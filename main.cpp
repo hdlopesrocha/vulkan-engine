@@ -1,7 +1,4 @@
-
-
 #include "vulkan/vulkan.hpp"
-
 
 class MyApp : public VulkanApp {
     public:

@@ -13,6 +13,15 @@
 // stb_image for texture loading
 #include <stb/stb_image.h>
 
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/integer.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/norm.hpp> 
+#include <glm/matrix.hpp>
+
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
 
@@ -110,11 +119,6 @@ class VulkanApp {
         uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
         void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory);
         void createUniformBuffer();
-        static void mat4_identity(float* m) ;
-        static void mat4_mul(const float* a, const float* b, float* out);
-        static void mat4_perspective(float* m, float fovY, float aspect, float znear, float zfar);
-        static void mat4_translate(float* m, float x, float y, float z);
-        static void mat4_rotate_y(float* m, float angle);
         void updateUniformBuffer();
         void createVertexBuffer();
         void createIndexBuffer();

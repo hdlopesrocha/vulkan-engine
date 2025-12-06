@@ -2,7 +2,7 @@
 # ---------
 
 CC = g++
-CFLAGS = -std=c++17 -O2
+CFLAGS = -std=c++17 -O2 -g
 INCLUDES = `pkg-config --cflags glfw3 vulkan`
 LIBS = `pkg-config --libs glfw3 vulkan` -ljpeg -lstb
 

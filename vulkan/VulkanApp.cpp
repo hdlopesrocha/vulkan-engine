@@ -2,6 +2,8 @@
 
 #include "vulkan.hpp"
 
+
+
 const std::vector<const char*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
 };
@@ -1118,77 +1120,30 @@ void VulkanApp::createUniformBuffer() {
     createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uniformBuffer, uniformBufferMemory);
 }
 
-// simple column-major 4x4 matrix helpers
-void VulkanApp::mat4_identity(float* m) {
-    for (int i = 0; i < 16; ++i) m[i] = 0.0f;
-    m[0] = m[5] = m[10] = m[15] = 1.0f;
-}
-
-void VulkanApp::mat4_mul(const float* a, const float* b, float* out) {
-    // column-major multiply out = a * b
-    // out[row + col*4] = sum_k a[row + k*4] * b[k + col*4]
-    for (int col = 0; col < 4; ++col) {
-        for (int row = 0; row < 4; ++row) {
-            float sum = 0.0f;
-            for (int k = 0; k < 4; ++k) {
-                sum += a[row + k*4] * b[k + col*4];
-            }
-            out[row + col*4] = sum;
-        }
-    }
-}
-
-void VulkanApp::mat4_perspective(float* m, float fovY, float aspect, float znear, float zfar) {
-    float f = 1.0f / tanf(fovY / 2.0f);
-    for (int i = 0; i < 16; ++i) m[i] = 0.0f;
-    m[0] = f / aspect;
-    m[5] = f;
-    m[10] = (zfar + znear) / (znear - zfar);
-    m[11] = -1.0f;
-    m[14] = (2.0f * zfar * znear) / (znear - zfar);
-}
-
-void VulkanApp::mat4_translate(float* m, float x, float y, float z) {
-    mat4_identity(m);
-    m[12] = x;
-    m[13] = y;
-    m[14] = z;
-}
-
-void VulkanApp::mat4_rotate_y(float* m, float angle) {
-    float c = cosf(angle);
-    float s = sinf(angle);
-    for (int i = 0; i < 16; ++i) m[i] = 0.0f;
-    m[0] = c; m[2] = s;
-    m[5] = 1.0f;
-    m[8] = -s; m[10] = c;
-    m[15] = 1.0f;
-}
-
 void VulkanApp::updateUniformBuffer() {
     // compute MVP = proj * view * model
-    float proj[16];
-    float view[16];
-    float model[16];
-    float tmp[16];
-    float mvp[16];
+    glm::mat4 proj = glm::mat4(1.0f);
+    glm::mat4 view = glm::mat4(1.0f);
+    glm::mat4 model = glm::mat4(1.0f);
+    glm::mat4 tmp = glm::mat4(1.0f);
+    glm::mat4 mvp = glm::mat4(1.0f);
 
     float aspect = (float)swapchainExtent.width / (float)swapchainExtent.height;
-    mat4_perspective(proj, 45.0f * 3.1415926f / 180.0f, aspect, 0.1f, 10.0f);
+    proj = glm::perspective(45.0f * 3.1415926f / 180.0f, aspect, 0.1f, 10.0f);
     // flip Y for Vulkan clip space
-    proj[5] *= -1.0f;
+    proj[1][1] *= -1.0f;
 
-    mat4_translate(view, 0.0f, 0.0f, -2.5f);
+    view = glm::translate(view, glm::vec3(0.0f, 0.0f, -2.5f));
 
     float time = (float)glfwGetTime();
-    mat4_rotate_y(model, time * 0.8f);
+    model = glm::rotate(model, time * 0.8f, glm::vec3(0.0f, 1.0f, 0.0f));
 
-    mat4_mul(view, model, tmp); // tmp = view * model
-    mat4_mul(proj, tmp, mvp);   // mvp = proj * view * model
+    tmp = view * model;
+    mvp = proj * view * model;
 
     void* data;
-    vkMapMemory(device, uniformBufferMemory, 0, sizeof(mvp), 0, &data);
-    memcpy(data, mvp, sizeof(mvp));
+    vkMapMemory(device, uniformBufferMemory, 0, sizeof(glm::mat4), 0, &data);
+    memcpy(data, &mvp, sizeof(glm::mat4));
     vkUnmapMemory(device, uniformBufferMemory);
 }
 
