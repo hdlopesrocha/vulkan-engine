@@ -4,9 +4,9 @@
 CC = g++
 CFLAGS = -std=c++17 -O2
 INCLUDES = `pkg-config --cflags glfw3 vulkan`
-LIBS = `pkg-config --libs glfw3 vulkan` -ljpeg
+LIBS = `pkg-config --libs glfw3 vulkan` -ljpeg -lstb
 
-SRC = main.cpp
+SRC = main.cpp vulkan/*cpp
 OUT = app
 
 all:
