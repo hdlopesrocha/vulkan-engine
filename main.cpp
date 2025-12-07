@@ -4,17 +4,19 @@ class MyApp : public VulkanApp {
     public:
 
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
-
+        VkSampler textureSampler = VK_NULL_HANDLE;
+        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+        Uniform uniform;
         void setup() override {
             // Graphics Pipeline
             {
-                ShaderStage vertexShader = ShaderStage(createShaderModule(
-                    FileReader::readFile("shaders/triangle.vert.spv")), 
+                ShaderStage vertexShader = ShaderStage(
+                    createShaderModule(FileReader::readFile("shaders/triangle.vert.spv")), 
                     VK_SHADER_STAGE_VERTEX_BIT
                 );
 
-                ShaderStage fragmentShader = ShaderStage(createShaderModule(
-                    FileReader::readFile("shaders/triangle.frag.spv")), 
+                ShaderStage fragmentShader = ShaderStage(
+                    createShaderModule(FileReader::readFile("shaders/triangle.frag.spv")), 
                     VK_SHADER_STAGE_FRAGMENT_BIT
                 );
 
@@ -27,14 +29,14 @@ class MyApp : public VulkanApp {
                         0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
                     },
                     {
-                        VkVertexInputAttributeDescription{
-                            0,0,VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos)
+                        VkVertexInputAttributeDescription {
+                            0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos)
                         },
-                        VkVertexInputAttributeDescription{
-                            1,0,VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)
+                        VkVertexInputAttributeDescription {
+                            1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)
                         },
-                        VkVertexInputAttributeDescription{
-                            2,0,VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)
+                        VkVertexInputAttributeDescription {
+                            2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)
                         }
                     }
                 );
@@ -44,18 +46,51 @@ class MyApp : public VulkanApp {
             }
             createTextureImage();
             createTextureImageView();
-            createTextureSampler();
-            createUniformBuffer();
+            textureSampler = createTextureSampler();
+            uniform = createUniformBuffer();
             createDescriptorPool();
-            createDescriptorSet();
+            // Descriptor Set
+            {
+                descriptorSet = createDescriptorSet();
+            
+                // uniform buffer descriptor (binding 0)
+                VkDescriptorBufferInfo bufferInfo { uniform.uniformBuffer, 0 , sizeof(float) * 16 };
+
+                VkWriteDescriptorSet uboWrite{};
+                uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                uboWrite.dstSet = descriptorSet;
+                uboWrite.dstBinding = 0;
+                uboWrite.dstArrayElement = 0;
+                uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                uboWrite.descriptorCount = 1;
+                uboWrite.pBufferInfo = &bufferInfo;
+
+                // image sampler descriptor (binding 1)
+                VkDescriptorImageInfo imageInfo { textureSampler, textureImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+
+                VkWriteDescriptorSet samplerWrite{};
+                samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                samplerWrite.dstSet = descriptorSet;
+                samplerWrite.dstBinding = 1;
+                samplerWrite.dstArrayElement = 0;
+                samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                samplerWrite.descriptorCount = 1;
+                samplerWrite.pImageInfo = &imageInfo;
+
+                updateDescriptorSet(
+                    descriptorSet, 
+                    { uboWrite, samplerWrite }
+                );
+            }
             createVertexBuffer();
             createIndexBuffer();
 
-            createCommandBuffers(graphicsPipeline);
+            createCommandBuffers(graphicsPipeline, descriptorSet);
         };
 
         void update(float deltaTime) override {
-
+            // update per-frame uniform buffer (MVP)
+            updateUniformBuffer(uniform);
         };
 
         void draw() override {
@@ -64,6 +99,11 @@ class MyApp : public VulkanApp {
 
         void clean() override {
             if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipeline, nullptr);
+            // texture and descriptor cleanup
+            if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(getDevice(), textureSampler, nullptr);
+            // uniform buffer
+            if (uniform.uniformBuffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniform.uniformBuffer, nullptr);
+            if (uniform.uniformBufferMemory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniform.uniformBufferMemory, nullptr);
         }
 
 };

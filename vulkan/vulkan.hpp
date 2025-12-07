@@ -50,6 +50,11 @@ struct ShaderStage {
     }
 };
 
+struct Uniform {
+    VkBuffer uniformBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory uniformBufferMemory = VK_NULL_HANDLE;
+};
+
 class FileReader {
     public:
     static std::vector<char> readFile(const std::string& filename);
@@ -88,17 +93,10 @@ class VulkanApp {
     uint32_t indexCount = 0;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     // texture and descriptor
-    VkImage textureImage = VK_NULL_HANDLE;
-    VkDeviceMemory textureImageMemory = VK_NULL_HANDLE;
-    VkImageView textureImageView = VK_NULL_HANDLE;
-    VkSampler textureSampler = VK_NULL_HANDLE;
+
     uint32_t mipLevels = 1;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-    // uniform buffer for MVP
-    VkBuffer uniformBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory uniformBufferMemory = VK_NULL_HANDLE;
     // depth resources
     VkImage depthImage = VK_NULL_HANDLE;
     VkDeviceMemory depthImageMemory = VK_NULL_HANDLE;
@@ -127,7 +125,6 @@ class VulkanApp {
 
         uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
         void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory);
-        void updateUniformBuffer();
         void drawFrame();
         void createInstance();
         bool checkValidationLayerSupport();
@@ -149,17 +146,25 @@ class VulkanApp {
 
 
     public:
+        VkImage textureImage = VK_NULL_HANDLE;
+        VkDeviceMemory textureImageMemory = VK_NULL_HANDLE;
+        VkImageView textureImageView = VK_NULL_HANDLE;
+
+
         void createTextureImage();
         void createTextureImageView();
-        void createTextureSampler();
-        void createUniformBuffer();
+        VkSampler createTextureSampler();
+        Uniform createUniformBuffer();
+        void updateUniformBuffer(Uniform &uniform);
         void createDescriptorPool();
-        void createDescriptorSet();
+        VkDescriptorSet createDescriptorSet();
+        void updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors);
+
         void createVertexBuffer();
         void createIndexBuffer();
         VkShaderModule createShaderModule(const std::vector<char>& code);
         VkPipeline createGraphicsPipeline(std::initializer_list<VkPipelineShaderStageCreateInfo> stages, VkVertexInputBindingDescription bindingDescription, std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions);
-        void createCommandBuffers(VkPipeline &graphicsPipeline);
+        void createCommandBuffers(VkPipeline &graphicsPipeline, VkDescriptorSet &descriptorSet);
 
         VkDevice getDevice() const;
 

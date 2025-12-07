@@ -49,7 +49,6 @@ void VulkanApp::initVulkan() {
 void VulkanApp::mainLoop() {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
-        update(0.0f); // TODO: calculate frame time
         drawFrame();
     }
 }
@@ -73,7 +72,6 @@ void VulkanApp::cleanup() {
     clean();
 
     // texture and descriptor cleanup
-    if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
     if (textureImageView != VK_NULL_HANDLE) vkDestroyImageView(device, textureImageView, nullptr);
     if (textureImage != VK_NULL_HANDLE) vkDestroyImage(device, textureImage, nullptr);
     if (textureImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, textureImageMemory, nullptr);
@@ -92,9 +90,7 @@ void VulkanApp::cleanup() {
     if (indexBufferMemory != VK_NULL_HANDLE) vkFreeMemory(device, indexBufferMemory, nullptr);
     if (vertexBuffer != VK_NULL_HANDLE) vkDestroyBuffer(device, vertexBuffer, nullptr);
     if (vertexBufferMemory != VK_NULL_HANDLE) vkFreeMemory(device, vertexBufferMemory, nullptr);
-    // uniform buffer
-    if (uniformBuffer != VK_NULL_HANDLE) vkDestroyBuffer(device, uniformBuffer, nullptr);
-    if (uniformBufferMemory != VK_NULL_HANDLE) vkFreeMemory(device, uniformBufferMemory, nullptr);
+
 
     // render pass
     if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
@@ -574,7 +570,7 @@ void VulkanApp::copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width
     endSingleTimeCommands(commandBuffer);
 }
 
-void VulkanApp::createCommandBuffers(VkPipeline &graphicsPipeline) {
+void VulkanApp::createCommandBuffers(VkPipeline &graphicsPipeline, VkDescriptorSet &descriptorSet) {
     commandBuffers.resize(swapchainFramebuffers.size());
 
     VkCommandBufferAllocateInfo allocInfo{};
@@ -698,7 +694,7 @@ void VulkanApp::createTextureImageView() {
     }
 }
 
-void VulkanApp::createTextureSampler() {
+VkSampler VulkanApp::createTextureSampler() {
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -715,10 +711,11 @@ void VulkanApp::createTextureSampler() {
     samplerInfo.minLod = 0.0f;
     samplerInfo.maxLod = (float)mipLevels;
     samplerInfo.mipLodBias = 0.0f;
-
+    VkSampler textureSampler = VK_NULL_HANDLE;
     if (vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
         throw std::runtime_error("failed to create texture sampler!");
     }
+    return textureSampler;
 }
 
 void VulkanApp::createDescriptorSetLayout() {
@@ -850,51 +847,24 @@ void VulkanApp::createDescriptorPool() {
     }
 }
 
-void VulkanApp::createDescriptorSet() {
+VkDescriptorSet VulkanApp::createDescriptorSet() {
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descriptorPool;
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts = &descriptorSetLayout;
 
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
         throw std::runtime_error("failed to allocate descriptor set!");
     }
-
-    // uniform buffer descriptor (binding 0)
-    VkDescriptorBufferInfo bufferInfo{};
-    bufferInfo.buffer = uniformBuffer;
-    bufferInfo.offset = 0;
-    bufferInfo.range = sizeof(float) * 16;
-
-    VkWriteDescriptorSet uboWrite{};
-    uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    uboWrite.dstSet = descriptorSet;
-    uboWrite.dstBinding = 0;
-    uboWrite.dstArrayElement = 0;
-    uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    uboWrite.descriptorCount = 1;
-    uboWrite.pBufferInfo = &bufferInfo;
-
-    // image sampler descriptor (binding 1)
-    VkDescriptorImageInfo imageInfo{};
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfo.imageView = textureImageView;
-    imageInfo.sampler = textureSampler;
-
-    VkWriteDescriptorSet samplerWrite{};
-    samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    samplerWrite.dstSet = descriptorSet;
-    samplerWrite.dstBinding = 1;
-    samplerWrite.dstArrayElement = 0;
-    samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    samplerWrite.descriptorCount = 1;
-    samplerWrite.pImageInfo = &imageInfo;
-
-    std::array<VkWriteDescriptorSet, 2> descriptorWrites = { uboWrite, samplerWrite };
-    vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+    return descriptorSet;
 }
 
+void VulkanApp::updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors) {
+    std::vector<VkWriteDescriptorSet> descriptorWrites(descriptors);
+    vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+}
 
 VkShaderModule VulkanApp::createShaderModule(const std::vector<char>& code) {
     VkShaderModuleCreateInfo createInfo{};
@@ -1059,12 +1029,14 @@ void VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemo
 }
 
 // create a simple host visible uniform buffer for a 4x4 MVP matrix
-void VulkanApp::createUniformBuffer() {
+Uniform VulkanApp::createUniformBuffer() {
     VkDeviceSize bufferSize = sizeof(float) * 16;
-    createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uniformBuffer, uniformBufferMemory);
+    Uniform uniform;
+    createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uniform.uniformBuffer, uniform.uniformBufferMemory);
+    return uniform;
 }
 
-void VulkanApp::updateUniformBuffer() {
+void VulkanApp::updateUniformBuffer(Uniform &uniform) {
     // compute MVP = proj * view * model
     glm::mat4 proj = glm::mat4(1.0f);
     glm::mat4 view = glm::mat4(1.0f);
@@ -1086,9 +1058,9 @@ void VulkanApp::updateUniformBuffer() {
     mvp = proj * view * model;
 
     void* data;
-    vkMapMemory(device, uniformBufferMemory, 0, sizeof(glm::mat4), 0, &data);
+    vkMapMemory(device, uniform.uniformBufferMemory, 0, sizeof(glm::mat4), 0, &data);
     memcpy(data, &mvp, sizeof(glm::mat4));
-    vkUnmapMemory(device, uniformBufferMemory);
+    vkUnmapMemory(device, uniform.uniformBufferMemory);
 }
 
 void VulkanApp::createVertexBuffer() {
@@ -1173,9 +1145,7 @@ void VulkanApp::drawFrame() {
         std::cerr << "vkAcquireNextImageKHR failed: " << r << std::endl;
         return;
     }
-
-    // update per-frame uniform buffer (MVP)
-    updateUniformBuffer();
+    update(0.0f); // TODO: calculate frame time
 
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
