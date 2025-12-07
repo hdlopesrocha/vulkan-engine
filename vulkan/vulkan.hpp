@@ -103,7 +103,6 @@ class VulkanApp {
     VkRenderPass renderPass = VK_NULL_HANDLE;
     std::vector<VkFramebuffer> swapchainFramebuffers;
     VkCommandPool commandPool = VK_NULL_HANDLE;
-    std::vector<VkCommandBuffer> commandBuffers;
 
     VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
     VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
@@ -118,6 +117,7 @@ class VulkanApp {
     VkDeviceMemory depthImageMemory = VK_NULL_HANDLE;
     VkImageView depthImageView = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
+    std::vector<VkCommandBuffer> commandBuffers;
 
     private:
 
@@ -174,15 +174,15 @@ class VulkanApp {
         Buffer createIndexBuffer(std::vector<uint16_t> &indices);
         VkShaderModule createShaderModule(const std::vector<char>& code);
         VkPipeline createGraphicsPipeline(std::initializer_list<VkPipelineShaderStageCreateInfo> stages, VkVertexInputBindingDescription bindingDescription, std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions);
-        void createCommandBuffers(VkPipeline &graphicsPipeline, VkDescriptorSet &descriptorSet, VertexBufferObject &vbo);
+        std::vector<VkCommandBuffer> createCommandBuffers();
 
         VkDevice getDevice() const;
-
+        VkPipelineLayout getPipelineLayout() const;
 
         void run();
         virtual void setup() = 0;
         virtual void update(float deltaTime) = 0;
-        virtual void draw() = 0;
+        virtual void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) = 0;
         virtual void clean() = 0;
 
 };
