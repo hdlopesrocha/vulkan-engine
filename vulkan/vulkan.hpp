@@ -50,9 +50,9 @@ struct ShaderStage {
     }
 };
 
-struct Uniform {
-    VkBuffer uniformBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory uniformBufferMemory = VK_NULL_HANDLE;
+struct Buffer {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
 };
 
 class FileReader {
@@ -86,10 +86,8 @@ class VulkanApp {
     VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
     VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
     VkFence inFlightFence = VK_NULL_HANDLE;
-    VkBuffer vertexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory vertexBufferMemory = VK_NULL_HANDLE;
-    VkBuffer indexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory indexBufferMemory = VK_NULL_HANDLE;
+    Buffer vertexBuffer;
+    Buffer indexBuffer;
     uint32_t indexCount = 0;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     // texture and descriptor
@@ -124,7 +122,6 @@ class VulkanApp {
 
 
         uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
-        void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory);
         void drawFrame();
         void createInstance();
         bool checkValidationLayerSupport();
@@ -150,12 +147,11 @@ class VulkanApp {
         VkDeviceMemory textureImageMemory = VK_NULL_HANDLE;
         VkImageView textureImageView = VK_NULL_HANDLE;
 
-
+        Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties);
         void createTextureImage();
         void createTextureImageView();
         VkSampler createTextureSampler();
-        Uniform createUniformBuffer();
-        void updateUniformBuffer(Uniform &uniform);
+        void updateUniformBuffer(Buffer &uniform);
         void createDescriptorPool();
         VkDescriptorSet createDescriptorSet();
         void updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors);

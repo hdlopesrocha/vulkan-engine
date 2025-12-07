@@ -6,7 +6,8 @@ class MyApp : public VulkanApp {
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
         VkSampler textureSampler = VK_NULL_HANDLE;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-        Uniform uniform;
+        Buffer uniform;
+
         void setup() override {
             // Graphics Pipeline
             {
@@ -47,14 +48,14 @@ class MyApp : public VulkanApp {
             createTextureImage();
             createTextureImageView();
             textureSampler = createTextureSampler();
-            uniform = createUniformBuffer();
+            uniform = createBuffer(sizeof(float) * 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             createDescriptorPool();
             // Descriptor Set
             {
                 descriptorSet = createDescriptorSet();
             
                 // uniform buffer descriptor (binding 0)
-                VkDescriptorBufferInfo bufferInfo { uniform.uniformBuffer, 0 , sizeof(float) * 16 };
+                VkDescriptorBufferInfo bufferInfo { uniform.buffer, 0 , sizeof(float) * 16 };
 
                 VkWriteDescriptorSet uboWrite{};
                 uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -102,8 +103,8 @@ class MyApp : public VulkanApp {
             // texture and descriptor cleanup
             if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(getDevice(), textureSampler, nullptr);
             // uniform buffer
-            if (uniform.uniformBuffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniform.uniformBuffer, nullptr);
-            if (uniform.uniformBufferMemory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniform.uniformBufferMemory, nullptr);
+            if (uniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniform.buffer, nullptr);
+            if (uniform.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniform.memory, nullptr);
         }
 
 };
