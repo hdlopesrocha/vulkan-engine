@@ -39,6 +39,22 @@ struct QueueFamilyIndices {
     }
 };
 
+struct ShaderStage {
+    VkPipelineShaderStageCreateInfo info{};
+
+    ShaderStage(VkShaderModule m, VkShaderStageFlagBits s) {
+        info.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        info.stage  = s;
+        info.module = m;
+        info.pName  = "main";
+    }
+};
+
+class FileReader {
+    public:
+    static std::vector<char> readFile(const std::string& filename);
+};
+
 class VulkanApp {
     GLFWwindow* window = nullptr;
 
@@ -68,7 +84,6 @@ class VulkanApp {
     VkDeviceMemory indexBufferMemory = VK_NULL_HANDLE;
     uint32_t indexCount = 0;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     // texture and descriptor
     VkImage textureImage = VK_NULL_HANDLE;
     VkDeviceMemory textureImageMemory = VK_NULL_HANDLE;
@@ -103,25 +118,13 @@ class VulkanApp {
         void generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels);
         void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
         void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
-        void createCommandBuffers();
-        void createSyncObjects();
-        void createTextureImage();
-        void createTextureImageView();
-        void createTextureSampler();
         void createDepthResources();
-        void createDescriptorPool();
-        void createDescriptorSet();
         void createDescriptorSetLayout();
 
-        static std::vector<char> readFile(const std::string& filename);
-        VkShaderModule createShaderModule(const std::vector<char>& code);
-        void createGraphicsPipeline();
+
         uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
         void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory);
-        void createUniformBuffer();
         void updateUniformBuffer();
-        void createVertexBuffer();
-        void createIndexBuffer();
         void drawFrame();
         void createInstance();
         bool checkValidationLayerSupport();
@@ -131,8 +134,7 @@ class VulkanApp {
         void pickPhysicalDevice();
         bool isDeviceSuitable(VkPhysicalDevice device);
         void createLogicalDevice() ;
-
-
+        void createSyncObjects();
 
     private:
         void initWindow();
@@ -144,9 +146,25 @@ class VulkanApp {
 
 
     public:
+        void createTextureImage();
+        void createTextureImageView();
+        void createTextureSampler();
+        void createUniformBuffer();
+        void createDescriptorPool();
+        void createDescriptorSet();
+        void createVertexBuffer();
+        void createIndexBuffer();
+        VkShaderModule createShaderModule(const std::vector<char>& code);
+        VkPipeline createGraphicsPipeline(std::initializer_list<VkPipelineShaderStageCreateInfo> stages);
+        void createCommandBuffers(VkPipeline &graphicsPipeline);
+
+        VkDevice getDevice() const;
+
+
         void run();
         virtual void setup() = 0;
         virtual void update(float deltaTime) = 0;
         virtual void draw() = 0;
+        virtual void clean() = 0;
 
 };

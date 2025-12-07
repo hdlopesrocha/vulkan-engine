@@ -40,21 +40,10 @@ void VulkanApp::initVulkan() {
     createImageViews();
     createRenderPass();
     createDescriptorSetLayout();
-    createGraphicsPipeline();
     createCommandPool();
     createDepthResources();
     createFramebuffers();
-    createTextureImage();
-    createTextureImageView();
-    createTextureSampler();
-    // create uniform buffer (used by vertex shader)
-    createUniformBuffer();
-    createDescriptorPool();
-    createDescriptorSet();
-    createVertexBuffer();
-    createIndexBuffer();
-    createCommandBuffers();
-    createSyncObjects();
+
 }
 
 void VulkanApp::mainLoop() {
@@ -81,6 +70,8 @@ void VulkanApp::cleanup() {
         if (fb != VK_NULL_HANDLE) vkDestroyFramebuffer(device, fb, nullptr);
     }
 
+    clean();
+
     // texture and descriptor cleanup
     if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
     if (textureImageView != VK_NULL_HANDLE) vkDestroyImageView(device, textureImageView, nullptr);
@@ -94,7 +85,6 @@ void VulkanApp::cleanup() {
     if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 
     // destroy pipeline
-    if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
     if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 
     // vertex/index buffers
@@ -584,7 +574,7 @@ void VulkanApp::copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width
     endSingleTimeCommands(commandBuffer);
 }
 
-void VulkanApp::createCommandBuffers() {
+void VulkanApp::createCommandBuffers(VkPipeline &graphicsPipeline) {
     commandBuffers.resize(swapchainFramebuffers.size());
 
     VkCommandBufferAllocateInfo allocInfo{};
@@ -905,20 +895,6 @@ void VulkanApp::createDescriptorSet() {
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 }
 
-std::vector<char> VulkanApp::readFile(const std::string& filename) {
-    std::ifstream file(filename, std::ios::ate | std::ios::binary);
-
-    if (!file.is_open()) {
-        throw std::runtime_error("failed to open file: " + filename);
-    }
-
-    size_t fileSize = (size_t)file.tellg();
-    std::vector<char> buffer(fileSize);
-    file.seekg(0);
-    file.read(buffer.data(), fileSize);
-    file.close();
-    return buffer;
-}
 
 VkShaderModule VulkanApp::createShaderModule(const std::vector<char>& code) {
     VkShaderModuleCreateInfo createInfo{};
@@ -933,26 +909,12 @@ VkShaderModule VulkanApp::createShaderModule(const std::vector<char>& code) {
     return shaderModule;
 }
 
-void VulkanApp::createGraphicsPipeline() {
-    auto vertShaderCode = readFile("shaders/triangle.vert.spv");
-    auto fragShaderCode = readFile("shaders/triangle.frag.spv");
+VkDevice VulkanApp::getDevice() const {
+    return device;
+}
 
-    VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
-    VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
-
-    VkPipelineShaderStageCreateInfo vertStageInfo{};
-    vertStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vertStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vertStageInfo.module = vertShaderModule;
-    vertStageInfo.pName = "main";
-
-    VkPipelineShaderStageCreateInfo fragStageInfo{};
-    fragStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fragStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragStageInfo.module = fragShaderModule;
-    fragStageInfo.pName = "main";
-
-    VkPipelineShaderStageCreateInfo shaderStages[] = {vertStageInfo, fragStageInfo};
+VkPipeline VulkanApp::createGraphicsPipeline(std::initializer_list<VkPipelineShaderStageCreateInfo> stages) {
+    std::vector<VkPipelineShaderStageCreateInfo> shaderStages(stages);
 
     // vertex input (pos(vec3), color(vec3), uv(vec2))
     struct Vertex { float pos[3]; float color[3]; float uv[2]; };
@@ -1015,7 +977,7 @@ void VulkanApp::createGraphicsPipeline() {
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_NONE; // disable culling during debug
+    rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT; 
     rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
@@ -1053,8 +1015,8 @@ void VulkanApp::createGraphicsPipeline() {
 
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.stageCount = stages.size();
+    pipelineInfo.pStages = shaderStages.data();
     pipelineInfo.pVertexInputState = &vertexInputInfo;
     pipelineInfo.pInputAssemblyState = &inputAssembly;
     pipelineInfo.pViewportState = &viewportState;
@@ -1065,14 +1027,12 @@ void VulkanApp::createGraphicsPipeline() {
     pipelineInfo.layout = pipelineLayout;
     pipelineInfo.renderPass = renderPass;
     pipelineInfo.subpass = 0;
-
+    VkPipeline graphicsPipeline;
     if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create graphics pipeline!");
     }
-
-    vkDestroyShaderModule(device, fragShaderModule, nullptr);
-    vkDestroyShaderModule(device, vertShaderModule, nullptr);
     std::cerr << "graphics pipeline created\n";
+    return graphicsPipeline;
 }
 
 uint32_t VulkanApp::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
@@ -1471,6 +1431,8 @@ void VulkanApp::run() {
     initWindow();
     initVulkan();
     setup();
+    createSyncObjects();
+
     mainLoop();
     cleanup();
 }
