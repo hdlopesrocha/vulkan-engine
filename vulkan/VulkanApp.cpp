@@ -43,6 +43,7 @@ void VulkanApp::initVulkan() {
     createCommandPool();
     createDepthResources();
     createFramebuffers();
+    createSyncObjects();
 
 }
 
@@ -70,11 +71,6 @@ void VulkanApp::cleanup() {
     }
 
     clean();
-
-    // texture and descriptor cleanup
-    if (textureImageView != VK_NULL_HANDLE) vkDestroyImageView(device, textureImageView, nullptr);
-    if (textureImage != VK_NULL_HANDLE) vkDestroyImage(device, textureImage, nullptr);
-    if (textureImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, textureImageMemory, nullptr);
     // depth resources
     if (depthImageView != VK_NULL_HANDLE) vkDestroyImageView(device, depthImageView, nullptr);
     if (depthImage != VK_NULL_HANDLE) vkDestroyImage(device, depthImage, nullptr);
@@ -643,9 +639,10 @@ void VulkanApp::createSyncObjects() {
     }
 }
 
-void VulkanApp::createTextureImage() {
+TextureImage VulkanApp::createTextureImage(const char * filename) {
+    TextureImage textureImage;
     int texWidth, texHeight, texChannels;
-    unsigned char* pixels = stbi_load("textures/grass_color.jpg", &texWidth, &texHeight, &texChannels, 4);
+    unsigned char* pixels = stbi_load(filename, &texWidth, &texHeight, &texChannels, 4);
     if (!pixels) {
         throw std::runtime_error("failed to load texture image!");
     }
@@ -662,37 +659,39 @@ void VulkanApp::createTextureImage() {
     stbi_image_free(pixels);
 
     // use sRGB format so the GPU performs correct sRGB -> linear conversion when sampling
-    mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
-    createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, mipLevels, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
+    textureImage.mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
+    createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, textureImage.mipLevels, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage.image, textureImage.memory);
 
-    transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    copyBufferToImage(stagingBuffer.buffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
+    transitionImageLayout(textureImage.image, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    copyBufferToImage(stagingBuffer.buffer, textureImage.image, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
     // generate the mipmap chain
-    generateMipmaps(textureImage, VK_FORMAT_R8G8B8A8_SRGB, texWidth, texHeight, mipLevels);
+    generateMipmaps(textureImage.image, VK_FORMAT_R8G8B8A8_SRGB, texWidth, texHeight, textureImage.mipLevels);
 
     vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
     vkFreeMemory(device, stagingBuffer.memory, nullptr);
+    createTextureImageView(textureImage);
+    return textureImage;
 }
 
-void VulkanApp::createTextureImageView() {
+void VulkanApp::createTextureImageView(TextureImage &textureImage) {
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = textureImage;
+    viewInfo.image = textureImage.image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     // match the image format (use sRGB view so sampling applies correct conversion)
     viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = mipLevels;
+    viewInfo.subresourceRange.levelCount = textureImage.mipLevels;
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = 1;
 
-    if (vkCreateImageView(device, &viewInfo, nullptr, &textureImageView) != VK_SUCCESS) {
+    if (vkCreateImageView(device, &viewInfo, nullptr, &textureImage.view) != VK_SUCCESS) {
         throw std::runtime_error("failed to create texture image view!");
     }
 }
 
-VkSampler VulkanApp::createTextureSampler() {
+VkSampler VulkanApp::createTextureSampler(uint32_t mipLevels) {
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -1378,7 +1377,6 @@ void VulkanApp::run() {
     initWindow();
     initVulkan();
     setup();
-    createSyncObjects();
 
     mainLoop();
     cleanup();

@@ -60,7 +60,14 @@ class FileReader {
     static std::vector<char> readFile(const std::string& filename);
 };
 
-    struct Vertex { float pos[3]; float color[3]; float uv[2]; };
+struct TextureImage {
+    uint32_t mipLevels = 1;
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+};
+
+struct Vertex { float pos[3]; float color[3]; float uv[2]; };
 
 
 class VulkanApp {
@@ -92,7 +99,6 @@ class VulkanApp {
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     // texture and descriptor
 
-    uint32_t mipLevels = 1;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     // depth resources
@@ -132,6 +138,7 @@ class VulkanApp {
         bool isDeviceSuitable(VkPhysicalDevice device);
         void createLogicalDevice() ;
         void createSyncObjects();
+        void createTextureImageView(TextureImage &textureImage);
 
     private:
         void initWindow();
@@ -143,14 +150,9 @@ class VulkanApp {
 
 
     public:
-        VkImage textureImage = VK_NULL_HANDLE;
-        VkDeviceMemory textureImageMemory = VK_NULL_HANDLE;
-        VkImageView textureImageView = VK_NULL_HANDLE;
-
         Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties);
-        void createTextureImage();
-        void createTextureImageView();
-        VkSampler createTextureSampler();
+        TextureImage createTextureImage(const char * filename);
+        VkSampler createTextureSampler(uint32_t mipLevels);
         void updateUniformBuffer(Buffer &uniform);
         void createDescriptorPool();
         VkDescriptorSet createDescriptorSet();

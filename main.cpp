@@ -2,11 +2,11 @@
 
 class MyApp : public VulkanApp {
     public:
-
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
         VkSampler textureSampler = VK_NULL_HANDLE;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
         Buffer uniform;
+        TextureImage textureImage;
 
         void setup() override {
             // Graphics Pipeline
@@ -45,9 +45,8 @@ class MyApp : public VulkanApp {
                 vkDestroyShaderModule(getDevice(), fragmentShader.info.module, nullptr);
                 vkDestroyShaderModule(getDevice(), vertexShader.info.module, nullptr);
             }
-            createTextureImage();
-            createTextureImageView();
-            textureSampler = createTextureSampler();
+            textureImage = createTextureImage("textures/grass_color.jpg");
+            textureSampler = createTextureSampler(textureImage.mipLevels);
             uniform = createBuffer(sizeof(float) * 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             createDescriptorPool();
             // Descriptor Set
@@ -67,7 +66,7 @@ class MyApp : public VulkanApp {
                 uboWrite.pBufferInfo = &bufferInfo;
 
                 // image sampler descriptor (binding 1)
-                VkDescriptorImageInfo imageInfo { textureSampler, textureImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                VkDescriptorImageInfo imageInfo { textureSampler, textureImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 
                 VkWriteDescriptorSet samplerWrite{};
                 samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -102,6 +101,11 @@ class MyApp : public VulkanApp {
             if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipeline, nullptr);
             // texture and descriptor cleanup
             if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(getDevice(), textureSampler, nullptr);
+            // texture and descriptor cleanup
+            if (textureImage.view != VK_NULL_HANDLE) vkDestroyImageView(getDevice(), textureImage.view, nullptr);
+            if (textureImage.image != VK_NULL_HANDLE) vkDestroyImage(getDevice(), textureImage.image, nullptr);
+            if (textureImage.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), textureImage.memory, nullptr);
+            
             // uniform buffer
             if (uniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniform.buffer, nullptr);
             if (uniform.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniform.memory, nullptr);
