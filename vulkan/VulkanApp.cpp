@@ -44,7 +44,6 @@ void VulkanApp::initVulkan() {
     createDepthResources();
     createFramebuffers();
     createSyncObjects();
-
 }
 
 void VulkanApp::mainLoop() {
@@ -80,13 +79,6 @@ void VulkanApp::cleanup() {
 
     // destroy pipeline
     if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-
-    // vertex/index buffers
-    if (indexBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, indexBuffer.buffer, nullptr);
-    if (indexBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(device, indexBuffer.memory, nullptr);
-    if (vertexBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, vertexBuffer.buffer, nullptr);
-    if (vertexBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(device, vertexBuffer.memory, nullptr);
-
 
     // render pass
     if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
@@ -566,7 +558,7 @@ void VulkanApp::copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width
     endSingleTimeCommands(commandBuffer);
 }
 
-void VulkanApp::createCommandBuffers(VkPipeline &graphicsPipeline, VkDescriptorSet &descriptorSet) {
+void VulkanApp::createCommandBuffers(VkPipeline &graphicsPipeline, VkDescriptorSet &descriptorSet, VertexBufferObject &vbo) {
     commandBuffers.resize(swapchainFramebuffers.size());
 
     VkCommandBufferAllocateInfo allocInfo{};
@@ -604,17 +596,15 @@ void VulkanApp::createCommandBuffers(VkPipeline &graphicsPipeline, VkDescriptorS
         // bind pipeline and draw the indexed square
         vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
-        // debug: print indexCount so we know draw call has data
-        std::cerr << "[cmdbuf " << i << "] indexCount=" << indexCount << "\n";
 
-        VkBuffer vertexBuffers[] = { vertexBuffer.buffer };
+        VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
         VkDeviceSize offsets[] = { 0 };
         vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, vertexBuffers, offsets);
-        vkCmdBindIndexBuffer(commandBuffers[i], indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
+        vkCmdBindIndexBuffer(commandBuffers[i], vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
         // bind descriptor set for texture
         vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
 
-        vkCmdDrawIndexed(commandBuffers[i], indexCount, 1, 0, 0, 0);
+        vkCmdDrawIndexed(commandBuffers[i], vbo.indexCount, 1, 0, 0, 0);
 
         vkCmdEndRenderPass(commandBuffers[i]);
 
@@ -1056,76 +1046,35 @@ void VulkanApp::updateUniformBuffer(Buffer &uniform) {
     vkUnmapMemory(device, uniform.memory);
 }
 
-void VulkanApp::createVertexBuffer() {
-    // 24 unique vertices (4 per face) so each face can have its own UVs
-    std::vector<Vertex> vertices = {
-        // +X face
-        {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f, 0.0f}},
-        {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {1.0f, 0.0f}},
-        {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f, 1.0f}},
-        {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {0.0f, 1.0f}},
-        // -X face
-        {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f, 0.0f}},
-        {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {1.0f, 0.0f}},
-        {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f, 1.0f}},
-        {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {0.0f, 1.0f}},
-        // +Y face
-        {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {0.0f, 0.0f}},
-        {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f, 0.0f}},
-        {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f, 1.0f}},
-        {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {0.0f, 1.0f}},
-        // -Y face
-        {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f, 0.0f}},
-        {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {1.0f, 0.0f}},
-        {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {1.0f, 1.0f}},
-        {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f, 1.0f}},
-        // +Z face
-        {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f, 0.0f}},
-        {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f, 0.0f}},
-        {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f, 1.0f}},
-        {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f, 1.0f}},
-        // -Z face
-        {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f, 0.0f}},
-        {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f, 0.0f}},
-        {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f, 1.0f}},
-        {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f, 1.0f}},
-    };
+Buffer VulkanApp::createVertexBuffer(std::vector<Vertex> &vertices) {
 
     VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
 
-    vertexBuffer = createBuffer(bufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    Buffer vertexBuffer = createBuffer(bufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     void* data;
     vkMapMemory(device, vertexBuffer.memory, 0, bufferSize, 0, &data);
     memcpy(data, vertices.data(), (size_t)bufferSize);
     vkUnmapMemory(device, vertexBuffer.memory);
     std::cerr << "vertex buffer created, size: " << bufferSize << "\n";
+    return vertexBuffer;
 }
 
-void VulkanApp::createIndexBuffer() {
-    // 12 triangles (2 per face) * 3 indices = 36
-    std::vector<uint16_t> indices = {
-        0,1,2, 2,3,0,         // +X
-        4,5,6, 6,7,4,         // -X
-        8,9,10, 10,11,8,      // +Y
-        12,13,14, 14,15,12,   // -Y
-        16,17,18, 18,19,16,   // +Z
-        20,21,22, 22,23,20    // -Z
-    };
+Buffer VulkanApp::createIndexBuffer(std::vector<uint16_t> &indices) {
+
 
     VkDeviceSize bufferSize = sizeof(indices[0]) * indices.size();
 
-    indexBuffer = createBuffer(bufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    Buffer indexBuffer = createBuffer(bufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     void* data;
     vkMapMemory(device, indexBuffer.memory, 0, bufferSize, 0, &data);
     memcpy(data, indices.data(), (size_t)bufferSize);
     vkUnmapMemory(device, indexBuffer.memory);
     // store index count for draw
-    indexCount = static_cast<uint32_t>(indices.size());
+    uint32_t indexCount = static_cast<uint32_t>(indices.size());
     std::cerr << "index buffer created, indexCount=" << indexCount << "\n";
-
-    draw();
+    return indexBuffer;
 }
 
 void VulkanApp::drawFrame() {
@@ -1139,6 +1088,7 @@ void VulkanApp::drawFrame() {
         return;
     }
     update(0.0f); // TODO: calculate frame time
+    draw();
 
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;

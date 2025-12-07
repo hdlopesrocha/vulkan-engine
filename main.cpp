@@ -7,6 +7,7 @@ class MyApp : public VulkanApp {
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
         Buffer uniform;
         TextureImage textureImage;
+        VertexBufferObject vertexBufferObject;
 
         void setup() override {
             // Graphics Pipeline
@@ -82,10 +83,53 @@ class MyApp : public VulkanApp {
                     { uboWrite, samplerWrite }
                 );
             }
-            createVertexBuffer();
-            createIndexBuffer();
 
-            createCommandBuffers(graphicsPipeline, descriptorSet);
+            // 24 unique vertices (4 per face) so each face can have its own UVs
+            std::vector<Vertex> vertices = {
+                // +X face
+                {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f, 0.0f}},
+                {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {1.0f, 0.0f}},
+                {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f, 1.0f}},
+                {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {0.0f, 1.0f}},
+                // -X face
+                {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f, 0.0f}},
+                {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {1.0f, 0.0f}},
+                {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f, 1.0f}},
+                {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {0.0f, 1.0f}},
+                // +Y face
+                {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {0.0f, 0.0f}},
+                {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f, 0.0f}},
+                {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f, 1.0f}},
+                {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {0.0f, 1.0f}},
+                // -Y face
+                {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f, 0.0f}},
+                {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {1.0f, 0.0f}},
+                {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {1.0f, 1.0f}},
+                {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f, 1.0f}},
+                // +Z face
+                {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f, 0.0f}},
+                {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f, 0.0f}},
+                {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f, 1.0f}},
+                {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f, 1.0f}},
+                // -Z face
+                {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f, 0.0f}},
+                {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f, 0.0f}},
+                {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f, 1.0f}},
+                {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f, 1.0f}},
+            };
+            // 12 triangles (2 per face) * 3 indices = 36
+            std::vector<uint16_t> indices = {
+                0,1,2, 2,3,0,         // +X
+                4,5,6, 6,7,4,         // -X
+                8,9,10, 10,11,8,      // +Y
+                12,13,14, 14,15,12,   // -Y
+                16,17,18, 18,19,16,   // +Z
+                20,21,22, 22,23,20    // -Z
+            };
+
+            vertexBufferObject = VertexBufferObject { createVertexBuffer(vertices), createIndexBuffer(indices), (uint) indices.size() };
+
+            createCommandBuffers(graphicsPipeline, descriptorSet, vertexBufferObject);
         };
 
         void update(float deltaTime) override {
@@ -105,7 +149,9 @@ class MyApp : public VulkanApp {
             if (textureImage.view != VK_NULL_HANDLE) vkDestroyImageView(getDevice(), textureImage.view, nullptr);
             if (textureImage.image != VK_NULL_HANDLE) vkDestroyImage(getDevice(), textureImage.image, nullptr);
             if (textureImage.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), textureImage.memory, nullptr);
-            
+            // vertex/index buffers
+            vertexBufferObject.destroy(getDevice());
+
             // uniform buffer
             if (uniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniform.buffer, nullptr);
             if (uniform.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniform.memory, nullptr);

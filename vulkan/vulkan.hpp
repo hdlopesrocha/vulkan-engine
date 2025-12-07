@@ -67,6 +67,21 @@ struct TextureImage {
     VkImageView view = VK_NULL_HANDLE;
 };
 
+struct VertexBufferObject {
+    Buffer vertexBuffer;
+    Buffer indexBuffer;
+    uint32_t indexCount = 0;
+
+    void destroy(const VkDevice &device) {
+        if (indexBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, indexBuffer.buffer, nullptr);
+        if (indexBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(device, indexBuffer.memory, nullptr);
+        if (vertexBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, vertexBuffer.buffer, nullptr);
+        if (vertexBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(device, vertexBuffer.memory, nullptr);
+    }
+
+};
+
+
 struct Vertex { float pos[3]; float color[3]; float uv[2]; };
 
 
@@ -93,9 +108,6 @@ class VulkanApp {
     VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
     VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
     VkFence inFlightFence = VK_NULL_HANDLE;
-    Buffer vertexBuffer;
-    Buffer indexBuffer;
-    uint32_t indexCount = 0;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     // texture and descriptor
 
@@ -158,11 +170,11 @@ class VulkanApp {
         VkDescriptorSet createDescriptorSet();
         void updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors);
 
-        void createVertexBuffer();
-        void createIndexBuffer();
+        Buffer createVertexBuffer(std::vector<Vertex> &vertices);
+        Buffer createIndexBuffer(std::vector<uint16_t> &indices);
         VkShaderModule createShaderModule(const std::vector<char>& code);
         VkPipeline createGraphicsPipeline(std::initializer_list<VkPipelineShaderStageCreateInfo> stages, VkVertexInputBindingDescription bindingDescription, std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions);
-        void createCommandBuffers(VkPipeline &graphicsPipeline, VkDescriptorSet &descriptorSet);
+        void createCommandBuffers(VkPipeline &graphicsPipeline, VkDescriptorSet &descriptorSet, VertexBufferObject &vbo);
 
         VkDevice getDevice() const;
 
