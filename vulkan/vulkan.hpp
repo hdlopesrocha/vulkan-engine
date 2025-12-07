@@ -55,6 +55,9 @@ class FileReader {
     static std::vector<char> readFile(const std::string& filename);
 };
 
+    struct Vertex { float pos[3]; float color[3]; float uv[2]; };
+
+
 class VulkanApp {
     GLFWwindow* window = nullptr;
 
@@ -155,7 +158,7 @@ class VulkanApp {
         void createVertexBuffer();
         void createIndexBuffer();
         VkShaderModule createShaderModule(const std::vector<char>& code);
-        VkPipeline createGraphicsPipeline(std::initializer_list<VkPipelineShaderStageCreateInfo> stages);
+        VkPipeline createGraphicsPipeline(std::initializer_list<VkPipelineShaderStageCreateInfo> stages, VkVertexInputBindingDescription bindingDescription, std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions);
         void createCommandBuffers(VkPipeline &graphicsPipeline);
 
         VkDevice getDevice() const;

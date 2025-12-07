@@ -6,24 +6,42 @@ class MyApp : public VulkanApp {
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
 
         void setup() override {
-            ShaderStage vertexShader = ShaderStage(createShaderModule(
-                FileReader::readFile("shaders/triangle.vert.spv")), 
-                VK_SHADER_STAGE_VERTEX_BIT
-            );
+            // Graphics Pipeline
+            {
+                ShaderStage vertexShader = ShaderStage(createShaderModule(
+                    FileReader::readFile("shaders/triangle.vert.spv")), 
+                    VK_SHADER_STAGE_VERTEX_BIT
+                );
 
-            ShaderStage fragmentShader = ShaderStage(createShaderModule(
-                FileReader::readFile("shaders/triangle.frag.spv")), 
-                VK_SHADER_STAGE_FRAGMENT_BIT
-            );
+                ShaderStage fragmentShader = ShaderStage(createShaderModule(
+                    FileReader::readFile("shaders/triangle.frag.spv")), 
+                    VK_SHADER_STAGE_FRAGMENT_BIT
+                );
 
-            graphicsPipeline = createGraphicsPipeline({
-                vertexShader.info, 
-                fragmentShader.info
-            });
+                graphicsPipeline = createGraphicsPipeline(
+                    {
+                        vertexShader.info, 
+                        fragmentShader.info
+                    },
+                    VkVertexInputBindingDescription { 
+                        0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
+                    },
+                    {
+                        VkVertexInputAttributeDescription{
+                            0,0,VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos)
+                        },
+                        VkVertexInputAttributeDescription{
+                            1,0,VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)
+                        },
+                        VkVertexInputAttributeDescription{
+                            2,0,VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)
+                        }
+                    }
+                );
 
-            vkDestroyShaderModule(getDevice(), fragmentShader.info.module, nullptr);
-            vkDestroyShaderModule(getDevice(), vertexShader.info.module, nullptr);
-
+                vkDestroyShaderModule(getDevice(), fragmentShader.info.module, nullptr);
+                vkDestroyShaderModule(getDevice(), vertexShader.info.module, nullptr);
+            }
             createTextureImage();
             createTextureImageView();
             createTextureSampler();

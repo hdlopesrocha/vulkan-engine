@@ -913,32 +913,16 @@ VkDevice VulkanApp::getDevice() const {
     return device;
 }
 
-VkPipeline VulkanApp::createGraphicsPipeline(std::initializer_list<VkPipelineShaderStageCreateInfo> stages) {
+VkPipeline VulkanApp::createGraphicsPipeline(
+    std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
+    VkVertexInputBindingDescription bindingDescription,
+    std::initializer_list<VkVertexInputAttributeDescription> descriptions) {
+    
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages(stages);
 
-    // vertex input (pos(vec3), color(vec3), uv(vec2))
-    struct Vertex { float pos[3]; float color[3]; float uv[2]; };
+   
 
-    VkVertexInputBindingDescription bindingDescription{};
-    bindingDescription.binding = 0;
-    bindingDescription.stride = sizeof(Vertex);
-    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-    std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{};
-    attributeDescriptions[0].binding = 0;
-    attributeDescriptions[0].location = 0;
-    attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributeDescriptions[0].offset = offsetof(Vertex, pos);
-
-    attributeDescriptions[1].binding = 0;
-    attributeDescriptions[1].location = 1;
-    attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributeDescriptions[1].offset = offsetof(Vertex, color);
-
-    attributeDescriptions[2].binding = 0;
-    attributeDescriptions[2].location = 2;
-    attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
-    attributeDescriptions[2].offset = offsetof(Vertex, uv);
+    std::vector<VkVertexInputAttributeDescription> attributeDescriptions(descriptions);
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -1108,7 +1092,6 @@ void VulkanApp::updateUniformBuffer() {
 }
 
 void VulkanApp::createVertexBuffer() {
-    struct Vertex { float pos[3]; float color[3]; float uv[2]; };
     // 24 unique vertices (4 per face) so each face can have its own UVs
     std::vector<Vertex> vertices = {
         // +X face
