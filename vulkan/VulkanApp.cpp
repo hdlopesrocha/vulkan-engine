@@ -984,30 +984,10 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
 
 
 
-void VulkanApp::updateUniformBuffer(Buffer &uniform) {
-    // compute MVP = proj * view * model
-    glm::mat4 proj = glm::mat4(1.0f);
-    glm::mat4 view = glm::mat4(1.0f);
-    glm::mat4 model = glm::mat4(1.0f);
-    glm::mat4 tmp = glm::mat4(1.0f);
-    glm::mat4 mvp = glm::mat4(1.0f);
-
-    float aspect = (float)swapchainExtent.width / (float)swapchainExtent.height;
-    proj = glm::perspective(45.0f * 3.1415926f / 180.0f, aspect, 0.1f, 10.0f);
-    // flip Y for Vulkan clip space
-    proj[1][1] *= -1.0f;
-
-    view = glm::translate(view, glm::vec3(0.0f, 0.0f, -2.5f));
-
-    float time = (float)glfwGetTime();
-    model = glm::rotate(model, time * 0.8f, glm::vec3(0.0f, 1.0f, 0.0f));
-
-    tmp = view * model;
-    mvp = proj * view * model;
-
-    void* data;
-    vkMapMemory(device, uniform.memory, 0, sizeof(glm::mat4), 0, &data);
-    memcpy(data, &mvp, sizeof(glm::mat4));
+void VulkanApp::updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize) {
+    void* bufferData;
+    vkMapMemory(device, uniform.memory, 0, sizeof(glm::mat4), 0, &bufferData);
+    memcpy(bufferData, data, dataSize);
     vkUnmapMemory(device, uniform.memory);
 }
 
@@ -1302,6 +1282,14 @@ void VulkanApp::createLogicalDevice() {
     // retrieve queue handles
     vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
     vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
+}
+
+int VulkanApp::getWidth() {
+    return swapchainExtent.width;
+}
+
+int VulkanApp::getHeight() {
+    return swapchainExtent.height;
 }
 
 

@@ -165,7 +165,7 @@ class VulkanApp {
         Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties);
         TextureImage createTextureImage(const char * filename);
         VkSampler createTextureSampler(uint32_t mipLevels);
-        void updateUniformBuffer(Buffer &uniform);
+        void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
         void createDescriptorPool();
         VkDescriptorSet createDescriptorSet();
         void updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors);
@@ -178,6 +178,9 @@ class VulkanApp {
 
         VkDevice getDevice() const;
         VkPipelineLayout getPipelineLayout() const;
+
+        int getWidth();
+        int getHeight();
 
         void run();
         virtual void setup() = 0;

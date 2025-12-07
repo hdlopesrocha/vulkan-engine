@@ -133,8 +133,28 @@ class MyApp : public VulkanApp {
         };
 
         void update(float deltaTime) override {
+            // compute MVP = proj * view * model
+            glm::mat4 proj = glm::mat4(1.0f);
+            glm::mat4 view = glm::mat4(1.0f);
+            glm::mat4 model = glm::mat4(1.0f);
+            glm::mat4 tmp = glm::mat4(1.0f);
+            glm::mat4 mvp = glm::mat4(1.0f);
+
+            float aspect = (float)getWidth() / (float) getHeight();
+            proj = glm::perspective(45.0f * 3.1415926f / 180.0f, aspect, 0.1f, 10.0f);
+            // flip Y for Vulkan clip space
+            proj[1][1] *= -1.0f;
+
+            view = glm::translate(view, glm::vec3(0.0f, 0.0f, -2.5f));
+
+            float time = (float)glfwGetTime();
+            model = glm::rotate(model, time * 0.8f, glm::vec3(0.0f, 1.0f, 0.0f));
+
+            tmp = view * model;
+            mvp = proj * view * model;
+
             // update per-frame uniform buffer (MVP)
-            updateUniformBuffer(uniform);
+            updateUniformBuffer(uniform, &mvp, sizeof(glm::mat4));
         };
 
         void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
@@ -142,9 +162,6 @@ class MyApp : public VulkanApp {
             beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
             vkBeginCommandBuffer(commandBuffer, &beginInfo);
-
-
-
             vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
             // bind pipeline and draw the indexed square
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
