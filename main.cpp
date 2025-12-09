@@ -136,6 +136,28 @@ class MyApp : public VulkanApp {
             createCommandBuffers();
         };
 
+        // build ImGui UI (moved from VulkanApp)
+        void renderImGui() override {
+            if (ImGui::BeginMainMenuBar()) {
+                if (ImGui::BeginMenu("File")) {
+                    if (ImGui::MenuItem("Exit")) requestClose();
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("View")) {
+                    ImGui::MenuItem("Show Demo", NULL, &imguiShowDemo);
+                    if (ImGui::MenuItem("Fullscreen", "F11", isFullscreen)) {
+                        toggleFullscreen();
+                    }
+                    ImGui::EndMenu();
+                }
+                ImGui::SameLine(ImGui::GetIO().DisplaySize.x - 120);
+                ImGui::Text("FPS: %.1f", imguiFps);
+                ImGui::EndMainMenuBar();
+            }
+
+            if (imguiShowDemo) ImGui::ShowDemoWindow(&imguiShowDemo);
+        }
+
         void update(float deltaTime) override {
             // compute MVP = proj * view * model
             glm::mat4 proj = glm::mat4(1.0f);

@@ -119,6 +119,7 @@ class VulkanApp {
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> commandBuffers;
     
+protected:
     // set when the framebuffer (GLFW window) is resized so we can recreate swapchain
     bool framebufferResized = false;
     // fullscreen handling
@@ -133,8 +134,12 @@ class VulkanApp {
     double imguiLastTime = 0.0;
     float imguiFps = 0.0f;
 
+    // Allow derived classes to build ImGui UI per-frame
+    virtual void renderImGui() {}
+
     private:
         static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
+    protected:
         void toggleFullscreen();
 
         VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
@@ -204,6 +209,8 @@ class VulkanApp {
         int getHeight();
 
         void run();
+    // request the app to close the main window
+    void requestClose();
         virtual void setup() = 0;
         virtual void update(float deltaTime) = 0;
         virtual void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) = 0;

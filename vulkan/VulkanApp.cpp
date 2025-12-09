@@ -45,6 +45,14 @@ void VulkanApp::keyCallback(GLFWwindow* window, int key, int scancode, int actio
     if (key == GLFW_KEY_F11) {
         auto app = reinterpret_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
         if (app) app->toggleFullscreen();
+        return;
+    }
+    if (key == GLFW_KEY_ESCAPE) {
+        // close the window on ESC
+        // use requestClose helper so derived classes don't access `window` directly
+        auto app = reinterpret_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+        if (app) app->requestClose();
+        return;
     }
 }
 
@@ -70,6 +78,10 @@ void VulkanApp::toggleFullscreen() {
     }
     // signal swapchain recreation
     framebufferResized = true;
+}
+
+void VulkanApp::requestClose() {
+    if (window) glfwSetWindowShouldClose(window, GLFW_TRUE);
 }
 
 void VulkanApp::initVulkan() {
@@ -1157,32 +1169,13 @@ void VulkanApp::drawFrame() {
     }
     update(0.0f); // TODO: calculate frame time
 
-    // ImGui new frame
+    // ImGui new frame (backend)
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    if (ImGui::BeginMainMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Exit")) glfwSetWindowShouldClose(window, GLFW_TRUE);
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("View")) {
-            if (ImGui::MenuItem("Show Demo", NULL, &imguiShowDemo)) {
-                /* toggled demo window */
-            }
-            if (ImGui::MenuItem("Fullscreen", "F11", isFullscreen)) {
-                // toggle fullscreen mode
-                toggleFullscreen();
-            }
-            ImGui::EndMenu();
-        }
-        ImGui::SameLine(ImGui::GetIO().DisplaySize.x - 120);
-        ImGui::Text("FPS: %.1f", imguiFps);
-        ImGui::EndMainMenuBar();
-    }
-
-    if (imguiShowDemo) ImGui::ShowDemoWindow(&imguiShowDemo);
+    // call into the derived app to build the UI
+    renderImGui();
 
     // update FPS (simple moving average could be added)
     double now = glfwGetTime();
