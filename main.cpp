@@ -167,6 +167,21 @@ class MyApp : public VulkanApp {
 
             vkBeginCommandBuffer(commandBuffer, &beginInfo);
             vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+            // set dynamic viewport/scissor to match current swapchain extent
+            VkViewport viewport{};
+            viewport.x = 0.0f;
+            viewport.y = 0.0f;
+            viewport.width = (float)getWidth();
+            viewport.height = (float)getHeight();
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+            VkRect2D scissor{};
+            scissor.offset = {0, 0};
+            scissor.extent = { (uint32_t)getWidth(), (uint32_t)getHeight() };
+            vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
             // bind pipeline and draw the indexed square
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
