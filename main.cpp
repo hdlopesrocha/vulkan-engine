@@ -1,5 +1,9 @@
 #include "vulkan/vulkan.hpp"
 
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_vulkan.h>
+
 class MyApp : public VulkanApp {
     public:
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
@@ -175,6 +179,10 @@ class MyApp : public VulkanApp {
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
 
             vkCmdDrawIndexed(commandBuffer, vertexBufferObject.indexCount, 1, 0, 0, 0);
+
+            // render ImGui draw data inside the same command buffer (must be inside render pass)
+            ImDrawData* draw_data = ImGui::GetDrawData();
+            if (draw_data) ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
 
             vkCmdEndRenderPass(commandBuffer);
 

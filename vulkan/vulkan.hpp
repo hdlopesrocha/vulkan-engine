@@ -121,6 +121,11 @@ class VulkanApp {
     
     // set when the framebuffer (GLFW window) is resized so we can recreate swapchain
     bool framebufferResized = false;
+    // ImGui integration state
+    VkDescriptorPool imguiDescriptorPool = VK_NULL_HANDLE;
+    bool imguiShowDemo = false;
+    double imguiLastTime = 0.0;
+    float imguiFps = 0.0f;
 
     private:
 
@@ -161,6 +166,8 @@ class VulkanApp {
     private:
         void initWindow();
         void initVulkan();
+    void initImGui();
+    void cleanupImGui();
         void mainLoop();
         void cleanup();
 

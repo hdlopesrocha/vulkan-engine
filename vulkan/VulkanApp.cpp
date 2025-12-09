@@ -1,6 +1,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 
 #include "vulkan.hpp"
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_vulkan.h>
 
 
 
@@ -49,6 +52,7 @@ void VulkanApp::initVulkan() {
     createDepthResources();
     createFramebuffers();
     createSyncObjects();
+    initImGui();
 }
 
 void VulkanApp::mainLoop() {
@@ -75,6 +79,9 @@ void VulkanApp::cleanup() {
     }
 
     clean();
+
+    // ImGui cleanup (must happen before destroying descriptor pools and device)
+    cleanupImGui();
     // depth resources
     if (depthImageView != VK_NULL_HANDLE) vkDestroyImageView(device, depthImageView, nullptr);
     if (depthImage != VK_NULL_HANDLE) vkDestroyImage(device, depthImage, nullptr);
@@ -116,6 +123,72 @@ void VulkanApp::cleanup() {
 
     if (window) glfwDestroyWindow(window);
     glfwTerminate();
+}
+
+void VulkanApp::initImGui() {
+    // Create descriptor pool for ImGui
+    VkDescriptorPoolSize pool_sizes[] = {
+        { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+        { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
+    };
+
+    VkDescriptorPoolCreateInfo pool_info{};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    pool_info.maxSets = 1000 * (uint32_t)std::size(pool_sizes);
+    pool_info.poolSizeCount = static_cast<uint32_t>(std::size(pool_sizes));
+    pool_info.pPoolSizes = pool_sizes;
+
+    if (vkCreateDescriptorPool(device, &pool_info, nullptr, &imguiDescriptorPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create ImGui descriptor pool!");
+    }
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    ImGui::StyleColorsDark();
+
+    ImGui_ImplGlfw_InitForVulkan(window, true);
+
+    ImGui_ImplVulkan_InitInfo init_info{};
+    init_info.Instance = instance;
+    init_info.PhysicalDevice = physicalDevice;
+    init_info.Device = device;
+    init_info.QueueFamily = findQueueFamilies(physicalDevice).graphicsFamily.value();
+    init_info.Queue = graphicsQueue;
+    init_info.PipelineCache = VK_NULL_HANDLE;
+    init_info.DescriptorPool = imguiDescriptorPool;
+    init_info.MinImageCount = 2;
+    init_info.ImageCount = static_cast<uint32_t>(swapchainImages.size());
+    init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    init_info.Allocator = nullptr;
+
+    ImGui_ImplVulkan_Init(&init_info, renderPass);
+
+    // upload fonts (API differs between ImGui versions)
+    // Newer ImGui exposes Create/DestroyFontsTexture without command buffer arg
+    ImGui_ImplVulkan_CreateFontsTexture();
+    ImGui_ImplVulkan_DestroyFontsTexture();
+}
+
+void VulkanApp::cleanupImGui() {
+    if (imguiDescriptorPool != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device);
+        ImGui_ImplVulkan_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+        vkDestroyDescriptorPool(device, imguiDescriptorPool, nullptr);
+        imguiDescriptorPool = VK_NULL_HANDLE;
+    }
 }
 
 
@@ -1042,6 +1115,35 @@ void VulkanApp::drawFrame() {
     }
     update(0.0f); // TODO: calculate frame time
 
+    // ImGui new frame
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Exit")) glfwSetWindowShouldClose(window, GLFW_TRUE);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("View")) {
+            ImGui::MenuItem("Show Demo", NULL, &imguiShowDemo);
+            ImGui::EndMenu();
+        }
+        ImGui::SameLine(ImGui::GetIO().DisplaySize.x - 120);
+        ImGui::Text("FPS: %.1f", imguiFps);
+        ImGui::EndMainMenuBar();
+    }
+
+    if (imguiShowDemo) ImGui::ShowDemoWindow(&imguiShowDemo);
+
+    // update FPS (simple moving average could be added)
+    double now = glfwGetTime();
+    if (imguiLastTime > 0.0) {
+        double dt = now - imguiLastTime;
+        if (dt > 0.0) imguiFps = static_cast<float>(1.0 / dt);
+    }
+    imguiLastTime = now;
+
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
@@ -1052,6 +1154,9 @@ void VulkanApp::drawFrame() {
     submitInfo.pWaitDstStageMask = waitStages;
 
     VkCommandBuffer &commandBuffer = commandBuffers[imageIndex];
+
+    // reset the command buffer so we can re-record it for this frame
+    vkResetCommandBuffer(commandBuffer, 0);
 
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
@@ -1075,6 +1180,7 @@ void VulkanApp::drawFrame() {
     renderPassInfo.pClearValues = clearValues.data();
 
 
+    ImGui::Render();
     draw(commandBuffer, renderPassInfo);
     r = vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFence);
     if (r != VK_SUCCESS) {
