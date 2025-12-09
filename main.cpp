@@ -64,25 +64,27 @@ class MyApp : public VulkanApp {
                         VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
                         VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, uv) },
                         VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                        VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) }
+                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
+                            VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
                     }
                 );
 
                 vkDestroyShaderModule(getDevice(), fragmentShader.info.module, nullptr);
                 vkDestroyShaderModule(getDevice(), vertexShader.info.module, nullptr);
             }
-            textureImage = createTextureImage("textures/grass_color.jpg");
+            // create texture arrays (currently single-layer arrays; easy to extend by adding more filenames)
+            textureImage = createTextureImageArray({ "textures/grass_color.jpg" });
             textureSampler = createTextureSampler(textureImage.mipLevels);
-            normalImage = createTextureImage("textures/grass_normal.jpg");
+            normalImage = createTextureImageArray({ "textures/grass_normal.jpg" });
             normalSampler = createTextureSampler(normalImage.mipLevels);
-            heightImage = createTextureImage("textures/grass_bump.jpg");
+            heightImage = createTextureImageArray({ "textures/grass_bump.jpg" });
             heightSampler = createTextureSampler(heightImage.mipLevels);
             uniform = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             createDescriptorPool();
             // Descriptor Set
             {
                 descriptorSet = createDescriptorSet();
-            
+
                 // uniform buffer descriptor (binding 0)
                 VkDescriptorBufferInfo bufferInfo { uniform.buffer, 0 , sizeof(UniformObject) };
 
@@ -95,9 +97,8 @@ class MyApp : public VulkanApp {
                 uboWrite.descriptorCount = 1;
                 uboWrite.pBufferInfo = &bufferInfo;
 
-                // image sampler descriptor (binding 1)
+                // bind combined image sampler descriptors for texture arrays (single descriptor each)
                 VkDescriptorImageInfo imageInfo { textureSampler, textureImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-
                 VkWriteDescriptorSet samplerWrite{};
                 samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 samplerWrite.dstSet = descriptorSet;
@@ -107,7 +108,6 @@ class MyApp : public VulkanApp {
                 samplerWrite.descriptorCount = 1;
                 samplerWrite.pImageInfo = &imageInfo;
 
-                // normal map descriptor (binding 2)
                 VkDescriptorImageInfo normalInfo { normalSampler, normalImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
                 VkWriteDescriptorSet normalWrite{};
                 normalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -118,7 +118,6 @@ class MyApp : public VulkanApp {
                 normalWrite.descriptorCount = 1;
                 normalWrite.pImageInfo = &normalInfo;
 
-                // height/bump map descriptor (binding 3)
                 VkDescriptorImageInfo heightInfo { heightSampler, heightImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
                 VkWriteDescriptorSet heightWrite{};
                 heightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -138,35 +137,35 @@ class MyApp : public VulkanApp {
             // 24 unique vertices (4 per face) so each face can have its own UVs
             std::vector<Vertex> vertices = {
                 // +X face (normal +1,0,0) tangent computed later
-                {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f,0.0f}, {1,0,0}, {0,0,0}},
-                {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {1.0f,0.0f}, {1,0,0}, {0,0,0}},
-                {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f,1.0f}, {1,0,0}, {0,0,0}},
-                {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {0.0f,1.0f}, {1,0,0}, {0,0,0}},
+                {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f,0.0f}, {1,0,0}, {0,0,0}, 0.0f},
+                {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {1.0f,0.0f}, {1,0,0}, {0,0,0}, 0.0f},
+                {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f,1.0f}, {1,0,0}, {0,0,0}, 0.0f},
+                {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {0.0f,1.0f}, {1,0,0}, {0,0,0}, 0.0f},
                 // -X face (normal -1,0,0) tangent along -Z
-                {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f,0.0f}, {-1,0,0}, {0,0,0}},
-                {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {1.0f,0.0f}, {-1,0,0}, {0,0,0}},
-                {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f,1.0f}, {-1,0,0}, {0,0,0}},
-                {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {0.0f,1.0f}, {-1,0,0}, {0,0,0}},
+                {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f,0.0f}, {-1,0,0}, {0,0,0}, 0.0f},
+                {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {1.0f,0.0f}, {-1,0,0}, {0,0,0}, 0.0f},
+                {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f,1.0f}, {-1,0,0}, {0,0,0}, 0.0f},
+                {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {0.0f,1.0f}, {-1,0,0}, {0,0,0}, 0.0f},
                 // +Y face (normal 0,1,0) tangent along +X
-                {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {0.0f,0.0f}, {0,1,0}, {0,0,0}},
-                {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f,0.0f}, {0,1,0}, {0,0,0}},
-                {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f,1.0f}, {0,1,0}, {0,0,0}},
-                {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {0.0f,1.0f}, {0,1,0}, {0,0,0}},
+                {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {0.0f,0.0f}, {0,1,0}, {0,0,0}, 0.0f},
+                {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f,0.0f}, {0,1,0}, {0,0,0}, 0.0f},
+                {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f,1.0f}, {0,1,0}, {0,0,0}, 0.0f},
+                {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {0.0f,1.0f}, {0,1,0}, {0,0,0}, 0.0f},
                 // -Y face (normal 0,-1,0) tangent along +X
-                {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f,0.0f}, {0,-1,0}, {0,0,0}},
-                {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {1.0f,0.0f}, {0,-1,0}, {0,0,0}},
-                {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {1.0f,1.0f}, {0,-1,0}, {0,0,0}},
-                {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f,1.0f}, {0,-1,0}, {0,0,0}},
+                {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f,0.0f}, {0,-1,0}, {0,0,0}, 0.0f},
+                {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {1.0f,0.0f}, {0,-1,0}, {0,0,0}, 0.0f},
+                {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {1.0f,1.0f}, {0,-1,0}, {0,0,0}, 0.0f},
+                {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f,1.0f}, {0,-1,0}, {0,0,0}, 0.0f},
                 // +Z face (normal 0,0,1) tangent along +X
-                {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f,0.0f}, {0,0,1}, {0,0,0}},
-                {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f,0.0f}, {0,0,1}, {0,0,0}},
-                {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f,1.0f}, {0,0,1}, {0,0,0}},
-                {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f,1.0f}, {0,0,1}, {0,0,0}},
+                {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f,0.0f}, {0,0,1}, {0,0,0}, 0.0f},
+                {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f,0.0f}, {0,0,1}, {0,0,0}, 0.0f},
+                {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f,1.0f}, {0,0,1}, {0,0,0}, 0.0f},
+                {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f,1.0f}, {0,0,1}, {0,0,0}, 0.0f},
                 // -Z face (normal 0,0,-1) tangent along -X
-                {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f,0.0f}, {0,0,-1}, {0,0,0}},
-                {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f,0.0f}, {0,0,-1}, {0,0,0}},
-                {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f,1.0f}, {0,0,-1}, {0,0,0}},
-                {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f,1.0f}, {0,0,-1}, {0,0,0}},
+                {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f,0.0f}, {0,0,-1}, {0,0,0}, 0.0f},
+                {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f,0.0f}, {0,0,-1}, {0,0,0}, 0.0f},
+                {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f,1.0f}, {0,0,-1}, {0,0,0}, 0.0f},
+                {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f,1.0f}, {0,0,-1}, {0,0,0}, 0.0f},
             };
             // 12 triangles (2 per face) * 3 indices = 36
             std::vector<uint16_t> indices = {

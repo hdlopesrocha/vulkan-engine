@@ -5,6 +5,7 @@ layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragNormal;
 layout(location = 3) in vec3 fragTangent;
+layout(location = 5) flat in int fragTexIndex;
 
 // UBO must match binding 0 defined in vertex shader / host code
 // UBO must match CPU-side UniformObject layout:
@@ -21,15 +22,16 @@ layout(binding = 0) uniform UBO {
     vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=unused
 } ubo;
 
-layout(binding = 1) uniform sampler2D texSampler;
-layout(binding = 2) uniform sampler2D normalMap;
-layout(binding = 3) uniform sampler2D heightMap;
+// texture arrays: binding 1 = albedo array, 2 = normal array, 3 = height array
+layout(binding = 1) uniform sampler2DArray albedoArray;
+layout(binding = 2) uniform sampler2DArray normalArray;
+layout(binding = 3) uniform sampler2DArray heightArray;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 4) in vec3 fragPosWorld;
 
 // Parallax Occlusion Mapping helper
-vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT) {
+vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex) {
     float heightScale = ubo.pomParams.x;
     float minLayers = ubo.pomParams.y;
     float maxLayers = ubo.pomParams.z;
@@ -39,7 +41,7 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT) {
     vec2 P = viewDirT.xy * heightScale;
     vec2 deltaTex = P / numLayers;
     vec2 currentTex = texCoords;
-    float currentDepthMapValue = texture(heightMap, currentTex).r;
+    float currentDepthMapValue = texture(heightArray, vec3(currentTex, float(texIndex))).r;
     vec2 prevTex = currentTex;
     float prevDepth = currentDepthMapValue;
     // linear search through layers
@@ -47,7 +49,7 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT) {
         prevTex = currentTex;
         prevDepth = currentDepthMapValue;
         currentTex -= deltaTex;
-        currentDepthMapValue = texture(heightMap, currentTex).r;
+    currentDepthMapValue = texture(heightArray, vec3(currentTex, float(texIndex))).r;
         currentLayerDepth += layerDepth;
         if (currentLayerDepth >= currentDepthMapValue) break;
     }
@@ -68,7 +70,7 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT) {
     const int NUM_BINARY_ITERS = 5;
     for (int i = 0; i < NUM_BINARY_ITERS; ++i) {
         vec2 midTex = (lowTex + highTex) * 0.5;
-        float midDepthMap = texture(heightMap, midTex).r;
+    float midDepthMap = texture(heightArray, vec3(midTex, float(texIndex))).r;
         float midLayerDepth = (lowLayerDepth + highLayerDepth) * 0.5;
         if (midLayerDepth >= midDepthMap) {
             // intersection is between low and mid
@@ -96,11 +98,11 @@ void main() {
     // view direction in tangent space
     vec3 Vt = normalize(vec3(dot(viewDirWorld, T), dot(viewDirWorld, B), dot(viewDirWorld, N)));
     // compute parallax occlusion mapping to get final texture coords
-    vec2 finalUV = ParallaxOcclusionMapping(fragUV, Vt);
+    vec2 finalUV = ParallaxOcclusionMapping(fragUV, Vt, fragTexIndex);
 
-    // sample textures with parallax-corrected UV
-    vec4 tex = texture(texSampler, finalUV);
-    vec3 mapN = texture(normalMap, finalUV).xyz * 2.0 - 1.0; // tangent-space normal
+    // sample textures with parallax-corrected UV from texture2D arrays
+    vec4 tex = texture(albedoArray, vec3(finalUV, float(fragTexIndex)));
+    vec3 mapN = texture(normalArray, vec3(finalUV, float(fragTexIndex))).xyz * 2.0 - 1.0; // tangent-space normal
     // optional flip Y channel
     if (ubo.pomFlags.x > 0.5) mapN.y = -mapN.y;
     // transform normal to world space via TBN; allow flipping tangent-handedness

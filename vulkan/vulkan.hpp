@@ -82,7 +82,7 @@ struct VertexBufferObject {
 };
 
 
-struct Vertex { float pos[3]; float color[3]; float uv[2]; float normal[3]; float tangent[3]; };
+struct Vertex { float pos[3]; float color[3]; float uv[2]; float normal[3]; float tangent[3]; float texIndex; };
 
 
 class VulkanApp {
@@ -158,7 +158,7 @@ protected:
         VkCommandBuffer beginSingleTimeCommands();
         void endSingleTimeCommands(VkCommandBuffer commandBuffer);
         void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory);
-        void generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels);
+    void generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount = 1);
         void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
         void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
         void createDepthResources();
@@ -195,6 +195,7 @@ protected:
     public:
         Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties);
         TextureImage createTextureImage(const char * filename);
+    TextureImage createTextureImageArray(const std::vector<std::string>& filenames);
         VkSampler createTextureSampler(uint32_t mipLevels);
         void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
         void createDescriptorPool();

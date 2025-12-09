@@ -18,11 +18,13 @@ layout(location = 1) in vec3 inColor;
 layout(location = 2) in vec2 inUV;
 layout(location = 3) in vec3 inNormal;
 layout(location = 4) in vec3 inTangent;
+layout(location = 5) in float inTexIndex;
 
 layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec2 fragUV;
 layout(location = 2) out vec3 fragNormal;
 layout(location = 3) out vec3 fragTangent;
+layout(location = 5) flat out int fragTexIndex;
 layout(location = 4) out vec3 fragPosWorld;
 
 void main() {
@@ -31,6 +33,7 @@ void main() {
     // approximate normal from position (cube is centered at origin)
     fragNormal = normalize(inNormal);
     fragTangent = normalize(inTangent);
+        fragTexIndex = int(inTexIndex + 0.5);
     // compute world-space position and pass to fragment
     vec4 worldPos = ubo.model * vec4(inPos, 1.0);
     fragPosWorld = worldPos.xyz;
