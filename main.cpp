@@ -3,6 +3,7 @@
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
+#include "vulkan/Camera.hpp"
 
 struct UniformObject {
     glm::mat4 mvp;
@@ -18,14 +19,8 @@ class MyApp : public VulkanApp {
     public:
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     VkSampler textureSampler = VK_NULL_HANDLE;
-    // Camera state for WASD/QE movement
-    glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 2.5f);
-    glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
-    glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
-    float cameraSpeed = 2.5f; // units per second
-    // camera orientation (quaternion) for rotation via RTYFGH
-    glm::quat cameraQuat = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-    float cameraAngularSpeed = glm::radians(45.0f); // degrees per second converted to radians
+    // Camera
+    Camera camera = Camera(glm::vec3(0.0f, 0.0f, 2.5f));
         // POM / tuning controls
         float pomHeightScale = 0.06f;
         float pomMinLayers = 8.0f;
@@ -316,57 +311,10 @@ class MyApp : public VulkanApp {
             proj[1][1] *= -1.0f;
 
             GLFWwindow* win = getWindow();
-            // compute camera axes from quaternion
-            cameraFront = glm::normalize(glm::rotate(cameraQuat, glm::vec3(0.0f, 0.0f, -1.0f)));
-            cameraUp = glm::normalize(glm::rotate(cameraQuat, glm::vec3(0.0f, 1.0f, 0.0f)));
-
-            if (win) {
-                // handle camera rotation keys (R/T = pitch up/down, Y/F = yaw left/right, G/H = roll left/right)
-                float ang = cameraAngularSpeed * deltaTime;
-                glm::vec3 forward = cameraFront;
-                glm::vec3 up = cameraUp;
-                glm::vec3 right = glm::normalize(glm::cross(forward, up));
-
-                // New mapping: FR = yaw (- / +), G/T = pitch (- / +), H/Y = roll (- / +)
-                // FR: yaw around world up (negative, positive)
-                if (glfwGetKey(win, GLFW_KEY_H) == GLFW_PRESS) {
-                    cameraQuat = glm::normalize(glm::angleAxis(-ang, glm::vec3(0.0f,1.0f,0.0f)) * cameraQuat);
-                }
-                if (glfwGetKey(win, GLFW_KEY_F) == GLFW_PRESS) {
-                    cameraQuat = glm::normalize(glm::angleAxis(ang, glm::vec3(0.0f,1.0f,0.0f)) * cameraQuat);
-                }
-                // G/T: pitch around camera right (negative, positive)
-                if (glfwGetKey(win, GLFW_KEY_G) == GLFW_PRESS) {
-                    cameraQuat = glm::normalize(glm::angleAxis(-ang, right) * cameraQuat);
-                }
-                if (glfwGetKey(win, GLFW_KEY_T) == GLFW_PRESS) {
-                    cameraQuat = glm::normalize(glm::angleAxis(ang, right) * cameraQuat);
-                }
-                // H/Y: roll around camera forward (negative, positive)
-                if (glfwGetKey(win, GLFW_KEY_R) == GLFW_PRESS) {
-                    cameraQuat = glm::normalize(glm::angleAxis(-ang, forward) * cameraQuat);
-                }
-                if (glfwGetKey(win, GLFW_KEY_Y) == GLFW_PRESS) {
-                    cameraQuat = glm::normalize(glm::angleAxis(ang, forward) * cameraQuat);
-                }
-
-                // recompute axes after possible rotation
-                cameraFront = glm::normalize(glm::rotate(cameraQuat, glm::vec3(0.0f, 0.0f, -1.0f)));
-                cameraUp = glm::normalize(glm::rotate(cameraQuat, glm::vec3(0.0f, 1.0f, 0.0f)));
-
-                // handle keyboard input for camera movement (W/A/S/D forward/left/back/right, Q/E up/down)
-                float velocity = cameraSpeed * deltaTime;
-                if (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS) cameraPos += cameraFront * velocity;
-                if (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS) cameraPos -= cameraFront * velocity;
-                right = glm::normalize(glm::cross(cameraFront, cameraUp));
-                if (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS) cameraPos -= right * velocity;
-                if (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS) cameraPos += right * velocity;
-                if (glfwGetKey(win, GLFW_KEY_E) == GLFW_PRESS) cameraPos += cameraUp * velocity;
-                if (glfwGetKey(win, GLFW_KEY_Q) == GLFW_PRESS) cameraPos -= cameraUp * velocity;
-            }
+            if (win) camera.processInput(win, deltaTime);
 
             // build view matrix from camera state (no cube rotation)
-            view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+            view = camera.getViewMatrix();
 
             // keep model identity (stop cube rotation)
             model = glm::mat4(1.0f);
@@ -380,7 +328,7 @@ class MyApp : public VulkanApp {
             ubo.mvp = mvp;
             ubo.model = model;
             // camera world position
-            ubo.viewPos = glm::vec4(cameraPos, 1.0f);
+            ubo.viewPos = glm::vec4(camera.getPosition(), 1.0f);
             // directional light pointing slightly down and towards -Z
             glm::vec3 lightDir = glm::normalize(glm::vec3(-0.5f, -1.0f, -0.3f));
             ubo.lightDir = glm::vec4(lightDir, 0.0f);
