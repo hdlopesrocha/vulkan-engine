@@ -816,7 +816,15 @@ void VulkanApp::createDescriptorSetLayout() {
     normalSamplerBinding.pImmutableSamplers = nullptr;
     normalSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 3> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding};
+    // binding 3 : combined image sampler (fragment shader) - height map (parallax)
+    VkDescriptorSetLayoutBinding heightSamplerBinding{};
+    heightSamplerBinding.binding = 3;
+    heightSamplerBinding.descriptorCount = 1;
+    heightSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    heightSamplerBinding.pImmutableSamplers = nullptr;
+    heightSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 4> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding};
 
     // If we later add a normal map sampler (binding 2), extend bindings dynamically when required by the app.
 
@@ -917,8 +925,8 @@ void VulkanApp::createDescriptorPool() {
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = 1;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    // we have two combined image samplers (albedo + normal)
-    poolSizes[1].descriptorCount = 2;
+    // we have three combined image samplers (albedo + normal + height)
+    poolSizes[1].descriptorCount = 3;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;

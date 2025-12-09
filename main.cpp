@@ -6,16 +6,30 @@
 
 struct UniformObject {
     glm::mat4 mvp;
+    glm::mat4 model;
+    glm::vec4 viewPos; // world-space camera position
     glm::vec4 lightDir; // xyz = direction, w = unused (padding)
     glm::vec4 lightColor; // rgb = color, w = intensity
+    glm::vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
+    glm::vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=unused
 };
 
 class MyApp : public VulkanApp {
     public:
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     VkSampler textureSampler = VK_NULL_HANDLE;
+        // POM / tuning controls
+        float pomHeightScale = 0.06f;
+        float pomMinLayers = 8.0f;
+        float pomMaxLayers = 32.0f;
+        bool pomEnabled = true;
+        bool flipNormalY = false;
+        bool flipTangentHandedness = false;
+        float ambientFactor = 0.25f;
     TextureImage normalImage;
     VkSampler normalSampler = VK_NULL_HANDLE;
+    TextureImage heightImage;
+    VkSampler heightSampler = VK_NULL_HANDLE;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
         Buffer uniform;
         TextureImage textureImage;
@@ -58,6 +72,8 @@ class MyApp : public VulkanApp {
             textureSampler = createTextureSampler(textureImage.mipLevels);
             normalImage = createTextureImage("textures/grass_normal.jpg");
             normalSampler = createTextureSampler(normalImage.mipLevels);
+            heightImage = createTextureImage("textures/grass_bump.jpg");
+            heightSampler = createTextureSampler(heightImage.mipLevels);
             uniform = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             createDescriptorPool();
             // Descriptor Set
@@ -99,9 +115,20 @@ class MyApp : public VulkanApp {
                 normalWrite.descriptorCount = 1;
                 normalWrite.pImageInfo = &normalInfo;
 
+                // height/bump map descriptor (binding 3)
+                VkDescriptorImageInfo heightInfo { heightSampler, heightImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                VkWriteDescriptorSet heightWrite{};
+                heightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                heightWrite.dstSet = descriptorSet;
+                heightWrite.dstBinding = 3;
+                heightWrite.dstArrayElement = 0;
+                heightWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                heightWrite.descriptorCount = 1;
+                heightWrite.pImageInfo = &heightInfo;
+
                 updateDescriptorSet(
                     descriptorSet,
-                    { uboWrite, samplerWrite, normalWrite }
+                    { uboWrite, samplerWrite, normalWrite, heightWrite }
                 );
             }
 
@@ -254,6 +281,17 @@ class MyApp : public VulkanApp {
             }
 
             if (imguiShowDemo) ImGui::ShowDemoWindow(&imguiShowDemo);
+
+            // POM controls
+            ImGui::Begin("POM Controls");
+            ImGui::Checkbox("Enable POM", &pomEnabled);
+            ImGui::SliderFloat("Height Scale", &pomHeightScale, 0.0f, 0.2f, "%.3f");
+            ImGui::SliderFloat("Min Layers", &pomMinLayers, 1.0f, 64.0f, "%.0f");
+            ImGui::SliderFloat("Max Layers", &pomMaxLayers, 1.0f, 128.0f, "%.0f");
+            ImGui::Checkbox("Flip normal Y", &flipNormalY);
+            ImGui::Checkbox("Flip tangent handedness", &flipTangentHandedness);
+            ImGui::SliderFloat("Ambient", &ambientFactor, 0.0f, 1.0f, "%.2f");
+            ImGui::End();
         }
 
         void update(float deltaTime) override {
@@ -278,14 +316,22 @@ class MyApp : public VulkanApp {
             mvp = proj * view * model;
 
             // update per-frame uniform buffer (MVP)
-            // fill uniform object (MVP + directional light)
+            // fill uniform object (MVP, model, viewPos + directional light + POM params)
             UniformObject ubo{};
             ubo.mvp = mvp;
+            ubo.model = model;
+            // compute camera world position (inverse view * origin)
+            glm::mat4 invView = glm::inverse(view);
+            glm::vec4 camPos = invView * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+            ubo.viewPos = camPos;
             // directional light pointing slightly down and towards -Z
             glm::vec3 lightDir = glm::normalize(glm::vec3(-0.5f, -1.0f, -0.3f));
             ubo.lightDir = glm::vec4(lightDir, 0.0f);
             // white light with intensity in w
             ubo.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+            // POM params
+            ubo.pomParams = glm::vec4(pomHeightScale, pomMinLayers, pomMaxLayers, pomEnabled ? 1.0f : 0.0f);
+            ubo.pomFlags = glm::vec4(flipNormalY ? 1.0f : 0.0f, flipTangentHandedness ? 1.0f : 0.0f, ambientFactor, 0.0f);
 
             updateUniformBuffer(uniform, &ubo, sizeof(UniformObject));
         };
