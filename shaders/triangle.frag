@@ -38,7 +38,8 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex) {
     float numLayers = mix(maxLayers, minLayers, abs(dot(vec3(0.0,0.0,1.0), viewDirT)));
     float layerDepth = 1.0 / numLayers;
     float currentLayerDepth = 0.0;
-    vec2 P = viewDirT.xy * heightScale;
+    // parallax direction selectable via ubo.pomFlags.w (0.0 = normal, 1.0 = flipped)
+    vec2 P = (ubo.pomFlags.w > 0.5) ? -viewDirT.xy * heightScale : viewDirT.xy * heightScale;
     vec2 deltaTex = P / numLayers;
     vec2 currentTex = texCoords;
     float currentDepthMapValue = texture(heightArray, vec3(currentTex, float(texIndex))).r;

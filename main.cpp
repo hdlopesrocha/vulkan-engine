@@ -36,6 +36,7 @@ class MyApp : public VulkanApp {
         bool pomEnabled = true;
         bool flipNormalY = false;
         bool flipTangentHandedness = false;
+    bool flipParallaxDirection = true;
         float ambientFactor = 0.25f;
     // (managed by TextureManager)
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
@@ -309,6 +310,7 @@ class MyApp : public VulkanApp {
             ImGui::SliderFloat("Min Layers", &pomMinLayers, 1.0f, 64.0f, "%.0f");
             ImGui::SliderFloat("Max Layers", &pomMaxLayers, 1.0f, 128.0f, "%.0f");
             ImGui::Checkbox("Flip normal Y", &flipNormalY);
+            ImGui::Checkbox("Flip parallax direction", &flipParallaxDirection);
             ImGui::Checkbox("Flip tangent handedness", &flipTangentHandedness);
             ImGui::SliderFloat("Ambient", &ambientFactor, 0.0f, 1.0f, "%.2f");
             ImGui::End();
@@ -371,7 +373,8 @@ class MyApp : public VulkanApp {
             ubo.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
             // POM params
             ubo.pomParams = glm::vec4(pomHeightScale, pomMinLayers, pomMaxLayers, pomEnabled ? 1.0f : 0.0f);
-            ubo.pomFlags = glm::vec4(flipNormalY ? 1.0f : 0.0f, flipTangentHandedness ? 1.0f : 0.0f, ambientFactor, 0.0f);
+            // pomFlags: x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
+            ubo.pomFlags = glm::vec4(flipNormalY ? 1.0f : 0.0f, flipTangentHandedness ? 1.0f : 0.0f, ambientFactor, flipParallaxDirection ? 1.0f : 0.0f);
 
             updateUniformBuffer(uniform, &ubo, sizeof(UniformObject));
         };
