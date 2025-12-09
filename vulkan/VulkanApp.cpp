@@ -993,7 +993,15 @@ void VulkanApp::createDescriptorSetLayout() {
     heightSamplerBinding.pImmutableSamplers = nullptr;
     heightSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 4> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding};
+    // binding 4: shadow map sampler
+    VkDescriptorSetLayoutBinding shadowSamplerBinding{};
+    shadowSamplerBinding.binding = 4;
+    shadowSamplerBinding.descriptorCount = 1;
+    shadowSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    shadowSamplerBinding.pImmutableSamplers = nullptr;
+    shadowSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 5> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding, shadowSamplerBinding};
 
     // If we later add a normal map sampler (binding 2), extend bindings dynamically when required by the app.
 
@@ -1095,7 +1103,7 @@ void VulkanApp::createDescriptorPool(uint32_t maxSets) {
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = maxSets; // one uniform per set
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = 3 * maxSets; // albedo, normal, height per set
+    poolSizes[1].descriptorCount = 4 * maxSets; // albedo, normal, height, shadow per set
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;

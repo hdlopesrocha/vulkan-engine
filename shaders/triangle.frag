@@ -6,12 +6,12 @@ layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragNormal;
 layout(location = 3) in vec3 fragTangent;
 layout(location = 5) flat in int fragTexIndex;
+layout(location = 4) in vec3 fragPosWorld;
+layout(location = 6) in vec4 fragPosLightSpace;
 
 // UBO must match binding 0 defined in vertex shader / host code
 // UBO must match CPU-side UniformObject layout:
-// mat4 mvp; mat4 model; vec4 viewPos; vec4 lightDir; vec4 lightColor;
-// UBO must match CPU-side UniformObject layout:
-// mat4 mvp; mat4 model; vec4 viewPos; vec4 lightDir; vec4 lightColor; vec4 pomParams; vec4 pomFlags;
+// mat4 mvp; mat4 model; vec4 viewPos; vec4 lightDir; vec4 lightColor; vec4 pomParams; vec4 pomFlags; mat4 lightSpaceMatrix
 layout(binding = 0) uniform UBO {
     mat4 mvp;
     mat4 model;
@@ -20,15 +20,16 @@ layout(binding = 0) uniform UBO {
     vec4 lightColor;
     vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
     vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=unused
+    mat4 lightSpaceMatrix;
 } ubo;
 
-// texture arrays: binding 1 = albedo array, 2 = normal array, 3 = height array
+// texture arrays: binding 1 = albedo array, 2 = normal array, 3 = height array, 4 = shadow map
 layout(binding = 1) uniform sampler2DArray albedoArray;
 layout(binding = 2) uniform sampler2DArray normalArray;
 layout(binding = 3) uniform sampler2DArray heightArray;
+layout(binding = 4) uniform sampler2D shadowMap;
 
 layout(location = 0) out vec4 outColor;
-layout(location = 4) in vec3 fragPosWorld;
 
 // Parallax Occlusion Mapping helper
 vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex) {
@@ -89,6 +90,40 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex) {
     return clamp(finalTex, 0.0, 1.0);
 }
 
+// Shadow calculation with PCF (Percentage Closer Filtering)
+float ShadowCalculation(vec4 fragPosLightSpace, float bias) {
+    // Perspective divide
+    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+    
+    // Transform to [0,1] range
+    projCoords = projCoords * 0.5 + 0.5;
+    
+    // Outside shadow map bounds = no shadow
+    if(projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || projCoords.y < 0.0 || projCoords.y > 1.0)
+        return 0.0;
+    
+    // Get closest depth value from light's perspective
+    float currentDepth = projCoords.z;
+    
+    // PCF (Percentage Closer Filtering) for soft shadows
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
+    
+    // Sample 3x3 kernel around the shadow map coordinate
+    for(int x = -1; x <= 1; ++x)
+    {
+        for(int y = -1; y <= 1; ++y)
+        {
+            vec2 offset = vec2(x, y) * texelSize;
+            float pcfDepth = texture(shadowMap, projCoords.xy + offset).r;
+            shadow += (currentDepth - bias) > pcfDepth ? 1.0 : 0.0;
+        }
+    }
+    shadow /= 9.0; // Average the 9 samples
+    
+    return shadow;
+}
+
 void main() {
     // Always use layer 0 since each descriptor set points to different textures
     int texIndex = 0;
@@ -133,6 +168,10 @@ void main() {
         normalMap.y = -normalMap.y;
     }
     
+    // Use geometry normal instead of normal map for debugging
+    vec3 worldNormal = normalize(fragNormal);
+    
+    /*
     // Compute world-space normal from normal map
     vec3 N = normalize(fragNormal);
     vec3 T = normalize(fragTangent);
@@ -145,13 +184,24 @@ void main() {
     vec3 B = cross(N, T);
     mat3 TBN = mat3(T, B, N);
     vec3 worldNormal = normalize(TBN * normalMap);
+    */
     
     // Lighting calculation
-    vec3 lightDir = normalize(ubo.lightDir.xyz);
-    float NdotL = max(dot(worldNormal, lightDir), 0.0);
+    // ubo.lightDir points from surface to light
+    vec3 toLight = normalize(ubo.lightDir.xyz);
+    float NdotL = max(dot(worldNormal, toLight), 0.0);
+    
+    // Calculate shadow with adaptive bias based on surface angle
+    // Only apply shadows to horizontal surfaces (like the ground plane)
+    float shadow = 0.0;
+    if (abs(worldNormal.y) > 0.9) {
+        // This is a horizontal surface (plane)
+        float bias = max(0.005 * (1.0 - NdotL), 0.002);
+        shadow = ShadowCalculation(fragPosLightSpace, bias);
+    }
     
     vec3 ambient = albedoColor * ubo.pomFlags.z; // ambient factor
-    vec3 diffuse = albedoColor * ubo.lightColor.rgb * NdotL;
+    vec3 diffuse = albedoColor * ubo.lightColor.rgb * NdotL * (1.0 - shadow);
     
     outColor = vec4(ambient + diffuse, 1.0);
 }

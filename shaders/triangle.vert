@@ -10,6 +10,7 @@ layout(binding = 0) uniform UBO {
     vec4 lightColor;
     vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
     vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=unused
+    mat4 lightSpaceMatrix; // for shadow mapping
 } ubo;
 
 
@@ -26,17 +27,21 @@ layout(location = 2) out vec3 fragNormal;
 layout(location = 3) out vec3 fragTangent;
 layout(location = 5) flat out int fragTexIndex;
 layout(location = 4) out vec3 fragPosWorld;
+layout(location = 6) out vec4 fragPosLightSpace;
 
 void main() {
     fragColor = inColor;
     fragUV = inUV;
-    // approximate normal from position (cube is centered at origin)
-    fragNormal = normalize(inNormal);
-    fragTangent = normalize(inTangent);
-        fragTexIndex = int(inTexIndex + 0.5);
+    // Transform normal to world space using the model matrix
+    // For uniform scaling, mat3(model) works. For non-uniform scaling, use transpose(inverse(model))
+    fragNormal = normalize(mat3(ubo.model) * inNormal);
+    fragTangent = normalize(mat3(ubo.model) * inTangent);
+    fragTexIndex = int(inTexIndex + 0.5);
     // compute world-space position and pass to fragment
     vec4 worldPos = ubo.model * vec4(inPos, 1.0);
     fragPosWorld = worldPos.xyz;
+    // compute light-space position for shadow mapping
+    fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
     // apply MVP transform to the vertex position (MVP already includes model transform)
     gl_Position = ubo.mvp * vec4(inPos, 1.0);
 }
