@@ -1,5 +1,6 @@
 #include "TextureManager.hpp"
 #include <stdexcept>
+#include <backends/imgui_impl_vulkan.h>
 
 size_t TextureManager::loadTriple(const std::string &albedoFile, const std::string &normalFile, const std::string &heightFile) {
     if (!app) throw std::runtime_error("TextureManager not initialized with VulkanApp pointer");
@@ -23,6 +24,11 @@ void TextureManager::destroyAll() {
     if (!app) return;
     VkDevice device = app->getDevice();
     for (auto &t : triples) {
+        // remove ImGui texture handles if created
+    if (t.albedoTexID) ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)t.albedoTexID);
+    if (t.normalTexID) ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)t.normalTexID);
+    if (t.heightTexID) ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)t.heightTexID);
+
         if (t.albedoSampler != VK_NULL_HANDLE) vkDestroySampler(device, t.albedoSampler, nullptr);
         if (t.albedo.view != VK_NULL_HANDLE) vkDestroyImageView(device, t.albedo.view, nullptr);
         if (t.albedo.image != VK_NULL_HANDLE) vkDestroyImage(device, t.albedo.image, nullptr);
@@ -39,4 +45,22 @@ void TextureManager::destroyAll() {
         if (t.height.memory != VK_NULL_HANDLE) vkFreeMemory(device, t.height.memory, nullptr);
     }
     triples.clear();
+}
+
+ImTextureID TextureManager::getImTexture(size_t idx, int map) {
+    if (idx >= triples.size()) return nullptr;
+    Triple &t = triples[idx];
+    switch (map) {
+        case 0:
+            if (!t.albedoTexID) t.albedoTexID = ImGui_ImplVulkan_AddTexture(t.albedoSampler, t.albedo.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            return t.albedoTexID;
+        case 1:
+            if (!t.normalTexID) t.normalTexID = ImGui_ImplVulkan_AddTexture(t.normalSampler, t.normal.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            return t.normalTexID;
+        case 2:
+            if (!t.heightTexID) t.heightTexID = ImGui_ImplVulkan_AddTexture(t.heightSampler, t.height.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            return t.heightTexID;
+        default:
+            return nullptr;
+    }
 }

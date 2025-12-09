@@ -5,11 +5,9 @@
 #include <backends/imgui_impl_vulkan.h>
 #include "vulkan/Camera.hpp"
 #include "vulkan/TextureManager.hpp"
-#include <filesystem>
-#include <iostream>
-#include <map>
-#include <algorithm>
-#include <cctype>
+#include "vulkan/CubeMesh.hpp"
+#include <string>
+// (removed unused includes: filesystem, iostream, map, algorithm, cctype)
 
 struct UniformObject {
     glm::mat4 mvp;
@@ -27,6 +25,10 @@ class MyApp : public VulkanApp {
     // texture manager handles albedo/normal/height triples
     TextureManager textureManager;
     size_t textureTripleIndex = 0;
+    // cube mesh helper
+    CubeMesh cube;
+    // UI: currently selected texture triple for preview
+    size_t currentTextureIndex = 0;
     // Camera
     Camera camera = Camera(glm::vec3(0.0f, 0.0f, 2.5f));
         // POM / tuning controls
@@ -42,7 +44,7 @@ class MyApp : public VulkanApp {
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
         Buffer uniform;
     // textureImage is now owned by TextureManager
-        VertexBufferObject vertexBufferObject;
+        //VertexBufferObject vertexBufferObject; // now owned by CubeMesh
 
         void setup() override {
             // Graphics Pipeline
@@ -153,132 +155,8 @@ class MyApp : public VulkanApp {
                 );
             }
 
-            // 24 unique vertices (4 per face) so each face can have its own UVs
-            std::vector<Vertex> vertices = {
-                // +X face (normal +1,0,0) tangent computed later
-                {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f,0.0f}, {1,0,0}, {0,0,0}, 0.0f},
-                {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {1.0f,0.0f}, {1,0,0}, {0,0,0}, 0.0f},
-                {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f,1.0f}, {1,0,0}, {0,0,0}, 0.0f},
-                {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {0.0f,1.0f}, {1,0,0}, {0,0,0}, 0.0f},
-                // -X face (normal -1,0,0) tangent along -Z
-                {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f,0.0f}, {-1,0,0}, {0,0,0}, 0.0f},
-                {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {1.0f,0.0f}, {-1,0,0}, {0,0,0}, 0.0f},
-                {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f,1.0f}, {-1,0,0}, {0,0,0}, 0.0f},
-                {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {0.0f,1.0f}, {-1,0,0}, {0,0,0}, 0.0f},
-                // +Y face (normal 0,1,0) tangent along +X
-                {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {0.0f,0.0f}, {0,1,0}, {0,0,0}, 0.0f},
-                {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f,0.0f}, {0,1,0}, {0,0,0}, 0.0f},
-                {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f,1.0f}, {0,1,0}, {0,0,0}, 0.0f},
-                {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {0.0f,1.0f}, {0,1,0}, {0,0,0}, 0.0f},
-                // -Y face (normal 0,-1,0) tangent along +X
-                {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f,0.0f}, {0,-1,0}, {0,0,0}, 0.0f},
-                {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {1.0f,0.0f}, {0,-1,0}, {0,0,0}, 0.0f},
-                {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {1.0f,1.0f}, {0,-1,0}, {0,0,0}, 0.0f},
-                {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f,1.0f}, {0,-1,0}, {0,0,0}, 0.0f},
-                // +Z face (normal 0,0,1) tangent along +X
-                {{-0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f,0.0f}, {0,0,1}, {0,0,0}, 0.0f},
-                {{-0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f,0.0f}, {0,0,1}, {0,0,0}, 0.0f},
-                {{ 0.5f,  0.5f,  0.5f }, {1,1,1}, {1.0f,1.0f}, {0,0,1}, {0,0,0}, 0.0f},
-                {{ 0.5f, -0.5f,  0.5f }, {1,1,1}, {0.0f,1.0f}, {0,0,1}, {0,0,0}, 0.0f},
-                // -Z face (normal 0,0,-1) tangent along -X
-                {{ 0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f,0.0f}, {0,0,-1}, {0,0,0}, 0.0f},
-                {{ 0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f,0.0f}, {0,0,-1}, {0,0,0}, 0.0f},
-                {{-0.5f,  0.5f, -0.5f }, {1,1,1}, {1.0f,1.0f}, {0,0,-1}, {0,0,0}, 0.0f},
-                {{-0.5f, -0.5f, -0.5f }, {1,1,1}, {0.0f,1.0f}, {0,0,-1}, {0,0,0}, 0.0f},
-            };
-            // 12 triangles (2 per face) * 3 indices = 36
-            std::vector<uint16_t> indices = {
-                0,1,2, 2,3,0,         // +X
-                4,5,6, 6,7,4,         // -X
-                8,9,10, 10,11,8,      // +Y
-                12,13,14, 14,15,12,   // -Y
-                16,17,18, 18,19,16,   // +Z
-                20,21,22, 22,23,20    // -Z
-            };
-
-            // compute smooth per-vertex normals by averaging face normals
-            std::vector<glm::vec3> normAccum(vertices.size(), glm::vec3(0.0f));
-            for (size_t i = 0; i < indices.size(); i += 3) {
-                uint32_t i0 = indices[i];
-                uint32_t i1 = indices[i+1];
-                uint32_t i2 = indices[i+2];
-
-                glm::vec3 p0(vertices[i0].pos[0], vertices[i0].pos[1], vertices[i0].pos[2]);
-                glm::vec3 p1(vertices[i1].pos[0], vertices[i1].pos[1], vertices[i1].pos[2]);
-                glm::vec3 p2(vertices[i2].pos[0], vertices[i2].pos[1], vertices[i2].pos[2]);
-
-                glm::vec3 edge1 = p1 - p0;
-                glm::vec3 edge2 = p2 - p0;
-                glm::vec3 faceNormal = glm::cross(edge1, edge2);
-                if (glm::length2(faceNormal) > 0.0f) faceNormal = glm::normalize(faceNormal);
-
-                normAccum[i0] += faceNormal;
-                normAccum[i1] += faceNormal;
-                normAccum[i2] += faceNormal;
-            }
-
-            // store averaged normals back into vertices
-            for (size_t i = 0; i < vertices.size(); ++i) {
-                glm::vec3 n = normAccum[i];
-                if (glm::length2(n) > 0.0f) n = glm::normalize(n);
-                else n = glm::vec3(0.0f, 0.0f, 1.0f);
-                vertices[i].normal[0] = n.x;
-                vertices[i].normal[1] = n.y;
-                vertices[i].normal[2] = n.z;
-            }
-
-            // compute per-vertex tangents from positions and UVs
-            std::vector<glm::vec3> tanAccum(vertices.size(), glm::vec3(0.0f));
-            for (size_t i = 0; i < indices.size(); i += 3) {
-                uint32_t i0 = indices[i];
-                uint32_t i1 = indices[i+1];
-                uint32_t i2 = indices[i+2];
-
-                glm::vec3 p0(vertices[i0].pos[0], vertices[i0].pos[1], vertices[i0].pos[2]);
-                glm::vec3 p1(vertices[i1].pos[0], vertices[i1].pos[1], vertices[i1].pos[2]);
-                glm::vec3 p2(vertices[i2].pos[0], vertices[i2].pos[1], vertices[i2].pos[2]);
-
-                glm::vec2 uv0(vertices[i0].uv[0], vertices[i0].uv[1]);
-                glm::vec2 uv1(vertices[i1].uv[0], vertices[i1].uv[1]);
-                glm::vec2 uv2(vertices[i2].uv[0], vertices[i2].uv[1]);
-
-                glm::vec3 edge1 = p1 - p0;
-                glm::vec3 edge2 = p2 - p0;
-
-                glm::vec2 deltaUV1 = uv1 - uv0;
-                glm::vec2 deltaUV2 = uv2 - uv0;
-
-                float denom = deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y;
-                if (fabs(denom) < 1e-6f) continue;
-                float f = 1.0f / denom;
-
-                glm::vec3 tangent = f * (edge1 * deltaUV2.y - edge2 * deltaUV1.y);
-
-                tanAccum[i0] += tangent;
-                tanAccum[i1] += tangent;
-                tanAccum[i2] += tangent;
-            }
-
-            // orthonormalize and store tangent per-vertex
-            for (size_t i = 0; i < vertices.size(); ++i) {
-                glm::vec3 n(vertices[i].normal[0], vertices[i].normal[1], vertices[i].normal[2]);
-                glm::vec3 t = tanAccum[i];
-                // Gram-Schmidt orthogonalize
-                t = glm::normalize(t - n * glm::dot(n, t));
-                if (!glm::isnan(t.x) && glm::length2(t) > 0.0f) {
-                    vertices[i].tangent[0] = t.x;
-                    vertices[i].tangent[1] = t.y;
-                    vertices[i].tangent[2] = t.z;
-                } else {
-                    // fallback tangent
-                    vertices[i].tangent[0] = 1.0f;
-                    vertices[i].tangent[1] = 0.0f;
-                    vertices[i].tangent[2] = 0.0f;
-                }
-            }
-
-            vertexBufferObject = VertexBufferObject { createVertexBuffer(vertices), createIndexBuffer(indices), (uint) indices.size() };
-
+            // build cube mesh and GPU buffers (per-face tex indices all zero by default)
+            cube.build(this, {});
             createCommandBuffers();
         };
 
@@ -330,6 +208,47 @@ class MyApp : public VulkanApp {
             if (ImGui::Button("Reset Orientation")) {
                 // small helper: recreate camera to reset orientation (preserve position)
                 camera = Camera(camera.getPosition());
+            }
+            ImGui::End();
+
+            // Textures visualization (single preview with navigation)
+            ImGui::Begin("Textures");
+            size_t tc = textureManager.count();
+            if (tc == 0) {
+                ImGui::Text("No textures loaded");
+            } else {
+                // navigation
+                if (ImGui::Button("<")) {
+                    if (currentTextureIndex == 0) currentTextureIndex = tc - 1;
+                    else --currentTextureIndex;
+                }
+                ImGui::SameLine();
+                ImGui::Text("%zu / %zu", currentTextureIndex + 1, tc);
+                ImGui::SameLine();
+                if (ImGui::Button(">")) {
+                    currentTextureIndex = (currentTextureIndex + 1) % tc;
+                }
+
+                // tabs for albedo / normal / height
+                std::string tabBarId = std::string("tabs_") + std::to_string(currentTextureIndex);
+                if (ImGui::BeginTabBar(tabBarId.c_str())) {
+                    if (ImGui::BeginTabItem("Albedo")) {
+                        ImTextureID tex = textureManager.getImTexture(currentTextureIndex, 0);
+                        if (tex) ImGui::Image(tex, ImVec2(512,512));
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("Normal")) {
+                        ImTextureID tex = textureManager.getImTexture(currentTextureIndex, 1);
+                        if (tex) ImGui::Image(tex, ImVec2(512,512));
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("Height")) {
+                        ImTextureID tex = textureManager.getImTexture(currentTextureIndex, 2);
+                        if (tex) ImGui::Image(tex, ImVec2(512,512));
+                        ImGui::EndTabItem();
+                    }
+                    ImGui::EndTabBar();
+                }
             }
             ImGui::End();
         }
@@ -404,14 +323,14 @@ class MyApp : public VulkanApp {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
 
-            VkBuffer vertexBuffers[] = { vertexBufferObject.vertexBuffer.buffer };
+            VkBuffer vertexBuffers[] = { cube.getVBO().vertexBuffer.buffer };
             VkDeviceSize offsets[] = { 0 };
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-            vkCmdBindIndexBuffer(commandBuffer, vertexBufferObject.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
+            vkCmdBindIndexBuffer(commandBuffer, cube.getVBO().indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
             // bind descriptor set for texture
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
 
-            vkCmdDrawIndexed(commandBuffer, vertexBufferObject.indexCount, 1, 0, 0, 0);
+            vkCmdDrawIndexed(commandBuffer, cube.getVBO().indexCount, 1, 0, 0, 0);
 
             // render ImGui draw data inside the same command buffer (must be inside render pass)
             ImDrawData* draw_data = ImGui::GetDrawData();
@@ -429,8 +348,8 @@ class MyApp : public VulkanApp {
             if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipeline, nullptr);
             // texture cleanup via manager
             textureManager.destroyAll();
-            // vertex/index buffers
-            vertexBufferObject.destroy(getDevice());
+            // vertex/index buffers owned by cube
+            cube.destroy(getDevice());
 
             // uniform buffer
             if (uniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniform.buffer, nullptr);
