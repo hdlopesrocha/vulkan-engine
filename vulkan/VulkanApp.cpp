@@ -693,6 +693,8 @@ void VulkanApp::copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width
 std::vector<VkCommandBuffer> VulkanApp::createCommandBuffers() {
     commandBuffers.resize(swapchainFramebuffers.size());
 
+    std::cerr << "createCommandBuffers: allocating " << commandBuffers.size() << " command buffers, swapchainFramebuffers=" << swapchainFramebuffers.size() << "\n";
+
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.commandPool = commandPool;
@@ -1087,19 +1089,19 @@ void VulkanApp::createDepthResources() {
     endSingleTimeCommands(commandBuffer);
 }
 
-void VulkanApp::createDescriptorPool() {
+void VulkanApp::createDescriptorPool(uint32_t maxSets) {
     // One uniform buffer and one combined image sampler per map type (we use 2D array views)
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = 1; // single uniform
+    poolSizes[0].descriptorCount = maxSets; // one uniform per set
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = 3; // albedo, normal, height
+    poolSizes[1].descriptorCount = 3 * maxSets; // albedo, normal, height per set
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = maxSets;
 
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("failed to create descriptor pool!");
@@ -1201,8 +1203,9 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT; 
-    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    // use standard back-face culling. Mesh winding in this project uses clockwise
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
@@ -1704,6 +1707,9 @@ void VulkanApp::createLogicalDevice() {
     // retrieve queue handles
     vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
     vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
+    // debug: print queue family indices and whether the two queue handles are equal
+    std::cerr << "createLogicalDevice: graphicsFamily=" << indices.graphicsFamily.value() << " presentFamily=" << indices.presentFamily.value() << "\n";
+    std::cerr << "graphicsQueue handle: " << graphicsQueue << " presentQueue handle: " << presentQueue << "\n";
 }
 
 int VulkanApp::getWidth() {

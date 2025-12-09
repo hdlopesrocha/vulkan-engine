@@ -37,6 +37,6 @@ void main() {
     // compute world-space position and pass to fragment
     vec4 worldPos = ubo.model * vec4(inPos, 1.0);
     fragPosWorld = worldPos.xyz;
-    // apply MVP transform from UBO
+    // apply MVP transform to the vertex position (MVP already includes model transform)
     gl_Position = ubo.mvp * vec4(inPos, 1.0);
 }

@@ -200,7 +200,7 @@ protected:
     TextureImage createTextureImageArray(const std::vector<std::string>& filenames);
         VkSampler createTextureSampler(uint32_t mipLevels);
         void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
-        void createDescriptorPool();
+    void createDescriptorPool(uint32_t maxSets = 1);
         VkDescriptorSet createDescriptorSet();
         void updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors);
 

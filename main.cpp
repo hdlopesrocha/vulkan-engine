@@ -25,14 +25,14 @@ class MyApp : public VulkanApp {
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     // texture manager handles albedo/normal/height triples
     TextureManager textureManager;
-    size_t textureTripleIndex = 0;
     // cube mesh helper
     CubeMesh cube;
     TextureViewer textureViewer;
     // UI: currently selected texture triple for preview
     size_t currentTextureIndex = 0;
     // Camera
-    Camera camera = Camera(glm::vec3(0.0f, 0.0f, 2.5f));
+    // start the camera further back so multiple cubes are visible
+    Camera camera = Camera(glm::vec3(0.0f, 0.0f, 8.0f));
         // POM / tuning controls
         float pomHeightScale = 0.06f;
         float pomMinLayers = 8.0f;
@@ -43,8 +43,13 @@ class MyApp : public VulkanApp {
     bool flipParallaxDirection = true;
         float ambientFactor = 0.25f;
     // (managed by TextureManager)
-        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-        Buffer uniform;
+        std::vector<VkDescriptorSet> descriptorSets;
+        std::vector<Buffer> uniforms; // One uniform buffer per cube
+        // store projection and view for per-cube MVP computation in draw()
+        glm::mat4 projMat = glm::mat4(1.0f);
+        glm::mat4 viewMat = glm::mat4(1.0f);
+        // static parts of the UBO that don't vary per-cube (we'll set model/mvp per draw)
+        UniformObject uboStatic{};
     // textureImage is now owned by TextureManager
         //VertexBufferObject vertexBufferObject; // now owned by CubeMesh
 
@@ -72,7 +77,7 @@ class MyApp : public VulkanApp {
                     {
                         VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos) },
                         VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-                        VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, uv) },
+                        VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
                         VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
                             VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
                             VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
@@ -100,19 +105,30 @@ class MyApp : public VulkanApp {
             loadedIndices.push_back(textureManager.loadTriple("textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg"));
 
             // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
-            if (!loadedIndices.empty()) textureTripleIndex = loadedIndices[0];
-            uniform = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            createDescriptorPool();
-            // Descriptor Set
-            {
-                descriptorSet = createDescriptorSet();
+            if (!loadedIndices.empty()) currentTextureIndex = loadedIndices[0];
+            
+            // create uniform buffers - one per cube
+            uniforms.resize(loadedIndices.size());
+            for (size_t i = 0; i < uniforms.size(); ++i) {
+                uniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            }
+            
+            // create one descriptor set per loaded triple so we can bind each cube's textures independently
+            size_t tripleCount = textureManager.count();
+            if (tripleCount == 0) tripleCount = 1; // ensure at least one
+            createDescriptorPool(static_cast<uint32_t>(tripleCount));
 
-                // uniform buffer descriptor (binding 0)
-                VkDescriptorBufferInfo bufferInfo { uniform.buffer, 0 , sizeof(UniformObject) };
+            descriptorSets.resize(tripleCount, VK_NULL_HANDLE);
+            for (size_t i = 0; i < tripleCount; ++i) {
+                VkDescriptorSet ds = createDescriptorSet();
+                descriptorSets[i] = ds;
+
+                // uniform buffer descriptor (binding 0) - use separate uniform buffer per cube
+                VkDescriptorBufferInfo bufferInfo { uniforms[i].buffer, 0 , sizeof(UniformObject) };
 
                 VkWriteDescriptorSet uboWrite{};
                 uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                uboWrite.dstSet = descriptorSet;
+                uboWrite.dstSet = ds;
                 uboWrite.dstBinding = 0;
                 uboWrite.dstArrayElement = 0;
                 uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -120,11 +136,11 @@ class MyApp : public VulkanApp {
                 uboWrite.pBufferInfo = &bufferInfo;
 
                 // bind combined image sampler descriptors for texture arrays (single descriptor each)
-                const auto &tr = textureManager.getTriple(textureTripleIndex);
+                const auto &tr = textureManager.getTriple(i);
                 VkDescriptorImageInfo imageInfo { tr.albedoSampler, tr.albedo.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
                 VkWriteDescriptorSet samplerWrite{};
                 samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                samplerWrite.dstSet = descriptorSet;
+                samplerWrite.dstSet = ds;
                 samplerWrite.dstBinding = 1;
                 samplerWrite.dstArrayElement = 0;
                 samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -134,7 +150,7 @@ class MyApp : public VulkanApp {
                 VkDescriptorImageInfo normalInfo { tr.normalSampler, tr.normal.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
                 VkWriteDescriptorSet normalWrite{};
                 normalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                normalWrite.dstSet = descriptorSet;
+                normalWrite.dstSet = ds;
                 normalWrite.dstBinding = 2;
                 normalWrite.dstArrayElement = 0;
                 normalWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -144,7 +160,7 @@ class MyApp : public VulkanApp {
                 VkDescriptorImageInfo heightInfo { tr.heightSampler, tr.height.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
                 VkWriteDescriptorSet heightWrite{};
                 heightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                heightWrite.dstSet = descriptorSet;
+                heightWrite.dstSet = ds;
                 heightWrite.dstBinding = 3;
                 heightWrite.dstArrayElement = 0;
                 heightWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -152,7 +168,7 @@ class MyApp : public VulkanApp {
                 heightWrite.pImageInfo = &heightInfo;
 
                 updateDescriptorSet(
-                    descriptorSet,
+                    ds,
                     { uboWrite, samplerWrite, normalWrite, heightWrite }
                 );
             }
@@ -217,6 +233,16 @@ class MyApp : public VulkanApp {
 
             // Textures visualization (single preview with navigation)
             textureViewer.render();
+
+            // Debug panel: show scene info
+            ImGui::Begin("Debug");
+            ImGui::Text("Loaded texture triples: %zu", textureManager.count());
+            ImGui::Text("Rendered cubes: %zu", descriptorSets.size());
+            glm::vec3 camPos = camera.getPosition();
+            ImGui::Text("Camera pos: %.2f %.2f %.2f", camPos.x, camPos.y, camPos.z);
+            ImGui::Text("Cube grid spacing: %.1f", 2.5f);
+            ImGui::Text("Grid layout: 4x3 cubes");
+            ImGui::End();
         }
 
         void update(float deltaTime) override {
@@ -228,7 +254,7 @@ class MyApp : public VulkanApp {
             glm::mat4 mvp = glm::mat4(1.0f);
 
             float aspect = (float)getWidth() / (float) getHeight();
-            proj = glm::perspective(45.0f * 3.1415926f / 180.0f, aspect, 0.1f, 10.0f);
+            proj = glm::perspective(45.0f * 3.1415926f / 180.0f, aspect, 0.1f, 100.0f);
             // flip Y for Vulkan clip space
             proj[1][1] *= -1.0f;
 
@@ -244,24 +270,17 @@ class MyApp : public VulkanApp {
             tmp = view * model;
             mvp = proj * view * model;
 
-            // update per-frame uniform buffer (MVP)
-            // fill uniform object (MVP, model, viewPos + directional light + POM params)
-            UniformObject ubo{};
-            ubo.mvp = mvp;
-            ubo.model = model;
-            // camera world position
-            ubo.viewPos = glm::vec4(camera.getPosition(), 1.0f);
-            // directional light pointing slightly down and towards -Z
-            glm::vec3 lightDir = glm::normalize(glm::vec3(-0.5f, -1.0f, -0.3f));
-            ubo.lightDir = glm::vec4(lightDir, 0.0f);
-            // white light with intensity in w
-            ubo.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
-            // POM params
-            ubo.pomParams = glm::vec4(pomHeightScale, pomMinLayers, pomMaxLayers, pomEnabled ? 1.0f : 0.0f);
-            // pomFlags: x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
-            ubo.pomFlags = glm::vec4(flipNormalY ? 1.0f : 0.0f, flipTangentHandedness ? 1.0f : 0.0f, ambientFactor, flipParallaxDirection ? 1.0f : 0.0f);
+            // store projection and view for per-cube MVP computation in draw()
+            projMat = proj;
+            viewMat = view;
 
-            updateUniformBuffer(uniform, &ubo, sizeof(UniformObject));
+            // prepare static parts of the UBO (viewPos, light, POM params) - model and mvp will be set per-cube in draw()
+            uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
+            glm::vec3 lightDir = glm::normalize(glm::vec3(-0.5f, -1.0f, -0.3f));
+            uboStatic.lightDir = glm::vec4(lightDir, 0.0f);
+            uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+            uboStatic.pomParams = glm::vec4(pomHeightScale, pomMinLayers, pomMaxLayers, pomEnabled ? 1.0f : 0.0f);
+            uboStatic.pomFlags = glm::vec4(flipNormalY ? 1.0f : 0.0f, flipTangentHandedness ? 1.0f : 0.0f, ambientFactor, flipParallaxDirection ? 1.0f : 0.0f);
         };
 
         void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
@@ -293,10 +312,37 @@ class MyApp : public VulkanApp {
             VkDeviceSize offsets[] = { 0 };
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
             vkCmdBindIndexBuffer(commandBuffer, cube.getVBO().indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
-            // bind descriptor set for texture
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
+            // Draw one cube per loaded texture triple laid out in a centered grid
+            size_t n = descriptorSets.size();
+            float spacing = 2.5f;
+            if (n == 0) n = 1;
+            int cols = static_cast<int>(std::ceil(std::sqrt((float)n)));
+            int rows = static_cast<int>(std::ceil((float)n / cols));
+            float halfW = (cols - 1) * 0.5f * spacing;
+            float halfH = (rows - 1) * 0.5f * spacing;
+            // Render all cubes with separate uniform buffers
+            for (size_t i = 0; i < descriptorSets.size(); ++i) {
+                int col = static_cast<int>(i % cols);
+                int row = static_cast<int>(i / cols);
+                
+                // Position cubes in a grid layout
+                float x = col * spacing - halfW;
+                float y = halfH - row * spacing;
+                float z = -0.05f * static_cast<float>(i);
+                glm::mat4 model_i = glm::translate(glm::mat4(1.0f), glm::vec3(x, y, z));
+                glm::mat4 mvp_i = projMat * viewMat * model_i;
 
-            vkCmdDrawIndexed(commandBuffer, cube.getVBO().indexCount, 1, 0, 0, 0);
+                UniformObject ubo = uboStatic;
+                ubo.model = model_i;
+                ubo.mvp = mvp_i;
+                updateUniformBuffer(uniforms[i], &ubo, sizeof(UniformObject));
+
+                // bind descriptor set for this cube's textures
+                VkDescriptorSet ds = descriptorSets[i];
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &ds, 0, nullptr);
+
+                vkCmdDrawIndexed(commandBuffer, cube.getVBO().indexCount, 1, 0, 0, 0);
+            }
 
             // render ImGui draw data inside the same command buffer (must be inside render pass)
             ImDrawData* draw_data = ImGui::GetDrawData();
@@ -318,8 +364,12 @@ class MyApp : public VulkanApp {
             cube.destroy(getDevice());
 
             // uniform buffer
-            if (uniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniform.buffer, nullptr);
-            if (uniform.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniform.memory, nullptr);
+            for (auto& uniformBuffer : uniforms) {
+                if (uniformBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniformBuffer.buffer, nullptr);
+            }
+            for (auto& uniformBuffer : uniforms) {
+                if (uniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniformBuffer.memory, nullptr);
+            }
         }
 
 };

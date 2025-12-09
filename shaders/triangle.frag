@@ -90,30 +90,68 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex) {
 }
 
 void main() {
-    // compute view direction in world space
-    vec3 viewDirWorld = normalize(ubo.viewPos.xyz - fragPosWorld);
-    // construct TBN
+    // Always use layer 0 since each descriptor set points to different textures
+    int texIndex = 0;
+    
+    vec2 uv = fragUV;
+    
+    // Parallax Occlusion Mapping (if enabled)
+    if (ubo.pomParams.w > 0.5) {
+        // Compute tangent-space view direction for POM
+        vec3 N = normalize(fragNormal);
+        vec3 T = normalize(fragTangent);
+        
+        // Handle normal Y flipping
+        if (ubo.pomFlags.x > 0.5) {
+            N.y = -N.y;
+        }
+        
+        // Handle tangent handedness flipping  
+        if (ubo.pomFlags.y > 0.5) {
+            T = -T;
+        }
+        
+        vec3 B = cross(N, T);
+        mat3 TBN = mat3(T, B, N);
+        
+        vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
+        vec3 viewDirT = normalize(transpose(TBN) * viewDir);
+        
+        // Apply parallax occlusion mapping
+        uv = ParallaxOcclusionMapping(fragUV, viewDirT, texIndex);
+    }
+    
+    // Sample textures
+    vec3 albedoColor = texture(albedoArray, vec3(uv, float(texIndex))).rgb;
+    vec3 normalMap = texture(normalArray, vec3(uv, float(texIndex))).rgb;
+    
+    // Transform normal from [0,1] to [-1,1] range
+    normalMap = normalMap * 2.0 - 1.0;
+    
+    // Handle normal Y flipping for normal map
+    if (ubo.pomFlags.x > 0.5) {
+        normalMap.y = -normalMap.y;
+    }
+    
+    // Compute world-space normal from normal map
     vec3 N = normalize(fragNormal);
     vec3 T = normalize(fragTangent);
-    vec3 B = normalize(cross(N, T));
-    // view direction in tangent space
-    vec3 Vt = normalize(vec3(dot(viewDirWorld, T), dot(viewDirWorld, B), dot(viewDirWorld, N)));
-    // compute parallax occlusion mapping to get final texture coords
-    vec2 finalUV = ParallaxOcclusionMapping(fragUV, Vt, fragTexIndex);
-
-    // sample textures with parallax-corrected UV from texture2D arrays
-    vec4 tex = texture(albedoArray, vec3(finalUV, float(fragTexIndex)));
-    vec3 mapN = texture(normalArray, vec3(finalUV, float(fragTexIndex))).xyz * 2.0 - 1.0; // tangent-space normal
-    // optional flip Y channel
-    if (ubo.pomFlags.x > 0.5) mapN.y = -mapN.y;
-    // transform normal to world space via TBN; allow flipping tangent-handedness
-    vec3 B_use = (ubo.pomFlags.y > 0.5) ? normalize(cross(T, N)) : normalize(cross(N, T));
-    vec3 mapped = normalize(mapN.x * T + mapN.y * B_use + mapN.z * N);
-
-    vec3 L = normalize(ubo.lightDir.xyz);
-    float diff = max(dot(mapped, L), 0.0);
-    float ambient = ubo.pomFlags.z; // ambient stored in pomFlags.z
-    vec3 lighting = (ambient + diff * ubo.lightColor.w) * ubo.lightColor.rgb; // ambient + diffuse*intensity
-    vec3 shaded = tex.rgb * fragColor * lighting;
-    outColor = vec4(shaded, tex.a);
+    
+    // Handle tangent handedness
+    if (ubo.pomFlags.y > 0.5) {
+        T = -T;
+    }
+    
+    vec3 B = cross(N, T);
+    mat3 TBN = mat3(T, B, N);
+    vec3 worldNormal = normalize(TBN * normalMap);
+    
+    // Lighting calculation
+    vec3 lightDir = normalize(ubo.lightDir.xyz);
+    float NdotL = max(dot(worldNormal, lightDir), 0.0);
+    
+    vec3 ambient = albedoColor * ubo.pomFlags.z; // ambient factor
+    vec3 diffuse = albedoColor * ubo.lightColor.rgb * NdotL;
+    
+    outColor = vec4(ambient + diffuse, 1.0);
 }
