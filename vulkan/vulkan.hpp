@@ -121,6 +121,12 @@ class VulkanApp {
     
     // set when the framebuffer (GLFW window) is resized so we can recreate swapchain
     bool framebufferResized = false;
+    // fullscreen handling
+    bool isFullscreen = false;
+    int windowedPosX = 100;
+    int windowedPosY = 100;
+    int windowedWidth = WIDTH;
+    int windowedHeight = HEIGHT;
     // ImGui integration state
     VkDescriptorPool imguiDescriptorPool = VK_NULL_HANDLE;
     bool imguiShowDemo = false;
@@ -128,6 +134,8 @@ class VulkanApp {
     float imguiFps = 0.0f;
 
     private:
+        static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
+        void toggleFullscreen();
 
         VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
         VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);

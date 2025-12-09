@@ -36,6 +36,40 @@ void VulkanApp::initWindow() {
     // register resize callback so we can recreate the swapchain when user resizes window
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+    // register key callback for fullscreen toggle (F11)
+    glfwSetKeyCallback(window, keyCallback);
+}
+
+void VulkanApp::keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if (action != GLFW_PRESS) return;
+    if (key == GLFW_KEY_F11) {
+        auto app = reinterpret_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+        if (app) app->toggleFullscreen();
+    }
+}
+
+void VulkanApp::toggleFullscreen() {
+    if (!window) return;
+
+    if (!isFullscreen) {
+        // store windowed position and size
+        glfwGetWindowPos(window, &windowedPosX, &windowedPosY);
+        glfwGetWindowSize(window, &windowedWidth, &windowedHeight);
+
+        GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+        if (!monitor) return;
+        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+        if (!mode) return;
+
+        glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+        isFullscreen = true;
+    } else {
+        // restore windowed mode
+        glfwSetWindowMonitor(window, nullptr, windowedPosX, windowedPosY, windowedWidth, windowedHeight, 0);
+        isFullscreen = false;
+    }
+    // signal swapchain recreation
+    framebufferResized = true;
 }
 
 void VulkanApp::initVulkan() {
@@ -1134,7 +1168,13 @@ void VulkanApp::drawFrame() {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
-            ImGui::MenuItem("Show Demo", NULL, &imguiShowDemo);
+            if (ImGui::MenuItem("Show Demo", NULL, &imguiShowDemo)) {
+                /* toggled demo window */
+            }
+            if (ImGui::MenuItem("Fullscreen", "F11", isFullscreen)) {
+                // toggle fullscreen mode
+                toggleFullscreen();
+            }
             ImGui::EndMenu();
         }
         ImGui::SameLine(ImGui::GetIO().DisplaySize.x - 120);
