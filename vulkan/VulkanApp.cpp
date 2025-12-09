@@ -27,7 +27,12 @@ void VulkanApp::initWindow() {
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    // explicit allow window resizing
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan Engine", nullptr, nullptr);
+    // register resize callback so we can recreate the swapchain when user resizes window
+    glfwSetWindowUserPointer(window, this);
+    glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 }
 
 void VulkanApp::initVulkan() {
@@ -1028,7 +1033,10 @@ void VulkanApp::drawFrame() {
 
     uint32_t imageIndex;
     VkResult r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
-    if (r != VK_SUCCESS) {
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+        recreateSwapchain();
+        return;
+    } else if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
         std::cerr << "vkAcquireNextImageKHR failed: " << r << std::endl;
         return;
     }
@@ -1085,11 +1093,85 @@ void VulkanApp::drawFrame() {
     presentInfo.pImageIndices = &imageIndex;
 
     r = vkQueuePresentKHR(presentQueue, &presentInfo);
-    if (r != VK_SUCCESS) {
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || framebufferResized) {
+        framebufferResized = false;
+        recreateSwapchain();
+        return;
+    } else if (r != VK_SUCCESS) {
         std::cerr << "vkQueuePresentKHR failed: " << r << std::endl;
         return;
     }
     //std::cerr << "presented image " << imageIndex << "\n";
+}
+
+void VulkanApp::cleanupSwapchain() {
+    // destroy framebuffers
+    for (auto fb : swapchainFramebuffers) {
+        if (fb != VK_NULL_HANDLE) vkDestroyFramebuffer(device, fb, nullptr);
+    }
+    swapchainFramebuffers.clear();
+
+    // destroy image views
+    for (auto iv : swapchainImageViews) {
+        if (iv != VK_NULL_HANDLE) vkDestroyImageView(device, iv, nullptr);
+    }
+    swapchainImageViews.clear();
+
+    // destroy depth resources
+    if (depthImageView != VK_NULL_HANDLE) {
+        vkDestroyImageView(device, depthImageView, nullptr);
+        depthImageView = VK_NULL_HANDLE;
+    }
+    if (depthImage != VK_NULL_HANDLE) {
+        vkDestroyImage(device, depthImage, nullptr);
+        depthImage = VK_NULL_HANDLE;
+    }
+    if (depthImageMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, depthImageMemory, nullptr);
+        depthImageMemory = VK_NULL_HANDLE;
+    }
+
+    // free command buffers (they reference old framebuffers)
+    if (!commandBuffers.empty()) {
+        vkFreeCommandBuffers(device, commandPool, static_cast<uint32_t>(commandBuffers.size()), commandBuffers.data());
+        commandBuffers.clear();
+    }
+
+    // destroy swapchain
+    if (swapchain != VK_NULL_HANDLE) {
+        auto fp = (PFN_vkDestroySwapchainKHR)vkGetInstanceProcAddr(instance, "vkDestroySwapchainKHR");
+        if (fp) fp(device, swapchain, nullptr);
+        else vkDestroySwapchainKHR(device, swapchain, nullptr);
+        swapchain = VK_NULL_HANDLE;
+    }
+    swapchainImages.clear();
+}
+
+void VulkanApp::recreateSwapchain() {
+    int width = 0, height = 0;
+    // wait for non-zero size (window might be minimized)
+    while (width == 0 || height == 0) {
+        glfwGetFramebufferSize(window, &width, &height);
+        glfwWaitEvents();
+    }
+
+    vkDeviceWaitIdle(device);
+    cleanupSwapchain();
+
+    createSwapchain();
+    createImageViews();
+    createDepthResources();
+    createFramebuffers();
+    createCommandBuffers();
+
+    framebufferResized = false;
+}
+
+void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width, int height) {
+    auto app = reinterpret_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+    if (app) {
+        app->framebufferResized = true;
+    }
 }
 
 void VulkanApp::createInstance() {

@@ -118,6 +118,9 @@ class VulkanApp {
     VkImageView depthImageView = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> commandBuffers;
+    
+    // set when the framebuffer (GLFW window) is resized so we can recreate swapchain
+    bool framebufferResized = false;
 
     private:
 
@@ -137,6 +140,9 @@ class VulkanApp {
         void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
         void createDepthResources();
         void createDescriptorSetLayout();
+    void cleanupSwapchain();
+    void recreateSwapchain();
+    static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
 
 
         uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
