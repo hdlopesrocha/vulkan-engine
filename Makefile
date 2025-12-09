@@ -1,9 +1,16 @@
 
 # Minimal Makefile: assumes ImGui is installed system-wide and enables it
 CC = g++
-# enable ImGui by default; project expects a system-installed ImGui
-# IMGUI is always compiled in-source now so we don't need the macro here
-CFLAGS = -std=c++17 -O2 -g
+# Build configuration: choose release or debug
+# Usage: make            # builds default (release)
+#        make BUILD=debug
+# or shortcuts: make debug  or make release
+BUILD ?= release
+ifeq ($(BUILD),debug)
+	CFLAGS = -std=c++17 -O0 -g -DDEBUG
+else
+	CFLAGS = -std=c++17 -O3 -DNDEBUG
+endif
 
 # Use pkg-config for GLFW and Vulkan includes; also add common ImGui/stb include paths
 INCLUDES = `pkg-config --cflags glfw3 vulkan` -I/usr/include/imgui -I/usr/include/stb
@@ -14,6 +21,13 @@ OUT = app
 
 all:
 	$(CC) $(CFLAGS) $(INCLUDES) $(SRC) -o $(OUT) $(LIBS)
+
+.PHONY: debug release
+debug:
+	@$(MAKE) BUILD=debug all
+
+release:
+	@$(MAKE) BUILD=release all
 
 clean:
 	rm -f $(OUT)

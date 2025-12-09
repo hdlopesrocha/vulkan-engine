@@ -1,3 +1,47 @@
+# Ignore the built executable(s)
+app
+*/app
+*.out
+
+# Object files and temporary build files
+*.o
+*.obj
+*.lo
+*.la
+
+# Static and shared libraries
+*.a
+*.so
+*.dll
+*.dylib
+
+# Compiled shader binaries (SPIR-V)
+*.spv
+
+# Build directories
+/build/
+/bin/
+/dist/
+
+# Logs and runtime files
+*.log
+*.tmp
+*.cache
+
+# Editor/IDE files
+.vscode/
+.idea/
+*~
+*.swp
+
+# macOS
+.DS_Store
+
+# Thumbs/db
+Thumbs.db
+
+# Generated GUI/backends build artifacts
+/imgui/
 # Prerequisites
 *.d
 
