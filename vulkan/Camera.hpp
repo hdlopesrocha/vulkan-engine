@@ -23,6 +23,9 @@ public:
     float speed = 2.5f;
     float angularSpeedRad = glm::radians(45.0f);
 
+    // expose orientation for UI/debug
+    glm::quat getOrientation() const { return orientation; }
+
 private:
     glm::vec3 position;
     glm::quat orientation; // camera orientation

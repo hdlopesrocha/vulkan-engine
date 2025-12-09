@@ -295,6 +295,24 @@ class MyApp : public VulkanApp {
             ImGui::Checkbox("Flip tangent handedness", &flipTangentHandedness);
             ImGui::SliderFloat("Ambient", &ambientFactor, 0.0f, 1.0f, "%.2f");
             ImGui::End();
+
+            // Camera controls
+            ImGui::Begin("Camera");
+            ImGui::DragFloat("Move Speed", &camera.speed, 0.1f, 0.0f, 50.0f);
+            float angDeg = glm::degrees(camera.angularSpeedRad);
+            if (ImGui::SliderFloat("Angular Speed (deg/s)", &angDeg, 1.0f, 360.0f)) {
+                camera.angularSpeedRad = glm::radians(angDeg);
+            }
+            glm::vec3 pos = camera.getPosition();
+            ImGui::Text("Position: %.2f, %.2f, %.2f", pos.x, pos.y, pos.z);
+            glm::quat orient = camera.getOrientation();
+            glm::vec3 euler = glm::degrees(glm::eulerAngles(orient));
+            ImGui::Text("Euler (deg): X=%.1f Y=%.1f Z=%.1f", euler.x, euler.y, euler.z);
+            if (ImGui::Button("Reset Orientation")) {
+                // small helper: recreate camera to reset orientation (preserve position)
+                camera = Camera(camera.getPosition());
+            }
+            ImGui::End();
         }
 
         void update(float deltaTime) override {
