@@ -6,6 +6,7 @@
 #include "vulkan/Camera.hpp"
 #include "vulkan/TextureManager.hpp"
 #include "vulkan/CubeMesh.hpp"
+#include "vulkan/TextureViewer.hpp"
 #include <string>
 // (removed unused includes: filesystem, iostream, map, algorithm, cctype)
 
@@ -27,6 +28,7 @@ class MyApp : public VulkanApp {
     size_t textureTripleIndex = 0;
     // cube mesh helper
     CubeMesh cube;
+    TextureViewer textureViewer;
     // UI: currently selected texture triple for preview
     size_t currentTextureIndex = 0;
     // Camera
@@ -157,6 +159,8 @@ class MyApp : public VulkanApp {
 
             // build cube mesh and GPU buffers (per-face tex indices all zero by default)
             cube.build(this, {});
+            // initialize texture viewer (after textures loaded)
+            textureViewer.init(&textureManager);
             createCommandBuffers();
         };
 
@@ -212,45 +216,7 @@ class MyApp : public VulkanApp {
             ImGui::End();
 
             // Textures visualization (single preview with navigation)
-            ImGui::Begin("Textures");
-            size_t tc = textureManager.count();
-            if (tc == 0) {
-                ImGui::Text("No textures loaded");
-            } else {
-                // navigation
-                if (ImGui::Button("<")) {
-                    if (currentTextureIndex == 0) currentTextureIndex = tc - 1;
-                    else --currentTextureIndex;
-                }
-                ImGui::SameLine();
-                ImGui::Text("%zu / %zu", currentTextureIndex + 1, tc);
-                ImGui::SameLine();
-                if (ImGui::Button(">")) {
-                    currentTextureIndex = (currentTextureIndex + 1) % tc;
-                }
-
-                // tabs for albedo / normal / height
-                std::string tabBarId = std::string("tabs_") + std::to_string(currentTextureIndex);
-                if (ImGui::BeginTabBar(tabBarId.c_str())) {
-                    if (ImGui::BeginTabItem("Albedo")) {
-                        ImTextureID tex = textureManager.getImTexture(currentTextureIndex, 0);
-                        if (tex) ImGui::Image(tex, ImVec2(512,512));
-                        ImGui::EndTabItem();
-                    }
-                    if (ImGui::BeginTabItem("Normal")) {
-                        ImTextureID tex = textureManager.getImTexture(currentTextureIndex, 1);
-                        if (tex) ImGui::Image(tex, ImVec2(512,512));
-                        ImGui::EndTabItem();
-                    }
-                    if (ImGui::BeginTabItem("Height")) {
-                        ImTextureID tex = textureManager.getImTexture(currentTextureIndex, 2);
-                        if (tex) ImGui::Image(tex, ImVec2(512,512));
-                        ImGui::EndTabItem();
-                    }
-                    ImGui::EndTabBar();
-                }
-            }
-            ImGui::End();
+            textureViewer.render();
         }
 
         void update(float deltaTime) override {
