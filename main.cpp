@@ -6,6 +6,7 @@
 #include "vulkan/Camera.hpp"
 #include "vulkan/TextureManager.hpp"
 #include "vulkan/CubeMesh.hpp"
+#include "vulkan/PlaneMesh.hpp"
 #include "vulkan/TextureViewer.hpp"
 #include <string>
 // (removed unused includes: filesystem, iostream, map, algorithm, cctype)
@@ -25,8 +26,9 @@ class MyApp : public VulkanApp {
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     // texture manager handles albedo/normal/height triples
     TextureManager textureManager;
-    // cube mesh helper
+    // mesh helpers
     CubeMesh cube;
+    PlaneMesh plane;
     TextureViewer textureViewer;
     // UI: currently selected texture triple for preview
     size_t currentTextureIndex = 0;
@@ -45,6 +47,8 @@ class MyApp : public VulkanApp {
     // (managed by TextureManager)
         std::vector<VkDescriptorSet> descriptorSets;
         std::vector<Buffer> uniforms; // One uniform buffer per cube
+        VkDescriptorSet planeDescriptorSet = VK_NULL_HANDLE;
+        Buffer planeUniform;
         // store projection and view for per-cube MVP computation in draw()
         glm::mat4 projMat = glm::mat4(1.0f);
         glm::mat4 viewMat = glm::mat4(1.0f);
@@ -113,10 +117,10 @@ class MyApp : public VulkanApp {
                 uniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             }
             
-            // create one descriptor set per loaded triple so we can bind each cube's textures independently
+            // create descriptor sets - one per cube plus one for the plane
             size_t tripleCount = textureManager.count();
             if (tripleCount == 0) tripleCount = 1; // ensure at least one
-            createDescriptorPool(static_cast<uint32_t>(tripleCount));
+            createDescriptorPool(static_cast<uint32_t>(tripleCount + 1)); // +1 for the plane
 
             descriptorSets.resize(tripleCount, VK_NULL_HANDLE);
             for (size_t i = 0; i < tripleCount; ++i) {
@@ -175,6 +179,58 @@ class MyApp : public VulkanApp {
 
             // build cube mesh and GPU buffers (per-face tex indices all zero by default)
             cube.build(this, {});
+            
+            // build ground plane mesh (20x20 units, textured with first texture)
+            plane.build(this, 20.0f, 20.0f, 0.0f);
+            
+            // create uniform buffer for the plane
+            planeUniform = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            
+            // create descriptor set for the plane (use first texture triple)
+            planeDescriptorSet = createDescriptorSet();
+            VkDescriptorBufferInfo planeBufferInfo { planeUniform.buffer, 0, sizeof(UniformObject) };
+            
+            VkWriteDescriptorSet planeUboWrite{};
+            planeUboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            planeUboWrite.dstSet = planeDescriptorSet;
+            planeUboWrite.dstBinding = 0;
+            planeUboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            planeUboWrite.descriptorCount = 1;
+            planeUboWrite.pBufferInfo = &planeBufferInfo;
+            
+            // Use the same textures as the first cube (index 0) - get from TextureManager
+            const auto& firstTriple = textureManager.getTriple(0);
+            
+            VkDescriptorImageInfo planeAlbedoInfo{ firstTriple.albedoSampler, firstTriple.albedo.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo planeNormalInfo{ firstTriple.normalSampler, firstTriple.normal.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo planeHeightInfo{ firstTriple.heightSampler, firstTriple.height.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            
+            VkWriteDescriptorSet planeAlbedoWrite{};
+            planeAlbedoWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            planeAlbedoWrite.dstSet = planeDescriptorSet;
+            planeAlbedoWrite.dstBinding = 1;
+            planeAlbedoWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            planeAlbedoWrite.descriptorCount = 1;
+            planeAlbedoWrite.pImageInfo = &planeAlbedoInfo;
+            
+            VkWriteDescriptorSet planeNormalWrite{};
+            planeNormalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            planeNormalWrite.dstSet = planeDescriptorSet;
+            planeNormalWrite.dstBinding = 2;
+            planeNormalWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            planeNormalWrite.descriptorCount = 1;
+            planeNormalWrite.pImageInfo = &planeNormalInfo;
+            
+            VkWriteDescriptorSet planeHeightWrite{};
+            planeHeightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            planeHeightWrite.dstSet = planeDescriptorSet;
+            planeHeightWrite.dstBinding = 3;
+            planeHeightWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            planeHeightWrite.descriptorCount = 1;
+            planeHeightWrite.pImageInfo = &planeHeightInfo;
+            
+            updateDescriptorSet(planeDescriptorSet, { planeUboWrite, planeAlbedoWrite, planeNormalWrite, planeHeightWrite });
+            
             // initialize texture viewer (after textures loaded)
             textureViewer.init(&textureManager);
             createCommandBuffers();
@@ -320,6 +376,31 @@ class MyApp : public VulkanApp {
             int rows = static_cast<int>(std::ceil((float)n / cols));
             float halfW = (cols - 1) * 0.5f * spacing;
             float halfH = (rows - 1) * 0.5f * spacing;
+            // Render ground plane first (underneath cubes)
+            glm::mat4 planeModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.5f, 0.0f)); // Position below cubes
+            glm::mat4 planeMVP = projMat * viewMat * planeModel;
+            
+            UniformObject planeUBO = uboStatic;
+            planeUBO.model = planeModel;
+            planeUBO.mvp = planeMVP;
+            updateUniformBuffer(planeUniform, &planeUBO, sizeof(UniformObject));
+            
+            // Bind plane vertex/index buffers
+            VkBuffer planeVertexBuffers[] = { plane.getVBO().vertexBuffer.buffer };
+            VkDeviceSize planeOffsets[] = { 0 };
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, planeVertexBuffers, planeOffsets);
+            vkCmdBindIndexBuffer(commandBuffer, plane.getVBO().indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
+            
+            // Bind plane descriptor set and draw
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &planeDescriptorSet, 0, nullptr);
+            vkCmdDrawIndexed(commandBuffer, plane.getVBO().indexCount, 1, 0, 0, 0);
+            
+            // Rebind cube vertex/index buffers
+            VkBuffer cubeVertexBuffers[] = { cube.getVBO().vertexBuffer.buffer };
+            VkDeviceSize cubeOffsets[] = { 0 };
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, cubeVertexBuffers, cubeOffsets);
+            vkCmdBindIndexBuffer(commandBuffer, cube.getVBO().indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
+            
             // Render all cubes with separate uniform buffers
             for (size_t i = 0; i < descriptorSets.size(); ++i) {
                 int col = static_cast<int>(i % cols);
@@ -360,16 +441,21 @@ class MyApp : public VulkanApp {
             if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipeline, nullptr);
             // texture cleanup via manager
             textureManager.destroyAll();
-            // vertex/index buffers owned by cube
+            // vertex/index buffers cleanup
             cube.destroy(getDevice());
+            plane.cleanup(this);
 
-            // uniform buffer
+            // uniform buffers cleanup
             for (auto& uniformBuffer : uniforms) {
                 if (uniformBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniformBuffer.buffer, nullptr);
             }
             for (auto& uniformBuffer : uniforms) {
                 if (uniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniformBuffer.memory, nullptr);
             }
+            
+            // plane uniform buffer cleanup
+            if (planeUniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), planeUniform.buffer, nullptr);
+            if (planeUniform.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), planeUniform.memory, nullptr);
         }
 
 };
