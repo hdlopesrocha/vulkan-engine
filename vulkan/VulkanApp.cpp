@@ -1188,7 +1188,12 @@ void VulkanApp::drawFrame() {
         std::cerr << "vkAcquireNextImageKHR failed: " << r << std::endl;
         return;
     }
-    update(0.0f); // TODO: calculate frame time
+    // compute deltaTime for this frame
+    double frameNow = glfwGetTime();
+    float deltaTime = 0.0f;
+    if (lastFrameTime > 0.0) deltaTime = static_cast<float>(frameNow - lastFrameTime);
+    lastFrameTime = frameNow;
+    update(deltaTime);
 
     // ImGui new frame (backend)
     ImGui_ImplVulkan_NewFrame();
@@ -1540,6 +1545,10 @@ int VulkanApp::getWidth() {
 
 int VulkanApp::getHeight() {
     return swapchainExtent.height;
+}
+
+GLFWwindow* VulkanApp::getWindow() {
+    return window;
 }
 
 

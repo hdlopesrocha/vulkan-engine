@@ -18,6 +18,11 @@ class MyApp : public VulkanApp {
     public:
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     VkSampler textureSampler = VK_NULL_HANDLE;
+    // Camera state for WASD/QE movement
+    glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 2.5f);
+    glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
+    glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
+    float cameraSpeed = 2.5f; // units per second
         // POM / tuning controls
         float pomHeightScale = 0.06f;
         float pomMinLayers = 8.0f;
@@ -307,7 +312,21 @@ class MyApp : public VulkanApp {
             // flip Y for Vulkan clip space
             proj[1][1] *= -1.0f;
 
-            view = glm::translate(view, glm::vec3(0.0f, 0.0f, -2.5f));
+            // handle keyboard input for camera movement (W/A/S/D forward/left/back/right, Q/E up/down)
+            GLFWwindow* win = getWindow();
+            if (win) {
+                float velocity = cameraSpeed * deltaTime;
+                if (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS) cameraPos += cameraFront * velocity;
+                if (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS) cameraPos -= cameraFront * velocity;
+                glm::vec3 right = glm::normalize(glm::cross(cameraFront, cameraUp));
+                if (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS) cameraPos -= right * velocity;
+                if (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS) cameraPos += right * velocity;
+                if (glfwGetKey(win, GLFW_KEY_E) == GLFW_PRESS) cameraPos += cameraUp * velocity;
+                if (glfwGetKey(win, GLFW_KEY_Q) == GLFW_PRESS) cameraPos -= cameraUp * velocity;
+            }
+
+            // build view matrix from camera state
+            view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
 
             float time = (float)glfwGetTime();
             model = glm::rotate(model, time * 0.8f, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -320,10 +339,8 @@ class MyApp : public VulkanApp {
             UniformObject ubo{};
             ubo.mvp = mvp;
             ubo.model = model;
-            // compute camera world position (inverse view * origin)
-            glm::mat4 invView = glm::inverse(view);
-            glm::vec4 camPos = invView * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-            ubo.viewPos = camPos;
+            // camera world position
+            ubo.viewPos = glm::vec4(cameraPos, 1.0f);
             // directional light pointing slightly down and towards -Z
             glm::vec3 lightDir = glm::normalize(glm::vec3(-0.5f, -1.0f, -0.3f));
             ubo.lightDir = glm::vec4(lightDir, 0.0f);
@@ -394,6 +411,11 @@ class MyApp : public VulkanApp {
             if (normalImage.view != VK_NULL_HANDLE) vkDestroyImageView(getDevice(), normalImage.view, nullptr);
             if (normalImage.image != VK_NULL_HANDLE) vkDestroyImage(getDevice(), normalImage.image, nullptr);
             if (normalImage.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), normalImage.memory, nullptr);
+            // height map cleanup (parallax)
+            if (heightSampler != VK_NULL_HANDLE) vkDestroySampler(getDevice(), heightSampler, nullptr);
+            if (heightImage.view != VK_NULL_HANDLE) vkDestroyImageView(getDevice(), heightImage.view, nullptr);
+            if (heightImage.image != VK_NULL_HANDLE) vkDestroyImage(getDevice(), heightImage.image, nullptr);
+            if (heightImage.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), heightImage.memory, nullptr);
             // vertex/index buffers
             vertexBufferObject.destroy(getDevice());
 

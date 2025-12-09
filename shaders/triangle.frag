@@ -51,12 +51,38 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT) {
         currentLayerDepth += layerDepth;
         if (currentLayerDepth >= currentDepthMapValue) break;
     }
-    // linear interpolation between prev and current
+    // linear interpolation between prev and current (initial estimate)
     float afterDepth = currentDepthMapValue - currentLayerDepth;
     float beforeDepth = prevDepth - (currentLayerDepth - layerDepth);
     float weight = 0.0;
     if ((afterDepth - beforeDepth) != 0.0) weight = afterDepth / (afterDepth - beforeDepth);
     vec2 finalTex = mix(prevTex, currentTex, weight);
+
+    // Binary-search refinement between prevTex and currentTex to improve intersection precision
+    // Use a small fixed number of iterations (5) for a good quality/cost tradeoff.
+    vec2 lowTex = prevTex;
+    vec2 highTex = currentTex;
+    float lowLayerDepth = currentLayerDepth - layerDepth;
+    float highLayerDepth = currentLayerDepth;
+
+    const int NUM_BINARY_ITERS = 5;
+    for (int i = 0; i < NUM_BINARY_ITERS; ++i) {
+        vec2 midTex = (lowTex + highTex) * 0.5;
+        float midDepthMap = texture(heightMap, midTex).r;
+        float midLayerDepth = (lowLayerDepth + highLayerDepth) * 0.5;
+        if (midLayerDepth >= midDepthMap) {
+            // intersection is between low and mid
+            highTex = midTex;
+            highLayerDepth = midLayerDepth;
+        } else {
+            // intersection is between mid and high
+            lowTex = midTex;
+            lowLayerDepth = midLayerDepth;
+        }
+    }
+
+    // take midpoint of refined interval as final UV
+    finalTex = (lowTex + highTex) * 0.5;
     return clamp(finalTex, 0.0, 1.0);
 }
 

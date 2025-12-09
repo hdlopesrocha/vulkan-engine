@@ -133,9 +133,14 @@ protected:
     bool imguiShowDemo = false;
     double imguiLastTime = 0.0;
     float imguiFps = 0.0f;
+    // frame timing for update delta calculation
+    double lastFrameTime = 0.0;
 
     // Allow derived classes to build ImGui UI per-frame
     virtual void renderImGui() {}
+
+    // expose the GLFW window to derived classes for input polling
+    GLFWwindow* getWindow();
 
     private:
         static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
