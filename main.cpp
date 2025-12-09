@@ -5,6 +5,11 @@
 #include <backends/imgui_impl_vulkan.h>
 #include "vulkan/Camera.hpp"
 #include "vulkan/TextureManager.hpp"
+#include <filesystem>
+#include <iostream>
+#include <map>
+#include <algorithm>
+#include <cctype>
 
 struct UniformObject {
     glm::mat4 mvp;
@@ -72,9 +77,25 @@ class MyApp : public VulkanApp {
                 vkDestroyShaderModule(getDevice(), fragmentShader.info.module, nullptr);
                 vkDestroyShaderModule(getDevice(), vertexShader.info.module, nullptr);
             }
-            // initialize texture manager and load an albedo/normal/height triple
+            // initialize texture manager and explicitly load known albedo/normal/height triples by filename
             textureManager.init(this);
-            textureTripleIndex = textureManager.loadTriple("textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg");
+            std::vector<size_t> loadedIndices;
+
+            // Explicit per-name loads (one-by-one). Adjust list below if you add/remove texture files.
+            loadedIndices.push_back(textureManager.loadTriple("textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg"));
+            loadedIndices.push_back(textureManager.loadTriple("textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg"));
+            loadedIndices.push_back(textureManager.loadTriple("textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg"));
+            loadedIndices.push_back(textureManager.loadTriple("textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg"));
+            loadedIndices.push_back(textureManager.loadTriple("textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg"));
+            loadedIndices.push_back(textureManager.loadTriple("textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg"));
+            loadedIndices.push_back(textureManager.loadTriple("textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg"));
+            loadedIndices.push_back(textureManager.loadTriple("textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg"));
+            loadedIndices.push_back(textureManager.loadTriple("textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg"));
+            loadedIndices.push_back(textureManager.loadTriple("textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg"));
+            loadedIndices.push_back(textureManager.loadTriple("textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg"));
+
+            // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
+            if (!loadedIndices.empty()) textureTripleIndex = loadedIndices[0];
             uniform = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             createDescriptorPool();
             // Descriptor Set

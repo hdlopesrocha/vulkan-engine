@@ -932,8 +932,18 @@ VkSampler VulkanApp::createTextureSampler(uint32_t mipLevels) {
     samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.anisotropyEnable = VK_FALSE;
-    samplerInfo.maxAnisotropy = 1.0f;
+    // enable anisotropic filtering when supported by the device
+    VkPhysicalDeviceProperties deviceProperties{};
+    vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+    if (deviceProperties.limits.maxSamplerAnisotropy > 1.0f) {
+        samplerInfo.anisotropyEnable = VK_TRUE;
+        // clamp requested anisotropy to device maximum
+        float desiredAniso = std::min<float>(16.0f, deviceProperties.limits.maxSamplerAnisotropy);
+        samplerInfo.maxAnisotropy = desiredAniso;
+    } else {
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
+    }
     samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
     samplerInfo.compareEnable = VK_FALSE;
