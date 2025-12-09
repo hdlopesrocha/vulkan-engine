@@ -4,6 +4,7 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
 #include "vulkan/Camera.hpp"
+#include "vulkan/TextureManager.hpp"
 
 struct UniformObject {
     glm::mat4 mvp;
@@ -18,7 +19,9 @@ struct UniformObject {
 class MyApp : public VulkanApp {
     public:
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
-    VkSampler textureSampler = VK_NULL_HANDLE;
+    // texture manager handles albedo/normal/height triples
+    TextureManager textureManager;
+    size_t textureTripleIndex = 0;
     // Camera
     Camera camera = Camera(glm::vec3(0.0f, 0.0f, 2.5f));
         // POM / tuning controls
@@ -29,13 +32,10 @@ class MyApp : public VulkanApp {
         bool flipNormalY = false;
         bool flipTangentHandedness = false;
         float ambientFactor = 0.25f;
-    TextureImage normalImage;
-    VkSampler normalSampler = VK_NULL_HANDLE;
-    TextureImage heightImage;
-    VkSampler heightSampler = VK_NULL_HANDLE;
+    // (managed by TextureManager)
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
         Buffer uniform;
-        TextureImage textureImage;
+    // textureImage is now owned by TextureManager
         VertexBufferObject vertexBufferObject;
 
         void setup() override {
@@ -72,13 +72,9 @@ class MyApp : public VulkanApp {
                 vkDestroyShaderModule(getDevice(), fragmentShader.info.module, nullptr);
                 vkDestroyShaderModule(getDevice(), vertexShader.info.module, nullptr);
             }
-            // create texture arrays (currently single-layer arrays; easy to extend by adding more filenames)
-            textureImage = createTextureImageArray({ "textures/grass_color.jpg" });
-            textureSampler = createTextureSampler(textureImage.mipLevels);
-            normalImage = createTextureImageArray({ "textures/grass_normal.jpg" });
-            normalSampler = createTextureSampler(normalImage.mipLevels);
-            heightImage = createTextureImageArray({ "textures/grass_bump.jpg" });
-            heightSampler = createTextureSampler(heightImage.mipLevels);
+            // initialize texture manager and load an albedo/normal/height triple
+            textureManager.init(this);
+            textureTripleIndex = textureManager.loadTriple("textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg");
             uniform = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             createDescriptorPool();
             // Descriptor Set
@@ -98,7 +94,8 @@ class MyApp : public VulkanApp {
                 uboWrite.pBufferInfo = &bufferInfo;
 
                 // bind combined image sampler descriptors for texture arrays (single descriptor each)
-                VkDescriptorImageInfo imageInfo { textureSampler, textureImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                const auto &tr = textureManager.getTriple(textureTripleIndex);
+                VkDescriptorImageInfo imageInfo { tr.albedoSampler, tr.albedo.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
                 VkWriteDescriptorSet samplerWrite{};
                 samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 samplerWrite.dstSet = descriptorSet;
@@ -108,7 +105,7 @@ class MyApp : public VulkanApp {
                 samplerWrite.descriptorCount = 1;
                 samplerWrite.pImageInfo = &imageInfo;
 
-                VkDescriptorImageInfo normalInfo { normalSampler, normalImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                VkDescriptorImageInfo normalInfo { tr.normalSampler, tr.normal.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
                 VkWriteDescriptorSet normalWrite{};
                 normalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 normalWrite.dstSet = descriptorSet;
@@ -118,7 +115,7 @@ class MyApp : public VulkanApp {
                 normalWrite.descriptorCount = 1;
                 normalWrite.pImageInfo = &normalInfo;
 
-                VkDescriptorImageInfo heightInfo { heightSampler, heightImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                VkDescriptorImageInfo heightInfo { tr.heightSampler, tr.height.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
                 VkWriteDescriptorSet heightWrite{};
                 heightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 heightWrite.dstSet = descriptorSet;
@@ -406,21 +403,8 @@ class MyApp : public VulkanApp {
 
         void clean() override {
             if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipeline, nullptr);
-            // texture and descriptor cleanup (albedo)
-            if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(getDevice(), textureSampler, nullptr);
-            if (textureImage.view != VK_NULL_HANDLE) vkDestroyImageView(getDevice(), textureImage.view, nullptr);
-            if (textureImage.image != VK_NULL_HANDLE) vkDestroyImage(getDevice(), textureImage.image, nullptr);
-            if (textureImage.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), textureImage.memory, nullptr);
-            // normal map cleanup
-            if (normalSampler != VK_NULL_HANDLE) vkDestroySampler(getDevice(), normalSampler, nullptr);
-            if (normalImage.view != VK_NULL_HANDLE) vkDestroyImageView(getDevice(), normalImage.view, nullptr);
-            if (normalImage.image != VK_NULL_HANDLE) vkDestroyImage(getDevice(), normalImage.image, nullptr);
-            if (normalImage.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), normalImage.memory, nullptr);
-            // height map cleanup (parallax)
-            if (heightSampler != VK_NULL_HANDLE) vkDestroySampler(getDevice(), heightSampler, nullptr);
-            if (heightImage.view != VK_NULL_HANDLE) vkDestroyImageView(getDevice(), heightImage.view, nullptr);
-            if (heightImage.image != VK_NULL_HANDLE) vkDestroyImage(getDevice(), heightImage.image, nullptr);
-            if (heightImage.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), heightImage.memory, nullptr);
+            // texture cleanup via manager
+            textureManager.destroyAll();
             // vertex/index buffers
             vertexBufferObject.destroy(getDevice());
 
