@@ -82,7 +82,7 @@ struct VertexBufferObject {
 };
 
 
-struct Vertex { float pos[3]; float color[3]; float uv[2]; };
+struct Vertex { float pos[3]; float color[3]; float uv[2]; float normal[3]; float tangent[3]; };
 
 
 class VulkanApp {
