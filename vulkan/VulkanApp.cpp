@@ -797,7 +797,8 @@ void VulkanApp::createDescriptorSetLayout() {
     uboLayoutBinding.descriptorCount = 1;
     uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     uboLayoutBinding.pImmutableSamplers = nullptr;
-    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    // UBO is now referenced by both vertex and fragment shaders (lighting in fragment)
+    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
     // binding 1 : combined image sampler (fragment shader)
     VkDescriptorSetLayoutBinding samplerLayoutBinding{};
@@ -1118,7 +1119,8 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
 
 void VulkanApp::updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize) {
     void* bufferData;
-    vkMapMemory(device, uniform.memory, 0, sizeof(glm::mat4), 0, &bufferData);
+    // map the exact size requested by the caller so different uniform sizes are supported
+    vkMapMemory(device, uniform.memory, 0, dataSize, 0, &bufferData);
     memcpy(bufferData, data, dataSize);
     vkUnmapMemory(device, uniform.memory);
 }

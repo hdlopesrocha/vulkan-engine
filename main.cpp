@@ -4,6 +4,12 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
 
+struct UniformObject {
+    glm::mat4 mvp;
+    glm::vec4 lightDir; // xyz = direction, w = unused (padding)
+    glm::vec4 lightColor; // rgb = color, w = intensity
+};
+
 class MyApp : public VulkanApp {
     public:
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
@@ -52,14 +58,14 @@ class MyApp : public VulkanApp {
             }
             textureImage = createTextureImage("textures/grass_color.jpg");
             textureSampler = createTextureSampler(textureImage.mipLevels);
-            uniform = createBuffer(sizeof(float) * 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            uniform = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             createDescriptorPool();
             // Descriptor Set
             {
                 descriptorSet = createDescriptorSet();
             
                 // uniform buffer descriptor (binding 0)
-                VkDescriptorBufferInfo bufferInfo { uniform.buffer, 0 , sizeof(float) * 16 };
+                VkDescriptorBufferInfo bufferInfo { uniform.buffer, 0 , sizeof(UniformObject) };
 
                 VkWriteDescriptorSet uboWrite{};
                 uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -180,7 +186,16 @@ class MyApp : public VulkanApp {
             mvp = proj * view * model;
 
             // update per-frame uniform buffer (MVP)
-            updateUniformBuffer(uniform, &mvp, sizeof(glm::mat4));
+            // fill uniform object (MVP + directional light)
+            UniformObject ubo{};
+            ubo.mvp = mvp;
+            // directional light pointing slightly down and towards -Z
+            glm::vec3 lightDir = glm::normalize(glm::vec3(-0.5f, -1.0f, -0.3f));
+            ubo.lightDir = glm::vec4(lightDir, 0.0f);
+            // white light with intensity in w
+            ubo.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+
+            updateUniformBuffer(uniform, &ubo, sizeof(UniformObject));
         };
 
         void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
