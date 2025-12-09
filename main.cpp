@@ -43,7 +43,7 @@ class MyApp : public VulkanApp {
         bool pomEnabled = true;
         bool flipNormalY = false;
         bool flipTangentHandedness = false;
-    bool flipParallaxDirection = true;
+    bool flipParallaxDirection = false; // false = dark goes inward (standard), true = dark goes outward
         float ambientFactor = 0.4f; // Increased from 0.25 for brighter base lighting
     // (managed by TextureManager)
         std::vector<VkDescriptorSet> descriptorSets;

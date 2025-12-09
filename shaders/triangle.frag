@@ -39,11 +39,13 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex) {
     float numLayers = mix(maxLayers, minLayers, abs(dot(vec3(0.0,0.0,1.0), viewDirT)));
     float layerDepth = 1.0 / numLayers;
     float currentLayerDepth = 0.0;
-    // parallax direction selectable via ubo.pomFlags.w (0.0 = normal, 1.0 = flipped)
+    // parallax direction: when flipParallaxDirection is OFF (0.0), black carves inward (standard)
+    // when flipParallaxDirection is ON (1.0), black goes outward (inverted)
     vec2 P = (ubo.pomFlags.w > 0.5) ? -viewDirT.xy * heightScale : viewDirT.xy * heightScale;
     vec2 deltaTex = P / numLayers;
     vec2 currentTex = texCoords;
-    float currentDepthMapValue = texture(heightArray, vec3(currentTex, float(texIndex))).r;
+    // Invert height map: black (0.0) = deep/carved (1.0), white (1.0) = surface (0.0)
+    float currentDepthMapValue = 1.0 - texture(heightArray, vec3(currentTex, float(texIndex))).r;
     vec2 prevTex = currentTex;
     float prevDepth = currentDepthMapValue;
     // linear search through layers
@@ -51,7 +53,7 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex) {
         prevTex = currentTex;
         prevDepth = currentDepthMapValue;
         currentTex -= deltaTex;
-    currentDepthMapValue = texture(heightArray, vec3(currentTex, float(texIndex))).r;
+    currentDepthMapValue = 1.0 - texture(heightArray, vec3(currentTex, float(texIndex))).r;
         currentLayerDepth += layerDepth;
         if (currentLayerDepth >= currentDepthMapValue) break;
     }
@@ -72,7 +74,7 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex) {
     const int NUM_BINARY_ITERS = 5;
     for (int i = 0; i < NUM_BINARY_ITERS; ++i) {
         vec2 midTex = (lowTex + highTex) * 0.5;
-    float midDepthMap = texture(heightArray, vec3(midTex, float(texIndex))).r;
+    float midDepthMap = 1.0 - texture(heightArray, vec3(midTex, float(texIndex))).r;
         float midLayerDepth = (lowLayerDepth + highLayerDepth) * 0.5;
         if (midLayerDepth >= midDepthMap) {
             // intersection is between low and mid
@@ -87,7 +89,7 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex) {
 
     // take midpoint of refined interval as final UV
     finalTex = (lowTex + highTex) * 0.5;
-    return clamp(finalTex, 0.0, 1.0);
+    return finalTex; // Don't clamp - let sampler repeat mode handle tiling
 }
 
 // Shadow calculation with PCF (Percentage Closer Filtering)
@@ -146,7 +148,10 @@ void main() {
             T = -T;
         }
         
-        vec3 B = cross(N, T);
+        // Compute bitangent correctly: cross(T, N) for right-handed coordinate system
+        vec3 B = cross(T, N);
+        // TBN matrix transforms from tangent space to world space
+        // Columns are: tangent, bitangent, normal
         mat3 TBN = mat3(T, B, N);
         
         vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
