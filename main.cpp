@@ -43,7 +43,7 @@ struct UniformObject {
 
 class MyApp : public VulkanApp {
     public:
-        MyApp() : shadowMapper(this, 2048) {}
+        MyApp() : shadowMapper(this, 8192) {}
         
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     // texture manager handles albedo/normal/height triples

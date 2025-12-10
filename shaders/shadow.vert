@@ -25,5 +25,6 @@ void main() {
     fragNormal = mat3(push.model) * inNormal;
     fragTangent = mat3(push.model) * inTangent;
     
+    // MVP already includes model transform, apply to local position
     gl_Position = push.mvp * vec4(inPosition, 1.0);
 }

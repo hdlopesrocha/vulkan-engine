@@ -169,10 +169,10 @@ float ShadowCalculation(vec4 fragPosLightSpace, float bias) {
     float shadow = 0.0;
     vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
     
-    // Sample 3x3 kernel around the shadow map coordinate
-    for(int x = -1; x <= 1; ++x)
+    // Use larger 5x5 kernel to blur over gaps at cube edges
+    for(int x = -2; x <= 2; ++x)
     {
-        for(int y = -1; y <= 1; ++y)
+        for(int y = -2; y <= 2; ++y)
         {
             vec2 offset = vec2(x, y) * texelSize;
             float pcfDepth = texture(shadowMap, projCoords.xy + offset).r;
@@ -180,7 +180,7 @@ float ShadowCalculation(vec4 fragPosLightSpace, float bias) {
             shadow += currentDepth > (pcfDepth + bias) ? 1.0 : 0.0;
         }
     }
-    shadow /= 9.0; // Average the 9 samples
+    shadow /= 25.0; // Average the 25 samples (5x5)
     
     return shadow;
 }
@@ -286,7 +286,8 @@ void main() {
     
     // Only calculate shadows for surfaces facing the light (use geometry normal to avoid artifacts)
     if (geometryNdotL > 0.01) {
-        float bias = max(0.001 * (1.0 - NdotL), 0.0002);
+        // Increased bias since shadow map no longer uses parallax displacement
+        float bias = max(0.002 * (1.0 - NdotL), 0.0005);
         shadow = ShadowCalculation(adjustedPosLightSpace, bias);
         
         // Add parallax self-shadowing (if POM and self-shadowing are enabled)
