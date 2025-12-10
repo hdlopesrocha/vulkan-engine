@@ -11,7 +11,7 @@ layout(location = 6) in vec4 fragPosLightSpace;
 
 // UBO must match binding 0 defined in vertex shader / host code
 // UBO must match CPU-side UniformObject layout:
-// mat4 mvp; mat4 model; vec4 viewPos; vec4 lightDir; vec4 lightColor; vec4 pomParams; vec4 pomFlags; mat4 lightSpaceMatrix
+// mat4 mvp; mat4 model; vec4 viewPos; vec4 lightDir; vec4 lightColor; vec4 pomParams; vec4 pomFlags; vec4 specularParams; mat4 lightSpaceMatrix
 layout(binding = 0) uniform UBO {
     mat4 mvp;
     mat4 model;
@@ -19,7 +19,8 @@ layout(binding = 0) uniform UBO {
     vec4 lightDir;
     vec4 lightColor;
     vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
-    vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=unused
+    vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
+    vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
     mat4 lightSpaceMatrix;
 } ubo;
 
@@ -173,10 +174,6 @@ void main() {
         normalMap.y = -normalMap.y;
     }
     
-    // Use geometry normal instead of normal map for debugging
-    vec3 worldNormal = normalize(fragNormal);
-    
-    /*
     // Compute world-space normal from normal map
     vec3 N = normalize(fragNormal);
     vec3 T = normalize(fragTangent);
@@ -189,7 +186,9 @@ void main() {
     vec3 B = cross(N, T);
     mat3 TBN = mat3(T, B, N);
     vec3 worldNormal = normalize(TBN * normalMap);
-    */
+    
+    // Use geometry normal for shadow plane detection (not mapped normal)
+    vec3 geometryNormal = normalize(fragNormal);
     
     // Lighting calculation
     // ubo.lightDir points from surface to light
@@ -198,9 +197,9 @@ void main() {
     
     // Calculate shadow with adaptive bias based on surface angle
     // Only apply shadows to horizontal surfaces (ground plane)
-    // Check if this is the ground plane (Y position around -1.5)
+    // Check if this is the ground plane (Y position around -1.5) using geometry normal
     float shadow = 0.0;
-    if (worldNormal.y > 0.9 && fragPosWorld.y < -1.0) {
+    if (geometryNormal.y > 0.9 && fragPosWorld.y < -1.0) {
         // This is the ground plane - apply shadows
         float bias = max(0.01 * (1.0 - NdotL), 0.005);
         shadow = ShadowCalculation(fragPosLightSpace, bias);
@@ -209,5 +208,11 @@ void main() {
     vec3 ambient = albedoColor * ubo.pomFlags.z; // ambient factor
     vec3 diffuse = albedoColor * ubo.lightColor.rgb * NdotL * (1.0 - shadow);
     
-    outColor = vec4(ambient + diffuse, 1.0);
+    // Specular lighting (Blinn-Phong) - uses normal-mapped surface normal
+    vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
+    vec3 halfwayDir = normalize(toLight + viewDir);
+    float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), ubo.specularParams.y); // shininess from uniform
+    vec3 specular = ubo.lightColor.rgb * spec * (1.0 - shadow) * ubo.specularParams.x; // specular strength from uniform
+    
+    outColor = vec4(ambient + diffuse + specular, 1.0);
 }

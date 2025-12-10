@@ -20,7 +20,8 @@ struct UniformObject {
     glm::vec4 lightDir; // xyz = direction, w = unused (padding)
     glm::vec4 lightColor; // rgb = color, w = intensity
     glm::vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
-    glm::vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=unused
+    glm::vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
+    glm::vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
     glm::mat4 lightSpaceMatrix; // for shadow mapping
 };
 
@@ -56,6 +57,9 @@ class MyApp : public VulkanApp {
         bool flipTangentHandedness = false;
     bool flipParallaxDirection = false; // false = dark goes inward (standard), true = dark goes outward
         float ambientFactor = 0.4f; // Increased from 0.25 for brighter base lighting
+        // Specular lighting controls
+        float specularStrength = 0.5f;
+        float shininess = 32.0f;
     // (managed by TextureManager)
         std::vector<VkDescriptorSet> descriptorSets;
         std::vector<Buffer> uniforms; // One uniform buffer per cube
@@ -287,7 +291,11 @@ class MyApp : public VulkanApp {
             ImGui::Checkbox("Flip normal Y", &flipNormalY);
             ImGui::Checkbox("Flip parallax direction", &flipParallaxDirection);
             ImGui::Checkbox("Flip tangent handedness", &flipTangentHandedness);
+            ImGui::Separator();
+            ImGui::Text("Lighting");
             ImGui::SliderFloat("Ambient", &ambientFactor, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Specular Strength", &specularStrength, 0.0f, 2.0f, "%.2f");
+            ImGui::SliderFloat("Shininess", &shininess, 1.0f, 256.0f, "%.0f");
             ImGui::End();
 
             // Camera controls
@@ -382,6 +390,7 @@ class MyApp : public VulkanApp {
             uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
             uboStatic.pomParams = glm::vec4(pomHeightScale, pomMinLayers, pomMaxLayers, pomEnabled ? 1.0f : 0.0f);
             uboStatic.pomFlags = glm::vec4(flipNormalY ? 1.0f : 0.0f, flipTangentHandedness ? 1.0f : 0.0f, ambientFactor, flipParallaxDirection ? 1.0f : 0.0f);
+            uboStatic.specularParams = glm::vec4(specularStrength, shininess, 0.0f, 0.0f);
             
             // Compute light space matrix for shadow mapping
             // Adjust scene center to be between cubes and plane
