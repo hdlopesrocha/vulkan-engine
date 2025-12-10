@@ -64,10 +64,19 @@ void TextureManager::destroyAll() {
     if (!app) return;
     VkDevice device = app->getDevice();
     for (auto &t : triples) {
-        // remove ImGui texture handles if created
-        if (t.albedoTexID) ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)t.albedoTexID);
-        if (t.normalTexID) ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)t.normalTexID);
-        if (t.heightTexID) ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)t.heightTexID);
+        // remove ImGui texture handles if created (check that descriptor set is valid)
+        if (t.albedoTexID && (VkDescriptorSet)t.albedoTexID != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)t.albedoTexID);
+            t.albedoTexID = nullptr;
+        }
+        if (t.normalTexID && (VkDescriptorSet)t.normalTexID != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)t.normalTexID);
+            t.normalTexID = nullptr;
+        }
+        if (t.heightTexID && (VkDescriptorSet)t.heightTexID != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)t.heightTexID);
+            t.heightTexID = nullptr;
+        }
 
         // Only destroy resources we own
         if (t.ownsResources) {

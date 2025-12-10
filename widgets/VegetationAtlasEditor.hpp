@@ -15,6 +15,7 @@ public:
         : Widget("Vegetation Atlas Editor"), 
           vegetationTextureManager(vegTextureManager),
           atlasManager(atlasManager) {
+        isOpen = false; // Start closed to avoid crashes on startup
     }
     
     ~VegetationAtlasEditor() {
@@ -189,7 +190,13 @@ public:
             
             // Preview area with actual texture
             if (vegetationTextureManager && currentTextureIndex < (int)vegetationTextureManager->count()) {
-                ImTextureID texID = vegetationTextureManager->getImTexture((size_t)currentTextureIndex, currentTextureView);
+                ImTextureID texID = nullptr;
+                try {
+                    texID = vegetationTextureManager->getImTexture((size_t)currentTextureIndex, currentTextureView);
+                } catch (...) {
+                    // Silently catch any exceptions during texture ID retrieval
+                }
+                
                 if (texID) {
                     float previewSize = 256.0f;
                     ImVec2 cursorPos = ImGui::GetCursorScreenPos();

@@ -268,6 +268,7 @@ private:
                          int width, int height, int startX, int startY, int threshold,
                          int& minX, int& maxX, int& minY, int& maxY) {
         std::vector<std::pair<int, int>> stack;
+        stack.reserve(1000); // Reserve space to avoid reallocations
         stack.push_back({startX, startY});
         
         while (!stack.empty()) {
@@ -276,9 +277,15 @@ private:
             
             // Check bounds
             if (x < 0 || x >= width || y < 0 || y >= height) continue;
+            
+            // Check if already visited
             if (visited[y][x]) continue;
             
-            int pixelValue = imageData[y * width + x];
+            // Check pixel value
+            int pixelIndex = y * width + x;
+            if (pixelIndex < 0 || pixelIndex >= width * height) continue;
+            
+            int pixelValue = imageData[pixelIndex];
             if (pixelValue <= threshold) continue;
             
             // Mark as visited
@@ -290,11 +297,11 @@ private:
             minY = std::min(minY, y);
             maxY = std::max(maxY, y);
             
-            // Add neighbors to stack
-            stack.push_back({x + 1, y});
-            stack.push_back({x - 1, y});
-            stack.push_back({x, y + 1});
-            stack.push_back({x, y - 1});
+            // Add neighbors to stack (with bounds checking)
+            if (x + 1 < width) stack.push_back({x + 1, y});
+            if (x - 1 >= 0) stack.push_back({x - 1, y});
+            if (y + 1 < height) stack.push_back({x, y + 1});
+            if (y - 1 >= 0) stack.push_back({x, y - 1});
         }
     }
 };
