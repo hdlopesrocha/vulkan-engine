@@ -243,9 +243,11 @@ private:
             paramsChanged = true;
         }
         
-        // Auto-generate when parameters change
+        // Auto-generate ALL textures when parameters change (not just current tab)
         if (paramsChanged) {
-            generatePerlinNoise(texture);
+            generatePerlinNoise(albedo);
+            generatePerlinNoise(normal);
+            generatePerlinNoise(bump);
             // Update previous values
             prevPerlinScale = perlinScale;
             prevPerlinOctaves = perlinOctaves;
@@ -269,10 +271,20 @@ private:
         }
         ImGui::SameLine();
         if (ImGui::Button("Generate All")) {
-            // Generate all three textures (albedo, normal, bump)
+            // Generate all three textures (albedo, normal, bump) with the same parameters
             generatePerlinNoise(albedo);
             generatePerlinNoise(normal);
             generatePerlinNoise(bump);
+            
+            // Update previous values after generating all
+            prevPerlinScale = perlinScale;
+            prevPerlinOctaves = perlinOctaves;
+            prevPerlinPersistence = perlinPersistence;
+            prevPerlinLacunarity = perlinLacunarity;
+            prevPerlinBrightness = perlinBrightness;
+            prevPerlinContrast = perlinContrast;
+            prevPrimaryTextureIdx = primaryTextureIdx;
+            prevSecondaryTextureIdx = secondaryTextureIdx;
         }
         
         ImGui::Separator();
