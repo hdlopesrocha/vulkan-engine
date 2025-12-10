@@ -10,6 +10,7 @@ layout(binding = 0) uniform UBO {
     vec4 lightColor;
     vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
     vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=unused
+    vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
     mat4 lightSpaceMatrix; // for shadow mapping
 } ubo;
 
