@@ -426,6 +426,7 @@ class MyApp : public VulkanApp {
             
             // Initialize editable texture set (1024x1024)
             editableTextures.init(this, 1024, 1024, "Editable Textures");
+            editableTextures.setTextureManager(&textureManager);
             
             createCommandBuffers();
         };

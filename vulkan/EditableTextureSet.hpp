@@ -1,8 +1,10 @@
 #pragma once
 
 #include "EditableTexture.hpp"
+#include "TextureManager.hpp"
 #include <imgui.h>
 #include <random>
+#include <cstring>
 
 // Push constants for compute shader
 struct PerlinPushConstants {
@@ -11,9 +13,9 @@ struct PerlinPushConstants {
     float persistence;
     float lacunarity;
     uint32_t seed;
-    float brightness; // Added brightness adjustment (-1.0 to 1.0)
-    float contrast;   // Added contrast adjustment (0.0 to 2.0)
-    float padding;    // Padding for alignment
+    float brightness;
+    float contrast;
+    uint32_t textureSize;
 };
 
 class EditableTextureSet {
@@ -28,8 +30,11 @@ public:
         albedo.init(app, width, height, VK_FORMAT_R8G8B8A8_UNORM, "Albedo");
         normal.init(app, width, height, VK_FORMAT_R8G8B8A8_UNORM, "Normal");
         bump.init(app, width, height, VK_FORMAT_R8G8B8A8_UNORM, "Bump"); // Changed from R8 to RGBA8
-        
-        // Initialize compute pipeline for Perlin noise
+    }
+    
+    void setTextureManager(TextureManager* texMgr) {
+        this->textureMgr = texMgr;
+        // Initialize compute pipeline after texture manager is set
         createComputePipeline();
     }
     
@@ -97,6 +102,7 @@ public:
     
 private:
     VulkanApp* app = nullptr;
+    TextureManager* textureMgr = nullptr;
     std::string windowName = "Editable Textures";
     EditableTexture albedo;
     EditableTexture normal;
@@ -120,6 +126,10 @@ private:
     float perlinContrast = 1.0f;    // 0.0 to 2.0
     uint32_t perlinSeed = 12345;    // Fixed seed for consistent generation
     
+    // Texture selection indices
+    int primaryTextureIdx = 0;
+    int secondaryTextureIdx = 0;
+    
     // Previous parameter values for change detection
     float prevPerlinScale = 8.0f;
     float prevPerlinOctaves = 4.0f;
@@ -127,6 +137,8 @@ private:
     float prevPerlinLacunarity = 2.0f;
     float prevPerlinBrightness = 0.0f;
     float prevPerlinContrast = 1.0f;
+    int prevPrimaryTextureIdx = 0;
+    int prevSecondaryTextureIdx = 0;
     
     void renderTextureTab(EditableTexture& texture) {
         ImGui::Text("Size: %dx%d", texture.getWidth(), texture.getHeight());
@@ -154,6 +166,34 @@ private:
         ImGui::Text("Perlin Noise Generator");
         
         bool paramsChanged = false;
+        
+        // Texture selection for primary and secondary textures
+        if (textureMgr && textureMgr->count() > 0) {
+            ImGui::Text("Texture Selection:");
+            
+            if (ImGui::Combo("Primary Texture", &primaryTextureIdx, [](void* data, int idx, const char** out_text) {
+                static char buf[32];
+                snprintf(buf, sizeof(buf), "Texture %d", idx);
+                *out_text = buf;
+                return true;
+            }, nullptr, textureMgr->count())) {
+                paramsChanged = true;
+            }
+            
+            if (ImGui::Combo("Secondary Texture", &secondaryTextureIdx, [](void* data, int idx, const char** out_text) {
+                static char buf[32];
+                snprintf(buf, sizeof(buf), "Texture %d", idx);
+                *out_text = buf;
+                return true;
+            }, nullptr, textureMgr->count())) {
+                paramsChanged = true;
+            }
+        } else {
+            ImGui::TextColored(ImVec4(1, 0, 0, 1), "No textures loaded in TextureManager");
+        }
+        
+        ImGui::Separator();
+        ImGui::Text("Noise Parameters");
         
         if (ImGui::SliderFloat("Scale", &perlinScale, 1.0f, 32.0f)) {
             paramsChanged = true;
@@ -188,6 +228,8 @@ private:
             prevPerlinLacunarity = perlinLacunarity;
             prevPerlinBrightness = perlinBrightness;
             prevPerlinContrast = perlinContrast;
+            prevPrimaryTextureIdx = primaryTextureIdx;
+            prevSecondaryTextureIdx = secondaryTextureIdx;
         }
         
         if (ImGui::Button("Generate Perlin Noise")) {
@@ -217,17 +259,31 @@ private:
     }
     
     void createComputePipeline() {
-        // Create descriptor set layout
-        VkDescriptorSetLayoutBinding binding{};
-        binding.binding = 0;
-        binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        binding.descriptorCount = 1;
-        binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        // Create descriptor set layout with 3 bindings:
+        // 0: storage image (output)
+        // 1: sampler2D (primary texture)
+        // 2: sampler2D (secondary texture)
+        VkDescriptorSetLayoutBinding bindings[3] = {};
+        
+        bindings[0].binding = 0;
+        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        
+        bindings[1].binding = 1;
+        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        
+        bindings[2].binding = 2;
+        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[2].descriptorCount = 1;
+        bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 1;
-        layoutInfo.pBindings = &binding;
+        layoutInfo.bindingCount = 3;
+        layoutInfo.pBindings = bindings;
         
         if (vkCreateDescriptorSetLayout(app->getDevice(), &layoutInfo, nullptr, &computeDescriptorSetLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create compute descriptor set layout!");
@@ -272,14 +328,16 @@ private:
         vkDestroyShaderModule(app->getDevice(), computeShaderModule, nullptr);
         
         // Create descriptor pool
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        poolSize.descriptorCount = 3; // One for each texture
+        VkDescriptorPoolSize poolSizes[2] = {};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        poolSizes[0].descriptorCount = 3; // One for each texture
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSizes[1].descriptorCount = 6; // Two samplers per descriptor set (3 sets total)
         
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.poolSizeCount = 2;
+        poolInfo.pPoolSizes = poolSizes;
         poolInfo.maxSets = 3;
         
         if (vkCreateDescriptorPool(app->getDevice(), &poolInfo, nullptr, &computeDescriptorPool) != VK_SUCCESS) {
@@ -303,6 +361,8 @@ private:
             throw std::runtime_error("failed to allocate compute descriptor set!");
         }
         
+        // Note: We'll update the texture samplers dynamically in generatePerlinNoise
+        // For now, just set up the storage image binding
         VkDescriptorImageInfo imageInfo{};
         imageInfo.imageView = texture.getView();
         imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -320,6 +380,11 @@ private:
     }
     
     void generatePerlinNoise(EditableTexture& texture) {
+        if (!textureMgr || textureMgr->count() == 0) {
+            printf("Cannot generate: No textures in TextureManager\n");
+            return;
+        }
+        
         // Determine which descriptor set to use
         VkDescriptorSet descSet = VK_NULL_HANDLE;
         if (&texture == &albedo) {
@@ -334,6 +399,44 @@ private:
             return;
         }
         
+        // Clamp texture indices
+        int primIdx = std::min(primaryTextureIdx, (int)textureMgr->count() - 1);
+        int secIdx = std::min(secondaryTextureIdx, (int)textureMgr->count() - 1);
+        
+        // Update descriptor set with texture samplers
+        const auto& primaryTriple = textureMgr->getTriple(primIdx);
+        const auto& secondaryTriple = textureMgr->getTriple(secIdx);
+        
+        VkDescriptorImageInfo primaryImageInfo{};
+        primaryImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        primaryImageInfo.imageView = primaryTriple.albedo.view;
+        primaryImageInfo.sampler = primaryTriple.albedoSampler;
+        
+        VkDescriptorImageInfo secondaryImageInfo{};
+        secondaryImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        secondaryImageInfo.imageView = secondaryTriple.albedo.view;
+        secondaryImageInfo.sampler = secondaryTriple.albedoSampler;
+        
+        VkWriteDescriptorSet descriptorWrites[2] = {};
+        
+        descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[0].dstSet = descSet;
+        descriptorWrites[0].dstBinding = 1;
+        descriptorWrites[0].dstArrayElement = 0;
+        descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorWrites[0].descriptorCount = 1;
+        descriptorWrites[0].pImageInfo = &primaryImageInfo;
+        
+        descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[1].dstSet = descSet;
+        descriptorWrites[1].dstBinding = 2;
+        descriptorWrites[1].dstArrayElement = 0;
+        descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorWrites[1].descriptorCount = 1;
+        descriptorWrites[1].pImageInfo = &secondaryImageInfo;
+        
+        vkUpdateDescriptorSets(app->getDevice(), 2, descriptorWrites, 0, nullptr);
+        
         // Prepare push constants
         PerlinPushConstants pushConstants;
         pushConstants.scale = perlinScale;
@@ -342,13 +445,14 @@ private:
         pushConstants.lacunarity = perlinLacunarity;
         pushConstants.brightness = perlinBrightness;
         pushConstants.contrast = perlinContrast;
-        pushConstants.padding = 0.0f;
-        pushConstants.seed = perlinSeed; // Use the fixed seed
+        pushConstants.seed = perlinSeed;
+        pushConstants.textureSize = texture.getWidth();
         
         // Debug output
         printf("Generating Perlin noise: scale=%.2f, octaves=%.0f, persistence=%.2f, lacunarity=%.2f, brightness=%.2f, contrast=%.2f, seed=%u\n",
                pushConstants.scale, pushConstants.octaves, pushConstants.persistence, pushConstants.lacunarity, 
                pushConstants.brightness, pushConstants.contrast, pushConstants.seed);
+        printf("Primary texture: %d, Secondary texture: %d\n", primIdx, secIdx);
         printf("Texture size: %dx%d, dispatch groups: %dx%d\n", 
                texture.getWidth(), texture.getHeight(), 
                (texture.getWidth() + 15) / 16, (texture.getHeight() + 15) / 16);

@@ -4,6 +4,8 @@ layout (local_size_x = 16, local_size_y = 16) in;
 
 // Use rgba8 for compatibility - we'll handle single-channel formats separately
 layout (binding = 0, rgba8) uniform writeonly image2D resultImage;
+layout (binding = 1) uniform sampler2D primaryTexture;   // Primary texture to blend from
+layout (binding = 2) uniform sampler2D secondaryTexture; // Secondary texture to blend to
 
 layout (push_constant) uniform PushConstants {
     float scale;
@@ -13,7 +15,7 @@ layout (push_constant) uniform PushConstants {
     uint seed;
     float brightness;
     float contrast;
-    float padding;
+    uint textureSize; // Size for seamless wrapping
 } params;
 
 // Hash function for random number generation
@@ -31,8 +33,10 @@ float random(uvec2 v) {
     return float(n) / float(0xffffffffu);
 }
 
-// Generate random gradient vector
+// Generate random gradient vector with wrapping for seamless textures
 vec2 randomGradient(ivec2 p) {
+    // Wrap coordinates to make seamless
+    p = ivec2(mod(vec2(p), vec2(params.textureSize)));
     uint n = hash(uint(p.x) ^ hash(uint(p.y)));
     float angle = float(n) / float(0xffffffffu) * 6.28318530718; // 2 * PI
     return vec2(cos(angle), sin(angle));
@@ -43,12 +47,16 @@ float fade(float t) {
     return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
 }
 
-// Perlin noise function
+// Perlin noise function with seamless wrapping
 float perlin(vec2 p) {
+    // Wrap p to create seamless tiling
+    vec2 period = vec2(params.textureSize);
+    
     ivec2 p0 = ivec2(floor(p));
-    ivec2 p1 = p0 + ivec2(1, 0);
-    ivec2 p2 = p0 + ivec2(0, 1);
-    ivec2 p3 = p0 + ivec2(1, 1);
+    ivec2 p1 = ivec2(mod(vec2(p0 + ivec2(1, 0)), period));
+    ivec2 p2 = ivec2(mod(vec2(p0 + ivec2(0, 1)), period));
+    ivec2 p3 = ivec2(mod(vec2(p0 + ivec2(1, 1)), period));
+    p0 = ivec2(mod(vec2(p0), period));
     
     vec2 g0 = randomGradient(p0);
     vec2 g1 = randomGradient(p1);
@@ -112,7 +120,16 @@ void main() {
     // Clamp to [0, 1]
     noise = clamp(noise, 0.0, 1.0);
     
+    // Sample from primary and secondary textures using existing uv
+    vec3 primaryColor = texture(primaryTexture, uv).rgb;
+    vec3 secondaryColor = texture(secondaryTexture, uv).rgb;
+    
+    // Blend between textures using noise as mask
+    // noise = 0.0 -> primary texture
+    // noise = 1.0 -> secondary texture
+    vec3 blendedColor = mix(primaryColor, secondaryColor, noise);
+    
     // Write to image
-    vec4 color = vec4(noise, noise, noise, 1.0);
+    vec4 color = vec4(blendedColor, 1.0);
     imageStore(resultImage, texelCoord, color);
 }
