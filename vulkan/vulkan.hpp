@@ -1,5 +1,7 @@
 #pragma once
 
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE  // Use Vulkan depth range [0,1] instead of OpenGL [-1,1]
+
 #include <vulkan/vulkan.h>
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>

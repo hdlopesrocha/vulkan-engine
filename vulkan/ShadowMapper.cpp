@@ -263,7 +263,7 @@ void ShadowMapper::createShadowPipeline() {
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;  // Cull back faces (render front faces)
     rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_TRUE;
     pipelineInfo.pRasterizationState = &rasterizer;
@@ -362,8 +362,8 @@ void ShadowMapper::beginShadowPass(VkCommandBuffer commandBuffer, const glm::mat
     shadowScissor.extent = {shadowMapSize, shadowMapSize};
     vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
     
-    // Set depth bias to reduce shadow acne
-    vkCmdSetDepthBias(commandBuffer, 0.5f, 0.0f, 1.0f);
+    // Disable hardware depth bias - we'll use software bias in the shader instead
+    vkCmdSetDepthBias(commandBuffer, 0.0f, 0.0f, 0.0f);
     
     // Bind the shadow pipeline
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);

@@ -10,7 +10,9 @@
 #include "vulkan/TextureViewer.hpp"
 #include "vulkan/EditableTextureSet.hpp"
 #include "vulkan/ShadowMapper.hpp"
+#include "vulkan/ModelManager.hpp"
 #include <string>
+#include <memory>
 // (removed unused includes: filesystem, iostream, map, algorithm, cctype)
 
 struct UniformObject {
@@ -32,10 +34,14 @@ class MyApp : public VulkanApp {
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     // texture manager handles albedo/normal/height triples
     TextureManager textureManager;
-    // mesh helpers
-    CubeMesh cube;
-    PlaneMesh plane;
     TextureViewer textureViewer;
+    
+    // Model manager to handle all renderable objects
+    ModelManager modelManager;
+    
+    // Store meshes (owned by app but not direct attributes)
+    std::vector<std::unique_ptr<Model3D>> meshes;
+    
     // UI: currently selected texture triple for preview
     size_t currentTextureIndex = 0;
     
@@ -208,10 +214,16 @@ class MyApp : public VulkanApp {
             }
 
             // build cube mesh and GPU buffers (per-face tex indices all zero by default)
-            cube.build(this, {});
+            auto cube = std::make_unique<CubeMesh>();
+            cube->build(this, {});
             
             // build ground plane mesh (20x20 units, textured with fourth texture)
-            plane.build(this, 20.0f, 20.0f, 3.0f); // Using texture index 3
+            auto plane = std::make_unique<PlaneMesh>();
+            plane->build(this, 20.0f, 20.0f, 3.0f); // Using texture index 3
+            
+            // Store meshes for later use
+            meshes.push_back(std::move(cube));
+            meshes.push_back(std::move(plane));
             
             // create uniform buffer for the plane
             planeUniform = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -408,7 +420,8 @@ class MyApp : public VulkanApp {
             glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, worldUp);
             
             float orthoSize = 15.0f;
-            glm::mat4 lightProjection = glm::ortho(-orthoSize, orthoSize, -orthoSize, orthoSize, 5.0f, 40.0f);
+            // Use 0.1 to 50.0 for near/far to ensure good depth range
+            glm::mat4 lightProjection = glm::ortho(-orthoSize, orthoSize, -orthoSize, orthoSize, 0.1f, 50.0f);
             
             uboStatic.lightSpaceMatrix = lightProjection * lightView;
         };
@@ -419,6 +432,13 @@ class MyApp : public VulkanApp {
 
             vkBeginCommandBuffer(commandBuffer, &beginInfo);
             
+            // Clear previous frame's instances
+            modelManager.clear();
+            
+            // Get mesh pointers (cube at index 0, plane at index 1)
+            Model3D* cube = meshes[0].get();
+            Model3D* plane = meshes[1].get();
+            
             // Calculate grid layout for cubes
             size_t n = descriptorSets.size();
             float spacing = 2.5f;
@@ -428,10 +448,11 @@ class MyApp : public VulkanApp {
             float halfW = (cols - 1) * 0.5f * spacing;
             float halfH = (rows - 1) * 0.5f * spacing;
             
-            // First pass: Render shadow map
-            shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
+            // Add plane instance
+            glm::mat4 planeModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.5f, 0.0f));
+            modelManager.addInstance(plane, planeModel, planeDescriptorSet, &planeUniform);
             
-            // Render all cubes to shadow map
+            // Add cube instances
             for (size_t i = 0; i < descriptorSets.size(); ++i) {
                 int col = static_cast<int>(i % cols);
                 int row = static_cast<int>(i / cols);
@@ -441,13 +462,22 @@ class MyApp : public VulkanApp {
                 float z = row * spacing - halfH;
                 
                 glm::mat4 model_i = glm::translate(glm::mat4(1.0f), glm::vec3(x, y, z));
-                shadowMapper.renderObject(commandBuffer, model_i, cube.getVBO());
+                modelManager.addInstance(cube, model_i, descriptorSets[i], &uniforms[i]);
+            }
+            
+            // First pass: Render shadow map
+            shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
+            
+            // Render all instances to shadow map
+            for (const auto& instance : modelManager.getInstances()) {
+                shadowMapper.renderObject(commandBuffer, instance.transform, instance.model->getVBO());
             }
             
             shadowMapper.endShadowPass(commandBuffer);
             
             // Second pass: Render scene with shadows
             vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+            
             // set dynamic viewport/scissor to match current swapchain extent
             VkViewport viewport{};
             viewport.x = 0.0f;
@@ -463,65 +493,30 @@ class MyApp : public VulkanApp {
             scissor.extent = { (uint32_t)getWidth(), (uint32_t)getHeight() };
             vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-            // bind pipeline and draw the indexed square
+            // bind pipeline
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
-
-            VkBuffer vertexBuffers[] = { cube.getVBO().vertexBuffer.buffer };
-            VkDeviceSize offsets[] = { 0 };
-            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-            vkCmdBindIndexBuffer(commandBuffer, cube.getVBO().indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
-            // Draw one cube per loaded texture triple laid out in a centered grid
-            // (grid calculation already done at start of draw())
-            // Render ground plane first (underneath cubes)
-            glm::mat4 planeModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.5f, 0.0f)); // Position below cubes
-            glm::mat4 planeMVP = projMat * viewMat * planeModel;
-            
-            UniformObject planeUBO = uboStatic;
-            planeUBO.model = planeModel;
-            planeUBO.mvp = planeMVP;
-            // Ensure plane UBO has the light space matrix from uboStatic
-            planeUBO.lightSpaceMatrix = uboStatic.lightSpaceMatrix;
-            updateUniformBuffer(planeUniform, &planeUBO, sizeof(UniformObject));
-            
-            // Bind plane vertex/index buffers
-            VkBuffer planeVertexBuffers[] = { plane.getVBO().vertexBuffer.buffer };
-            VkDeviceSize planeOffsets[] = { 0 };
-            vkCmdBindVertexBuffers(commandBuffer, 0, 1, planeVertexBuffers, planeOffsets);
-            vkCmdBindIndexBuffer(commandBuffer, plane.getVBO().indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
-            
-            // Bind plane descriptor set and draw
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &planeDescriptorSet, 0, nullptr);
-            vkCmdDrawIndexed(commandBuffer, plane.getVBO().indexCount, 1, 0, 0, 0);
-            
-            // Rebind cube vertex/index buffers
-            VkBuffer cubeVertexBuffers[] = { cube.getVBO().vertexBuffer.buffer };
-            VkDeviceSize cubeOffsets[] = { 0 };
-            vkCmdBindVertexBuffers(commandBuffer, 0, 1, cubeVertexBuffers, cubeOffsets);
-            vkCmdBindIndexBuffer(commandBuffer, cube.getVBO().indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
-            
-            // Render all cubes with separate uniform buffers
-            for (size_t i = 0; i < descriptorSets.size(); ++i) {
-                int col = static_cast<int>(i % cols);
-                int row = static_cast<int>(i / cols);
+            // Render all instances with main pass
+            for (const auto& instance : modelManager.getInstances()) {
+                const auto& vbo = instance.model->getVBO();
                 
-                // Position cubes horizontally above the plane (plane at Y=-1.5)
-                float x = col * spacing - halfW;
-                float y = -1.0f; // Above the plane (plane is at -1.5)
-                float z = row * spacing - halfH; // Spread in Z direction
-                glm::mat4 model_i = glm::translate(glm::mat4(1.0f), glm::vec3(x, y, z));
-                glm::mat4 mvp_i = projMat * viewMat * model_i;
-
+                // Bind vertex and index buffers
+                VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
+                VkDeviceSize offsets[] = { 0 };
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
+                
+                // Update uniform buffer for this instance
+                glm::mat4 mvp = projMat * viewMat * instance.transform;
                 UniformObject ubo = uboStatic;
-                ubo.model = model_i;
-                ubo.mvp = mvp_i;
-                updateUniformBuffer(uniforms[i], &ubo, sizeof(UniformObject));
-
-                // bind descriptor set for this cube's textures
-                VkDescriptorSet ds = descriptorSets[i];
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &ds, 0, nullptr);
-
-                vkCmdDrawIndexed(commandBuffer, cube.getVBO().indexCount, 1, 0, 0, 0);
+                ubo.model = instance.transform;
+                ubo.mvp = mvp;
+                updateUniformBuffer(*instance.uniformBuffer, &ubo, sizeof(UniformObject));
+                
+                // Bind descriptor set and draw
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                                       getPipelineLayout(), 0, 1, &instance.descriptorSet, 0, nullptr);
+                vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
             }
 
             // render ImGui draw data inside the same command buffer (must be inside render pass)
@@ -540,9 +535,11 @@ class MyApp : public VulkanApp {
             if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipeline, nullptr);
             // texture cleanup via manager
             textureManager.destroyAll();
-            // vertex/index buffers cleanup
-            cube.destroy(getDevice());
-            plane.destroy(getDevice());
+            // vertex/index buffers cleanup - destroy all meshes
+            for (auto& mesh : meshes) {
+                mesh->destroy(getDevice());
+            }
+            meshes.clear();
 
             // uniform buffers cleanup
             for (auto& uniformBuffer : uniforms) {

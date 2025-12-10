@@ -98,8 +98,9 @@ float ShadowCalculation(vec4 fragPosLightSpace, float bias) {
     // Perspective divide
     vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
     
-    // Transform to [0,1] range
-    projCoords = projCoords * 0.5 + 0.5;
+    // With GLM_FORCE_DEPTH_ZERO_TO_ONE, Z is already in [0,1]
+    // But XY still need transformation from [-1,1] to [0,1]
+    projCoords.xy = projCoords.xy * 0.5 + 0.5;
     
     // Outside shadow map bounds = no shadow
     if(projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || projCoords.y < 0.0 || projCoords.y > 1.0)
@@ -119,7 +120,8 @@ float ShadowCalculation(vec4 fragPosLightSpace, float bias) {
         {
             vec2 offset = vec2(x, y) * texelSize;
             float pcfDepth = texture(shadowMap, projCoords.xy + offset).r;
-            shadow += (currentDepth - bias) > pcfDepth ? 1.0 : 0.0;
+            // Shadow test with bias to prevent shadow acne
+            shadow += currentDepth > (pcfDepth + bias) ? 1.0 : 0.0;
         }
     }
     shadow /= 9.0; // Average the 9 samples
@@ -196,14 +198,8 @@ void main() {
     float NdotL = max(dot(worldNormal, toLight), 0.0);
     
     // Calculate shadow with adaptive bias based on surface angle
-    // Only apply shadows to horizontal surfaces (ground plane)
-    // Check if this is the ground plane (Y position around -1.5) using geometry normal
-    float shadow = 0.0;
-    if (geometryNormal.y > 0.9 && fragPosWorld.y < -1.0) {
-        // This is the ground plane - apply shadows
-        float bias = max(0.01 * (1.0 - NdotL), 0.005);
-        shadow = ShadowCalculation(fragPosLightSpace, bias);
-    }
+    float bias = max(0.005 * (1.0 - NdotL), 0.001);
+    float shadow = ShadowCalculation(fragPosLightSpace, bias);
     
     vec3 ambient = albedoColor * ubo.pomFlags.z; // ambient factor
     vec3 diffuse = albedoColor * ubo.lightColor.rgb * NdotL * (1.0 - shadow);
