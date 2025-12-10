@@ -15,8 +15,8 @@ void Camera::processInput(GLFWwindow* window, float deltaTime) {
 
     // rotation: FR = yaw (-/+), G/T = pitch (-/+), H/Y = roll (-/+)
     float ang = angularSpeedRad * deltaTime;
-    if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(-ang, glm::vec3(0.0f,1.0f,0.0f)) * orientation);
-    if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(ang, glm::vec3(0.0f,1.0f,0.0f)) * orientation);
+    if (glfwGetKey(window, GLFW_KEY_H) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(-ang, glm::vec3(0.0f,1.0f,0.0f)) * orientation);
+    if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(ang, glm::vec3(0.0f,1.0f,0.0f)) * orientation);
 
     // recompute axes after possible yaw change
     forward = getForward();
@@ -26,7 +26,7 @@ void Camera::processInput(GLFWwindow* window, float deltaTime) {
     if (glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(-ang, right) * orientation);
     if (glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(ang, right) * orientation);
 
-    if (glfwGetKey(window, GLFW_KEY_H) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(-ang, forward) * orientation);
+    if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(-ang, forward) * orientation);
     if (glfwGetKey(window, GLFW_KEY_Y) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(ang, forward) * orientation);
 
     // recompute axes after rotation
