@@ -1,12 +1,7 @@
 #pragma once
-#include "vulkan.hpp"
+#include "Model3D.hpp"
 
-class PlaneMesh {
-private:
-    VertexBufferObject vbo;
-
+class PlaneMesh : public Model3D {
 public:
     void build(VulkanApp* app, float width = 20.0f, float height = 20.0f, float texIndex = 0.0f);
-    const VertexBufferObject& getVBO() const { return vbo; }
-    void cleanup(VulkanApp* app);
 };

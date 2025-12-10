@@ -542,7 +542,7 @@ class MyApp : public VulkanApp {
             textureManager.destroyAll();
             // vertex/index buffers cleanup
             cube.destroy(getDevice());
-            plane.cleanup(this);
+            plane.destroy(getDevice());
 
             // uniform buffers cleanup
             for (auto& uniformBuffer : uniforms) {

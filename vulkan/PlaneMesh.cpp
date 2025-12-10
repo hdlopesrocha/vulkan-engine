@@ -1,6 +1,5 @@
 #include "PlaneMesh.hpp"
 #include <vector>
-#include <glm/glm.hpp>
 
 void PlaneMesh::build(VulkanApp* app, float width, float height, float texIndex) {
     // Create a simple quad in the XZ plane (Y=0) centered at origin
@@ -27,26 +26,7 @@ void PlaneMesh::build(VulkanApp* app, float width, float height, float texIndex)
         2, 3, 0   // Second triangle
     };
 
-    // Compute tangents for normal mapping
-    // For a flat plane in XZ with normal (0,1,0), tangent is (1,0,0)
-    for (auto& vertex : vertices) {
-        vertex.tangent[0] = 1.0f;
-        vertex.tangent[1] = 0.0f;
-        vertex.tangent[2] = 0.0f;
-    }
-
-    Buffer vb = app->createVertexBuffer(vertices);
-    Buffer ib = app->createIndexBuffer(indices);
-    vbo = VertexBufferObject { vb, ib, static_cast<uint32_t>(indices.size()) };
-}
-
-void PlaneMesh::cleanup(VulkanApp* app) {
-    if (vbo.vertexBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), vbo.vertexBuffer.buffer, nullptr);
-        vkFreeMemory(app->getDevice(), vbo.vertexBuffer.memory, nullptr);
-    }
-    if (vbo.indexBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), vbo.indexBuffer.buffer, nullptr);
-        vkFreeMemory(app->getDevice(), vbo.indexBuffer.memory, nullptr);
-    }
+    // Use the base class build method
+    // For a flat plane, we don't need to recompute normals and tangents (already set correctly)
+    Model3D::build(app, vertices, indices, false, false);
 }
