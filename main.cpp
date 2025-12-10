@@ -13,7 +13,6 @@
 #include "vulkan/ModelManager.hpp"
 #include "widgets/WidgetManager.hpp"
 #include "widgets/CameraWidget.hpp"
-#include "widgets/POMControlsWidget.hpp"
 #include "widgets/DebugWidget.hpp"
 #include "widgets/ShadowMapWidget.hpp"
 #include <string>
@@ -62,6 +61,7 @@ class MyApp : public VulkanApp {
     
     // UI: currently selected texture triple for preview
     size_t currentTextureIndex = 0;
+    size_t editableTextureIndex = 0;  // Index of the editable texture triple in TextureManager
     
     // Shadow mapping
     ShadowMapper shadowMapper;
@@ -69,23 +69,9 @@ class MyApp : public VulkanApp {
     // Camera
     // start the camera further back so multiple cubes are visible
     Camera camera = Camera(glm::vec3(0.0f, 0.0f, 8.0f));
-        // POM / tuning controls
-        float pomHeightScale = 0.06f;
-        float pomMinLayers = 8.0f;
-        float pomMaxLayers = 32.0f;
-        bool pomEnabled = true;
-        bool flipNormalY = false;
-        bool flipTangentHandedness = false;
-    bool flipParallaxDirection = false; // false = dark goes inward (standard), true = dark goes outward
-        float ambientFactor = 0.4f; // Increased from 0.25 for brighter base lighting
-        // Specular lighting controls
-        float specularStrength = 0.5f;
-        float shininess = 32.0f;
     // (managed by TextureManager)
         std::vector<VkDescriptorSet> descriptorSets;
         std::vector<Buffer> uniforms; // One uniform buffer per cube
-        VkDescriptorSet planeDescriptorSet = VK_NULL_HANDLE;
-        Buffer planeUniform;
         
         // store projection and view for per-cube MVP computation in draw()
         glm::mat4 projMat = glm::mat4(1.0f);
@@ -149,19 +135,36 @@ class MyApp : public VulkanApp {
             loadedIndices.push_back(textureManager.loadTriple("textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg"));
             loadedIndices.push_back(textureManager.loadTriple("textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg"));
 
+            // Initialize and add editable textures BEFORE creating descriptor sets
+            editableTextures = std::make_shared<EditableTextureSet>();
+            editableTextures->init(this, 1024, 1024, "Editable Textures");
+            editableTextures->setTextureManager(&textureManager);
+            editableTextures->generateInitialTextures();
+            
+            // Add editable textures to TextureManager as a regular triple
+            size_t editableIndex = textureManager.addTriple(
+                editableTextures->getAlbedo().getTextureImage(),
+                editableTextures->getAlbedo().getSampler(),
+                editableTextures->getNormal().getTextureImage(),
+                editableTextures->getNormal().getSampler(),
+                editableTextures->getBump().getTextureImage(),
+                editableTextures->getBump().getSampler()
+            );
+            editableTextureIndex = editableIndex;  // Store for plane rendering
+
             // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
             if (!loadedIndices.empty()) currentTextureIndex = loadedIndices[0];
             
-            // create uniform buffers - one per cube
-            uniforms.resize(loadedIndices.size());
+            // create uniform buffers - one per texture (including editable texture)
+            uniforms.resize(textureManager.count());
             for (size_t i = 0; i < uniforms.size(); ++i) {
                 uniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             }
             
-            // create descriptor sets - one per cube plus one for the plane
+            // create descriptor sets - one per texture triple
             size_t tripleCount = textureManager.count();
             if (tripleCount == 0) tripleCount = 1; // ensure at least one
-            createDescriptorPool(static_cast<uint32_t>(tripleCount + 1)); // +1 for the plane
+            createDescriptorPool(static_cast<uint32_t>(tripleCount));
 
             descriptorSets.resize(tripleCount, VK_NULL_HANDLE);
             for (size_t i = 0; i < tripleCount; ++i) {
@@ -232,20 +235,13 @@ class MyApp : public VulkanApp {
             auto cube = std::make_unique<CubeMesh>();
             cube->build(this, {});
             
-            // build ground plane mesh (20x20 units, textured with fourth texture)
+            // build ground plane mesh (20x20 units)
             auto plane = std::make_unique<PlaneMesh>();
-            plane->build(this, 20.0f, 20.0f, 3.0f); // Using texture index 3
+            plane->build(this, 20.0f, 20.0f, 0.0f); // Will use editable texture index
             
             // Store meshes for later use
             meshes.push_back(std::move(cube));
             meshes.push_back(std::move(plane));
-            
-            // create uniform buffer for the plane
-            planeUniform = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            
-            // create descriptor set for the plane (will be updated to use editable textures later)
-            planeDescriptorSet = createDescriptorSet();
-            updatePlaneDescriptorSet();
             
             // Initialize light space matrix BEFORE creating command buffers
             // Light direction points FROM surface TO light (for lighting calculations)
@@ -268,38 +264,22 @@ class MyApp : public VulkanApp {
             textureViewer->init(&textureManager);
             widgetManager.addWidget(textureViewer);
             
-            editableTextures = std::make_shared<EditableTextureSet>();
-            editableTextures->init(this, 1024, 1024, "Editable Textures");
-            editableTextures->setTextureManager(&textureManager);
-            editableTextures->setOnTextureGenerated([this]() {
-                updatePlaneDescriptorSet();
-                printf("Plane descriptor set updated with new textures\n");
+            // Add editable textures widget (already created above)
+            editableTextures->setOnTextureGenerated([this, editableIndex]() {
+                // Material properties persist, just textures get updated
+                printf("Editable textures regenerated (index %zu)\n", editableIndex);
             });
-            editableTextures->generateInitialTextures();
             widgetManager.addWidget(editableTextures);
             
             // Create other widgets
             auto cameraWidget = std::make_shared<CameraWidget>(&camera);
             widgetManager.addWidget(cameraWidget);
             
-            auto pomWidget = std::make_shared<POMControlsWidget>(
-                &pomHeightScale, &pomMinLayers, &pomMaxLayers, &pomEnabled,
-                &flipNormalY, &flipTangentHandedness, &flipParallaxDirection,
-                &ambientFactor, &specularStrength, &shininess
-            );
-            widgetManager.addWidget(pomWidget);
-            
             auto debugWidget = std::make_shared<DebugWidget>(&textureManager, &camera, &currentTextureIndex);
             widgetManager.addWidget(debugWidget);
             
             auto shadowWidget = std::make_shared<ShadowMapWidget>(&shadowMapper);
             widgetManager.addWidget(shadowWidget);
-            
-            // Generate initial textures (blend between texture 0 and texture 3)
-            printf("Generating initial textures...\n");
-            editableTextures->getAlbedo();  // Ensure textures are accessible
-            editableTextures->getNormal();
-            editableTextures->getBump();
             
             createCommandBuffers();
         };
@@ -367,9 +347,7 @@ class MyApp : public VulkanApp {
             glm::vec3 lightDir = glm::normalize(glm::vec3(1.0f, 1.0f, 1.0f));
             uboStatic.lightDir = glm::vec4(lightDir, 0.0f);
             uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
-            uboStatic.pomParams = glm::vec4(pomHeightScale, pomMinLayers, pomMaxLayers, pomEnabled ? 1.0f : 0.0f);
-            uboStatic.pomFlags = glm::vec4(flipNormalY ? 1.0f : 0.0f, flipTangentHandedness ? 1.0f : 0.0f, ambientFactor, flipParallaxDirection ? 1.0f : 0.0f);
-            uboStatic.specularParams = glm::vec4(specularStrength, shininess, 0.0f, 0.0f);
+            // Note: pomParams, pomFlags, and specularParams are set per-instance from material properties
             
             // Compute light space matrix for shadow mapping
             // Adjust scene center to be between cubes and plane
@@ -415,12 +393,16 @@ class MyApp : public VulkanApp {
             float halfW = (cols - 1) * 0.5f * spacing;
             float halfH = (rows - 1) * 0.5f * spacing;
             
-            // Add plane instance
+            // Add plane instance (uses editable texture)
             glm::mat4 planeModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.5f, 0.0f));
-            modelManager.addInstance(plane, planeModel, planeDescriptorSet, &planeUniform, nullptr);  // Plane has custom material handling
+            const MaterialProperties* planeMat = &textureManager.getMaterial(editableTextureIndex);
+            modelManager.addInstance(plane, planeModel, descriptorSets[editableTextureIndex], &uniforms[editableTextureIndex], planeMat);
             
             // Add cube instances
             for (size_t i = 0; i < descriptorSets.size(); ++i) {
+                // Skip the editable texture index (it's used for the plane)
+                if (i == editableTextureIndex) continue;
+                
                 int col = static_cast<int>(i % cols);
                 int row = static_cast<int>(i / cols);
                 
@@ -524,75 +506,11 @@ class MyApp : public VulkanApp {
                 if (uniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniformBuffer.memory, nullptr);
             }
             
-            // plane uniform buffer cleanup
-            if (planeUniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), planeUniform.buffer, nullptr);
-            if (planeUniform.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), planeUniform.memory, nullptr);
-            
             // editable textures cleanup
             if (editableTextures) editableTextures->cleanup();
             
             // shadow map cleanup
             shadowMapper.cleanup();
-        }
-        
-        void updatePlaneDescriptorSet() {
-            // Check if editable textures are initialized
-            if (!editableTextures || editableTextures->getAlbedo().getView() == VK_NULL_HANDLE) {
-                printf("Warning: Editable textures not yet initialized, skipping plane descriptor update\n");
-                return;
-            }
-            
-            // Update plane descriptor set to use editable textures
-            VkDescriptorBufferInfo planeBufferInfo { planeUniform.buffer, 0, sizeof(UniformObject) };
-            
-            VkWriteDescriptorSet planeUboWrite{};
-            planeUboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            planeUboWrite.dstSet = planeDescriptorSet;
-            planeUboWrite.dstBinding = 0;
-            planeUboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            planeUboWrite.descriptorCount = 1;
-            planeUboWrite.pBufferInfo = &planeBufferInfo;
-            
-            // Use editable textures (albedo, normal, bump)
-            VkDescriptorImageInfo planeAlbedoInfo{ editableTextures->getAlbedo().getSampler(), editableTextures->getAlbedo().getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            VkDescriptorImageInfo planeNormalInfo{ editableTextures->getNormal().getSampler(), editableTextures->getNormal().getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            VkDescriptorImageInfo planeHeightInfo{ editableTextures->getBump().getSampler(), editableTextures->getBump().getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            
-            VkWriteDescriptorSet planeAlbedoWrite{};
-            planeAlbedoWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            planeAlbedoWrite.dstSet = planeDescriptorSet;
-            planeAlbedoWrite.dstBinding = 1;
-            planeAlbedoWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            planeAlbedoWrite.descriptorCount = 1;
-            planeAlbedoWrite.pImageInfo = &planeAlbedoInfo;
-            
-            VkWriteDescriptorSet planeNormalWrite{};
-            planeNormalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            planeNormalWrite.dstSet = planeDescriptorSet;
-            planeNormalWrite.dstBinding = 2;
-            planeNormalWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            planeNormalWrite.descriptorCount = 1;
-            planeNormalWrite.pImageInfo = &planeNormalInfo;
-            
-            VkWriteDescriptorSet planeHeightWrite{};
-            planeHeightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            planeHeightWrite.dstSet = planeDescriptorSet;
-            planeHeightWrite.dstBinding = 3;
-            planeHeightWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            planeHeightWrite.descriptorCount = 1;
-            planeHeightWrite.pImageInfo = &planeHeightInfo;
-            
-            // Shadow map descriptor for plane (binding 4)
-            VkDescriptorImageInfo planeShadowInfo { shadowMapper.getShadowMapSampler(), shadowMapper.getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
-            VkWriteDescriptorSet planeShadowWrite{};
-            planeShadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            planeShadowWrite.dstSet = planeDescriptorSet;
-            planeShadowWrite.dstBinding = 4;
-            planeShadowWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            planeShadowWrite.descriptorCount = 1;
-            planeShadowWrite.pImageInfo = &planeShadowInfo;
-            
-            updateDescriptorSet(planeDescriptorSet, { planeUboWrite, planeAlbedoWrite, planeNormalWrite, planeHeightWrite, planeShadowWrite });
         }
 
 };

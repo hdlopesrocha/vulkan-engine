@@ -39,6 +39,9 @@ public:
         
         // Material properties for this texture
         MaterialProperties material;
+        
+        // Ownership flag - if false, resources are managed externally (e.g., EditableTextureSet)
+        bool ownsResources = true;
     };
 
     TextureManager() = default;
@@ -46,6 +49,11 @@ public:
 
     // Loads a triple (albedo, normal, height). Returns index of the stored triple.
     size_t loadTriple(const std::string &albedoFile, const std::string &normalFile, const std::string &heightFile);
+
+    // Add an existing triple (e.g., from EditableTextureSet). Returns index of the stored triple.
+    size_t addTriple(const TextureImage& albedo, VkSampler albedoSampler,
+                     const TextureImage& normal, VkSampler normalSampler,
+                     const TextureImage& height, VkSampler heightSampler);
 
     // Return an ImTextureID for ImGui rendering of the requested map (0=albedo,1=normal,2=height)
     ImTextureID getImTexture(size_t idx, int map);

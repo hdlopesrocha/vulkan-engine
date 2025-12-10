@@ -229,6 +229,16 @@ public:
     uint32_t getBytesPerPixel() const { return bytesPerPixel; }
     VkDescriptorSet getImGuiDescriptorSet() const { return imguiDescSet; }
     
+    // Get as TextureImage for TextureManager compatibility
+    TextureImage getTextureImage() const {
+        TextureImage tex;
+        tex.image = image;
+        tex.memory = memory;
+        tex.view = view;
+        tex.mipLevels = 1;
+        return tex;
+    }
+    
 private:
     VulkanApp* app = nullptr;
     uint32_t width = 0;
