@@ -5,6 +5,7 @@
 #include <backends/imgui_impl_vulkan.h>
 #include "vulkan/Camera.hpp"
 #include "vulkan/TextureManager.hpp"
+#include "vulkan/AtlasManager.hpp"
 #include "vulkan/CubeMesh.hpp"
 #include "vulkan/PlaneMesh.hpp"
 #include "vulkan/EditableTextureSet.hpp"
@@ -17,6 +18,7 @@
 #include "widgets/TextureViewerWidget.hpp"
 #include "widgets/SettingsWidget.hpp"
 #include "widgets/LightWidget.hpp"
+#include "widgets/VegetationAtlasEditor.hpp"
 #include <string>
 #include <memory>
 // (removed unused includes: filesystem, iostream, map, algorithm, cctype)
@@ -48,6 +50,12 @@ class MyApp : public VulkanApp {
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     // texture manager handles albedo/normal/height triples
     TextureManager textureManager;
+    
+    // Vegetation texture manager for billboard vegetation (albedo/normal/opacity)
+    TextureManager vegetationTextureManager;
+    
+    // Atlas manager for vegetation tile definitions
+    AtlasManager vegetationAtlasManager;
     
     // Widget manager (handles all UI windows)
     WidgetManager widgetManager;
@@ -240,6 +248,41 @@ class MyApp : public VulkanApp {
             textureManager.getMaterial(softSandIdx).ambientFactor = 0.22f;
             loadedIndices.push_back(softSandIdx);
 
+            // Initialize vegetation texture manager for billboard vegetation
+            vegetationTextureManager.init(this);
+            
+            // Load vegetation textures (albedo/normal/opacity triples)
+            // Note: We use the height slot for opacity masks
+            size_t foliageIdx = vegetationTextureManager.loadTriple(
+                "textures/vegetation/foliage_color.jpg", 
+                "textures/vegetation/foliage_normal.jpg", 
+                "textures/vegetation/foliage_opacity.jpg"
+            );
+            vegetationTextureManager.getMaterial(foliageIdx).pomEnabled = false; // No parallax for billboards
+            vegetationTextureManager.getMaterial(foliageIdx).specularStrength = 0.1f;
+            vegetationTextureManager.getMaterial(foliageIdx).shininess = 4.0f;
+            vegetationTextureManager.getMaterial(foliageIdx).ambientFactor = 0.3f;
+            
+            size_t grassVegIdx = vegetationTextureManager.loadTriple(
+                "textures/vegetation/grass_color.jpg", 
+                "textures/vegetation/grass_normal.jpg", 
+                "textures/vegetation/grass_opacity.jpg"
+            );
+            vegetationTextureManager.getMaterial(grassVegIdx).pomEnabled = false;
+            vegetationTextureManager.getMaterial(grassVegIdx).specularStrength = 0.15f;
+            vegetationTextureManager.getMaterial(grassVegIdx).shininess = 6.0f;
+            vegetationTextureManager.getMaterial(grassVegIdx).ambientFactor = 0.35f;
+            
+            size_t wildIdx = vegetationTextureManager.loadTriple(
+                "textures/vegetation/wild_color.jpg", 
+                "textures/vegetation/wild_normal.jpg", 
+                "textures/vegetation/wild_opacity.jpg"
+            );
+            vegetationTextureManager.getMaterial(wildIdx).pomEnabled = false;
+            vegetationTextureManager.getMaterial(wildIdx).specularStrength = 0.12f;
+            vegetationTextureManager.getMaterial(wildIdx).shininess = 5.0f;
+            vegetationTextureManager.getMaterial(wildIdx).ambientFactor = 0.32f;
+
             // Initialize and add editable textures BEFORE creating descriptor sets
             editableTextures = std::make_shared<EditableTextureSet>();
             editableTextures->init(this, 1024, 1024, "Editable Textures");
@@ -393,6 +436,10 @@ class MyApp : public VulkanApp {
             // Create light control widget
             auto lightWidget = std::make_shared<LightWidget>(&lightDirection);
             widgetManager.addWidget(lightWidget);
+            
+            // Create vegetation atlas editor widget
+            auto vegAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureManager, &vegetationAtlasManager);
+            widgetManager.addWidget(vegAtlasEditor);
             
             createCommandBuffers();
         };
