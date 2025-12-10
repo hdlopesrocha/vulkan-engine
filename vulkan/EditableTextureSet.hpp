@@ -239,7 +239,7 @@ private:
         if (ImGui::SliderFloat("Brightness", &perlinBrightness, -1.0f, 1.0f)) {
             paramsChanged = true;
         }
-        if (ImGui::SliderFloat("Contrast", &perlinContrast, 0.0f, 2.0f)) {
+        if (ImGui::SliderFloat("Contrast", &perlinContrast, 0.0f, 5.0f)) {
             paramsChanged = true;
         }
         
