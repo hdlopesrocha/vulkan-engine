@@ -11,6 +11,9 @@ struct PerlinPushConstants {
     float persistence;
     float lacunarity;
     uint32_t seed;
+    float brightness; // Added brightness adjustment (-1.0 to 1.0)
+    float contrast;   // Added contrast adjustment (0.0 to 2.0)
+    float padding;    // Padding for alignment
 };
 
 class EditableTextureSet {
@@ -113,12 +116,17 @@ private:
     float perlinOctaves = 4.0f;
     float perlinPersistence = 0.5f;
     float perlinLacunarity = 2.0f;
+    float perlinBrightness = 0.0f;  // -1.0 to 1.0
+    float perlinContrast = 1.0f;    // 0.0 to 2.0
+    uint32_t perlinSeed = 12345;    // Fixed seed for consistent generation
     
     // Previous parameter values for change detection
     float prevPerlinScale = 8.0f;
     float prevPerlinOctaves = 4.0f;
     float prevPerlinPersistence = 0.5f;
     float prevPerlinLacunarity = 2.0f;
+    float prevPerlinBrightness = 0.0f;
+    float prevPerlinContrast = 1.0f;
     
     void renderTextureTab(EditableTexture& texture) {
         ImGui::Text("Size: %dx%d", texture.getWidth(), texture.getHeight());
@@ -160,6 +168,16 @@ private:
             paramsChanged = true;
         }
         
+        ImGui::Separator();
+        ImGui::Text("Adjustments");
+        
+        if (ImGui::SliderFloat("Brightness", &perlinBrightness, -1.0f, 1.0f)) {
+            paramsChanged = true;
+        }
+        if (ImGui::SliderFloat("Contrast", &perlinContrast, 0.0f, 2.0f)) {
+            paramsChanged = true;
+        }
+        
         // Auto-generate when parameters change
         if (paramsChanged) {
             generatePerlinNoise(texture);
@@ -168,26 +186,18 @@ private:
             prevPerlinOctaves = perlinOctaves;
             prevPerlinPersistence = perlinPersistence;
             prevPerlinLacunarity = perlinLacunarity;
+            prevPerlinBrightness = perlinBrightness;
+            prevPerlinContrast = perlinContrast;
         }
         
         if (ImGui::Button("Generate Perlin Noise")) {
             generatePerlinNoise(texture);
         }
         ImGui::SameLine();
-        if (ImGui::Button("Randomize")) {
-            // Randomize parameters and generate
+        if (ImGui::Button("Randomize Seed")) {
+            // Only randomize the seed to generate a new pattern
             std::random_device rd;
-            std::mt19937 gen(rd());
-            std::uniform_real_distribution<float> scaleDist(4.0f, 16.0f);
-            std::uniform_real_distribution<float> octavesDist(2.0f, 6.0f);
-            std::uniform_real_distribution<float> persistenceDist(0.3f, 0.7f);
-            std::uniform_real_distribution<float> lacunarityDist(1.5f, 3.0f);
-            
-            perlinScale = scaleDist(gen);
-            perlinOctaves = octavesDist(gen);
-            perlinPersistence = persistenceDist(gen);
-            perlinLacunarity = lacunarityDist(gen);
-            
+            perlinSeed = rd();
             generatePerlinNoise(texture);
         }
         
@@ -330,14 +340,15 @@ private:
         pushConstants.octaves = perlinOctaves;
         pushConstants.persistence = perlinPersistence;
         pushConstants.lacunarity = perlinLacunarity;
-        
-        // Random seed
-        std::random_device rd;
-        pushConstants.seed = rd();
+        pushConstants.brightness = perlinBrightness;
+        pushConstants.contrast = perlinContrast;
+        pushConstants.padding = 0.0f;
+        pushConstants.seed = perlinSeed; // Use the fixed seed
         
         // Debug output
-        printf("Generating Perlin noise: scale=%.2f, octaves=%.0f, persistence=%.2f, lacunarity=%.2f, seed=%u\n",
-               pushConstants.scale, pushConstants.octaves, pushConstants.persistence, pushConstants.lacunarity, pushConstants.seed);
+        printf("Generating Perlin noise: scale=%.2f, octaves=%.0f, persistence=%.2f, lacunarity=%.2f, brightness=%.2f, contrast=%.2f, seed=%u\n",
+               pushConstants.scale, pushConstants.octaves, pushConstants.persistence, pushConstants.lacunarity, 
+               pushConstants.brightness, pushConstants.contrast, pushConstants.seed);
         printf("Texture size: %dx%d, dispatch groups: %dx%d\n", 
                texture.getWidth(), texture.getHeight(), 
                (texture.getWidth() + 15) / 16, (texture.getHeight() + 15) / 16);
