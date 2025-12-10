@@ -197,11 +197,12 @@ void main() {
     float NdotL = max(dot(worldNormal, toLight), 0.0);
     
     // Calculate shadow with adaptive bias based on surface angle
-    // Only apply shadows to horizontal surfaces (like the ground plane)
+    // Only apply shadows to horizontal surfaces (ground plane)
+    // Check if this is the ground plane (Y position around -1.5)
     float shadow = 0.0;
-    if (abs(worldNormal.y) > 0.9) {
-        // This is a horizontal surface (plane)
-        float bias = max(0.005 * (1.0 - NdotL), 0.002);
+    if (worldNormal.y > 0.9 && fragPosWorld.y < -1.0) {
+        // This is the ground plane - apply shadows
+        float bias = max(0.01 * (1.0 - NdotL), 0.005);
         shadow = ShadowCalculation(fragPosLightSpace, bias);
     }
     
