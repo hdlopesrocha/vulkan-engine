@@ -242,6 +242,13 @@ private:
             perlinSeed = rd();
             generatePerlinNoise(texture);
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Generate All")) {
+            // Generate all three textures (albedo, normal, bump)
+            generatePerlinNoise(albedo);
+            generatePerlinNoise(normal);
+            generatePerlinNoise(bump);
+        }
         
         ImGui::Separator();
         
@@ -385,14 +392,19 @@ private:
             return;
         }
         
-        // Determine which descriptor set to use
+        // Determine which descriptor set to use and which texture type
         VkDescriptorSet descSet = VK_NULL_HANDLE;
+        int textureType = 0; // 0=albedo, 1=normal, 2=bump
+        
         if (&texture == &albedo) {
             descSet = albedoComputeDescSet;
+            textureType = 0;
         } else if (&texture == &normal) {
             descSet = normalComputeDescSet;
+            textureType = 1;
         } else if (&texture == &bump) {
             descSet = bumpComputeDescSet;
+            textureType = 2;
         }
         
         if (descSet == VK_NULL_HANDLE) {
@@ -403,19 +415,36 @@ private:
         int primIdx = std::min(primaryTextureIdx, (int)textureMgr->count() - 1);
         int secIdx = std::min(secondaryTextureIdx, (int)textureMgr->count() - 1);
         
-        // Update descriptor set with texture samplers
+        // Get the appropriate texture maps based on type
         const auto& primaryTriple = textureMgr->getTriple(primIdx);
         const auto& secondaryTriple = textureMgr->getTriple(secIdx);
         
         VkDescriptorImageInfo primaryImageInfo{};
-        primaryImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        primaryImageInfo.imageView = primaryTriple.albedo.view;
-        primaryImageInfo.sampler = primaryTriple.albedoSampler;
-        
         VkDescriptorImageInfo secondaryImageInfo{};
+        primaryImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         secondaryImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        secondaryImageInfo.imageView = secondaryTriple.albedo.view;
-        secondaryImageInfo.sampler = secondaryTriple.albedoSampler;
+        
+        // Select the correct texture type (albedo, normal, or bump)
+        switch(textureType) {
+            case 0: // Albedo
+                primaryImageInfo.imageView = primaryTriple.albedo.view;
+                primaryImageInfo.sampler = primaryTriple.albedoSampler;
+                secondaryImageInfo.imageView = secondaryTriple.albedo.view;
+                secondaryImageInfo.sampler = secondaryTriple.albedoSampler;
+                break;
+            case 1: // Normal
+                primaryImageInfo.imageView = primaryTriple.normal.view;
+                primaryImageInfo.sampler = primaryTriple.normalSampler;
+                secondaryImageInfo.imageView = secondaryTriple.normal.view;
+                secondaryImageInfo.sampler = secondaryTriple.normalSampler;
+                break;
+            case 2: // Bump/Height
+                primaryImageInfo.imageView = primaryTriple.height.view;
+                primaryImageInfo.sampler = primaryTriple.heightSampler;
+                secondaryImageInfo.imageView = secondaryTriple.height.view;
+                secondaryImageInfo.sampler = secondaryTriple.heightSampler;
+                break;
+        }
         
         VkWriteDescriptorSet descriptorWrites[2] = {};
         
@@ -448,9 +477,11 @@ private:
         pushConstants.seed = perlinSeed;
         pushConstants.textureSize = texture.getWidth();
         
+        const char* typeNames[] = {"Albedo", "Normal", "Bump"};
+        
         // Debug output
-        printf("Generating Perlin noise: scale=%.2f, octaves=%.0f, persistence=%.2f, lacunarity=%.2f, brightness=%.2f, contrast=%.2f, seed=%u\n",
-               pushConstants.scale, pushConstants.octaves, pushConstants.persistence, pushConstants.lacunarity, 
+        printf("Generating %s Perlin noise: scale=%.2f, octaves=%.0f, persistence=%.2f, lacunarity=%.2f, brightness=%.2f, contrast=%.2f, seed=%u\n",
+               typeNames[textureType], pushConstants.scale, pushConstants.octaves, pushConstants.persistence, pushConstants.lacunarity, 
                pushConstants.brightness, pushConstants.contrast, pushConstants.seed);
         printf("Primary texture: %d, Secondary texture: %d\n", primIdx, secIdx);
         printf("Texture size: %dx%d, dispatch groups: %dx%d\n", 
