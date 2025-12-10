@@ -18,6 +18,8 @@ struct PerlinPushConstants {
     float brightness;
     float contrast;
     uint32_t textureSize;
+    float time;  // Time parameter for animated noise
+    float padding[3];  // Padding for alignment
 };
 
 class EditableTextureSet : public Widget {
@@ -147,6 +149,7 @@ private:
     float perlinBrightness = 0.0f;  // -1.0 to 1.0
     float perlinContrast = 1.0f;    // 0.0 to 2.0
     uint32_t perlinSeed = 12345;    // Fixed seed for consistent generation
+    float perlinTime = 0.0f;        // Time parameter for noise evolution
     
     // Texture selection indices (grass=3, sand=8)
     int primaryTextureIdx = 3;      // Grass texture
@@ -162,6 +165,7 @@ private:
     float prevPerlinLacunarity = 2.0f;
     float prevPerlinBrightness = 0.0f;
     float prevPerlinContrast = 1.0f;
+    float prevPerlinTime = 0.0f;
     int prevPrimaryTextureIdx = 3;      // Match initial primary (grass)
     int prevSecondaryTextureIdx = 8;    // Match initial secondary (sand)
     
@@ -235,6 +239,9 @@ private:
         if (ImGui::SliderFloat("Lacunarity", &perlinLacunarity, 1.0f, 4.0f)) {
             paramsChanged = true;
         }
+        if (ImGui::SliderFloat("Time", &perlinTime, 0.0f, 100.0f)) {
+            paramsChanged = true;
+        }
         
         ImGui::Separator();
         ImGui::Text("Adjustments");
@@ -258,6 +265,7 @@ private:
             prevPerlinLacunarity = perlinLacunarity;
             prevPerlinBrightness = perlinBrightness;
             prevPerlinContrast = perlinContrast;
+            prevPerlinTime = perlinTime;
             prevPrimaryTextureIdx = primaryTextureIdx;
             prevSecondaryTextureIdx = secondaryTextureIdx;
         }
@@ -286,6 +294,7 @@ private:
             prevPerlinLacunarity = perlinLacunarity;
             prevPerlinBrightness = perlinBrightness;
             prevPerlinContrast = perlinContrast;
+            prevPerlinTime = perlinTime;
             prevPrimaryTextureIdx = primaryTextureIdx;
             prevSecondaryTextureIdx = secondaryTextureIdx;
         }
@@ -516,6 +525,7 @@ private:
         pushConstants.contrast = perlinContrast;
         pushConstants.seed = perlinSeed;
         pushConstants.textureSize = texture.getWidth();
+        pushConstants.time = perlinTime;
         
         const char* typeNames[] = {"Albedo", "Normal", "Bump"};
         
