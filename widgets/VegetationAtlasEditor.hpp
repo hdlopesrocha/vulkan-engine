@@ -25,6 +25,7 @@ public:
     
     void render() override {
         if (!isOpen) return;
+        if (!vegetationTextureManager || !atlasManager) return; // Safety check
         
         ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
         if (!ImGui::Begin(title.c_str(), &isOpen)) {

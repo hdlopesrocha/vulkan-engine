@@ -21,7 +21,7 @@
 #include "widgets/VegetationAtlasEditor.hpp"
 #include <string>
 #include <memory>
-// (removed unused includes: filesystem, iostream, map, algorithm, cctype)
+#include <iostream>
 
 struct UniformObject {
     glm::mat4 mvp;
@@ -282,6 +282,17 @@ class MyApp : public VulkanApp {
             vegetationTextureManager.getMaterial(wildIdx).specularStrength = 0.12f;
             vegetationTextureManager.getMaterial(wildIdx).shininess = 5.0f;
             vegetationTextureManager.getMaterial(wildIdx).ambientFactor = 0.32f;
+
+            // Auto-detect tiles from vegetation opacity maps
+            std::cout << "Auto-detecting vegetation tiles from opacity maps..." << std::endl;
+            int foliageTiles = vegetationAtlasManager.autoDetectTiles(0, "textures/vegetation/foliage_opacity.jpg", 10);
+            std::cout << "  Foliage: detected " << foliageTiles << " tiles" << std::endl;
+            
+            int grassTiles = vegetationAtlasManager.autoDetectTiles(1, "textures/vegetation/grass_opacity.jpg", 10);
+            std::cout << "  Grass: detected " << grassTiles << " tiles" << std::endl;
+            
+            int wildTiles = vegetationAtlasManager.autoDetectTiles(2, "textures/vegetation/wild_opacity.jpg", 10);
+            std::cout << "  Wild: detected " << wildTiles << " tiles" << std::endl;
 
             // Initialize and add editable textures BEFORE creating descriptor sets
             editableTextures = std::make_shared<EditableTextureSet>();
