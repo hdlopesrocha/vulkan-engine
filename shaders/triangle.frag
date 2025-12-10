@@ -251,11 +251,18 @@ void main() {
     // Lighting calculation
     // ubo.lightDir points from surface to light
     vec3 toLight = normalize(ubo.lightDir.xyz);
-    float NdotL = max(dot(worldNormal, toLight), 0.0);
     
-    // Check if geometry is facing the light (for shadow calculations)
-    // Use geometry normal, not normal-mapped normal, to avoid artifacts on back faces
+    // Use geometry normal for base lighting to get consistent light direction
+    // Then add normal map detail on top
     float geometryNdotL = dot(geometryNormal, toLight);
+    float normalMappedNdotL = max(dot(worldNormal, toLight), 0.0);
+    
+    // Blend between geometry-based and normal-mapped lighting
+    // This gives consistent light direction while preserving normal map detail
+    float baseLighting = max(geometryNdotL, 0.0);
+    float detailLighting = normalMappedNdotL;
+    // Use geometry lighting as base (70%), modulate with normal map detail (30%)
+    float NdotL = baseLighting * 0.7 + detailLighting * 0.3;
     
     // Adjust shadow position based on parallax displacement (if enabled)
     vec4 adjustedPosLightSpace = fragPosLightSpace;

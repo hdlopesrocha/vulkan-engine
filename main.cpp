@@ -16,6 +16,7 @@
 #include "widgets/ShadowMapWidget.hpp"
 #include "widgets/TextureViewerWidget.hpp"
 #include "widgets/SettingsWidget.hpp"
+#include "widgets/LightWidget.hpp"
 #include <string>
 #include <memory>
 // (removed unused includes: filesystem, iostream, map, algorithm, cctype)
@@ -68,6 +69,9 @@ class MyApp : public VulkanApp {
     
     // Shadow mapping
     ShadowMapper shadowMapper;
+    
+    // Light direction (controlled by LightWidget)
+    glm::vec3 lightDirection = glm::normalize(glm::vec3(1.0f, 1.0f, 1.0f));
     
     // Camera
     // start the camera further back so multiple cubes are visible
@@ -346,7 +350,7 @@ class MyApp : public VulkanApp {
             
             // Initialize light space matrix BEFORE creating command buffers
             // Light direction points FROM surface TO light (for lighting calculations)
-            glm::vec3 lightDirToLight = glm::normalize(glm::vec3(1.0f, 1.0f, 1.0f));
+            glm::vec3 lightDirToLight = glm::normalize(lightDirection);
             // Adjust scene center to be between cubes (around y=0) and plane (y=-1.5)
             glm::vec3 sceneCenter = glm::vec3(0.0f, -0.75f, 0.0f);
             glm::vec3 lightPos = sceneCenter + lightDirToLight * 20.0f;
@@ -385,6 +389,10 @@ class MyApp : public VulkanApp {
             // Create settings widget
             settingsWidget = std::make_shared<SettingsWidget>();
             widgetManager.addWidget(settingsWidget);
+            
+            // Create light control widget
+            auto lightWidget = std::make_shared<LightWidget>(&lightDirection);
+            widgetManager.addWidget(lightWidget);
             
             createCommandBuffers();
         };
@@ -449,7 +457,7 @@ class MyApp : public VulkanApp {
             // prepare static parts of the UBO (viewPos, light, POM params) - model and mvp will be set per-cube in draw()
             uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
             // Light direction: pointing upward from surface to light
-            glm::vec3 lightDir = glm::normalize(glm::vec3(1.0f, 1.0f, 1.0f));
+            glm::vec3 lightDir = glm::normalize(lightDirection);
             uboStatic.lightDir = glm::vec4(lightDir, 0.0f);
             uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
             // Note: pomParams, pomFlags, and specularParams are set per-instance from material properties
@@ -459,7 +467,7 @@ class MyApp : public VulkanApp {
             glm::vec3 sceneCenter = glm::vec3(0.0f, -0.75f, 0.0f);
             
             // Diagonal light direction matching setup()
-            glm::vec3 shadowLightDir = glm::normalize(glm::vec3(1.0f, 1.0f, 1.0f));
+            glm::vec3 shadowLightDir = glm::normalize(lightDirection);
             glm::vec3 lightPos = sceneCenter + shadowLightDir * 20.0f;
             
             glm::vec3 worldUp = glm::vec3(0.0f, 1.0f, 0.0f);
