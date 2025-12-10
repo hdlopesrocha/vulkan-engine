@@ -7,7 +7,6 @@
 #include "vulkan/TextureManager.hpp"
 #include "vulkan/CubeMesh.hpp"
 #include "vulkan/PlaneMesh.hpp"
-#include "vulkan/TextureViewer.hpp"
 #include "vulkan/EditableTextureSet.hpp"
 #include "vulkan/ShadowMapper.hpp"
 #include "vulkan/ModelManager.hpp"
@@ -15,6 +14,7 @@
 #include "widgets/CameraWidget.hpp"
 #include "widgets/DebugWidget.hpp"
 #include "widgets/ShadowMapWidget.hpp"
+#include "widgets/TextureViewerWidget.hpp"
 #include <string>
 #include <memory>
 // (removed unused includes: filesystem, iostream, map, algorithm, cctype)

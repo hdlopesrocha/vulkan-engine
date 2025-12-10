@@ -1,8 +1,8 @@
 #pragma once
 
 #include <imgui.h>
-#include "TextureManager.hpp"
-#include "../widgets/Widget.hpp"
+#include "../vulkan/TextureManager.hpp"
+#include "Widget.hpp"
 
 class TextureViewer : public Widget {
 public:

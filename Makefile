@@ -16,7 +16,7 @@ endif
 INCLUDES = `pkg-config --cflags glfw3 vulkan` -I/usr/include/imgui -I/usr/include/stb
 LIBS = `pkg-config --libs glfw3 vulkan` -limgui -lstb -ljpeg
 
-SRC = main.cpp vulkan/*cpp
+SRC = main.cpp vulkan/*cpp widgets/*cpp
 OUT = app
 
 # shader sources and generated SPIR-V

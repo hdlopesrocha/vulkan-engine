@@ -1,4 +1,4 @@
-#include "TextureViewer.hpp"
+#include "TextureViewerWidget.hpp"
 #include <string>
 
 void TextureViewer::render() {
