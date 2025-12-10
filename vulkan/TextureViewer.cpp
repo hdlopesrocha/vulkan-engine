@@ -43,6 +43,49 @@ void TextureViewer::render() {
             if (tex) ImGui::Image(tex, ImVec2(512,512));
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Material")) {
+            MaterialProperties& mat = manager->getMaterial(currentIndex);
+            
+            ImGui::Text("Parallax Occlusion Mapping");
+            ImGui::Separator();
+            
+            bool pomEnabledBool = (mat.pomEnabled > 0.5f);
+            if (ImGui::Checkbox("Enable POM", &pomEnabledBool)) {
+                mat.pomEnabled = pomEnabledBool ? 1.0f : 0.0f;
+            }
+            ImGui::SliderFloat("Height Scale", &mat.pomHeightScale, 0.0f, 0.2f, "%.3f");
+            ImGui::SliderFloat("Min Layers", &mat.pomMinLayers, 1.0f, 64.0f, "%.0f");
+            ImGui::SliderFloat("Max Layers", &mat.pomMaxLayers, 1.0f, 128.0f, "%.0f");
+            
+            ImGui::Spacing();
+            ImGui::Text("Normal/Tangent Adjustments");
+            ImGui::Separator();
+            
+            bool flipNormalYBool = (mat.flipNormalY > 0.5f);
+            if (ImGui::Checkbox("Flip Normal Y", &flipNormalYBool)) {
+                mat.flipNormalY = flipNormalYBool ? 1.0f : 0.0f;
+            }
+            
+            bool flipTangentBool = (mat.flipTangentHandedness > 0.5f);
+            if (ImGui::Checkbox("Flip Tangent Handedness", &flipTangentBool)) {
+                mat.flipTangentHandedness = flipTangentBool ? 1.0f : 0.0f;
+            }
+            
+            bool flipParallaxBool = (mat.flipParallaxDirection > 0.5f);
+            if (ImGui::Checkbox("Flip Parallax Direction", &flipParallaxBool)) {
+                mat.flipParallaxDirection = flipParallaxBool ? 1.0f : 0.0f;
+            }
+            
+            ImGui::Spacing();
+            ImGui::Text("Lighting");
+            ImGui::Separator();
+            
+            ImGui::SliderFloat("Ambient Factor", &mat.ambientFactor, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Specular Strength", &mat.specularStrength, 0.0f, 2.0f, "%.2f");
+            ImGui::SliderFloat("Shininess", &mat.shininess, 1.0f, 256.0f, "%.0f");
+            
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
     }
 

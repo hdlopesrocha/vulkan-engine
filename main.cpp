@@ -25,6 +25,13 @@ struct UniformObject {
     glm::vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
     glm::vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
     glm::mat4 lightSpaceMatrix; // for shadow mapping
+    
+    // Set material properties from MaterialProperties struct
+    void setMaterial(const MaterialProperties& mat) {
+        pomParams = glm::vec4(mat.pomHeightScale, mat.pomMinLayers, mat.pomMaxLayers, mat.pomEnabled);
+        pomFlags = glm::vec4(mat.flipNormalY, mat.flipTangentHandedness, mat.ambientFactor, mat.flipParallaxDirection);
+        specularParams = glm::vec4(mat.specularStrength, mat.shininess, 0.0f, 0.0f);
+    }
 };
 
 class MyApp : public VulkanApp {
@@ -450,7 +457,7 @@ class MyApp : public VulkanApp {
             
             // Add plane instance
             glm::mat4 planeModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.5f, 0.0f));
-            modelManager.addInstance(plane, planeModel, planeDescriptorSet, &planeUniform);
+            modelManager.addInstance(plane, planeModel, planeDescriptorSet, &planeUniform, nullptr);  // Plane has custom material handling
             
             // Add cube instances
             for (size_t i = 0; i < descriptorSets.size(); ++i) {
@@ -462,7 +469,9 @@ class MyApp : public VulkanApp {
                 float z = row * spacing - halfH;
                 
                 glm::mat4 model_i = glm::translate(glm::mat4(1.0f), glm::vec3(x, y, z));
-                modelManager.addInstance(cube, model_i, descriptorSets[i], &uniforms[i]);
+                // Pass material properties for this texture
+                const MaterialProperties* mat = &textureManager.getMaterial(i);
+                modelManager.addInstance(cube, model_i, descriptorSets[i], &uniforms[i], mat);
             }
             
             // First pass: Render shadow map
@@ -511,6 +520,12 @@ class MyApp : public VulkanApp {
                 UniformObject ubo = uboStatic;
                 ubo.model = instance.transform;
                 ubo.mvp = mvp;
+                
+                // Apply per-texture material properties if available
+                if (instance.material) {
+                    ubo.setMaterial(*instance.material);
+                }
+                
                 updateUniformBuffer(*instance.uniformBuffer, &ubo, sizeof(UniformObject));
                 
                 // Bind descriptor set and draw

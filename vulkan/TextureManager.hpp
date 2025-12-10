@@ -5,6 +5,24 @@
 #include <vector>
 #include <string>
 
+// Material properties per texture
+struct MaterialProperties {
+    float pomHeightScale = 0.06f;
+    float pomMinLayers = 8.0f;
+    float pomMaxLayers = 32.0f;
+    float pomEnabled = 1.0f;  // 1.0 = enabled, 0.0 = disabled
+    
+    float flipNormalY = 0.0f;
+    float flipTangentHandedness = 0.0f;
+    float ambientFactor = 0.4f;
+    float flipParallaxDirection = 0.0f;
+    
+    float specularStrength = 0.5f;
+    float shininess = 32.0f;
+    float padding1 = 0.0f;  // Align to 16 bytes
+    float padding2 = 0.0f;
+};
+
 class TextureManager {
 public:
     struct Triple {
@@ -18,6 +36,9 @@ public:
         ImTextureID albedoTexID = nullptr;
         ImTextureID normalTexID = nullptr;
         ImTextureID heightTexID = nullptr;
+        
+        // Material properties for this texture
+        MaterialProperties material;
     };
 
     TextureManager() = default;
@@ -28,6 +49,10 @@ public:
 
     // Return an ImTextureID for ImGui rendering of the requested map (0=albedo,1=normal,2=height)
     ImTextureID getImTexture(size_t idx, int map);
+
+    // Access material properties
+    MaterialProperties& getMaterial(size_t idx) { return triples.at(idx).material; }
+    const MaterialProperties& getMaterial(size_t idx) const { return triples.at(idx).material; }
 
     // number of loaded triples
     size_t count() const { return triples.size(); }
@@ -42,3 +67,4 @@ private:
     VulkanApp* app = nullptr;
     std::vector<Triple> triples;
 };
+
