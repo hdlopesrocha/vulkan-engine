@@ -5,7 +5,7 @@
 // Base class for all UI widgets
 class Widget {
 public:
-    Widget(const std::string& title) : title(title), isOpen(true) {}
+    Widget(const std::string& title) : title(title), isOpen(false) {}
     virtual ~Widget() = default;
     
     // Render the widget (must be implemented by derived classes)

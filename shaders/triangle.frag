@@ -11,7 +11,7 @@ layout(location = 6) in vec4 fragPosLightSpace;
 
 // UBO must match binding 0 defined in vertex shader / host code
 // UBO must match CPU-side UniformObject layout:
-// mat4 mvp; mat4 model; vec4 viewPos; vec4 lightDir; vec4 lightColor; vec4 pomParams; vec4 pomFlags; vec4 specularParams; mat4 lightSpaceMatrix
+// mat4 mvp; mat4 model; vec4 viewPos; vec4 lightDir; vec4 lightColor; vec4 pomParams; vec4 pomFlags; vec4 specularParams; mat4 lightSpaceMatrix; vec4 shadowEffects
 layout(binding = 0) uniform UBO {
     mat4 mvp;
     mat4 model;
@@ -22,6 +22,7 @@ layout(binding = 0) uniform UBO {
     vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
     vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
     mat4 lightSpaceMatrix;
+    vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
 } ubo;
 
 // texture arrays: binding 1 = albedo array, 2 = normal array, 3 = height array, 4 = shadow map
@@ -91,6 +92,62 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex) {
     // take midpoint of refined interval as final UV
     finalTex = (lowTex + highTex) * 0.5;
     return finalTex; // Don't clamp - let sampler repeat mode handle tiling
+}
+
+// Parallax self-shadowing: ray-march from surface point towards light
+// Returns 0.0 (full shadow) to 1.0 (no shadow)
+// Height convention: black (texture.r=0) = deep (1.0 after inversion), white (texture.r=1) = surface (0.0 after inversion)
+float ParallaxSelfShadow(vec2 texCoords, vec3 lightDirT, float currentHeight, int texIndex) {
+    float heightScale = ubo.pomParams.x;
+    float minLayers = ubo.pomParams.y;
+    float qualityMultiplier = ubo.shadowEffects.z; // quality setting from UI
+    
+    // Number of samples for shadow ray-march (adjusted by quality)
+    float numSamples = minLayers * qualityMultiplier;
+    numSamples = max(numSamples, 4.0); // At least 4 samples for decent quality
+    
+    // March direction in texture space - opposite of view direction for POM
+    // For shadow, we need to march in the direction opposite to where light comes from
+    vec2 lightOffset = (ubo.pomFlags.w > 0.5) ? lightDirT.xy : -lightDirT.xy;
+    vec2 rayStep = lightOffset * heightScale / numSamples;
+    
+    // Start from current position
+    vec2 currentTexCoords = texCoords;
+    
+    // In the height map coordinate system (after 1.0 - texture):
+    // 0.0 = surface (white in texture), 1.0 = deepest (black in texture)
+    // currentHeight is where we are after POM displacement
+    // We need to march "upward" (towards 0.0) as we move toward the light
+    float rayHeight = currentHeight;
+    
+    // As we march towards light (upward in world), height decreases (towards surface/0.0)
+    // lightDirT.z is positive when light is above surface
+    float heightStep = -lightDirT.z / numSamples; // Negative because moving towards surface
+    
+    // March from current carved position towards the light
+    for (int i = 1; i <= int(numSamples); ++i) {
+        currentTexCoords += rayStep;
+        rayHeight += heightStep;
+        
+        // If we've reached the surface or beyond, no more occlusion possible
+        if (rayHeight <= 0.0) break;
+        
+        // Sample height at this position (inverted: 0.0=surface, 1.0=deep)
+        float sampledHeight = 1.0 - texture(heightArray, vec3(currentTexCoords, float(texIndex))).r;
+        
+        // Occlusion check: if the geometry at this point is higher (less deep) than our ray,
+        // it means there's blocking geometry between us and the light
+        // sampledHeight < rayHeight means the surface is higher up (closer to 0.0)
+        if (sampledHeight < rayHeight) {
+            // Calculate shadow intensity based on how much geometry blocks the light
+            float occlusionAmount = (rayHeight - sampledHeight) / heightScale;
+            float shadowFactor = clamp(occlusionAmount * 2.0, 0.0, 1.0);
+            return 1.0 - shadowFactor;
+        }
+    }
+    
+    // No occlusion found - fully lit
+    return 1.0;
 }
 
 // Shadow calculation with PCF (Percentage Closer Filtering)
@@ -197,18 +254,55 @@ void main() {
     vec3 toLight = normalize(ubo.lightDir.xyz);
     float NdotL = max(dot(worldNormal, toLight), 0.0);
     
+    // Adjust shadow position based on parallax displacement (if enabled)
+    vec4 adjustedPosLightSpace = fragPosLightSpace;
+    if (ubo.pomParams.w > 0.5 && ubo.shadowEffects.y > 0.5) { // Check shadowDisplacement setting
+        // Get height at the parallax-displaced UV
+        float height = 1.0 - texture(heightArray, vec3(uv, float(texIndex))).r;
+        float heightScale = ubo.pomParams.x;
+        
+        // Offset world position along the normal by the height displacement
+        // This makes shadows "follow" the height variations
+        vec3 offset = worldNormal * height * heightScale;
+        vec3 adjustedWorldPos = fragPosWorld + offset;
+        
+        // Transform adjusted position to light space
+        adjustedPosLightSpace = ubo.lightSpaceMatrix * vec4(adjustedWorldPos, 1.0);
+    }
+    
     // Calculate shadow with adaptive bias based on surface angle
     float bias = max(0.005 * (1.0 - NdotL), 0.001);
-    float shadow = ShadowCalculation(fragPosLightSpace, bias);
+    float shadow = ShadowCalculation(adjustedPosLightSpace, bias);
+    
+    // Add parallax self-shadowing (if POM and self-shadowing are enabled)
+    float selfShadow = 1.0;
+    if (ubo.pomParams.w > 0.5 && ubo.shadowEffects.x > 0.5) { // Check selfShadowing setting
+        // Transform light direction to tangent space
+        vec3 lightDirT = normalize(transpose(TBN) * toLight);
+        
+        // Get current height at the parallax-offset UV
+        float currentHeight = 1.0 - texture(heightArray, vec3(uv, float(texIndex))).r;
+        
+        // Only compute self-shadow if light is above the surface in tangent space
+        if (lightDirT.z > 0.0) {
+            selfShadow = ParallaxSelfShadow(uv, lightDirT, currentHeight, texIndex);
+        } else {
+            // Light is below the surface = full shadow
+            selfShadow = 0.0;
+        }
+    }
+    
+    // Combine global shadow and self-shadow (multiply to get darker result)
+    float totalShadow = max(shadow, 1.0 - selfShadow);
     
     vec3 ambient = albedoColor * ubo.pomFlags.z; // ambient factor
-    vec3 diffuse = albedoColor * ubo.lightColor.rgb * NdotL * (1.0 - shadow);
+    vec3 diffuse = albedoColor * ubo.lightColor.rgb * NdotL * (1.0 - totalShadow);
     
     // Specular lighting (Blinn-Phong) - uses normal-mapped surface normal
     vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
     vec3 halfwayDir = normalize(toLight + viewDir);
     float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), ubo.specularParams.y); // shininess from uniform
-    vec3 specular = ubo.lightColor.rgb * spec * (1.0 - shadow) * ubo.specularParams.x; // specular strength from uniform
+    vec3 specular = ubo.lightColor.rgb * spec * (1.0 - totalShadow) * ubo.specularParams.x; // specular strength from uniform
     
     outColor = vec4(ambient + diffuse + specular, 1.0);
 }

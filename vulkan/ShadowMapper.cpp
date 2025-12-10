@@ -32,6 +32,10 @@ void ShadowMapper::cleanup() {
         vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
         shadowPipelineLayout = VK_NULL_HANDLE;
     }
+    if (shadowDescriptorSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(device, shadowDescriptorSetLayout, nullptr);
+        shadowDescriptorSetLayout = VK_NULL_HANDLE;
+    }
     if (shadowFramebuffer != VK_NULL_HANDLE) {
         vkDestroyFramebuffer(device, shadowFramebuffer, nullptr);
         shadowFramebuffer = VK_NULL_HANDLE;
@@ -202,6 +206,23 @@ void ShadowMapper::createShadowFramebuffer() {
 void ShadowMapper::createShadowPipeline() {
     VkDevice device = vulkanApp->getDevice();
     
+    // Create descriptor set layout for height map (binding 3)
+    VkDescriptorSetLayoutBinding heightBinding{};
+    heightBinding.binding = 3;
+    heightBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    heightBinding.descriptorCount = 1;
+    heightBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    heightBinding.pImmutableSamplers = nullptr;
+    
+    VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo{};
+    descriptorLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    descriptorLayoutInfo.bindingCount = 1;
+    descriptorLayoutInfo.pBindings = &heightBinding;
+    
+    if (vkCreateDescriptorSetLayout(device, &descriptorLayoutInfo, nullptr, &shadowDescriptorSetLayout) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create shadow descriptor set layout!");
+    }
+    
     ShaderStage shadowVertexShader = ShaderStage(
         vulkanApp->createShaderModule(FileReader::readFile("shaders/shadow.vert.spv")),
         VK_SHADER_STAGE_VERTEX_BIT
@@ -301,15 +322,16 @@ void ShadowMapper::createShadowPipeline() {
     pipelineInfo.pDynamicState = &dynamicState;
     
     // Create pipeline layout with push constants
+    // Push constants: mat4 mvp + mat4 model + vec4 viewPos + vec4 pomParams + vec4 pomFlags
     VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(glm::mat4);
+    pushConstantRange.size = sizeof(glm::mat4) * 2 + sizeof(glm::vec4) * 3; // mvp + model + viewPos + pomParams + pomFlags
     
     VkPipelineLayoutCreateInfo shadowLayoutInfo{};
     shadowLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    shadowLayoutInfo.setLayoutCount = 0;
-    shadowLayoutInfo.pSetLayouts = nullptr;
+    shadowLayoutInfo.setLayoutCount = 1;
+    shadowLayoutInfo.pSetLayouts = &shadowDescriptorSetLayout;
     shadowLayoutInfo.pushConstantRangeCount = 1;
     shadowLayoutInfo.pPushConstantRanges = &pushConstantRange;
     
@@ -370,9 +392,14 @@ void ShadowMapper::beginShadowPass(VkCommandBuffer commandBuffer, const glm::mat
 }
 
 void ShadowMapper::renderObject(VkCommandBuffer commandBuffer, const glm::mat4& modelMatrix, 
-                                 const VertexBufferObject& vbo) {
+                                 const VertexBufferObject& vbo, VkDescriptorSet descriptorSet,
+                                 const glm::vec4& pomParams, const glm::vec4& pomFlags, const glm::vec3& viewPos) {
     // Compute MVP for this object
     glm::mat4 mvp = currentLightSpaceMatrix * modelMatrix;
+    
+    // Bind descriptor set for height map
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                            shadowPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
     
     // Bind vertex/index buffers
     VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
@@ -380,8 +407,24 @@ void ShadowMapper::renderObject(VkCommandBuffer commandBuffer, const glm::mat4& 
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
     vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
     
-    // Push MVP matrix directly to the shader
-    vkCmdPushConstants(commandBuffer, shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &mvp);
+    // Push all constants: mvp + model + viewPos + pomParams + pomFlags
+    struct ShadowPushConstants {
+        glm::mat4 mvp;
+        glm::mat4 model;
+        glm::vec4 viewPos;
+        glm::vec4 pomParams;
+        glm::vec4 pomFlags;
+    } pushConstants;
+    
+    pushConstants.mvp = mvp;
+    pushConstants.model = modelMatrix;
+    pushConstants.viewPos = glm::vec4(viewPos, 1.0f);
+    pushConstants.pomParams = pomParams;
+    pushConstants.pomFlags = pomFlags;
+    
+    vkCmdPushConstants(commandBuffer, shadowPipelineLayout, 
+                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
+                      0, sizeof(ShadowPushConstants), &pushConstants);
     
     // Draw
     vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);

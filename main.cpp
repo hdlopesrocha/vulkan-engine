@@ -15,6 +15,7 @@
 #include "widgets/DebugWidget.hpp"
 #include "widgets/ShadowMapWidget.hpp"
 #include "widgets/TextureViewerWidget.hpp"
+#include "widgets/SettingsWidget.hpp"
 #include <string>
 #include <memory>
 // (removed unused includes: filesystem, iostream, map, algorithm, cctype)
@@ -29,6 +30,7 @@ struct UniformObject {
     glm::vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
     glm::vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
     glm::mat4 lightSpaceMatrix; // for shadow mapping
+    glm::vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
     
     // Set material properties from MaterialProperties struct
     void setMaterial(const MaterialProperties& mat) {
@@ -52,6 +54,7 @@ class MyApp : public VulkanApp {
     // Widgets (shared pointers for widget manager)
     std::shared_ptr<TextureViewer> textureViewer;
     std::shared_ptr<EditableTextureSet> editableTextures;
+    std::shared_ptr<SettingsWidget> settingsWidget;
     
     // Model manager to handle all renderable objects
     ModelManager modelManager;
@@ -281,6 +284,10 @@ class MyApp : public VulkanApp {
             auto shadowWidget = std::make_shared<ShadowMapWidget>(&shadowMapper);
             widgetManager.addWidget(shadowWidget);
             
+            // Create settings widget
+            settingsWidget = std::make_shared<SettingsWidget>();
+            widgetManager.addWidget(settingsWidget);
+            
             createCommandBuffers();
         };
 
@@ -421,7 +428,27 @@ class MyApp : public VulkanApp {
             
             // Render all instances to shadow map
             for (const auto& instance : modelManager.getInstances()) {
-                shadowMapper.renderObject(commandBuffer, instance.transform, instance.model->getVBO());
+                // Build POM parameters from instance material
+                glm::vec4 pomParams(0.1f, 8.0f, 32.0f, 0.0f); // default: disabled
+                glm::vec4 pomFlags(0.0f, 0.0f, 0.0f, 0.0f);
+                
+                if (instance.material && settingsWidget->getParallaxInShadowPassEnabled()) {
+                    pomParams = glm::vec4(
+                        instance.material->pomHeightScale,
+                        instance.material->pomMinLayers,
+                        instance.material->pomMaxLayers,
+                        instance.material->pomEnabled
+                    );
+                    pomFlags = glm::vec4(
+                        instance.material->flipNormalY,
+                        instance.material->flipTangentHandedness,
+                        0.0f, // unused in shadow pass
+                        instance.material->flipParallaxDirection
+                    );
+                }
+                
+                shadowMapper.renderObject(commandBuffer, instance.transform, instance.model->getVBO(),
+                                        instance.descriptorSet, pomParams, pomFlags, camera.getPosition());
             }
             
             shadowMapper.endShadowPass(commandBuffer);
@@ -467,6 +494,14 @@ class MyApp : public VulkanApp {
                 if (instance.material) {
                     ubo.setMaterial(*instance.material);
                 }
+                
+                // Apply shadow effect settings from settings widget
+                ubo.shadowEffects = glm::vec4(
+                    settingsWidget->getSelfShadowingEnabled() ? 1.0f : 0.0f,
+                    settingsWidget->getShadowDisplacementEnabled() ? 1.0f : 0.0f,
+                    settingsWidget->getSelfShadowQuality(),
+                    0.0f  // unused
+                );
                 
                 updateUniformBuffer(*instance.uniformBuffer, &ubo, sizeof(UniformObject));
                 
