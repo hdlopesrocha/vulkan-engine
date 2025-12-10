@@ -157,8 +157,6 @@ protected:
         void createRenderPass();
         void createFramebuffers();
         void createCommandPool();
-        VkCommandBuffer beginSingleTimeCommands();
-        void endSingleTimeCommands(VkCommandBuffer commandBuffer);
         void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory);
     void generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount = 1);
         void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
@@ -170,7 +168,6 @@ protected:
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
 
 
-        uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
         void drawFrame();
         void createInstance();
         bool checkValidationLayerSupport();
@@ -215,6 +212,11 @@ protected:
 
         int getWidth();
         int getHeight();
+        
+        // Public utility methods for texture manipulation
+        uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
+        VkCommandBuffer beginSingleTimeCommands();
+        void endSingleTimeCommands(VkCommandBuffer commandBuffer);
 
         void run();
     // request the app to close the main window

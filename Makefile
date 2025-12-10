@@ -20,9 +20,10 @@ SRC = main.cpp vulkan/*cpp
 OUT = app
 
 # shader sources and generated SPIR-V
-SHADERS = shaders/triangle.vert shaders/triangle.frag shaders/shadow.vert shaders/shadow.frag
+SHADERS = shaders/triangle.vert shaders/triangle.frag shaders/shadow.vert shaders/shadow.frag shaders/perlin_noise.comp
 SPVS = $(SHADERS:.vert=.vert.spv)
 SPVS := $(SPVS:.frag=.frag.spv)
+SPVS := $(SPVS:.comp=.comp.spv)
 
 all: shaders
 	$(CC) $(CFLAGS) $(INCLUDES) $(SRC) -o $(OUT) $(LIBS)
@@ -38,6 +39,14 @@ shaders/%.vert.spv: shaders/%.vert
 	fi
 
 shaders/%.frag.spv: shaders/%.frag
+	@echo "Compiling shader: $< -> $@"
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc $< -o $@; \
+	else \
+		glslangValidator -V $< -o $@; \
+	fi
+
+shaders/%.comp.spv: shaders/%.comp
 	@echo "Compiling shader: $< -> $@"
 	@if command -v glslc >/dev/null 2>&1; then \
 		glslc $< -o $@; \

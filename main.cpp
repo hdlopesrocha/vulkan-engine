@@ -8,6 +8,7 @@
 #include "vulkan/CubeMesh.hpp"
 #include "vulkan/PlaneMesh.hpp"
 #include "vulkan/TextureViewer.hpp"
+#include "vulkan/EditableTextureSet.hpp"
 #include <string>
 // (removed unused includes: filesystem, iostream, map, algorithm, cctype)
 
@@ -33,6 +34,10 @@ class MyApp : public VulkanApp {
     TextureViewer textureViewer;
     // UI: currently selected texture triple for preview
     size_t currentTextureIndex = 0;
+    
+    // Editable textures (1024x1024) - grouped in a single set
+    EditableTextureSet editableTextures;
+    
     // Camera
     // start the camera further back so multiple cubes are visible
     Camera camera = Camera(glm::vec3(0.0f, 0.0f, 8.0f));
@@ -418,6 +423,10 @@ class MyApp : public VulkanApp {
             
             // initialize texture viewer (after textures loaded)
             textureViewer.init(&textureManager);
+            
+            // Initialize editable texture set (1024x1024)
+            editableTextures.init(this, 1024, 1024, "Editable Textures");
+            
             createCommandBuffers();
         };
 
@@ -504,6 +513,9 @@ class MyApp : public VulkanApp {
                 ImGui::Text("Shadow map not available");
             }
             ImGui::End();
+            
+            // Editable Textures (single window with tabs)
+            editableTextures.renderImGui();
         }
 
         void update(float deltaTime) override {
@@ -692,6 +704,9 @@ class MyApp : public VulkanApp {
             // plane uniform buffer cleanup
             if (planeUniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), planeUniform.buffer, nullptr);
             if (planeUniform.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), planeUniform.memory, nullptr);
+            
+            // editable textures cleanup
+            editableTextures.cleanup();
             
             // shadow map cleanup
             cleanupShadowMap();
