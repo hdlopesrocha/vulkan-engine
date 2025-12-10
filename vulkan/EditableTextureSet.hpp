@@ -5,6 +5,7 @@
 #include <imgui.h>
 #include <random>
 #include <cstring>
+#include <functional>
 
 // Push constants for compute shader
 struct PerlinPushConstants {
@@ -36,6 +37,24 @@ public:
         this->textureMgr = texMgr;
         // Initialize compute pipeline after texture manager is set
         createComputePipeline();
+    }
+    
+    // Set callback to be called after texture generation
+    void setOnTextureGenerated(std::function<void()> callback) {
+        onTextureGeneratedCallback = callback;
+    }
+    
+    // Generate all textures initially
+    void generateInitialTextures() {
+        if (!textureMgr || textureMgr->count() == 0) {
+            printf("Cannot generate initial textures: No textures in TextureManager\n");
+            return;
+        }
+        
+        printf("Generating initial textures (Albedo, Normal, Bump)...\n");
+        generatePerlinNoise(albedo);
+        generatePerlinNoise(normal);
+        generatePerlinNoise(bump);
     }
     
     void cleanup() {
@@ -126,9 +145,12 @@ private:
     float perlinContrast = 1.0f;    // 0.0 to 2.0
     uint32_t perlinSeed = 12345;    // Fixed seed for consistent generation
     
-    // Texture selection indices
-    int primaryTextureIdx = 0;
-    int secondaryTextureIdx = 0;
+    // Texture selection indices (grass=3, sand=8)
+    int primaryTextureIdx = 3;      // Grass texture
+    int secondaryTextureIdx = 8;    // Sand texture
+    
+    // Callback function to notify when textures are generated
+    std::function<void()> onTextureGeneratedCallback;
     
     // Previous parameter values for change detection
     float prevPerlinScale = 8.0f;
@@ -137,8 +159,8 @@ private:
     float prevPerlinLacunarity = 2.0f;
     float prevPerlinBrightness = 0.0f;
     float prevPerlinContrast = 1.0f;
-    int prevPrimaryTextureIdx = 0;
-    int prevSecondaryTextureIdx = 0;
+    int prevPrimaryTextureIdx = 3;      // Match initial primary (grass)
+    int prevSecondaryTextureIdx = 8;    // Match initial secondary (sand)
     
     void renderTextureTab(EditableTexture& texture) {
         ImGui::Text("Size: %dx%d", texture.getWidth(), texture.getHeight());
@@ -550,5 +572,10 @@ private:
         app->endSingleTimeCommands(commandBuffer);
         
         printf("Perlin noise generation complete!\n");
+        
+        // Call callback if set
+        if (onTextureGeneratedCallback) {
+            onTextureGeneratedCallback();
+        }
     }
 };

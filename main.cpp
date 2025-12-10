@@ -350,60 +350,9 @@ class MyApp : public VulkanApp {
             // create uniform buffer for the plane
             planeUniform = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             
-            // create descriptor set for the plane (use first texture triple)
+            // create descriptor set for the plane (will be updated to use editable textures later)
             planeDescriptorSet = createDescriptorSet();
-            VkDescriptorBufferInfo planeBufferInfo { planeUniform.buffer, 0, sizeof(UniformObject) };
-            
-            VkWriteDescriptorSet planeUboWrite{};
-            planeUboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            planeUboWrite.dstSet = planeDescriptorSet;
-            planeUboWrite.dstBinding = 0;
-            planeUboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            planeUboWrite.descriptorCount = 1;
-            planeUboWrite.pBufferInfo = &planeBufferInfo;
-            
-            // Use texture index 3 for the plane (fourth texture)
-            const auto& planeTriple = textureManager.getTriple(3);
-            
-            VkDescriptorImageInfo planeAlbedoInfo{ planeTriple.albedoSampler, planeTriple.albedo.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            VkDescriptorImageInfo planeNormalInfo{ planeTriple.normalSampler, planeTriple.normal.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            VkDescriptorImageInfo planeHeightInfo{ planeTriple.heightSampler, planeTriple.height.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            
-            VkWriteDescriptorSet planeAlbedoWrite{};
-            planeAlbedoWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            planeAlbedoWrite.dstSet = planeDescriptorSet;
-            planeAlbedoWrite.dstBinding = 1;
-            planeAlbedoWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            planeAlbedoWrite.descriptorCount = 1;
-            planeAlbedoWrite.pImageInfo = &planeAlbedoInfo;
-            
-            VkWriteDescriptorSet planeNormalWrite{};
-            planeNormalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            planeNormalWrite.dstSet = planeDescriptorSet;
-            planeNormalWrite.dstBinding = 2;
-            planeNormalWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            planeNormalWrite.descriptorCount = 1;
-            planeNormalWrite.pImageInfo = &planeNormalInfo;
-            
-            VkWriteDescriptorSet planeHeightWrite{};
-            planeHeightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            planeHeightWrite.dstSet = planeDescriptorSet;
-            planeHeightWrite.dstBinding = 3;
-            planeHeightWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            planeHeightWrite.descriptorCount = 1;
-            planeHeightWrite.pImageInfo = &planeHeightInfo;
-            
-            // Shadow map descriptor for plane (binding 4)
-            VkDescriptorImageInfo planeShadowInfo { shadowMapSampler, shadowMapView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
-            VkWriteDescriptorSet planeShadowWrite{};
-            planeShadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            planeShadowWrite.dstSet = planeDescriptorSet;
-            planeShadowWrite.dstBinding = 4;
-            planeShadowWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            planeShadowWrite.descriptorCount = 1;
-            planeShadowWrite.pImageInfo = &planeShadowInfo;
-            
-            updateDescriptorSet(planeDescriptorSet, { planeUboWrite, planeAlbedoWrite, planeNormalWrite, planeHeightWrite, planeShadowWrite });
+            updatePlaneDescriptorSet();
             
             // Initialize light space matrix BEFORE creating command buffers
             // Light direction points FROM surface TO light (for lighting calculations)
@@ -427,6 +376,21 @@ class MyApp : public VulkanApp {
             // Initialize editable texture set (1024x1024)
             editableTextures.init(this, 1024, 1024, "Editable Textures");
             editableTextures.setTextureManager(&textureManager);
+            
+            // Set callback to update plane descriptor set when textures are generated
+            editableTextures.setOnTextureGenerated([this]() {
+                updatePlaneDescriptorSet();
+                printf("Plane descriptor set updated with new textures\n");
+            });
+            
+            // Generate initial textures so plane has content
+            editableTextures.generateInitialTextures();
+            
+            // Generate initial textures (blend between texture 0 and texture 3)
+            printf("Generating initial textures...\n");
+            editableTextures.getAlbedo();  // Ensure textures are accessible
+            editableTextures.getNormal();
+            editableTextures.getBump();
             
             createCommandBuffers();
         };
@@ -713,7 +677,6 @@ class MyApp : public VulkanApp {
             cleanupShadowMap();
         }
         
-    private:
         void createShadowMap() {
             // Create depth image for shadow map
             VkImageCreateInfo imageInfo{};
@@ -1000,6 +963,66 @@ class MyApp : public VulkanApp {
                 0, nullptr,
                 1, &barrier
             );
+        }
+        
+        void updatePlaneDescriptorSet() {
+            // Check if editable textures are initialized
+            if (editableTextures.getAlbedo().getView() == VK_NULL_HANDLE) {
+                printf("Warning: Editable textures not yet initialized, skipping plane descriptor update\n");
+                return;
+            }
+            
+            // Update plane descriptor set to use editable textures
+            VkDescriptorBufferInfo planeBufferInfo { planeUniform.buffer, 0, sizeof(UniformObject) };
+            
+            VkWriteDescriptorSet planeUboWrite{};
+            planeUboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            planeUboWrite.dstSet = planeDescriptorSet;
+            planeUboWrite.dstBinding = 0;
+            planeUboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            planeUboWrite.descriptorCount = 1;
+            planeUboWrite.pBufferInfo = &planeBufferInfo;
+            
+            // Use editable textures (albedo, normal, bump)
+            VkDescriptorImageInfo planeAlbedoInfo{ editableTextures.getAlbedo().getSampler(), editableTextures.getAlbedo().getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo planeNormalInfo{ editableTextures.getNormal().getSampler(), editableTextures.getNormal().getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo planeHeightInfo{ editableTextures.getBump().getSampler(), editableTextures.getBump().getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            
+            VkWriteDescriptorSet planeAlbedoWrite{};
+            planeAlbedoWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            planeAlbedoWrite.dstSet = planeDescriptorSet;
+            planeAlbedoWrite.dstBinding = 1;
+            planeAlbedoWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            planeAlbedoWrite.descriptorCount = 1;
+            planeAlbedoWrite.pImageInfo = &planeAlbedoInfo;
+            
+            VkWriteDescriptorSet planeNormalWrite{};
+            planeNormalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            planeNormalWrite.dstSet = planeDescriptorSet;
+            planeNormalWrite.dstBinding = 2;
+            planeNormalWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            planeNormalWrite.descriptorCount = 1;
+            planeNormalWrite.pImageInfo = &planeNormalInfo;
+            
+            VkWriteDescriptorSet planeHeightWrite{};
+            planeHeightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            planeHeightWrite.dstSet = planeDescriptorSet;
+            planeHeightWrite.dstBinding = 3;
+            planeHeightWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            planeHeightWrite.descriptorCount = 1;
+            planeHeightWrite.pImageInfo = &planeHeightInfo;
+            
+            // Shadow map descriptor for plane (binding 4)
+            VkDescriptorImageInfo planeShadowInfo { shadowMapSampler, shadowMapView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet planeShadowWrite{};
+            planeShadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            planeShadowWrite.dstSet = planeDescriptorSet;
+            planeShadowWrite.dstBinding = 4;
+            planeShadowWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            planeShadowWrite.descriptorCount = 1;
+            planeShadowWrite.pImageInfo = &planeShadowInfo;
+            
+            updateDescriptorSet(planeDescriptorSet, { planeUboWrite, planeAlbedoWrite, planeNormalWrite, planeHeightWrite, planeShadowWrite });
         }
 
 };
