@@ -106,47 +106,46 @@ float ParallaxSelfShadow(vec2 texCoords, vec3 lightDirT, float currentHeight, in
     float numSamples = minLayers * qualityMultiplier;
     numSamples = max(numSamples, 4.0); // At least 4 samples for decent quality
     
-    // March direction in texture space - opposite of view direction for POM
-    // For shadow, we need to march in the direction opposite to where light comes from
-    vec2 lightOffset = (ubo.pomFlags.w > 0.5) ? lightDirT.xy : -lightDirT.xy;
-    vec2 rayStep = lightOffset * heightScale / numSamples;
+    // March in the direction of the light in texture space
+    // Use the SAME logic as POM: respect the flipParallaxDirection flag
+    // Negate X component
+    vec2 lightXY = vec2(-lightDirT.x, lightDirT.y);
+    vec2 L = (ubo.pomFlags.w > 0.5) ? -lightXY * heightScale : lightXY * heightScale;
+    vec2 rayStep = L / numSamples;
     
-    // Start from current position
+    // Start from current displaced position
     vec2 currentTexCoords = texCoords;
     
-    // In the height map coordinate system (after 1.0 - texture):
-    // 0.0 = surface (white in texture), 1.0 = deepest (black in texture)
-    // currentHeight is where we are after POM displacement
-    // We need to march "upward" (towards 0.0) as we move toward the light
+    // Height system: 0.0 = surface (white), 1.0 = deepest (black)
+    // We're at currentHeight and march towards the light
     float rayHeight = currentHeight;
     
-    // As we march towards light (upward in world), height decreases (towards surface/0.0)
-    // lightDirT.z is positive when light is above surface
-    float heightStep = -lightDirT.z / numSamples; // Negative because moving towards surface
+    // Height change per step - as we go towards light (up), height decreases
+    float layerDepth = lightDirT.z / numSamples;
     
-    // March from current carved position towards the light
+    // March from current position towards the light source
     for (int i = 1; i <= int(numSamples); ++i) {
-        currentTexCoords += rayStep;
-        rayHeight += heightStep;
+        // Move along the ray
+        currentTexCoords -= rayStep; // Subtract like POM does
+        rayHeight -= layerDepth; // Move up (decrease depth)
         
-        // If we've reached the surface or beyond, no more occlusion possible
+        // If we've reached the surface, no more shadow
         if (rayHeight <= 0.0) break;
         
-        // Sample height at this position (inverted: 0.0=surface, 1.0=deep)
+        // Sample height at this position
         float sampledHeight = 1.0 - texture(heightArray, vec3(currentTexCoords, float(texIndex))).r;
         
-        // Occlusion check: if the geometry at this point is higher (less deep) than our ray,
-        // it means there's blocking geometry between us and the light
-        // sampledHeight < rayHeight means the surface is higher up (closer to 0.0)
-        if (sampledHeight < rayHeight) {
-            // Calculate shadow intensity based on how much geometry blocks the light
-            float occlusionAmount = (rayHeight - sampledHeight) / heightScale;
-            float shadowFactor = clamp(occlusionAmount * 2.0, 0.0, 1.0);
+        // If sampled point is shallower (less deep) than our ray, it blocks the light
+        float bias = 0.02;
+        if (sampledHeight < rayHeight - bias) {
+            // Blocking geometry found
+            float occlusionDepth = (rayHeight - sampledHeight) / heightScale;
+            float shadowFactor = clamp(occlusionDepth * 2.0, 0.0, 1.0);
             return 1.0 - shadowFactor;
         }
     }
     
-    // No occlusion found - fully lit
+    // No occlusion - fully lit
     return 1.0;
 }
 
@@ -254,6 +253,10 @@ void main() {
     vec3 toLight = normalize(ubo.lightDir.xyz);
     float NdotL = max(dot(worldNormal, toLight), 0.0);
     
+    // Check if geometry is facing the light (for shadow calculations)
+    // Use geometry normal, not normal-mapped normal, to avoid artifacts on back faces
+    float geometryNdotL = dot(geometryNormal, toLight);
+    
     // Adjust shadow position based on parallax displacement (if enabled)
     vec4 adjustedPosLightSpace = fragPosLightSpace;
     if (ubo.pomParams.w > 0.5 && ubo.shadowEffects.y > 0.5) { // Check shadowDisplacement setting
@@ -271,25 +274,32 @@ void main() {
     }
     
     // Calculate shadow with adaptive bias based on surface angle
-    float bias = max(0.005 * (1.0 - NdotL), 0.001);
-    float shadow = ShadowCalculation(adjustedPosLightSpace, bias);
-    
-    // Add parallax self-shadowing (if POM and self-shadowing are enabled)
+    float shadow = 0.0;
     float selfShadow = 1.0;
-    if (ubo.pomParams.w > 0.5 && ubo.shadowEffects.x > 0.5) { // Check selfShadowing setting
+    
+    // Only calculate shadows for surfaces facing the light (use geometry normal to avoid artifacts)
+    if (geometryNdotL > 0.01) {
+        float bias = max(0.001 * (1.0 - NdotL), 0.0002);
+        shadow = ShadowCalculation(adjustedPosLightSpace, bias);
+        
+        // Add parallax self-shadowing (if POM and self-shadowing are enabled)
+        if (ubo.pomParams.w > 0.5 && ubo.shadowEffects.x > 0.5) { // Check selfShadowing setting
         // Transform light direction to tangent space
         vec3 lightDirT = normalize(transpose(TBN) * toLight);
         
         // Get current height at the parallax-offset UV
         float currentHeight = 1.0 - texture(heightArray, vec3(uv, float(texIndex))).r;
         
-        // Only compute self-shadow if light is above the surface in tangent space
-        if (lightDirT.z > 0.0) {
+        // Only compute self-shadow if light is reasonably above the surface
+        // Use a small threshold to avoid computing shadows for grazing angles
+        if (lightDirT.z > 0.1) {
             selfShadow = ParallaxSelfShadow(uv, lightDirT, currentHeight, texIndex);
-        } else {
-            // Light is below the surface = full shadow
-            selfShadow = 0.0;
         }
+        // If light is at grazing angle or below, just don't apply self-shadow (leave at 1.0)
+        }
+    } else {
+        // Back-facing surfaces should be in full shadow
+        shadow = 1.0;
     }
     
     // Combine global shadow and self-shadow (multiply to get darker result)

@@ -147,7 +147,7 @@ private:
     float perlinPersistence = 0.5f;
     float perlinLacunarity = 2.0f;
     float perlinBrightness = 0.0f;  // -1.0 to 1.0
-    float perlinContrast = 1.0f;    // 0.0 to 2.0
+    float perlinContrast = 5.0f;    // 0.0 to 5.0
     uint32_t perlinSeed = 12345;    // Fixed seed for consistent generation
     float perlinTime = 0.0f;        // Time parameter for noise evolution
     
@@ -164,7 +164,7 @@ private:
     float prevPerlinPersistence = 0.5f;
     float prevPerlinLacunarity = 2.0f;
     float prevPerlinBrightness = 0.0f;
-    float prevPerlinContrast = 1.0f;
+    float prevPerlinContrast = 5.0f;
     float prevPerlinTime = 0.0f;
     int prevPrimaryTextureIdx = 3;      // Match initial primary (grass)
     int prevSecondaryTextureIdx = 8;    // Match initial secondary (sand)
