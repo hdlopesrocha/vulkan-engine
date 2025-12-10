@@ -9,6 +9,7 @@
 #include "vulkan/PlaneMesh.hpp"
 #include "vulkan/TextureViewer.hpp"
 #include "vulkan/EditableTextureSet.hpp"
+#include "vulkan/ShadowMapper.hpp"
 #include <string>
 // (removed unused includes: filesystem, iostream, map, algorithm, cctype)
 
@@ -25,6 +26,8 @@ struct UniformObject {
 
 class MyApp : public VulkanApp {
     public:
+        MyApp() : shadowMapper(this, 2048) {}
+        
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     // texture manager handles albedo/normal/height triples
     TextureManager textureManager;
@@ -37,6 +40,9 @@ class MyApp : public VulkanApp {
     
     // Editable textures (1024x1024) - grouped in a single set
     EditableTextureSet editableTextures;
+    
+    // Shadow mapping
+    ShadowMapper shadowMapper;
     
     // Camera
     // start the camera further back so multiple cubes are visible
@@ -56,19 +62,6 @@ class MyApp : public VulkanApp {
         VkDescriptorSet planeDescriptorSet = VK_NULL_HANDLE;
         Buffer planeUniform;
         
-        // Shadow mapping resources
-        const uint32_t SHADOW_MAP_SIZE = 2048;
-        VkImage shadowMapImage = VK_NULL_HANDLE;
-        VkDeviceMemory shadowMapMemory = VK_NULL_HANDLE;
-        VkImageView shadowMapView = VK_NULL_HANDLE;
-        VkSampler shadowMapSampler = VK_NULL_HANDLE;
-        VkFramebuffer shadowFramebuffer = VK_NULL_HANDLE;
-        VkRenderPass shadowRenderPass = VK_NULL_HANDLE;
-        VkPipeline shadowPipeline = VK_NULL_HANDLE;
-        VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
-        VkDescriptorSetLayout shadowDescSetLayout = VK_NULL_HANDLE;
-        Buffer lightSpaceUniform; // Light-space matrix for shadow pass
-        VkDescriptorSet shadowMapImGuiDescSet = VK_NULL_HANDLE; // For ImGui display
         // store projection and view for per-cube MVP computation in draw()
         glm::mat4 projMat = glm::mat4(1.0f);
         glm::mat4 viewMat = glm::mat4(1.0f);
@@ -78,6 +71,9 @@ class MyApp : public VulkanApp {
         //VertexBufferObject vertexBufferObject; // now owned by CubeMesh
 
         void setup() override {
+            // Initialize shadow mapper
+            shadowMapper.init();
+            
             // Graphics Pipeline
             {
                 ShaderStage vertexShader = ShaderStage(
@@ -137,140 +133,6 @@ class MyApp : public VulkanApp {
                 uniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             }
             
-            // Create shadow map resources
-            createShadowMap();
-            
-            // Create shadow pipeline
-            {
-                ShaderStage shadowVertexShader = ShaderStage(
-                    createShaderModule(FileReader::readFile("shaders/shadow.vert.spv")),
-                    VK_SHADER_STAGE_VERTEX_BIT
-                );
-
-                ShaderStage shadowFragmentShader = ShaderStage(
-                    createShaderModule(FileReader::readFile("shaders/shadow.frag.spv")),
-                    VK_SHADER_STAGE_FRAGMENT_BIT
-                );
-
-                // Use the same descriptor set layout and pipeline layout as the main pipeline
-                // but create a pipeline compatible with the shadow render pass
-                VkGraphicsPipelineCreateInfo pipelineInfo{};
-                pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-                
-                VkPipelineShaderStageCreateInfo shaderStages[] = { shadowVertexShader.info, shadowFragmentShader.info };
-                pipelineInfo.stageCount = 2;
-                pipelineInfo.pStages = shaderStages;
-                
-                // Vertex input
-                VkVertexInputBindingDescription bindingDescription{};
-                bindingDescription.binding = 0;
-                bindingDescription.stride = sizeof(Vertex);
-                bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-                
-                std::vector<VkVertexInputAttributeDescription> attributeDescriptions = {
-                    VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos) },
-                    VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-                    VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
-                    VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                    VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
-                    VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
-                };
-                
-                VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-                vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-                vertexInputInfo.vertexBindingDescriptionCount = 1;
-                vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-                vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-                vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
-                pipelineInfo.pVertexInputState = &vertexInputInfo;
-                
-                // Input assembly
-                VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-                inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-                inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-                inputAssembly.primitiveRestartEnable = VK_FALSE;
-                pipelineInfo.pInputAssemblyState = &inputAssembly;
-                
-                // Viewport state
-                VkPipelineViewportStateCreateInfo viewportState{};
-                viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-                viewportState.viewportCount = 1;
-                viewportState.scissorCount = 1;
-                pipelineInfo.pViewportState = &viewportState;
-                
-                // Rasterization
-                VkPipelineRasterizationStateCreateInfo rasterizer{};
-                rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-                rasterizer.depthClampEnable = VK_TRUE; // Enable depth clamp to prevent far plane clipping
-                rasterizer.rasterizerDiscardEnable = VK_FALSE;
-                rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-                rasterizer.lineWidth = 1.0f;
-                rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT; // Cull front faces for shadow mapping (Peter Panning prevention)
-                rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-                rasterizer.depthBiasEnable = VK_TRUE; // Enable depth bias for shadow mapping
-                pipelineInfo.pRasterizationState = &rasterizer;
-                
-                // Multisample
-                VkPipelineMultisampleStateCreateInfo multisampling{};
-                multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-                multisampling.sampleShadingEnable = VK_FALSE;
-                multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-                pipelineInfo.pMultisampleState = &multisampling;
-                
-                // Depth stencil
-                VkPipelineDepthStencilStateCreateInfo depthStencil{};
-                depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-                depthStencil.depthTestEnable = VK_TRUE;
-                depthStencil.depthWriteEnable = VK_TRUE;
-                depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-                depthStencil.depthBoundsTestEnable = VK_FALSE;
-                depthStencil.stencilTestEnable = VK_FALSE;
-                pipelineInfo.pDepthStencilState = &depthStencil;
-                
-                // Color blend - no color attachments for shadow pass
-                VkPipelineColorBlendStateCreateInfo colorBlending{};
-                colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-                colorBlending.logicOpEnable = VK_FALSE;
-                colorBlending.attachmentCount = 0; // No color attachments
-                pipelineInfo.pColorBlendState = &colorBlending;
-                
-                // Dynamic state
-                VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS };
-                VkPipelineDynamicStateCreateInfo dynamicState{};
-                dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-                dynamicState.dynamicStateCount = 3;
-                dynamicState.pDynamicStates = dynamicStates;
-                pipelineInfo.pDynamicState = &dynamicState;
-                
-                // Create separate pipeline layout for shadow pass with push constants
-                VkPushConstantRange pushConstantRange{};
-                pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-                pushConstantRange.offset = 0;
-                pushConstantRange.size = sizeof(glm::mat4); // Size of MVP matrix
-                
-                VkPipelineLayoutCreateInfo shadowLayoutInfo{};
-                shadowLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-                shadowLayoutInfo.setLayoutCount = 0; // No descriptor sets needed for shadow pass
-                shadowLayoutInfo.pSetLayouts = nullptr;
-                shadowLayoutInfo.pushConstantRangeCount = 1;
-                shadowLayoutInfo.pPushConstantRanges = &pushConstantRange;
-                
-                if (vkCreatePipelineLayout(getDevice(), &shadowLayoutInfo, nullptr, &shadowPipelineLayout) != VK_SUCCESS) {
-                    throw std::runtime_error("failed to create shadow pipeline layout!");
-                }
-                
-                pipelineInfo.layout = shadowPipelineLayout;
-                pipelineInfo.renderPass = shadowRenderPass;
-                pipelineInfo.subpass = 0;
-                
-                if (vkCreateGraphicsPipelines(getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &shadowPipeline) != VK_SUCCESS) {
-                    throw std::runtime_error("failed to create shadow pipeline!");
-                }
-                
-                vkDestroyShaderModule(getDevice(), shadowFragmentShader.info.module, nullptr);
-                vkDestroyShaderModule(getDevice(), shadowVertexShader.info.module, nullptr);
-            }
-            
             // create descriptor sets - one per cube plus one for the plane
             size_t tripleCount = textureManager.count();
             if (tripleCount == 0) tripleCount = 1; // ensure at least one
@@ -326,7 +188,7 @@ class MyApp : public VulkanApp {
                 heightWrite.pImageInfo = &heightInfo;
                 
                 // Shadow map descriptor (binding 4)
-                VkDescriptorImageInfo shadowInfo { shadowMapSampler, shadowMapView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+                VkDescriptorImageInfo shadowInfo { shadowMapper.getShadowMapSampler(), shadowMapper.getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
                 VkWriteDescriptorSet shadowWrite{};
                 shadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 shadowWrite.dstSet = ds;
@@ -461,7 +323,7 @@ class MyApp : public VulkanApp {
             
             // Shadow Map Viewer
             ImGui::Begin("Shadow Map");
-            ImGui::Text("Shadow Map Size: %dx%d", SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+            ImGui::Text("Shadow Map Size: %dx%d", shadowMapper.getShadowMapSize(), shadowMapper.getShadowMapSize());
             
             // Debug: show light direction and position
             glm::vec3 lightDirVec = glm::normalize(glm::vec3(1.0f, 1.0f, 1.0f));
@@ -472,8 +334,8 @@ class MyApp : public VulkanApp {
             ImGui::Text("Scene Center: %.2f, %.2f, %.2f", sceneCenter.x, sceneCenter.y, sceneCenter.z);
             
             // Display shadow map as a texture
-            if (shadowMapImGuiDescSet != VK_NULL_HANDLE) {
-                ImGui::Image((ImTextureID)shadowMapImGuiDescSet, ImVec2(256, 256));
+            if (shadowMapper.getImGuiDescriptorSet() != VK_NULL_HANDLE) {
+                ImGui::Image((ImTextureID)shadowMapper.getImGuiDescriptorSet(), ImVec2(256, 256));
             } else {
                 ImGui::Text("Shadow map not available");
             }
@@ -558,7 +420,22 @@ class MyApp : public VulkanApp {
             float halfH = (rows - 1) * 0.5f * spacing;
             
             // First pass: Render shadow map
-            renderShadowPass(commandBuffer);
+            shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
+            
+            // Render all cubes to shadow map
+            for (size_t i = 0; i < descriptorSets.size(); ++i) {
+                int col = static_cast<int>(i % cols);
+                int row = static_cast<int>(i / cols);
+                
+                float x = col * spacing - halfW;
+                float y = -1.0f; // Above the plane
+                float z = row * spacing - halfH;
+                
+                glm::mat4 model_i = glm::translate(glm::mat4(1.0f), glm::vec3(x, y, z));
+                shadowMapper.renderObject(commandBuffer, model_i, cube.getVBO());
+            }
+            
+            shadowMapper.endShadowPass(commandBuffer);
             
             // Second pass: Render scene with shadows
             vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -674,295 +551,7 @@ class MyApp : public VulkanApp {
             editableTextures.cleanup();
             
             // shadow map cleanup
-            cleanupShadowMap();
-        }
-        
-        void createShadowMap() {
-            // Create depth image for shadow map
-            VkImageCreateInfo imageInfo{};
-            imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-            imageInfo.imageType = VK_IMAGE_TYPE_2D;
-            imageInfo.extent.width = SHADOW_MAP_SIZE;
-            imageInfo.extent.height = SHADOW_MAP_SIZE;
-            imageInfo.extent.depth = 1;
-            imageInfo.mipLevels = 1;
-            imageInfo.arrayLayers = 1;
-            imageInfo.format = VK_FORMAT_D32_SFLOAT;
-            imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-            imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-            imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            
-            if (vkCreateImage(getDevice(), &imageInfo, nullptr, &shadowMapImage) != VK_SUCCESS) {
-                throw std::runtime_error("failed to create shadow map image!");
-            }
-            
-            VkMemoryRequirements memRequirements;
-            vkGetImageMemoryRequirements(getDevice(), shadowMapImage, &memRequirements);
-            
-            VkMemoryAllocateInfo allocInfo{};
-            allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            allocInfo.allocationSize = memRequirements.size;
-            allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-            
-            if (vkAllocateMemory(getDevice(), &allocInfo, nullptr, &shadowMapMemory) != VK_SUCCESS) {
-                throw std::runtime_error("failed to allocate shadow map memory!");
-            }
-            
-            vkBindImageMemory(getDevice(), shadowMapImage, shadowMapMemory, 0);
-            
-            // Create image view
-            VkImageViewCreateInfo viewInfo{};
-            viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            viewInfo.image = shadowMapImage;
-            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            viewInfo.format = VK_FORMAT_D32_SFLOAT;
-            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-            viewInfo.subresourceRange.baseMipLevel = 0;
-            viewInfo.subresourceRange.levelCount = 1;
-            viewInfo.subresourceRange.baseArrayLayer = 0;
-            viewInfo.subresourceRange.layerCount = 1;
-            
-            if (vkCreateImageView(getDevice(), &viewInfo, nullptr, &shadowMapView) != VK_SUCCESS) {
-                throw std::runtime_error("failed to create shadow map image view!");
-            }
-            
-            // Create sampler for shadow map with comparison
-            VkSamplerCreateInfo samplerInfo{};
-            samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-            samplerInfo.magFilter = VK_FILTER_NEAREST;
-            samplerInfo.minFilter = VK_FILTER_NEAREST;
-            samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-            samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-            samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-            samplerInfo.anisotropyEnable = VK_FALSE;
-            samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-            samplerInfo.unnormalizedCoordinates = VK_FALSE;
-            samplerInfo.compareEnable = VK_FALSE; // Can enable for hardware PCF
-            samplerInfo.compareOp = VK_COMPARE_OP_LESS;
-            samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-            
-            if (vkCreateSampler(getDevice(), &samplerInfo, nullptr, &shadowMapSampler) != VK_SUCCESS) {
-                throw std::runtime_error("failed to create shadow map sampler!");
-            }
-            
-            // Create ImGui descriptor set for shadow map visualization
-            shadowMapImGuiDescSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
-                shadowMapSampler, 
-                shadowMapView, 
-                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-            );
-            
-            // Create shadow render pass
-            createShadowRenderPass();
-            
-            // Create shadow framebuffer
-            createShadowFramebuffer();
-        }
-        
-        void createShadowRenderPass() {
-            VkAttachmentDescription depthAttachment{};
-            depthAttachment.format = VK_FORMAT_D32_SFLOAT;
-            depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-            depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-            depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            
-            VkAttachmentReference depthAttachmentRef{};
-            depthAttachmentRef.attachment = 0;
-            depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            
-            VkSubpassDescription subpass{};
-            subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-            subpass.colorAttachmentCount = 0;
-            subpass.pDepthStencilAttachment = &depthAttachmentRef;
-            
-            VkSubpassDependency dependency{};
-            dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-            dependency.dstSubpass = 0;
-            dependency.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-            dependency.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            
-            VkRenderPassCreateInfo renderPassInfo{};
-            renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-            renderPassInfo.attachmentCount = 1;
-            renderPassInfo.pAttachments = &depthAttachment;
-            renderPassInfo.subpassCount = 1;
-            renderPassInfo.pSubpasses = &subpass;
-            renderPassInfo.dependencyCount = 1;
-            renderPassInfo.pDependencies = &dependency;
-            
-            if (vkCreateRenderPass(getDevice(), &renderPassInfo, nullptr, &shadowRenderPass) != VK_SUCCESS) {
-                throw std::runtime_error("failed to create shadow render pass!");
-            }
-        }
-        
-        void createShadowFramebuffer() {
-            VkFramebufferCreateInfo framebufferInfo{};
-            framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            framebufferInfo.renderPass = shadowRenderPass;
-            framebufferInfo.attachmentCount = 1;
-            framebufferInfo.pAttachments = &shadowMapView;
-            framebufferInfo.width = SHADOW_MAP_SIZE;
-            framebufferInfo.height = SHADOW_MAP_SIZE;
-            framebufferInfo.layers = 1;
-            
-            if (vkCreateFramebuffer(getDevice(), &framebufferInfo, nullptr, &shadowFramebuffer) != VK_SUCCESS) {
-                throw std::runtime_error("failed to create shadow framebuffer!");
-            }
-        }
-        
-        void cleanupShadowMap() {
-            if (shadowMapImGuiDescSet != VK_NULL_HANDLE) {
-                ImGui_ImplVulkan_RemoveTexture(shadowMapImGuiDescSet);
-                shadowMapImGuiDescSet = VK_NULL_HANDLE;
-            }
-            if (shadowPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), shadowPipeline, nullptr);
-            if (shadowFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(getDevice(), shadowFramebuffer, nullptr);
-            if (shadowRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(getDevice(), shadowRenderPass, nullptr);
-            if (shadowMapSampler != VK_NULL_HANDLE) vkDestroySampler(getDevice(), shadowMapSampler, nullptr);
-            if (shadowMapView != VK_NULL_HANDLE) vkDestroyImageView(getDevice(), shadowMapView, nullptr);
-            if (shadowMapImage != VK_NULL_HANDLE) vkDestroyImage(getDevice(), shadowMapImage, nullptr);
-            if (shadowMapMemory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), shadowMapMemory, nullptr);
-        }
-        
-        void renderShadowPass(VkCommandBuffer commandBuffer) {
-            // Debug: print what lightSpaceMatrix we're using in shadow pass
-            static int shadowDebugCount = 0;
-            if (shadowDebugCount == 0) {
-                printf("\n=== SHADOW PASS DEBUG ===\n");
-                glm::mat4 ls = uboStatic.lightSpaceMatrix;
-                printf("lightSpaceMatrix being used:\n");
-                for(int row=0; row<4; row++) {
-                    printf("  [%.3f, %.3f, %.3f, %.3f]\n", ls[0][row], ls[1][row], ls[2][row], ls[3][row]);
-                }
-                shadowDebugCount++;
-            }
-            
-            // Begin shadow render pass
-            VkRenderPassBeginInfo shadowRenderPassInfo{};
-            shadowRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-            shadowRenderPassInfo.renderPass = shadowRenderPass;
-            shadowRenderPassInfo.framebuffer = shadowFramebuffer;
-            shadowRenderPassInfo.renderArea.offset = {0, 0};
-            shadowRenderPassInfo.renderArea.extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE};
-            
-            VkClearValue clearDepth;
-            clearDepth.depthStencil = {1.0f, 0};
-            shadowRenderPassInfo.clearValueCount = 1;
-            shadowRenderPassInfo.pClearValues = &clearDepth;
-            
-            vkCmdBeginRenderPass(commandBuffer, &shadowRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-            
-            // Set viewport and scissor for shadow map
-            VkViewport shadowViewport{};
-            shadowViewport.x = 0.0f;
-            shadowViewport.y = 0.0f;
-            shadowViewport.width = (float)SHADOW_MAP_SIZE;
-            shadowViewport.height = (float)SHADOW_MAP_SIZE;
-            shadowViewport.minDepth = 0.0f;
-            shadowViewport.maxDepth = 1.0f;
-            vkCmdSetViewport(commandBuffer, 0, 1, &shadowViewport);
-            
-            VkRect2D shadowScissor{};
-            shadowScissor.offset = {0, 0};
-            shadowScissor.extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE};
-            vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
-            
-            // Set depth bias to reduce shadow acne (reduced values for better shadow visibility)
-            vkCmdSetDepthBias(commandBuffer, 0.5f, 0.0f, 1.0f);
-            
-            // Bind the shadow pipeline
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
-            
-            // Don't render the plane to shadow map - we only want cube shadows on the plane
-            // Skip plane rendering in shadow pass
-            
-            // Render all cubes to shadow map
-            size_t n = descriptorSets.size();
-            float spacing = 2.5f;
-            if (n == 0) n = 1;
-            int cols = static_cast<int>(std::ceil(std::sqrt((float)n)));
-            int rows = static_cast<int>(std::ceil((float)n / cols));
-            float halfW = (cols - 1) * 0.5f * spacing;
-            float halfH = (rows - 1) * 0.5f * spacing;
-            
-            // Debug: Print once
-            static bool printed = false;
-            if (!printed) {
-                printf("Shadow pass: rendering %zu cubes in %dx%d grid\n", descriptorSets.size(), cols, rows);
-                printf("Grid dimensions: halfW=%.2f, halfH=%.2f, spacing=%.2f\n", halfW, halfH, spacing);
-                printed = true;
-            }
-            
-            VkBuffer cubeVertexBuffers[] = { cube.getVBO().vertexBuffer.buffer };
-            VkDeviceSize cubeOffsets[] = { 0 };
-            vkCmdBindVertexBuffers(commandBuffer, 0, 1, cubeVertexBuffers, cubeOffsets);
-            vkCmdBindIndexBuffer(commandBuffer, cube.getVBO().indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
-            
-            for (size_t i = 0; i < descriptorSets.size(); ++i) {
-                int col = static_cast<int>(i % cols);
-                int row = static_cast<int>(i / cols);
-                
-                // Position cubes horizontally above the plane (plane at Y=-1.5)
-                float x = col * spacing - halfW;
-                float y = -1.0f; // Above the plane (plane is at -1.5)
-                float z = row * spacing - halfH; // Spread in Z direction
-                
-                // Skip shadow rendering for cubes below the plane
-                if (y < -1.5f) {
-                    continue;
-                }
-                
-                glm::mat4 model_i = glm::translate(glm::mat4(1.0f), glm::vec3(x, y, z));
-                glm::mat4 mvp_i = uboStatic.lightSpaceMatrix * model_i;
-                
-                // Debug: Print ALL cube positions to see the full grid
-                static bool printedPos = false;
-                if (!printedPos) {
-                    printf("  Cube %zu: pos(%.2f, %.2f, %.2f)\n", i, x, y, z);
-                    if (i == descriptorSets.size() - 1) printedPos = true;
-                }
-
-                // Push MVP matrix directly to the shader
-                vkCmdPushConstants(commandBuffer, shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &mvp_i);
-                
-                vkCmdDrawIndexed(commandBuffer, cube.getVBO().indexCount, 1, 0, 0, 0);
-            }
-            
-            vkCmdEndRenderPass(commandBuffer);
-            
-            // Transition shadow map from depth attachment to shader read
-            VkImageMemoryBarrier barrier{};
-            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.image = shadowMapImage;
-            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-            barrier.subresourceRange.baseMipLevel = 0;
-            barrier.subresourceRange.levelCount = 1;
-            barrier.subresourceRange.baseArrayLayer = 0;
-            barrier.subresourceRange.layerCount = 1;
-            barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            
-            vkCmdPipelineBarrier(
-                commandBuffer,
-                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0,
-                0, nullptr,
-                0, nullptr,
-                1, &barrier
-            );
+            shadowMapper.cleanup();
         }
         
         void updatePlaneDescriptorSet() {
@@ -1013,7 +602,7 @@ class MyApp : public VulkanApp {
             planeHeightWrite.pImageInfo = &planeHeightInfo;
             
             // Shadow map descriptor for plane (binding 4)
-            VkDescriptorImageInfo planeShadowInfo { shadowMapSampler, shadowMapView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo planeShadowInfo { shadowMapper.getShadowMapSampler(), shadowMapper.getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
             VkWriteDescriptorSet planeShadowWrite{};
             planeShadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             planeShadowWrite.dstSet = planeDescriptorSet;
