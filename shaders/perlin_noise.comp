@@ -35,8 +35,8 @@ float random(uvec2 v) {
 
 // Generate random gradient vector with wrapping for seamless textures
 vec2 randomGradient(ivec2 p) {
-    // Wrap coordinates to make seamless
-    p = ivec2(mod(vec2(p), vec2(params.textureSize)));
+    // Wrap coordinates based on scale to make seamless
+    p = ivec2(mod(vec2(p), params.scale));
     uint n = hash(uint(p.x) ^ hash(uint(p.y)));
     float angle = float(n) / float(0xffffffffu) * 6.28318530718; // 2 * PI
     return vec2(cos(angle), sin(angle));
@@ -49,21 +49,25 @@ float fade(float t) {
 
 // Perlin noise function with seamless wrapping
 float perlin(vec2 p) {
-    // Wrap p to create seamless tiling
-    vec2 period = vec2(params.textureSize);
+    // For seamless tiling, we need to wrap at the scaled resolution
+    // The period should match the scale to ensure integer wrapping
+    float period = params.scale;
     
-    ivec2 p0 = ivec2(floor(p));
-    ivec2 p1 = ivec2(mod(vec2(p0 + ivec2(1, 0)), period));
-    ivec2 p2 = ivec2(mod(vec2(p0 + ivec2(0, 1)), period));
-    ivec2 p3 = ivec2(mod(vec2(p0 + ivec2(1, 1)), period));
-    p0 = ivec2(mod(vec2(p0), period));
+    // Wrap p into the period
+    vec2 pWrapped = mod(p, period);
+    
+    ivec2 p0 = ivec2(floor(pWrapped));
+    vec2 f = fract(pWrapped);
+    
+    // Calculate the four corner positions with wrapping
+    ivec2 p1 = ivec2(mod(float(p0.x + 1), period), p0.y);
+    ivec2 p2 = ivec2(p0.x, mod(float(p0.y + 1), period));
+    ivec2 p3 = ivec2(mod(float(p0.x + 1), period), mod(float(p0.y + 1), period));
     
     vec2 g0 = randomGradient(p0);
     vec2 g1 = randomGradient(p1);
     vec2 g2 = randomGradient(p2);
     vec2 g3 = randomGradient(p3);
-    
-    vec2 f = fract(p);
     
     float v0 = dot(g0, f - vec2(0.0, 0.0));
     float v1 = dot(g1, f - vec2(1.0, 0.0));

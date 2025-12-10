@@ -217,7 +217,10 @@ private:
         ImGui::Separator();
         ImGui::Text("Noise Parameters");
         
-        if (ImGui::SliderFloat("Scale", &perlinScale, 1.0f, 32.0f)) {
+        // Use integer scale for perfect seamless tiling
+        int scaleInt = (int)perlinScale;
+        if (ImGui::SliderInt("Scale", &scaleInt, 1, 32)) {
+            perlinScale = (float)scaleInt;
             paramsChanged = true;
         }
         if (ImGui::SliderFloat("Octaves", &perlinOctaves, 1.0f, 8.0f)) {
