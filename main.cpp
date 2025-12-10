@@ -11,6 +11,11 @@
 #include "vulkan/EditableTextureSet.hpp"
 #include "vulkan/ShadowMapper.hpp"
 #include "vulkan/ModelManager.hpp"
+#include "widgets/WidgetManager.hpp"
+#include "widgets/CameraWidget.hpp"
+#include "widgets/POMControlsWidget.hpp"
+#include "widgets/DebugWidget.hpp"
+#include "widgets/ShadowMapWidget.hpp"
 #include <string>
 #include <memory>
 // (removed unused includes: filesystem, iostream, map, algorithm, cctype)
@@ -41,7 +46,13 @@ class MyApp : public VulkanApp {
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     // texture manager handles albedo/normal/height triples
     TextureManager textureManager;
-    TextureViewer textureViewer;
+    
+    // Widget manager (handles all UI windows)
+    WidgetManager widgetManager;
+    
+    // Widgets (shared pointers for widget manager)
+    std::shared_ptr<TextureViewer> textureViewer;
+    std::shared_ptr<EditableTextureSet> editableTextures;
     
     // Model manager to handle all renderable objects
     ModelManager modelManager;
@@ -51,9 +62,6 @@ class MyApp : public VulkanApp {
     
     // UI: currently selected texture triple for preview
     size_t currentTextureIndex = 0;
-    
-    // Editable textures (1024x1024) - grouped in a single set
-    EditableTextureSet editableTextures;
     
     // Shadow mapping
     ShadowMapper shadowMapper;
@@ -255,27 +263,43 @@ class MyApp : public VulkanApp {
             glm::mat4 lightProjection = glm::ortho(-orthoSize, orthoSize, -orthoSize, orthoSize, 1.0f, 50.0f);
             uboStatic.lightSpaceMatrix = lightProjection * lightView;
             
-            // initialize texture viewer (after textures loaded)
-            textureViewer.init(&textureManager);
+            // Initialize widgets
+            textureViewer = std::make_shared<TextureViewer>();
+            textureViewer->init(&textureManager);
+            widgetManager.addWidget(textureViewer);
             
-            // Initialize editable texture set (1024x1024)
-            editableTextures.init(this, 1024, 1024, "Editable Textures");
-            editableTextures.setTextureManager(&textureManager);
-            
-            // Set callback to update plane descriptor set when textures are generated
-            editableTextures.setOnTextureGenerated([this]() {
+            editableTextures = std::make_shared<EditableTextureSet>();
+            editableTextures->init(this, 1024, 1024, "Editable Textures");
+            editableTextures->setTextureManager(&textureManager);
+            editableTextures->setOnTextureGenerated([this]() {
                 updatePlaneDescriptorSet();
                 printf("Plane descriptor set updated with new textures\n");
             });
+            editableTextures->generateInitialTextures();
+            widgetManager.addWidget(editableTextures);
             
-            // Generate initial textures so plane has content
-            editableTextures.generateInitialTextures();
+            // Create other widgets
+            auto cameraWidget = std::make_shared<CameraWidget>(&camera);
+            widgetManager.addWidget(cameraWidget);
+            
+            auto pomWidget = std::make_shared<POMControlsWidget>(
+                &pomHeightScale, &pomMinLayers, &pomMaxLayers, &pomEnabled,
+                &flipNormalY, &flipTangentHandedness, &flipParallaxDirection,
+                &ambientFactor, &specularStrength, &shininess
+            );
+            widgetManager.addWidget(pomWidget);
+            
+            auto debugWidget = std::make_shared<DebugWidget>(&textureManager, &camera, &currentTextureIndex);
+            widgetManager.addWidget(debugWidget);
+            
+            auto shadowWidget = std::make_shared<ShadowMapWidget>(&shadowMapper);
+            widgetManager.addWidget(shadowWidget);
             
             // Generate initial textures (blend between texture 0 and texture 3)
             printf("Generating initial textures...\n");
-            editableTextures.getAlbedo();  // Ensure textures are accessible
-            editableTextures.getNormal();
-            editableTextures.getBump();
+            editableTextures->getAlbedo();  // Ensure textures are accessible
+            editableTextures->getNormal();
+            editableTextures->getBump();
             
             createCommandBuffers();
         };
@@ -294,6 +318,9 @@ class MyApp : public VulkanApp {
                     }
                     ImGui::EndMenu();
                 }
+                // Widget menu
+                widgetManager.renderMenu();
+                
                 ImGui::SameLine(ImGui::GetIO().DisplaySize.x - 120);
                 ImGui::Text("FPS: %.1f", imguiFps);
                 ImGui::EndMainMenuBar();
@@ -301,75 +328,8 @@ class MyApp : public VulkanApp {
 
             if (imguiShowDemo) ImGui::ShowDemoWindow(&imguiShowDemo);
 
-            // POM controls
-            ImGui::Begin("POM Controls");
-            ImGui::Checkbox("Enable POM", &pomEnabled);
-            ImGui::SliderFloat("Height Scale", &pomHeightScale, 0.0f, 0.2f, "%.3f");
-            ImGui::SliderFloat("Min Layers", &pomMinLayers, 1.0f, 64.0f, "%.0f");
-            ImGui::SliderFloat("Max Layers", &pomMaxLayers, 1.0f, 128.0f, "%.0f");
-            ImGui::Checkbox("Flip normal Y", &flipNormalY);
-            ImGui::Checkbox("Flip parallax direction", &flipParallaxDirection);
-            ImGui::Checkbox("Flip tangent handedness", &flipTangentHandedness);
-            ImGui::Separator();
-            ImGui::Text("Lighting");
-            ImGui::SliderFloat("Ambient", &ambientFactor, 0.0f, 1.0f, "%.2f");
-            ImGui::SliderFloat("Specular Strength", &specularStrength, 0.0f, 2.0f, "%.2f");
-            ImGui::SliderFloat("Shininess", &shininess, 1.0f, 256.0f, "%.0f");
-            ImGui::End();
-
-            // Camera controls
-            ImGui::Begin("Camera");
-            ImGui::DragFloat("Move Speed", &camera.speed, 0.1f, 0.0f, 50.0f);
-            float angDeg = glm::degrees(camera.angularSpeedRad);
-            if (ImGui::SliderFloat("Angular Speed (deg/s)", &angDeg, 1.0f, 360.0f)) {
-                camera.angularSpeedRad = glm::radians(angDeg);
-            }
-            glm::vec3 pos = camera.getPosition();
-            ImGui::Text("Position: %.2f, %.2f, %.2f", pos.x, pos.y, pos.z);
-            glm::quat orient = camera.getOrientation();
-            glm::vec3 euler = glm::degrees(glm::eulerAngles(orient));
-            ImGui::Text("Euler (deg): X=%.1f Y=%.1f Z=%.1f", euler.x, euler.y, euler.z);
-            if (ImGui::Button("Reset Orientation")) {
-                // small helper: recreate camera to reset orientation (preserve position)
-                camera = Camera(camera.getPosition());
-            }
-            ImGui::End();
-
-            // Textures visualization (single preview with navigation)
-            textureViewer.render();
-
-            // Debug panel: show scene info
-            ImGui::Begin("Debug");
-            ImGui::Text("Loaded texture triples: %zu", textureManager.count());
-            ImGui::Text("Rendered cubes: %zu", descriptorSets.size());
-            glm::vec3 camPos = camera.getPosition();
-            ImGui::Text("Camera pos: %.2f %.2f %.2f", camPos.x, camPos.y, camPos.z);
-            ImGui::Text("Cube grid spacing: %.1f", 2.5f);
-            ImGui::Text("Grid layout: 4x3 cubes");
-            ImGui::End();
-            
-            // Shadow Map Viewer
-            ImGui::Begin("Shadow Map");
-            ImGui::Text("Shadow Map Size: %dx%d", shadowMapper.getShadowMapSize(), shadowMapper.getShadowMapSize());
-            
-            // Debug: show light direction and position
-            glm::vec3 lightDirVec = glm::normalize(glm::vec3(1.0f, 1.0f, 1.0f));
-            glm::vec3 sceneCenter = glm::vec3(0.0f, 0.0f, 0.0f);
-            glm::vec3 lightPosVec = sceneCenter + lightDirVec * 20.0f;
-            ImGui::Text("Light Dir: %.2f, %.2f, %.2f", lightDirVec.x, lightDirVec.y, lightDirVec.z);
-            ImGui::Text("Light Pos: %.2f, %.2f, %.2f", lightPosVec.x, lightPosVec.y, lightPosVec.z);
-            ImGui::Text("Scene Center: %.2f, %.2f, %.2f", sceneCenter.x, sceneCenter.y, sceneCenter.z);
-            
-            // Display shadow map as a texture
-            if (shadowMapper.getImGuiDescriptorSet() != VK_NULL_HANDLE) {
-                ImGui::Image((ImTextureID)shadowMapper.getImGuiDescriptorSet(), ImVec2(256, 256));
-            } else {
-                ImGui::Text("Shadow map not available");
-            }
-            ImGui::End();
-            
-            // Editable Textures (single window with tabs)
-            editableTextures.renderImGui();
+            // Render all widgets
+            widgetManager.renderAll();
         }
 
         void update(float deltaTime) override {
@@ -569,7 +529,7 @@ class MyApp : public VulkanApp {
             if (planeUniform.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), planeUniform.memory, nullptr);
             
             // editable textures cleanup
-            editableTextures.cleanup();
+            if (editableTextures) editableTextures->cleanup();
             
             // shadow map cleanup
             shadowMapper.cleanup();
@@ -577,7 +537,7 @@ class MyApp : public VulkanApp {
         
         void updatePlaneDescriptorSet() {
             // Check if editable textures are initialized
-            if (editableTextures.getAlbedo().getView() == VK_NULL_HANDLE) {
+            if (!editableTextures || editableTextures->getAlbedo().getView() == VK_NULL_HANDLE) {
                 printf("Warning: Editable textures not yet initialized, skipping plane descriptor update\n");
                 return;
             }
@@ -594,9 +554,9 @@ class MyApp : public VulkanApp {
             planeUboWrite.pBufferInfo = &planeBufferInfo;
             
             // Use editable textures (albedo, normal, bump)
-            VkDescriptorImageInfo planeAlbedoInfo{ editableTextures.getAlbedo().getSampler(), editableTextures.getAlbedo().getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            VkDescriptorImageInfo planeNormalInfo{ editableTextures.getNormal().getSampler(), editableTextures.getNormal().getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            VkDescriptorImageInfo planeHeightInfo{ editableTextures.getBump().getSampler(), editableTextures.getBump().getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo planeAlbedoInfo{ editableTextures->getAlbedo().getSampler(), editableTextures->getAlbedo().getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo planeNormalInfo{ editableTextures->getNormal().getSampler(), editableTextures->getNormal().getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo planeHeightInfo{ editableTextures->getBump().getSampler(), editableTextures->getBump().getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             
             VkWriteDescriptorSet planeAlbedoWrite{};
             planeAlbedoWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

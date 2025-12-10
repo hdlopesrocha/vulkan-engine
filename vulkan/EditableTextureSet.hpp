@@ -2,6 +2,7 @@
 
 #include "EditableTexture.hpp"
 #include "TextureManager.hpp"
+#include "../widgets/Widget.hpp"
 #include <imgui.h>
 #include <random>
 #include <cstring>
@@ -19,13 +20,13 @@ struct PerlinPushConstants {
     uint32_t textureSize;
 };
 
-class EditableTextureSet {
+class EditableTextureSet : public Widget {
 public:
-    EditableTextureSet() = default;
+    EditableTextureSet() : Widget("Editable Textures") {}
     
     void init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName = "Editable Textures") {
         this->app = app;
-        this->windowName = windowName;
+        this->title = windowName;  // Update widget title
         
         // Initialize all three textures (all RGBA8 for compute shader compatibility)
         albedo.init(app, width, height, VK_FORMAT_R8G8B8A8_UNORM, "Albedo");
@@ -82,8 +83,11 @@ public:
     }
     
     // Render a single ImGui window with tabs
-    void renderImGui() {
-        ImGui::Begin(windowName.c_str(), nullptr, ImGuiWindowFlags_None);
+    void render() override {
+        if (!ImGui::Begin(title.c_str(), &isOpen, ImGuiWindowFlags_None)) {
+            ImGui::End();
+            return;
+        }
         
         if (ImGui::BeginTabBar("TextureTabBar")) {
             // Albedo Tab
@@ -122,7 +126,6 @@ public:
 private:
     VulkanApp* app = nullptr;
     TextureManager* textureMgr = nullptr;
-    std::string windowName = "Editable Textures";
     EditableTexture albedo;
     EditableTexture normal;
     EditableTexture bump;

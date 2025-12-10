@@ -2,12 +2,13 @@
 
 #include <imgui.h>
 #include "TextureManager.hpp"
+#include "../widgets/Widget.hpp"
 
-class TextureViewer {
+class TextureViewer : public Widget {
 public:
-    TextureViewer() = default;
+    TextureViewer() : Widget("Textures") {}
     void init(TextureManager* manager) { this->manager = manager; }
-    void render();
+    void render() override;
 
 private:
     TextureManager* manager = nullptr;

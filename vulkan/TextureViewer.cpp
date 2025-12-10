@@ -4,7 +4,11 @@
 void TextureViewer::render() {
     if (!manager) return;
 
-    ImGui::Begin("Textures");
+    if (!ImGui::Begin(title.c_str(), &isOpen)) {
+        ImGui::End();
+        return;
+    }
+    
     size_t tc = manager->count();
     if (tc == 0) {
         ImGui::Text("No textures loaded");
