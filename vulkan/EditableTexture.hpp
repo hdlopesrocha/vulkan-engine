@@ -41,7 +41,10 @@ public:
     void cleanup() {
         if (!app) return;
         VkDevice device = app->getDevice();
-        
+        if (!device || device == VK_NULL_HANDLE) {
+            app = nullptr;
+            return;
+        }
         if (sampler != VK_NULL_HANDLE) {
             vkDestroySampler(device, sampler, nullptr);
             sampler = VK_NULL_HANDLE;
@@ -58,6 +61,7 @@ public:
             vkFreeMemory(device, memory, nullptr);
             memory = VK_NULL_HANDLE;
         }
+        app = nullptr;
     }
     
     // Edit a pixel (RGBA format)

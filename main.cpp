@@ -69,6 +69,7 @@ class MyApp : public VulkanApp {
     std::shared_ptr<TextureViewer> textureViewer;
     std::shared_ptr<EditableTextureSet> editableTextures;
     std::shared_ptr<SettingsWidget> settingsWidget;
+    std::shared_ptr<BillboardCreator> billboardCreator;
     
     // Model manager to handle all renderable objects
     ModelManager modelManager;
@@ -458,7 +459,7 @@ class MyApp : public VulkanApp {
             widgetManager.addWidget(vegAtlasEditor);
             
             // Create billboard creator widget
-            auto billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureManager);
+            billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureManager);
             billboardCreator->setVulkanApp(this);
             widgetManager.addWidget(billboardCreator);
             
@@ -717,6 +718,9 @@ class MyApp : public VulkanApp {
             
             // editable textures cleanup
             if (editableTextures) editableTextures->cleanup();
+            
+            // billboard creator cleanup
+            if (billboardCreator) billboardCreator->cleanup();
             
             // shadow map cleanup
             shadowMapper.cleanup();

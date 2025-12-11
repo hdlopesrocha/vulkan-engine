@@ -37,12 +37,17 @@ public:
         texturesInitialized = true;
     }
     
-    ~BillboardCreator() {
+    void cleanup() {
         if (texturesInitialized) {
             composedAlbedo.cleanup();
             composedNormal.cleanup();
             composedOpacity.cleanup();
+            texturesInitialized = false;
         }
+    }
+    
+    ~BillboardCreator() {
+        // Don't cleanup here - it will be done explicitly before VulkanApp destruction
     }
     
     void render() override {
