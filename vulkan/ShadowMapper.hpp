@@ -24,6 +24,8 @@ public:
     VkSampler getShadowMapSampler() const { return shadowMapSampler; }
     VkDescriptorSet getImGuiDescriptorSet() const { return shadowMapImGuiDescSet; }
     uint32_t getShadowMapSize() const { return shadowMapSize; }
+    // debug: read back depth image to host and write PGM
+    void readbackShadowDepth();
     
 private:
     VulkanApp* vulkanApp;

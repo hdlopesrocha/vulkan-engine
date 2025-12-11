@@ -1486,6 +1486,9 @@ void VulkanApp::drawFrame() {
         return;
     }
     //std::cerr << "presented image " << imageIndex << "\n";
+
+    // Hook for derived apps to run post-submit instrumentation (e.g., readback)
+    postSubmit();
 }
 
 void VulkanApp::cleanupSwapchain() {

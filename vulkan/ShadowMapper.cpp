@@ -1,6 +1,8 @@
 #include "ShadowMapper.hpp"
 #include <backends/imgui_impl_vulkan.h>
 #include <stdexcept>
+#include <fstream>
+#include <limits>
 
 ShadowMapper::ShadowMapper(VulkanApp* app, uint32_t shadowMapSize)
     : vulkanApp(app), shadowMapSize(shadowMapSize) {}
@@ -228,17 +230,36 @@ void ShadowMapper::createShadowPipeline() {
         VK_SHADER_STAGE_VERTEX_BIT
     );
 
-    ShaderStage shadowFragmentShader = ShaderStage(
-        vulkanApp->createShaderModule(FileReader::readFile("shaders/shadow.frag.spv")),
-        VK_SHADER_STAGE_FRAGMENT_BIT
-    );
+    // Build a list of ShaderStage objects (so their .info members remain valid)
+    std::vector<ShaderStage> shaderObjs;
+    shaderObjs.push_back(shadowVertexShader);
+
+    // Attempt to load tessellation stages for shadow pipeline (displacement in shadow pass)
+    bool hasTess = false;
+    try {
+        auto tescCode = FileReader::readFile("shaders/shadow.tesc.spv");
+        auto teseCode = FileReader::readFile("shaders/shadow.tese.spv");
+        if (!tescCode.empty() && !teseCode.empty()) {
+            shaderObjs.emplace_back(vulkanApp->createShaderModule(tescCode), VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
+            shaderObjs.emplace_back(vulkanApp->createShaderModule(teseCode), VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
+            hasTess = true;
+        }
+    } catch (...) {
+        hasTess = false;
+    }
+
+    shaderObjs.emplace_back(vulkanApp->createShaderModule(FileReader::readFile("shaders/shadow.frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
 
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    
-    VkPipelineShaderStageCreateInfo shaderStages[] = { shadowVertexShader.info, shadowFragmentShader.info };
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = shaderStages;
+
+    // Assemble shader stage list from shaderObjs
+    std::vector<VkPipelineShaderStageCreateInfo> stages;
+    for (const auto &s : shaderObjs) stages.push_back(s.info);
+    pipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
+    // Keep the shader stages array alive until pipeline creation
+    std::vector<VkPipelineShaderStageCreateInfo> shaderStageVec = stages;
+    pipelineInfo.pStages = shaderStageVec.data();
     
     // Vertex input
     VkVertexInputBindingDescription bindingDescription{};
@@ -266,7 +287,7 @@ void ShadowMapper::createShadowPipeline() {
     // Input assembly
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.topology = hasTess ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     inputAssembly.primitiveRestartEnable = VK_FALSE;
     pipelineInfo.pInputAssemblyState = &inputAssembly;
     
@@ -342,13 +363,21 @@ void ShadowMapper::createShadowPipeline() {
     pipelineInfo.layout = shadowPipelineLayout;
     pipelineInfo.renderPass = shadowRenderPass;
     pipelineInfo.subpass = 0;
-    
+    VkPipelineTessellationStateCreateInfo tessState{};
+    if (hasTess) {
+        tessState.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
+        tessState.patchControlPoints = 3;
+        pipelineInfo.pTessellationState = &tessState;
+    }
+
     if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &shadowPipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create shadow pipeline!");
     }
-    
-    vkDestroyShaderModule(device, shadowFragmentShader.info.module, nullptr);
-    vkDestroyShaderModule(device, shadowVertexShader.info.module, nullptr);
+
+    // Destroy shader modules we created
+    for (const auto &s : shaderObjs) {
+        vkDestroyShaderModule(device, s.info.module, nullptr);
+    }
 }
 
 void ShadowMapper::beginShadowPass(VkCommandBuffer commandBuffer, const glm::mat4& lightSpaceMatrix) {
@@ -458,4 +487,111 @@ void ShadowMapper::endShadowPass(VkCommandBuffer commandBuffer) {
         0, nullptr,
         1, &barrier
     );
+}
+
+void ShadowMapper::readbackShadowDepth() {
+    // Readback the shadow depth image to a host-visible buffer and write a PGM for debugging
+    VkDevice device = vulkanApp->getDevice();
+    VkDeviceSize imageSize = static_cast<VkDeviceSize>(shadowMapSize) * shadowMapSize * sizeof(float);
+
+    // Create staging buffer
+    Buffer stagingBuffer = vulkanApp->createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    // Record commands: transition to TRANSFER_SRC, copy image to buffer, transition back to READ_ONLY
+    VkCommandBuffer cmd = vulkanApp->beginSingleTimeCommands();
+
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = shadowMapImage;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0, nullptr,
+        0, nullptr,
+        1, &barrier
+    );
+
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0,0,0};
+    region.imageExtent = { shadowMapSize, shadowMapSize, 1 };
+
+    vkCmdCopyImageToBuffer(cmd, shadowMapImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer.buffer, 1, &region);
+
+    // transition back to read-only optimal for shader sampling
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0,
+        0, nullptr,
+        0, nullptr,
+        1, &barrier
+    );
+
+    vulkanApp->endSingleTimeCommands(cmd);
+
+    // Map and write PGM
+    void* data;
+    vkMapMemory(device, stagingBuffer.memory, 0, imageSize, 0, &data);
+    float* depths = reinterpret_cast<float*>(data);
+    size_t count = static_cast<size_t>(shadowMapSize) * shadowMapSize;
+
+    float minD = std::numeric_limits<float>::infinity();
+    float maxD = -std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < count; ++i) {
+        float v = depths[i];
+        if (v < minD) minD = v;
+        if (v > maxD) maxD = v;
+    }
+    if (!(minD <= maxD)) { minD = 0.0f; maxD = 1.0f; }
+
+    // create normalized 8-bit image
+    std::vector<unsigned char> image(count);
+    float range = maxD - minD;
+    for (size_t i = 0; i < count; ++i) {
+        float v = depths[i];
+        float n = (range > 1e-6f) ? (v - minD) / range : 0.0f;
+        unsigned char c = static_cast<unsigned char>(std::min(1.0f, std::max(0.0f, n)) * 255.0f);
+        image[i] = c;
+    }
+
+    // ensure bin directory exists and write PGM
+    std::ofstream ofs("bin/shadow_depth.pgm", std::ios::binary);
+    if (ofs) {
+        ofs << "P5\n" << shadowMapSize << " " << shadowMapSize << "\n255\n";
+        ofs.write(reinterpret_cast<const char*>(image.data()), image.size());
+        ofs.close();
+    }
+
+    std::cerr << "[ShadowMapper] depth stats: min=" << minD << " max=" << maxD << "\n";
+
+    vkUnmapMemory(device, stagingBuffer.memory);
+    vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
+    vkFreeMemory(device, stagingBuffer.memory, nullptr);
 }

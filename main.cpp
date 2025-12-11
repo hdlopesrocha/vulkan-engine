@@ -57,6 +57,8 @@ struct UniformObject {
 class MyApp : public VulkanApp, public IEventHandler {
     public:
         MyApp() : shadowMapper(this, 8192) {}
+
+        // postSubmit() override removed to disable slow per-frame shadow readback
         
     VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     VkPipeline graphicsPipelineWire = VK_NULL_HANDLE;

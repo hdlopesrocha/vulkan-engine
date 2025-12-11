@@ -227,5 +227,7 @@ protected:
         virtual void update(float deltaTime) = 0;
         virtual void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) = 0;
         virtual void clean() = 0;
+        // Called after a frame has been submitted/presented. Derived apps may override.
+        virtual void postSubmit() {}
 
 };
