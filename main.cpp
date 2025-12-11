@@ -7,6 +7,7 @@
 #include "events/EventManager.hpp"
 #include "events/WindowEvents.hpp"
 #include "events/KeyboardPublisher.hpp"
+#include "events/GamepadPublisher.hpp"
 #include "vulkan/TextureManager.hpp"
 #include "events/CameraEvents.hpp"
 #include "vulkan/AtlasManager.hpp"
@@ -97,6 +98,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     // Event manager for app-wide pub/sub
     EventManager eventManager;
     KeyboardPublisher keyboard;
+    GamepadPublisher gamepad;
     // (managed by TextureManager)
         std::vector<VkDescriptorSet> descriptorSets;
         std::vector<Buffer> uniforms; // One uniform buffer per cube
@@ -534,7 +536,16 @@ class MyApp : public VulkanApp, public IEventHandler {
             proj[1][1] *= -1.0f;
 
             GLFWwindow* win = getWindow();
-            if (win) keyboard.update(win, &eventManager, camera, deltaTime);
+            if (win) {
+                // Apply sensitivity settings from UI
+                keyboard.setMoveSpeed(settingsWidget->getMoveSpeed());
+                keyboard.setAngularSpeed(settingsWidget->getAngularSpeedDeg());
+                keyboard.update(win, &eventManager, camera, deltaTime, settingsWidget->getFlipKeyboardRotation());
+            }
+            // Poll gamepad and publish camera movement events (apply sensitivity)
+            gamepad.setMoveSpeed(settingsWidget->getMoveSpeed());
+            gamepad.setAngularSpeed(settingsWidget->getAngularSpeedDeg());
+            gamepad.update(&eventManager, camera, deltaTime, settingsWidget->getFlipGamepadRotation());
 
             // build view matrix from camera state (no cube rotation)
             view = camera.getViewMatrix();

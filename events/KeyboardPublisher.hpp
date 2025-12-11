@@ -19,7 +19,9 @@ public:
     // - em: EventManager to publish to (must be valid)
     // - cam: reference to Camera (used only to read forward/right/up)
     // - deltaTime: frame delta in seconds
-    void update(GLFWwindow* window, EventManager* em, const Camera& cam, float deltaTime);
+    void update(GLFWwindow* window, EventManager* em, const Camera& cam, float deltaTime, bool flipRotation);
+    void setMoveSpeed(float v) { moveSpeed = v; }
+    void setAngularSpeed(float deg) { angularSpeedDeg = deg; }
 
 private:
     float moveSpeed;         // units per second

@@ -10,7 +10,7 @@
 KeyboardPublisher::KeyboardPublisher(float moveSpeed_, float angularSpeedDeg_)
     : moveSpeed(moveSpeed_), angularSpeedDeg(angularSpeedDeg_) {}
 
-void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camera& cam, float deltaTime) {
+void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camera& cam, float deltaTime, bool flipRotation) {
     if (!window || !em) return;
 
     // compute camera axes (camera provides normalized vectors)
@@ -20,6 +20,7 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
 
     float velocity = moveSpeed * deltaTime;
     float angDeg = angularSpeedDeg * deltaTime;
+    float rotSign = flipRotation ? -1.0f : 1.0f;
 
     // Translation keys (continuous while held)
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
@@ -44,24 +45,24 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
     // Rotation keys (continuous while held)
     // yaw: H (left), F (right) around world up
     if (glfwGetKey(window, GLFW_KEY_H) == GLFW_PRESS) {
-        em->publish(std::make_shared<RotateCameraEvent>(-angDeg, 0.0f, 0.0f));
+        em->publish(std::make_shared<RotateCameraEvent>(rotSign * -angDeg, 0.0f, 0.0f));
     }
     if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS) {
-        em->publish(std::make_shared<RotateCameraEvent>(angDeg, 0.0f, 0.0f));
+        em->publish(std::make_shared<RotateCameraEvent>(rotSign * angDeg, 0.0f, 0.0f));
     }
     // pitch: G (down), T (up) around camera right
     if (glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS) {
-        em->publish(std::make_shared<RotateCameraEvent>(0.0f, -angDeg, 0.0f));
+        em->publish(std::make_shared<RotateCameraEvent>(0.0f, rotSign * -angDeg, 0.0f));
     }
     if (glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS) {
-        em->publish(std::make_shared<RotateCameraEvent>(0.0f, angDeg, 0.0f));
+        em->publish(std::make_shared<RotateCameraEvent>(0.0f, rotSign * angDeg, 0.0f));
     }
     // roll: R (left), Y (right) around forward
     if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) {
-        em->publish(std::make_shared<RotateCameraEvent>(0.0f, 0.0f, -angDeg));
+        em->publish(std::make_shared<RotateCameraEvent>(0.0f, 0.0f, rotSign * -angDeg));
     }
     if (glfwGetKey(window, GLFW_KEY_Y) == GLFW_PRESS) {
-        em->publish(std::make_shared<RotateCameraEvent>(0.0f, 0.0f, angDeg));
+        em->publish(std::make_shared<RotateCameraEvent>(0.0f, 0.0f, rotSign * angDeg));
     }
 
     // Toggle fullscreen: F11 on key-down

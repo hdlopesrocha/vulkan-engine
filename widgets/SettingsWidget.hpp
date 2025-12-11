@@ -48,7 +48,29 @@ public:
             }
             
             ImGui::Separator();
-            
+
+            ImGui::Text("Input");
+            ImGui::Separator();
+            if (ImGui::Checkbox("Flip keyboard rotation axes", &flipKeyboardRotation)) {
+                // toggled
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Invert yaw/pitch directions for keyboard rotation controls");
+            if (ImGui::Checkbox("Flip gamepad rotation axes", &flipGamepadRotation)) {
+                // toggled
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Invert yaw/pitch directions for gamepad right-stick");
+
+            ImGui::Separator();
+
+            ImGui::Text("Input Sensitivity");
+            ImGui::Separator();
+            ImGui::SliderFloat("Move Speed", &moveSpeed, 0.1f, 20.0f, "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Movement speed in units/second used by keyboard and gamepad");
+            ImGui::SliderFloat("Angular Speed (deg/s)", &angularSpeedDeg, 1.0f, 360.0f, "%.0f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Angular rotation speed in degrees/second used by keyboard and gamepad");
+
+            ImGui::Separator();
+
             if (ImGui::Button("Reset to Defaults")) {
                 resetToDefaults();
             }
@@ -61,17 +83,29 @@ public:
     bool getShadowDisplacementEnabled() const { return enableShadowDisplacement; }
     bool getParallaxInShadowPassEnabled() const { return enableParallaxInShadowPass; }
     float getSelfShadowQuality() const { return selfShadowQuality; }
+    bool getFlipKeyboardRotation() const { return flipKeyboardRotation; }
+    bool getFlipGamepadRotation() const { return flipGamepadRotation; }
+    float getMoveSpeed() const { return moveSpeed; }
+    float getAngularSpeedDeg() const { return angularSpeedDeg; }
     
 private:
     bool enableSelfShadowing = true;           // Parallax self-shadowing (bumps on themselves)
     bool enableShadowDisplacement = true;      // External shadows follow height
     bool enableParallaxInShadowPass = true;    // Cast shadows match appearance
     float selfShadowQuality = 0.5f;            // Quality multiplier for self-shadow rays
+    bool flipKeyboardRotation = false;         // Flip keyboard rotation axes
+    bool flipGamepadRotation = false;          // Flip gamepad rotation axes
+    float moveSpeed = 2.5f;                    // movement units/sec
+    float angularSpeedDeg = 45.0f;             // degrees/sec for rotation
     
     void resetToDefaults() {
         enableSelfShadowing = true;
         enableShadowDisplacement = true;
         enableParallaxInShadowPass = true;
         selfShadowQuality = 0.5f;
+        flipKeyboardRotation = false;
+        flipGamepadRotation = false;
+        moveSpeed = 2.5f;
+        angularSpeedDeg = 45.0f;
     }
 };
