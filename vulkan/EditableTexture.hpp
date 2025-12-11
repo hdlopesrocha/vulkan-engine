@@ -228,6 +228,7 @@ public:
     uint32_t getHeight() const { return height; }
     uint32_t getBytesPerPixel() const { return bytesPerPixel; }
     VkDescriptorSet getImGuiDescriptorSet() const { return imguiDescSet; }
+    const uint8_t* getPixelData() const { return cpuData.data(); }
     
     // Get as TextureImage for TextureManager compatibility
     TextureImage getTextureImage() const {

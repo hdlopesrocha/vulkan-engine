@@ -6,6 +6,7 @@
 #include "vulkan/Camera.hpp"
 #include "vulkan/TextureManager.hpp"
 #include "vulkan/AtlasManager.hpp"
+#include "vulkan/BillboardManager.hpp"
 #include "vulkan/CubeMesh.hpp"
 #include "vulkan/PlaneMesh.hpp"
 #include "vulkan/EditableTextureSet.hpp"
@@ -19,6 +20,7 @@
 #include "widgets/SettingsWidget.hpp"
 #include "widgets/LightWidget.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
+#include "widgets/BillboardCreator.hpp"
 #include <string>
 #include <memory>
 #include <iostream>
@@ -56,6 +58,9 @@ class MyApp : public VulkanApp {
     
     // Atlas manager for vegetation tile definitions
     AtlasManager vegetationAtlasManager;
+    
+    // Billboard manager for creating billboards from atlas tiles
+    BillboardManager billboardManager;
     
     // Widget manager (handles all UI windows)
     WidgetManager widgetManager;
@@ -451,6 +456,11 @@ class MyApp : public VulkanApp {
             // Create vegetation atlas editor widget
             auto vegAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureManager, &vegetationAtlasManager);
             widgetManager.addWidget(vegAtlasEditor);
+            
+            // Create billboard creator widget
+            auto billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureManager);
+            billboardCreator->setVulkanApp(this);
+            widgetManager.addWidget(billboardCreator);
             
             createCommandBuffers();
         };
