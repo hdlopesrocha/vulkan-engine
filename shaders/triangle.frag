@@ -37,6 +37,13 @@ layout(location = 0) out vec4 outColor;
 
 // Parallax Occlusion Mapping helper
 // ParallaxOcclusionMapping now takes adjusted, per-fragment POM parameters (computed just before the call)
+// Sample height helper that respects per-material height interpretation
+float sampleHeight(vec2 texCoords, int texIndex) {
+    float raw = texture(heightArray, vec3(texCoords, float(texIndex))).r;
+    // mappingParams.z == 1.0 means height is direct (white=high)
+    return (ubo.mappingParams.z > 0.5) ? raw : 1.0 - raw;
+}
+
 vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex, float heightScale, float minLayers, float maxLayers) {
     float numLayers = mix(maxLayers, minLayers, abs(dot(vec3(0.0,0.0,1.0), viewDirT)));
     float layerDepth = 1.0 / numLayers;
@@ -46,8 +53,8 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex, float
     vec2 P = (ubo.pomFlags.w > 0.5) ? -viewDirT.xy * heightScale : viewDirT.xy * heightScale;
     vec2 deltaTex = P / numLayers;
     vec2 currentTex = texCoords;
-    // Invert height map: black (0.0) = deep/carved (1.0), white (1.0) = surface (0.0)
-    float currentDepthMapValue = 1.0 - texture(heightArray, vec3(currentTex, float(texIndex))).r;
+    // Sample height (respect per-material interpretation)
+    float currentDepthMapValue = sampleHeight(currentTex, texIndex);
     vec2 prevTex = currentTex;
     float prevDepth = currentDepthMapValue;
     // linear search through layers
@@ -55,7 +62,7 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex, float
         prevTex = currentTex;
         prevDepth = currentDepthMapValue;
         currentTex -= deltaTex;
-    currentDepthMapValue = 1.0 - texture(heightArray, vec3(currentTex, float(texIndex))).r;
+    currentDepthMapValue = sampleHeight(currentTex, texIndex);
         currentLayerDepth += layerDepth;
         if (currentLayerDepth >= currentDepthMapValue) break;
     }
@@ -76,7 +83,7 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex, float
     const int NUM_BINARY_ITERS = 5;
     for (int i = 0; i < NUM_BINARY_ITERS; ++i) {
         vec2 midTex = (lowTex + highTex) * 0.5;
-    float midDepthMap = 1.0 - texture(heightArray, vec3(midTex, float(texIndex))).r;
+    float midDepthMap = sampleHeight(midTex, texIndex);
         float midLayerDepth = (lowLayerDepth + highLayerDepth) * 0.5;
         if (midLayerDepth >= midDepthMap) {
             // intersection is between low and mid
@@ -132,7 +139,7 @@ float ParallaxSelfShadow(vec2 texCoords, vec3 lightDirT, float currentHeight, in
         if (rayHeight <= 0.0) break;
         
         // Sample height at this position
-        float sampledHeight = 1.0 - texture(heightArray, vec3(currentTexCoords, float(texIndex))).r;
+        float sampledHeight = sampleHeight(currentTexCoords, texIndex);
         
         // If sampled point is shallower (less deep) than our ray, it blocks the light
         float bias = 0.02;
@@ -269,6 +276,8 @@ void main() {
     vec3 B = cross(N, T);
     mat3 TBN = mat3(T, B, N);
     vec3 worldNormal = normalize(TBN * normalMap);
+
+    
     
     // Use geometry normal for shadow plane detection (not mapped normal)
     vec3 geometryNormal = normalize(fragNormal);
@@ -293,7 +302,7 @@ void main() {
     vec4 adjustedPosLightSpace = fragPosLightSpace;
     if (int(ubo.mappingParams.x + 0.5) == 1 && ubo.pomParams.w > 0.5 && ubo.shadowEffects.y > 0.5) { // Check shadowDisplacement setting
         // Get height at the parallax-displaced UV
-        float height = 1.0 - texture(heightArray, vec3(uv, float(texIndex))).r;
+        float height = sampleHeight(uv, texIndex);
         // Use the adjusted heightScale computed earlier so shadow displacement follows the GPU LOD
         float heightScale = adjHeightScale;
 
@@ -322,7 +331,7 @@ void main() {
         vec3 lightDirT = normalize(transpose(TBN) * toLight);
         
         // Get current height at the parallax-offset UV
-        float currentHeight = 1.0 - texture(heightArray, vec3(uv, float(texIndex))).r;
+        float currentHeight = sampleHeight(uv, texIndex);
         
         // Only compute self-shadow if light is reasonably above the surface
         // Use a small threshold to avoid computing shadows for grazing angles

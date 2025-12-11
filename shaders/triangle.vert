@@ -33,6 +33,8 @@ layout(location = 5) flat out int fragTexIndex;
 layout(location = 4) out vec3 fragPosWorld;
 layout(location = 6) out vec4 fragPosLightSpace;
 layout(location = 7) out vec3 fragLocalPos;
+layout(location = 8) out vec3 fragLocalNormal;
+layout(location = 9) out vec3 fragLocalTangent;
 
 void main() {
     fragColor = inColor;
@@ -49,6 +51,9 @@ void main() {
     fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
     // pass local-space position (used by tessellation/displacement)
     fragLocalPos = inPos;
+    // also pass local-space normal/tangent (before model transform) for tessellation displacement
+    fragLocalNormal = inNormal;
+    fragLocalTangent = inTangent;
     // apply MVP transform to the vertex position (MVP already includes model transform)
     gl_Position = ubo.mvp * vec4(inPos, 1.0);
 }

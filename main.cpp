@@ -49,7 +49,7 @@ struct UniformObject {
     void setMaterial(const MaterialProperties& mat) {
         pomParams = glm::vec4(mat.pomHeightScale, mat.pomMinLayers, mat.pomMaxLayers, mat.pomEnabled);
         pomFlags = glm::vec4(mat.flipNormalY, mat.flipTangentHandedness, mat.ambientFactor, mat.flipParallaxDirection);
-        mappingParams = glm::vec4(mat.mappingMode, 0.0f, 0.0f, 0.0f);
+        mappingParams = glm::vec4(mat.mappingMode, mat.tessLevel, mat.invertHeight, mat.tessHeightScale);
         specularParams = glm::vec4(mat.specularStrength, mat.shininess, 0.0f, 0.0f);
     }
 };

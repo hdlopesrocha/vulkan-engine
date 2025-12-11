@@ -14,6 +14,14 @@ struct MaterialProperties {
     
     // Mapping mode: 0 = none, 1 = parallax (POM), 2 = tessellation (displacement)
     float mappingMode = 1.0f;
+    // When true (1.0) sample height map directly (white=high). When false (0.0) use legacy invert (black=deep -> 1.0-height)
+    // default: when mappingMode==1 (parallax) we want legacy invert (black=deep)
+    float invertHeight = 0.0f;
+    // Tessellation-specific height scale (used when mappingMode == 2)
+    // Increased default so tessellation displacement is noticeable.
+    float tessHeightScale = 0.2f;
+    // Tessellation level for hardware displacement (used when mappingMode == 2)
+    float tessLevel = 16.0f;
     
     float flipNormalY = 0.0f;
     float flipTangentHandedness = 0.0f;

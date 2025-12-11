@@ -50,17 +50,7 @@ void TextureViewer::render() {
         if (ImGui::BeginTabItem("Material")) {
             MaterialProperties& mat = manager->getMaterial(currentIndex);
             
-            ImGui::Text("Parallax Occlusion Mapping");
-            ImGui::Separator();
-            
-            bool pomEnabledBool = (mat.pomEnabled > 0.5f);
-            if (ImGui::Checkbox("Enable POM", &pomEnabledBool)) {
-                mat.pomEnabled = pomEnabledBool ? 1.0f : 0.0f;
-            }
-            ImGui::SliderFloat("Height Scale", &mat.pomHeightScale, 0.0f, 0.2f, "%.3f");
-            ImGui::SliderFloat("Min Layers", &mat.pomMinLayers, 1.0f, 64.0f, "%.0f");
-            ImGui::SliderFloat("Max Layers", &mat.pomMaxLayers, 1.0f, 128.0f, "%.0f");
-            
+            // POM controls moved below and shown conditionally based on Mapping Mode
             ImGui::Spacing();
             ImGui::Text("Normal/Tangent Adjustments");
             ImGui::Separator();
@@ -96,6 +86,32 @@ void TextureViewer::render() {
             const char* modes[] = { "None", "Parallax (POM)", "Tessellation (Displacement)" };
             if (ImGui::Combo("Mapping Mode", &mappingMode, modes, IM_ARRAYSIZE(modes))) {
                 mat.mappingMode = static_cast<float>(mappingMode);
+                // Default height interpretation: parallax uses legacy invert (black=deep),
+                // tessellation uses direct (white=high). User can still override with the checkbox.
+                mat.invertHeight = (mappingMode == 1) ? 0.0f : 1.0f;
+            }
+            // Height map interpretation: legacy inverted vs direct
+            bool heightDirect = (mat.invertHeight > 0.5f);
+            if (ImGui::Checkbox("Height Is Direct (white=high)", &heightDirect)) {
+                mat.invertHeight = heightDirect ? 1.0f : 0.0f;
+            }
+            // Tessellation level (per-material). Only relevant when mappingMode == 2
+            if (mappingMode == 2) {
+                int tess = static_cast<int>(mat.tessLevel + 0.5f);
+                if (ImGui::SliderInt("Tessellation Level", &tess, 1, 64)) {
+                    mat.tessLevel = static_cast<float>(tess);
+                }
+                ImGui::SliderFloat("Tess Height Scale", &mat.tessHeightScale, 0.0f, 1.0f, "%.3f");
+            }
+
+            // Auto-set pomEnabled based on mapping mode and show POM sliders when appropriate
+            mat.pomEnabled = (mappingMode == 1) ? 1.0f : 0.0f;
+            if (mappingMode == 1) {
+                ImGui::Separator();
+                ImGui::Text("Parallax Occlusion Mapping");
+                ImGui::SliderFloat("Height Scale", &mat.pomHeightScale, 0.0f, 0.2f, "%.3f");
+                ImGui::SliderFloat("Min Layers", &mat.pomMinLayers, 1.0f, 64.0f, "%.0f");
+                ImGui::SliderFloat("Max Layers", &mat.pomMaxLayers, 1.0f, 128.0f, "%.0f");
             }
             
             ImGui::EndTabItem();

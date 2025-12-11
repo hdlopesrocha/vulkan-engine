@@ -2,6 +2,22 @@
 
 layout(vertices = 3) out;
 
+// UBO must match CPU-side UniformObject layout (we only need mappingParams here)
+layout(binding = 0) uniform UBO {
+    mat4 mvp;
+    mat4 model;
+    vec4 viewPos;
+    vec4 lightDir;
+    vec4 lightColor;
+    vec4 pomParams;
+    vec4 pomFlags;
+    vec4 parallaxLOD;
+    vec4 mappingParams; // x=mappingMode, y=tessLevel
+    vec4 specularParams;
+    mat4 lightSpaceMatrix;
+    vec4 shadowEffects;
+} ubo;
+
 // Pass through per-vertex varyings from vertex shader
 layout(location = 0) in vec3 pc_inFragColor[];
 layout(location = 1) in vec2 pc_inUV[];
@@ -10,6 +26,8 @@ layout(location = 3) in vec3 pc_inTangent[];
 layout(location = 4) in vec3 pc_inPosWorld[];
 layout(location = 5) in float pc_inTexIndex[];
 layout(location = 7) in vec3 pc_inLocalPos[];
+layout(location = 8) in vec3 pc_inLocalNormal[];
+layout(location = 9) in vec3 pc_inLocalTangent[];
 
 layout(location = 0) out vec3 tc_fragColor[];
 layout(location = 1) out vec2 tc_fragUV[];
@@ -18,6 +36,8 @@ layout(location = 3) out vec3 tc_fragTangent[];
 layout(location = 4) out vec3 tc_fragPosWorld[];
 layout(location = 5) flat out int tc_fragTexIndex[];
 layout(location = 7) out vec3 tc_fragLocalPos[];
+layout(location = 8) out vec3 tc_fragLocalNormal[];
+layout(location = 9) out vec3 tc_fragLocalTangent[];
 
 void main() {
     // Pass through per-vertex data to evaluation stage
@@ -28,10 +48,13 @@ void main() {
     tc_fragPosWorld[gl_InvocationID] = pc_inPosWorld[gl_InvocationID];
     tc_fragTexIndex[gl_InvocationID] = int(pc_inTexIndex[gl_InvocationID] + 0.5);
     tc_fragLocalPos[gl_InvocationID] = pc_inLocalPos[gl_InvocationID];
+    tc_fragLocalNormal[gl_InvocationID] = pc_inLocalNormal[gl_InvocationID];
+    tc_fragLocalTangent[gl_InvocationID] = pc_inLocalTangent[gl_InvocationID];
 
-    // Simple fixed tessellation level for now. Could be made adaptive using patch size / distance.
-    float outer = 4.0;
-    float inner = 4.0;
+    // Read tessellation level from per-material mappingParams.y (set by host)
+    float tessLevel = clamp(ubo.mappingParams.y, 1.0, 64.0);
+    float outer = tessLevel;
+    float inner = tessLevel;
     gl_TessLevelOuter[0] = outer;
     gl_TessLevelOuter[1] = outer;
     gl_TessLevelOuter[2] = outer;
