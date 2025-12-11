@@ -4,7 +4,11 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
 #include "vulkan/Camera.hpp"
+#include "events/EventManager.hpp"
+#include "events/WindowEvents.hpp"
+#include "events/KeyboardPublisher.hpp"
 #include "vulkan/TextureManager.hpp"
+#include "events/CameraEvents.hpp"
 #include "vulkan/AtlasManager.hpp"
 #include "vulkan/BillboardManager.hpp"
 #include "vulkan/CubeMesh.hpp"
@@ -45,7 +49,7 @@ struct UniformObject {
     }
 };
 
-class MyApp : public VulkanApp {
+class MyApp : public VulkanApp, public IEventHandler {
     public:
         MyApp() : shadowMapper(this, 8192) {}
         
@@ -90,6 +94,9 @@ class MyApp : public VulkanApp {
     // Camera
     // start the camera further back so multiple cubes are visible
     Camera camera = Camera(glm::vec3(0.0f, 0.0f, 8.0f));
+    // Event manager for app-wide pub/sub
+    EventManager eventManager;
+    KeyboardPublisher keyboard;
     // (managed by TextureManager)
         std::vector<VkDescriptorSet> descriptorSets;
         std::vector<Buffer> uniforms; // One uniform buffer per cube
@@ -103,6 +110,10 @@ class MyApp : public VulkanApp {
         //VertexBufferObject vertexBufferObject; // now owned by CubeMesh
 
         void setup() override {
+            // Subscribe camera and app to event manager
+            eventManager.subscribe(&camera);
+            eventManager.subscribe(this);
+
             // Initialize shadow mapper
             shadowMapper.init();
             
@@ -466,6 +477,19 @@ class MyApp : public VulkanApp {
             createCommandBuffers();
         };
 
+        // IEventHandler: handle top-level window events like close/fullscreen
+        void onEvent(const EventPtr &event) override {
+            if (!event) return;
+            if (std::dynamic_pointer_cast<CloseWindowEvent>(event)) {
+                requestClose();
+                return;
+            }
+            if (std::dynamic_pointer_cast<ToggleFullscreenEvent>(event)) {
+                toggleFullscreen();
+                return;
+            }
+        }
+
         // build ImGui UI (moved from VulkanApp)
         void renderImGui() override {
             if (ImGui::BeginMainMenuBar()) {
@@ -495,6 +519,8 @@ class MyApp : public VulkanApp {
         }
 
         void update(float deltaTime) override {
+            // Process queued events (dispatch to handlers)
+            eventManager.processQueued();
             // compute MVP = proj * view * model
             glm::mat4 proj = glm::mat4(1.0f);
             glm::mat4 view = glm::mat4(1.0f);
@@ -508,7 +534,7 @@ class MyApp : public VulkanApp {
             proj[1][1] *= -1.0f;
 
             GLFWwindow* win = getWindow();
-            if (win) camera.processInput(win, deltaTime);
+            if (win) keyboard.update(win, &eventManager, camera, deltaTime);
 
             // build view matrix from camera state (no cube rotation)
             view = camera.getViewMatrix();
@@ -699,6 +725,12 @@ class MyApp : public VulkanApp {
         };
 
         void clean() override {
+            // Unsubscribe handlers from event manager to avoid callbacks during teardown
+            eventManager.unsubscribe(&camera);
+            eventManager.unsubscribe(this);
+            // Clear any queued events
+            eventManager.processQueued();
+
             if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipeline, nullptr);
             // texture cleanup via manager
             textureManager.destroyAll();

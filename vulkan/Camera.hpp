@@ -3,14 +3,14 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/quaternion.hpp>
-#include <GLFW/glfw3.h>
+#include "../events/IEventHandler.hpp"
+#include "../events/CameraEvents.hpp"
 
-class Camera {
+class Camera : public IEventHandler {
 public:
     Camera(const glm::vec3 &pos = glm::vec3(0.0f, 0.0f, 2.5f));
 
-    // Process keyboard input for this frame
-    void processInput(GLFWwindow* window, float deltaTime);
+    // Camera is now event-driven. Use events to control translation/rotation.
 
     // Getters
     glm::mat4 getViewMatrix() const;
@@ -25,6 +25,14 @@ public:
 
     // expose orientation for UI/debug
     glm::quat getOrientation() const { return orientation; }
+
+    // Immediate control methods (used by event handlers)
+    void translate(const glm::vec3 &d) { position += d; }
+    void rotateEuler(float yawDeg, float pitchDeg, float rollDeg);
+    void rotateAxisAngle(const glm::vec3 &axis, float angleDeg);
+
+    // IEventHandler implementation: handle camera events
+    void onEvent(const EventPtr &event) override;
 
 private:
     glm::vec3 position;

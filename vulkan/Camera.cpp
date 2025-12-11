@@ -1,51 +1,57 @@
 #include "Camera.hpp"
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/constants.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include "../events/CameraEvents.hpp"
 
 Camera::Camera(const glm::vec3 &pos)
     : position(pos), orientation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f)) {
 }
 
-void Camera::processInput(GLFWwindow* window, float deltaTime) {
-    if (!window) return;
-
-    // derive axes from quaternion
-    glm::vec3 forward = getForward();
-    glm::vec3 up = getUp();
-    glm::vec3 right = getRight();
-
-    // rotation: FR = yaw (-/+), G/T = pitch (-/+), H/Y = roll (-/+)
-    float ang = angularSpeedRad * deltaTime;
-    if (glfwGetKey(window, GLFW_KEY_H) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(-ang, glm::vec3(0.0f,1.0f,0.0f)) * orientation);
-    if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(ang, glm::vec3(0.0f,1.0f,0.0f)) * orientation);
-
-    // recompute axes after possible yaw change
-    forward = getForward();
-    up = getUp();
-    right = getRight();
-
-    if (glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(-ang, right) * orientation);
-    if (glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(ang, right) * orientation);
-
-    if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(-ang, forward) * orientation);
-    if (glfwGetKey(window, GLFW_KEY_Y) == GLFW_PRESS) orientation = glm::normalize(glm::angleAxis(ang, forward) * orientation);
-
-    // recompute axes after rotation
-    forward = getForward();
-    up = getUp();
-    right = getRight();
-
-    // translation: W/A/S/D forward/left/back/right, Q/E up/down
-    float velocity = speed * deltaTime;
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) position += forward * velocity;
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) position -= forward * velocity;
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) position -= right * velocity;
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) position += right * velocity;
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) position += up * velocity;
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) position -= up * velocity;
-}
+// Camera input is now event-driven. Keyboard handling is performed by a separate
+// KeyboardPublisher which converts key state into camera/window events and
+// publishes them to the EventManager.
 
 glm::mat4 Camera::getViewMatrix() const {
     glm::vec3 f = getForward();
     glm::vec3 u = getUp();
     return glm::lookAt(position, position + f, u);
+}
+
+void Camera::rotateEuler(float yawDeg, float pitchDeg, float rollDeg) {
+    // Convert degrees to radians and apply yaw (around world up), pitch (around right), roll (around forward)
+    float yaw = glm::radians(yawDeg);
+    float pitch = glm::radians(pitchDeg);
+    float roll = glm::radians(rollDeg);
+
+    // Apply yaw around world up (0,1,0)
+    orientation = glm::normalize(glm::angleAxis(yaw, glm::vec3(0.0f,1.0f,0.0f)) * orientation);
+
+    // Apply pitch around camera right
+    glm::vec3 right = getRight();
+    orientation = glm::normalize(glm::angleAxis(pitch, right) * orientation);
+
+    // Apply roll around camera forward
+    glm::vec3 forward = getForward();
+    orientation = glm::normalize(glm::angleAxis(roll, forward) * orientation);
+}
+
+void Camera::rotateAxisAngle(const glm::vec3 &axis, float angleDeg) {
+    float angle = glm::radians(angleDeg);
+    orientation = glm::normalize(glm::angleAxis(angle, glm::normalize(axis)) * orientation);
+}
+
+void Camera::onEvent(const EventPtr &event) {
+    if (!event) return;
+    // Translate
+    if (auto t = std::dynamic_pointer_cast<TranslateCameraEvent>(event)) {
+        translate(t->delta);
+        return;
+    }
+    // Rotate
+    if (auto r = std::dynamic_pointer_cast<RotateCameraEvent>(event)) {
+        if (r->useAxisAngle) rotateAxisAngle(r->axis, r->angleDegrees);
+        else rotateEuler(r->yaw, r->pitch, r->roll);
+        return;
+    }
 }
