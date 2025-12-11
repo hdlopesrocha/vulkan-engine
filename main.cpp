@@ -29,6 +29,7 @@
 #include <string>
 #include <memory>
 #include <iostream>
+#include <cmath>
 
 struct UniformObject {
     glm::mat4 mvp;
@@ -38,6 +39,7 @@ struct UniformObject {
     glm::vec4 lightColor; // rgb = color, w = intensity
     glm::vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
     glm::vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
+    glm::vec4 parallaxLOD; // x=parallaxNear, y=parallaxFar, z=reductionAtFar, w=unused
     glm::vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
     glm::mat4 lightSpaceMatrix; // for shadow mapping
     glm::vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
@@ -496,6 +498,17 @@ class MyApp : public VulkanApp, public IEventHandler {
             glm::vec3 lightDir = glm::normalize(lightDirection);
             uboStatic.lightDir = glm::vec4(lightDir, 0.0f);
             uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+            // Pass parallax LOD settings to the GPU so the fragment shader can compute smooth fading
+            if (settingsWidget) {
+                uboStatic.parallaxLOD = glm::vec4(
+                    settingsWidget->getParallaxNear(),
+                    settingsWidget->getParallaxFar(),
+                    settingsWidget->getParallaxReduction(),
+                    0.0f
+                );
+            } else {
+                uboStatic.parallaxLOD = glm::vec4(1.0f, 25.0f, 0.3f, 0.0f);
+            }
             // Note: pomParams, pomFlags, and specularParams are set per-instance from material properties
             
             // Compute light space matrix for shadow mapping
@@ -636,6 +649,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (instance.material) {
                     ubo.setMaterial(*instance.material);
                 }
+                // NOTE: parallax LOD smoothing is now computed in the fragment shader.
+                // We send the per-frame parallax LOD parameters in ubo.parallaxLOD (set in update()).
                 
                 // Apply shadow effect settings from settings widget
                 ubo.shadowEffects = glm::vec4(

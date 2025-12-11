@@ -20,6 +20,7 @@ layout(binding = 0) uniform UBO {
     vec4 lightColor;
     vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
     vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
+    vec4 parallaxLOD; // x=parallaxNear, y=parallaxFar, z=reductionAtFar, w=unused
     vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
     mat4 lightSpaceMatrix;
     vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
@@ -34,10 +35,8 @@ layout(binding = 4) uniform sampler2D shadowMap;
 layout(location = 0) out vec4 outColor;
 
 // Parallax Occlusion Mapping helper
-vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex) {
-    float heightScale = ubo.pomParams.x;
-    float minLayers = ubo.pomParams.y;
-    float maxLayers = ubo.pomParams.z;
+// ParallaxOcclusionMapping now takes adjusted, per-fragment POM parameters (computed just before the call)
+vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex, float heightScale, float minLayers, float maxLayers) {
     float numLayers = mix(maxLayers, minLayers, abs(dot(vec3(0.0,0.0,1.0), viewDirT)));
     float layerDepth = 1.0 / numLayers;
     float currentLayerDepth = 0.0;
@@ -97,9 +96,8 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex) {
 // Parallax self-shadowing: ray-march from surface point towards light
 // Returns 0.0 (full shadow) to 1.0 (no shadow)
 // Height convention: black (texture.r=0) = deep (1.0 after inversion), white (texture.r=1) = surface (0.0 after inversion)
-float ParallaxSelfShadow(vec2 texCoords, vec3 lightDirT, float currentHeight, int texIndex) {
-    float heightScale = ubo.pomParams.x;
-    float minLayers = ubo.pomParams.y;
+// ParallaxSelfShadow now accepts adjusted, per-fragment heightScale and minLayers
+float ParallaxSelfShadow(vec2 texCoords, vec3 lightDirT, float currentHeight, int texIndex, float heightScale, float minLayers) {
     float qualityMultiplier = ubo.shadowEffects.z; // quality setting from UI
     
     // Number of samples for shadow ray-march (adjusted by quality)
@@ -191,6 +189,11 @@ void main() {
     
     vec2 uv = fragUV;
     
+    // Prepare adjusted POM parameters (default = material values)
+    float adjHeightScale = ubo.pomParams.x;
+    float adjMinLayers = ubo.pomParams.y;
+    float adjMaxLayers = ubo.pomParams.z;
+
     // Parallax Occlusion Mapping (if enabled)
     if (ubo.pomParams.w > 0.5) {
         // Compute tangent-space view direction for POM
@@ -215,9 +218,29 @@ void main() {
         
         vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
         vec3 viewDirT = normalize(transpose(TBN) * viewDir);
-        
-        // Apply parallax occlusion mapping
-        uv = ParallaxOcclusionMapping(fragUV, viewDirT, texIndex);
+
+        // Compute smooth LOD fade in the fragment shader using the parallaxLOD values
+        // parallaxLOD.x = near, parallaxLOD.y = far, parallaxLOD.z = reductionAtFar
+        float parallaxNear = ubo.parallaxLOD.x;
+        float parallaxFar = ubo.parallaxLOD.y;
+        float reductionAtFar = ubo.parallaxLOD.z;
+
+        // compute world-space distance from camera to fragment
+        float dist = length(ubo.viewPos.xyz - fragPosWorld);
+        // t = 0 -> near (full detail), t = 1 -> far (reduced)
+        float t = 0.0;
+        if (parallaxFar > parallaxNear) {
+            t = clamp((dist - parallaxNear) / (parallaxFar - parallaxNear), 0.0, 1.0);
+        }
+        float lodFactor = mix(1.0, reductionAtFar, t);
+
+        // apply smooth scaling to height and layers (keep at least 1 layer)
+        adjHeightScale = max(0.0, adjHeightScale * lodFactor);
+        adjMinLayers = max(1.0, adjMinLayers * lodFactor);
+        adjMaxLayers = max(1.0, adjMaxLayers * lodFactor);
+
+        // Apply parallax occlusion mapping with adjusted parameters computed on GPU
+        uv = ParallaxOcclusionMapping(fragUV, viewDirT, texIndex, adjHeightScale, adjMinLayers, adjMaxLayers);
     }
     
     // Sample textures
@@ -269,13 +292,14 @@ void main() {
     if (ubo.pomParams.w > 0.5 && ubo.shadowEffects.y > 0.5) { // Check shadowDisplacement setting
         // Get height at the parallax-displaced UV
         float height = 1.0 - texture(heightArray, vec3(uv, float(texIndex))).r;
-        float heightScale = ubo.pomParams.x;
-        
+        // Use the adjusted heightScale computed earlier so shadow displacement follows the GPU LOD
+        float heightScale = adjHeightScale;
+
         // Offset world position along the normal by the height displacement
         // This makes shadows "follow" the height variations
         vec3 offset = worldNormal * height * heightScale;
         vec3 adjustedWorldPos = fragPosWorld + offset;
-        
+
         // Transform adjusted position to light space
         adjustedPosLightSpace = ubo.lightSpaceMatrix * vec4(adjustedWorldPos, 1.0);
     }
@@ -301,7 +325,8 @@ void main() {
         // Only compute self-shadow if light is reasonably above the surface
         // Use a small threshold to avoid computing shadows for grazing angles
         if (lightDirT.z > 0.1) {
-            selfShadow = ParallaxSelfShadow(uv, lightDirT, currentHeight, texIndex);
+            // use adjusted heightScale and minLayers computed earlier for self-shadow ray-marching
+            selfShadow = ParallaxSelfShadow(uv, lightDirT, currentHeight, texIndex, adjHeightScale, adjMinLayers);
         }
         // If light is at grazing angle or below, just don't apply self-shadow (leave at 1.0)
         }
