@@ -157,115 +157,45 @@ class MyApp : public VulkanApp, public IEventHandler {
             std::vector<size_t> loadedIndices;
 
             // Explicit per-name loads (one-by-one) with realistic material properties
-            // Bricks - rough masonry surface
-            size_t bricksIdx = textureManager.loadTriple("textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg");
-            textureManager.getMaterial(bricksIdx).pomHeightScale = 0.08f;
-            textureManager.getMaterial(bricksIdx).pomMinLayers = 10.0f;
-            textureManager.getMaterial(bricksIdx).pomMaxLayers = 40.0f;
-            textureManager.getMaterial(bricksIdx).specularStrength = 0.2f;
-            textureManager.getMaterial(bricksIdx).shininess = 8.0f;
-            textureManager.getMaterial(bricksIdx).ambientFactor = 0.12f;
-            loadedIndices.push_back(bricksIdx);
-            
-            // Dirt - rough, non-reflective organic material
-            size_t dirtIdx = textureManager.loadTriple("textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg");
-            textureManager.getMaterial(dirtIdx).pomHeightScale = 0.05f;
-            textureManager.getMaterial(dirtIdx).pomMinLayers = 8.0f;
-            textureManager.getMaterial(dirtIdx).pomMaxLayers = 32.0f;
-            textureManager.getMaterial(dirtIdx).specularStrength = 0.05f;
-            textureManager.getMaterial(dirtIdx).shininess = 4.0f;
-            textureManager.getMaterial(dirtIdx).ambientFactor = 0.15f;
-            loadedIndices.push_back(dirtIdx);
-            
-            // Forest floor - organic, moderately rough
-            size_t forestIdx = textureManager.loadTriple("textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg");
-            textureManager.getMaterial(forestIdx).pomHeightScale = 0.06f;
-            textureManager.getMaterial(forestIdx).pomMinLayers = 8.0f;
-            textureManager.getMaterial(forestIdx).pomMaxLayers = 32.0f;
-            textureManager.getMaterial(forestIdx).specularStrength = 0.1f;
-            textureManager.getMaterial(forestIdx).shininess = 6.0f;
-            textureManager.getMaterial(forestIdx).ambientFactor = 0.18f;
-            loadedIndices.push_back(forestIdx);
-            
-            // Grass - soft, slightly reflective when wet
-            size_t grassIdx = textureManager.loadTriple("textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg");
-            textureManager.getMaterial(grassIdx).pomHeightScale = 0.04f;
-            textureManager.getMaterial(grassIdx).pomMinLayers = 8.0f;
-            textureManager.getMaterial(grassIdx).pomMaxLayers = 28.0f;
-            textureManager.getMaterial(grassIdx).specularStrength = 0.15f;
-            textureManager.getMaterial(grassIdx).shininess = 10.0f;
-            textureManager.getMaterial(grassIdx).ambientFactor = 0.2f;
-            loadedIndices.push_back(grassIdx);
-            
-            // Lava - bright, highly emissive, some specular from molten surface
-            size_t lavaIdx = textureManager.loadTriple("textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg");
-            textureManager.getMaterial(lavaIdx).pomHeightScale = 0.03f;
-            textureManager.getMaterial(lavaIdx).pomMinLayers = 6.0f;
-            textureManager.getMaterial(lavaIdx).pomMaxLayers = 24.0f;
-            textureManager.getMaterial(lavaIdx).specularStrength = 0.8f;
-            textureManager.getMaterial(lavaIdx).shininess = 64.0f;
-            textureManager.getMaterial(lavaIdx).ambientFactor = 0.4f; // Self-illuminated
-            loadedIndices.push_back(lavaIdx);
-            
-            // Metal - highly reflective, smooth surface
-            size_t metalIdx = textureManager.loadTriple("textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg");
-            textureManager.getMaterial(metalIdx).pomHeightScale = 0.02f;
-            textureManager.getMaterial(metalIdx).pomMinLayers = 8.0f;
-            textureManager.getMaterial(metalIdx).pomMaxLayers = 32.0f;
-            textureManager.getMaterial(metalIdx).specularStrength = 0.9f;
-            textureManager.getMaterial(metalIdx).shininess = 128.0f;
-            textureManager.getMaterial(metalIdx).ambientFactor = 0.1f;
-            loadedIndices.push_back(metalIdx);
-            
-            // Pixel art - stylized, no parallax
-            size_t pixelIdx = textureManager.loadTriple("textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg");
-            textureManager.getMaterial(pixelIdx).pomHeightScale = 0.01f;
-            textureManager.getMaterial(pixelIdx).pomMinLayers = 4.0f;
-            textureManager.getMaterial(pixelIdx).pomMaxLayers = 16.0f;
-            textureManager.getMaterial(pixelIdx).specularStrength = 0.3f;
-            textureManager.getMaterial(pixelIdx).shininess = 16.0f;
-            textureManager.getMaterial(pixelIdx).ambientFactor = 0.15f;
-            loadedIndices.push_back(pixelIdx);
-            
-            // Rock - rough, hard surface with deep crevices
-            size_t rockIdx = textureManager.loadTriple("textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg");
-            textureManager.getMaterial(rockIdx).pomHeightScale = 0.1f;
-            textureManager.getMaterial(rockIdx).pomMinLayers = 12.0f;
-            textureManager.getMaterial(rockIdx).pomMaxLayers = 48.0f;
-            textureManager.getMaterial(rockIdx).specularStrength = 0.15f;
-            textureManager.getMaterial(rockIdx).shininess = 8.0f;
-            textureManager.getMaterial(rockIdx).ambientFactor = 0.1f;
-            loadedIndices.push_back(rockIdx);
-            
-            // Sand - fine grain, subtle parallax, slightly reflective
-            size_t sandIdx = textureManager.loadTriple("textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg");
-            textureManager.getMaterial(sandIdx).pomHeightScale = 0.03f;
-            textureManager.getMaterial(sandIdx).pomMinLayers = 6.0f;
-            textureManager.getMaterial(sandIdx).pomMaxLayers = 24.0f;
-            textureManager.getMaterial(sandIdx).specularStrength = 0.25f;
-            textureManager.getMaterial(sandIdx).shininess = 12.0f;
-            textureManager.getMaterial(sandIdx).ambientFactor = 0.2f;
-            loadedIndices.push_back(sandIdx);
-            
-            // Snow - soft, bright, diffuse reflection
-            size_t snowIdx = textureManager.loadTriple("textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg");
-            textureManager.getMaterial(snowIdx).pomHeightScale = 0.04f;
-            textureManager.getMaterial(snowIdx).pomMinLayers = 6.0f;
-            textureManager.getMaterial(snowIdx).pomMaxLayers = 28.0f;
-            textureManager.getMaterial(snowIdx).specularStrength = 0.6f;
-            textureManager.getMaterial(snowIdx).shininess = 32.0f;
-            textureManager.getMaterial(snowIdx).ambientFactor = 0.3f;
-            loadedIndices.push_back(snowIdx);
-            
-            // Soft sand - very fine, smooth, gentle highlights
-            size_t softSandIdx = textureManager.loadTriple("textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg");
-            textureManager.getMaterial(softSandIdx).pomHeightScale = 0.025f;
-            textureManager.getMaterial(softSandIdx).pomMinLayers = 6.0f;
-            textureManager.getMaterial(softSandIdx).pomMaxLayers = 20.0f;
-            textureManager.getMaterial(softSandIdx).specularStrength = 0.3f;
-            textureManager.getMaterial(softSandIdx).shininess = 16.0f;
-            textureManager.getMaterial(softSandIdx).ambientFactor = 0.22f;
-            loadedIndices.push_back(softSandIdx);
+            struct MatSpec {
+                const char* albedo;
+                const char* normal;
+                const char* bump;
+                float pomHeightScale;
+                float pomMinLayers;
+                float pomMaxLayers;
+                float specularStrength;
+                float shininess;
+                float ambientFactor;
+                bool pomEnabled;
+            };
+
+            const std::vector<MatSpec> specs = {
+                {"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg", 0.08f, 10.0f, 40.0f, 0.2f, 8.0f, 0.12f, true},
+                {"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg", 0.05f, 8.0f, 32.0f, 0.05f, 4.0f, 0.15f, true},
+                {"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg", 0.06f, 8.0f, 32.0f, 0.1f, 6.0f, 0.18f, true},
+                {"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg", 0.04f, 8.0f, 28.0f, 0.15f, 10.0f, 0.2f, true},
+                {"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg", 0.03f, 6.0f, 24.0f, 0.8f, 64.0f, 0.4f, true},
+                {"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg", 0.02f, 8.0f, 32.0f, 0.9f, 128.0f, 0.1f, true},
+                {"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg", 0.01f, 4.0f, 16.0f, 0.3f, 16.0f, 0.15f, true},
+                {"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg", 0.1f, 12.0f, 48.0f, 0.15f, 8.0f, 0.1f, true},
+                {"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg", 0.03f, 6.0f, 24.0f, 0.25f, 12.0f, 0.2f, true},
+                {"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg", 0.04f, 6.0f, 28.0f, 0.6f, 32.0f, 0.3f, true},
+                {"textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg", 0.025f, 6.0f, 20.0f, 0.3f, 16.0f, 0.22f, true}
+            };
+
+            for (const auto &s : specs) {
+                size_t idx = textureManager.loadTriple(s.albedo, s.normal, s.bump);
+                auto &mat = textureManager.getMaterial(idx);
+                mat.pomHeightScale = s.pomHeightScale;
+                mat.pomMinLayers = s.pomMinLayers;
+                mat.pomMaxLayers = s.pomMaxLayers;
+                mat.specularStrength = s.specularStrength;
+                mat.shininess = s.shininess;
+                mat.ambientFactor = s.ambientFactor;
+                mat.pomEnabled = s.pomEnabled;
+                loadedIndices.push_back(idx);
+            }
 
             // Initialize vegetation texture manager for billboard vegetation
             vegetationTextureManager.init(this);
