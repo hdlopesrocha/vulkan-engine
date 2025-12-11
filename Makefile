@@ -16,38 +16,55 @@ endif
 INCLUDES = `pkg-config --cflags glfw3 vulkan` -I/usr/include/imgui -I/usr/include/stb
 LIBS = `pkg-config --libs glfw3 vulkan` -limgui -lstb -ljpeg
 
-SRC = main.cpp vulkan/*cpp widgets/*cpp events/*cpp
-OUT = app
+# Output directory for runtime binary and resources
+OUT_DIR = bin
 
 # shader sources and generated SPIR-V
+SRC = main.cpp vulkan/*cpp widgets/*cpp events/*cpp
+OUT = $(OUT_DIR)/app
+
+# shader sources and generated SPIR-V
+
 SHADERS = shaders/triangle.vert shaders/triangle.frag shaders/shadow.vert shaders/shadow.frag shaders/perlin_noise.comp
+# SPIR-V targets will be written into the OUT_DIR/shaders directory
 SPVS = $(SHADERS:.vert=.vert.spv)
 SPVS := $(SPVS:.frag=.frag.spv)
 SPVS := $(SPVS:.comp=.comp.spv)
+OUT_SPVS := $(patsubst shaders/%, $(OUT_DIR)/shaders/%, $(SPVS))
 
 all: shaders
+	@mkdir -p $(OUT_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) $(SRC) -o $(OUT) $(LIBS)
 
-shaders: $(SPVS)
+	# Copy runtime resources into bin/
+	@echo "Copying runtime resources to $(OUT_DIR)/"
+	@mkdir -p $(OUT_DIR)/shaders
+	@if [ -d textures ]; then cp -a textures $(OUT_DIR)/ || true; fi
+	@if [ -f imgui.ini ]; then cp imgui.ini $(OUT_DIR)/ || true; fi
 
-shaders/%.vert.spv: shaders/%.vert
+shaders: $(OUT_SPVS)
+
+$(OUT_DIR)/shaders/%.vert.spv: shaders/%.vert
 	@echo "Compiling shader: $< -> $@"
+	@mkdir -p $(dir $@)
 	@if command -v glslc >/dev/null 2>&1; then \
 		glslc $< -o $@; \
 	else \
 		glslangValidator -V $< -o $@; \
 	fi
 
-shaders/%.frag.spv: shaders/%.frag
+$(OUT_DIR)/shaders/%.frag.spv: shaders/%.frag
 	@echo "Compiling shader: $< -> $@"
+	@mkdir -p $(dir $@)
 	@if command -v glslc >/dev/null 2>&1; then \
 		glslc $< -o $@; \
 	else \
 		glslangValidator -V $< -o $@; \
 	fi
 
-shaders/%.comp.spv: shaders/%.comp
+$(OUT_DIR)/shaders/%.comp.spv: shaders/%.comp
 	@echo "Compiling shader: $< -> $@"
+	@mkdir -p $(dir $@)
 	@if command -v glslc >/dev/null 2>&1; then \
 		glslc $< -o $@; \
 	else \
@@ -61,8 +78,21 @@ debug:
 release:
 	@$(MAKE) BUILD=release all
 
+.PHONY: run run-debug
+run: all
+	@echo "Running app from $(OUT_DIR)/"
+	@cd $(OUT_DIR) && ./app
+
+run-debug: debug
+	@echo "Running debug build from $(OUT_DIR)/"
+	@cd $(OUT_DIR) && ./app
+
 clean:
+	# Remove built executable and bin/ runtime bundle
 	rm -f $(OUT)
+	rm -rf $(OUT_DIR)
+	# Remove generated SPIR-V files in shaders/ (if present)
+	-rm -f $(SPVS)
 	
 install:
 	sudo apt install vulkan-validationlayers
