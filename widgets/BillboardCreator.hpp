@@ -38,12 +38,14 @@ public:
     }
     
     void cleanup() {
+        printf("[BillboardCreator] cleanup start: texturesInitialized=%d\n", texturesInitialized ? 1 : 0);
         if (texturesInitialized) {
             composedAlbedo.cleanup();
             composedNormal.cleanup();
             composedOpacity.cleanup();
             texturesInitialized = false;
         }
+        printf("[BillboardCreator] cleanup done\n");
     }
     
     ~BillboardCreator() {

@@ -45,6 +45,15 @@ public:
             app = nullptr;
             return;
         }
+        printf("[EditableTexture] cleanup start - app=%p, image=%p, view=%p, sampler=%p\n", (void*)app, (void*)image, (void*)view, (void*)sampler);
+        // Remove ImGui descriptor set if present (must happen before cleanupImGui/descriptor pool destruction)
+        ImTextureID id = getImGuiDescriptorSet();
+        if (id) {
+            // remove ImGui descriptor set first to avoid ImGui holding references into Vulkan after we destroy handles
+            ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)id);
+            imguiDescSet = VK_NULL_HANDLE;
+        }
+        // destroy Vulkan objects (sampler, view, image, memory) if valid
         if (sampler != VK_NULL_HANDLE) {
             vkDestroySampler(device, sampler, nullptr);
             sampler = VK_NULL_HANDLE;
@@ -61,7 +70,12 @@ public:
             vkFreeMemory(device, memory, nullptr);
             memory = VK_NULL_HANDLE;
         }
+        // clear cpu-side buffer
+    cpuData.clear();
+    cpuData.shrink_to_fit();
+        // null out app to make cleanup idempotent
         app = nullptr;
+        printf("[EditableTexture] cleanup done\n");
     }
     
     // Edit a pixel (RGBA format)

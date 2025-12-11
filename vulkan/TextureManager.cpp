@@ -63,7 +63,18 @@ size_t TextureManager::addTriple(const TextureImage& albedo, VkSampler albedoSam
 void TextureManager::destroyAll() {
     if (!app) return;
     VkDevice device = app->getDevice();
-    for (auto &t : triples) {
+    printf("[TextureManager] destroyAll start: triples=%zu device=%p\n", triples.size(), (void*)device);
+    if (device == VK_NULL_HANDLE) {
+        // Device already destroyed; can't call Vulkan destroy functions or ImGui removal safely.
+        // Just clear our local bookkeeping to avoid double-destruction from destructors later.
+        printf("[TextureManager] device is VK_NULL_HANDLE - skipping Vulkan destroys and ImGui removals\n");
+        triples.clear();
+        return;
+    }
+    for (size_t i = 0; i < triples.size(); ++i) {
+        auto &t = triples[i];
+        printf("[TextureManager] triple %zu: ownsResources=%d albedoSampler=%p albedoView=%p albedoImage=%p albedoTexID=%p\n",
+               i, t.ownsResources, (void*)t.albedoSampler, (void*)t.albedo.view, (void*)t.albedo.image, (void*)t.albedoTexID);
         // remove ImGui texture handles if created (check that descriptor set is valid)
         if (t.albedoTexID && (VkDescriptorSet)t.albedoTexID != VK_NULL_HANDLE) {
             ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)t.albedoTexID);
@@ -97,6 +108,7 @@ void TextureManager::destroyAll() {
         }
     }
     triples.clear();
+    printf("[TextureManager] destroyAll done\n");
 }
 
 ImTextureID TextureManager::getImTexture(size_t idx, int map) {

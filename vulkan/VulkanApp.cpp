@@ -109,6 +109,7 @@ void VulkanApp::mainLoop() {
 }
 
 void VulkanApp::cleanup() {
+    printf("[VulkanApp] cleanup start - device=%p\n", (void*)device);
     if (device != VK_NULL_HANDLE) vkDeviceWaitIdle(device);
 
     // destroy sync objects
@@ -127,7 +128,9 @@ void VulkanApp::cleanup() {
     clean();
 
     // ImGui cleanup (must happen before destroying descriptor pools and device)
+    printf("[VulkanApp] calling cleanupImGui() - imguiDescriptorPool=%p\n", (void*)imguiDescriptorPool);
     cleanupImGui();
+    printf("[VulkanApp] cleanupImGui() returned\n");
     // depth resources
     if (depthImageView != VK_NULL_HANDLE) vkDestroyImageView(device, depthImageView, nullptr);
     if (depthImage != VK_NULL_HANDLE) vkDestroyImage(device, depthImage, nullptr);
@@ -158,7 +161,12 @@ void VulkanApp::cleanup() {
         if (fp) fp(instance, surface, nullptr);
     }
 
-    if (device != VK_NULL_HANDLE) vkDestroyDevice(device, nullptr);
+    printf("[VulkanApp] about to vkDestroyDevice(device=%p)\n", (void*)device);
+    if (device != VK_NULL_HANDLE) {
+        vkDestroyDevice(device, nullptr);
+        device = VK_NULL_HANDLE;
+    }
+    printf("[VulkanApp] vkDestroyDevice returned\n");
 
     if (debugMessenger != VK_NULL_HANDLE) {
         auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
@@ -166,6 +174,7 @@ void VulkanApp::cleanup() {
     }
 
     if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr);
+    printf("[VulkanApp] vkDestroyInstance returned\n");
 
     if (window) glfwDestroyWindow(window);
     glfwTerminate();
@@ -228,12 +237,14 @@ void VulkanApp::initImGui() {
 
 void VulkanApp::cleanupImGui() {
     if (imguiDescriptorPool != VK_NULL_HANDLE) {
+        printf("[VulkanApp] cleanupImGui start - imguiDescriptorPool=%p device=%p\n", (void*)imguiDescriptorPool, (void*)device);
         vkDeviceWaitIdle(device);
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
         vkDestroyDescriptorPool(device, imguiDescriptorPool, nullptr);
         imguiDescriptorPool = VK_NULL_HANDLE;
+        printf("[VulkanApp] cleanupImGui done\n");
     }
 }
 
