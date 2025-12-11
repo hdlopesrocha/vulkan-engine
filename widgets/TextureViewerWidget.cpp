@@ -87,6 +87,16 @@ void TextureViewer::render() {
             ImGui::SliderFloat("Ambient Factor", &mat.ambientFactor, 0.0f, 1.0f, "%.2f");
             ImGui::SliderFloat("Specular Strength", &mat.specularStrength, 0.0f, 2.0f, "%.2f");
             ImGui::SliderFloat("Shininess", &mat.shininess, 1.0f, 256.0f, "%.0f");
+
+            ImGui::Spacing();
+            ImGui::Text("Mapping Mode");
+            ImGui::Separator();
+            // mappingMode: 0=none, 1=parallax, 2=tessellation
+            int mappingMode = static_cast<int>(mat.mappingMode + 0.5f);
+            const char* modes[] = { "None", "Parallax (POM)", "Tessellation (Displacement)" };
+            if (ImGui::Combo("Mapping Mode", &mappingMode, modes, IM_ARRAYSIZE(modes))) {
+                mat.mappingMode = static_cast<float>(mappingMode);
+            }
             
             ImGui::EndTabItem();
         }

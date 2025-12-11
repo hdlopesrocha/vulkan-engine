@@ -978,8 +978,8 @@ void VulkanApp::createDescriptorSetLayout() {
     uboLayoutBinding.descriptorCount = 1;
     uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     uboLayoutBinding.pImmutableSamplers = nullptr;
-    // UBO is now referenced by both vertex and fragment shaders (lighting in fragment)
-    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    // UBO is referenced by vertex, fragment and tessellation stages
+    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
     // bindings 1..3: arrays of combined image samplers (albedo / normal / height)
     // bindings 1..3: one combined image sampler each (we use a texture2D array as the image view)
@@ -988,7 +988,7 @@ void VulkanApp::createDescriptorSetLayout() {
     samplerLayoutBinding.descriptorCount = 1;
     samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     samplerLayoutBinding.pImmutableSamplers = nullptr;
-    samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
     VkDescriptorSetLayoutBinding normalSamplerBinding{};
     normalSamplerBinding.binding = 2;
@@ -1002,7 +1002,8 @@ void VulkanApp::createDescriptorSetLayout() {
     heightSamplerBinding.descriptorCount = 1;
     heightSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     heightSamplerBinding.pImmutableSamplers = nullptr;
-    heightSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // Height sampler is used by fragment shader and tessellation evaluation shader (for displacement)
+    heightSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
     // binding 4: shadow map sampler
     VkDescriptorSetLayoutBinding shadowSamplerBinding{};
@@ -1170,7 +1171,8 @@ VkPipelineLayout VulkanApp::getPipelineLayout() const {
 VkPipeline VulkanApp::createGraphicsPipeline(
     std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
     VkVertexInputBindingDescription bindingDescription,
-    std::initializer_list<VkVertexInputAttributeDescription> descriptions) {
+    std::initializer_list<VkVertexInputAttributeDescription> descriptions,
+    VkPolygonMode polygonMode) {
     
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages(stages);
 
@@ -1187,6 +1189,7 @@ VkPipeline VulkanApp::createGraphicsPipeline(
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    // Default topology: triangle list. If tessellation stages are present, switch to patch list.
     inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     inputAssembly.primitiveRestartEnable = VK_FALSE;
 
@@ -1220,7 +1223,7 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.depthClampEnable = VK_FALSE;
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.polygonMode = polygonMode;
     rasterizer.lineWidth = 1.0f;
     // use standard back-face culling. Mesh winding in this project uses clockwise
     rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
@@ -1247,8 +1250,11 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     pipelineLayoutInfo.setLayoutCount = (descriptorSetLayout != VK_NULL_HANDLE) ? 1u : 0u;
     pipelineLayoutInfo.pSetLayouts = (descriptorSetLayout != VK_NULL_HANDLE) ? &descriptorSetLayout : nullptr;
 
-    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create pipeline layout!");
+    // Create pipeline layout only once and reuse for multiple pipelines
+    if (pipelineLayout == VK_NULL_HANDLE) {
+        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create pipeline layout!");
+        }
     }
 
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
@@ -1259,9 +1265,24 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
 
+    // If tessellation shaders are present, set input assembly topology to patch list and add tessellation state
+    bool hasTessellation = false;
+    for (const auto &s : shaderStages) {
+        if (s.stage & (VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)) {
+            hasTessellation = true;
+            break;
+        }
+    }
+    VkPipelineTessellationStateCreateInfo tessState{};
+    if (hasTessellation) {
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+        tessState.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
+        tessState.patchControlPoints = 3; // triangles
+    }
+
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.stageCount = stages.size();
+    pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
     pipelineInfo.pStages = shaderStages.data();
     pipelineInfo.pVertexInputState = &vertexInputInfo;
     pipelineInfo.pInputAssemblyState = &inputAssembly;
@@ -1274,6 +1295,7 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     pipelineInfo.layout = pipelineLayout;
     pipelineInfo.renderPass = renderPass;
     pipelineInfo.subpass = 0;
+    if (hasTessellation) pipelineInfo.pTessellationState = &tessState;
     VkPipeline graphicsPipeline;
     if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create graphics pipeline!");
@@ -1701,7 +1723,14 @@ void VulkanApp::createLogicalDevice() {
         queueCreateInfos.push_back(queueCreateInfo);
     }
 
+    // Query supported features and enable non-solid fill (wireframe) if available
+    VkPhysicalDeviceFeatures supportedFeatures{};
+    vkGetPhysicalDeviceFeatures(physicalDevice, &supportedFeatures);
+
     VkPhysicalDeviceFeatures deviceFeatures{};
+    if (supportedFeatures.fillModeNonSolid) {
+        deviceFeatures.fillModeNonSolid = VK_TRUE;
+    }
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

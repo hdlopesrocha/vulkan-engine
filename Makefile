@@ -25,11 +25,13 @@ OUT = $(OUT_DIR)/app
 
 # shader sources and generated SPIR-V
 
-SHADERS = shaders/triangle.vert shaders/triangle.frag shaders/shadow.vert shaders/shadow.frag shaders/perlin_noise.comp
+SHADERS = shaders/triangle.vert shaders/triangle.tesc shaders/triangle.tese shaders/triangle.frag shaders/shadow.vert shaders/shadow.frag shaders/perlin_noise.comp
 # SPIR-V targets will be written into the OUT_DIR/shaders directory
 SPVS = $(SHADERS:.vert=.vert.spv)
 SPVS := $(SPVS:.frag=.frag.spv)
 SPVS := $(SPVS:.comp=.comp.spv)
+SPVS := $(SPVS:.tesc=.tesc.spv)
+SPVS := $(SPVS:.tese=.tese.spv)
 OUT_SPVS := $(patsubst shaders/%, $(OUT_DIR)/shaders/%, $(SPVS))
 
 all: shaders
@@ -63,6 +65,24 @@ $(OUT_DIR)/shaders/%.frag.spv: shaders/%.frag
 	fi
 
 $(OUT_DIR)/shaders/%.comp.spv: shaders/%.comp
+	@echo "Compiling shader: $< -> $@"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc $< -o $@; \
+	else \
+		glslangValidator -V $< -o $@; \
+	fi
+
+$(OUT_DIR)/shaders/%.tesc.spv: shaders/%.tesc
+	@echo "Compiling shader: $< -> $@"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc $< -o $@; \
+	else \
+		glslangValidator -V $< -o $@; \
+	fi
+
+$(OUT_DIR)/shaders/%.tese.spv: shaders/%.tese
 	@echo "Compiling shader: $< -> $@"
 	@mkdir -p $(dir $@)
 	@if command -v glslc >/dev/null 2>&1; then \

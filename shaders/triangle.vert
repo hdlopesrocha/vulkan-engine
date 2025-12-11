@@ -10,8 +10,11 @@ layout(binding = 0) uniform UBO {
     vec4 lightColor;
     vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
     vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=unused
+    vec4 parallaxLOD; // x=parallaxNear, y=parallaxFar, z=reductionAtFar, w=unused
+    vec4 mappingParams; // x=mappingMode (0=none,1=parallax,2=tessellation), y/z/w unused
     vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
     mat4 lightSpaceMatrix; // for shadow mapping
+    vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
 } ubo;
 
 
@@ -29,6 +32,7 @@ layout(location = 3) out vec3 fragTangent;
 layout(location = 5) flat out int fragTexIndex;
 layout(location = 4) out vec3 fragPosWorld;
 layout(location = 6) out vec4 fragPosLightSpace;
+layout(location = 7) out vec3 fragLocalPos;
 
 void main() {
     fragColor = inColor;
@@ -43,6 +47,8 @@ void main() {
     fragPosWorld = worldPos.xyz;
     // compute light-space position for shadow mapping
     fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
+    // pass local-space position (used by tessellation/displacement)
+    fragLocalPos = inPos;
     // apply MVP transform to the vertex position (MVP already includes model transform)
     gl_Position = ubo.mvp * vec4(inPos, 1.0);
 }

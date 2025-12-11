@@ -21,6 +21,7 @@ layout(binding = 0) uniform UBO {
     vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
     vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
     vec4 parallaxLOD; // x=parallaxNear, y=parallaxFar, z=reductionAtFar, w=unused
+    vec4 mappingParams; // x=mappingMode (0=none,1=parallax,2=tessellation)
     vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
     mat4 lightSpaceMatrix;
     vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
@@ -194,8 +195,9 @@ void main() {
     float adjMinLayers = ubo.pomParams.y;
     float adjMaxLayers = ubo.pomParams.z;
 
-    // Parallax Occlusion Mapping (if enabled)
-    if (ubo.pomParams.w > 0.5) {
+    // Parallax Occlusion Mapping (if enabled AND mapping mode == parallax)
+    int mappingMode = int(ubo.mappingParams.x + 0.5);
+    if (mappingMode == 1 && ubo.pomParams.w > 0.5) {
         // Compute tangent-space view direction for POM
         vec3 N = normalize(fragNormal);
         vec3 T = normalize(fragTangent);
@@ -289,7 +291,7 @@ void main() {
     
     // Adjust shadow position based on parallax displacement (if enabled)
     vec4 adjustedPosLightSpace = fragPosLightSpace;
-    if (ubo.pomParams.w > 0.5 && ubo.shadowEffects.y > 0.5) { // Check shadowDisplacement setting
+    if (int(ubo.mappingParams.x + 0.5) == 1 && ubo.pomParams.w > 0.5 && ubo.shadowEffects.y > 0.5) { // Check shadowDisplacement setting
         // Get height at the parallax-displaced UV
         float height = 1.0 - texture(heightArray, vec3(uv, float(texIndex))).r;
         // Use the adjusted heightScale computed earlier so shadow displacement follows the GPU LOD
@@ -315,7 +317,7 @@ void main() {
         shadow = ShadowCalculation(adjustedPosLightSpace, bias);
         
         // Add parallax self-shadowing (if POM and self-shadowing are enabled)
-        if (ubo.pomParams.w > 0.5 && ubo.shadowEffects.x > 0.5) { // Check selfShadowing setting
+    if (int(ubo.mappingParams.x + 0.5) == 1 && ubo.pomParams.w > 0.5 && ubo.shadowEffects.x > 0.5) { // Check selfShadowing setting
         // Transform light direction to tangent space
         vec3 lightDirT = normalize(transpose(TBN) * toLight);
         

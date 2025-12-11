@@ -40,6 +40,7 @@ struct UniformObject {
     glm::vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
     glm::vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
     glm::vec4 parallaxLOD; // x=parallaxNear, y=parallaxFar, z=reductionAtFar, w=unused
+    glm::vec4 mappingParams; // x=mappingMode (0=none,1=parallax,2=tessellation), y/z/w unused
     glm::vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
     glm::mat4 lightSpaceMatrix; // for shadow mapping
     glm::vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
@@ -48,6 +49,7 @@ struct UniformObject {
     void setMaterial(const MaterialProperties& mat) {
         pomParams = glm::vec4(mat.pomHeightScale, mat.pomMinLayers, mat.pomMaxLayers, mat.pomEnabled);
         pomFlags = glm::vec4(mat.flipNormalY, mat.flipTangentHandedness, mat.ambientFactor, mat.flipParallaxDirection);
+        mappingParams = glm::vec4(mat.mappingMode, 0.0f, 0.0f, 0.0f);
         specularParams = glm::vec4(mat.specularStrength, mat.shininess, 0.0f, 0.0f);
     }
 };
@@ -56,7 +58,10 @@ class MyApp : public VulkanApp, public IEventHandler {
     public:
         MyApp() : shadowMapper(this, 8192) {}
         
-        VkPipeline graphicsPipeline = VK_NULL_HANDLE;
+    VkPipeline graphicsPipeline = VK_NULL_HANDLE;
+    VkPipeline graphicsPipelineWire = VK_NULL_HANDLE;
+    VkPipeline graphicsPipelineTess = VK_NULL_HANDLE;
+    VkPipeline graphicsPipelineTessWire = VK_NULL_HANDLE;
     // texture manager handles albedo/normal/height triples
     TextureManager textureManager;
     
@@ -151,6 +156,84 @@ class MyApp : public VulkanApp, public IEventHandler {
                     }
                 );
 
+                // Create wireframe variant (if device supports it)
+                graphicsPipelineWire = createGraphicsPipeline(
+                    {
+                        vertexShader.info,
+                        fragmentShader.info
+                    },
+                    VkVertexInputBindingDescription { 
+                        0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
+                    },
+                    {
+                        VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos) },
+                        VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
+                        VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
+                        VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+                        VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
+                        VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
+                    },
+                    VK_POLYGON_MODE_LINE
+                );
+
+                // create a tessellated pipeline as well (vertex + tesc + tese + fragment)
+                ShaderStage tescShader = ShaderStage(
+                    createShaderModule(FileReader::readFile("shaders/triangle.tesc.spv")),
+                    VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
+                );
+                ShaderStage teseShader = ShaderStage(
+                    createShaderModule(FileReader::readFile("shaders/triangle.tese.spv")),
+                    VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
+                );
+
+                // Build tessellated pipeline
+                graphicsPipelineTess = createGraphicsPipeline(
+                    {
+                        vertexShader.info,
+                        tescShader.info,
+                        teseShader.info,
+                        fragmentShader.info
+                    },
+                    VkVertexInputBindingDescription { 
+                        0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
+                    },
+                    {
+                        VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos) },
+                        VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
+                        VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
+                        VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+                        VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
+                        VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
+                    }
+                );
+
+                // Build tessellated wireframe pipeline
+                graphicsPipelineTessWire = createGraphicsPipeline(
+                    {
+                        vertexShader.info,
+                        tescShader.info,
+                        teseShader.info,
+                        fragmentShader.info
+                    },
+                    VkVertexInputBindingDescription { 
+                        0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
+                    },
+                    {
+                        VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos) },
+                        VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
+                        VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
+                        VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+                        VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
+                        VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
+                    },
+                    VK_POLYGON_MODE_LINE
+                );
+
+                // Destroy tess shader modules after pipeline creation
+                vkDestroyShaderModule(getDevice(), tescShader.info.module, nullptr);
+                vkDestroyShaderModule(getDevice(), teseShader.info.module, nullptr);
+
+                // Destroy vertex/fragment modules used to create the pipelines
                 vkDestroyShaderModule(getDevice(), fragmentShader.info.module, nullptr);
                 vkDestroyShaderModule(getDevice(), vertexShader.info.module, nullptr);
             }
@@ -627,7 +710,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
             // bind pipeline
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            // We'll bind the appropriate pipeline per-instance (regular or tessellated)
 
             // Render all instances with main pass
             for (const auto& instance : modelManager.getInstances()) {
@@ -663,7 +746,19 @@ class MyApp : public VulkanApp, public IEventHandler {
                 updateUniformBuffer(*instance.uniformBuffer, &ubo, sizeof(UniformObject));
                 
                 // Bind descriptor set and draw
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                // Choose pipeline based on per-material mapping mode (0=none,1=parallax,2=tessellation)
+                int mappingMode = 0;
+                if (instance.material) mappingMode = static_cast<int>(instance.material->mappingMode + 0.5f);
+                bool wire = settingsWidget ? settingsWidget->getWireframeEnabled() : false;
+                if (mappingMode == 2 && graphicsPipelineTess != VK_NULL_HANDLE) {
+                    if (wire && graphicsPipelineTessWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineTessWire);
+                    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineTess);
+                } else {
+                    if (wire && graphicsPipelineWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineWire);
+                    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+                }
+
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                        getPipelineLayout(), 0, 1, &instance.descriptorSet, 0, nullptr);
                 vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
             }
@@ -688,6 +783,9 @@ class MyApp : public VulkanApp, public IEventHandler {
             eventManager.processQueued();
 
             if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipeline, nullptr);
+            if (graphicsPipelineWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineWire, nullptr);
+            if (graphicsPipelineTess != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineTess, nullptr);
+            if (graphicsPipelineTessWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineTessWire, nullptr);
             // texture cleanup via manager
             textureManager.destroyAll();
             // vertex/index buffers cleanup - destroy all meshes

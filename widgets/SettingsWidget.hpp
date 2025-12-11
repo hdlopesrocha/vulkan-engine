@@ -83,6 +83,11 @@ public:
             if (ImGui::Button("Reset to Defaults")) {
                 resetToDefaults();
             }
+            ImGui::Separator();
+            if (ImGui::Checkbox("Wireframe Mode", &wireframeMode)) {
+                // toggle wireframe rendering
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Render meshes in wireframe (requires GPU support)");
         }
         ImGui::End();
     }
@@ -99,6 +104,7 @@ public:
     float getParallaxNear() const { return parallaxNear; }
     float getParallaxFar() const { return parallaxFar; }
     float getParallaxReduction() const { return parallaxReduction; }
+    bool getWireframeEnabled() const { return wireframeMode; }
     
 private:
     bool enableSelfShadowing = true;           // Parallax self-shadowing (bumps on themselves)
@@ -112,6 +118,7 @@ private:
     float parallaxNear = 1.0f;                 // near distance for full parallax detail
     float parallaxFar = 25.0f;                 // far distance where reduction applies
     float parallaxReduction = 0.3f;            // reduction factor at far distance (0..1)
+    bool wireframeMode = false;                // render wireframe when true
     
     void resetToDefaults() {
         enableSelfShadowing = true;
