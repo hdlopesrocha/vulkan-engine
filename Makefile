@@ -122,3 +122,13 @@ install:
 	sudo cp backends/*.h /usr/local/include/imgui/backends/
 	sudo cp libimgui.a /usr/local/lib/
 	sudo ldconfig
+
+.PHONY: cloc
+cloc:
+	@echo "Running cloc to count lines of code..."
+	@# Exclude runtime bins and third_party from the count; print to terminal (no file)
+	@if command -v cloc >/dev/null 2>&1; then \
+		cloc --exclude-dir=$(OUT_DIR),third_party .; \
+	else \
+		echo "cloc not found on PATH. Install it (e.g. sudo apt install cloc) to get a detailed LOC report."; \
+	fi
