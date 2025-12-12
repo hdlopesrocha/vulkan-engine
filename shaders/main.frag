@@ -38,19 +38,14 @@ void main() {
         // Compute tangent-space view direction for POM
         vec3 N = normalize(fragNormal);
         vec3 T = normalize(fragTangent);
-        
+
         // Handle normal Y flipping
         if (ubo.pomFlags.x > 0.5) {
             N.y = -N.y;
         }
         
-        // Handle tangent handedness flipping  
-        if (ubo.pomFlags.y > 0.5) {
-            T = -T;
-        }
-        
-        // Compute bitangent correctly: cross(T, N) for right-handed coordinate system
-        vec3 B = cross(T, N);
+        // Compute bitangent (assume right-handed TBN)
+        vec3 B = cross(N, T);
         // TBN matrix transforms from tangent space to world space
         // Columns are: tangent, bitangent, normal
         mat3 TBN = mat3(T, B, N);
@@ -97,12 +92,8 @@ void main() {
     // Compute world-space normal from normal map
     vec3 N = normalize(fragNormal);
     vec3 T = normalize(fragTangent);
-    
-    // Handle tangent handedness
-    if (ubo.pomFlags.y > 0.5) {
-        T = -T;
-    }
-    
+
+    // Compute bitangent (assume right-handed TBN)
     vec3 B = cross(N, T);
     mat3 TBN = mat3(T, B, N);
     vec3 worldNormal = normalize(TBN * normalMap);
@@ -188,5 +179,66 @@ void main() {
     float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), ubo.specularParams.y); // shininess from uniform
     vec3 specular = ubo.lightColor.rgb * spec * (1.0 - totalShadow) * ubo.specularParams.x; // specular strength from uniform
     
+    // Debug visualisation modes (0 = normal render)
+    int debugMode = int(ubo.debugParams.x + 0.5);
+    if (debugMode == 0) {
+        outColor = vec4(ambient + diffuse + specular, 1.0);
+        return;
+    }
+    if (debugMode == 1) {
+        // Geometry normal (world-space geometry normal)
+        vec3 gn = normalize(fragNormal);
+        outColor = vec4(gn * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (debugMode == 2) {
+        // Normal map visualised in world space
+        vec3 nm = normalize(worldNormal);
+        outColor = vec4(nm * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (debugMode == 3) {
+        // UV coordinates (wrap using fract)
+        vec2 fuv = fract(fragUV);
+        outColor = vec4(fuv.x, fuv.y, 0.0, 1.0);
+        return;
+    }
+    if (debugMode == 4) {
+        // Tangent (world-space)
+        vec3 tcol = normalize(T) * 0.5 + 0.5;
+        outColor = vec4(tcol, 1.0);
+        return;
+    }
+    if (debugMode == 5) {
+        // Bitangent (world-space)
+        vec3 bcol = normalize(B) * 0.5 + 0.5;
+        outColor = vec4(bcol, 1.0);
+        return;
+    }
+    if (debugMode == 6) {
+        // Normal (world-space)
+        vec3 ncol = normalize(N) * 0.5 + 0.5;
+        outColor = vec4(ncol, 1.0);
+        return;
+    }
+    if (debugMode == 7) {
+        // Raw albedo texture (no lighting)
+        vec3 rawAlbedo = texture(albedoArray, vec3(fragUV, float(texIndex))).rgb;
+        outColor = vec4(rawAlbedo, 1.0);
+        return;
+    }
+    if (debugMode == 8) {
+        // Raw normal map colors (as stored in the texture, no remap)
+        vec3 rawNormalTex = texture(normalArray, vec3(fragUV, float(texIndex))).rgb;
+        outColor = vec4(rawNormalTex, 1.0);
+        return;
+    }
+    if (debugMode == 9) {
+        // Bump/height map visualization (grayscale)
+        float h = texture(heightArray, vec3(fragUV, float(texIndex))).r;
+        outColor = vec4(vec3(h), 1.0);
+        return;
+    }
+    // Fallback to normal rendering
     outColor = vec4(ambient + diffuse + specular, 1.0);
 }

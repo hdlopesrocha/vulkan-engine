@@ -13,7 +13,7 @@ layout(location = 4) in vec3 pc_inPosWorld[];
 layout(location = 5) in float pc_inTexIndex[];
 layout(location = 7) in vec3 pc_inLocalPos[];
 layout(location = 8) in vec3 pc_inLocalNormal[];
-layout(location = 9) in vec3 pc_inLocalTangent[];
+layout(location = 9) in vec4 pc_inLocalTangent[];
 
 layout(location = 0) out vec3 tc_fragColor[];
 layout(location = 1) out vec2 tc_fragUV[];
@@ -23,7 +23,7 @@ layout(location = 4) out vec3 tc_fragPosWorld[];
 layout(location = 5) flat out int tc_fragTexIndex[];
 layout(location = 7) out vec3 tc_fragLocalPos[];
 layout(location = 8) out vec3 tc_fragLocalNormal[];
-layout(location = 9) out vec3 tc_fragLocalTangent[];
+layout(location = 9) out vec4 tc_fragLocalTangent[];
 
 void main() {
     // Pass through per-vertex data to evaluation stage
@@ -31,6 +31,8 @@ void main() {
     tc_fragUV[gl_InvocationID] = pc_inUV[gl_InvocationID];
     tc_fragNormal[gl_InvocationID] = pc_inNormal[gl_InvocationID];
     tc_fragTangent[gl_InvocationID] = pc_inTangent[gl_InvocationID];
+        tc_fragNormal[gl_InvocationID] = pc_inNormal[gl_InvocationID];
+        tc_fragTangent[gl_InvocationID] = pc_inTangent[gl_InvocationID];
     tc_fragPosWorld[gl_InvocationID] = pc_inPosWorld[gl_InvocationID];
     tc_fragTexIndex[gl_InvocationID] = int(pc_inTexIndex[gl_InvocationID] + 0.5);
     tc_fragLocalPos[gl_InvocationID] = pc_inLocalPos[gl_InvocationID];

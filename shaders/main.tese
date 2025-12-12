@@ -38,7 +38,7 @@ void main() {
     vec3 localPos = tc_fragLocalPos[0] * bc.x + tc_fragLocalPos[1] * bc.y + tc_fragLocalPos[2] * bc.z;
     // Prefer the explicitly-passed local-space normal/tangent for correct displacement
     vec3 localNormal = normalize(tc_fragLocalNormal[0] * bc.x + tc_fragLocalNormal[1] * bc.y + tc_fragLocalNormal[2] * bc.z);
-    vec3 localTangent = normalize(tc_fragLocalTangent[0] * bc.x + tc_fragLocalTangent[1] * bc.y + tc_fragLocalTangent[2] * bc.z);
+    vec3 localTangent = tc_fragLocalTangent[0] * bc.x + tc_fragLocalTangent[1] * bc.y + tc_fragLocalTangent[2] * bc.z;
     vec2 uv = tc_fragUV[0] * bc.x + tc_fragUV[1] * bc.y + tc_fragUV[2] * bc.z;
     int texIndex = int(float(tc_fragTexIndex[0]) * bc.x + float(tc_fragTexIndex[1]) * bc.y + float(tc_fragTexIndex[2]) * bc.z + 0.5);
     fragColor = tc_fragColor[0] * bc.x + tc_fragColor[1] * bc.y + tc_fragColor[2] * bc.z;

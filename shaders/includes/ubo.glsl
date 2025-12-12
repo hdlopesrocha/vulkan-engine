@@ -14,4 +14,5 @@ layout(binding = 0) uniform UBO {
     vec4 triplanarParams; // x=scaleU, y=scaleV, z=enabled(1.0), w=unused
     mat4 lightSpaceMatrix; // for shadow mapping
     vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
+    vec4 debugParams; // x=debugMode (0=normal,1=geometry normal,2=normal map,3=uv,4=tangent,5=bitangent,6=raw albedo,7=raw normal map,8=bump/height,9=TBN composite)
 } ubo;

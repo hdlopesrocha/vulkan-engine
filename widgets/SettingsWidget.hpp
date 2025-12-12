@@ -88,6 +88,15 @@ public:
                 // toggle wireframe rendering
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Render meshes in wireframe (requires GPU support)");
+
+            ImGui::Separator();
+            ImGui::Text("Debug Visualisation");
+            ImGui::Separator();
+            const char* debugItems[] = { "Default Render", "Fragment Normal", "World Normal", "UV Coordinates", "Tangent (TBN)", "Bitangent (TBN)", "Normal (TBN)", "Albedo Texture", "Normal Texture", "Bump Texture" };
+            int current = debugMode;
+            if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {
+                debugMode = current;
+            }
         }
         ImGui::End();
     }
@@ -105,6 +114,7 @@ public:
     float getParallaxFar() const { return parallaxFar; }
     float getParallaxReduction() const { return parallaxReduction; }
     bool getWireframeEnabled() const { return wireframeMode; }
+        int getDebugMode() const { return debugMode; }
     
 private:
     bool enableSelfShadowing = true;           // Parallax self-shadowing (bumps on themselves)
@@ -119,6 +129,7 @@ private:
     float parallaxFar = 25.0f;                 // far distance where reduction applies
     float parallaxReduction = 0.3f;            // reduction factor at far distance (0..1)
     bool wireframeMode = false;                // render wireframe when true
+        int debugMode = 0;                         // 0=normal,1=geom normal,2=normal map,3=uv,4=tangent,5=bitangent,6=raw albedo,7=raw normal,8=bump,9=TBN composite
     
     void resetToDefaults() {
         enableSelfShadowing = true;
@@ -132,5 +143,6 @@ private:
         parallaxNear = 1.0f;
         parallaxFar = 25.0f;
         parallaxReduction = 0.3f;
+        debugMode = 0;
     }
 };

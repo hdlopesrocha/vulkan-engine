@@ -45,6 +45,7 @@ struct UniformObject {
     glm::vec4 triplanarParams; // x=scaleU, y=scaleV, z=enabled(1.0), w=unused
     glm::mat4 lightSpaceMatrix; // for shadow mapping
     glm::vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
+    glm::vec4 debugParams; // x=debugMode (0=normal,1=normalVec,2=normalMap,3=uv,4=tangent,5=bitangent)
     
     // Set material properties from MaterialProperties struct
     void setMaterial(const MaterialProperties& mat) {
@@ -174,7 +175,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                         VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
                         VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
                         VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                        VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
+                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
                         VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
                     },
                     VK_POLYGON_MODE_LINE
@@ -206,7 +207,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                         VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
                         VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
                         VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                        VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
+                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
                         VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
                     }
                 );
@@ -227,7 +228,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                         VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
                         VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
                         VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                        VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
+                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
                         VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
                     },
                     VK_POLYGON_MODE_LINE
@@ -730,6 +731,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                     settingsWidget->getSelfShadowQuality(),
                     0.0f  // unused
                 );
+                // Debug visualization mode (set by SettingsWidget)
+                if (settingsWidget) ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
+                else ubo.debugParams = glm::vec4(0.0f);
                 
                 updateUniformBuffer(*instance.uniformBuffer, &ubo, sizeof(UniformObject));
                 

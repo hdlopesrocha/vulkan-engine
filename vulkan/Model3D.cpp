@@ -71,8 +71,9 @@ void Model3D::computeNormals(std::vector<Vertex>& vertices, const std::vector<ui
 }
 
 void Model3D::computeTangents(std::vector<Vertex>& vertices, const std::vector<uint16_t>& indices) {
-    // Compute per-vertex tangents from positions and UVs
+    // Compute per-vertex tangents and bitangents from positions and UVs, and store handedness in tangent.w
     std::vector<glm::vec3> tanAccum(vertices.size(), glm::vec3(0.0f));
+    std::vector<glm::vec3> bitAccum(vertices.size(), glm::vec3(0.0f));
     
     for (size_t i = 0; i < indices.size(); i += 3) {
         uint32_t i0 = indices[i];
@@ -98,21 +99,32 @@ void Model3D::computeTangents(std::vector<Vertex>& vertices, const std::vector<u
         float f = 1.0f / denom;
 
         glm::vec3 tangent = f * (edge1 * deltaUV2.y - edge2 * deltaUV1.y);
+        glm::vec3 bitangent = f * (edge2 * deltaUV1.x - edge1 * deltaUV2.x);
 
         tanAccum[i0] += tangent;
         tanAccum[i1] += tangent;
         tanAccum[i2] += tangent;
+
+        bitAccum[i0] += bitangent;
+        bitAccum[i1] += bitangent;
+        bitAccum[i2] += bitangent;
     }
 
-    // Orthonormalize and store tangent per-vertex
+    // Orthonormalize and store tangent + handedness per-vertex
     for (size_t i = 0; i < vertices.size(); ++i) {
         glm::vec3 n(vertices[i].normal[0], vertices[i].normal[1], vertices[i].normal[2]);
         glm::vec3 t = tanAccum[i];
+        glm::vec3 b = bitAccum[i];
         
         if (glm::length2(t) > 0.0f) {
             t = glm::normalize(t - n * glm::dot(n, t));
         }
-        
+
+        float handedness = 1.0f;
+        if (glm::length2(b) > 0.0f && glm::length2(t) > 0.0f) {
+            handedness = (glm::dot(glm::cross(n, t), b) < 0.0f) ? -1.0f : 1.0f;
+        }
+
         if (!glm::isnan(t.x) && glm::length2(t) > 0.0f) {
             vertices[i].tangent[0] = t.x;
             vertices[i].tangent[1] = t.y;
