@@ -5,7 +5,7 @@ layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec3 fragTangent;
 layout(location = 3) in vec3 fragPosWorld;
 
-#include "includes/push_constants.glsl"
+#include "includes/ubo.glsl"
 
 layout(binding = 3) uniform sampler2DArray heightArray;
 

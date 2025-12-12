@@ -16,8 +16,7 @@ public:
     
     // Render a single object to shadow map
     void renderObject(VkCommandBuffer commandBuffer, const glm::mat4& modelMatrix, 
-                      const VertexBufferObject& vbo, VkDescriptorSet descriptorSet,
-                      const glm::vec4& pomParams, const glm::vec4& pomFlags, const glm::vec3& viewPos);
+                      const VertexBufferObject& vbo, VkDescriptorSet descriptorSet);
     
     // Getters for resources
     VkImageView getShadowMapView() const { return shadowMapView; }

@@ -1,6 +1,6 @@
 #version 450
 
-#include "includes/push_constants.glsl"
+#include "includes/ubo.glsl"
 
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
@@ -17,16 +17,16 @@ layout(location = 8) out vec3 pc_inLocalNormal;
 layout(location = 9) out vec3 pc_inLocalTangent;
 
 void main() {
-    vec4 worldPos = push.model * vec4(inPosition, 1.0);
+    vec4 worldPos = ubo.model * vec4(inPosition, 1.0);
     pc_inPosWorld = worldPos.xyz;
     pc_inUV = inTexCoord;
-    pc_inNormal = mat3(push.model) * inNormal;
-    pc_inTangent = mat3(push.model) * inTangent;
+    pc_inNormal = mat3(ubo.model) * inNormal;
+    pc_inTangent = mat3(ubo.model) * inTangent;
     pc_inTexIndex = 0.0; // default single-layer
     pc_inLocalPos = inPosition;
     pc_inLocalNormal = inNormal;
     pc_inLocalTangent = inTangent;
     
     // MVP already includes model transform, apply to local position
-    gl_Position = push.mvp * vec4(inPosition, 1.0);
+    gl_Position = ubo.mvp * vec4(inPosition, 1.0);
 }

@@ -687,8 +687,19 @@ class MyApp : public VulkanApp, public IEventHandler {
                     );
                 }
                 
+                // Update uniform buffer for shadow pass
+                glm::mat4 shadowMvp = uboStatic.lightSpaceMatrix * instance.transform;
+                UniformObject shadowUbo = uboStatic;
+                shadowUbo.model = instance.transform;
+                shadowUbo.mvp = shadowMvp;
+                shadowUbo.pomParams = pomParams;
+                shadowUbo.pomFlags = pomFlags;
+                // Other fields can stay as is
+                
+                updateUniformBuffer(*instance.uniformBuffer, &shadowUbo, sizeof(UniformObject));
+                
                 shadowMapper.renderObject(commandBuffer, instance.transform, instance.model->getVBO(),
-                                        instance.descriptorSet, pomParams, pomFlags, camera.getPosition());
+                                        instance.descriptorSet);
             }
             
             shadowMapper.endShadowPass(commandBuffer);
