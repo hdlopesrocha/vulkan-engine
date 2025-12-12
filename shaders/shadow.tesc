@@ -4,7 +4,6 @@ layout(vertices = 3) out;
 
 #include "includes/ubo.glsl"
 
-// Inputs from vertex shader (match triangle.tesc convention)
 layout(location = 7) in vec3 pc_inLocalPos[];
 layout(location = 8) in vec3 pc_inLocalNormal[];
 layout(location = 1) in vec2 pc_inUV[];

@@ -25,4 +25,9 @@ struct MaterialProperties {
     float shininess = 32.0f;
     float padding1 = 0.0f;  // Align to 16 bytes
     float padding2 = 0.0f;
+
+    // Triplanar mapping toggle and per-material UV scales (disabled by default)
+    bool triplanar = false;
+    float triplanarScaleU = 1.0f;
+    float triplanarScaleV = 1.0f;
 };

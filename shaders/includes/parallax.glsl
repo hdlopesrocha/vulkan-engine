@@ -3,9 +3,10 @@ vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex, float
     float numLayers = mix(maxLayers, minLayers, abs(dot(vec3(0.0,0.0,1.0), viewDirT)));
     float layerDepth = 1.0 / numLayers;
     float currentLayerDepth = 0.0;
-    // parallax direction: when flipParallaxDirection is OFF (0.0), black carves inward (standard)
-    // when flipParallaxDirection is ON (1.0), black goes outward (inverted)
-    vec2 P = (ubo.pomFlags.w > 0.5) ? -viewDirT.xy * heightScale : viewDirT.xy * heightScale;
+    // parallax direction: project the tangent-space view direction onto the texture plane
+    // P = (viewDirT.xy / viewDirT.z) * heightScale; guard against small z
+    float vz = max(abs(viewDirT.z), 1e-6);
+    vec2 P = (ubo.pomFlags.w > 0.5) ? -(viewDirT.xy / vz) * heightScale : (viewDirT.xy / vz) * heightScale;
     vec2 deltaTex = P / numLayers;
     vec2 currentTex = texCoords;
     // Sample height (respect per-material interpretation)
@@ -66,10 +67,9 @@ float ParallaxSelfShadow(vec2 texCoords, vec3 lightDirT, float currentHeight, in
     numSamples = max(numSamples, 4.0); // At least 4 samples for decent quality
     
     // March in the direction of the light in texture space
-    // Use the SAME logic as POM: respect the flipParallaxDirection flag
-    // Negate X component
-    vec2 lightXY = vec2(-lightDirT.x, lightDirT.y);
-    vec2 L = (ubo.pomFlags.w > 0.5) ? -lightXY * heightScale : lightXY * heightScale;
+    // Use the same projection as POM: project light direction into texture plane
+    float lz = max(abs(lightDirT.z), 1e-6);
+    vec2 L = (ubo.pomFlags.w > 0.5) ? -(lightDirT.xy / lz) * heightScale : (lightDirT.xy / lz) * heightScale;
     vec2 rayStep = L / numSamples;
     
     // Start from current displaced position
@@ -79,8 +79,8 @@ float ParallaxSelfShadow(vec2 texCoords, vec3 lightDirT, float currentHeight, in
     // We're at currentHeight and march towards the light
     float rayHeight = currentHeight;
     
-    // Height change per step - as we go towards light (up), height decreases
-    float layerDepth = lightDirT.z / numSamples;
+    // Height change per step - use absolute z to support axes where projected z may be negative
+    float layerDepth = max(abs(lightDirT.z), 1e-6) / numSamples;
     
     // March from current position towards the light source
     for (int i = 1; i <= int(numSamples); ++i) {

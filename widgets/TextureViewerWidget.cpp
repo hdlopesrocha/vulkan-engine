@@ -69,6 +69,17 @@ void TextureViewer::render() {
             if (ImGui::Checkbox("Flip Parallax Direction", &flipParallaxBool)) {
                 mat.flipParallaxDirection = flipParallaxBool;
             }
+
+            bool triplanarBool = mat.triplanar;
+            if (ImGui::Checkbox("Enable Triplanar Mapping", &triplanarBool)) {
+                mat.triplanar = triplanarBool;
+            }
+            if (mat.triplanar) {
+                ImGui::Indent();
+                ImGui::SliderFloat("Triplanar Scale U", &mat.triplanarScaleU, 0.01f, 10.0f, "%.3f");
+                ImGui::SliderFloat("Triplanar Scale V", &mat.triplanarScaleV, 0.01f, 10.0f, "%.3f");
+                ImGui::Unindent();
+            }
             
             ImGui::Spacing();
             ImGui::Text("Lighting");

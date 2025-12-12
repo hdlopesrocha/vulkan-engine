@@ -11,6 +11,7 @@ layout(binding = 0) uniform UBO {
     vec4 parallaxLOD; // x=parallaxNear, y=parallaxFar, z=reductionAtFar, w=unused
     vec4 mappingParams; // x=mappingMode (0=none,1=parallax,2=tessellation), y/z/w unused
     vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
+    vec4 triplanarParams; // x=scaleU, y=scaleV, z=enabled(1.0), w=unused
     mat4 lightSpaceMatrix; // for shadow mapping
     vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
 } ubo;

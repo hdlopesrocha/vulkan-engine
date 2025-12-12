@@ -42,6 +42,7 @@ struct UniformObject {
     glm::vec4 parallaxLOD; // x=parallaxNear, y=parallaxFar, z=reductionAtFar, w=unused
     glm::vec4 mappingParams; // x=mappingMode (0=none,1=parallax,2=tessellation), y/z/w unused
     glm::vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
+    glm::vec4 triplanarParams; // x=scaleU, y=scaleV, z=enabled(1.0), w=unused
     glm::mat4 lightSpaceMatrix; // for shadow mapping
     glm::vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
     
@@ -51,6 +52,7 @@ struct UniformObject {
         pomFlags = glm::vec4(mat.flipNormalY, mat.flipTangentHandedness, mat.ambientFactor, mat.flipParallaxDirection);
         mappingParams = glm::vec4(mat.mappingMode, mat.tessLevel, mat.invertHeight, mat.tessHeightScale);
         specularParams = glm::vec4(mat.specularStrength, mat.shininess, 0.0f, 0.0f);
+        triplanarParams = glm::vec4(mat.triplanarScaleU, mat.triplanarScaleV, mat.triplanar ? 1.0f : 0.0f, 0.0f);
     }
 };
 
@@ -245,7 +247,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // Explicit per-name loads (one-by-one) with realistic material properties
             const std::vector<std::pair<std::array<const char*,3>, MaterialProperties>> specs = {
-                {{"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg"}, MaterialProperties{0.08f, 10.0f, 40.0f, 2.0f, true, 0.08f, 4.0f, false, false, 0.12f, false, 0.2f, 8.0f}},
+                {{"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg"}, MaterialProperties{0.015f, 10.0f, 40.0f, 1.0f, false, 0.08f, 4.0f, false, false, 0.12f, false, 0.2f, 8.0f}},
                 {{"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg"}, MaterialProperties{0.05f, 8.0f, 32.0f, 1.0f, false, 0.05f, 1.0f, false, false, 0.15f, false, 0.05f, 4.0f}},
                 {{"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg"}, MaterialProperties{0.06f, 8.0f, 32.0f, 1.0f, false, 0.06f, 1.0f, false, false, 0.18f, false, 0.1f, 6.0f}},
                 {{"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg"}, MaterialProperties{0.04f, 8.0f, 28.0f, 1.0f, false, 0.04f, 1.0f, false, false, 0.2f, false, 0.15f, 10.0f}},
