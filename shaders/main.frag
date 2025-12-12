@@ -87,7 +87,7 @@ void main() {
     }
     
     vec3 T = normalize(fragTangent);
-    vec3 B = cross(T, N);  // Try left-handed for mesh compatibility
+    vec3 B = cross(T, N);  // Left-handed bitangent for mesh compatibility
     mat3 TBN = mat3(T, B, N);
     
     // Compute world-space normal
@@ -189,10 +189,10 @@ void main() {
     vec3 ambient = albedoColor * ubo.pomFlags.z; // ambient factor
     vec3 diffuse = albedoColor * ubo.lightColor.rgb * NdotL * (1.0 - totalShadow);
     
-    // Specular lighting (Blinn-Phong) - uses normal-mapped surface normal
+    // Specular lighting (Phong) - uses normal-mapped surface normal
     vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
-    vec3 halfwayDir = normalize(toLight + viewDir);
-    float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), ubo.specularParams.y); // shininess from uniform
+    vec3 reflectDir = reflect(-toLight, worldNormal);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), ubo.specularParams.y); // shininess from uniform
     vec3 specular = ubo.lightColor.rgb * spec * (1.0 - totalShadow) * ubo.specularParams.x; // specular strength from uniform
     
     // Debug visualisation modes (0 = normal render)
