@@ -70,8 +70,6 @@ float ParallaxSelfShadow(vec2 texCoords, vec3 lightDirT, float currentHeight, in
     // Use the same projection as POM: project light direction into texture plane
     float lz = max(abs(lightDirT.z), 1e-6);
     vec2 L = (ubo.pomFlags.w > 0.5) ? -(lightDirT.xy / lz) * heightScale : (lightDirT.xy / lz) * heightScale;
-    // Rotate projection 90 degrees clockwise as requested (x,y) -> (y, -x)
-    L = vec2(L.y, -L.x);
     vec2 rayStep = L / numSamples;
     
     // Start from current displaced position

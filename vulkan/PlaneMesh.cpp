@@ -28,5 +28,5 @@ void PlaneMesh::build(VulkanApp* app, float width, float height, float texIndex)
 
     // Use the base class build method
     // For a flat plane, we don't need to recompute normals and tangents (already set correctly)
-    Model3D::build(app, vertices, indices, false, false);
+    Model3D::build(app, vertices, indices, true, true);
 }

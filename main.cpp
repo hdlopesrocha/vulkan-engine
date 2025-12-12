@@ -102,7 +102,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     ShadowMapper shadowMapper;
     
     // Light direction (controlled by LightWidget)
-    glm::vec3 lightDirection = glm::normalize(glm::vec3(1.0f, 1.0f, 1.0f));
+    glm::vec3 lightDirection = glm::normalize(glm::vec3(-1.0f, -1.0f, -1.0f));
     
     // Camera
     // start the camera further back so multiple cubes are visible
@@ -315,6 +315,27 @@ class MyApp : public VulkanApp, public IEventHandler {
                 editableTextures->getBump().getTextureImage(),
                 editableTextures->getBump().getSampler()
             );
+            // Apply editable material properties in a single-line initializer
+            textureManager.getMaterial(editableIndex) = MaterialProperties{
+                0.05f, // pomHeightScale
+                6.0f,  // pomMinLayers
+                32.0f, // pomMaxLayers
+                1.0f,  // mappingMode (parallax)
+                false, // invertHeight
+                0.2f,  // tessHeightScale (unused)
+                16.0f, // tessLevel (unused)
+                false, // flipNormalY
+                false, // flipTangentHandedness
+                0.12f, // ambientFactor
+                false, // flipParallaxDirection
+                0.5f,  // specularStrength
+                32.0f, // shininess
+                0.0f,  // padding1
+                0.0f,  // padding2
+                false, // triplanar
+                1.0f,  // triplanarScaleU
+                1.0f   // triplanarScaleV
+            };
             editableTextureIndex = editableIndex;  // Store for plane rendering
 
             // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
@@ -409,8 +430,10 @@ class MyApp : public VulkanApp, public IEventHandler {
             meshes.push_back(std::move(plane));
             
             // Initialize light space matrix BEFORE creating command buffers
-            // Light direction points FROM surface TO light (for lighting calculations)
-            glm::vec3 lightDirToLight = glm::normalize(lightDirection);
+            // UI `lightDirection` is the direction FROM the camera/world TO the light (TO the light).
+            // For constructing the light view (positioning the light), we need a vector FROM the light TOWARD the scene center,
+            // so negate the UI direction when computing light position for shadow mapping.
+            glm::vec3 lightDirToLight = -glm::normalize(lightDirection);
             // Adjust scene center to be between cubes (around y=0) and plane (y=-1.5)
             glm::vec3 sceneCenter = glm::vec3(0.0f, -0.75f, 0.0f);
             glm::vec3 lightPos = sceneCenter + lightDirToLight * 20.0f;
@@ -549,9 +572,11 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // prepare static parts of the UBO (viewPos, light, POM params) - model and mvp will be set per-cube in draw()
             uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
-            // Light direction: pointing upward from surface to light
+            // The UI `lightDirection` represents a vector TO the light. Shaders expect a light vector that points FROM the
+            // light TOWARD the surface when performing lighting/shadow calculations. Send the negated direction to the GPU
+            // so both lighting and shadow projection use the same convention.
             glm::vec3 lightDir = glm::normalize(lightDirection);
-            uboStatic.lightDir = glm::vec4(lightDir, 0.0f);
+            uboStatic.lightDir = glm::vec4(-lightDir, 0.0f);
             uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
             // Pass parallax LOD settings to the GPU so the fragment shader can compute smooth fading
             if (settingsWidget) {
@@ -570,9 +595,10 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Adjust scene center to be between cubes and plane
             glm::vec3 sceneCenter = glm::vec3(0.0f, -0.75f, 0.0f);
             
-            // Diagonal light direction matching setup()
+            // Diagonal light direction matching setup(): use negated UI direction so the light position and view
+            // are consistent with the negated `uboStatic.lightDir` sent to shaders.
             glm::vec3 shadowLightDir = glm::normalize(lightDirection);
-            glm::vec3 lightPos = sceneCenter + shadowLightDir * 20.0f;
+            glm::vec3 lightPos = sceneCenter - shadowLightDir * 20.0f;
             
             glm::vec3 worldUp = glm::vec3(0.0f, 1.0f, 0.0f);
             if (glm::abs(glm::dot(shadowLightDir, worldUp)) > 0.9f) {
@@ -633,11 +659,12 @@ class MyApp : public VulkanApp, public IEventHandler {
                 modelManager.addInstance(cube, model_i, descriptorSets[i], &uniforms[i], mat);
             }
             
-            // First pass: Render shadow map
-            shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
-            
-            // Render all instances to shadow map
-            for (const auto& instance : modelManager.getInstances()) {
+            // First pass: Render shadow map (skip if shadows globally disabled)
+            if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
+                shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
+                
+                // Render all instances to shadow map
+                for (const auto& instance : modelManager.getInstances()) {
                 // Build POM parameters from instance material
                 glm::vec4 pomParams(0.1f, 8.0f, 32.0f, 0.0f); // default: disabled
                 glm::vec4 pomFlags(0.0f, 0.0f, 0.0f, 0.0f);
@@ -674,11 +701,12 @@ class MyApp : public VulkanApp, public IEventHandler {
                 
                 updateUniformBuffer(*instance.uniformBuffer, &shadowUbo, sizeof(UniformObject));
                 
-                shadowMapper.renderObject(commandBuffer, instance.transform, instance.model->getVBO(),
-                                        instance.descriptorSet);
+                    shadowMapper.renderObject(commandBuffer, instance.transform, instance.model->getVBO(),
+                                            instance.descriptorSet);
+                }
+
+                shadowMapper.endShadowPass(commandBuffer);
             }
-            
-            shadowMapper.endShadowPass(commandBuffer);
             
             // Second pass: Render scene with shadows
             vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -729,7 +757,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                     settingsWidget->getSelfShadowingEnabled() ? 1.0f : 0.0f,
                     settingsWidget->getShadowDisplacementEnabled() ? 1.0f : 0.0f,
                     settingsWidget->getSelfShadowQuality(),
-                    0.0f  // unused
+                    settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f  // global shadows enabled
                 );
                 // Debug visualization mode (set by SettingsWidget)
                 if (settingsWidget) ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);

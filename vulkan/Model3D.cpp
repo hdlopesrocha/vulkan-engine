@@ -43,13 +43,10 @@ void Model3D::computeNormals(std::vector<Vertex>& vertices, const std::vector<ui
         glm::vec3 edge1 = p1 - p0;
         glm::vec3 edge2 = p2 - p0;
         glm::vec3 faceNormal = glm::cross(edge1, edge2);
-        
+
         if (glm::length2(faceNormal) > 0.0f) {
             faceNormal = glm::normalize(faceNormal);
         }
-        
-        // Negate to fix winding order
-        faceNormal = -faceNormal;
 
         normAccum[i0] += faceNormal;
         normAccum[i1] += faceNormal;

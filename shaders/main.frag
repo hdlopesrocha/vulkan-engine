@@ -26,6 +26,7 @@ void main() {
     int texIndex = 0;
     
     vec2 uv = fragUV;
+    vec3 viewDirT = vec3(0.0, 0.0, 1.0);
     
     // Prepare adjusted POM parameters (default = material values)
     float adjHeightScale = ubo.pomParams.x;
@@ -89,7 +90,7 @@ void main() {
         normalMap.y = -normalMap.y;
     }
     
-    // Compute world-space normal from normal map
+    // Compute world-space normal from normal map using the same stable TBN construction
     vec3 N = normalize(fragNormal);
     vec3 T = normalize(fragTangent);
 
@@ -98,18 +99,14 @@ void main() {
     mat3 TBN = mat3(T, B, N);
     vec3 worldNormal = normalize(TBN * normalMap);
 
-    
-    
-    // Use geometry normal for shadow plane detection (not mapped normal)
-    vec3 geometryNormal = normalize(fragNormal);
-    
     // Lighting calculation
-    // ubo.lightDir points from surface to light
-    vec3 toLight = normalize(ubo.lightDir.xyz);
+    // ubo.lightDir is sent as a vector FROM the light TOWARD the surface (light->surface).
+    // Negate it here to get the conventional surface->light vector used for lighting calculations.
+    vec3 toLight = -normalize(ubo.lightDir.xyz);
     
     // Use geometry normal for base lighting to get consistent light direction
     // Then add normal map detail on top
-    float geometryNdotL = dot(geometryNormal, toLight);
+    float geometryNdotL = dot(N, toLight);
     float normalMappedNdotL = max(dot(worldNormal, toLight), 0.0);
     
     // Blend between geometry-based and normal-mapped lighting
@@ -127,44 +124,59 @@ void main() {
         // Use the adjusted heightScale computed earlier so shadow displacement follows the GPU LOD
         float heightScale = adjHeightScale;
 
-        // Offset world position along the normal by the height displacement
-        // This makes shadows "follow" the height variations
-        vec3 offset = worldNormal * height * heightScale;
-        vec3 adjustedWorldPos = fragPosWorld + offset;
+        // Use parallaxFade (computed earlier) to scale shadow displacement; avoid shifting shadows when parallax is disabled
+        float parallaxFadeLocal = clamp((viewDirT.z - 0.12) / (0.35 - 0.12), 0.0, 1.0);
+
+        // Offset world position along the geometry normal by the height displacement (scaled by fade)
+        // Use geometry normal (not normal-map detail) so shadow displacement follows actual geometry.
+        // Height is interpreted so larger values mean deeper displacement into the surface;
+        // move the shadow sample point along -N to project the displaced surface toward the light correctly.
+        vec3 offset = worldNormal * height * heightScale * parallaxFadeLocal;
+        vec3 adjustedWorldPos = fragPosWorld - offset;
 
         // Transform adjusted position to light space
         adjustedPosLightSpace = ubo.lightSpaceMatrix * vec4(adjustedWorldPos, 1.0);
     }
     
-    // Calculate shadow with adaptive bias based on surface angle
+    // Calculate shadow with adaptive bias based on surface angle.
+    // If global shadows are disabled (ubo.shadowEffects.w == 0) we skip shadowing entirely.
     float shadow = 0.0;
     float selfShadow = 1.0;
-    
-    // Only calculate shadows for surfaces facing the light (use geometry normal to avoid artifacts)
-    if (geometryNdotL > 0.01) {
-        // Increased bias since shadow map no longer uses parallax displacement
-        float bias = max(0.002 * (1.0 - NdotL), 0.0005);
-        shadow = ShadowCalculation(adjustedPosLightSpace, bias);
-        
-        // Add parallax self-shadowing (if POM and self-shadowing are enabled)
-    if (int(ubo.mappingParams.x + 0.5) == 1 && ubo.pomParams.w > 0.5 && ubo.shadowEffects.x > 0.5) { // Check selfShadowing setting
-        // Transform light direction to tangent space
-        vec3 lightDirT = normalize(transpose(TBN) * toLight);
-        
-        // Get current height at the parallax-offset UV
-        float currentHeight = sampleHeight(uv, texIndex);
-        
-        // Only compute self-shadow if light is reasonably above the surface
-        // Use a small threshold to avoid computing shadows for grazing angles
-        if (lightDirT.z > 0.1) {
-            // use adjusted heightScale and minLayers computed earlier for self-shadow ray-marching
-            selfShadow = ParallaxSelfShadow(uv, lightDirT, currentHeight, texIndex, adjHeightScale, adjMinLayers);
-        }
-        // If light is at grazing angle or below, just don't apply self-shadow (leave at 1.0)
+
+    if (ubo.shadowEffects.w > 0.5) {
+        // Only calculate shadows for surfaces facing the light (use geometry normal to avoid artifacts)
+        if (geometryNdotL > 0.01) {
+            // Increased bias since shadow map no longer uses parallax displacement
+            float bias = max(0.002 * (1.0 - NdotL), 0.0005);
+            shadow = ShadowCalculation(adjustedPosLightSpace, bias);
+
+            // Add parallax self-shadowing (if POM and self-shadowing are enabled)
+            if (int(ubo.mappingParams.x + 0.5) == 1 && ubo.pomParams.w > 0.5 && ubo.shadowEffects.x > 0.5) { // Check selfShadowing setting
+                // Transform light direction to tangent space
+                vec3 lightDirT = normalize(transpose(TBN) * toLight);
+
+                // Get current height at the parallax-offset UV
+                float currentHeight = sampleHeight(uv, texIndex);
+
+                // Only compute self-shadow if light is reasonably above the surface
+                // Use a small threshold to avoid computing shadows for grazing angles
+                float parallaxFadeLocal = clamp((viewDirT.z - 0.12) / (0.35 - 0.12), 0.0, 1.0);
+                if (lightDirT.z > 0.1 && parallaxFadeLocal > 0.01) {
+                    // use adjusted heightScale and minLayers computed earlier for self-shadow ray-marching
+                    float rawSelf = ParallaxSelfShadow(uv, lightDirT, currentHeight, texIndex, adjHeightScale, adjMinLayers);
+                    // Blend self-shadow with no-shadow (1.0) based on parallax fade so it smoothly appears
+                    selfShadow = mix(1.0, rawSelf, parallaxFadeLocal);
+                }
+                // If light is at grazing angle or below, just don't apply self-shadow (leave at 1.0)
+            }
+        } else {
+            // Back-facing surfaces should be in full shadow
+            shadow = 1.0;
         }
     } else {
-        // Back-facing surfaces should be in full shadow
-        shadow = 1.0;
+        // Shadows globally disabled: leave shadow=0 (fully lit) and selfShadow=1 (no self-shadow)
+        shadow = 0.0;
+        selfShadow = 1.0;
     }
     
     // Combine global shadow and self-shadow (multiply to get darker result)
@@ -237,6 +249,18 @@ void main() {
         // Bump/height map visualization (grayscale)
         float h = texture(heightArray, vec3(fragUV, float(texIndex))).r;
         outColor = vec4(vec3(h), 1.0);
+        return;
+    }
+    if (debugMode == 10) {
+        outColor = vec4(geometryNdotL, normalMappedNdotL, 0.0, 1.0);
+        return;
+    }
+    if (debugMode == 11) {
+        // Normal computed from derivatives of world position (dFdx/dFdy)
+        vec3 dPdx = dFdx(fragPosWorld);
+        vec3 dPdy = dFdy(fragPosWorld);
+        vec3 derivNormal = normalize(cross(dPdx, dPdy));
+        outColor = vec4(derivNormal * 0.5 + 0.5, 1.0);
         return;
     }
     // Fallback to normal rendering

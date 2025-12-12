@@ -15,6 +15,10 @@ public:
         if (ImGui::Begin(title.c_str(), &isOpen)) {
             ImGui::Text("Shadow Effects");
             ImGui::Separator();
+            if (ImGui::Checkbox("Enable Shadows", &enableShadows)) {
+                // toggle global shadowing (shadow map + self-shadowing)
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Globally enable or disable all shadowing (map + parallax self-shadow)");
             
             if (ImGui::Checkbox("Enable Parallax Self-Shadowing", &enableSelfShadowing)) {
                 // Self-shadowing: bumps casting shadows on themselves
@@ -92,7 +96,7 @@ public:
             ImGui::Separator();
             ImGui::Text("Debug Visualisation");
             ImGui::Separator();
-            const char* debugItems[] = { "Default Render", "Fragment Normal", "World Normal", "UV Coordinates", "Tangent (TBN)", "Bitangent (TBN)", "Normal (TBN)", "Albedo Texture", "Normal Texture", "Bump Texture" };
+            const char* debugItems[] = { "Default Render", "Fragment Normal", "World Normal", "UV Coordinates", "Tangent (TBN)", "Bitangent (TBN)", "Normal (TBN)", "Albedo Texture", "Normal Texture", "Bump Texture", "Parallax Pre-Projection", "Normal from Derivatives" };
             int current = debugMode;
             if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {
                 debugMode = current;
@@ -106,6 +110,7 @@ public:
     bool getShadowDisplacementEnabled() const { return enableShadowDisplacement; }
     bool getParallaxInShadowPassEnabled() const { return enableParallaxInShadowPass; }
     float getSelfShadowQuality() const { return selfShadowQuality; }
+    bool getShadowsEnabled() const { return enableShadows; }
     bool getFlipKeyboardRotation() const { return flipKeyboardRotation; }
     bool getFlipGamepadRotation() const { return flipGamepadRotation; }
     float getMoveSpeed() const { return moveSpeed; }
@@ -120,6 +125,7 @@ private:
     bool enableSelfShadowing = true;           // Parallax self-shadowing (bumps on themselves)
     bool enableShadowDisplacement = true;      // External shadows follow height
     bool enableParallaxInShadowPass = true;    // Cast shadows match appearance
+    bool enableShadows = true;                 // Global toggle for shadow mapping + self-shadow
     float selfShadowQuality = 0.5f;            // Quality multiplier for self-shadow rays
     bool flipKeyboardRotation = false;         // Flip keyboard rotation axes
     bool flipGamepadRotation = false;          // Flip gamepad rotation axes
@@ -129,12 +135,13 @@ private:
     float parallaxFar = 25.0f;                 // far distance where reduction applies
     float parallaxReduction = 0.3f;            // reduction factor at far distance (0..1)
     bool wireframeMode = false;                // render wireframe when true
-        int debugMode = 0;                         // 0=normal,1=geom normal,2=normal map,3=uv,4=tangent,5=bitangent,6=raw albedo,7=raw normal,8=bump,9=TBN composite
+        int debugMode = 0;                         // 0=Default,1=Geometry normal,2=Normal map/world,3=UV,4=Tangent,5=Bitangent,6=Normal (mapped),7=Albedo,8=Normal Tex,9=Bump,10=Parallax Pre-Projection,11=Normal from Derivatives
     
     void resetToDefaults() {
         enableSelfShadowing = true;
         enableShadowDisplacement = true;
         enableParallaxInShadowPass = true;
+        enableShadows = true;
         selfShadowQuality = 0.5f;
         flipKeyboardRotation = false;
         flipGamepadRotation = false;

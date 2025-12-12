@@ -57,8 +57,15 @@ public:
         if (!isOpen) return;
         
         if (ImGui::Begin(title.c_str(), &isOpen)) {
-            ImGui::Text("Light Direction: (%.3f, %.3f, %.3f)", 
-                    lightDirection->x, lightDirection->y, lightDirection->z);
+            // Show and allow editing the light direction vector (normalized when edited)
+            float dir[3] = { lightDirection->x, lightDirection->y, lightDirection->z };
+            if (ImGui::InputFloat3("Direction", dir, "%.3f")) {
+                glm::vec3 newDir = glm::normalize(glm::vec3(dir[0], dir[1], dir[2]));
+                *lightDirection = newDir;
+                // Update sliders to reflect the new direction
+                calculateAnglesFromDirection();
+            }
+            ImGui::Text("Normalized: (%.3f, %.3f, %.3f)", lightDirection->x, lightDirection->y, lightDirection->z);
             ImGui::Text("Azimuth: %.1f°, Elevation: %.1f°", azimuth, elevation);
             
             ImGui::Separator();
