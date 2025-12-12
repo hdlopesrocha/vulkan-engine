@@ -244,81 +244,47 @@ class MyApp : public VulkanApp, public IEventHandler {
             std::vector<size_t> loadedIndices;
 
             // Explicit per-name loads (one-by-one) with realistic material properties
-            struct MatSpec {
-                const char* albedo;
-                const char* normal;
-                const char* bump;
-                float pomHeightScale;
-                float pomMinLayers;
-                float pomMaxLayers;
-                float specularStrength;
-                float shininess;
-                float ambientFactor;
-                float mappingMode;
-                float tessLevel;
-                float bumpHeight;
+            const std::vector<std::pair<std::array<const char*,3>, MaterialProperties>> specs = {
+                {{"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg"}, MaterialProperties{0.08f, 10.0f, 40.0f, 2.0f, true, 0.08f, 4.0f, false, false, 0.12f, false, 0.2f, 8.0f}},
+                {{"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg"}, MaterialProperties{0.05f, 8.0f, 32.0f, 1.0f, false, 0.05f, 1.0f, false, false, 0.15f, false, 0.05f, 4.0f}},
+                {{"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg"}, MaterialProperties{0.06f, 8.0f, 32.0f, 1.0f, false, 0.06f, 1.0f, false, false, 0.18f, false, 0.1f, 6.0f}},
+                {{"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg"}, MaterialProperties{0.04f, 8.0f, 28.0f, 1.0f, false, 0.04f, 1.0f, false, false, 0.2f, false, 0.15f, 10.0f}},
+                {{"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg"}, MaterialProperties{0.03f, 6.0f, 24.0f, 1.0f, false, 0.03f, 1.0f, false, false, 0.4f, false, 0.8f, 64.0f}},
+                {{"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg"}, MaterialProperties{0.02f, 8.0f, 32.0f, 1.0f, false, 0.02f, 1.0f, false, false, 0.1f, false, 0.9f, 128.0f}},
+                {{"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg"}, MaterialProperties{0.01f, 4.0f, 16.0f, 1.0f, false, 0.01f, 1.0f, false, false, 0.15f, false, 0.3f, 16.0f}},
+                {{"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg"}, MaterialProperties{0.1f, 12.0f, 48.0f, 1.0f, false, 0.1f, 1.0f, false, false, 0.1f, false, 0.15f, 8.0f}},
+                {{"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg"}, MaterialProperties{0.03f, 6.0f, 24.0f, 1.0f, false, 0.03f, 1.0f, false, false, 0.2f, false, 0.25f, 12.0f}},
+                {{"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg"}, MaterialProperties{0.04f, 6.0f, 28.0f, 1.0f, false, 0.04f, 1.0f, false, false, 0.3f, false, 0.6f, 32.0f}},
+                {{"textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg"}, MaterialProperties{0.025f, 6.0f, 20.0f, 1.0f, false, 0.025f, 1.0f, false, false, 0.22f, false, 0.3f, 16.0f}}
             };
 
-            const std::vector<MatSpec> specs = {
-                {"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg", 0.08f, 10.0f, 40.0f, 0.2f, 8.0f, 0.12f, 2.0f, 4.0f, 0.08f},
-                {"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg", 0.05f, 8.0f, 32.0f, 0.05f, 4.0f, 0.15f, 1.0f, 1.0f, 0.05f},
-                {"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg", 0.06f, 8.0f, 32.0f, 0.1f, 6.0f, 0.18f, 1.0f, 1.0f, 0.06f},
-                {"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg", 0.04f, 8.0f, 28.0f, 0.15f, 10.0f, 0.2f, 1.0f, 1.0f, 0.04f},
-                {"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg", 0.03f, 6.0f, 24.0f, 0.8f, 64.0f, 0.4f, 1.0f, 1.0f, 0.03f},
-                {"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg", 0.02f, 8.0f, 32.0f, 0.9f, 128.0f, 0.1f, 1.0f, 1.0f, 0.02f},
-                {"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg", 0.01f, 4.0f, 16.0f, 0.3f, 16.0f, 0.15f, 1.0f, 1.0f, 0.01f},
-                {"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg", 0.1f, 12.0f, 48.0f, 0.15f, 8.0f, 0.1f, 1.0f, 1.0f, 0.1f},
-                {"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg", 0.03f, 6.0f, 24.0f, 0.25f, 12.0f, 0.2f, 1.0f, 1.0f, 0.03f},
-                {"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg", 0.04f, 6.0f, 28.0f, 0.6f, 32.0f, 0.3f, 1.0f, 1.0f, 0.04f},
-                {"textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg", 0.025f, 6.0f, 20.0f, 0.3f, 16.0f, 0.22f, 1.0f, 1.0f, 0.025f}
-            };
-
-            for (const auto &s : specs) {
-                size_t idx = textureManager.loadTriple(s.albedo, s.normal, s.bump);
+            for (const auto &entry : specs) {
+                const auto &files = entry.first;
+                const auto &matSpec = entry.second;
+                size_t idx = textureManager.loadTriple(files[0], files[1], files[2]);
                 auto &mat = textureManager.getMaterial(idx);
-                mat.pomHeightScale = s.pomHeightScale;
-                mat.pomMinLayers = s.pomMinLayers;
-                mat.pomMaxLayers = s.pomMaxLayers;
-                mat.specularStrength = s.specularStrength;
-                mat.shininess = s.shininess;
-                mat.ambientFactor = s.ambientFactor;
-                mat.mappingMode = s.mappingMode;
-                mat.tessLevel = s.tessLevel;
-                mat.tessHeightScale = s.bumpHeight;
+                mat = matSpec;
                 loadedIndices.push_back(idx);
             }
 
             // Initialize vegetation texture manager for billboard vegetation
             vegetationTextureManager.init(this);
-            
-            // Load vegetation textures (albedo/normal/opacity triples)
+
+            // Load vegetation textures (albedo/normal/opacity triples) and initialize MaterialProperties
             // Note: We use the height slot for opacity masks
-            size_t foliageIdx = vegetationTextureManager.loadTriple(
-                "textures/vegetation/foliage_color.jpg", 
-                "textures/vegetation/foliage_normal.jpg", 
-                "textures/vegetation/foliage_opacity.jpg"
-            );
-            vegetationTextureManager.getMaterial(foliageIdx).specularStrength = 0.1f;
-            vegetationTextureManager.getMaterial(foliageIdx).shininess = 4.0f;
-            vegetationTextureManager.getMaterial(foliageIdx).ambientFactor = 0.3f;
-            
-            size_t grassVegIdx = vegetationTextureManager.loadTriple(
-                "textures/vegetation/grass_color.jpg", 
-                "textures/vegetation/grass_normal.jpg", 
-                "textures/vegetation/grass_opacity.jpg"
-            );
-            vegetationTextureManager.getMaterial(grassVegIdx).specularStrength = 0.15f;
-            vegetationTextureManager.getMaterial(grassVegIdx).shininess = 6.0f;
-            vegetationTextureManager.getMaterial(grassVegIdx).ambientFactor = 0.35f;
-            
-            size_t wildIdx = vegetationTextureManager.loadTriple(
-                "textures/vegetation/wild_color.jpg", 
-                "textures/vegetation/wild_normal.jpg", 
-                "textures/vegetation/wild_opacity.jpg"
-            );
-            vegetationTextureManager.getMaterial(wildIdx).specularStrength = 0.12f;
-            vegetationTextureManager.getMaterial(wildIdx).shininess = 5.0f;
-            vegetationTextureManager.getMaterial(wildIdx).ambientFactor = 0.32f;
+            const std::vector<std::pair<std::array<const char*,3>, MaterialProperties>> vegSpecs = {
+                {{"textures/vegetation/foliage_color.jpg", "textures/vegetation/foliage_normal.jpg", "textures/vegetation/foliage_opacity.jpg"}, MaterialProperties{0.06f, 8.0f, 32.0f, 1.0f, false, 0.0f, 1.0f, false, false, 0.3f, false, 0.1f, 4.0f}},
+                {{"textures/vegetation/grass_color.jpg",   "textures/vegetation/grass_normal.jpg",   "textures/vegetation/grass_opacity.jpg"},   MaterialProperties{0.06f, 8.0f, 32.0f, 1.0f, false, 0.0f, 1.0f, false, false, 0.35f, false, 0.15f, 6.0f}},
+                {{"textures/vegetation/wild_color.jpg",    "textures/vegetation/wild_normal.jpg",    "textures/vegetation/wild_opacity.jpg"},    MaterialProperties{0.06f, 8.0f, 32.0f, 1.0f, false, 0.0f, 1.0f, false, false, 0.32f, false, 0.12f, 5.0f}}
+            };
+
+            for (const auto &entry : vegSpecs) {
+                const auto &files = entry.first;
+                const auto &mp = entry.second;
+                size_t idx = vegetationTextureManager.loadTriple(files[0], files[1], files[2]);
+                auto &mat = vegetationTextureManager.getMaterial(idx);
+                mat = mp;
+            }
 
             // Auto-detect tiles from vegetation opacity maps
             std::cout << "Auto-detecting vegetation tiles from opacity maps..." << std::endl;

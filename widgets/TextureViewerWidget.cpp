@@ -55,19 +55,19 @@ void TextureViewer::render() {
             ImGui::Text("Normal/Tangent Adjustments");
             ImGui::Separator();
             
-            bool flipNormalYBool = (mat.flipNormalY > 0.5f);
+            bool flipNormalYBool = mat.flipNormalY;
             if (ImGui::Checkbox("Flip Normal Y", &flipNormalYBool)) {
-                mat.flipNormalY = flipNormalYBool ? 1.0f : 0.0f;
+                mat.flipNormalY = flipNormalYBool;
             }
             
-            bool flipTangentBool = (mat.flipTangentHandedness > 0.5f);
+            bool flipTangentBool = mat.flipTangentHandedness;
             if (ImGui::Checkbox("Flip Tangent Handedness", &flipTangentBool)) {
-                mat.flipTangentHandedness = flipTangentBool ? 1.0f : 0.0f;
+                mat.flipTangentHandedness = flipTangentBool;
             }
             
-            bool flipParallaxBool = (mat.flipParallaxDirection > 0.5f);
+            bool flipParallaxBool = mat.flipParallaxDirection;
             if (ImGui::Checkbox("Flip Parallax Direction", &flipParallaxBool)) {
-                mat.flipParallaxDirection = flipParallaxBool ? 1.0f : 0.0f;
+                mat.flipParallaxDirection = flipParallaxBool;
             }
             
             ImGui::Spacing();
@@ -88,12 +88,12 @@ void TextureViewer::render() {
                 mat.mappingMode = static_cast<float>(mappingMode);
                 // Default height interpretation: parallax uses legacy invert (black=deep),
                 // tessellation uses direct (white=high). User can still override with the checkbox.
-                mat.invertHeight = (mappingMode == 1) ? 0.0f : 1.0f;
+                mat.invertHeight = (mappingMode == 1) ? false : true;
             }
             // Height map interpretation: legacy inverted vs direct
-            bool heightDirect = (mat.invertHeight > 0.5f);
+            bool heightDirect = mat.invertHeight;
             if (ImGui::Checkbox("Height Is Direct (white=high)", &heightDirect)) {
-                mat.invertHeight = heightDirect ? 1.0f : 0.0f;
+                mat.invertHeight = heightDirect;
             }
             // Tessellation level (per-material). Only relevant when mappingMode == 2
             if (mappingMode == 2) {
