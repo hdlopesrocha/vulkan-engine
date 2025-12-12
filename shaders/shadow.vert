@@ -6,6 +6,7 @@ layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inTexCoord;
 layout(location = 3) in vec3 inTangent;
+layout(location = 5) in float inTexIndex;
 
 layout(location = 0) out vec2 pc_inUV;
 layout(location = 1) out vec3 pc_inNormal;
@@ -22,7 +23,7 @@ void main() {
     pc_inUV = inTexCoord;
     pc_inNormal = mat3(ubo.model) * inNormal;
     pc_inTangent = mat3(ubo.model) * inTangent;
-    pc_inTexIndex = 0.0; // default single-layer
+    pc_inTexIndex = inTexIndex;
     pc_inLocalPos = inPosition;
     pc_inLocalNormal = inNormal;
     pc_inLocalTangent = inTangent;

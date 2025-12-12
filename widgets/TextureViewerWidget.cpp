@@ -104,8 +104,6 @@ void TextureViewer::render() {
                 ImGui::SliderFloat("Tess Height Scale", &mat.tessHeightScale, 0.0f, 1.0f, "%.3f");
             }
 
-            // Auto-set pomEnabled based on mapping mode and show POM sliders when appropriate
-            mat.pomEnabled = (mappingMode == 1) ? 1.0f : 0.0f;
             if (mappingMode == 1) {
                 ImGui::Separator();
                 ImGui::Text("Parallax Occlusion Mapping");

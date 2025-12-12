@@ -28,6 +28,8 @@ layout(location = 6) out vec4 fragPosLightSpace;
 
 #include "includes/common.glsl"
 
+#include "includes/displacement.glsl"
+
 void main() {
     // barycentric coordinates
     vec3 bc = gl_TessCoord;
@@ -41,18 +43,8 @@ void main() {
     int texIndex = int(float(tc_fragTexIndex[0]) * bc.x + float(tc_fragTexIndex[1]) * bc.y + float(tc_fragTexIndex[2]) * bc.z + 0.5);
     fragColor = tc_fragColor[0] * bc.x + tc_fragColor[1] * bc.y + tc_fragColor[2] * bc.z;
 
-    // Default: no displacement
-    vec3 displacedLocalPos = localPos;
-
-    // Only apply displacement when mapping mode indicates tessellation
-    int mappingMode = int(ubo.mappingParams.x + 0.5);
-    if (mappingMode == 2) {
-        // Sample height according to material flag and displace outward
-        float height = sampleHeight(uv, texIndex);
-        // Use per-material tessellation height scale passed in mappingParams.w
-        float heightScale = ubo.mappingParams.w;
-        displacedLocalPos += localNormal * (height * heightScale);
-    }
+    // Apply displacement
+    vec3 displacedLocalPos = applyDisplacement(localPos, localNormal, uv, texIndex);
 
     // Compute world-space position and normals
     vec4 worldPos = ubo.model * vec4(displacedLocalPos, 1.0);

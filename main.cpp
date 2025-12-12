@@ -47,7 +47,7 @@ struct UniformObject {
     
     // Set material properties from MaterialProperties struct
     void setMaterial(const MaterialProperties& mat) {
-        pomParams = glm::vec4(mat.pomHeightScale, mat.pomMinLayers, mat.pomMaxLayers, mat.pomEnabled);
+        pomParams = glm::vec4(mat.pomHeightScale, mat.pomMinLayers, mat.pomMaxLayers, (mat.mappingMode == 1.0f) ? 1.0f : 0.0f);
         pomFlags = glm::vec4(mat.flipNormalY, mat.flipTangentHandedness, mat.ambientFactor, mat.flipParallaxDirection);
         mappingParams = glm::vec4(mat.mappingMode, mat.tessLevel, mat.invertHeight, mat.tessHeightScale);
         specularParams = glm::vec4(mat.specularStrength, mat.shininess, 0.0f, 0.0f);
@@ -254,21 +254,23 @@ class MyApp : public VulkanApp, public IEventHandler {
                 float specularStrength;
                 float shininess;
                 float ambientFactor;
-                bool pomEnabled;
+                float mappingMode;
+                float tessLevel;
+                float bumpHeight;
             };
 
             const std::vector<MatSpec> specs = {
-                {"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg", 0.08f, 10.0f, 40.0f, 0.2f, 8.0f, 0.12f, true},
-                {"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg", 0.05f, 8.0f, 32.0f, 0.05f, 4.0f, 0.15f, true},
-                {"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg", 0.06f, 8.0f, 32.0f, 0.1f, 6.0f, 0.18f, true},
-                {"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg", 0.04f, 8.0f, 28.0f, 0.15f, 10.0f, 0.2f, true},
-                {"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg", 0.03f, 6.0f, 24.0f, 0.8f, 64.0f, 0.4f, true},
-                {"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg", 0.02f, 8.0f, 32.0f, 0.9f, 128.0f, 0.1f, true},
-                {"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg", 0.01f, 4.0f, 16.0f, 0.3f, 16.0f, 0.15f, true},
-                {"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg", 0.1f, 12.0f, 48.0f, 0.15f, 8.0f, 0.1f, true},
-                {"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg", 0.03f, 6.0f, 24.0f, 0.25f, 12.0f, 0.2f, true},
-                {"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg", 0.04f, 6.0f, 28.0f, 0.6f, 32.0f, 0.3f, true},
-                {"textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg", 0.025f, 6.0f, 20.0f, 0.3f, 16.0f, 0.22f, true}
+                {"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg", 0.08f, 10.0f, 40.0f, 0.2f, 8.0f, 0.12f, 2.0f, 4.0f, 0.08f},
+                {"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg", 0.05f, 8.0f, 32.0f, 0.05f, 4.0f, 0.15f, 1.0f, 1.0f, 0.05f},
+                {"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg", 0.06f, 8.0f, 32.0f, 0.1f, 6.0f, 0.18f, 1.0f, 1.0f, 0.06f},
+                {"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg", 0.04f, 8.0f, 28.0f, 0.15f, 10.0f, 0.2f, 1.0f, 1.0f, 0.04f},
+                {"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg", 0.03f, 6.0f, 24.0f, 0.8f, 64.0f, 0.4f, 1.0f, 1.0f, 0.03f},
+                {"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg", 0.02f, 8.0f, 32.0f, 0.9f, 128.0f, 0.1f, 1.0f, 1.0f, 0.02f},
+                {"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg", 0.01f, 4.0f, 16.0f, 0.3f, 16.0f, 0.15f, 1.0f, 1.0f, 0.01f},
+                {"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg", 0.1f, 12.0f, 48.0f, 0.15f, 8.0f, 0.1f, 1.0f, 1.0f, 0.1f},
+                {"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg", 0.03f, 6.0f, 24.0f, 0.25f, 12.0f, 0.2f, 1.0f, 1.0f, 0.03f},
+                {"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg", 0.04f, 6.0f, 28.0f, 0.6f, 32.0f, 0.3f, 1.0f, 1.0f, 0.04f},
+                {"textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg", 0.025f, 6.0f, 20.0f, 0.3f, 16.0f, 0.22f, 1.0f, 1.0f, 0.025f}
             };
 
             for (const auto &s : specs) {
@@ -280,7 +282,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 mat.specularStrength = s.specularStrength;
                 mat.shininess = s.shininess;
                 mat.ambientFactor = s.ambientFactor;
-                mat.pomEnabled = s.pomEnabled;
+                mat.mappingMode = s.mappingMode;
+                mat.tessLevel = s.tessLevel;
+                mat.tessHeightScale = s.bumpHeight;
                 loadedIndices.push_back(idx);
             }
 
@@ -294,7 +298,6 @@ class MyApp : public VulkanApp, public IEventHandler {
                 "textures/vegetation/foliage_normal.jpg", 
                 "textures/vegetation/foliage_opacity.jpg"
             );
-            vegetationTextureManager.getMaterial(foliageIdx).pomEnabled = false; // No parallax for billboards
             vegetationTextureManager.getMaterial(foliageIdx).specularStrength = 0.1f;
             vegetationTextureManager.getMaterial(foliageIdx).shininess = 4.0f;
             vegetationTextureManager.getMaterial(foliageIdx).ambientFactor = 0.3f;
@@ -304,7 +307,6 @@ class MyApp : public VulkanApp, public IEventHandler {
                 "textures/vegetation/grass_normal.jpg", 
                 "textures/vegetation/grass_opacity.jpg"
             );
-            vegetationTextureManager.getMaterial(grassVegIdx).pomEnabled = false;
             vegetationTextureManager.getMaterial(grassVegIdx).specularStrength = 0.15f;
             vegetationTextureManager.getMaterial(grassVegIdx).shininess = 6.0f;
             vegetationTextureManager.getMaterial(grassVegIdx).ambientFactor = 0.35f;
@@ -314,7 +316,6 @@ class MyApp : public VulkanApp, public IEventHandler {
                 "textures/vegetation/wild_normal.jpg", 
                 "textures/vegetation/wild_opacity.jpg"
             );
-            vegetationTextureManager.getMaterial(wildIdx).pomEnabled = false;
             vegetationTextureManager.getMaterial(wildIdx).specularStrength = 0.12f;
             vegetationTextureManager.getMaterial(wildIdx).shininess = 5.0f;
             vegetationTextureManager.getMaterial(wildIdx).ambientFactor = 0.32f;
@@ -677,7 +678,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                         instance.material->pomHeightScale,
                         instance.material->pomMinLayers,
                         instance.material->pomMaxLayers,
-                        instance.material->pomEnabled
+                        (instance.material->mappingMode == 1.0f) ? 1.0f : 0.0f
                     );
                     pomFlags = glm::vec4(
                         instance.material->flipNormalY,
@@ -694,7 +695,13 @@ class MyApp : public VulkanApp, public IEventHandler {
                 shadowUbo.mvp = shadowMvp;
                 shadowUbo.pomParams = pomParams;
                 shadowUbo.pomFlags = pomFlags;
-                // Other fields can stay as is
+                // Set mapping mode for tessellation displacement in shadow pass
+                shadowUbo.mappingParams = glm::vec4(
+                    instance.material ? instance.material->mappingMode : 0.0f,  // Use per-material mapping mode
+                    instance.material ? instance.material->tessLevel : 1.0f,    // tess level
+                    instance.material ? instance.material->invertHeight : 0.0f, // invert height
+                    instance.material ? instance.material->tessHeightScale : 0.1f // tess height scale
+                );
                 
                 updateUniformBuffer(*instance.uniformBuffer, &shadowUbo, sizeof(UniformObject));
                 

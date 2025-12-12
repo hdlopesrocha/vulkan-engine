@@ -11,11 +11,13 @@ layout(location = 1) in vec2 tc_fragUV[];
 layout(location = 5) flat in int tc_fragTexIndex[];
 
 // samplers (height map needed here for displacement)
-layout(binding = 1) uniform sampler2DArray heightArray;
+layout(binding = 3) uniform sampler2DArray heightArray;
 
 // Outputs to next stage / not used in depth-only pass
 
 #include "includes/common.glsl"
+
+#include "includes/displacement.glsl"
 
 void main() {
     // barycentric coordinates
@@ -27,13 +29,7 @@ void main() {
     vec2 uv = tc_fragUV[0] * bc.x + tc_fragUV[1] * bc.y + tc_fragUV[2] * bc.z;
     int texIndex = int(float(tc_fragTexIndex[0]) * bc.x + float(tc_fragTexIndex[1]) * bc.y + float(tc_fragTexIndex[2]) * bc.z + 0.5);
 
-    vec3 displacedLocalPos = localPos;
-    int mappingMode = int(ubo.mappingParams.x + 0.5);
-    if (mappingMode == 2) {
-        float height = sampleHeight(uv, texIndex);
-        float heightScale = ubo.mappingParams.w;
-        displacedLocalPos += localNormal * (height * heightScale);
-    }
+    vec3 displacedLocalPos = applyDisplacement(localPos, localNormal, uv, texIndex);
 
     vec4 worldPos = ubo.model * vec4(displacedLocalPos, 1.0);
     // For shadow pass, write light-space clip position

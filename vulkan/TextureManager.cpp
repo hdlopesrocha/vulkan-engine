@@ -20,7 +20,6 @@ size_t TextureManager::loadTriple(const std::string &albedoFile, const std::stri
     t.material.pomHeightScale = 0.06f;
     t.material.pomMinLayers = 8.0f;
     t.material.pomMaxLayers = 32.0f;
-    t.material.pomEnabled = 1.0f;
     t.material.flipNormalY = 0.0f;
     t.material.flipTangentHandedness = 0.0f;
     t.material.ambientFactor = 0.15f;
@@ -48,7 +47,6 @@ size_t TextureManager::addTriple(const TextureImage& albedo, VkSampler albedoSam
     t.material.pomHeightScale = 0.06f;
     t.material.pomMinLayers = 8.0f;
     t.material.pomMaxLayers = 32.0f;
-    t.material.pomEnabled = 1.0f;
     t.material.flipNormalY = 0.0f;
     t.material.flipTangentHandedness = 0.0f;
     t.material.ambientFactor = 0.15f;

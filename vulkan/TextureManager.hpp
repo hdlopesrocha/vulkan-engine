@@ -10,7 +10,6 @@ struct MaterialProperties {
     float pomHeightScale = 0.06f;
     float pomMinLayers = 8.0f;
     float pomMaxLayers = 32.0f;
-    float pomEnabled = 1.0f;  // 1.0 = enabled, 0.0 = disabled
     
     // Mapping mode: 0 = none, 1 = parallax (POM), 2 = tessellation (displacement)
     float mappingMode = 1.0f;
