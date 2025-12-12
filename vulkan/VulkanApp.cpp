@@ -36,24 +36,14 @@ void VulkanApp::initWindow() {
     // register resize callback so we can recreate the swapchain when user resizes window
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
-    // register key callback for fullscreen toggle (F11)
-    glfwSetKeyCallback(window, keyCallback);
+    // keyboard input is handled by the event system (KeyboardPublisher)
+    // do not register a direct key callback here to avoid duplicate handling
 }
 
 void VulkanApp::keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-    if (action != GLFW_PRESS) return;
-    if (key == GLFW_KEY_F11) {
-        auto app = reinterpret_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
-        if (app) app->toggleFullscreen();
-        return;
-    }
-    if (key == GLFW_KEY_ESCAPE) {
-        // close the window on ESC
-        // use requestClose helper so derived classes don't access `window` directly
-        auto app = reinterpret_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
-        if (app) app->requestClose();
-        return;
-    }
+    // Intentionally left empty: keyboard input (including F11/ESC)
+    // is handled by the event system (KeyboardPublisher -> EventManager).
+    (void)window; (void)key; (void)scancode; (void)action; (void)mods;
 }
 
 void VulkanApp::toggleFullscreen() {
