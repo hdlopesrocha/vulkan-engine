@@ -25,7 +25,7 @@ OUT = $(OUT_DIR)/app
 
 # shader sources and generated SPIR-V
 
-SHADERS = shaders/triangle.vert shaders/triangle.tesc shaders/triangle.tese shaders/triangle.frag shaders/shadow.vert shaders/shadow.tesc shaders/shadow.tese shaders/shadow.frag shaders/perlin_noise.comp
+SHADERS = shaders/main.vert shaders/main.tesc shaders/main.tese shaders/main.frag shaders/shadow.vert shaders/shadow.tesc shaders/shadow.tese shaders/shadow.frag shaders/perlin_noise.comp
 # SPIR-V targets will be written into the OUT_DIR/shaders directory
 SPVS = $(SHADERS:.vert=.vert.spv)
 SPVS := $(SPVS:.frag=.frag.spv)

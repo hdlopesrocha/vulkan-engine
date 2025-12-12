@@ -131,12 +131,12 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Graphics Pipeline
             {
                 ShaderStage vertexShader = ShaderStage(
-                    createShaderModule(FileReader::readFile("shaders/triangle.vert.spv")), 
+                    createShaderModule(FileReader::readFile("shaders/main.vert.spv")), 
                     VK_SHADER_STAGE_VERTEX_BIT
                 );
 
                 ShaderStage fragmentShader = ShaderStage(
-                    createShaderModule(FileReader::readFile("shaders/triangle.frag.spv")), 
+                    createShaderModule(FileReader::readFile("shaders/main.frag.spv")), 
                     VK_SHADER_STAGE_FRAGMENT_BIT
                 );
 
@@ -180,11 +180,11 @@ class MyApp : public VulkanApp, public IEventHandler {
 
                 // create a tessellated pipeline as well (vertex + tesc + tese + fragment)
                 ShaderStage tescShader = ShaderStage(
-                    createShaderModule(FileReader::readFile("shaders/triangle.tesc.spv")),
+                    createShaderModule(FileReader::readFile("shaders/main.tesc.spv")),
                     VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
                 );
                 ShaderStage teseShader = ShaderStage(
-                    createShaderModule(FileReader::readFile("shaders/triangle.tese.spv")),
+                    createShaderModule(FileReader::readFile("shaders/main.tese.spv")),
                     VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
                 );
 
