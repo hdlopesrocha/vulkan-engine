@@ -251,13 +251,13 @@ class MyApp : public VulkanApp, public IEventHandler {
                 {{"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg"}, MaterialProperties{0.015f, 10.0f, 40.0f, 1.0f, false, 0.08f, 4.0f, false, false, 0.12f, false, 0.2f, 8.0f}},
                 {{"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg"}, MaterialProperties{0.05f, 8.0f, 32.0f, 1.0f, false, 0.05f, 1.0f, false, false, 0.15f, false, 0.05f, 4.0f}},
                 {{"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg"}, MaterialProperties{0.06f, 8.0f, 32.0f, 1.0f, false, 0.06f, 1.0f, false, false, 0.18f, false, 0.1f, 6.0f}},
-                {{"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg"}, MaterialProperties{0.04f, 8.0f, 28.0f, 1.0f, false, 0.04f, 1.0f, false, false, 0.2f, false, 0.15f, 10.0f}},
+                {{"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg"}, MaterialProperties{0.04f, 8.0f, 28.0f, 1.0f, false, 0.04f, 1.0f, false, false, 0.5f, false, 0.05f, 10.0f}},
                 {{"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg"}, MaterialProperties{0.03f, 6.0f, 24.0f, 1.0f, false, 0.03f, 1.0f, false, false, 0.4f, false, 0.8f, 64.0f}},
-                {{"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg"}, MaterialProperties{0.02f, 8.0f, 32.0f, 1.0f, false, 0.02f, 1.0f, false, false, 0.1f, false, 0.9f, 128.0f}},
+                {{"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg"}, MaterialProperties{0.05f, 8.0f, 32.0f, 1.0f, false, 0.02f, 1.0f, false, false, 0.1f, false, 0.9f, 128.0f}},
                 {{"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg"}, MaterialProperties{0.01f, 4.0f, 16.0f, 1.0f, false, 0.01f, 1.0f, false, false, 0.15f, false, 0.3f, 16.0f}},
                 {{"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg"}, MaterialProperties{0.1f, 12.0f, 48.0f, 1.0f, false, 0.1f, 1.0f, false, false, 0.1f, false, 0.15f, 8.0f}},
-                {{"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg"}, MaterialProperties{0.03f, 6.0f, 24.0f, 1.0f, false, 0.03f, 1.0f, false, false, 0.2f, false, 0.25f, 12.0f}},
-                {{"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg"}, MaterialProperties{0.04f, 6.0f, 28.0f, 1.0f, false, 0.04f, 1.0f, false, false, 0.3f, false, 0.6f, 32.0f}},
+                {{"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg"}, MaterialProperties{0.03f, 6.0f, 24.0f, 1.0f, false, 0.03f, 1.0f, false, false, 0.5f, false, 0.25f, 12.0f}},
+                {{"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg"}, MaterialProperties{0.04f, 6.0f, 28.0f, 1.0f, false, 0.04f, 1.0f, false, false, 0.1f, false, 0.05f, 8.0f}},
                 {{"textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg"}, MaterialProperties{0.025f, 6.0f, 20.0f, 1.0f, false, 0.025f, 1.0f, false, false, 0.22f, false, 0.3f, 16.0f}}
             };
 
@@ -326,9 +326,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 16.0f, // tessLevel (unused)
                 false, // flipNormalY
                 false, // flipTangentHandedness
-                0.12f, // ambientFactor
+                0.5f, // ambientFactor
                 false, // flipParallaxDirection
-                0.5f,  // specularStrength
+                0.05f,  // specularStrength
                 32.0f, // shininess
                 0.0f,  // padding1
                 0.0f,  // padding2

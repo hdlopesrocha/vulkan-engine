@@ -78,43 +78,47 @@ void main() {
         uv = ParallaxOcclusionMapping(fragUV, viewDirT, texIndex, adjHeightScale, adjMinLayers, adjMaxLayers);
     }
     
-    // Sample textures
-    vec3 albedoColor = texture(albedoArray, vec3(uv, float(texIndex))).rgb;
-    vec3 normalMap = texture(normalArray, vec3(uv, float(texIndex))).rgb;
+    // Compute geometry normal
+    vec3 N = normalize(fragNormal);
     
-    // Transform normal from [0,1] to [-1,1] range
-    normalMap = normalMap * 2.0 - 1.0;
-    
-    // Handle normal Y flipping for normal map
+    // Handle normal Y flipping for geometry normal (consistent with POM block)
     if (ubo.pomFlags.x > 0.5) {
-        normalMap.y = -normalMap.y;
+        N.y = -N.y;
     }
     
-    // Compute world-space normal from normal map using the same stable TBN construction
-    vec3 N = normalize(fragNormal);
     vec3 T = normalize(fragTangent);
-
-    // Compute bitangent (assume right-handed TBN)
-    vec3 B = cross(N, T);
+    vec3 B = cross(T, N);  // Try left-handed for mesh compatibility
     mat3 TBN = mat3(T, B, N);
-    vec3 worldNormal = normalize(TBN * normalMap);
+    
+    // Compute world-space normal
+    vec3 worldNormal = N; // Default to geometry normal
+    
+    // Apply normal mapping if enabled (mappingMode >= 1)
+    if (mappingMode >= 1) {
+        vec3 normalMap = texture(normalArray, vec3(uv, float(texIndex))).rgb;
+        
+        // Transform normal from [0,1] to [-1,1] range
+        normalMap = normalize(normalMap * 2.0 - 1.0);
+        
+        // Handle normal Y flipping for normal map
+        if (ubo.pomFlags.x > 0.5) {
+            normalMap.y = -normalMap.y;
+        }
+        
+        vec3 perturbedNormal = TBN * normalMap;
+        worldNormal = normalize(perturbedNormal);
+    }
+    
+    // Sample albedo texture (after UV displacement if parallax was applied)
+    vec3 albedoColor = texture(albedoArray, vec3(uv, float(texIndex))).rgb;
 
     // Lighting calculation
     // ubo.lightDir is sent as a vector FROM the light TOWARD the surface (light->surface).
     // Negate it here to get the conventional surface->light vector used for lighting calculations.
     vec3 toLight = -normalize(ubo.lightDir.xyz);
     
-    // Use geometry normal for base lighting to get consistent light direction
-    // Then add normal map detail on top
-    float geometryNdotL = dot(N, toLight);
-    float normalMappedNdotL = max(dot(worldNormal, toLight), 0.0);
-    
-    // Blend between geometry-based and normal-mapped lighting
-    // This gives consistent light direction while preserving normal map detail
-    float baseLighting = max(geometryNdotL, 0.0);
-    float detailLighting = normalMappedNdotL;
-    // Use geometry lighting as base (70%), modulate with normal map detail (30%)
-    float NdotL = baseLighting * 0.7 + detailLighting * 0.3;
+    // Use normal-mapped normal for lighting calculations
+    float NdotL = max(dot(worldNormal, toLight), 0.0);
     
     // Adjust shadow position based on parallax displacement (if enabled)
     vec4 adjustedPosLightSpace = fragPosLightSpace;
@@ -131,7 +135,7 @@ void main() {
         // Use geometry normal (not normal-map detail) so shadow displacement follows actual geometry.
         // Height is interpreted so larger values mean deeper displacement into the surface;
         // move the shadow sample point along -N to project the displaced surface toward the light correctly.
-        vec3 offset = worldNormal * height * heightScale * parallaxFadeLocal;
+        vec3 offset = N * height * heightScale * parallaxFadeLocal;
         vec3 adjustedWorldPos = fragPosWorld - offset;
 
         // Transform adjusted position to light space
@@ -144,8 +148,8 @@ void main() {
     float selfShadow = 1.0;
 
     if (ubo.shadowEffects.w > 0.5) {
-        // Only calculate shadows for surfaces facing the light (use geometry normal to avoid artifacts)
-        if (geometryNdotL > 0.01) {
+        // Only calculate shadows for surfaces facing the light (use normal-mapped normal)
+        if (dot(worldNormal, toLight) > 0.01) {
             // Increased bias since shadow map no longer uses parallax displacement
             float bias = max(0.002 * (1.0 - NdotL), 0.0005);
             shadow = ShadowCalculation(adjustedPosLightSpace, bias);
@@ -252,7 +256,8 @@ void main() {
         return;
     }
     if (debugMode == 10) {
-        outColor = vec4(geometryNdotL, normalMappedNdotL, 0.0, 1.0);
+        // Lighting comparison: NdotL and shadow
+        outColor = vec4(NdotL, totalShadow, 0.0, 1.0);
         return;
     }
     if (debugMode == 11) {
