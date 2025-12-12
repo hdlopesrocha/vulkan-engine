@@ -2,21 +2,7 @@
 
 layout(triangles, equal_spacing, cw) in;
 
-// UBO must match CPU-side UniformObject layout (we use same UBO as other shaders)
-layout(binding = 0) uniform UBO {
-    mat4 mvp;
-    mat4 model;
-    vec4 viewPos;
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
-    vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
-    vec4 parallaxLOD; // x=parallaxNear, y=parallaxFar, z=reductionAtFar, w=unused
-    vec4 mappingParams; // x=mappingMode
-    vec4 specularParams; // x=specularStrength, y=shininess
-    mat4 lightSpaceMatrix;
-    vec4 shadowEffects;
-} ubo;
+#include "includes/ubo.glsl"
 
 // Inputs from TCS (per-vertex arrays)
 layout(location = 0) in vec3 tc_fragColor[];
@@ -38,14 +24,9 @@ layout(location = 5) flat out int fragTexIndex;
 layout(location = 4) out vec3 fragPosWorld;
 layout(location = 6) out vec4 fragPosLightSpace;
 
-// samplers (height map needed here for displacement)
-layout(binding = 3) uniform sampler2DArray heightArray;
+#include "includes/textures.glsl"
 
-// helper to sample height respecting per-material interpretation (mappingParams.z)
-float sampleHeight(vec2 uv, int texIndex) {
-    float raw = texture(heightArray, vec3(uv, float(texIndex))).r;
-    return (ubo.mappingParams.z > 0.5) ? raw : 1.0 - raw;
-}
+#include "includes/common.glsl"
 
 void main() {
     // barycentric coordinates

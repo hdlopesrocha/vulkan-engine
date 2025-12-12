@@ -2,21 +2,7 @@
 
 layout(vertices = 3) out;
 
-// UBO must match CPU-side UniformObject layout (we only need mappingParams here)
-layout(binding = 0) uniform UBO {
-    mat4 mvp;
-    mat4 model;
-    vec4 viewPos;
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 pomParams;
-    vec4 pomFlags;
-    vec4 parallaxLOD;
-    vec4 mappingParams; // x=mappingMode, y=tessLevel
-    vec4 specularParams;
-    mat4 lightSpaceMatrix;
-    vec4 shadowEffects;
-} ubo;
+#include "includes/ubo.glsl"
 
 // Pass through per-vertex varyings from vertex shader
 layout(location = 0) in vec3 pc_inFragColor[];

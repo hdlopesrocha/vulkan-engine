@@ -50,45 +50,45 @@ $(OUT_DIR)/shaders/%.vert.spv: shaders/%.vert
 	@echo "Compiling shader: $< -> $@"
 	@mkdir -p $(dir $@)
 	@if command -v glslc >/dev/null 2>&1; then \
-		glslc $< -o $@; \
+		glslc -I shaders/includes $< -o $@; \
 	else \
-		glslangValidator -V $< -o $@; \
+		glslangValidator -I shaders/includes -V $< -o $@; \
 	fi
 
 $(OUT_DIR)/shaders/%.frag.spv: shaders/%.frag
 	@echo "Compiling shader: $< -> $@"
 	@mkdir -p $(dir $@)
 	@if command -v glslc >/dev/null 2>&1; then \
-		glslc $< -o $@; \
+		glslc -I shaders/includes $< -o $@; \
 	else \
-		glslangValidator -V $< -o $@; \
+		glslangValidator -I shaders/includes -V $< -o $@; \
 	fi
 
 $(OUT_DIR)/shaders/%.comp.spv: shaders/%.comp
 	@echo "Compiling shader: $< -> $@"
 	@mkdir -p $(dir $@)
 	@if command -v glslc >/dev/null 2>&1; then \
-		glslc $< -o $@; \
+		glslc -I shaders/includes $< -o $@; \
 	else \
-		glslangValidator -V $< -o $@; \
+		glslangValidator -I shaders/includes -V $< -o $@; \
 	fi
 
 $(OUT_DIR)/shaders/%.tesc.spv: shaders/%.tesc
 	@echo "Compiling shader: $< -> $@"
 	@mkdir -p $(dir $@)
 	@if command -v glslc >/dev/null 2>&1; then \
-		glslc $< -o $@; \
+		glslc -I shaders/includes $< -o $@; \
 	else \
-		glslangValidator -V $< -o $@; \
+		glslangValidator -I shaders/includes -V $< -o $@; \
 	fi
 
 $(OUT_DIR)/shaders/%.tese.spv: shaders/%.tese
 	@echo "Compiling shader: $< -> $@"
 	@mkdir -p $(dir $@)
 	@if command -v glslc >/dev/null 2>&1; then \
-		glslc $< -o $@; \
+		glslc -I shaders/includes $< -o $@; \
 	else \
-		glslangValidator -V $< -o $@; \
+		glslangValidator -I shaders/includes -V $< -o $@; \
 	fi
 
 .PHONY: debug release

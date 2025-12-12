@@ -2,21 +2,7 @@
 
 layout(vertices = 3) out;
 
-// Minimal UBO for tessellation control stage (must match host layout where used)
-layout(binding = 0) uniform UBO {
-    mat4 mvp;
-    mat4 model;
-    vec4 viewPos;
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 pomParams;
-    vec4 pomFlags;
-    vec4 parallaxLOD;
-    vec4 mappingParams; // x=mappingMode, y=tessLevel, z=invertHeight, w=tessHeightScale
-    vec4 specularParams;
-    mat4 lightSpaceMatrix;
-    vec4 shadowEffects;
-} ubo;
+#include "includes/ubo.glsl"
 
 // Inputs from vertex shader (match triangle.tesc convention)
 layout(location = 7) in vec3 pc_inLocalPos[];

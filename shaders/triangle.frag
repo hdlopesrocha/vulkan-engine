@@ -9,40 +9,13 @@ layout(location = 5) flat in int fragTexIndex;
 layout(location = 4) in vec3 fragPosWorld;
 layout(location = 6) in vec4 fragPosLightSpace;
 
-// UBO must match binding 0 defined in vertex shader / host code
-// UBO must match CPU-side UniformObject layout:
-// mat4 mvp; mat4 model; vec4 viewPos; vec4 lightDir; vec4 lightColor; vec4 pomParams; vec4 pomFlags; vec4 specularParams; mat4 lightSpaceMatrix; vec4 shadowEffects
-layout(binding = 0) uniform UBO {
-    mat4 mvp;
-    mat4 model;
-    vec4 viewPos;
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
-    vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
-    vec4 parallaxLOD; // x=parallaxNear, y=parallaxFar, z=reductionAtFar, w=unused
-    vec4 mappingParams; // x=mappingMode (0=none,1=parallax,2=tessellation)
-    vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
-    mat4 lightSpaceMatrix;
-    vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
-} ubo;
+#include "includes/ubo.glsl"
 
-// texture arrays: binding 1 = albedo array, 2 = normal array, 3 = height array, 4 = shadow map
-layout(binding = 1) uniform sampler2DArray albedoArray;
-layout(binding = 2) uniform sampler2DArray normalArray;
-layout(binding = 3) uniform sampler2DArray heightArray;
-layout(binding = 4) uniform sampler2D shadowMap;
+#include "includes/textures.glsl"
 
 layout(location = 0) out vec4 outColor;
 
-// Parallax Occlusion Mapping helper
-// ParallaxOcclusionMapping now takes adjusted, per-fragment POM parameters (computed just before the call)
-// Sample height helper that respects per-material height interpretation
-float sampleHeight(vec2 texCoords, int texIndex) {
-    float raw = texture(heightArray, vec3(texCoords, float(texIndex))).r;
-    // mappingParams.z == 1.0 means height is direct (white=high)
-    return (ubo.mappingParams.z > 0.5) ? raw : 1.0 - raw;
-}
+#include "includes/common.glsl"
 
 vec2 ParallaxOcclusionMapping(vec2 texCoords, vec3 viewDirT, int texIndex, float heightScale, float minLayers, float maxLayers) {
     float numLayers = mix(maxLayers, minLayers, abs(dot(vec3(0.0,0.0,1.0), viewDirT)));

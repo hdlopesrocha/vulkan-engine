@@ -2,21 +2,7 @@
 
 layout(triangles, equal_spacing, cw) in;
 
-// UBO must match CPU-side UniformObject layout (we use same UBO as other shaders)
-layout(binding = 0) uniform UBO {
-    mat4 mvp;
-    mat4 model;
-    vec4 viewPos;
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
-    vec4 pomFlags;
-    vec4 parallaxLOD;
-    vec4 mappingParams; // x=mappingMode
-    vec4 specularParams;
-    mat4 lightSpaceMatrix;
-    vec4 shadowEffects;
-} ubo;
+#include "includes/ubo.glsl"
 
 // Inputs from TCS (per-vertex arrays) — use matching locations
 layout(location = 7) in vec3 tc_fragLocalPos[];
@@ -29,11 +15,7 @@ layout(binding = 1) uniform sampler2DArray heightArray;
 
 // Outputs to next stage / not used in depth-only pass
 
-// helper to sample height respecting per-material interpretation
-float sampleHeight(vec2 uv, int texIndex) {
-    float raw = texture(heightArray, vec3(uv, float(texIndex))).r;
-    return (ubo.mappingParams.z > 0.5) ? raw : 1.0 - raw;
-}
+#include "includes/common.glsl"
 
 void main() {
     // barycentric coordinates
