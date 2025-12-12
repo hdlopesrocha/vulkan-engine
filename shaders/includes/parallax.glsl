@@ -77,10 +77,10 @@ float ParallaxSelfShadow(vec2 texCoords, vec3 lightDirT, float currentHeight, in
     
     // Height system: 0.0 = surface (white), 1.0 = deepest (black)
     // We're at currentHeight and march towards the light
-    float rayHeight = currentHeight;
+    float rayHeight = currentHeight * heightScale;
     
-    // Height change per step - use absolute z to support axes where projected z may be negative
-    float layerDepth = max(abs(lightDirT.z), 1e-6) / numSamples;
+    // Height change per step - scale by heightScale to match
+    float layerDepth = (max(abs(lightDirT.z), 1e-6) * heightScale) / numSamples;
     
     // March from current position towards the light source
     for (int i = 1; i <= int(numSamples); ++i) {
@@ -92,10 +92,10 @@ float ParallaxSelfShadow(vec2 texCoords, vec3 lightDirT, float currentHeight, in
         if (rayHeight <= 0.0) break;
         
         // Sample height at this position
-        float sampledHeight = sampleHeight(currentTexCoords, texIndex);
+        float sampledHeight = sampleHeight(currentTexCoords, texIndex) * heightScale;
         
         // If sampled point is shallower (less deep) than our ray, it blocks the light
-        float bias = 0.02;
+        float bias = heightScale * 0.02;
         if (sampledHeight < rayHeight - bias) {
             // Blocking geometry found
             float occlusionDepth = (rayHeight - sampledHeight) / heightScale;
