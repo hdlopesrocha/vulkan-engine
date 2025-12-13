@@ -54,16 +54,6 @@ void TextureViewer::render() {
             ImGui::Text("Normal/Tangent Adjustments");
             ImGui::Separator();
             
-            bool flipNormalYBool = mat.flipNormalY;
-            if (ImGui::Checkbox("Flip Normal Y", &flipNormalYBool)) {
-                mat.flipNormalY = flipNormalYBool;
-            }
-            
-            bool flipTangentBool = mat.flipTangentHandedness;
-            if (ImGui::Checkbox("Flip Tangent Handedness", &flipTangentBool)) {
-                mat.flipTangentHandedness = flipTangentBool;
-            }
-            
 
             bool triplanarBool = mat.triplanar;
             if (ImGui::Checkbox("Enable Triplanar Mapping", &triplanarBool)) {

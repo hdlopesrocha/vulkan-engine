@@ -11,8 +11,6 @@ struct MaterialProperties {
     // Tessellation level for hardware displacement (used when mappingMode == 2)
     float tessLevel = 16.0f;
     
-    bool flipNormalY = false;
-    bool flipTangentHandedness = false;
     float ambientFactor = 0.4f;
     
     float specularStrength = 0.5f;

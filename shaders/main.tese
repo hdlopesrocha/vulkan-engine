@@ -13,10 +13,11 @@ layout(location = 5) flat in int tc_fragTexIndex[];
 layout(location = 7) in vec3 tc_fragLocalPos[]; // local-space position
 layout(location = 8) in vec3 tc_fragLocalNormal[];
 
-// Outputs to fragment shader (match triangle.frag inputs)
+// Outputs to fragment shader (match main.frag inputs)
 layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec2 fragUV;
 layout(location = 2) out vec3 fragNormal; // world-space normal
+layout(location = 3) out vec3 sharpNormal;
 layout(location = 5) flat out int fragTexIndex;
 layout(location = 4) out vec3 fragPosWorld;
 layout(location = 6) out vec4 fragPosLightSpace;
@@ -62,7 +63,7 @@ void main() {
 
     fragUV = uv;
     fragTexIndex = texIndex;
-
+    sharpNormal = normalize(cross(tc_fragPosWorld[1] - tc_fragPosWorld[0], tc_fragPosWorld[2] - tc_fragPosWorld[0]));
     // Output clip-space position using MVP (MVP includes model matrix)
     gl_Position = ubo.mvp * vec4(displacedLocalPos, 1.0);
 }

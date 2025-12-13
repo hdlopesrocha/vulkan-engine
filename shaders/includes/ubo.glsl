@@ -7,7 +7,7 @@ layout(binding = 0) uniform UBO {
     vec4 lightDir;
     vec4 lightColor;
     // Material flags.
-    // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=unused
+    // x=unused, y=unused, z=ambient, w=unused
     vec4 materialFlags;
     vec4 mappingParams; // x=mappingEnabled (0=off,1=on) toggles tessellation + bump mapping, y/z/w unused
     vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused

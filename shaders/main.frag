@@ -4,6 +4,7 @@
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragNormal;
+layout(location = 3) in vec3 sharpNormal;
 layout(location = 5) flat in int fragTexIndex;
 layout(location = 4) in vec3 fragPosWorld;
 layout(location = 6) in vec4 fragPosLightSpace;
@@ -31,11 +32,6 @@ void main() {
     // Compute geometry normal
     vec3 N = normalize(fragNormal);
     
-    // Handle normal Y flipping for geometry normal (material flag)
-    if (ubo.materialFlags.x > 0.5) {
-        N.y = -N.y;
-    }
-    
     // Compute tangent and bitangent from derivatives (no vertex tangent attribute)
     vec3 dpdx = dFdx(fragPosWorld);
     vec3 dpdy = dFdy(fragPosWorld);
@@ -59,10 +55,6 @@ void main() {
         }
     }
     vec3 B = normalize(cross(N, T));
-    // Allow material override for tangent handedness (flip bitangent)
-    if (ubo.materialFlags.y > 0.5) {
-        B = -B;
-    }
     mat3 TBN = mat3(T, B, N);
     
     // Compute world-space normal
@@ -76,10 +68,6 @@ void main() {
         // Transform normal from [0,1] to [-1,1] range
         normalMap = normalize(normalMap * 2.0 - 1.0);
         
-        // Handle normal Y flipping for normal map
-        if (ubo.materialFlags.x > 0.5) {
-            normalMap.y = -normalMap.y;
-        }
         worldNormal = normalize(TBN * normalMap);
     }
     
@@ -187,6 +175,10 @@ void main() {
         outColor = vec4(NdotL, totalShadow, 0.0, 1.0);
         return;
     }
+    if (debugMode == 11) {
+        outColor = vec4(sharpNormal * 0.5 + 0.5, 1.0);
+        return;
+    }
     if (debugMode == 12) {
         // Visualize surface->light vector (mapped to 0..1) to inspect direction
         vec3 tl = normalize(toLight);
@@ -205,15 +197,7 @@ void main() {
         outColor = vec4(shadow, 0.0, totalShadow, 1.0);
         return;
     }
-    // debugMode 15 (TES displacement visualization) removed
-    if (debugMode == 11) {
-        // Normal computed from derivatives of world position (dFdx/dFdy)
-        vec3 dPdx = dFdx(fragPosWorld);
-        vec3 dPdy = dFdy(fragPosWorld);
-        vec3 derivNormal = normalize(cross(dPdx, dPdy));
-        outColor = vec4(derivNormal * 0.5 + 0.5, 1.0);
-        return;
-    }
+
     // Fallback to normal rendering
     outColor = vec4(ambient + diffuse + specular, 1.0);
 }
