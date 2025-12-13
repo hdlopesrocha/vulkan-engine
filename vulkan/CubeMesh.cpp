@@ -52,5 +52,5 @@ void CubeMesh::build(VulkanApp* app, const std::vector<float>& faceTexIndices) {
     };
 
     // Let the base class compute robust per-vertex tangents from positions/UVs
-    Model3D::build(app, vertices, indices, false, true);
+    Model3D::build(app, vertices, indices, false);
 }

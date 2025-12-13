@@ -27,5 +27,5 @@ void PlaneMesh::build(VulkanApp* app, float width, float height, float texIndex)
     };
 
     // Use the base class build method and compute tangents on the CPU
-    Model3D::build(app, vertices, indices, false, true);
+    Model3D::build(app, vertices, indices, false);
 }

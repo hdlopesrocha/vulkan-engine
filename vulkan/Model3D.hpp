@@ -13,8 +13,7 @@ public:
     void build(VulkanApp* app, 
                const std::vector<Vertex>& vertices, 
                const std::vector<uint16_t>& indices,
-               bool computeNormals = true,
-               bool computeTangents = true);
+               bool computeNormals = true);
 
     // Destroy GPU buffers
     void destroy(VkDevice device) { vbo.destroy(device); }

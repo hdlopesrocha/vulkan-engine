@@ -4,8 +4,7 @@
 void Model3D::build(VulkanApp* app, 
                     const std::vector<Vertex>& inputVertices, 
                     const std::vector<uint16_t>& inputIndices,
-                    bool computeNormalsFlag,
-                    bool computeTangentsFlag) {
+                    bool computeNormalsFlag) {
     
     // Make copies so we can modify them
     std::vector<Vertex> vertices = inputVertices;
@@ -64,4 +63,3 @@ void Model3D::computeNormals(std::vector<Vertex>& vertices, const std::vector<ui
     }
 }
 
-// Tangent computation removed: per-fragment derivatives are used to build TBN when needed.
