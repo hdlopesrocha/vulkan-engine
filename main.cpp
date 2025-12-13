@@ -733,6 +733,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (instance.material) {
                     ubo.setMaterial(*instance.material);
                 }
+                // (temporary debug logging removed)
                 // Global normal mapping toggle (separate from tessellation/mappingMode)
                 if (settingsWidget) {
                     ubo.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;

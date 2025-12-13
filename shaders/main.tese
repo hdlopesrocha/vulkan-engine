@@ -20,6 +20,7 @@ layout(location = 2) out vec3 fragNormal; // world-space normal
 layout(location = 5) flat out int fragTexIndex;
 layout(location = 4) out vec3 fragPosWorld;
 layout(location = 6) out vec4 fragPosLightSpace;
+// (removed debug displacement output)
 
 #include "includes/textures.glsl"
 
@@ -40,8 +41,16 @@ void main() {
     int texIndex = int(float(tc_fragTexIndex[0]) * bc.x + float(tc_fragTexIndex[1]) * bc.y + float(tc_fragTexIndex[2]) * bc.z + 0.5);
     fragColor = tc_fragColor[0] * bc.x + tc_fragColor[1] * bc.y + tc_fragColor[2] * bc.z;
 
-    // Apply displacement
-    vec3 displacedLocalPos = applyDisplacement(localPos, localNormal, uv, texIndex);
+    // Apply displacement (also compute magnitude for debug visualization)
+    vec3 displacedLocalPos = localPos;
+    float disp = 0.0;
+    if (ubo.mappingParams.x > 0.5) {
+        float height = sampleHeight(uv, texIndex);
+        float heightScale = ubo.mappingParams.w;
+        disp = height * heightScale;
+        displacedLocalPos += localNormal * disp;
+    }
+    // displacement magnitude used only on-TES; no debug output
 
     // Compute world-space position and normals
     vec4 worldPos = ubo.model * vec4(displacedLocalPos, 1.0);

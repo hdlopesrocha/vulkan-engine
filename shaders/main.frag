@@ -205,6 +205,7 @@ void main() {
         outColor = vec4(shadow, 0.0, totalShadow, 1.0);
         return;
     }
+    // debugMode 15 (TES displacement visualization) removed
     if (debugMode == 11) {
         // Normal computed from derivatives of world position (dFdx/dFdy)
         vec3 dPdx = dFdx(fragPosWorld);
