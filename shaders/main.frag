@@ -24,6 +24,7 @@ void main() {
     int texIndex = 0;
 
     vec2 uv = fragUV;
+    bool usedTriplanar = false;
 
     // Geometry normal (world-space)
     vec3 N = normalize(fragNormal);
@@ -32,11 +33,48 @@ void main() {
     vec3 T = vec3(0.0, 0.0, 0.0);
     vec3 B = vec3(0.0, 0.0, 0.0);
     bool haveTB = false;
-    // Sample albedo texture
-    vec3 albedoColor = texture(albedoArray, vec3(uv, float(texIndex))).rgb;
+    // Sample albedo texture (triplanar when enabled)
+    vec3 albedoColor;
+    if (ubo.triplanarParams.z > 0.5) {
+        usedTriplanar = true;
+        // Triplanar projection UVs: X-project uses YZ, Y-project uses XZ, Z-project uses XY
+        vec2 uvX = fragPosWorld.yz * vec2(ubo.triplanarParams.x, ubo.triplanarParams.y);
+        vec2 uvY = fragPosWorld.xz * vec2(ubo.triplanarParams.x, ubo.triplanarParams.y);
+        vec2 uvZ = fragPosWorld.xy * vec2(ubo.triplanarParams.x, ubo.triplanarParams.y);
+        // Blend weights from geometry normal
+        vec3 w = abs(N);
+        w = w * w; // sharpen the blend a bit
+        float sum = w.x + w.y + w.z + 1e-6;
+        w /= sum;
+        // Sample albedo from the three projections
+        vec3 cX = texture(albedoArray, vec3(uvX, float(texIndex))).rgb;
+        vec3 cY = texture(albedoArray, vec3(uvY, float(texIndex))).rgb;
+        vec3 cZ = texture(albedoArray, vec3(uvZ, float(texIndex))).rgb;
+        albedoColor = cX * w.x + cY * w.y + cZ * w.z;
+        // If normal mapping is enabled, compute triplanar normal as well
+        if (ubo.mappingParams.x > 0.5 || ubo.materialFlags.w > 0.5) {
+            // Sample normal maps per projection
+            vec3 nX = texture(normalArray, vec3(uvX, float(texIndex))).rgb * 2.0 - 1.0;
+            vec3 nY = texture(normalArray, vec3(uvY, float(texIndex))).rgb * 2.0 - 1.0;
+            vec3 nZ = texture(normalArray, vec3(uvZ, float(texIndex))).rgb * 2.0 - 1.0;
+            // For each projection, transform sampled normal to world-space using a basis aligned with world axes
+            vec3 tX = vec3(0.0, 1.0, 0.0);
+            vec3 bX = vec3(0.0, 0.0, 1.0);
+            vec3 nmX = normalize(nX.x * tX + nX.y * bX + nX.z * vec3(1.0, 0.0, 0.0));
+            vec3 tY = vec3(1.0, 0.0, 0.0);
+            vec3 bY = vec3(0.0, 0.0, 1.0);
+            vec3 nmY = normalize(nY.x * tY + nY.y * bY + nY.z * vec3(0.0, 1.0, 0.0));
+            vec3 tZ = vec3(1.0, 0.0, 0.0);
+            vec3 bZ = vec3(0.0, 1.0, 0.0);
+            vec3 nmZ = normalize(nZ.x * tZ + nZ.y * bZ + nZ.z * vec3(0.0, 0.0, 1.0));
+            worldNormal = normalize(nmX * w.x + nmY * w.y + nmZ * w.z);
+        }
+    } else {
+        albedoColor = texture(albedoArray, vec3(uv, float(texIndex))).rgb;
+    }
 
     // Compute normal mapping if enabled (per-material or global toggle)
-    if (ubo.mappingParams.x > 0.5 || ubo.materialFlags.w > 0.5) {
+    if (!usedTriplanar && (ubo.mappingParams.x > 0.5 || ubo.materialFlags.w > 0.5)) {
         // Prefer vertex tangent if available
         if (length(fragTangent.xyz) > 1e-6) {
             vec3 t = normalize(fragTangent.xyz);
