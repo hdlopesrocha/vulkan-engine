@@ -14,6 +14,7 @@
 #include "vulkan/BillboardManager.hpp"
 #include "vulkan/CubeMesh.hpp"
 #include "vulkan/PlaneMesh.hpp"
+#include "vulkan/SphereMesh.hpp"
 #include "vulkan/EditableTextureSet.hpp"
 #include "vulkan/ShadowMapper.hpp"
 #include "vulkan/ModelManager.hpp"
@@ -112,6 +113,9 @@ class MyApp : public VulkanApp, public IEventHandler {
     // (managed by TextureManager)
         std::vector<VkDescriptorSet> descriptorSets;
         std::vector<Buffer> uniforms; // One uniform buffer per cube
+        // Additional per-texture uniform buffers and descriptor sets for sphere instances
+        std::vector<VkDescriptorSet> sphereDescriptorSets;
+        std::vector<Buffer> sphereUniforms;
         
         // store projection and view for per-cube MVP computation in draw()
         glm::mat4 projMat = glm::mat4(1.0f);
@@ -353,7 +357,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             // create descriptor sets - one per texture triple
             size_t tripleCount = textureManager.count();
             if (tripleCount == 0) tripleCount = 1; // ensure at least one
-            createDescriptorPool(static_cast<uint32_t>(tripleCount));
+            // Allocate descriptor pool sized for both cube and sphere descriptor sets (2 sets per texture triple)
+            createDescriptorPool(static_cast<uint32_t>(tripleCount * 2));
 
             descriptorSets.resize(tripleCount, VK_NULL_HANDLE);
             for (size_t i = 0; i < tripleCount; ++i) {
@@ -420,6 +425,31 @@ class MyApp : public VulkanApp, public IEventHandler {
                 );
             }
 
+            // Create per-texture descriptor sets and uniform buffers for sphere instances (one per texture triple)
+            sphereDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
+            sphereUniforms.resize(tripleCount);
+            for (size_t i = 0; i < tripleCount; ++i) {
+                // create uniform buffer for sphere instance
+                sphereUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                VkDescriptorSet ds = createDescriptorSet();
+                sphereDescriptorSets[i] = ds;
+
+                // reuse image samplers from texture triple i
+                const auto &tr = textureManager.getTriple(i);
+                VkDescriptorBufferInfo bufferInfo { sphereUniforms[i].buffer, 0 , sizeof(UniformObject) };
+                VkDescriptorImageInfo imageInfo { tr.albedoSampler, tr.albedo.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                VkDescriptorImageInfo normalInfo { tr.normalSampler, tr.normal.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                VkDescriptorImageInfo heightInfo { tr.heightSampler, tr.height.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                VkDescriptorImageInfo shadowInfo { shadowMapper.getShadowMapSampler(), shadowMapper.getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+
+                VkWriteDescriptorSet uboWrite{}; uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; uboWrite.dstSet = ds; uboWrite.dstBinding = 0; uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; uboWrite.descriptorCount = 1; uboWrite.pBufferInfo = &bufferInfo;
+                VkWriteDescriptorSet samplerWrite{}; samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; samplerWrite.dstSet = ds; samplerWrite.dstBinding = 1; samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; samplerWrite.descriptorCount = 1; samplerWrite.pImageInfo = &imageInfo;
+                VkWriteDescriptorSet normalWrite{}; normalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; normalWrite.dstSet = ds; normalWrite.dstBinding = 2; normalWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; normalWrite.descriptorCount = 1; normalWrite.pImageInfo = &normalInfo;
+                VkWriteDescriptorSet heightWrite{}; heightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; heightWrite.dstSet = ds; heightWrite.dstBinding = 3; heightWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; heightWrite.descriptorCount = 1; heightWrite.pImageInfo = &heightInfo;
+                VkWriteDescriptorSet shadowWrite{}; shadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; shadowWrite.dstSet = ds; shadowWrite.dstBinding = 4; shadowWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; shadowWrite.descriptorCount = 1; shadowWrite.pImageInfo = &shadowInfo;
+                updateDescriptorSet(ds, { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
+            }
+
             // build cube mesh and GPU buffers (per-face tex indices all zero by default)
             auto cube = std::make_unique<CubeMesh>();
             cube->build(this, {});
@@ -428,9 +458,13 @@ class MyApp : public VulkanApp, public IEventHandler {
             auto plane = std::make_unique<PlaneMesh>();
             plane->build(this, 20.0f, 20.0f, 0.0f); // Will use editable texture index
             
+            // build sphere mesh
+            auto sphere = std::make_unique<SphereMesh>();
+            sphere->build(this, 0.5f, 32, 16, 0.0f);
             // Store meshes for later use
             meshes.push_back(std::move(cube));
             meshes.push_back(std::move(plane));
+            meshes.push_back(std::move(sphere));
             
             // Initialize light space matrix BEFORE creating command buffers
             // UI `lightDirection` is the direction FROM the camera/world TO the light (TO the light).
@@ -652,8 +686,25 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // Pass material properties for this texture
                 const MaterialProperties* mat = &textureManager.getMaterial(i);
                 modelManager.addInstance(cube, model_i, descriptorSets[i], &uniforms[i], mat);
+
+                // Create sphere above this cube if sphere mesh available
+                if (meshes.size() > 2) {
+                    Model3D* sphere = meshes[2].get();
+                    float sphereRadius = 0.5f; // match mesh radius
+                    // Place the sphere just above the cube top with a small gap to avoid intersection
+                    float cubeHalfHeight = 0.5f;
+                    float gap = 0.5f; // slightly larger gap to avoid numerical intersection
+                    // Account for tessellation displacement (max height) if mapping mode is enabled for this material
+                    float extraDisp = 0.0f;
+                    if (mat && mat->mappingMode) extraDisp = mat->tessHeightScale;
+                    float sphereCenterY = y + cubeHalfHeight + sphereRadius + gap + extraDisp; // place on top of cube
+                    glm::mat4 sphereModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, sphereCenterY, z));
+                    modelManager.addInstance(sphere, sphereModel, sphereDescriptorSets[i], &sphereUniforms[i], mat);
+                }
             }
             
+            // Add spheres above each cube instance (if sphere mesh is present)
+
             // First pass: Render shadow map (skip if shadows globally disabled)
             if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
                 shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
@@ -809,6 +860,13 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (uniformBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniformBuffer.buffer, nullptr);
             }
             for (auto& uniformBuffer : uniforms) {
+                if (uniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniformBuffer.memory, nullptr);
+            }
+            // sphere uniform buffers cleanup
+            for (auto& uniformBuffer : sphereUniforms) {
+                if (uniformBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniformBuffer.buffer, nullptr);
+            }
+            for (auto& uniformBuffer : sphereUniforms) {
                 if (uniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniformBuffer.memory, nullptr);
             }
             
