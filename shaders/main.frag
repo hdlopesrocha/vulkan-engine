@@ -7,6 +7,7 @@ layout(location = 2) in vec3 fragNormal;
 layout(location = 5) flat in int fragTexIndex;
 layout(location = 4) in vec3 fragPosWorld;
 layout(location = 6) in vec4 fragPosLightSpace;
+layout(location = 9) in vec4 fragTangent;
 
 #include "includes/ubo.glsl"
 
@@ -27,9 +28,44 @@ void main() {
     // Geometry normal (world-space)
     vec3 N = normalize(fragNormal);
     vec3 worldNormal = N;
-
+    // Tangent & bitangent (world-space) from vertex tangents (preferred), otherwise compute via derivatives
+    vec3 T = vec3(0.0, 0.0, 0.0);
+    vec3 B = vec3(0.0, 0.0, 0.0);
+    bool haveTB = false;
     // Sample albedo texture
     vec3 albedoColor = texture(albedoArray, vec3(uv, float(texIndex))).rgb;
+
+    // Compute normal mapping if enabled (per-material or global toggle)
+    if (ubo.mappingParams.x > 0.5 || ubo.materialFlags.w > 0.5) {
+        // Prefer vertex tangent if available
+        if (length(fragTangent.xyz) > 1e-6) {
+            vec3 t = normalize(fragTangent.xyz);
+            vec3 b = normalize(cross(N, t) * fragTangent.w);
+            T = t; B = b; haveTB = true;
+            // Sample tangent-space normal from texture and transform to world-space
+            vec3 nmap = texture(normalArray, vec3(uv, float(texIndex))).rgb * 2.0 - 1.0;
+            worldNormal = normalize(nmap.x * T + nmap.y * B + nmap.z * N);
+        } else {
+            // Use screen-space derivatives to compute tangent & bitangent in world-space
+            vec3 dp1 = dFdx(fragPosWorld);
+            vec3 dp2 = dFdy(fragPosWorld);
+            vec2 duv1 = dFdx(fragUV);
+            vec2 duv2 = dFdy(fragUV);
+            float det = duv1.x * duv2.y - duv1.y * duv2.x;
+            if (abs(det) > 1e-6) {
+                float r = 1.0 / det;
+                vec3 t = normalize((dp1 * duv2.y - dp2 * duv1.y) * r);
+                vec3 b = normalize((dp2 * duv1.x - dp1 * duv2.x) * r);
+                // Orthonormalize against geometry normal
+                t = normalize(t - N * dot(N, t));
+                b = normalize(cross(N, t));
+                // Sample tangent-space normal from texture and transform to world-space
+                vec3 nmap = texture(normalArray, vec3(uv, float(texIndex))).rgb * 2.0 - 1.0;
+                worldNormal = normalize(nmap.x * t + nmap.y * b + nmap.z * N);
+                T = t; B = b; haveTB = true;
+            }
+        }
+    }
 
     // Lighting calculation
     vec3 toLight = -normalize(ubo.lightDir.xyz);
@@ -75,14 +111,24 @@ void main() {
         return;
     }
     if (debugMode == 4) {
-        // Tangent unavailable — show geometry normal instead
-        vec3 tcol = normalize(N) * 0.5 + 0.5;
+        // Show tangent if available, else geometry normal
+        vec3 tcol;
+        if (haveTB) {
+            tcol = normalize(T) * 0.5 + 0.5;
+        } else {
+            tcol = normalize(N) * 0.5 + 0.5;
+        }
         outColor = vec4(tcol, 1.0);
         return;
     }
     if (debugMode == 5) {
-        // Bitangent unavailable — show geometry normal instead
-        vec3 bcol = normalize(N) * 0.5 + 0.5;
+        // Show bitangent if available, else geometry normal
+        vec3 bcol;
+        if (haveTB) {
+            bcol = normalize(B) * 0.5 + 0.5;
+        } else {
+            bcol = normalize(N) * 0.5 + 0.5;
+        }
         outColor = vec4(bcol, 1.0);
         return;
     }

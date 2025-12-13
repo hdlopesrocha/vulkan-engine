@@ -12,6 +12,7 @@ layout(location = 4) in vec3 tc_fragPosWorld[]; // world pos passed through by T
 layout(location = 5) flat in int tc_fragTexIndex[];
 layout(location = 7) in vec3 tc_fragLocalPos[]; // local-space position
 layout(location = 8) in vec3 tc_fragLocalNormal[];
+layout(location = 9) in vec4 tc_fragTangent[];
 
 // Outputs to fragment shader (match main.frag inputs)
 layout(location = 0) out vec3 fragColor;
@@ -20,6 +21,7 @@ layout(location = 2) out vec3 fragNormal; // world-space normal
 layout(location = 5) flat out int fragTexIndex;
 layout(location = 4) out vec3 fragPosWorld;
 layout(location = 6) out vec4 fragPosLightSpace;
+layout(location = 9) out vec4 fragTangent;
 // (removed debug displacement output)
 
 #include "includes/textures.glsl"
@@ -64,4 +66,7 @@ void main() {
 
     // Compute fragNormal: do not apply normal mapping here — use transformed geometry normal
     fragNormal = normalize(mat3(ubo.model) * localNormal);
+    // Compute world-space tangent handedness-aware
+    vec4 tangentLocal = tc_fragTangent[0] * bc.x + tc_fragTangent[1] * bc.y + tc_fragTangent[2] * bc.z;
+    fragTangent = vec4(normalize(mat3(ubo.model) * tangentLocal.xyz), tangentLocal.w);
 }

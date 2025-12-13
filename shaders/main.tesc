@@ -10,6 +10,7 @@ layout(location = 1) in vec2 pc_inUV[];
 layout(location = 2) in vec3 pc_inNormal[];
 layout(location = 4) in vec3 pc_inPosWorld[];
 layout(location = 5) in float pc_inTexIndex[];
+layout(location = 9) in vec4 pc_inTangent[];
 layout(location = 7) in vec3 pc_inLocalPos[];
 layout(location = 8) in vec3 pc_inLocalNormal[];
 
@@ -20,6 +21,7 @@ layout(location = 4) out vec3 tc_fragPosWorld[];
 layout(location = 5) flat out int tc_fragTexIndex[];
 layout(location = 7) out vec3 tc_fragLocalPos[];
 layout(location = 8) out vec3 tc_fragLocalNormal[];
+layout(location = 9) out vec4 tc_fragTangent[];
 
 void main() {
     // Pass through per-vertex data to evaluation stage
@@ -31,6 +33,7 @@ void main() {
     tc_fragTexIndex[gl_InvocationID] = int(pc_inTexIndex[gl_InvocationID] + 0.5);
     tc_fragLocalPos[gl_InvocationID] = pc_inLocalPos[gl_InvocationID];
     tc_fragLocalNormal[gl_InvocationID] = pc_inLocalNormal[gl_InvocationID];
+    tc_fragTangent[gl_InvocationID] = pc_inTangent[gl_InvocationID];
     // local tangent removed
 
     // Read tessellation level from per-material mappingParams.y (set by host)

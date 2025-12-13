@@ -11,13 +11,13 @@ void PlaneMesh::build(VulkanApp* app, float width, float height, float texIndex)
     float uvScale = 5.0f;
     std::vector<Vertex> vertices = {
         // Bottom-left
-        {{-halfW, 0.0f, -halfH}, {1,1,1}, {0.0f, 0.0f}, {0,1,0}, texIndex},
+        {{-halfW, 0.0f, -halfH}, {1,1,1}, {0.0f, 0.0f}, {0,1,0}, texIndex, {0,0,0,1}},
         // Bottom-right  
-        {{ halfW, 0.0f, -halfH}, {1,1,1}, {uvScale, 0.0f}, {0,1,0}, texIndex},
+        {{ halfW, 0.0f, -halfH}, {1,1,1}, {uvScale, 0.0f}, {0,1,0}, texIndex, {0,0,0,1}},
         // Top-right
-        {{ halfW, 0.0f,  halfH}, {1,1,1}, {uvScale, uvScale}, {0,1,0}, texIndex},
+        {{ halfW, 0.0f,  halfH}, {1,1,1}, {uvScale, uvScale}, {0,1,0}, texIndex, {0,0,0,1}},
         // Top-left
-        {{-halfW, 0.0f,  halfH}, {1,1,1}, {0.0f, uvScale}, {0,1,0}, texIndex},
+        {{-halfW, 0.0f,  halfH}, {1,1,1}, {0.0f, uvScale}, {0,1,0}, texIndex, {0,0,0,1}},
     };
 
     // Two triangles to form the quad
