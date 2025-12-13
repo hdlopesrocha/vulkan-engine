@@ -4,7 +4,7 @@
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragNormal;
-layout(location = 3) in vec3 fragTangent;
+layout(location = 3) in vec4 fragTangent;
 layout(location = 5) flat in int fragTexIndex;
 layout(location = 4) in vec3 fragPosWorld;
 layout(location = 6) in vec4 fragPosLightSpace;
@@ -38,17 +38,18 @@ void main() {
     if (mappingMode == 1 && ubo.pomParams.w > 0.5) {
         // Compute tangent-space view direction for POM
         vec3 N = normalize(fragNormal);
-        vec3 T = normalize(fragTangent);
+        vec3 T = normalize(fragTangent.xyz);
+        float vertHand = fragTangent.w;
 
         // Handle normal Y flipping
         if (ubo.pomFlags.x > 0.5) {
             N.y = -N.y;
         }
         
-        // Compute bitangent (assume right-handed TBN)
-        vec3 B = cross(N, T);
+        // Compute bitangent using per-vertex handedness (and optional global flip)
+        float handed = vertHand * (ubo.pomFlags.y > 0.5 ? -1.0 : 1.0);
+        vec3 B = cross(N, T) * handed;
         // TBN matrix transforms from tangent space to world space
-        // Columns are: tangent, bitangent, normal
         mat3 TBN = mat3(T, B, N);
         
         vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
@@ -86,8 +87,10 @@ void main() {
         N.y = -N.y;
     }
     
-    vec3 T = normalize(fragTangent);
-    vec3 B = cross(T, N);  // Left-handed bitangent for mesh compatibility
+    vec3 T = normalize(fragTangent.xyz);
+    float vertHand_main = fragTangent.w;
+    float handed_main = vertHand_main * (ubo.pomFlags.y > 0.5 ? -1.0 : 1.0);
+    vec3 B = cross(N, T) * handed_main;
     mat3 TBN = mat3(T, B, N);
     
     // Compute world-space normal
@@ -104,9 +107,7 @@ void main() {
         if (ubo.pomFlags.x > 0.5) {
             normalMap.y = -normalMap.y;
         }
-        
-        vec3 perturbedNormal = TBN * normalMap;
-        worldNormal = normalize(perturbedNormal);
+        worldNormal = normalize(TBN * normalMap);
     }
     
     // Sample albedo texture (after UV displacement if parallax was applied)
@@ -118,7 +119,7 @@ void main() {
     vec3 toLight = -normalize(ubo.lightDir.xyz);
     
     // Use normal-mapped normal for lighting calculations
-    float NdotL = max(dot(worldNormal, toLight), 0.0);
+    float NdotL = max(dot(N, toLight), 0.0);
     
     // Adjust shadow position based on parallax displacement (if enabled)
     vec4 adjustedPosLightSpace = fragPosLightSpace;
@@ -149,7 +150,7 @@ void main() {
 
     if (ubo.shadowEffects.w > 0.5) {
         // Only calculate shadows for surfaces facing the light (use normal-mapped normal)
-        if (dot(worldNormal, toLight) > 0.01) {
+        if (NdotL > 0.01) {
             // Increased bias since shadow map no longer uses parallax displacement
             float bias = max(0.002 * (1.0 - NdotL), 0.0005);
             shadow = ShadowCalculation(adjustedPosLightSpace, bias);
@@ -258,6 +259,25 @@ void main() {
     if (debugMode == 10) {
         // Lighting comparison: NdotL and shadow
         outColor = vec4(NdotL, totalShadow, 0.0, 1.0);
+        return;
+    }
+    if (debugMode == 12) {
+        // Visualize surface->light vector (mapped to 0..1) to inspect direction
+        vec3 tl = normalize(toLight);
+        outColor = vec4(tl * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (debugMode == 13) {
+        // Show NdotL as grayscale (how much each fragment is lit)
+        outColor = vec4(vec3(NdotL), 1.0);
+        return;
+    }
+    if (debugMode == 14) {
+        // Shadow diagnostics visualization:
+        // R = global shadow (from shadow map sampling),
+        // G = self-shadow occlusion amount (1.0 - selfShadow),
+        // B = combined totalShadow used to darken lighting.
+        outColor = vec4(shadow, 1.0 - selfShadow, totalShadow, 1.0);
         return;
     }
     if (debugMode == 11) {

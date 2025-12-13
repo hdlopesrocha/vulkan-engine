@@ -4,6 +4,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/constants.hpp>
 #include <imgui.h>
+#include <iostream>
 
 class LightWidget : public Widget {
 private:
@@ -22,14 +23,19 @@ private:
         float elevationRad = glm::radians(elevation);
         
         // Calculate direction TO the light source (where light comes from)
-        // Azimuth: 0° = +Z (North), 90° = +X (East), 180° = -Z (South), 270° = -X (West)
-        // Elevation: 0° = horizon, 90° = zenith (straight up), -90° = nadir (straight down)
+        // Use conventional spherical -> Cartesian conversion where azimuth rotates around Y
+        // Azimuth: 0° = +Z (North), 90° = +X (East), 180° = -Z (South), -90° = -X (West)
+        // Elevation: 0° = horizon, +90° = zenith (straight up), -90° = nadir (straight down)
         glm::vec3 direction;
-        direction.x = cos(elevationRad) * sin(azimuthRad);
-        direction.y = sin(elevationRad);
-        direction.z = cos(elevationRad) * cos(azimuthRad);
+        float cosE = cos(elevationRad);
+        direction.x = cosE * sin(azimuthRad); // horizontal X component
+        direction.y = sin(elevationRad);      // vertical component
+        direction.z = cosE * cos(azimuthRad); // horizontal Z component
         
         *lightDirection = glm::normalize(direction);
+        // Debug: print updated angles and direction
+        std::cout << "[LightWidget] Az=" << azimuth << " El=" << elevation
+              << " Dir=(" << (*lightDirection).x << ", " << (*lightDirection).y << ", " << (*lightDirection).z << ")\n";
     }
     
     // Calculate spherical coordinates from direction vector (for initialization)
@@ -39,9 +45,9 @@ private:
         glm::vec3 dir = glm::normalize(*lightDirection);
         
         // Calculate elevation (angle from horizontal plane)
-        elevation = glm::degrees(asin(dir.y));
-        
-        // Calculate azimuth (angle in horizontal plane)
+        elevation = glm::degrees(asin(glm::clamp(dir.y, -1.0f, 1.0f)));
+
+        // Calculate azimuth (angle in horizontal plane). Use atan2(x,z) to match the X/Z ordering above.
         azimuth = glm::degrees(atan2(dir.x, dir.z));
     }
     

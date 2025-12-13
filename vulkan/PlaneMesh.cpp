@@ -11,13 +11,13 @@ void PlaneMesh::build(VulkanApp* app, float width, float height, float texIndex)
     float uvScale = 5.0f;
     std::vector<Vertex> vertices = {
         // Bottom-left
-        {{-halfW, 0.0f, -halfH}, {1,1,1}, {0.0f, 0.0f}, {0,1,0}, {1,0,0}, texIndex},
+        {{-halfW, 0.0f, -halfH}, {1,1,1}, {0.0f, 0.0f}, {0,1,0}, {1,0,0,1.0f}, texIndex},
         // Bottom-right  
-        {{ halfW, 0.0f, -halfH}, {1,1,1}, {uvScale, 0.0f}, {0,1,0}, {1,0,0}, texIndex},
+        {{ halfW, 0.0f, -halfH}, {1,1,1}, {uvScale, 0.0f}, {0,1,0}, {1,0,0,1.0f}, texIndex},
         // Top-right
-        {{ halfW, 0.0f,  halfH}, {1,1,1}, {uvScale, uvScale}, {0,1,0}, {1,0,0}, texIndex},
+        {{ halfW, 0.0f,  halfH}, {1,1,1}, {uvScale, uvScale}, {0,1,0}, {1,0,0,1.0f}, texIndex},
         // Top-left
-        {{-halfW, 0.0f,  halfH}, {1,1,1}, {0.0f, uvScale}, {0,1,0}, {1,0,0}, texIndex},
+        {{-halfW, 0.0f,  halfH}, {1,1,1}, {0.0f, uvScale}, {0,1,0}, {1,0,0,1.0f}, texIndex},
     };
 
     // Two triangles to form the quad
@@ -26,7 +26,6 @@ void PlaneMesh::build(VulkanApp* app, float width, float height, float texIndex)
         2, 3, 0   // Second triangle
     };
 
-    // Use the base class build method
-    // For a flat plane, we don't need to recompute normals and tangents (already set correctly)
-    Model3D::build(app, vertices, indices, true, true);
+    // Use the base class build method and compute tangents on the CPU
+    Model3D::build(app, vertices, indices, false, true);
 }

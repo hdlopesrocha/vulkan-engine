@@ -156,7 +156,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                         VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
                         VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
                         VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
+                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
                             VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
                     }
                 );
@@ -175,7 +175,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                         VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
                         VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
                         VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
+                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
                         VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
                     },
                     VK_POLYGON_MODE_LINE
@@ -207,7 +207,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                         VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
                         VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
                         VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
+                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
                         VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
                     }
                 );
@@ -228,7 +228,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                         VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
                         VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
                         VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, tangent) },
+                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
                         VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
                     },
                     VK_POLYGON_MODE_LINE
@@ -576,7 +576,10 @@ class MyApp : public VulkanApp, public IEventHandler {
             // light TOWARD the surface when performing lighting/shadow calculations. Send the negated direction to the GPU
             // so both lighting and shadow projection use the same convention.
             glm::vec3 lightDir = glm::normalize(lightDirection);
-            uboStatic.lightDir = glm::vec4(-lightDir, 0.0f);
+            uboStatic.lightDir = glm::vec4(lightDir, 0.0f);
+            // Debug: print UI lightDirection and sent UBO lightDir
+            std::cout << "[UBO] UI lightDirection=(" << lightDirection.x << ", " << lightDirection.y << ", " << lightDirection.z << ")\n";
+            std::cout << "[UBO] sent ubo.lightDir=(" << uboStatic.lightDir.x << ", " << uboStatic.lightDir.y << ", " << uboStatic.lightDir.z << ")\n";
             uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
             // Pass parallax LOD settings to the GPU so the fragment shader can compute smooth fading
             if (settingsWidget) {

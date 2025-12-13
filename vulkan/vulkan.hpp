@@ -86,7 +86,7 @@ struct VertexBufferObject {
 };
 
 
-struct Vertex { float pos[3]; float color[3]; float uv[2]; float normal[3]; float tangent[3]; float texIndex; };
+struct Vertex { float pos[3]; float color[3]; float uv[2]; float normal[3]; float tangent[4]; float texIndex; };
 
 
 class VulkanApp {

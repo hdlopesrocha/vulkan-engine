@@ -40,8 +40,8 @@ void Model3D::computeNormals(std::vector<Vertex>& vertices, const std::vector<ui
         glm::vec3 p1(vertices[i1].pos[0], vertices[i1].pos[1], vertices[i1].pos[2]);
         glm::vec3 p2(vertices[i2].pos[0], vertices[i2].pos[1], vertices[i2].pos[2]);
 
-        glm::vec3 edge1 = p1 - p0;
-        glm::vec3 edge2 = p2 - p0;
+        glm::vec3 edge1 = p0 - p1;
+        glm::vec3 edge2 = p0 - p2;
         glm::vec3 faceNormal = glm::cross(edge1, edge2);
 
         if (glm::length2(faceNormal) > 0.0f) {
@@ -126,11 +126,13 @@ void Model3D::computeTangents(std::vector<Vertex>& vertices, const std::vector<u
             vertices[i].tangent[0] = t.x;
             vertices[i].tangent[1] = t.y;
             vertices[i].tangent[2] = t.z;
+            vertices[i].tangent[3] = handedness;
         } else {
             // Default tangent
             vertices[i].tangent[0] = 1.0f;
             vertices[i].tangent[1] = 0.0f;
             vertices[i].tangent[2] = 0.0f;
+            vertices[i].tangent[3] = 1.0f;
         }
     }
 }

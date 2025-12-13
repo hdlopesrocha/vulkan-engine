@@ -2,7 +2,7 @@
 
 layout(location = 0) in vec2 fragUV;
 layout(location = 1) in vec3 fragNormal;
-layout(location = 2) in vec3 fragTangent;
+layout(location = 4) in vec4 fragTangent;
 layout(location = 3) in vec3 fragPosWorld;
 
 #include "includes/ubo.glsl"

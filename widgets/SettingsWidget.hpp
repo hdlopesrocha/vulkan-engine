@@ -96,7 +96,7 @@ public:
             ImGui::Separator();
             ImGui::Text("Debug Visualisation");
             ImGui::Separator();
-            const char* debugItems[] = { "Default Render", "Fragment Normal", "World Normal", "UV Coordinates", "Tangent (TBN)", "Bitangent (TBN)", "Normal (TBN)", "Albedo Texture", "Normal Texture", "Bump Texture", "Parallax Pre-Projection", "Normal from Derivatives" };
+            const char* debugItems[] = { "Default Render", "Fragment Normal", "World Normal", "UV Coordinates", "Tangent (TBN)", "Bitangent (TBN)", "Normal (TBN)", "Albedo Texture", "Normal Texture", "Bump Texture", "Parallax Pre-Projection", "Normal from Derivatives", "Light Vector (RGB)", "N·L (grayscale)", "Shadow Diagnostics" };
             int current = debugMode;
             if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {
                 debugMode = current;
@@ -135,7 +135,7 @@ private:
     float parallaxFar = 25.0f;                 // far distance where reduction applies
     float parallaxReduction = 0.3f;            // reduction factor at far distance (0..1)
     bool wireframeMode = false;                // render wireframe when true
-        int debugMode = 0;                         // 0=Default,1=Geometry normal,2=Normal map/world,3=UV,4=Tangent,5=Bitangent,6=Normal (mapped),7=Albedo,8=Normal Tex,9=Bump,10=Parallax Pre-Projection,11=Normal from Derivatives
+        int debugMode = 0;                         // 0=Default,1=Fragment Normal,2=World Normal,3=UV,4=Tangent,5=Bitangent,6=Normal (TBN),7=Albedo,8=Normal Tex,9=Bump,10=Parallax Pre-Projection,11=Normal from Derivatives,12=Light Vector,13=N·L,14=Shadow Diagnostics
     
     void resetToDefaults() {
         enableSelfShadowing = true;
