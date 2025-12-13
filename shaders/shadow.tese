@@ -9,11 +9,17 @@ layout(location = 7) in vec3 tc_fragLocalPos[];
 layout(location = 8) in vec3 tc_fragLocalNormal[];
 layout(location = 1) in vec2 tc_fragUV[];
 layout(location = 5) flat in int tc_fragTexIndex[];
+layout(location = 9) in vec4 tc_fragTangent[];
 
 // samplers (height map needed here for displacement)
 layout(binding = 3) uniform sampler2DArray heightArray;
 
 // Outputs to next stage / not used in depth-only pass
+layout(location = 0) out vec2 fragUV;
+layout(location = 1) out vec3 fragNormal;
+layout(location = 3) out vec3 fragPosWorld;
+layout(location = 5) flat out int fragTexIndex;
+layout(location = 9) out vec4 fragTangent;
 
 #include "includes/common.glsl"
 
@@ -33,5 +39,15 @@ void main() {
 
     vec4 worldPos = ubo.model * vec4(displacedLocalPos, 1.0);
     // For shadow pass, write light-space clip position
+    // Output varyings for potential normal mapping use in fragment
+    fragPosWorld = worldPos.xyz;
+    fragUV = uv;
+    fragTexIndex = texIndex;
+    // Geometry normal (world-space)
+    fragNormal = normalize(mat3(ubo.model) * localNormal);
+    // Interpolate and transform tangent (handedness preserved in w)
+    vec4 tangentLocal = tc_fragTangent[0] * bc.x + tc_fragTangent[1] * bc.y + tc_fragTangent[2] * bc.z;
+    fragTangent = vec4(normalize(mat3(ubo.model) * tangentLocal.xyz), tangentLocal.w);
+
     gl_Position = ubo.lightSpaceMatrix * worldPos;
 }

@@ -69,6 +69,11 @@ class MyApp : public VulkanApp, public IEventHandler {
     public:
         MyApp() : shadowMapper(this, 8192) {}
 
+
+            void postSubmit() override {
+                
+            }
+
         // postSubmit() override removed to disable slow per-frame shadow readback
         
     VkPipeline graphicsPipeline = VK_NULL_HANDLE;
@@ -557,6 +562,11 @@ class MyApp : public VulkanApp, public IEventHandler {
             
             // Create settings widget
             settingsWidget = std::make_shared<SettingsWidget>();
+            // Hook debug UI button to trigger a shadow depth readback
+            settingsWidget->setDumpShadowDepthCallback([this]() {
+                shadowMapper.readbackShadowDepth();
+                std::cerr << "[Debug] Wrote bin/shadow_depth.pgm (manual trigger).\n";
+            });
             widgetManager.addWidget(settingsWidget);
             
             // Create light control widget

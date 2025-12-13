@@ -38,15 +38,21 @@ private:
     VkFramebuffer shadowFramebuffer = VK_NULL_HANDLE;
     VkRenderPass shadowRenderPass = VK_NULL_HANDLE;
     VkPipeline shadowPipeline = VK_NULL_HANDLE;
+    VkPipeline shadowPipelineWire = VK_NULL_HANDLE;
     VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout shadowDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorSet shadowMapImGuiDescSet = VK_NULL_HANDLE;
     
     // Current light space matrix for rendering
     glm::mat4 currentLightSpaceMatrix;
+    // One-shot wireframe readback control
+    bool requestWireframeReadbackFlag = false;
+    bool performingWireframeReadback = false;
     
     void createShadowMap();
     void createShadowRenderPass();
     void createShadowFramebuffer();
     void createShadowPipeline();
+    // Request next shadow pass be rendered in wireframe and read back
+    void requestWireframeReadback() { requestWireframeReadbackFlag = true; }
 };

@@ -2,6 +2,7 @@
 
 #include "Widget.hpp"
 #include <imgui.h>
+#include <functional>
 
 class SettingsWidget : public Widget {
 public:
@@ -19,6 +20,10 @@ public:
 
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Globally enable or disable all shadowing");
+            if (ImGui::Button("Dump Shadow Depth")) {
+                if (onDumpShadowDepth) onDumpShadowDepth();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Write shadow depth PGM for debugging");
             
             
             ImGui::Separator();
@@ -86,6 +91,9 @@ public:
     bool getWireframeEnabled() const { return wireframeMode; }
         int getDebugMode() const { return debugMode; }
     bool getNormalMappingEnabled() const { return normalMappingEnabled; }
+
+    // Callback setter for debug actions
+    void setDumpShadowDepthCallback(std::function<void()> cb) { onDumpShadowDepth = cb; }
     
 private:
     bool enableShadows = true;                 // Global toggle for shadow mapping
@@ -97,6 +105,7 @@ private:
     bool wireframeMode = false;                // render wireframe when true
         int debugMode = 0;                         // 0=Default,1=Fragment Normal,2=World Normal,3=UV,4=Tangent,5=Bitangent,6=Normal (TBN),7=Albedo,8=Normal Tex,9=Bump,10=Pre-Projection,11=Normal from Derivatives,12=Light Vector,13=N·L,14=Shadow Diagnostics,15=Triplanar Weights
     bool normalMappingEnabled = true;          // Global toggle for normal mapping
+    std::function<void()> onDumpShadowDepth;
     
     void resetToDefaults() {
         enableShadows = true;

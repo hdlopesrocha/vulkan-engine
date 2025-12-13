@@ -220,10 +220,20 @@ void ShadowMapper::createShadowPipeline() {
     heightBinding.binding = 3;
     heightBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     heightBinding.descriptorCount = 1;
-    heightBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // Height sampler is used by both the tessellation evaluation (displacement)
+    // and fragment shader (optional depth offset), so expose it to both stages.
+    heightBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+
+    // Normal sampler (binding 2) is read by the shadow fragment when bump mapping
+    // is enabled to compute a depth offset. Add a binding for it here.
+    VkDescriptorSetLayoutBinding normalBinding{};
+    normalBinding.binding = 2;
+    normalBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    normalBinding.descriptorCount = 1;
+    normalBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     heightBinding.pImmutableSamplers = nullptr;
     
-    std::array<VkDescriptorSetLayoutBinding, 2> bindings = {uboBinding, heightBinding};
+    std::array<VkDescriptorSetLayoutBinding, 3> bindings = {uboBinding, normalBinding, heightBinding};
     
     VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo{};
     descriptorLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -564,7 +574,7 @@ void ShadowMapper::readbackShadowDepth() {
     }
 
     // ensure bin directory exists and write PGM
-    std::ofstream ofs("bin/shadow_depth.pgm", std::ios::binary);
+    std::ofstream ofs("shadow_depth.pgm", std::ios::binary);
     if (ofs) {
         ofs << "P5\n" << shadowMapSize << " " << shadowMapSize << "\n255\n";
         ofs.write(reinterpret_cast<const char*>(image.data()), image.size());
