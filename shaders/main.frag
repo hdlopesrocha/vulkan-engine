@@ -29,6 +29,11 @@ void main() {
     // Geometry normal (world-space)
     vec3 N = normalize(fragNormal);
     vec3 worldNormal = N;
+    // Precompute triplanar blend weights from geometric normal (abs^2 normalized)
+    vec3 triW = abs(N);
+    triW = triW * triW;
+    float triWSum = triW.x + triW.y + triW.z + 1e-6;
+    triW /= triWSum;
     // Tangent & bitangent (world-space) from vertex tangents (preferred), otherwise compute via derivatives
     vec3 T = vec3(0.0, 0.0, 0.0);
     vec3 B = vec3(0.0, 0.0, 0.0);
@@ -42,10 +47,7 @@ void main() {
         vec2 uvY = fragPosWorld.xz * vec2(ubo.triplanarParams.x, ubo.triplanarParams.y);
         vec2 uvZ = fragPosWorld.xy * vec2(ubo.triplanarParams.x, ubo.triplanarParams.y);
         // Blend weights from geometry normal
-        vec3 w = abs(N);
-        w = w * w; // sharpen the blend a bit
-        float sum = w.x + w.y + w.z + 1e-6;
-        w /= sum;
+        vec3 w = triW;
         // Sample albedo from the three projections
         vec3 cX = texture(albedoArray, vec3(uvX, float(texIndex))).rgb;
         vec3 cY = texture(albedoArray, vec3(uvY, float(texIndex))).rgb;
@@ -210,6 +212,12 @@ void main() {
     }
     if (debugMode == 14) {
         outColor = vec4(shadow, 0.0, totalShadow, 1.0);
+        return;
+    }
+    if (debugMode == 15) {
+        // Visualize triplanar blend weights RGB (X/Y/Z projections)
+        vec3 w = triW;
+        outColor = vec4(w, 1.0);
         return;
     }
 
