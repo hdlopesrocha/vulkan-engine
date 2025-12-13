@@ -15,7 +15,7 @@ vec3 applyDisplacement(vec3 localPos, vec3 localNormal, vec2 uv, int texIndex) {
         }
         // Use per-material tessellation height scale passed in mappingParams.w
         float heightScale = ubo.mappingParams.w;
-        // Displace outward along surface normal based on sampled height
+        // Displace outward along surface normal based on sampled height (relative to surface)
         float d = height * heightScale;
         displacedLocalPos += localNormal * d;
     }

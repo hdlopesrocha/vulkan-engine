@@ -694,10 +694,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                     // Place the sphere just above the cube top with a small gap to avoid intersection
                     float cubeHalfHeight = 0.5f;
                     float gap = 0.5f; // slightly larger gap to avoid numerical intersection
-                    // Account for tessellation displacement (max height) if mapping mode is enabled for this material (not used directly; compute avg below)
-                    // Subtract approx half the tessellation height so the object's center stays visually at the expected position
-                    float avgDisp = (mat && mat->mappingMode) ? (mat->tessHeightScale * 0.5f) : 0.0f;
-                    float sphereCenterY = y + cubeHalfHeight + sphereRadius + gap - avgDisp; // adjusted placement
+                    float sphereCenterY = y + cubeHalfHeight + sphereRadius + gap; // place on top of cube
                     glm::mat4 sphereModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, sphereCenterY, z));
                     modelManager.addInstance(sphere, sphereModel, sphereDescriptorSets[i], &sphereUniforms[i], mat);
                 }
