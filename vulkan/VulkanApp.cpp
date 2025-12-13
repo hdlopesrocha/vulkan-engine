@@ -758,7 +758,7 @@ TextureImage VulkanApp::createTextureImage(const char * filename) {
     return textureImage;
 }
 
-TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& filenames) {
+TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& filenames, bool srgb) {
     TextureImage textureImage;
     if (filenames.empty()) throw std::runtime_error("createTextureImageArray: empty filename list");
 
@@ -793,6 +793,9 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
 
     textureImage.mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
 
+    // choose format: sRGB for color/albedo textures, UNORM for normal/height maps
+    VkFormat chosenFormat = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+
     // create image with arrayLayers = layerCount
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -803,7 +806,7 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
     imageInfo.extent.depth = 1;
     imageInfo.mipLevels = textureImage.mipLevels;
     imageInfo.arrayLayers = layerCount;
-    imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    imageInfo.format = chosenFormat;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     // need transfer src/dst for mipmap generation and sampled for shader access
@@ -885,7 +888,7 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
     endSingleTimeCommands(commandBuffer);
 
     // generate mipmaps for the array texture (per-layer)
-    generateMipmaps(textureImage.image, VK_FORMAT_R8G8B8A8_SRGB, texWidth, texHeight, textureImage.mipLevels, layerCount);
+    generateMipmaps(textureImage.image, chosenFormat, texWidth, texHeight, textureImage.mipLevels, layerCount);
 
     vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
     vkFreeMemory(device, stagingBuffer.memory, nullptr);
@@ -895,7 +898,7 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = textureImage.image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    viewInfo.format = chosenFormat;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = textureImage.mipLevels;

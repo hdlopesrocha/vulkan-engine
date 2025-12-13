@@ -7,13 +7,13 @@ size_t TextureManager::loadTriple(const std::string &albedoFile, const std::stri
 
     Triple t;
     // create array textures with a single layer each (keeps current behavior but centralizes resource management)
-    t.albedo = app->createTextureImageArray({ albedoFile });
+    t.albedo = app->createTextureImageArray({ albedoFile }, true);
     t.albedoSampler = app->createTextureSampler(t.albedo.mipLevels);
-
-    t.normal = app->createTextureImageArray({ normalFile });
+    // normal maps must be linear (UNORM) — do not use sRGB conversion
+    t.normal = app->createTextureImageArray({ normalFile }, false);
     t.normalSampler = app->createTextureSampler(t.normal.mipLevels);
-
-    t.height = app->createTextureImageArray({ heightFile });
+    // height maps also use linear sampling
+    t.height = app->createTextureImageArray({ heightFile }, false);
     t.heightSampler = app->createTextureSampler(t.height.mipLevels);
 
     // Initialize material properties with reasonable defaults

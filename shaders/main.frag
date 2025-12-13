@@ -44,17 +44,25 @@ void main() {
     float denom = duvdx.x * duvdy.y - duvdy.x * duvdx.y;
     vec3 T;
     if (abs(denom) < 1e-6) {
-        // fallback tangent (arbitrary orthonormal basis)
-        T = normalize(vec3(1.0, 0.0, 0.0));
+        // Robust fallback tangent: pick any vector orthogonal to N
+        if (abs(N.z) < 0.9) T = normalize(cross(N, vec3(0.0, 0.0, 1.0)));
+        else T = normalize(cross(N, vec3(0.0, 1.0, 0.0)));
     } else {
         float r = 1.0 / denom;
-        T = normalize((dpdx * duvdy.y - dpdy * duvdx.y) * r);
-    }
-        vec3 B = normalize(cross(N, T));
-        // Allow material override for tangent handedness (flip bitangent)
-        if (ubo.materialFlags.y > 0.5) {
-            B = -B;
+        T = (dpdx * duvdy.y - dpdy * duvdx.y) * r;
+        // Orthonormalize T against N (Gram-Schmidt)
+        T = normalize(T - N * dot(N, T));
+        // If orthonormalization produced a degenerate tangent, fall back
+        if (length(T) < 1e-6) {
+            if (abs(N.z) < 0.9) T = normalize(cross(N, vec3(0.0, 0.0, 1.0)));
+            else T = normalize(cross(N, vec3(0.0, 1.0, 0.0)));
         }
+    }
+    vec3 B = normalize(cross(N, T));
+    // Allow material override for tangent handedness (flip bitangent)
+    if (ubo.materialFlags.y > 0.5) {
+        B = -B;
+    }
     mat3 TBN = mat3(T, B, N);
     
     // Compute world-space normal

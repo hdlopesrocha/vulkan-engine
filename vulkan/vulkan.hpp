@@ -196,7 +196,7 @@ protected:
     public:
         Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties);
         TextureImage createTextureImage(const char * filename);
-    TextureImage createTextureImageArray(const std::vector<std::string>& filenames);
+    TextureImage createTextureImageArray(const std::vector<std::string>& filenames, bool srgb = true);
         VkSampler createTextureSampler(uint32_t mipLevels);
         void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
     void createDescriptorPool(uint32_t maxSets = 1);
