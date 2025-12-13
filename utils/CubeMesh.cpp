@@ -1,9 +1,7 @@
 #include "CubeMesh.hpp"
 #include <vector>
 
-void CubeMesh::build(VulkanApp* app, const std::vector<float>& faceTexIndices) {
-    // 24 unique vertices (4 per face) so each face can have its own UVs
-    // If faceTexIndices.size()==6, use those values per face; otherwise default to 0.0
+void CubeMesh::build(const std::vector<float>& faceTexIndices) {
     auto texForFace = [&](int face)->float{
         if (faceTexIndices.size() == 6) return faceTexIndices[face];
         return 0.0f;
@@ -51,6 +49,8 @@ void CubeMesh::build(VulkanApp* app, const std::vector<float>& faceTexIndices) {
         20,21,22, 22,23,20    // -Z
     };
 
-    // Let the base class compute robust per-vertex tangents from positions/UVs
-    Model3D::build(app, vertices, indices, false);
+    // Set geometry and compute per-vertex tangents
+    setGeometry(vertices, indices);
+    //computeNormals();
+    computeTangents();
 }

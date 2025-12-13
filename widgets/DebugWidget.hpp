@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../vulkan/Camera.hpp"
+#include "../utils/Camera.hpp"
 #include "../vulkan/TextureManager.hpp"
 #include <imgui.h>
 #include <cstddef>

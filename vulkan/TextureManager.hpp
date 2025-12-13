@@ -6,7 +6,7 @@
 #include <string>
 
 // Material properties per texture (defined in separate header)
-#include "MaterialProperties.hpp"
+#include "../utils/MaterialProperties.hpp"
 
 class TextureManager {
 public:

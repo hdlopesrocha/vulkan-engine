@@ -1,7 +1,7 @@
 #include "GamepadPublisher.hpp"
 #include "EventManager.hpp"
 #include "CameraEvents.hpp"
-#include "../vulkan/Camera.hpp"
+#include "../utils/Camera.hpp"
 
 #include <GLFW/glfw3.h>
 #include <algorithm>

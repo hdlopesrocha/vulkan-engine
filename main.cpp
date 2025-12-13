@@ -3,7 +3,7 @@
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
-#include "vulkan/Camera.hpp"
+#include "utils/Camera.hpp"
 #include "events/EventManager.hpp"
 #include "events/WindowEvents.hpp"
 #include "events/KeyboardPublisher.hpp"
@@ -11,10 +11,10 @@
 #include "vulkan/TextureManager.hpp"
 #include "events/CameraEvents.hpp"
 #include "vulkan/AtlasManager.hpp"
-#include "vulkan/BillboardManager.hpp"
-#include "vulkan/CubeMesh.hpp"
-#include "vulkan/PlaneMesh.hpp"
-#include "vulkan/SphereMesh.hpp"
+#include "utils/BillboardManager.hpp"
+#include "utils/CubeMesh.hpp"
+#include "utils/PlaneMesh.hpp"
+#include "utils/SphereMesh.hpp"
 #include "vulkan/EditableTextureSet.hpp"
 #include "vulkan/ShadowMapper.hpp"
 #include "vulkan/ModelManager.hpp"
@@ -56,6 +56,8 @@ struct UniformObject {
     }
 };
 
+#include "vulkan/VertexBufferObjectBuilder.hpp"
+
 class MyApp : public VulkanApp, public IEventHandler {
     public:
         MyApp() : shadowMapper(this, 8192) {}
@@ -63,6 +65,9 @@ class MyApp : public VulkanApp, public IEventHandler {
         // postSubmit() override removed to disable slow per-frame shadow readback
         
     VkPipeline graphicsPipeline = VK_NULL_HANDLE;
+    
+    // GPU buffers for the built meshes (parallel to `meshes`)
+    std::vector<VertexBufferObject> meshVBOs;
     VkPipeline graphicsPipelineWire = VK_NULL_HANDLE;
     VkPipeline graphicsPipelineTess = VK_NULL_HANDLE;
     VkPipeline graphicsPipelineTessWire = VK_NULL_HANDLE;
@@ -450,21 +455,27 @@ class MyApp : public VulkanApp, public IEventHandler {
                 updateDescriptorSet(ds, { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
             }
 
-            // build cube mesh and GPU buffers (per-face tex indices all zero by default)
+            // build cube mesh and geometry (per-face tex indices all zero by default)
             auto cube = std::make_unique<CubeMesh>();
-            cube->build(this, {});
+            cube->build({});
+            VertexBufferObject cubeVbo = VertexBufferObjectBuilder::create(this, *cube);
             
             // build ground plane mesh (20x20 units)
             auto plane = std::make_unique<PlaneMesh>();
-            plane->build(this, 20.0f, 20.0f, 0.0f); // Will use editable texture index
+            plane->build(20.0f, 20.0f, 0.0f); // Will use editable texture index
+            VertexBufferObject planeVbo = VertexBufferObjectBuilder::create(this, *plane);
             
             // build sphere mesh
             auto sphere = std::make_unique<SphereMesh>();
-            sphere->build(this, 0.5f, 32, 16, 0.0f);
-            // Store meshes for later use
+            sphere->build(0.5f, 32, 16, 0.0f);
+            VertexBufferObject sphereVbo = VertexBufferObjectBuilder::create(this, *sphere);
+            // Store meshes and their GPU buffers for later use
             meshes.push_back(std::move(cube));
+            meshVBOs.push_back(cubeVbo);
             meshes.push_back(std::move(plane));
+            meshVBOs.push_back(planeVbo);
             meshes.push_back(std::move(sphere));
+            meshVBOs.push_back(sphereVbo);
             
             // Initialize light space matrix BEFORE creating command buffers
             // UI `lightDirection` is the direction FROM the camera/world TO the light (TO the light).
@@ -668,7 +679,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Add plane instance (uses editable texture)
             glm::mat4 planeModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.5f, 0.0f));
             const MaterialProperties* planeMat = &textureManager.getMaterial(editableTextureIndex);
-            modelManager.addInstance(plane, planeModel, descriptorSets[editableTextureIndex], &uniforms[editableTextureIndex], planeMat);
+            modelManager.addInstance(plane, meshVBOs[1], planeModel, descriptorSets[editableTextureIndex], &uniforms[editableTextureIndex], planeMat);
             
             // Add cube instances
             for (size_t i = 0; i < descriptorSets.size(); ++i) {
@@ -685,7 +696,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 glm::mat4 model_i = glm::translate(glm::mat4(1.0f), glm::vec3(x, y, z));
                 // Pass material properties for this texture
                 const MaterialProperties* mat = &textureManager.getMaterial(i);
-                modelManager.addInstance(cube, model_i, descriptorSets[i], &uniforms[i], mat);
+                modelManager.addInstance(cube, meshVBOs[0], model_i, descriptorSets[i], &uniforms[i], mat);
 
                 // Create sphere above this cube if sphere mesh available
                 if (meshes.size() > 2) {
@@ -696,7 +707,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                     float gap = 0.5f; // slightly larger gap to avoid numerical intersection
                     float sphereCenterY = y + cubeHalfHeight + sphereRadius + gap; // place on top of cube
                     glm::mat4 sphereModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, sphereCenterY, z));
-                    modelManager.addInstance(sphere, sphereModel, sphereDescriptorSets[i], &sphereUniforms[i], mat);
+                    modelManager.addInstance(sphere, meshVBOs[2], sphereModel, sphereDescriptorSets[i], &sphereUniforms[i], mat);
                 }
             }
             
@@ -735,7 +746,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 
                 updateUniformBuffer(*instance.uniformBuffer, &shadowUbo, sizeof(UniformObject));
                 
-                    shadowMapper.renderObject(commandBuffer, instance.transform, instance.model->getVBO(),
+                    shadowMapper.renderObject(commandBuffer, instance.transform, instance.vbo,
                                             instance.descriptorSet);
                 }
 
@@ -765,7 +776,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // Render all instances with main pass
             for (const auto& instance : modelManager.getInstances()) {
-                const auto& vbo = instance.model->getVBO();
+                const auto& vbo = instance.vbo;
                 
                 // Bind vertex and index buffers
                 VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
@@ -846,10 +857,11 @@ class MyApp : public VulkanApp, public IEventHandler {
             if (graphicsPipelineTessWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineTessWire, nullptr);
             // texture cleanup via manager
             textureManager.destroyAll();
-            // vertex/index buffers cleanup - destroy all meshes
-            for (auto& mesh : meshes) {
-                mesh->destroy(getDevice());
+            // vertex/index buffers cleanup - destroy GPU buffers created from the meshes
+            for (auto& vbo : meshVBOs) {
+                vbo.destroy(getDevice());
             }
+            meshVBOs.clear();
             meshes.clear();
 
             // uniform buffers cleanup

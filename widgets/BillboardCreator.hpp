@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../vulkan/BillboardManager.hpp"
+#include "../utils/BillboardManager.hpp"
 #include "../vulkan/AtlasManager.hpp"
 #include "../vulkan/TextureManager.hpp"
 #include "../vulkan/EditableTexture.hpp"

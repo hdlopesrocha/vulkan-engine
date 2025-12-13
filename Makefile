@@ -20,7 +20,7 @@ LIBS = `pkg-config --libs glfw3 vulkan` -limgui -lstb -ljpeg
 OUT_DIR = bin
 
 # shader sources and generated SPIR-V
-SRC = main.cpp vulkan/*cpp widgets/*cpp events/*cpp
+SRC = main.cpp utils/*cpp vulkan/*cpp widgets/*cpp events/*cpp
 OUT = $(OUT_DIR)/app
 
 # shader sources and generated SPIR-V
