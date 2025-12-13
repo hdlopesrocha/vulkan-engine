@@ -11,3 +11,25 @@ float sampleHeight(vec2 texCoords, int texIndex) {
     }
     return clamp(h, 0.0, 1.0);
 }
+
+// Triplanar height sampling: blend height from world-space projected UVs
+float sampleHeightTriplanar(vec3 worldPos, vec3 normal, int texIndex) {
+    // Build three projection UVs using triplanar scale from UBO
+    vec2 uvX = worldPos.yz * vec2(ubo.triplanarParams.x, ubo.triplanarParams.y);
+    vec2 uvY = worldPos.xz * vec2(ubo.triplanarParams.x, ubo.triplanarParams.y);
+    vec2 uvZ = worldPos.xy * vec2(ubo.triplanarParams.x, ubo.triplanarParams.y);
+    // Calculate blend weights from world normal
+    vec3 w = abs(normal);
+    w = w * w;
+    float sum = w.x + w.y + w.z + 1e-6;
+    w /= sum;
+    // Sample heights
+    float hX = texture(heightArray, vec3(uvX, float(texIndex))).r;
+    float hY = texture(heightArray, vec3(uvY, float(texIndex))).r;
+    float hZ = texture(heightArray, vec3(uvZ, float(texIndex))).r;
+    float h = hX * w.x + hY * w.y + hZ * w.z;
+    if (ubo.mappingParams.z > 0.5) {
+        h = 1.0 - h;
+    }
+    return clamp(h, 0.0, 1.0);
+}

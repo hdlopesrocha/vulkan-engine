@@ -47,7 +47,14 @@ void main() {
     vec3 displacedLocalPos = localPos;
     float disp = 0.0;
     if (ubo.mappingParams.x > 0.5) {
-        float height = sampleHeight(uv, texIndex);
+        // Use triplanar height sampling if enabled
+        vec3 worldPosForSampling = (ubo.model * vec4(localPos, 1.0)).xyz;
+        float height = 0.0;
+        if (ubo.triplanarParams.z > 0.5) {
+            height = sampleHeightTriplanar(worldPosForSampling, localNormal, texIndex);
+        } else {
+            height = sampleHeight(uv, texIndex);
+        }
         float heightScale = ubo.mappingParams.w;
         disp = height * heightScale;
         displacedLocalPos += localNormal * disp;
