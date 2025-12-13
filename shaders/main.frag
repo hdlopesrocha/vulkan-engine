@@ -4,7 +4,6 @@
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragNormal;
-layout(location = 3) in vec3 sharpNormal;
 layout(location = 5) flat in int fragTexIndex;
 layout(location = 4) in vec3 fragPosWorld;
 layout(location = 6) in vec4 fragPosLightSpace;
@@ -176,7 +175,9 @@ void main() {
         return;
     }
     if (debugMode == 11) {
-        outColor = vec4(sharpNormal * 0.5 + 0.5, 1.0);
+        // Real normal calculated from position derivatives
+        vec3 normalToShow = normalize(cross(dFdy(fragPosWorld), dFdx(fragPosWorld)));
+        outColor = vec4(normalToShow * 0.5 + 0.5, 1.0);
         return;
     }
     if (debugMode == 12) {
