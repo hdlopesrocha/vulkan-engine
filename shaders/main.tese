@@ -62,37 +62,6 @@ void main() {
     // Output clip-space position using MVP (MVP includes model matrix)
     gl_Position = ubo.mvp * vec4(displacedLocalPos, 1.0);
 
-    // Compute fragNormal
-    if (ubo.mappingParams.x > 0.5) {
-        // Compute tangent and bitangent from the patch
-        vec3 edge1 = tc_fragLocalPos[1] - tc_fragLocalPos[0];
-        vec3 edge2 = tc_fragLocalPos[2] - tc_fragLocalPos[0];
-        vec2 deltaUV1 = tc_fragUV[1] - tc_fragUV[0];
-        vec2 deltaUV2 = tc_fragUV[2] - tc_fragUV[0];
-        float denom = deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y;
-        vec3 tangent, bitangent;
-        if (abs(denom) > 1e-6) {
-            float f = 1.0 / denom;
-            tangent = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2);
-            bitangent = f * (-deltaUV2.x * edge1 + deltaUV1.x * edge2);
-        } else {
-            // Fallback: assume tangent along X, bitangent along Y or something
-            tangent = vec3(1.0, 0.0, 0.0);
-            bitangent = vec3(0.0, 1.0, 0.0);
-        }
-        // Transform to world space
-        tangent = mat3(ubo.model) * tangent;
-        bitangent = mat3(ubo.model) * bitangent;
-        vec3 normal = mat3(ubo.model) * localNormal;
-        // Orthonormalize
-        tangent = normalize(tangent - normal * dot(normal, tangent));
-        bitangent = normalize(bitangent - normal * dot(normal, bitangent));
-        mat3 TBN = mat3(tangent, bitangent, normal);
-        // Sample normal map
-        vec3 normalMap = texture(normalArray, vec3(fragUV, float(fragTexIndex))).rgb * 2.0 - 1.0;
-        normalMap = normalize(normalMap);
-        fragNormal = normalize(TBN * normalMap);
-    } else {
-        fragNormal = normalize(mat3(ubo.model) * localNormal);
-    }
+    // Compute fragNormal: do not apply normal mapping here — use transformed geometry normal
+    fragNormal = normalize(mat3(ubo.model) * localNormal);
 }
