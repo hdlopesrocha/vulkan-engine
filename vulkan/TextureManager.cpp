@@ -17,13 +17,10 @@ size_t TextureManager::loadTriple(const std::string &albedoFile, const std::stri
     t.heightSampler = app->createTextureSampler(t.height.mipLevels);
 
     // Initialize material properties with reasonable defaults
-    t.material.pomHeightScale = 0.06f;
-    t.material.pomMinLayers = 8.0f;
-    t.material.pomMaxLayers = 32.0f;
     t.material.flipNormalY = false;
     t.material.flipTangentHandedness = false;
     t.material.ambientFactor = 0.15f;
-    t.material.flipParallaxDirection = false;
+    (void)0; // parallax removed
     t.material.specularStrength = 0.5f;
     t.material.shininess = 32.0f;
 
@@ -44,13 +41,10 @@ size_t TextureManager::addTriple(const TextureImage& albedo, VkSampler albedoSam
     t.ownsResources = false;  // Externally managed resources
     
     // Initialize material properties with reasonable defaults
-    t.material.pomHeightScale = 0.06f;
-    t.material.pomMinLayers = 8.0f;
-    t.material.pomMaxLayers = 32.0f;
     t.material.flipNormalY = false;
     t.material.flipTangentHandedness = false;
     t.material.ambientFactor = 0.15f;
-    t.material.flipParallaxDirection = false;
+    (void)0; // parallax removed
     t.material.specularStrength = 0.5f;
     t.material.shininess = 32.0f;
     

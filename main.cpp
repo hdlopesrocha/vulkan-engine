@@ -37,10 +37,9 @@ struct UniformObject {
     glm::vec4 viewPos; // world-space camera position
     glm::vec4 lightDir; // xyz = direction, w = unused (padding)
     glm::vec4 lightColor; // rgb = color, w = intensity
-    glm::vec4 pomParams; // x=heightScale, y=minLayers, z=maxLayers, w=enabled
-    glm::vec4 pomFlags;  // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=flipParallaxDirection
-    glm::vec4 parallaxLOD; // x=parallaxNear, y=parallaxFar, z=reductionAtFar, w=unused
-    glm::vec4 mappingParams; // x=mappingMode (0=none,1=parallax,2=tessellation), y/z/w unused
+    // Material flags
+    glm::vec4 materialFlags; // x=flipNormalY, y=flipTangentHandedness, z=ambient, w=unused
+    glm::vec4 mappingParams; // x=mappingEnabled (0=off,1=on) toggles tessellation + bump mapping, y/z/w unused
     glm::vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
     glm::vec4 triplanarParams; // x=scaleU, y=scaleV, z=enabled(1.0), w=unused
     glm::mat4 lightSpaceMatrix; // for shadow mapping
@@ -48,10 +47,9 @@ struct UniformObject {
     glm::vec4 debugParams; // x=debugMode (0=normal,1=normalVec,2=normalMap,3=uv,4=tangent,5=bitangent)
     
     // Set material properties from MaterialProperties struct
-    void setMaterial(const MaterialProperties& mat) {
-        pomParams = glm::vec4(mat.pomHeightScale, mat.pomMinLayers, mat.pomMaxLayers, (mat.mappingMode == 1.0f) ? 1.0f : 0.0f);
-        pomFlags = glm::vec4(mat.flipNormalY, mat.flipTangentHandedness, mat.ambientFactor, mat.flipParallaxDirection);
-        mappingParams = glm::vec4(mat.mappingMode, mat.tessLevel, mat.invertHeight, mat.tessHeightScale);
+        void setMaterial(const MaterialProperties& mat) {
+        materialFlags = glm::vec4(mat.flipNormalY, mat.flipTangentHandedness, mat.ambientFactor, 0.0f);
+        mappingParams = glm::vec4(mat.mappingMode ? 1.0f : 0.0f, mat.tessLevel, mat.invertHeight ? 1.0f : 0.0f, mat.tessHeightScale);
         specularParams = glm::vec4(mat.specularStrength, mat.shininess, 0.0f, 0.0f);
         triplanarParams = glm::vec4(mat.triplanarScaleU, mat.triplanarScaleV, mat.triplanar ? 1.0f : 0.0f, 0.0f);
     }
@@ -248,17 +246,17 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // Explicit per-name loads (one-by-one) with realistic material properties
             const std::vector<std::pair<std::array<const char*,3>, MaterialProperties>> specs = {
-                {{"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg"}, MaterialProperties{0.015f, 10.0f, 40.0f, 1.0f, false, 0.08f, 4.0f, false, false, 0.12f, false, 0.2f, 8.0f}},
-                {{"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg"}, MaterialProperties{0.05f, 8.0f, 32.0f, 1.0f, false, 0.05f, 1.0f, false, false, 0.15f, false, 0.05f, 4.0f}},
-                {{"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg"}, MaterialProperties{0.06f, 8.0f, 32.0f, 1.0f, false, 0.06f, 1.0f, false, false, 0.18f, false, 0.1f, 6.0f}},
-                {{"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg"}, MaterialProperties{0.04f, 8.0f, 28.0f, 1.0f, false, 0.04f, 1.0f, false, false, 0.5f, false, 0.05f, 10.0f}},
-                {{"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg"}, MaterialProperties{0.03f, 6.0f, 24.0f, 1.0f, false, 0.03f, 1.0f, false, false, 0.4f, false, 0.8f, 64.0f}},
-                {{"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg"}, MaterialProperties{0.05f, 8.0f, 32.0f, 1.0f, false, 0.02f, 1.0f, false, false, 0.1f, false, 0.9f, 128.0f}},
-                {{"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg"}, MaterialProperties{0.01f, 4.0f, 16.0f, 1.0f, false, 0.01f, 1.0f, false, false, 0.15f, false, 0.3f, 16.0f}},
-                {{"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg"}, MaterialProperties{0.1f, 12.0f, 48.0f, 1.0f, false, 0.1f, 1.0f, false, false, 0.1f, false, 0.15f, 8.0f}},
-                {{"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg"}, MaterialProperties{0.03f, 6.0f, 24.0f, 1.0f, false, 0.03f, 1.0f, false, false, 0.5f, false, 0.25f, 12.0f}},
-                {{"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg"}, MaterialProperties{0.04f, 6.0f, 28.0f, 1.0f, false, 0.04f, 1.0f, false, false, 0.1f, false, 0.05f, 8.0f}},
-                {{"textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg"}, MaterialProperties{0.025f, 6.0f, 20.0f, 1.0f, false, 0.025f, 1.0f, false, false, 0.22f, false, 0.3f, 16.0f}}
+                {{"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg"}, MaterialProperties{true, false, 0.08f, 4.0f, false, false, 0.12f, false, 0.2f, 8.0f}},
+                {{"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg"}, MaterialProperties{true, false, 0.05f, 1.0f, false, false, 0.15f, false, 0.05f, 4.0f}},
+                {{"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg"}, MaterialProperties{true, false, 0.06f, 1.0f, false, false, 0.18f, false, 0.1f, 6.0f}},
+                {{"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg"}, MaterialProperties{true, false, 0.04f, 1.0f, false, false, 0.5f, false, 0.05f, 10.0f}},
+                {{"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg"}, MaterialProperties{true, false, 0.03f, 1.0f, false, false, 0.4f, false, 0.8f, 64.0f}},
+                {{"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg"}, MaterialProperties{true, false, 0.02f, 1.0f, false, false, 0.1f, false, 0.9f, 128.0f}},
+                {{"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg"}, MaterialProperties{true, false, 0.01f, 1.0f, false, false, 0.15f, false, 0.3f, 16.0f}},
+                {{"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg"}, MaterialProperties{true, false, 0.1f, 1.0f, false, false, 0.1f, false, 0.15f, 8.0f}},
+                {{"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg"}, MaterialProperties{true, false, 0.03f, 1.0f, false, false, 0.5f, false, 0.25f, 12.0f}},
+                {{"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg"}, MaterialProperties{true, false, 0.04f, 1.0f, false, false, 0.1f, false, 0.05f, 8.0f}},
+                {{"textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg"}, MaterialProperties{true, false, 0.025f, 1.0f, false, false, 0.22f, false, 0.3f, 16.0f}}
             };
 
             for (const auto &entry : specs) {
@@ -270,15 +268,21 @@ class MyApp : public VulkanApp, public IEventHandler {
                 loadedIndices.push_back(idx);
             }
 
+            // Disable mapping for all loaded materials: set mappingMode to false
+            for (size_t idx : loadedIndices) {
+                auto &m = textureManager.getMaterial(idx);
+                m.mappingMode = false; // none
+            }
+
             // Initialize vegetation texture manager for billboard vegetation
             vegetationTextureManager.init(this);
 
             // Load vegetation textures (albedo/normal/opacity triples) and initialize MaterialProperties
             // Note: We use the height slot for opacity masks
             const std::vector<std::pair<std::array<const char*,3>, MaterialProperties>> vegSpecs = {
-                {{"textures/vegetation/foliage_color.jpg", "textures/vegetation/foliage_normal.jpg", "textures/vegetation/foliage_opacity.jpg"}, MaterialProperties{0.06f, 8.0f, 32.0f, 1.0f, false, 0.0f, 1.0f, false, false, 0.3f, false, 0.1f, 4.0f}},
-                {{"textures/vegetation/grass_color.jpg",   "textures/vegetation/grass_normal.jpg",   "textures/vegetation/grass_opacity.jpg"},   MaterialProperties{0.06f, 8.0f, 32.0f, 1.0f, false, 0.0f, 1.0f, false, false, 0.35f, false, 0.15f, 6.0f}},
-                {{"textures/vegetation/wild_color.jpg",    "textures/vegetation/wild_normal.jpg",    "textures/vegetation/wild_opacity.jpg"},    MaterialProperties{0.06f, 8.0f, 32.0f, 1.0f, false, 0.0f, 1.0f, false, false, 0.32f, false, 0.12f, 5.0f}}
+                {{"textures/vegetation/foliage_color.jpg", "textures/vegetation/foliage_normal.jpg", "textures/vegetation/foliage_opacity.jpg"}, MaterialProperties{true, false, 0.0f, 1.0f, false, false, 0.3f, false, 0.1f, 4.0f}},
+                {{"textures/vegetation/grass_color.jpg",   "textures/vegetation/grass_normal.jpg",   "textures/vegetation/grass_opacity.jpg"},   MaterialProperties{true, false, 0.0f, 1.0f, false, false, 0.35f, false, 0.15f, 6.0f}},
+                {{"textures/vegetation/wild_color.jpg",    "textures/vegetation/wild_normal.jpg",    "textures/vegetation/wild_opacity.jpg"},    MaterialProperties{true, false, 0.0f, 1.0f, false, false, 0.32f, false, 0.12f, 5.0f}}
             };
 
             for (const auto &entry : vegSpecs) {
@@ -287,6 +291,11 @@ class MyApp : public VulkanApp, public IEventHandler {
                 size_t idx = vegetationTextureManager.loadTriple(files[0], files[1], files[2]);
                 auto &mat = vegetationTextureManager.getMaterial(idx);
                 mat = mp;
+            }
+
+            for (size_t vi = 0; vi < vegetationTextureManager.count(); ++vi) {
+                auto &vm = vegetationTextureManager.getMaterial(vi);
+                    vm.mappingMode = false;
             }
 
             // Auto-detect tiles from vegetation opacity maps
@@ -317,17 +326,13 @@ class MyApp : public VulkanApp, public IEventHandler {
             );
             // Apply editable material properties in a single-line initializer
             textureManager.getMaterial(editableIndex) = MaterialProperties{
-                0.05f, // pomHeightScale
-                6.0f,  // pomMinLayers
-                32.0f, // pomMaxLayers
-                1.0f,  // mappingMode (parallax)
+                false,  // mappingMode (none)
                 false, // invertHeight
                 0.2f,  // tessHeightScale (unused)
                 16.0f, // tessLevel (unused)
                 false, // flipNormalY
                 false, // flipTangentHandedness
                 0.5f, // ambientFactor
-                false, // flipParallaxDirection
                 0.05f,  // specularStrength
                 32.0f, // shininess
                 0.0f,  // padding1
@@ -570,7 +575,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             projMat = proj;
             viewMat = view;
 
-            // prepare static parts of the UBO (viewPos, light, POM params) - model and mvp will be set per-cube in draw()
+            // prepare static parts of the UBO (viewPos, light, material flags) - model and mvp will be set per-cube in draw()
             uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
             // The UI `lightDirection` represents a vector TO the light. Shaders expect a light vector that points FROM the
             // light TOWARD the surface when performing lighting/shadow calculations. Send the negated direction to the GPU
@@ -581,18 +586,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             std::cout << "[UBO] UI lightDirection=(" << lightDirection.x << ", " << lightDirection.y << ", " << lightDirection.z << ")\n";
             std::cout << "[UBO] sent ubo.lightDir=(" << uboStatic.lightDir.x << ", " << uboStatic.lightDir.y << ", " << uboStatic.lightDir.z << ")\n";
             uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
-            // Pass parallax LOD settings to the GPU so the fragment shader can compute smooth fading
-            if (settingsWidget) {
-                uboStatic.parallaxLOD = glm::vec4(
-                    settingsWidget->getParallaxNear(),
-                    settingsWidget->getParallaxFar(),
-                    settingsWidget->getParallaxReduction(),
-                    0.0f
-                );
-            } else {
-                uboStatic.parallaxLOD = glm::vec4(1.0f, 25.0f, 0.3f, 0.0f);
-            }
-            // Note: pomParams, pomFlags, and specularParams are set per-instance from material properties
+            // Note: material flags and specularParams are set per-instance from material properties
             
             // Compute light space matrix for shadow mapping
             // Adjust scene center to be between cubes and plane
@@ -668,37 +662,28 @@ class MyApp : public VulkanApp, public IEventHandler {
                 
                 // Render all instances to shadow map
                 for (const auto& instance : modelManager.getInstances()) {
-                // Build POM parameters from instance material
-                glm::vec4 pomParams(0.1f, 8.0f, 32.0f, 0.0f); // default: disabled
-                glm::vec4 pomFlags(0.0f, 0.0f, 0.0f, 0.0f);
-                
-                if (instance.material && settingsWidget->getParallaxInShadowPassEnabled()) {
-                    pomParams = glm::vec4(
-                        instance.material->pomHeightScale,
-                        instance.material->pomMinLayers,
-                        instance.material->pomMaxLayers,
-                        (instance.material->mappingMode == 1.0f) ? 1.0f : 0.0f
-                    );
-                    pomFlags = glm::vec4(
+                // Build material flags for shadow pass
+                glm::vec4 materialFlags(0.0f, 0.0f, 0.0f, 0.0f);
+                if (instance.material) {
+                    materialFlags = glm::vec4(
                         instance.material->flipNormalY,
                         instance.material->flipTangentHandedness,
-                        0.0f, // unused in shadow pass
-                        instance.material->flipParallaxDirection
+                        0.0f, // ambient not used in shadow pass
+                        0.0f
                     );
                 }
-                
+
                 // Update uniform buffer for shadow pass
                 glm::mat4 shadowMvp = uboStatic.lightSpaceMatrix * instance.transform;
                 UniformObject shadowUbo = uboStatic;
                 shadowUbo.model = instance.transform;
                 shadowUbo.mvp = shadowMvp;
-                shadowUbo.pomParams = pomParams;
-                shadowUbo.pomFlags = pomFlags;
+                shadowUbo.materialFlags = materialFlags;
                 // Set mapping mode for tessellation displacement in shadow pass
                 shadowUbo.mappingParams = glm::vec4(
-                    instance.material ? instance.material->mappingMode : 0.0f,  // Use per-material mapping mode
+                    instance.material ? (instance.material->mappingMode ? 1.0f : 0.0f) : 0.0f,  // Use per-material mapping flag
                     instance.material ? instance.material->tessLevel : 1.0f,    // tess level
-                    instance.material ? instance.material->invertHeight : 0.0f, // invert height
+                    instance.material ? (instance.material->invertHeight ? 1.0f : 0.0f) : 0.0f, // invert height
                     instance.material ? instance.material->tessHeightScale : 0.1f // tess height scale
                 );
                 
@@ -752,14 +737,12 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (instance.material) {
                     ubo.setMaterial(*instance.material);
                 }
-                // NOTE: parallax LOD smoothing is now computed in the fragment shader.
-                // We send the per-frame parallax LOD parameters in ubo.parallaxLOD (set in update()).
                 
-                // Apply shadow effect settings from settings widget
+                // Apply shadow settings: 
                 ubo.shadowEffects = glm::vec4(
-                    settingsWidget->getSelfShadowingEnabled() ? 1.0f : 0.0f,
-                    settingsWidget->getShadowDisplacementEnabled() ? 1.0f : 0.0f,
-                    settingsWidget->getSelfShadowQuality(),
+                    0.0f, 
+                    0.0f, // shadow displacement disabled
+                    0.0f, 
                     settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f  // global shadows enabled
                 );
                 // Debug visualization mode (set by SettingsWidget)
@@ -769,11 +752,10 @@ class MyApp : public VulkanApp, public IEventHandler {
                 updateUniformBuffer(*instance.uniformBuffer, &ubo, sizeof(UniformObject));
                 
                 // Bind descriptor set and draw
-                // Choose pipeline based on per-material mapping mode (0=none,1=parallax,2=tessellation)
-                int mappingMode = 0;
-                if (instance.material) mappingMode = static_cast<int>(instance.material->mappingMode + 0.5f);
+                // Choose pipeline based on per-material mapping enabled flag (false=none, true=tessellation+bump)
+                bool mappingEnabled = (instance.material) ? instance.material->mappingMode : false;
                 bool wire = settingsWidget ? settingsWidget->getWireframeEnabled() : false;
-                if (mappingMode == 2 && graphicsPipelineTess != VK_NULL_HANDLE) {
+                if (mappingEnabled && graphicsPipelineTess != VK_NULL_HANDLE) {
                     if (wire && graphicsPipelineTessWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineTessWire);
                     else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineTess);
                 } else {

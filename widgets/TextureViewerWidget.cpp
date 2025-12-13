@@ -65,10 +65,7 @@ void TextureViewer::render() {
                 mat.flipTangentHandedness = flipTangentBool;
             }
             
-            bool flipParallaxBool = mat.flipParallaxDirection;
-            if (ImGui::Checkbox("Flip Parallax Direction", &flipParallaxBool)) {
-                mat.flipParallaxDirection = flipParallaxBool;
-            }
+            // Parallax removed: hide flip-parallax control
 
             bool triplanarBool = mat.triplanar;
             if (ImGui::Checkbox("Enable Triplanar Mapping", &triplanarBool)) {
@@ -90,24 +87,20 @@ void TextureViewer::render() {
             ImGui::SliderFloat("Shininess", &mat.shininess, 1.0f, 256.0f, "%.0f");
 
             ImGui::Spacing();
-            ImGui::Text("Mapping Mode");
+            ImGui::Text("Mapping (Tessellation + Bump)");
             ImGui::Separator();
-            // mappingMode: 0=none, 1=parallax, 2=tessellation
-            int mappingMode = static_cast<int>(mat.mappingMode + 0.5f);
-            const char* modes[] = { "None", "Parallax (POM)", "Tessellation (Displacement)" };
-            if (ImGui::Combo("Mapping Mode", &mappingMode, modes, IM_ARRAYSIZE(modes))) {
-                mat.mappingMode = static_cast<float>(mappingMode);
-                // Default height interpretation: parallax uses legacy invert (black=deep),
-                // tessellation uses direct (white=high). User can still override with the checkbox.
-                mat.invertHeight = (mappingMode == 1) ? false : true;
+            // mappingMode is now a boolean toggle
+            bool mappingEnabled = mat.mappingMode;
+            if (ImGui::Checkbox("Enable Tessellation & Bump Mapping", &mappingEnabled)) {
+                mat.mappingMode = mappingEnabled;
             }
             // Height map interpretation: legacy inverted vs direct
             bool heightDirect = mat.invertHeight;
             if (ImGui::Checkbox("Height Is Direct (white=high)", &heightDirect)) {
                 mat.invertHeight = heightDirect;
             }
-            // Tessellation level (per-material). Only relevant when mappingMode == 2
-            if (mappingMode == 2) {
+            // Tessellation level (per-material). Only relevant when mapping is enabled
+            if (mat.mappingMode) {
                 int tess = static_cast<int>(mat.tessLevel + 0.5f);
                 if (ImGui::SliderInt("Tessellation Level", &tess, 1, 64)) {
                     mat.tessLevel = static_cast<float>(tess);
@@ -115,13 +108,7 @@ void TextureViewer::render() {
                 ImGui::SliderFloat("Tess Height Scale", &mat.tessHeightScale, 0.0f, 1.0f, "%.3f");
             }
 
-            if (mappingMode == 1) {
-                ImGui::Separator();
-                ImGui::Text("Parallax Occlusion Mapping");
-                ImGui::SliderFloat("Height Scale", &mat.pomHeightScale, 0.0f, 0.2f, "%.3f");
-                ImGui::SliderFloat("Min Layers", &mat.pomMinLayers, 1.0f, 64.0f, "%.0f");
-                ImGui::SliderFloat("Max Layers", &mat.pomMaxLayers, 1.0f, 128.0f, "%.0f");
-            }
+            // Parallax removed: no POM controls
             
             ImGui::EndTabItem();
         }
