@@ -50,7 +50,6 @@ void TextureViewer::render() {
         if (ImGui::BeginTabItem("Material")) {
             MaterialProperties& mat = manager->getMaterial(currentIndex);
             
-            // POM controls moved below and shown conditionally based on Mapping Mode
             ImGui::Spacing();
             ImGui::Text("Normal/Tangent Adjustments");
             ImGui::Separator();
@@ -65,7 +64,6 @@ void TextureViewer::render() {
                 mat.flipTangentHandedness = flipTangentBool;
             }
             
-            // Parallax removed: hide flip-parallax control
 
             bool triplanarBool = mat.triplanar;
             if (ImGui::Checkbox("Enable Triplanar Mapping", &triplanarBool)) {
@@ -107,8 +105,6 @@ void TextureViewer::render() {
                 }
                 ImGui::SliderFloat("Tess Height Scale", &mat.tessHeightScale, 0.0f, 1.0f, "%.3f");
             }
-
-            // Parallax removed: no POM controls
             
             ImGui::EndTabItem();
         }

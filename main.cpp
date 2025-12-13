@@ -154,8 +154,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                         VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
                         VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
                         VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
-                            VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
+                        VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
                     }
                 );
 
@@ -173,7 +172,6 @@ class MyApp : public VulkanApp, public IEventHandler {
                         VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
                         VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
                         VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
                         VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
                     },
                     VK_POLYGON_MODE_LINE
@@ -205,7 +203,6 @@ class MyApp : public VulkanApp, public IEventHandler {
                         VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
                         VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
                         VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
                         VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
                     }
                 );
@@ -226,7 +223,6 @@ class MyApp : public VulkanApp, public IEventHandler {
                         VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
                         VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
                         VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
                         VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
                     },
                     VK_POLYGON_MODE_LINE
@@ -246,17 +242,17 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // Explicit per-name loads (one-by-one) with realistic material properties
             const std::vector<std::pair<std::array<const char*,3>, MaterialProperties>> specs = {
-                {{"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg"}, MaterialProperties{true, false, 0.08f, 4.0f, false, false, 0.12f, false, 0.2f, 8.0f}},
-                {{"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg"}, MaterialProperties{true, false, 0.05f, 1.0f, false, false, 0.15f, false, 0.05f, 4.0f}},
-                {{"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg"}, MaterialProperties{true, false, 0.06f, 1.0f, false, false, 0.18f, false, 0.1f, 6.0f}},
-                {{"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg"}, MaterialProperties{true, false, 0.04f, 1.0f, false, false, 0.5f, false, 0.05f, 10.0f}},
-                {{"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg"}, MaterialProperties{true, false, 0.03f, 1.0f, false, false, 0.4f, false, 0.8f, 64.0f}},
-                {{"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg"}, MaterialProperties{true, false, 0.02f, 1.0f, false, false, 0.1f, false, 0.9f, 128.0f}},
-                {{"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg"}, MaterialProperties{true, false, 0.01f, 1.0f, false, false, 0.15f, false, 0.3f, 16.0f}},
-                {{"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg"}, MaterialProperties{true, false, 0.1f, 1.0f, false, false, 0.1f, false, 0.15f, 8.0f}},
-                {{"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg"}, MaterialProperties{true, false, 0.03f, 1.0f, false, false, 0.5f, false, 0.25f, 12.0f}},
-                {{"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg"}, MaterialProperties{true, false, 0.04f, 1.0f, false, false, 0.1f, false, 0.05f, 8.0f}},
-                {{"textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg"}, MaterialProperties{true, false, 0.025f, 1.0f, false, false, 0.22f, false, 0.3f, 16.0f}}
+                {{"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg"}, MaterialProperties{true, false, 0.08f, 4.0f, false, false, 0.12f, 0.5f, 32.0f, 0.0f}},
+                {{"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg"}, MaterialProperties{true, false, 0.05f, 1.0f, false, false, 0.15f, 0.5f, 32.0f, 0.0f}},
+                {{"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg"}, MaterialProperties{true, false, 0.06f, 1.0f, false, false, 0.18f, 0.5f, 32.0f, 0.0f}},
+                {{"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg"}, MaterialProperties{true, false, 0.04f, 1.0f, false, false, 0.5f, 0.5f, 32.0f, 0.0f}},
+                {{"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg"}, MaterialProperties{true, false, 0.03f, 1.0f, false, false, 0.4f, 0.5f, 32.0f, 0.0f}},
+                {{"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg"}, MaterialProperties{true, false, 0.02f, 1.0f, false, false, 0.1f, 0.8f, 64.0f, 0.0f}},
+                {{"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg"}, MaterialProperties{true, false, 0.01f, 1.0f, false, false, 0.15f, 0.3f, 16.0f, 0.0f}},
+                {{"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg"}, MaterialProperties{true, false, 0.1f, 1.0f, false, false, 0.1f, 0.4f, 32.0f, 0.0f}},
+                {{"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg"}, MaterialProperties{true, false, 0.03f, 1.0f, false, false, 0.5f, 0.2f, 16.0f, 0.0f}},
+                {{"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg"}, MaterialProperties{true, false, 0.04f, 1.0f, false, false, 0.1f, 0.1f, 8.0f, 0.0f}},
+                {{"textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg"}, MaterialProperties{true, false, 0.025f, 1.0f, false, false, 0.22f, 0.3f, 16.0f, 0.0f}}
             };
 
             for (const auto &entry : specs) {
@@ -280,9 +276,9 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Load vegetation textures (albedo/normal/opacity triples) and initialize MaterialProperties
             // Note: We use the height slot for opacity masks
             const std::vector<std::pair<std::array<const char*,3>, MaterialProperties>> vegSpecs = {
-                {{"textures/vegetation/foliage_color.jpg", "textures/vegetation/foliage_normal.jpg", "textures/vegetation/foliage_opacity.jpg"}, MaterialProperties{true, false, 0.0f, 1.0f, false, false, 0.3f, false, 0.1f, 4.0f}},
-                {{"textures/vegetation/grass_color.jpg",   "textures/vegetation/grass_normal.jpg",   "textures/vegetation/grass_opacity.jpg"},   MaterialProperties{true, false, 0.0f, 1.0f, false, false, 0.35f, false, 0.15f, 6.0f}},
-                {{"textures/vegetation/wild_color.jpg",    "textures/vegetation/wild_normal.jpg",    "textures/vegetation/wild_opacity.jpg"},    MaterialProperties{true, false, 0.0f, 1.0f, false, false, 0.32f, false, 0.12f, 5.0f}}
+                {{"textures/vegetation/foliage_color.jpg", "textures/vegetation/foliage_normal.jpg", "textures/vegetation/foliage_opacity.jpg"}, MaterialProperties{true, false, 0.0f, 1.0f, false, false, 0.3f, 0.3f, 8.0f, 0.0f}},
+                {{"textures/vegetation/grass_color.jpg",   "textures/vegetation/grass_normal.jpg",   "textures/vegetation/grass_opacity.jpg"},   MaterialProperties{true, false, 0.0f, 1.0f, false, false, 0.35f, 0.3f, 8.0f, 0.0f}},
+                {{"textures/vegetation/wild_color.jpg",    "textures/vegetation/wild_normal.jpg",    "textures/vegetation/wild_opacity.jpg"},    MaterialProperties{true, false, 0.0f, 1.0f, false, false, 0.32f, 0.3f, 8.0f, 0.0f}}
             };
 
             for (const auto &entry : vegSpecs) {
@@ -736,6 +732,12 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // Apply per-texture material properties if available
                 if (instance.material) {
                     ubo.setMaterial(*instance.material);
+                }
+                // Global normal mapping toggle (separate from tessellation/mappingMode)
+                if (settingsWidget) {
+                    ubo.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
+                } else {
+                    ubo.materialFlags.w = 1.0f;
                 }
                 
                 // Apply shadow settings: 

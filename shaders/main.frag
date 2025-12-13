@@ -4,7 +4,6 @@
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragNormal;
-layout(location = 3) in vec4 fragTangent;
 layout(location = 5) flat in int fragTexIndex;
 layout(location = 4) in vec3 fragPosWorld;
 layout(location = 6) in vec4 fragPosLightSpace;
@@ -37,17 +36,32 @@ void main() {
         N.y = -N.y;
     }
     
-    vec3 T = normalize(fragTangent.xyz);
-    float vertHand_main = fragTangent.w;
-    float handed_main = vertHand_main * (ubo.materialFlags.y > 0.5 ? -1.0 : 1.0);
-    vec3 B = cross(N, T) * handed_main;
+    // Compute tangent and bitangent from derivatives (no vertex tangent attribute)
+    vec3 dpdx = dFdx(fragPosWorld);
+    vec3 dpdy = dFdy(fragPosWorld);
+    vec2 duvdx = dFdx(fragUV);
+    vec2 duvdy = dFdy(fragUV);
+    float denom = duvdx.x * duvdy.y - duvdy.x * duvdx.y;
+    vec3 T;
+    if (abs(denom) < 1e-6) {
+        // fallback tangent (arbitrary orthonormal basis)
+        T = normalize(vec3(1.0, 0.0, 0.0));
+    } else {
+        float r = 1.0 / denom;
+        T = normalize((dpdx * duvdy.y - dpdy * duvdx.y) * r);
+    }
+        vec3 B = normalize(cross(N, T));
+        // Allow material override for tangent handedness (flip bitangent)
+        if (ubo.materialFlags.y > 0.5) {
+            B = -B;
+        }
     mat3 TBN = mat3(T, B, N);
     
     // Compute world-space normal
     vec3 worldNormal = N; // Default to geometry normal
     
-    // Apply normal mapping if enabled (mappingMode >= 1)
-    bool mappingEnabled = (ubo.mappingParams.x > 0.5);
+    // Apply normal mapping if enabled (global setting stored in materialFlags.w)
+    bool mappingEnabled = (ubo.materialFlags.w > 0.5);
     if (mappingEnabled) {
         vec3 normalMap = texture(normalArray, vec3(uv, float(texIndex))).rgb;
         
@@ -70,7 +84,7 @@ void main() {
     vec3 toLight = -normalize(ubo.lightDir.xyz);
     
     // Use normal-mapped normal for lighting calculations
-    float NdotL = max(dot(N, toLight), 0.0);
+        float NdotL = max(dot(worldNormal, toLight), 0.0);
     
     // Adjust shadow position based on height displacement (disabled)
     vec4 adjustedPosLightSpace = fragPosLightSpace;
@@ -106,11 +120,10 @@ void main() {
     
     // Debug visualisation modes (0 = normal render)
     int debugMode = int(ubo.debugParams.x + 0.5);
-    if (debugMode == 14) {
-        // Shadow diagnostics visualization:
-        // R = global shadow (from shadow map sampling),
-        // B = combined shadow (same as R).
-        outColor = vec4(shadow, 0.0, shadow, 1.0);
+    if (debugMode == 1) {
+        // Fragment geometry normal (world-space geometry normal)
+        vec3 gn = normalize(fragNormal);
+        outColor = vec4(gn * 0.5 + 0.5, 1.0);
         return;
     }
     if (debugMode == 2) {

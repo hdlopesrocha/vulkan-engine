@@ -13,6 +13,6 @@ layout(binding = 0) uniform UBO {
     vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
     vec4 triplanarParams; // x=scaleU, y=scaleV, z=enabled(1.0), w=unused
     mat4 lightSpaceMatrix; // for shadow mapping
-    vec4 shadowEffects; // x/y/z = unused (self-shadow & displacement removed), w=global shadows enabled (1.0 = on)
-    vec4 debugParams; // x=debugMode (0=normal,1=geometry normal,2=normal map,3=uv,4=tangent,5=bitangent,6=raw albedo,7=raw normal map,8=bump/height,9=TBN composite,10=pre-projection,11=normal from derivatives)
+    vec4 shadowEffects; // x/y/z = unused, w=global shadows enabled (1.0 = on)
+    vec4 debugParams; // x=debugMode (0=normal,1=fragment normal,2=normal map (world),3=uv,4=tangent,5=bitangent,6=geometry normal (world),7=albedo,8=normal texture,9=height/bump,10=lighting (N·L,shadow),11=normal from derivatives,12=light vector (rgb),13=N·L grayscale,14=shadow diagnostics)
 } ubo;

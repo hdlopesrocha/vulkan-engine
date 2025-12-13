@@ -16,7 +16,7 @@ public:
             ImGui::Text("Shadow Effects");
             ImGui::Separator();
             if (ImGui::Checkbox("Enable Shadows", &enableShadows)) {
-                // toggle global shadowing (shadow map + self-shadowing)
+
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Globally enable or disable all shadowing");
             
@@ -30,6 +30,12 @@ public:
 
             ImGui::Text("Input");
             ImGui::Separator();
+                ImGui::Text("Rendering");
+                ImGui::Separator();
+                if (ImGui::Checkbox("Enable Normal Mapping", &normalMappingEnabled)) {
+                    // toggled
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Globally enable/disable normal mapping (normal maps still needed in textures)");
             if (ImGui::Checkbox("Flip keyboard rotation axes", &flipKeyboardRotation)) {
                 // toggled
             }
@@ -79,10 +85,10 @@ public:
     float getAngularSpeedDeg() const { return angularSpeedDeg; }
     bool getWireframeEnabled() const { return wireframeMode; }
         int getDebugMode() const { return debugMode; }
+    bool getNormalMappingEnabled() const { return normalMappingEnabled; }
     
 private:
-    // Self-shadowing and shadow-displacement removed
-    bool enableShadows = true;                 // Global toggle for shadow mapping + self-shadow
+    bool enableShadows = true;                 // Global toggle for shadow mapping
     
     bool flipKeyboardRotation = false;         // Flip keyboard rotation axes
     bool flipGamepadRotation = false;          // Flip gamepad rotation axes
@@ -90,9 +96,9 @@ private:
     float angularSpeedDeg = 45.0f;             // degrees/sec for rotation
     bool wireframeMode = false;                // render wireframe when true
         int debugMode = 0;                         // 0=Default,1=Fragment Normal,2=World Normal,3=UV,4=Tangent,5=Bitangent,6=Normal (TBN),7=Albedo,8=Normal Tex,9=Bump,10=Pre-Projection,11=Normal from Derivatives,12=Light Vector,13=N·L,14=Shadow Diagnostics
+    bool normalMappingEnabled = true;          // Global toggle for normal mapping
     
     void resetToDefaults() {
-        // Self-shadowing and shadow-displacement defaults removed
         enableShadows = true;
         
         flipKeyboardRotation = false;

@@ -9,7 +9,7 @@ public:
     Model3D() = default;
 
     // Build GPU buffers from provided vertices and indices
-    // Automatically computes normals and tangents if not provided or if requested
+    // Automatically computes normals if not provided; per-fragment tangents are used instead of stored vertex tangents
     void build(VulkanApp* app, 
                const std::vector<Vertex>& vertices, 
                const std::vector<uint16_t>& indices,
@@ -26,5 +26,4 @@ protected:
 
     // Helper methods for geometry computation
     static void computeNormals(std::vector<Vertex>& vertices, const std::vector<uint16_t>& indices);
-    static void computeTangents(std::vector<Vertex>& vertices, const std::vector<uint16_t>& indices);
 };
