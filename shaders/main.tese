@@ -56,6 +56,7 @@ void main() {
             height = sampleHeight(uv, texIndex);
         }
         float heightScale = ubo.mappingParams.w;
+        // Displace outward along the surface normal
         disp = height * heightScale;
         displacedLocalPos += localNormal * disp;
     }
