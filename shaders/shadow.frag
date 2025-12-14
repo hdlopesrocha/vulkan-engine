@@ -27,7 +27,7 @@ void main() {
     triW /= triWSum;
 
     if (ubo.triplanarParams.z > 0.5) {
-        worldNormal = computeTriplanarNormal(fragPosWorld, triW, texIndex);
+        worldNormal = computeTriplanarNormal(fragPosWorld, triW, texIndex, N);
     } else if (ubo.mappingParams.x > 0.5 || ubo.materialFlags.w > 0.5) {
         vec3 nmap = texture(normalArray, vec3(fragUV, float(texIndex))).rgb * 2.0 - 1.0;
         vec3 T = vec3(0.0);

@@ -49,7 +49,7 @@ void main() {
         albedoColor = computeTriplanarAlbedo(fragPosWorld, w, texIndex);
         // If normal mapping is enabled, compute triplanar normal as well
         if (ubo.mappingParams.x > 0.5 || ubo.materialFlags.w > 0.5) {
-            worldNormal = computeTriplanarNormal(fragPosWorld, w, texIndex);
+            worldNormal = computeTriplanarNormal(fragPosWorld, w, texIndex, N);
         }
     } else {
         albedoColor = texture(albedoArray, vec3(uv, float(texIndex))).rgb;
