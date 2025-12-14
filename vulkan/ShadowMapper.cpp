@@ -30,14 +30,8 @@ void ShadowMapper::cleanup() {
         vkDestroyPipeline(device, shadowPipeline, nullptr);
         shadowPipeline = VK_NULL_HANDLE;
     }
-    if (shadowPipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
-        shadowPipelineLayout = VK_NULL_HANDLE;
-    }
-    if (shadowDescriptorSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device, shadowDescriptorSetLayout, nullptr);
-        shadowDescriptorSetLayout = VK_NULL_HANDLE;
-    }
+    // shadow pipeline uses the main app's pipeline layout; don't destroy it here
+    // shadow uses the main app's descriptor set layout; do not destroy it here
     if (shadowFramebuffer != VK_NULL_HANDLE) {
         vkDestroyFramebuffer(device, shadowFramebuffer, nullptr);
         shadowFramebuffer = VK_NULL_HANDLE;
@@ -208,41 +202,8 @@ void ShadowMapper::createShadowFramebuffer() {
 void ShadowMapper::createShadowPipeline() {
     VkDevice device = vulkanApp->getDevice();
     
-    // Create descriptor set layout for UBO (binding 0) and height map (binding 3)
-    VkDescriptorSetLayoutBinding uboBinding{};
-    uboBinding.binding = 0;
-    uboBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    uboBinding.descriptorCount = 1;
-    uboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-    uboBinding.pImmutableSamplers = nullptr;
-    
-    VkDescriptorSetLayoutBinding heightBinding{};
-    heightBinding.binding = 3;
-    heightBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    heightBinding.descriptorCount = 1;
-    // Height sampler is used by both the tessellation evaluation (displacement)
-    // and fragment shader (optional depth offset), so expose it to both stages.
-    heightBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-
-    // Normal sampler (binding 2) is read by the shadow fragment when bump mapping
-    // is enabled to compute a depth offset. Add a binding for it here.
-    VkDescriptorSetLayoutBinding normalBinding{};
-    normalBinding.binding = 2;
-    normalBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    normalBinding.descriptorCount = 1;
-    normalBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    heightBinding.pImmutableSamplers = nullptr;
-    
-    std::array<VkDescriptorSetLayoutBinding, 3> bindings = {uboBinding, normalBinding, heightBinding};
-    
-    VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo{};
-    descriptorLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    descriptorLayoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-    descriptorLayoutInfo.pBindings = bindings.data();
-    
-    if (vkCreateDescriptorSetLayout(device, &descriptorLayoutInfo, nullptr, &shadowDescriptorSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create shadow descriptor set layout!");
-    }
+    // Use the main app's descriptor set layout so shadow pipeline and main pipeline share bindings
+    VkDescriptorSetLayout sharedLayout = vulkanApp->getDescriptorSetLayout();
     
     ShaderStage shadowVertexShader = ShaderStage(
         vulkanApp->createShaderModule(FileReader::readFile("shaders/main.vert.spv")),
@@ -361,18 +322,8 @@ void ShadowMapper::createShadowPipeline() {
     dynamicState.pDynamicStates = dynamicStates;
     pipelineInfo.pDynamicState = &dynamicState;
     
-    VkPipelineLayoutCreateInfo shadowLayoutInfo{};
-    shadowLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    shadowLayoutInfo.setLayoutCount = 1;
-    shadowLayoutInfo.pSetLayouts = &shadowDescriptorSetLayout;
-    shadowLayoutInfo.pushConstantRangeCount = 0; // No push constants, using UBO
-    shadowLayoutInfo.pPushConstantRanges = nullptr;
-    
-    if (vkCreatePipelineLayout(device, &shadowLayoutInfo, nullptr, &shadowPipelineLayout) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create shadow pipeline layout!");
-    }
-    
-    pipelineInfo.layout = shadowPipelineLayout;
+    // Reuse the application's pipeline layout so descriptor bindings/push constants match exactly
+    pipelineInfo.layout = vulkanApp->getPipelineLayout();
     pipelineInfo.renderPass = shadowRenderPass;
     pipelineInfo.subpass = 0;
     VkPipelineTessellationStateCreateInfo tessState{};
@@ -437,9 +388,9 @@ void ShadowMapper::renderObject(VkCommandBuffer commandBuffer, const glm::mat4& 
     // Compute MVP for this object
     glm::mat4 mvp = currentLightSpaceMatrix * modelMatrix;
     
-    // Bind descriptor set (includes UBO and height map)
+    // Bind descriptor set (includes UBO and image samplers) using the app's pipeline layout
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                            shadowPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+                            vulkanApp->getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
     
     // Bind vertex/index buffers
     VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };

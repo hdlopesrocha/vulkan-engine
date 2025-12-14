@@ -155,8 +155,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             eventManager.subscribe(&camera);
             eventManager.subscribe(this);
 
-            // Initialize shadow mapper
-            shadowMapper.init();
+            // Initialize shadow mapper (moved after pipeline creation below)
             
             // Graphics Pipeline
             {
@@ -298,6 +297,10 @@ class MyApp : public VulkanApp, public IEventHandler {
                     vkDestroyShaderModule(getDevice(), skyVert.info.module, nullptr);
                 }
             }
+
+            // Now that pipelines (and the app pipeline layout) have been created, initialize shadow mapper
+            shadowMapper.init();
+
             // initialize texture manager and explicitly load known albedo/normal/height triples by filename
             textureManager.init(this);
             std::vector<size_t> loadedIndices;
@@ -417,12 +420,13 @@ class MyApp : public VulkanApp, public IEventHandler {
             size_t tripleCount = textureManager.count();
             if (tripleCount == 0) tripleCount = 1; // ensure at least one
             // Allocate descriptor pool sized for both cube and sphere descriptor sets (4 sets per texture triple)
-            createDescriptorPool(static_cast<uint32_t>(tripleCount * 4));
+            // uboCount = number of uniform descriptors (one per descriptor set), samplerCount = total combined image sampler descriptors
+            createDescriptorPool(static_cast<uint32_t>(tripleCount * 4), static_cast<uint32_t>(tripleCount * 16));
 
             descriptorSets.resize(tripleCount, VK_NULL_HANDLE);
             shadowDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
             for (size_t i = 0; i < tripleCount; ++i) {
-                VkDescriptorSet ds = createDescriptorSet();
+                VkDescriptorSet ds = createDescriptorSet(getDescriptorSetLayout());
                 descriptorSets[i] = ds;
 
                 // uniform buffer descriptor (binding 0) - use separate uniform buffer per cube
@@ -485,7 +489,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 );
 
                 // Create shadow descriptor set
-                VkDescriptorSet sds = createDescriptorSet();
+                VkDescriptorSet sds = createDescriptorSet(getDescriptorSetLayout());
                 shadowDescriptorSets[i] = sds;
 
                 // uniform buffer descriptor (binding 0) - use shadow uniform buffer
@@ -514,9 +518,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // create uniform buffer for sphere instance
                 sphereUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                 shadowSphereUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                VkDescriptorSet ds = createDescriptorSet();
+                VkDescriptorSet ds = createDescriptorSet(getDescriptorSetLayout());
                 sphereDescriptorSets[i] = ds;
-                VkDescriptorSet sds = createDescriptorSet();
+                VkDescriptorSet sds = createDescriptorSet(getDescriptorSetLayout());
                 shadowSphereDescriptorSets[i] = sds;
 
                 // reuse image samplers from texture triple i

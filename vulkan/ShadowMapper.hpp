@@ -23,7 +23,7 @@ public:
     VkSampler getShadowMapSampler() const { return shadowMapSampler; }
     VkDescriptorSet getImGuiDescriptorSet() const { return shadowMapImGuiDescSet; }
     uint32_t getShadowMapSize() const { return shadowMapSize; }
-    VkDescriptorSetLayout getShadowDescriptorSetLayout() const { return shadowDescriptorSetLayout; }
+    VkDescriptorSetLayout getShadowDescriptorSetLayout() const { return vulkanApp->getDescriptorSetLayout(); }
     // debug: read back depth image to host and write PGM
     void readbackShadowDepth();
     
@@ -41,7 +41,6 @@ private:
     VkPipeline shadowPipeline = VK_NULL_HANDLE;
     VkPipeline shadowPipelineWire = VK_NULL_HANDLE;
     VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout shadowDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorSet shadowMapImGuiDescSet = VK_NULL_HANDLE;
     
     // Current light space matrix for rendering
