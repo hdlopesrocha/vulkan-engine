@@ -5,6 +5,7 @@
 #include <bitset>
 #include <bits/stdc++.h>
 #include <glm/glm.hpp>
+#include "Vertex.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -54,31 +55,7 @@ enum ContainmentType {
 };
 
 
-//
-// Strong 64-bit mixing (MurmurHash3 finalizer)
-//
-inline uint64_t murmurMix(uint64_t k) {
-	k ^= k >> 33;
-	k *= 0xff51afd7ed558ccdULL;
-	k ^= k >> 33;
-	k *= 0xc4ceb9fe1a85ec53ULL;
-	k ^= k >> 33;
-	return k;
-}
-
-//
-// Combine new value v into hash h
-//
-inline uint64_t hashCombine(uint64_t h, uint64_t v) {
-	return h ^ murmurMix(v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
-}
-
-
-inline uint64_t pack2(float a, float b) {
-	struct Pair { float x; float y; };
-	static_assert(sizeof(Pair) == sizeof(uint64_t));
-	return std::bit_cast<uint64_t>(Pair{a, b});
-}
+// Hashing utilities and `Vertex` are provided by math/vertex.hpp
 
 template<typename A, typename B, typename C>
 struct Triple {
@@ -93,113 +70,8 @@ struct Triple {
     }
 };
 
-struct alignas(16)  Vertex {
-	public:
-    glm::vec4 position;
-    glm::vec4 normal;
-    glm::vec2 texCoord;
-    int brushIndex;
-    int _pad0;
 
-    Vertex(glm::vec4 pos,glm::vec4 normal,glm::vec2 texCoord, int brushIndex) {
-    	this->position = pos;
-    	this->normal = normal;
-    	this->texCoord = texCoord;
-    	this->brushIndex = brushIndex;
-		this->_pad0 = 0; // Padding to ensure alignment
-    }
-
-    Vertex(glm::vec3 pos,glm::vec3 normal,glm::vec2 texCoord, int brushIndex) : 
-		Vertex(glm::vec4(pos, 0.0f), glm::vec4(normal, 0.0f), texCoord, brushIndex) {
-    }
-
-    Vertex() : 
-		Vertex(glm::vec4(0), glm::vec4(0), glm::vec2(0), 0) {
-    }
-
-    Vertex(glm::vec3 pos) : 
-		Vertex(glm::vec4(pos, 0.0f), glm::vec4(0), glm::vec2(0), 0) {
-    }
-
-	bool operator<(const Vertex& other) const {
-        return std::tie(position.x, position.y, position.z, normal.x, normal.y, normal.z, texCoord.x, texCoord.y, brushIndex) 
-             < std::tie(other.position.x, other.position.y, other.position.z, other.normal.x, other.normal.y, other.normal.z, other.texCoord.x, other.texCoord.y, other.brushIndex);
-    }
-
-	bool operator==(const Vertex& o) const {
-    	return std::bit_cast<uint64_t>(pack2(position.x, position.y)) ==
-           std::bit_cast<uint64_t>(pack2(o.position.x, o.position.y)) &&
-           std::bit_cast<uint32_t>(position.z) ==
-           std::bit_cast<uint32_t>(o.position.z) &&
-
-           std::bit_cast<uint64_t>(pack2(normal.x, normal.y)) ==
-           std::bit_cast<uint64_t>(pack2(o.normal.x, o.normal.y)) &&
-           std::bit_cast<uint32_t>(normal.z) ==
-           std::bit_cast<uint32_t>(o.normal.z) &&
-
-           std::bit_cast<uint64_t>(pack2(texCoord.x, texCoord.y)) ==
-           std::bit_cast<uint64_t>(pack2(o.texCoord.x, o.texCoord.y)) &&
-
-           brushIndex == o.brushIndex;
-	}
-
-    bool operator!=(const Vertex& other) const {
-        return !(*this == other);
-    }
-};
-
-
-// Custom hash function for glm::vec3
-namespace std {
-
-    template <> struct hash<glm::vec4> {
-        uint64_t operator()(const glm::vec4& v) const {
-			uint64_t h = 0;
-            h = hashCombine(h, pack2(v.x, v.y));
-            h = hashCombine(h, pack2(v.z, v.w));
-			return h;
-        }
-    };
-
-    template<> struct hash<glm::vec3> {
-        uint64_t operator()(const glm::vec3& v) const noexcept {
-            uint64_t h = 0;
-
-            // pack X + Y together
-            h = hashCombine(h, pack2(v.x, v.y));
-
-            // add Z separately
-            uint64_t zbits = std::bit_cast<uint32_t>(v.z);
-            h = hashCombine(h, zbits);
-
-            return h;
-        }
-    };
-
-    // Custom hash function for glm::vec2 (texture coordinates)
-    template<> struct hash<glm::vec2> {
-        uint64_t operator()(const glm::vec2& v) const noexcept {
-            // Pack both floats together
-            uint64_t k = pack2(v.x, v.y);
-            return murmurMix(k);
-        }
-    };
-}
-
-struct VertexHasher {
-   uint64_t operator()(const Vertex& v) const noexcept {
-        uint64_t h = 0;
-
-        h = hashCombine(h, std::hash<glm::vec3>{}(v.position));
-        h = hashCombine(h, std::hash<glm::vec3>{}(v.normal));
-        h = hashCombine(h, std::hash<glm::vec2>{}(v.texCoord));
-
-        // If you use brushIndex, just add:
-        // h = hashCombine(h, std::bit_cast<uint32_t>(v.brushIndex));
-
-        return h;
-    }
-};
+// Vertex and related hashing utilities moved to math/vertex.hpp
 
 struct TripleHasher {
     std::size_t operator()(const Triple<uint,uint,uint> &v) const {

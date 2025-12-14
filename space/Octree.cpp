@@ -530,8 +530,8 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         }
 
         if(node!= NULL) {
-            node->vertex.position = glm::vec4(SDF::getAveragePosition(resultSDF, frame.cube) ,0.0f);
-            node->vertex.normal = glm::vec4(SDF::getNormalFromPosition(resultSDF, frame.cube, node->vertex.position), 0.0f);        
+            node->vertex.position = SDF::getAveragePosition(resultSDF, frame.cube);
+            node->vertex.normal = SDF::getNormalFromPosition(resultSDF, frame.cube, node->vertex.position);
             
             // ------------------------------
             // Simplification & Painting

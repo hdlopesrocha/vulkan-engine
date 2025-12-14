@@ -36,8 +36,8 @@ struct OctreeSerialized {
 
 
 struct alignas(16) OctreeNodeCubeSerialized {
-    glm::vec4 position;
-    glm::vec4 normal;
+	glm::vec3 position;
+	glm::vec3 normal;
     glm::vec2 texCoord;
     int brushIndex;
     uint children[8];
@@ -54,7 +54,7 @@ struct alignas(16) OctreeNodeCubeSerialized {
 		this->position = vertex.position;
 		this->normal = vertex.normal;
 		this->texCoord = vertex.texCoord;
-		this->brushIndex = vertex.brushIndex;
+		this->brushIndex = vertex.texIndex;
 		this->min = cube.getMin();
 		this->length = cube.getLength();
 		this->bits = bits;
