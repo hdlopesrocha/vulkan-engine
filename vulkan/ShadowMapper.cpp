@@ -256,7 +256,7 @@ void ShadowMapper::createShadowPipeline() {
     // Attempt to load tessellation stages for shadow pipeline (displacement in shadow pass)
     bool hasTess = false;
     try {
-        auto tescCode = FileReader::readFile("shaders/shadow.tesc.spv");
+        auto tescCode = FileReader::readFile("shaders/main.tesc.spv");
         auto teseCode = FileReader::readFile("shaders/shadow.tese.spv");
         if (!tescCode.empty() && !teseCode.empty()) {
             shaderObjs.emplace_back(vulkanApp->createShaderModule(tescCode), VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
