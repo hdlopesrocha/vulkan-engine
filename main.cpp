@@ -53,6 +53,7 @@ struct UniformObject {
     glm::vec4 nightHorizon; // rgb = night horizon color
     glm::vec4 nightZenith;  // rgb = night zenith color
     glm::vec4 nightParams;  // x = night intensity, y = starIntensity
+    glm::vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
     
     // Set material properties from MaterialProperties struct
         void setMaterial(const MaterialProperties& mat) {
@@ -135,6 +136,11 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Additional per-texture uniform buffers and descriptor sets for sphere instances
         std::vector<VkDescriptorSet> sphereDescriptorSets;
         std::vector<Buffer> sphereUniforms;
+        // Shadow pass buffers and descriptor sets
+        std::vector<Buffer> shadowUniforms;
+        std::vector<VkDescriptorSet> shadowDescriptorSets;
+        std::vector<Buffer> shadowSphereUniforms;
+        std::vector<VkDescriptorSet> shadowSphereDescriptorSets;
         
         // store projection and view for per-cube MVP computation in draw()
         glm::mat4 projMat = glm::mat4(1.0f);
@@ -401,14 +407,20 @@ class MyApp : public VulkanApp, public IEventHandler {
             for (size_t i = 0; i < uniforms.size(); ++i) {
                 uniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             }
+            // create shadow uniform buffers
+            shadowUniforms.resize(textureManager.count());
+            for (size_t i = 0; i < shadowUniforms.size(); ++i) {
+                shadowUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            }
             
             // create descriptor sets - one per texture triple
             size_t tripleCount = textureManager.count();
             if (tripleCount == 0) tripleCount = 1; // ensure at least one
-            // Allocate descriptor pool sized for both cube and sphere descriptor sets (2 sets per texture triple)
-            createDescriptorPool(static_cast<uint32_t>(tripleCount * 2));
+            // Allocate descriptor pool sized for both cube and sphere descriptor sets (4 sets per texture triple)
+            createDescriptorPool(static_cast<uint32_t>(tripleCount * 4));
 
             descriptorSets.resize(tripleCount, VK_NULL_HANDLE);
+            shadowDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
             for (size_t i = 0; i < tripleCount; ++i) {
                 VkDescriptorSet ds = createDescriptorSet();
                 descriptorSets[i] = ds;
@@ -471,16 +483,41 @@ class MyApp : public VulkanApp, public IEventHandler {
                     ds,
                     { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite }
                 );
+
+                // Create shadow descriptor set
+                VkDescriptorSet sds = createDescriptorSet();
+                shadowDescriptorSets[i] = sds;
+
+                // uniform buffer descriptor (binding 0) - use shadow uniform buffer
+                VkDescriptorBufferInfo shadowBufferInfo { shadowUniforms[i].buffer, 0 , sizeof(UniformObject) };
+                VkWriteDescriptorSet shadowUboWrite{};
+                shadowUboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                shadowUboWrite.dstSet = sds;
+                shadowUboWrite.dstBinding = 0;
+                shadowUboWrite.dstArrayElement = 0;
+                shadowUboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                shadowUboWrite.descriptorCount = 1;
+                shadowUboWrite.pBufferInfo = &shadowBufferInfo;
+
+                updateDescriptorSet(
+                    sds,
+                    { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite }
+                );
             }
 
             // Create per-texture descriptor sets and uniform buffers for sphere instances (one per texture triple)
             sphereDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
             sphereUniforms.resize(tripleCount);
+            shadowSphereUniforms.resize(tripleCount);
+            shadowSphereDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
             for (size_t i = 0; i < tripleCount; ++i) {
                 // create uniform buffer for sphere instance
                 sphereUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                shadowSphereUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                 VkDescriptorSet ds = createDescriptorSet();
                 sphereDescriptorSets[i] = ds;
+                VkDescriptorSet sds = createDescriptorSet();
+                shadowSphereDescriptorSets[i] = sds;
 
                 // reuse image samplers from texture triple i
                 const auto &tr = textureManager.getTriple(i);
@@ -496,6 +533,13 @@ class MyApp : public VulkanApp, public IEventHandler {
                 VkWriteDescriptorSet heightWrite{}; heightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; heightWrite.dstSet = ds; heightWrite.dstBinding = 3; heightWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; heightWrite.descriptorCount = 1; heightWrite.pImageInfo = &heightInfo;
                 VkWriteDescriptorSet shadowWrite{}; shadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; shadowWrite.dstSet = ds; shadowWrite.dstBinding = 4; shadowWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; shadowWrite.descriptorCount = 1; shadowWrite.pImageInfo = &shadowInfo;
                 updateDescriptorSet(ds, { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
+
+                // Create shadow descriptor set for spheres
+                VkDescriptorBufferInfo shadowBufferInfo { shadowSphereUniforms[i].buffer, 0 , sizeof(UniformObject) };
+                VkWriteDescriptorSet shadowUboWrite = uboWrite;
+                shadowUboWrite.dstSet = sds;
+                shadowUboWrite.pBufferInfo = &shadowBufferInfo;
+                updateDescriptorSet(sds, { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
             }
 
             // build cube mesh and geometry (per-face tex indices all zero by default)
@@ -747,7 +791,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Add plane instance (uses editable texture)
             glm::mat4 planeModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.5f, 0.0f));
             const MaterialProperties* planeMat = &textureManager.getMaterial(editableTextureIndex);
-            modelManager.addInstance(plane, meshVBOs[1], planeModel, descriptorSets[editableTextureIndex], &uniforms[editableTextureIndex], planeMat);
+            modelManager.addInstance(plane, meshVBOs[1], planeModel, descriptorSets[editableTextureIndex], &uniforms[editableTextureIndex], shadowDescriptorSets[editableTextureIndex], &shadowUniforms[editableTextureIndex], planeMat);
             
             // Add cube instances
             for (size_t i = 0; i < descriptorSets.size(); ++i) {
@@ -764,7 +808,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 glm::mat4 model_i = glm::translate(glm::mat4(1.0f), glm::vec3(x, y, z));
                 // Pass material properties for this texture
                 const MaterialProperties* mat = &textureManager.getMaterial(i);
-                modelManager.addInstance(cube, meshVBOs[0], model_i, descriptorSets[i], &uniforms[i], mat);
+                modelManager.addInstance(cube, meshVBOs[0], model_i, descriptorSets[i], &uniforms[i], shadowDescriptorSets[i], &shadowUniforms[i], mat);
 
                 // Create sphere above this cube if sphere mesh available
                 if (meshes.size() > 2) {
@@ -775,7 +819,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                     float gap = 0.5f; // slightly larger gap to avoid numerical intersection
                     float sphereCenterY = y + cubeHalfHeight + sphereRadius + gap; // place on top of cube
                     glm::mat4 sphereModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, sphereCenterY, z));
-                    modelManager.addInstance(sphere, meshVBOs[2], sphereModel, sphereDescriptorSets[i], &sphereUniforms[i], mat);
+                    modelManager.addInstance(sphere, meshVBOs[2], sphereModel, sphereDescriptorSets[i], &sphereUniforms[i], shadowSphereDescriptorSets[i], &shadowSphereUniforms[i], mat);
                 }
             }
             
@@ -811,11 +855,11 @@ class MyApp : public VulkanApp, public IEventHandler {
                     instance.material ? (instance.material->invertHeight ? 1.0f : 0.0f) : 0.0f, // invert height
                     instance.material ? instance.material->tessHeightScale : 0.1f // tess height scale
                 );
-                
-                updateUniformBuffer(*instance.uniformBuffer, &shadowUbo, sizeof(UniformObject));
+                shadowUbo.passParams = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 1.0
+                updateUniformBuffer(*instance.shadowUniformBuffer, &shadowUbo, sizeof(UniformObject));
                 
                     shadowMapper.renderObject(commandBuffer, instance.transform, instance.vbo,
-                                            instance.descriptorSet);
+                                            instance.shadowDescriptorSet);
                 }
 
                 shadowMapper.endShadowPass(commandBuffer);
@@ -847,6 +891,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 glm::mat4 model = glm::translate(glm::mat4(1.0f), camPos) * glm::scale(glm::mat4(1.0f), glm::vec3(50.0f));
                 skyUbo.model = model;
                 skyUbo.mvp = projMat * viewMat * model;
+                skyUbo.passParams = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 0.0
                 // use first sphere uniform buffer / descriptor set to bind UBO
                 updateUniformBuffer(sphereUniforms[0], &skyUbo, sizeof(UniformObject));
 
@@ -903,7 +948,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // Debug visualization mode (set by SettingsWidget)
                 if (settingsWidget) ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
                 else ubo.debugParams = glm::vec4(0.0f);
-                
+                ubo.passParams = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 0.0
                 updateUniformBuffer(*instance.uniformBuffer, &ubo, sizeof(UniformObject));
                 
                 // Bind descriptor set and draw

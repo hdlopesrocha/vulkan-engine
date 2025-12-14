@@ -22,4 +22,5 @@ layout(binding = 0) uniform UBO {
         vec4 nightHorizon; // rgb = night horizon color
         vec4 nightZenith;  // rgb = night zenith color
         vec4 nightParams;  // x = night intensity (0..1), y = starIntensity, z/w unused
+        vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
 } ubo;

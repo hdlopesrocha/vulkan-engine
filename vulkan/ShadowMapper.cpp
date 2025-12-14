@@ -257,7 +257,7 @@ void ShadowMapper::createShadowPipeline() {
     bool hasTess = false;
     try {
         auto tescCode = FileReader::readFile("shaders/main.tesc.spv");
-        auto teseCode = FileReader::readFile("shaders/shadow.tese.spv");
+        auto teseCode = FileReader::readFile("shaders/main.tese.spv");
         if (!tescCode.empty() && !teseCode.empty()) {
             shaderObjs.emplace_back(vulkanApp->createShaderModule(tescCode), VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
             shaderObjs.emplace_back(vulkanApp->createShaderModule(teseCode), VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);

@@ -38,9 +38,12 @@ void main() {
     vec3 localNormal = normalize(tc_fragLocalNormal[0] * bc.x + tc_fragLocalNormal[1] * bc.y + tc_fragLocalNormal[2] * bc.z);
     vec2 uv = tc_fragUV[0] * bc.x + tc_fragUV[1] * bc.y + tc_fragUV[2] * bc.z;
     int texIndex = int(float(tc_fragTexIndex[0]) * bc.x + float(tc_fragTexIndex[1]) * bc.y + float(tc_fragTexIndex[2]) * bc.z + 0.5);
-    
-    // Not required by shadow shader
-    fragColor = tc_fragColor[0] * bc.x + tc_fragColor[1] * bc.y + tc_fragColor[2] * bc.z;
+    bool isShadowPass = ubo.passParams.x > 0.5;
+    if (!isShadowPass) {
+        fragColor = tc_fragColor[0] * bc.x + tc_fragColor[1] * bc.y + tc_fragColor[2] * bc.z;
+    } else {
+        fragColor = vec3(0.0);
+    }
 
     // Apply displacement
     vec3 displacedLocalPos = localPos;
@@ -64,16 +67,20 @@ void main() {
     // Compute world-space position and normals
     vec4 worldPos = ubo.model * vec4(displacedLocalPos, 1.0);
     fragPosWorld = worldPos.xyz;
+    if (!isShadowPass) {
+        fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
+    } else {
+        fragPosLightSpace = vec4(0.0);
+    }
+
     fragUV = uv;
     fragTexIndex = texIndex;
-    fragNormal = normalize(mat3(ubo.model) * localNormal);
-
-    vec4 tangentLocal = tc_fragTangent[0] * bc.x + tc_fragTangent[1] * bc.y + tc_fragTangent[2] * bc.z;
-    fragTangent = vec4(normalize(mat3(ubo.model) * tangentLocal.xyz), tangentLocal.w);
-
-    fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
-
+    // Output clip-space position using MVP (MVP includes model matrix)
     gl_Position = ubo.mvp * vec4(displacedLocalPos, 1.0);
 
-    
+    // Compute fragNormal: do not apply normal mapping here — use transformed geometry normal
+    fragNormal = normalize(mat3(ubo.model) * localNormal);
+    // Compute world-space tangent handedness-aware
+    vec4 tangentLocal = tc_fragTangent[0] * bc.x + tc_fragTangent[1] * bc.y + tc_fragTangent[2] * bc.z;
+    fragTangent = vec4(normalize(mat3(ubo.model) * tangentLocal.xyz), tangentLocal.w);
 }

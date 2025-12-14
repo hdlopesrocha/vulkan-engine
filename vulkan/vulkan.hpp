@@ -199,9 +199,10 @@ protected:
     TextureImage createTextureImageArray(const std::vector<std::string>& filenames, bool srgb = true);
         VkSampler createTextureSampler(uint32_t mipLevels);
         void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
-    void createDescriptorPool(uint32_t maxSets = 1);
-        VkDescriptorSet createDescriptorSet();
+    void createDescriptorPool(uint32_t uboCount, uint32_t samplerCount);
+        VkDescriptorSet createDescriptorSet(VkDescriptorSetLayout layout);
         void updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors);
+        VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
 
         Buffer createVertexBuffer(std::vector<Vertex> &vertices);
         Buffer createIndexBuffer(std::vector<uint16_t> &indices);

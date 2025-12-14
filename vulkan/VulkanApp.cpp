@@ -1102,31 +1102,31 @@ void VulkanApp::createDepthResources() {
     endSingleTimeCommands(commandBuffer);
 }
 
-void VulkanApp::createDescriptorPool(uint32_t maxSets) {
-    // One uniform buffer and one combined image sampler per map type (we use 2D array views)
+void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
+    // One uniform buffer and combined image samplers
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = maxSets; // one uniform per set
+    poolSizes[0].descriptorCount = uboCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = 4 * maxSets; // albedo, normal, height, shadow per set
+    poolSizes[1].descriptorCount = samplerCount;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = maxSets;
+    poolInfo.maxSets = uboCount; // assuming maxSets is uboCount, but actually should be total sets
 
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("failed to create descriptor pool!");
     }
 }
 
-VkDescriptorSet VulkanApp::createDescriptorSet() {
+VkDescriptorSet VulkanApp::createDescriptorSet(VkDescriptorSetLayout layout) {
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descriptorPool;
     allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &descriptorSetLayout;
+    allocInfo.pSetLayouts = &layout;
 
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
