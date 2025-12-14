@@ -25,6 +25,7 @@
 #include "widgets/TextureViewerWidget.hpp"
 #include "widgets/SettingsWidget.hpp"
 #include "widgets/LightWidget.hpp"
+#include "widgets/SkyWidget.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
 #include "widgets/BillboardCreator.hpp"
 #include <string>
@@ -46,6 +47,12 @@ struct UniformObject {
     glm::mat4 lightSpaceMatrix; // for shadow mapping
     glm::vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
     glm::vec4 debugParams; // x=debugMode (0=normal,1=normalVec,2=normalMap,3=uv,4=tangent,5=bitangent)
+    glm::vec4 skyHorizon; // rgb = horizon color, a = unused
+    glm::vec4 skyZenith;  // rgb = zenith color, a = unused
+    glm::vec4 skyParams;  // x = warmth, y = exponent, z/w = unused
+    glm::vec4 nightHorizon; // rgb = night horizon color
+    glm::vec4 nightZenith;  // rgb = night zenith color
+    glm::vec4 nightParams;  // x = night intensity, y = starIntensity
     
     // Set material properties from MaterialProperties struct
         void setMaterial(const MaterialProperties& mat) {
@@ -92,6 +99,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     std::shared_ptr<EditableTextureSet> editableTextures;
     std::shared_ptr<SettingsWidget> settingsWidget;
     std::shared_ptr<BillboardCreator> billboardCreator;
+    std::shared_ptr<SkyWidget> skyWidget;
     
     // Model manager to handle all renderable objects
     ModelManager modelManager;
@@ -554,6 +562,17 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Create light control widget
             auto lightWidget = std::make_shared<LightWidget>(&lightDirection);
             widgetManager.addWidget(lightWidget);
+            // Create sky widget (controls colors and parameters)
+            skyWidget = std::make_shared<SkyWidget>();
+            widgetManager.addWidget(skyWidget);
+            if (skyWidget) {
+                uboStatic.skyHorizon = glm::vec4(skyWidget->getHorizonColor(), 1.0f);
+                uboStatic.skyZenith = glm::vec4(skyWidget->getZenithColor(), 1.0f);
+                uboStatic.skyParams = glm::vec4(skyWidget->getWarmth(), skyWidget->getExponent(), skyWidget->getSunFlare(), 0.0f);
+                uboStatic.nightHorizon = glm::vec4(skyWidget->getNightHorizon(), 1.0f);
+                uboStatic.nightZenith = glm::vec4(skyWidget->getNightZenith(), 1.0f);
+                uboStatic.nightParams = glm::vec4(skyWidget->getNightIntensity(), skyWidget->getStarIntensity(), 0.0f, 0.0f);
+            }
             
             // Create vegetation atlas editor widget
             auto vegAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureManager, &vegetationAtlasManager);
@@ -660,6 +679,15 @@ class MyApp : public VulkanApp, public IEventHandler {
             std::cout << "[UBO] sent ubo.lightDir=(" << uboStatic.lightDir.x << ", " << uboStatic.lightDir.y << ", " << uboStatic.lightDir.z << ")\n";
             uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
             // Note: material flags and specularParams are set per-instance from material properties
+            // Update sky UBO values from widget (if present)
+            if (skyWidget) {
+                uboStatic.skyHorizon = glm::vec4(skyWidget->getHorizonColor(), 1.0f);
+                uboStatic.skyZenith = glm::vec4(skyWidget->getZenithColor(), 1.0f);
+                uboStatic.skyParams = glm::vec4(skyWidget->getWarmth(), skyWidget->getExponent(), skyWidget->getSunFlare(), 0.0f);
+                uboStatic.nightHorizon = glm::vec4(skyWidget->getNightHorizon(), 1.0f);
+                uboStatic.nightZenith = glm::vec4(skyWidget->getNightZenith(), 1.0f);
+                uboStatic.nightParams = glm::vec4(skyWidget->getNightIntensity(), skyWidget->getStarIntensity(), 0.0f, 0.0f);
+            }
             
             // Compute light space matrix for shadow mapping
             // Adjust scene center to be between cubes and plane
