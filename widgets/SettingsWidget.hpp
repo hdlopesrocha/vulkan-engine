@@ -61,6 +61,14 @@ public:
 
             ImGui::Separator();
 
+            ImGui::Text("Tessellation");
+            ImGui::Separator();
+            ImGui::Checkbox("Adaptive Tessellation", &adaptiveTessellation);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable camera-distance driven tessellation level");
+            ImGui::SliderFloat("Tess Min Level", &tessMinLevel, 1.0f, 64.0f, "%.1f");
+            ImGui::SliderFloat("Tess Max Level", &tessMaxLevel, 1.0f, 64.0f, "%.1f");
+            ImGui::SliderFloat("Tess Max Distance", &tessMaxDistance, 1.0f, 200.0f, "%.1f");
+
             if (ImGui::Button("Reset to Defaults")) {
                 resetToDefaults();
             }
@@ -106,6 +114,11 @@ private:
         int debugMode = 0;                         // 0=Default,1=Fragment Normal,2=World Normal,3=UV,4=Tangent,5=Bitangent,6=Normal (TBN),7=Albedo,8=Normal Tex,9=Bump,10=Pre-Projection,11=Normal from Derivatives,12=Light Vector,13=N·L,14=Shadow Diagnostics,15=Triplanar Weights
     bool normalMappingEnabled = true;          // Global toggle for normal mapping
     std::function<void()> onDumpShadowDepth;
+    // Tessellation settings
+    bool adaptiveTessellation = true;
+    float tessMinLevel = 1.0f;
+    float tessMaxLevel = 32.0f;
+    float tessMaxDistance = 30.0f;
     
     void resetToDefaults() {
         enableShadows = true;
@@ -115,5 +128,15 @@ private:
         moveSpeed = 2.5f;
         angularSpeedDeg = 45.0f;
         debugMode = 0;
+        adaptiveTessellation = true;
+        tessMinLevel = 1.0f;
+        tessMaxLevel = 32.0f;
+        tessMaxDistance = 30.0f;
     }
+public:
+    // Tessellation getters
+    bool getAdaptiveTessellation() const { return adaptiveTessellation; }
+    float getTessMinLevel() const { return tessMinLevel; }
+    float getTessMaxLevel() const { return tessMaxLevel; }
+    float getTessMaxDistance() const { return tessMaxDistance; }
 };

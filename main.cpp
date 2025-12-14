@@ -842,6 +842,23 @@ class MyApp : public VulkanApp, public IEventHandler {
             
             // Add spheres above each cube instance (if sphere mesh is present)
 
+            // Helper: compute tessellation level for an instance based on camera distance and settings
+            auto computeTess = [&](const glm::mat4 &modelMat, const MaterialProperties* mat) -> float {
+                float baseTess = mat ? mat->tessLevel : 1.0f;
+                glm::vec3 camPosForTess = camera.getPosition();
+                glm::vec3 objPos = glm::vec3(modelMat[3]);
+                float dist = glm::distance(camPosForTess, objPos);
+                float tessForThis = baseTess;
+                if (settingsWidget && settingsWidget->getAdaptiveTessellation()) {
+                    float maxDist = settingsWidget->getTessMaxDistance();
+                    float t = glm::clamp(dist / maxDist, 0.0f, 1.0f);
+                    float maxLevel = settingsWidget->getTessMaxLevel() + baseTess;
+                    float minLevel = settingsWidget->getTessMinLevel();
+                    tessForThis = glm::mix(maxLevel, minLevel, t);
+                }
+                return glm::clamp(tessForThis, 1.0f, 64.0f);
+            };
+
             // First pass: Render shadow map (skip if shadows globally disabled)
             if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
                 shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
@@ -866,11 +883,12 @@ class MyApp : public VulkanApp, public IEventHandler {
                 shadowUbo.mvp = shadowMvp;
                 shadowUbo.materialFlags = materialFlags;
                 // Set mapping mode for tessellation displacement in shadow pass
+                float tessForThis = computeTess(instance.transform, instance.material);
                 shadowUbo.mappingParams = glm::vec4(
-                    instance.material ? (instance.material->mappingMode ? 1.0f : 0.0f) : 0.0f,  // Use per-material mapping flag
-                    instance.material ? instance.material->tessLevel : 1.0f,    // tess level
-                    instance.material ? (instance.material->invertHeight ? 1.0f : 0.0f) : 0.0f, // invert height
-                    instance.material ? instance.material->tessHeightScale : 0.1f // tess height scale
+                    instance.material ? (instance.material->mappingMode ? 1.0f : 0.0f) : 0.0f,
+                    tessForThis,
+                    instance.material ? (instance.material->invertHeight ? 1.0f : 0.0f) : 0.0f,
+                    instance.material ? instance.material->tessHeightScale : 0.1f
                 );
                 shadowUbo.passParams = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 1.0
                 updateUniformBuffer(*instance.shadowUniformBuffer, &shadowUbo, sizeof(UniformObject));
@@ -947,6 +965,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (instance.material) {
                     ubo.setMaterial(*instance.material);
                 }
+                // Override tessellation level in mappingParams based on camera distance
+                ubo.mappingParams.y = computeTess(instance.transform, instance.material);
                 // (temporary debug logging removed)
                 // Global normal mapping toggle (separate from tessellation/mappingMode)
                 if (settingsWidget) {
