@@ -22,7 +22,6 @@ layout(location = 5) flat out int fragTexIndex;
 layout(location = 4) out vec3 fragPosWorld;
 layout(location = 6) out vec4 fragPosLightSpace;
 layout(location = 9) out vec4 fragTangent;
-// (removed debug displacement output)
 
 #include "includes/textures.glsl"
 
@@ -36,14 +35,14 @@ void main() {
 
     // Interpolate local-space position, normal, tangent, uv, and texIndex
     vec3 localPos = tc_fragLocalPos[0] * bc.x + tc_fragLocalPos[1] * bc.y + tc_fragLocalPos[2] * bc.z;
-    // Prefer the explicitly-passed local-space normal/tangent for correct displacement
     vec3 localNormal = normalize(tc_fragLocalNormal[0] * bc.x + tc_fragLocalNormal[1] * bc.y + tc_fragLocalNormal[2] * bc.z);
-    // Tangent attribute removed; do not interpolate local tangent
     vec2 uv = tc_fragUV[0] * bc.x + tc_fragUV[1] * bc.y + tc_fragUV[2] * bc.z;
     int texIndex = int(float(tc_fragTexIndex[0]) * bc.x + float(tc_fragTexIndex[1]) * bc.y + float(tc_fragTexIndex[2]) * bc.z + 0.5);
+    
+    // Not required by shadow shader
     fragColor = tc_fragColor[0] * bc.x + tc_fragColor[1] * bc.y + tc_fragColor[2] * bc.z;
 
-    // Apply displacement (also compute magnitude for debug visualization)
+    // Apply displacement
     vec3 displacedLocalPos = localPos;
     float disp = 0.0;
     if (ubo.mappingParams.x > 0.5) {
@@ -65,16 +64,16 @@ void main() {
     // Compute world-space position and normals
     vec4 worldPos = ubo.model * vec4(displacedLocalPos, 1.0);
     fragPosWorld = worldPos.xyz;
-    fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
-
     fragUV = uv;
     fragTexIndex = texIndex;
-    // Output clip-space position using MVP (MVP includes model matrix)
-    gl_Position = ubo.mvp * vec4(displacedLocalPos, 1.0);
-
-    // Compute fragNormal: do not apply normal mapping here — use transformed geometry normal
     fragNormal = normalize(mat3(ubo.model) * localNormal);
-    // Compute world-space tangent handedness-aware
+
     vec4 tangentLocal = tc_fragTangent[0] * bc.x + tc_fragTangent[1] * bc.y + tc_fragTangent[2] * bc.z;
     fragTangent = vec4(normalize(mat3(ubo.model) * tangentLocal.xyz), tangentLocal.w);
+
+    fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
+
+    gl_Position = ubo.mvp * vec4(displacedLocalPos, 1.0);
+
+    
 }
