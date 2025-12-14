@@ -503,6 +503,12 @@ class MyApp : public VulkanApp, public IEventHandler {
                 shadowUboWrite.descriptorCount = 1;
                 shadowUboWrite.pBufferInfo = &shadowBufferInfo;
 
+                // Ensure sampler/texture writes target the shadow descriptor set as well
+                samplerWrite.dstSet = sds;
+                normalWrite.dstSet = sds;
+                heightWrite.dstSet = sds;
+                shadowWrite.dstSet = sds;
+
                 updateDescriptorSet(
                     sds,
                     { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite }
@@ -543,6 +549,11 @@ class MyApp : public VulkanApp, public IEventHandler {
                 VkWriteDescriptorSet shadowUboWrite = uboWrite;
                 shadowUboWrite.dstSet = sds;
                 shadowUboWrite.pBufferInfo = &shadowBufferInfo;
+                // Make sure the image sampler writes also target the shadow descriptor set
+                samplerWrite.dstSet = sds;
+                normalWrite.dstSet = sds;
+                heightWrite.dstSet = sds;
+                shadowWrite.dstSet = sds;
                 updateDescriptorSet(sds, { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
             }
 
