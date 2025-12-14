@@ -23,8 +23,6 @@ layout(location = 9) out vec4 fragTangent;
 
 #include "includes/common.glsl"
 
-#include "includes/displacement.glsl"
-
 void main() {
     // barycentric coordinates
     vec3 bc = gl_TessCoord;
@@ -35,7 +33,24 @@ void main() {
     vec2 uv = tc_fragUV[0] * bc.x + tc_fragUV[1] * bc.y + tc_fragUV[2] * bc.z;
     int texIndex = int(float(tc_fragTexIndex[0]) * bc.x + float(tc_fragTexIndex[1]) * bc.y + float(tc_fragTexIndex[2]) * bc.z + 0.5);
 
-    vec3 displacedLocalPos = applyDisplacement(localPos, localNormal, uv, texIndex);
+    // Apply displacement (also compute magnitude for debug visualization)
+    vec3 displacedLocalPos = localPos;
+    float disp = 0.0;
+    if (ubo.mappingParams.x > 0.5) {
+        // Use triplanar height sampling if enabled
+        vec3 worldPosForSampling = (ubo.model * vec4(localPos, 1.0)).xyz;
+        float height = 0.0;
+        if (ubo.triplanarParams.z > 0.5) {
+            height = sampleHeightTriplanar(worldPosForSampling, localNormal, texIndex);
+        } else {
+            height = sampleHeight(uv, texIndex);
+        }
+        float heightScale = ubo.mappingParams.w;
+        // Displace outward along surface normal based on sampled height
+        disp = height * heightScale;
+        displacedLocalPos += localNormal * disp;
+    }
+    // displacement magnitude used only on-TES; no debug output
 
     vec4 worldPos = ubo.model * vec4(displacedLocalPos, 1.0);
     // For shadow pass, write light-space clip position
