@@ -15,9 +15,9 @@ layout(location = 9) in vec4 tc_fragTangent[];
 layout(binding = 3) uniform sampler2DArray heightArray;
 
 // Outputs to next stage / not used in depth-only pass
-layout(location = 0) out vec2 fragUV;
-layout(location = 1) out vec3 fragNormal;
-layout(location = 3) out vec3 fragPosWorld;
+layout(location = 1) out vec2 fragUV;
+layout(location = 2) out vec3 fragNormal;
+layout(location = 4) out vec3 fragPosWorld;
 layout(location = 5) flat out int fragTexIndex;
 layout(location = 9) out vec4 fragTangent;
 

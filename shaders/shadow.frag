@@ -1,8 +1,8 @@
 #version 450
 
-layout(location = 0) in vec2 fragUV;
-layout(location = 1) in vec3 fragNormal;
-layout(location = 3) in vec3 fragPosWorld;
+layout(location = 1) in vec2 fragUV;
+layout(location = 2) in vec3 fragNormal;
+layout(location = 4) in vec3 fragPosWorld;
 layout(location = 5) flat in int fragTexIndex;
 layout(location = 9) in vec4 fragTangent;
 

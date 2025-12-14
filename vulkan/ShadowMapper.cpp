@@ -245,7 +245,7 @@ void ShadowMapper::createShadowPipeline() {
     }
     
     ShaderStage shadowVertexShader = ShaderStage(
-        vulkanApp->createShaderModule(FileReader::readFile("shaders/shadow.vert.spv")),
+        vulkanApp->createShaderModule(FileReader::readFile("shaders/main.vert.spv")),
         VK_SHADER_STAGE_VERTEX_BIT
     );
 
