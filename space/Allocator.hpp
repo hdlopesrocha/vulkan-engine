@@ -1,3 +1,6 @@
+#ifndef SPACE_ALLOCATOR_HPP
+#define SPACE_ALLOCATOR_HPP
+
 #include <vector>
 #include <unordered_set>
 #include <mutex>
@@ -188,3 +191,6 @@ public:
 
     size_t getBlockSize() const { return blockSize; }
 };
+
+#endif // SPACE_ALLOCATOR_HPP
+

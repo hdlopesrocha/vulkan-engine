@@ -6,6 +6,8 @@ OctreeNode * OctreeAllocator::allocate(){
     return result;
 }
 
+OctreeAllocator::OctreeAllocator() : nodeAllocator(1024), childAllocator(1024) {}
+
 void OctreeAllocator::get(OctreeNode * nodes[8], uint indices[8]){
     nodeAllocator.getFromIndices(nodes, indices);
 }
