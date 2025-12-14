@@ -584,8 +584,9 @@ class MyApp : public VulkanApp, public IEventHandler {
             // For constructing the light view (positioning the light), we need a vector FROM the light TOWARD the scene center,
             // so negate the UI direction when computing light position for shadow mapping.
             glm::vec3 lightDirToLight = -glm::normalize(lightDirection);
-            // Adjust scene center to be between cubes (around y=0) and plane (y=-1.5)
-            glm::vec3 sceneCenter = glm::vec3(0.0f, -0.75f, 0.0f);
+            // Center shadow ortho on camera XZ so it follows camera movement
+            glm::vec3 camPosInit = camera.getPosition();
+            glm::vec3 sceneCenter = glm::vec3(camPosInit.x, -0.75f, camPosInit.z);
             glm::vec3 lightPos = sceneCenter + lightDirToLight * 20.0f;
             glm::vec3 worldUp = glm::vec3(0.0f, 1.0f, 0.0f);
             if (glm::abs(glm::dot(lightDirToLight, worldUp)) > 0.9f) {
@@ -759,9 +760,10 @@ class MyApp : public VulkanApp, public IEventHandler {
             }
             
             // Compute light space matrix for shadow mapping
-            // Adjust scene center to be between cubes and plane
-            glm::vec3 sceneCenter = glm::vec3(0.0f, -0.75f, 0.0f);
-            
+            // Center shadow ortho on camera XZ so the shadow projection follows camera movement
+            glm::vec3 camPos = camera.getPosition();
+            glm::vec3 sceneCenter = glm::vec3(camPos.x, -0.75f, camPos.z);
+
             // Diagonal light direction matching setup(): use negated UI direction so the light position and view
             // are consistent with the negated `uboStatic.lightDir` sent to shaders.
             glm::vec3 shadowLightDir = glm::normalize(lightDirection);
