@@ -1165,7 +1165,7 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
     VkVertexInputBindingDescription bindingDescription,
     std::initializer_list<VkVertexInputAttributeDescription> descriptions,
-    VkPolygonMode polygonMode) {
+    VkPolygonMode polygonMode, VkCullModeFlagBits cullMode, bool depthWrite) {
     
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages(stages);
 
@@ -1218,8 +1218,8 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = polygonMode;
     rasterizer.lineWidth = 1.0f;
-    // use standard back-face culling. Mesh winding in this project uses clockwise
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    // use user-specified culling mode (default back-face). Mesh winding in this project uses clockwise
+    rasterizer.cullMode = cullMode;
     rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
@@ -1253,7 +1253,7 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = depthWrite ? VK_TRUE : VK_FALSE;
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;

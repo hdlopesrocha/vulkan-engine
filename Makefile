@@ -25,7 +25,7 @@ OUT = $(OUT_DIR)/app
 
 # shader sources and generated SPIR-V
 
-SHADERS = shaders/main.vert shaders/main.tesc shaders/main.tese shaders/main.frag shaders/shadow.vert shaders/shadow.tesc shaders/shadow.tese shaders/shadow.frag shaders/perlin_noise.comp
+SHADERS = shaders/main.vert shaders/main.tesc shaders/main.tese shaders/main.frag shaders/shadow.vert shaders/shadow.tesc shaders/shadow.tese shaders/shadow.frag shaders/perlin_noise.comp shaders/sky.vert shaders/sky.frag
 # SPIR-V targets will be written into the OUT_DIR/shaders directory
 SPVS = $(SHADERS:.vert=.vert.spv)
 SPVS := $(SPVS:.frag=.frag.spv)
@@ -45,6 +45,9 @@ all: shaders
 	@if [ -f imgui.ini ]; then cp imgui.ini $(OUT_DIR)/ || true; fi
 
 shaders: $(OUT_SPVS)
+	@# Copy compiled SPIR-V back to the source shaders/ folder so FileReader can load shaders/*.spv at runtime
+	@mkdir -p shaders
+	@cp -u $(OUT_DIR)/shaders/*.spv shaders/ 2>/dev/null || true
 
 $(OUT_DIR)/shaders/%.vert.spv: shaders/%.vert
 	@echo "Compiling shader: $< -> $@"

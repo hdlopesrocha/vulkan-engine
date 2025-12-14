@@ -71,6 +71,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     VkPipeline graphicsPipelineWire = VK_NULL_HANDLE;
     VkPipeline graphicsPipelineTess = VK_NULL_HANDLE;
     VkPipeline graphicsPipelineTessWire = VK_NULL_HANDLE;
+    VkPipeline skyPipeline = VK_NULL_HANDLE;
     // texture manager handles albedo/normal/height triples
     TextureManager textureManager;
     
@@ -248,6 +249,35 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // Destroy vertex/fragment modules used to create the pipelines
                 vkDestroyShaderModule(getDevice(), fragmentShader.info.module, nullptr);
                 vkDestroyShaderModule(getDevice(), vertexShader.info.module, nullptr);
+
+                // Create sky pipeline (renders large inside-out sphere with no depth writes)
+                {
+                    ShaderStage skyVert = ShaderStage(
+                        createShaderModule(FileReader::readFile("shaders/sky.vert.spv")),
+                        VK_SHADER_STAGE_VERTEX_BIT
+                    );
+                    ShaderStage skyFrag = ShaderStage(
+                        createShaderModule(FileReader::readFile("shaders/sky.frag.spv")),
+                        VK_SHADER_STAGE_FRAGMENT_BIT
+                    );
+
+                    skyPipeline = createGraphicsPipeline(
+                        { skyVert.info, skyFrag.info },
+                        VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX },
+                        {
+                            VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos) },
+                            VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
+                            VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
+                            VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
+                            VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, texIndex) }
+                        },
+                        VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false
+                    );
+
+                    vkDestroyShaderModule(getDevice(), skyFrag.info.module, nullptr);
+                    vkDestroyShaderModule(getDevice(), skyVert.info.module, nullptr);
+                }
             }
             // initialize texture manager and explicitly load known albedo/normal/height triples by filename
             textureManager.init(this);
@@ -771,6 +801,29 @@ class MyApp : public VulkanApp, public IEventHandler {
             scissor.extent = { (uint32_t)getWidth(), (uint32_t)getHeight() };
             vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+            // --- Render sky sphere first: large sphere centered at camera ---
+            if (skyPipeline != VK_NULL_HANDLE && meshes.size() > 2 && meshVBOs.size() > 2 && !sphereDescriptorSets.empty() && !sphereUniforms.empty()) {
+                // update sky uniform (centered at camera)
+                UniformObject skyUbo = uboStatic;
+                glm::vec3 camPos = glm::vec3(uboStatic.viewPos);
+                glm::mat4 model = glm::translate(glm::mat4(1.0f), camPos) * glm::scale(glm::mat4(1.0f), glm::vec3(50.0f));
+                skyUbo.model = model;
+                skyUbo.mvp = projMat * viewMat * model;
+                // use first sphere uniform buffer / descriptor set to bind UBO
+                updateUniformBuffer(sphereUniforms[0], &skyUbo, sizeof(UniformObject));
+
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &sphereDescriptorSets[0], 0, nullptr);
+
+                // bind sphere vertex/index buffers
+                const auto &vbo = meshVBOs[2];
+                VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
+                VkDeviceSize offsets[] = { 0 };
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
+                vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
+            }
+
             // bind pipeline
             // We'll bind the appropriate pipeline per-instance (regular or tessellated)
 
@@ -855,6 +908,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             if (graphicsPipelineWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineWire, nullptr);
             if (graphicsPipelineTess != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineTess, nullptr);
             if (graphicsPipelineTessWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineTessWire, nullptr);
+            if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), skyPipeline, nullptr);
             // texture cleanup via manager
             textureManager.destroyAll();
             // vertex/index buffers cleanup - destroy GPU buffers created from the meshes

@@ -206,7 +206,7 @@ protected:
         Buffer createVertexBuffer(std::vector<Vertex> &vertices);
         Buffer createIndexBuffer(std::vector<uint16_t> &indices);
         VkShaderModule createShaderModule(const std::vector<char>& code);
-    VkPipeline createGraphicsPipeline(std::initializer_list<VkPipelineShaderStageCreateInfo> stages, VkVertexInputBindingDescription bindingDescription, std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions, VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL);
+    VkPipeline createGraphicsPipeline(std::initializer_list<VkPipelineShaderStageCreateInfo> stages, VkVertexInputBindingDescription bindingDescription, std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions, VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL, VkCullModeFlagBits cullMode = VK_CULL_MODE_BACK_BIT, bool depthWrite = true);
         std::vector<VkCommandBuffer> createCommandBuffers();
 
         VkDevice getDevice() const;
