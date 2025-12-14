@@ -7,20 +7,20 @@ CC = g++
 # or shortcuts: make debug  or make release
 BUILD ?= release
 ifeq ($(BUILD),debug)
-	CFLAGS = -std=c++17 -O0 -g -DDEBUG
+	CFLAGS = -std=c++20 -O0 -g -DDEBUG
 else
-	CFLAGS = -std=c++17 -O3 -DNDEBUG
+	CFLAGS = -std=c++20 -O3 -DNDEBUG
 endif
 
 # Use pkg-config for GLFW and Vulkan includes; also add common ImGui/stb include paths
 INCLUDES = `pkg-config --cflags glfw3 vulkan` -I/usr/include/imgui -I/usr/include/stb
-LIBS = `pkg-config --libs glfw3 vulkan` -limgui -lstb -ljpeg
+LIBS = `pkg-config --libs glfw3 vulkan` -limgui -lstb -ljpeg -lgdal -lz
 
 # Output directory for runtime binary and resources
 OUT_DIR = bin
 
 # shader sources and generated SPIR-V
-SRC = main.cpp utils/*cpp vulkan/*cpp widgets/*cpp events/*cpp
+SRC = main.cpp utils/*cpp vulkan/*cpp widgets/*cpp events/*cpp math/*cpp sdf/*cpp space/*cpp
 OUT = $(OUT_DIR)/app
 
 # shader sources and generated SPIR-V
