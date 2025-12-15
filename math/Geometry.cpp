@@ -1,4 +1,5 @@
-#include "math.hpp"
+#include "Geometry.hpp"
+#include "Math.hpp"
 
 Geometry::Geometry(bool reusable) {
     this->center = glm::vec3(0);

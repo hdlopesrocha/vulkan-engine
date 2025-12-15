@@ -1,4 +1,6 @@
-#include "space.hpp"
+#include "OctreeVisibilityChecker.hpp"
+#include "octree.hpp"
+#include "OctreeNode.hpp"
 
 
 OctreeVisibilityChecker::OctreeVisibilityChecker() {

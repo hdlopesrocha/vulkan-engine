@@ -1,4 +1,10 @@
-#include "math.hpp"
+#include "HeightMapTif.hpp"
+#include "HeightFunction.hpp"
+#include "Math.hpp"
+#include <gdal/gdal.h>
+#include <gdal/gdal_priv.h>
+#include <gdal/cpl_conv.h>
+#include <iostream>
 
 
 

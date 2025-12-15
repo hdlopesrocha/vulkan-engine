@@ -1,4 +1,6 @@
-#include "math.hpp"
+#include "GradientPerlinSurface.hpp"
+#include "PerlinSurface.hpp"
+#include "Math.hpp"
 
 
 GradientPerlinSurface::GradientPerlinSurface(float amplitude, float frequency, float offset) : PerlinSurface(amplitude, frequency, offset){

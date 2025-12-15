@@ -1,4 +1,6 @@
 #include "math.hpp"
+#include <sstream>
+#include <fstream>
 #include <zlib.h>
 
 bool Math::isBetween(float x, float min, float max) {

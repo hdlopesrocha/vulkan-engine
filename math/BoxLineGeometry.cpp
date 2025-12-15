@@ -1,4 +1,6 @@
-#include "math.hpp"
+#include "BoxLineGeometry.hpp"
+#include "BoundingBox.hpp"
+#include "Math.hpp"
 namespace {
     Vertex getVertex(glm::vec3 v) {
         return Vertex(v,glm::normalize(v), Math::triplanarMapping(v,0),0 );

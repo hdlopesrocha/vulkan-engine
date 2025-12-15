@@ -1,4 +1,6 @@
-#include "math.hpp"
+#include "SphereGeometry.hpp"
+#include "Geometry.hpp"
+#include "Math.hpp"
 
     Vertex getVertex(glm::vec3 v, int plane) {
         return Vertex(v,glm::normalize(v), Math::triplanarMapping(v,plane),0 );

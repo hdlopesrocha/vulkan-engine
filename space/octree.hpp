@@ -2,8 +2,11 @@
 #define SPACE_OCTREE_HPP
 
 #include "types.hpp"
+#include "Simplifier.hpp"
 #include "ThreadPool.hpp"
 #include <unordered_set>
+
+class IteratorHandler;
 
 class Octree: public BoundingCube {
     using BoundingCube::BoundingCube;
@@ -55,13 +58,6 @@ private:
 };
 
 
-class Simplifier {
-    float angle;
-    float distance;
-    bool texturing;
-public:
-    Simplifier(float angle, float distance, bool texturing);
-    std::pair<bool,int> simplify(const BoundingCube chunkCube, const BoundingCube cube, const float * sdf, NodeOperationResult * children);
-};
+// Simplifier is declared in Simplifier.hpp
 
 #endif

@@ -5,6 +5,8 @@
 #include <bit>
 #include <cstdint>
 #include <utility>
+#include <tuple>
+#include <functional>
 
 inline uint64_t murmurMix(uint64_t k) {
 	k ^= k >> 33;

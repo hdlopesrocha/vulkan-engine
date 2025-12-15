@@ -1,4 +1,4 @@
-#include "space.hpp"
+#include "types.hpp"
 
 OctreeNodeTriangleHandler::OctreeNodeTriangleHandler(long * count){
     this->count = count;

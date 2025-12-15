@@ -1,4 +1,6 @@
-#include "math.hpp"
+#include "Plane.hpp"
+#include "AbstractBoundingBox.hpp"
+#include "Math.hpp"
 
 Plane::Plane(glm::vec3 normal, glm::vec3 point) {
     this->normal = normal;

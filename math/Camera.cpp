@@ -1,4 +1,5 @@
-#include "math.hpp"
+#include "Camera.hpp"
+#include "Math.hpp"
 
 
 Camera::Camera(glm::vec3 position, glm::quat quaternion, float near, float far) {

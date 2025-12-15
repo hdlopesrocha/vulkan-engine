@@ -2,9 +2,8 @@
 #define SPACE_OCTREE_ALLOCATOR_HPP
 
 #include "Allocator.hpp"
-
-class OctreeNode;
-class ChildBlock;
+#include "OctreeNode.hpp"
+#include "ChildBlock.hpp"
 
 class OctreeAllocator {
 public:

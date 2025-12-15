@@ -1,4 +1,5 @@
-#include "math.hpp"
+#include "BoundingBox.hpp"
+#include "Math.hpp"
 
 BoundingBox::BoundingBox(glm::vec3 min, glm::vec3 max) : AbstractBoundingBox(min) {
 	this->max = max;

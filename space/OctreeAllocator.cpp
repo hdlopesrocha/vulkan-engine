@@ -1,4 +1,5 @@
-#include "space.hpp"
+#include "OctreeAllocator.hpp"
+#include "Allocator.hpp"
 
 
 OctreeNode * OctreeAllocator::allocate(){

@@ -1,3 +1,5 @@
+#ifndef SPACE_CONCURRENT_QUEUE_HPP
+#define SPACE_CONCURRENT_QUEUE_HPP
 #include <queue>
 #include <mutex>
 #include <condition_variable>
@@ -32,3 +34,5 @@ private:
     std::queue<T> queue_;
     std::condition_variable cv_;
 };
+
+#endif

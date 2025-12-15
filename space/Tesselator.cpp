@@ -1,4 +1,6 @@
-#include "space.hpp"
+#include "Tesselator.hpp"
+#include "octree.hpp"
+#include "IteratorHandler.hpp"
 
 
 Tesselator::Tesselator(long * count, ThreadContext * context): OctreeNodeTriangleHandler(count), context(context) {

@@ -4,6 +4,7 @@
 #include <vector>
 #include <tsl/robin_map.h>
 #include <mutex>
+#include <shared_mutex>
 #include <functional>
 #include "../math/math.hpp"
 #include "../sdf/SDF.hpp"

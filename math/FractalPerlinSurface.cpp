@@ -1,4 +1,6 @@
-#include "math.hpp"
+#include "FractalPerlinSurface.hpp"
+#include "PerlinSurface.hpp"
+#include "Math.hpp"
 
 
 FractalPerlinSurface::FractalPerlinSurface(float amplitude, float frequency, float offset) : PerlinSurface(amplitude, frequency, offset){

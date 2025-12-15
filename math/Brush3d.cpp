@@ -1,4 +1,6 @@
-#include "math.hpp"
+#include "Brush3d.hpp"
+#include "Camera.hpp"
+#include "Math.hpp"
 
 Brush3d::Brush3d() {
    	this->translationSensitivity = 32.0f;

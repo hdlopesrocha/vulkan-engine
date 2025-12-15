@@ -1,4 +1,8 @@
-#include "space.hpp"
+#include "IteratorHandler.hpp"
+#include "ConcurrentQueue.hpp"
+#include "ThreadPool.hpp"
+#include "octree.hpp"
+#include "OctreeNode.hpp"
 #include <queue>
 
 #include <atomic>

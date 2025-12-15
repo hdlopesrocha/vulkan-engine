@@ -1,4 +1,6 @@
-#include "math.hpp"
+#include "BoundingCube.hpp"
+#include "AbstractBoundingBox.hpp"
+#include "Math.hpp"
 
 BoundingCube::BoundingCube() : AbstractBoundingBox(glm::vec3(0)) {
 	this->length = 0;
@@ -6,6 +8,10 @@ BoundingCube::BoundingCube() : AbstractBoundingBox(glm::vec3(0)) {
 
 BoundingCube::BoundingCube(glm::vec3 min, float length) : AbstractBoundingBox(min) {
 	this->length = length;
+}
+
+BoundingCube::BoundingCube(const BoundingCube &other) : AbstractBoundingBox(other.getMin()) {
+    this->length = other.length;
 }
 
 glm::vec3 BoundingCube::getMax() const {

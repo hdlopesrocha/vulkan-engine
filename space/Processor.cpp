@@ -1,4 +1,7 @@
-#include "space.hpp"
+#include "Processor.hpp"
+#include "octree.hpp"
+#include "OctreeNode.hpp"
+#include "ThreadPool.hpp"
 
 
 Processor::Processor(long * count, ThreadPool &threadPool, ThreadContext * context, std::vector<OctreeNodeTriangleHandler*> * handlers): threadPool(threadPool), context(context), handlers(handlers) {

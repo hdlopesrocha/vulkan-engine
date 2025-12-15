@@ -1,4 +1,5 @@
-#include "math.hpp"
+#include "Frustum.hpp"
+#include "Math.hpp"
 
 Frustum::Frustum(glm::mat4 m)
 {

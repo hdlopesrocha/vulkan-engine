@@ -1,4 +1,6 @@
-#include "math.hpp"
+#include "CachedHeightMapSurface.hpp"
+#include "HeightFunction.hpp"
+#include "Math.hpp"
 
 CachedHeightMapSurface::CachedHeightMapSurface(const HeightFunction &function, BoundingBox box, float delta) {
     this->box = box;

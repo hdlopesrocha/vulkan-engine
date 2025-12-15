@@ -1,4 +1,6 @@
-#include "space.hpp"
+#include "ChildBlock.hpp"
+#include "OctreeAllocator.hpp"
+#include "OctreeNode.hpp"
 
 ChildBlock::ChildBlock() {
 

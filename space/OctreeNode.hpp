@@ -1,18 +1,8 @@
-#ifndef SPACE_NODE_HPP
-#define SPACE_NODE_HPP
+#ifndef SPACE_OCTREE_NODE_HPP
+#define SPACE_OCTREE_NODE_HPP
 
-#include "Allocator.hpp"
+#include "ChildBlock.hpp"
 #include "types.hpp"
-
-struct ChildBlock {
-    uint children[8];
-    ChildBlock();
-    ChildBlock * init();
-    void clear(OctreeAllocator &allocator, OctreeChangeHandler * handler);
-    bool isEmpty();
-    void set(uint i, OctreeNode * node, OctreeAllocator &allocator);
-    OctreeNode * get(uint i, OctreeAllocator &allocator);
-};
 
 class OctreeNode {
 

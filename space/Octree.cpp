@@ -1,4 +1,7 @@
-#include "space.hpp"
+#include "octree.hpp"
+#include "OctreeAllocator.hpp"
+#include "OctreeNode.hpp"
+#include "IteratorHandler.hpp"
 
 //      6-----7
 //     /|    /|

@@ -1,4 +1,6 @@
-#include "math.hpp"
+#include "BoxGeometry.hpp"
+#include "BoundingBox.hpp"
+#include "Math.hpp"
 
 namespace {
     Vertex getVertex(glm::vec3 v, glm::vec3 n, glm::vec2 t) {

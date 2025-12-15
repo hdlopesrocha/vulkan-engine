@@ -1,4 +1,5 @@
-#include "math.hpp"
+#include "HeightFunction.hpp"
+#include "Math.hpp"
 
 glm::vec3 HeightFunction::getNormal(float x, float z, float delta)  const {
     float q11 = getHeightAt(x,z);

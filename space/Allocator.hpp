@@ -7,6 +7,7 @@
 #include <shared_mutex>
 #include <cassert>
 #include <cstdlib>
+#include <climits>
 #include <stdexcept>
 #include <iostream>
 #define NDEBUG 1

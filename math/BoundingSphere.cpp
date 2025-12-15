@@ -1,4 +1,6 @@
-#include "math.hpp"
+#include "BoundingSphere.hpp"
+#include "AbstractBoundingBox.hpp"
+#include "Math.hpp"
 
 BoundingSphere::BoundingSphere(glm::vec3 center, float radius) {
 	this->center = center;
@@ -10,9 +12,9 @@ BoundingSphere::BoundingSphere() {
 	this->radius = 0;
 }
 
-bool BoundingSphere::contains(const glm::vec3 point) const {
-	glm::vec3 temp = point - this->center;
-	return glm::dot(temp, temp) < radius*radius;
+bool BoundingSphere::contains(const glm::vec3 &point) const {
+    glm::vec3 temp = point - this->center;
+    return glm::dot(temp, temp) < radius*radius;
 }
 
 bool BoundingSphere::intersects(const AbstractBoundingBox& cube) const {

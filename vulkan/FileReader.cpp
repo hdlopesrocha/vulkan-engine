@@ -1,4 +1,5 @@
 #include "vulkan.hpp"
+#include "FileReader.hpp"
 
 
 std::vector<char> FileReader::readFile(const std::string& filename) {

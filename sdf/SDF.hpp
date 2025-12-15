@@ -4,8 +4,33 @@
 #include <glm/glm.hpp>
 #include "types.hpp"
 #include "../math/math.hpp"
-#include "distance_functions.hpp"
-#include "effects.hpp"
+#include "SphereDistanceFunction.hpp"
+#include "CylinderDistanceFunction.hpp"
+#include "TorusDistanceFunction.hpp"
+#include "BoxDistanceFunction.hpp"
+#include "CapsuleDistanceFunction.hpp"
+#include "HeightMapDistanceFunction.hpp"
+#include "OctahedronDistanceFunction.hpp"
+#include "PyramidDistanceFunction.hpp"
+#include "ConeDistanceFunction.hpp"
+
+// Wrapped helpers
+#include "WrappedSphere.hpp"
+#include "WrappedCylinder.hpp"
+#include "WrappedTorus.hpp"
+#include "WrappedBox.hpp"
+#include "WrappedCapsule.hpp"
+#include "WrappedHeightMap.hpp"
+#include "WrappedOctahedron.hpp"
+#include "WrappedPyramid.hpp"
+#include "WrappedCone.hpp"
+
+// Effects
+#include "WrappedSignedDistanceEffect.hpp"
+#include "WrappedPerlinDistortDistanceEffect.hpp"
+#include "WrappedPerlinCarveDistanceEffect.hpp"
+#include "WrappedSineDistortDistanceEffect.hpp"
+#include "WrappedVoronoiCarveDistanceEffect.hpp"
 
 // Thin header: `SDF` utility functions remain here; distance function classes
 // and effects are declared in the split headers to reduce compilation impact.

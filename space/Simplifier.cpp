@@ -1,4 +1,5 @@
-#include "space.hpp"
+#include "Simplifier.hpp"
+#include "octree.hpp"
 
 
 Simplifier::Simplifier(float angle, float distance, bool texturing) {

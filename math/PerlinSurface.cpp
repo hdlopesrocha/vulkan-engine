@@ -1,4 +1,7 @@
-#include "math.hpp"
+
+#include "PerlinSurface.hpp"
+#include "Math.hpp"
+#include <stb/stb_perlin.h>
 
 
 
