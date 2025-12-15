@@ -56,6 +56,14 @@ public:
     }
 
     void loadScene(SceneLoaderCallback& callback) override {
+
+        std::cout << "LocalScene::loadScene() " << std::endl;
+        auto startTime = std::chrono::steady_clock::now();
+
         callback.loadScene(*opaqueOctree, *transparentOctree);
+
+        auto endTime = std::chrono::steady_clock::now();
+        double elapsed = std::chrono::duration<double>(endTime - startTime).count();
+        std::cout << "LocalScene::loadScene Ok! " << std::to_string(elapsed) << "s"  << std::endl;
     }
 };

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <iostream>
-#include <GLFW/glfw3.h>
+#include <chrono>
 #include <glm/glm.hpp>
 
 #include "Scene.hpp"
@@ -64,8 +64,6 @@ public:
 
     void loadScene(Octree &opaqueLayer, Octree &transparentLayer) {
 
-        std::cout << "Scene::generate() " << std::endl;
-        double startTime = glfwGetTime(); // Get elapsed time in seconds
         //WrappedSignedDistanceFunction::resetCalls();
         int sizePerTile = 30;
         int tiles= 256;
@@ -307,10 +305,7 @@ public:
             opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(9), minSize*0.25, simplifier, &opaqueLayerChangeHandler);
         }
 
-        double endTime = glfwGetTime(); // Get elapsed time in seconds
-        //std::cout << "Scene::callsToSDF " << std::to_string(WrappedSignedDistanceFunction::_calls)   << std::endl;
-
-        std::cout << "Scene::generate Ok! " << std::to_string(endTime-startTime) << "s"  << std::endl;
+   
         //brushContext->model.scale = glm::vec3(256.0f);
 
 

@@ -27,6 +27,14 @@ OBJ_DIR := $(OUT_DIR)/obj
 OBJS := $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(SRCS))
 OUT = $(OUT_DIR)/app
 
+# Objects used for the standalone server (exclude the app's main.o and vulkan objects to avoid duplicate main
+# and linking against Vulkan)
+SERVER_OBJS := $(filter-out $(OBJ_DIR)/main.o $(OBJ_DIR)/vulkan/%.o $(OBJ_DIR)/widgets/%.o $(OBJ_DIR)/events/KeyboardPublisher.o $(OBJ_DIR)/events/GamepadPublisher.o,$(OBJS))
+
+# Server-specific link flags: exclude glfw and vulkan libs (they are brought in via pkg-config in LIBS)
+SERVER_LIBS := -lstb -lgdal -lz
+SERVER_INCLUDES := -I/usr/include/imgui -I/usr/include/stb
+
 # shader sources and generated SPIR-V
 
 SHADERS = shaders/main.vert shaders/main.tesc shaders/main.tese shaders/main.frag shaders/shadow.frag shaders/perlin_noise.comp shaders/sky.vert shaders/sky.frag
@@ -38,9 +46,16 @@ SPVS := $(SPVS:.tesc=.tesc.spv)
 SPVS := $(SPVS:.tese=.tese.spv)
 OUT_SPVS := $(patsubst shaders/%, $(OUT_DIR)/shaders/%, $(SPVS))
 
-all: shaders $(OUT)
+all: shaders $(OUT) server
 	@mkdir -p $(OUT_DIR)
 	@mkdir -p $(OBJ_DIR)
+
+.PHONY: server
+server:
+	@mkdir -p $(OUT_DIR)
+	# Ensure project objects are built, then link server with them so it can use project symbols
+	@$(MAKE) $(SERVER_OBJS)
+	$(CC) $(CFLAGS) $(SERVER_INCLUDES) server.cpp $(SERVER_OBJS) -o $(OUT_DIR)/server $(SERVER_LIBS)
 
 $(OUT): $(OBJS)
 	$(CC) $(CFLAGS) $(INCLUDES) $(OBJS) -o $(OUT) $(LIBS)
@@ -113,6 +128,10 @@ debug:
 
 release:
 	@$(MAKE) BUILD=release all
+
+.PHONY: server-debug
+server-debug:
+	@$(MAKE) BUILD=debug server
 
 .PHONY: run run-debug
 run: all
