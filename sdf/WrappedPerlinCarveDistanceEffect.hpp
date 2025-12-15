@@ -3,6 +3,8 @@
 
 #include "WrappedSignedDistanceEffect.hpp"
 #include <glm/glm.hpp>
+#include "SDF.hpp"
+#include "../math/Math.hpp"
 
 class WrappedPerlinCarveDistanceEffect : public WrappedSignedDistanceEffect {
     public:

@@ -1,11 +1,11 @@
 #ifndef SPACE_PROCESSOR_HPP
 #define SPACE_PROCESSOR_HPP
 
-#include "types.hpp"
 #include "IteratorHandler.hpp"
-#include "octree.hpp"
+#include "Octree.hpp"
 #include "ThreadPool.hpp"
 #include <unordered_set>
+#include "../math/BoundingCubeHasher.hpp"
 
 class Processor : public IteratorHandler {
     ThreadPool &threadPool;

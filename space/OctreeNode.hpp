@@ -2,7 +2,13 @@
 #define SPACE_OCTREE_NODE_HPP
 
 #include "ChildBlock.hpp"
-#include "types.hpp"
+#include "../math/Vertex.hpp"
+#include "../math/BoundingCube.hpp"
+#include "../math/SpaceType.hpp"
+
+class OctreeAllocator;
+class OctreeChangeHandler;
+struct OctreeNodeCubeSerialized;
 
 class OctreeNode {
 

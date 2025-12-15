@@ -1,7 +1,7 @@
 #include "OctreeVisibilityChecker.hpp"
-#include "octree.hpp"
+#include "Octree.hpp"
 #include "OctreeNode.hpp"
-
+#include "../math/Frustum.hpp"
 
 OctreeVisibilityChecker::OctreeVisibilityChecker() {
 	visibleNodes.reserve(1024);

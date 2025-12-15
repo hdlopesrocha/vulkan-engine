@@ -39,8 +39,6 @@ OUT_SPVS := $(patsubst shaders/%, $(OUT_DIR)/shaders/%, $(SPVS))
 all: shaders $(OUT)
 	@mkdir -p $(OUT_DIR)
 	@mkdir -p $(OBJ_DIR)
-	@echo "Sources to compile:"
-	@for f in $(SRCS); do echo "  $$f"; done
 
 $(OUT): $(OBJS)
 	$(CC) $(CFLAGS) $(INCLUDES) $(OBJS) -o $(OUT) $(LIBS)

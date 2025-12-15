@@ -3,6 +3,8 @@
 
 #include "SignedDistanceFunction.hpp"
 #include <glm/glm.hpp>
+#include "../math/Transformation.hpp"
+#include "SDF.hpp"
 
 class PyramidDistanceFunction : public SignedDistanceFunction {
 public:

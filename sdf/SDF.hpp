@@ -2,38 +2,31 @@
 #define SDF_HPP
 
 #include <glm/glm.hpp>
-#include "types.hpp"
-#include "../math/math.hpp"
-#include "SphereDistanceFunction.hpp"
-#include "CylinderDistanceFunction.hpp"
-#include "TorusDistanceFunction.hpp"
-#include "BoxDistanceFunction.hpp"
-#include "CapsuleDistanceFunction.hpp"
-#include "HeightMapDistanceFunction.hpp"
-#include "OctahedronDistanceFunction.hpp"
-#include "PyramidDistanceFunction.hpp"
-#include "ConeDistanceFunction.hpp"
 
-// Wrapped helpers
-#include "WrappedSphere.hpp"
-#include "WrappedCylinder.hpp"
-#include "WrappedTorus.hpp"
-#include "WrappedBox.hpp"
-#include "WrappedCapsule.hpp"
-#include "WrappedHeightMap.hpp"
-#include "WrappedOctahedron.hpp"
-#include "WrappedPyramid.hpp"
-#include "WrappedCone.hpp"
+//      6-----7
+//     /|    /|
+//    4z+---5 |
+//    | 2y--+-3
+//    |/    |/
+//    0-----1x
+static const glm::ivec2 SDF_EDGES[12] = {
+    {0, 1}, 
+    {1, 3}, 
+    {2, 3}, 
+    {0, 2},
+    {4, 5},
+    {5, 7}, 
+    {6, 7}, 
+    {4, 6},
+    {0, 4}, 
+    {1, 5}, 
+    {2, 6}, 
+    {3, 7}
+}; 
 
-// Effects
-#include "WrappedSignedDistanceEffect.hpp"
-#include "WrappedPerlinDistortDistanceEffect.hpp"
-#include "WrappedPerlinCarveDistanceEffect.hpp"
-#include "WrappedSineDistortDistanceEffect.hpp"
-#include "WrappedVoronoiCarveDistanceEffect.hpp"
-
-// Thin header: `SDF` utility functions remain here; distance function classes
-// and effects are declared in the split headers to reduce compilation impact.
+#include "../math/BoundingCube.hpp"
+#include "../math/SpaceType.hpp"
+#include "../math/BrushMode.hpp"
 
 class SDF
 {

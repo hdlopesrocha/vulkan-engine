@@ -1,5 +1,5 @@
 #include "Processor.hpp"
-#include "octree.hpp"
+#include "Octree.hpp"
 #include "OctreeNode.hpp"
 #include "ThreadPool.hpp"
 

@@ -1,7 +1,6 @@
 #ifndef SPACE_ITERATOR_HPP
 #define SPACE_ITERATOR_HPP
 
-#include "types.hpp"
 #include "ThreadPool.hpp"
 #include "IteratorHandler.hpp"
 #include <stack>

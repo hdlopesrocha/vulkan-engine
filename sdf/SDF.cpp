@@ -1,4 +1,8 @@
 #include "SDF.hpp"
+#include "../math/Math.hpp"
+#include <iostream>
+#include <cstring>
+#include <stb/stb_perlin.h>
 
 glm::vec3 SDF::getPosition(float sdf[8], const BoundingCube &cube) {
     // Early exit if there's no surface inside this cube

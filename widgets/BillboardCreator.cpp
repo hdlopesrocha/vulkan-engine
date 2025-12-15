@@ -5,6 +5,17 @@
 #include <vector>
 #include <cstdio>
 
+// Constructor moved from header
+BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureManager* textureMgr)
+    : Widget("Billboard Creator"), billboardManager(billboardMgr), atlasManager(atlasMgr), textureManager(textureMgr) {
+    isOpen = false; // Start closed
+}
+
+void BillboardCreator::setVulkanApp(VulkanApp* app) {
+    vulkanApp = app;
+    initializeTextures();
+}
+
 void BillboardCreator::initializeTextures() {
     if (!vulkanApp || texturesInitialized) return;
 
@@ -556,8 +567,84 @@ void BillboardCreator::drawCheckerboard(ImDrawList* drawList, ImVec2 pos, float 
         }
     }
 }
-#include "BillboardCreator.hpp"
 
-// Auto-generated implementation stub for BillboardCreator
+// BillboardCreator::render moved from header
+void BillboardCreator::render() {
+    if (!isOpen) return;
+    if (!billboardManager || !atlasManager || !textureManager) return;
 
-// Minimal no-op implementation to keep translation unit for build.
+    ImGui::SetNextWindowSize(ImVec2(900, 700), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin(title.c_str(), &isOpen)) {
+        ImGui::End();
+        return;
+    }
+
+    // Left panel - Billboard list
+    ImGui::BeginChild("BillboardList", ImVec2(200, 0), true);
+
+    ImGui::Text("Billboards");
+    ImGui::Separator();
+
+    // Create new billboard button
+    if (ImGui::Button("New Billboard", ImVec2(-1, 0))) {
+        std::string name = "Billboard " + std::to_string(billboardManager->getBillboardCount() + 1);
+        currentBillboardIndex = billboardManager->createBillboard(name);
+        selectedLayerIndex = -1;
+    }
+
+    ImGui::Spacing();
+
+    // List billboards
+    for (size_t i = 0; i < billboardManager->getBillboardCount(); ++i) {
+        const Billboard* billboard = billboardManager->getBillboard(i);
+        if (!billboard) continue;
+
+        ImGui::PushID(i);
+        bool isSelected = (currentBillboardIndex == static_cast<int>(i));
+        if (ImGui::Selectable(billboard->name.c_str(), isSelected)) {
+            currentBillboardIndex = i;
+            selectedLayerIndex = -1;
+        }
+
+        // Right-click menu
+        if (ImGui::BeginPopupContextItem()) {
+            if (ImGui::MenuItem("Delete")) {
+                billboardManager->removeBillboard(i);
+                if (currentBillboardIndex >= static_cast<int>(billboardManager->getBillboardCount())) {
+                    currentBillboardIndex = billboardManager->getBillboardCount() - 1;
+                }
+                selectedLayerIndex = -1;
+                ImGui::EndPopup();
+                ImGui::PopID();
+                break;
+            }
+            ImGui::EndPopup();
+        }
+
+        ImGui::PopID();
+    }
+
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    // Right panel - Billboard editor
+    ImGui::BeginChild("BillboardEditor", ImVec2(0, 0), true);
+
+    if (currentBillboardIndex >= 0 && currentBillboardIndex < static_cast<int>(billboardManager->getBillboardCount())) {
+        Billboard* billboard = billboardManager->getBillboard(currentBillboardIndex);
+        if (!billboard) {
+            ImGui::Text("Error: Invalid billboard");
+            ImGui::EndChild();
+            ImGui::End();
+            return;
+        }
+
+        renderBillboardEditor(billboard);
+    } else {
+        ImGui::Text("Select or create a billboard to edit");
+    }
+
+    ImGui::EndChild();
+
+    ImGui::End();
+}

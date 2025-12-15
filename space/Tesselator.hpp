@@ -1,7 +1,11 @@
 #ifndef SPACE_TESSELATOR_HPP
 #define SPACE_TESSELATOR_HPP
 
-#include "types.hpp"
+
+#include "OctreeNodeTriangleHandler.hpp"
+#include "ThreadContext.hpp"
+#include "../math/Geometry.hpp"
+#include "../math/Vertex.hpp"
 
 class Tesselator : public OctreeNodeTriangleHandler{
     ThreadContext * context;

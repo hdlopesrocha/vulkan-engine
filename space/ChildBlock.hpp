@@ -1,7 +1,21 @@
 #ifndef SPACE_CHILD_BLOCK_HPP
 #define SPACE_CHILD_BLOCK_HPP
 
-#include "types.hpp"
+#include "OctreeChangeHandler.hpp"
+
+class OctreeAllocator;
+class OctreeNode;
+
+#include <cstdint>
+#include <climits>
+
+class OctreeChangeHandler;
+class OctreeAllocator;
+class OctreeNode;
+
+typedef unsigned int uint;
+
+const uint UINT_MAX_ARRAY [8] = {UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX};
 
 struct ChildBlock {
     uint children[8];

@@ -2,6 +2,7 @@
 #define GEOMETRY_HPP
 
 #include "Vertex.hpp"
+#include "VertexHasher.hpp"
 #include <vector>
 #include <tsl/robin_map.h>
 
@@ -29,20 +30,11 @@ template <typename T> struct InstanceGeometry {
 public:
     Geometry * geometry;
     std::vector<T> instances;
-    InstanceGeometry(Geometry * geometry) {
-        this->geometry = geometry;
-        geometry->setCenter();
-    }
-    InstanceGeometry(Geometry * geometry, std::vector<T> &instances) {
-        this->geometry = geometry;
-        this->instances = instances;
-        geometry->setCenter();
-    }
-    ~InstanceGeometry() {
-        if(!geometry->reusable){
-            delete geometry;
-        }
-    }
+    InstanceGeometry(Geometry * geometry);
+    InstanceGeometry(Geometry * geometry, std::vector<T> &instances);
+    ~InstanceGeometry();
 };
+
+#include "Geometry.tpp"
 
 #endif

@@ -1,7 +1,7 @@
 #include "IteratorHandler.hpp"
 #include "ConcurrentQueue.hpp"
 #include "ThreadPool.hpp"
-#include "octree.hpp"
+#include "Octree.hpp"
 #include "OctreeNode.hpp"
 #include <queue>
 

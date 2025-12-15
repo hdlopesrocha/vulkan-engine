@@ -1,5 +1,7 @@
 #include "Simplifier.hpp"
-#include "octree.hpp"
+#include "NodeOperationResult.hpp"
+#include "Octree.hpp"
+#include "../sdf/SDF.hpp"
 
 
 Simplifier::Simplifier(float angle, float distance, bool texturing) {

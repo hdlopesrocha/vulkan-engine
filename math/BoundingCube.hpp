@@ -42,23 +42,6 @@ public:
     bool operator==(const BoundingCube& other) const;
 };
 
-struct BoundingCubeHasher {
-    std::size_t operator()(const BoundingCube &v) const {
-        std::size_t hash = 0;
-        hash ^= std::hash<glm::vec3>{}(v.getMin()) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
-        hash ^= std::hash<float>{}(v.getLengthX()) + 0x01000193 + (hash << 6) + (hash >> 2);
-        return hash;
-    }
-};
 
-struct BoundingCubeKeyHash {
-    size_t operator()(const BoundingCube& key) const {
-        size_t h1 = std::hash<int>{}(key.getMinX());
-        size_t h2 = std::hash<int>{}(key.getMinY());
-        size_t h3 = std::hash<int>{}(key.getMinZ());
-        size_t h4 = std::hash<int>{}(key.getLengthX());
-        return h1 ^ h2 ^ h3 ^ h4;
-    }
-};
 
 #endif

@@ -1,9 +1,10 @@
 #ifndef SPACE_OCTREE_VISIBILITY_CHECKER_HPP
 #define SPACE_OCTREE_VISIBILITY_CHECKER_HPP
 
-#include "types.hpp"
 #include "IteratorHandler.hpp"
-#include "octree.hpp"
+#include "Octree.hpp"
+#include "OctreeNode.hpp"
+#include "../math/Frustum.hpp"
 #include <mutex>
 
 class OctreeVisibilityChecker : public IteratorHandler{

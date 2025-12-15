@@ -1,4 +1,5 @@
 #include "AbstractBoundingBox.hpp"
+#include "BoundingVolumeVisitor.hpp"
 #include "Math.hpp"
 #include "BoundingCube.hpp"
 

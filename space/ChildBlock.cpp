@@ -1,6 +1,8 @@
 #include "ChildBlock.hpp"
 #include "OctreeAllocator.hpp"
 #include "OctreeNode.hpp"
+#include <cstring>
+
 
 ChildBlock::ChildBlock() {
 

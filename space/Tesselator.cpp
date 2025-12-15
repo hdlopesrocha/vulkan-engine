@@ -1,5 +1,5 @@
 #include "Tesselator.hpp"
-#include "octree.hpp"
+#include "Octree.hpp"
 #include "IteratorHandler.hpp"
 
 

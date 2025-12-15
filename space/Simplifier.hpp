@@ -1,7 +1,10 @@
 #ifndef SPACE_SIMPLIFIER_HPP
 #define SPACE_SIMPLIFIER_HPP
 
-#include "types.hpp"
+#include "../math/BoundingCube.hpp"
+#include <utility>
+
+struct NodeOperationResult;
 
 class Simplifier {
     float angle;

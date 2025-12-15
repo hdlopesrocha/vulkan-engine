@@ -1,5 +1,11 @@
 #include "OctreeNode.hpp"
+#include "OctreeNodeCubeSerialized.hpp"
 #include "OctreeAllocator.hpp"
+#include <cmath>
+#include <cstring>
+
+
+const float INFINITY_ARRAY [8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
 
 
 OctreeNode::OctreeNode() {

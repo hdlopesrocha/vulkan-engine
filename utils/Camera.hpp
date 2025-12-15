@@ -27,7 +27,7 @@ public:
     glm::quat getOrientation() const { return orientation; }
 
     // Immediate control methods (used by event handlers)
-    void translate(const glm::vec3 &d) { position += d; }
+    void translate(const glm::vec3 &d);
     void rotateEuler(float yawDeg, float pitchDeg, float rollDeg);
     void rotateAxisAngle(const glm::vec3 &axis, float angleDeg);
 

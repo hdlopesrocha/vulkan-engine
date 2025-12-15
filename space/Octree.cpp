@@ -1,7 +1,16 @@
-#include "octree.hpp"
+#include "Octree.hpp"
+#include "../math/BrushMode.hpp"
+#include "NodeOperationResult.hpp"
+#include "OctreeNodeCubeSerialized.hpp"
+#include <cmath>
+
+const float INFINITY_ARRAY [8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
 #include "OctreeAllocator.hpp"
 #include "OctreeNode.hpp"
 #include "IteratorHandler.hpp"
+#include "../sdf/SDF.hpp"
+#include "../math/BrushMode.hpp"
+
 
 //      6-----7
 //     /|    /|

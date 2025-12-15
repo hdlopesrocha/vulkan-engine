@@ -3,6 +3,11 @@
 
 #include "WrappedSignedDistanceEffect.hpp"
 #include <glm/glm.hpp>
+#include "../math/Math.hpp"
+#include "../math/BoundingCube.hpp"
+#include "../math/BoundingSphere.hpp"
+#include "../math/Transformation.hpp"
+#include "SDF.hpp"
 
 class WrappedVoronoiCarveDistanceEffect : public WrappedSignedDistanceEffect {
     public:

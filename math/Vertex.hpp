@@ -98,16 +98,4 @@ template<> struct hash<glm::vec2> {
 
 } // namespace std
 
-struct VertexHasher {
-   uint64_t operator()(const Vertex& v) const noexcept {
-        uint64_t h = 0;
-        h = hashCombine(h, std::hash<glm::vec3>{}(v.position));
-        h = hashCombine(h, std::hash<glm::vec3>{}(v.normal));
-        h = hashCombine(h, std::hash<glm::vec2>{}(v.texCoord));
-        h = hashCombine(h, std::hash<int>{}(v.texIndex));
-        h = hashCombine(h, std::hash<int>{}(v.brushIndex));
-        return h;
-    }
-};
-
 #endif // MATH_VERTEX_HPP

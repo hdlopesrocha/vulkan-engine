@@ -1,5 +1,104 @@
 #include "SettingsWidget.hpp"
 
+SettingsWidget::SettingsWidget() : Widget("Settings") {
+    isOpen = true;
+}
+
+void SettingsWidget::resetToDefaults() {
+    enableShadows = true;
+
+    flipKeyboardRotation = false;
+    flipGamepadRotation = false;
+    moveSpeed = 2.5f;
+    angularSpeedDeg = 45.0f;
+    debugMode = 0;
+    adaptiveTessellation = true;
+    tessMinLevel = 1.0f;
+    tessMaxLevel = 32.0f;
+    tessMaxDistance = 30.0f;
+}
+
+void SettingsWidget::render() {
+    if (!isOpen) return;
+
+    if (ImGui::Begin(title.c_str(), &isOpen)) {
+        ImGui::Text("Shadow Effects");
+        ImGui::Separator();
+        if (ImGui::Checkbox("Enable Shadows", &enableShadows)) {
+
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Globally enable or disable all shadowing");
+        if (ImGui::Button("Dump Shadow Depth")) {
+            if (onDumpShadowDepth) onDumpShadowDepth();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Write shadow depth PGM for debugging");
+
+
+        ImGui::Separator();
+        ImGui::Text("Performance");
+        ImGui::Separator();
+
+
+        ImGui::Separator();
+
+        ImGui::Text("Input");
+        ImGui::Separator();
+            ImGui::Text("Rendering");
+            ImGui::Separator();
+            if (ImGui::Checkbox("Enable Normal Mapping", &normalMappingEnabled)) {
+                // toggled
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Globally enable/disable normal mapping (normal maps still needed in textures)");
+        if (ImGui::Checkbox("Flip keyboard rotation axes", &flipKeyboardRotation)) {
+            // toggled
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Invert yaw/pitch directions for keyboard rotation controls");
+        if (ImGui::Checkbox("Flip gamepad rotation axes", &flipGamepadRotation)) {
+            // toggled
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Invert yaw/pitch directions for gamepad right-stick");
+
+        ImGui::Separator();
+
+        ImGui::Text("Input Sensitivity");
+        ImGui::Separator();
+        ImGui::SliderFloat("Move Speed", &moveSpeed, 0.1f, 20.0f, "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Movement speed in units/second used by keyboard and gamepad");
+        ImGui::SliderFloat("Angular Speed (deg/s)", &angularSpeedDeg, 1.0f, 360.0f, "%.0f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Angular rotation speed in degrees/second used by keyboard and gamepad");
+
+        ImGui::Separator();
+
+        ImGui::Text("Tessellation");
+        ImGui::Separator();
+        ImGui::Checkbox("Adaptive Tessellation", &adaptiveTessellation);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable camera-distance driven tessellation level");
+        ImGui::SliderFloat("Tess Min Level", &tessMinLevel, 1.0f, 64.0f, "%.1f");
+        ImGui::SliderFloat("Tess Max Level", &tessMaxLevel, 1.0f, 64.0f, "%.1f");
+        ImGui::SliderFloat("Tess Max Distance", &tessMaxDistance, 1.0f, 200.0f, "%.1f");
+
+        if (ImGui::Button("Reset to Defaults")) {
+            resetToDefaults();
+        }
+        ImGui::Separator();
+        if (ImGui::Checkbox("Wireframe Mode", &wireframeMode)) {
+            // toggle wireframe rendering
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Render meshes in wireframe (requires GPU support)");
+
+        ImGui::Separator();
+        ImGui::Text("Debug Visualisation");
+        ImGui::Separator();
+        const char* debugItems[] = { "Default Render", "Fragment Normal", "World Normal", "UV Coordinates", "Tangent (TBN)", "Bitangent (TBN)", "Normal (TBN)", "Albedo Texture", "Normal Texture", "Bump Texture", "Height Pre-Projection", "Normal from Derivatives", "Light Vector (RGB)", "N·L (grayscale)", "Shadow Diagnostics", "Triplanar Weights" };
+        int current = debugMode;
+        if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {
+            debugMode = current;
+        }
+    }
+    ImGui::End();
+}
+#include "SettingsWidget.hpp"
+
 // Auto-generated implementation stub for SettingsWidget
 
 // Minimal no-op implementation to keep translation unit for build.

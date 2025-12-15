@@ -2,8 +2,8 @@
 #define SDF_SIGNED_DISTANCE_FUNCTION_HPP
 
 #include <glm/glm.hpp>
-#include "types.hpp"
 #include "../math/Transformation.hpp"
+#include "SdfType.hpp"
 
 class SignedDistanceFunction {
 public:

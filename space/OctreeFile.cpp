@@ -1,9 +1,11 @@
 #include "OctreeFile.hpp"
-#include "octree.hpp"
+#include "Octree.hpp"
 #include "OctreeNode.hpp"
 #include "OctreeAllocator.hpp"
 #include "ChildBlock.hpp"
 #include "OctreeNodeFile.hpp"
+#include "../sdf/SDF.hpp"
+#include "../math/Math.hpp"
 
 
 

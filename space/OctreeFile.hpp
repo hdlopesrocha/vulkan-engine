@@ -1,8 +1,8 @@
 #ifndef SPACE_OCTREE_FILE_HPP
 #define SPACE_OCTREE_FILE_HPP
 
-#include "types.hpp"
-#include "octree.hpp"
+#include "Octree.hpp"
+#include "OctreeNodeSerialized.hpp"
 
 class OctreeFile {
     Octree * tree;

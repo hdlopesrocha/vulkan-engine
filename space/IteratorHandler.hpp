@@ -1,8 +1,11 @@
 #ifndef SPACE_ITERATOR_HANDLER_HPP
 #define SPACE_ITERATOR_HANDLER_HPP
 
-#include "types.hpp"
 #include <stack>
+
+#include "OctreeNodeData.hpp"
+#include "StackFrame.hpp"
+#include "StackFrameOut.hpp"
 
 class Octree;
 class ThreadPool;

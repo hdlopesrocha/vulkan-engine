@@ -55,3 +55,8 @@ void Camera::onEvent(const EventPtr &event) {
         return;
     }
 }
+
+// Moved from header: immediate translation
+void Camera::translate(const glm::vec3 &d) {
+    position += d;
+}

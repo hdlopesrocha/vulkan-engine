@@ -1,4 +1,9 @@
-#include "math.hpp"
+#include "Math.hpp"
+#include <glm/glm.hpp>
+#include "BoundingSphere.hpp"
+#include "BoundingBox.hpp"
+#include <filesystem>
+#include "BrushMode.hpp"
 #include <sstream>
 #include <fstream>
 #include <zlib.h>
