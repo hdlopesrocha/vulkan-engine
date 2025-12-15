@@ -16,8 +16,8 @@ class WrappedSignedDistanceFunction : public SignedDistanceFunction {
     public:
     bool cacheEnabled = false;
 
-    WrappedSignedDistanceFunction(SignedDistanceFunction * function) : function(function) {}
-    virtual ~WrappedSignedDistanceFunction() = default;
+    WrappedSignedDistanceFunction(SignedDistanceFunction * function);
+    virtual ~WrappedSignedDistanceFunction();
 
     virtual void accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const = 0;
     virtual ContainmentType check(const BoundingCube &cube, const Transformation &model, float bias) const = 0;
@@ -25,37 +25,13 @@ class WrappedSignedDistanceFunction : public SignedDistanceFunction {
     virtual bool isContained(const BoundingCube &cube, const Transformation &model, float bias) const = 0;
     virtual const char* getLabel() const = 0;
 
-    SdfType getType() const override {
-        return function->getType();
-    }
+    SdfType getType() const override;
 
-    SignedDistanceFunction * getFunction() {
-        return function;
-    }
+    SignedDistanceFunction * getFunction();
 
-    float distance(const glm::vec3 &p, const Transformation &model) override {
-        if(cacheEnabled){
-            mtx.lock();
-            auto it = cacheSDF.find(p);
-            if (it != cacheSDF.end()) {
-                float value = it->second;
-                mtx.unlock();
-                return value;
-            }
-            mtx.unlock();
-            float result = function->distance(p, model);
-            mtx.lock();
-            cacheSDF[p] = result;
-            mtx.unlock();
-            return result;
-        } else {
-           return function->distance(p, model);
-        }
-    }
+    float distance(const glm::vec3 &p, const Transformation &model) override;
 
-    glm::vec3 getCenter(const Transformation &model) const override {
-        return function->getCenter(model);
-    };
+    glm::vec3 getCenter(const Transformation &model) const override;
 };
 
 #endif
