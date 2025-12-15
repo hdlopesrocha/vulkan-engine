@@ -129,10 +129,6 @@ debug:
 release:
 	@$(MAKE) BUILD=release all
 
-.PHONY: server-debug
-server-debug:
-	@$(MAKE) BUILD=debug server
-
 .PHONY: run run-debug
 run: all
 	@echo "Running app from $(OUT_DIR)/"
@@ -152,7 +148,8 @@ clean:
 install:
 	sudo apt install vulkan-validationlayers
 	sudo apt install glslang-tools
-
+	sudo apt-get install robin-map-dev
+	
 	# 1. Install dependencies
 	sudo apt update
 	sudo apt install -y build-essential git cmake pkg-config libglfw3-dev libvulkan-dev vulkan-validationlayers glslang-tools
