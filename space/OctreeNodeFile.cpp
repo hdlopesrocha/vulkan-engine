@@ -73,7 +73,7 @@ void OctreeNodeFile::load(std::string baseFolder, BoundingCube &cube) {
 uint OctreeNodeFile::saveRecursive(OctreeNode * node, std::vector<OctreeNodeSerialized> * nodes) {
 	if(node!=NULL) {
 		OctreeNodeSerialized n = OctreeNodeSerialized();
-		n.brushIndex = node->vertex.brushIndex;
+		n.brushIndex = node->vertex.texIndex;
 		n.bits = node->bits;
 		SDF::copySDF(node->sdf, n.sdf);
 

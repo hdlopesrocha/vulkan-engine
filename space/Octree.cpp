@@ -273,7 +273,7 @@ void Octree::handleQuadNodes(const BoundingCube &cube, uint level, const float s
                 if(childNode != NULL && childNode->getType() == SpaceType::Surface) {
                     vertices[i] = childNode->vertex;
                 } else {
-                    vertices[i].brushIndex = DISCARD_BRUSH_INDEX;
+                    vertices[i].texIndex = DISCARD_BRUSH_INDEX;
                 }
 			}
 	
@@ -445,11 +445,11 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             }
             
             float childSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
-            int childBrushIndex = node != NULL ? node->vertex.brushIndex : frame.brushIndex;
+            int childBrushIndex = node != NULL ? node->vertex.texIndex : frame.brushIndex;
             bool isChildInterpolated = frame.interpolated;
 
             if(child != NULL) {
-                childBrushIndex = child->vertex.brushIndex;
+                childBrushIndex = child->vertex.texIndex;
                 SDF::copySDF(child->sdf, childSDF);
             } else {
                 isChildInterpolated = true;
@@ -560,7 +560,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                 }
             }
 
-            node->vertex.brushIndex = brushIndex;
+            node->vertex.texIndex = brushIndex;
 
             if(!isLeaf) {
                 // ------------------------------

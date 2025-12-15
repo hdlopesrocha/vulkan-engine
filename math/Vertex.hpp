@@ -33,16 +33,15 @@ public:
     glm::vec3 normal;
     glm::vec4 tangent;
     int texIndex;
-    int brushIndex;
     int _pad0;
 
-    Vertex(glm::vec3 pos, glm::vec3 normal, glm::vec2 texCoord, int brushIndex)
-        : position(pos), color(glm::vec3(1.0f)), texCoord(texCoord), normal(normal), texIndex(0), brushIndex(brushIndex), tangent(glm::vec4(0.0f)), _pad0(0) {
+    Vertex(glm::vec3 pos, glm::vec3 normal, glm::vec2 texCoord, int texIndex)
+        : position(pos), color(glm::vec3(1.0f)), texCoord(texCoord), normal(normal), texIndex(texIndex), tangent(glm::vec4(0.0f)), _pad0(0) {
     }
 
-    Vertex() : position(glm::vec3(0.0f)), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), texIndex(0), brushIndex(0), tangent(glm::vec4(0.0f)), _pad0(0) {}
+    Vertex() : position(glm::vec3(0.0f)), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), texIndex(0), tangent(glm::vec4(0.0f)), _pad0(0) {}
 
-    Vertex(glm::vec3 pos) : position(pos), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), texIndex(0), brushIndex(0), tangent(glm::vec4(0.0f)), _pad0(0) {}
+    Vertex(glm::vec3 pos) : position(pos), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), texIndex(0), tangent(glm::vec4(0.0f)), _pad0(0) {}
 
     bool operator<(const Vertex& other) const {
         return std::tie(position.x, position.y, position.z, normal.x, normal.y, normal.z, texCoord.x, texCoord.y, texIndex)
@@ -58,7 +57,7 @@ public:
 
                std::bit_cast<uint64_t>(pack2(texCoord.x, texCoord.y)) == std::bit_cast<uint64_t>(pack2(o.texCoord.x, o.texCoord.y)) &&
 
-               texIndex == o.texIndex && brushIndex == o.brushIndex;
+               texIndex == o.texIndex;
     }
 
     bool operator!=(const Vertex& other) const {
