@@ -9,7 +9,7 @@ BUILD ?= release
 ifeq ($(BUILD),debug)
 	CFLAGS = -std=c++20 -O0 -g -DDEBUG
 else
-	CFLAGS = -std=c++20 -O3 -DNDEBUG
+	CFLAGS = -std=c++20 -O3 -march=native -DNDEBUG
 endif
 
 # Use pkg-config for GLFW and Vulkan includes; also add common ImGui/stb include paths
@@ -175,6 +175,9 @@ install:
 	sudo cp libimgui.a /usr/local/lib/
 	sudo ldconfig
 
+	@echo "Optionally, for profiling and code analysis tools, run:"
+	@echo "  sudo apt-get install cloc kcachegrind massif-visualizer"
+
 .PHONY: cloc
 cloc:
 	@echo "Running cloc to count lines of code..."
@@ -184,3 +187,6 @@ cloc:
 	else \
 		echo "cloc not found on PATH. Install it (e.g. sudo apt install cloc) to get a detailed LOC report."; \
 	fi
+
+callgrind:
+	cd bin; valgrind --tool=callgrind --callgrind-out-file=file.out ./server;  kcachegrind file.out	

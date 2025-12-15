@@ -5,13 +5,13 @@
 
 class LocalScene : public Scene {
 
-    Octree * opaqueOctree = NULL;
-    Octree * transparentOctree = NULL;
+    Octree opaqueOctree;
+    Octree transparentOctree;
 
 public:
-    LocalScene() {
-        opaqueOctree = new Octree(BoundingCube(glm::vec3(0.0f), 1.0f), 32.0f);
-        transparentOctree = new Octree(BoundingCube(glm::vec3(0.0f), 1.0f), 32.0f);
+    LocalScene() : 
+        opaqueOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)), 
+        transparentOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)) {
     };
     ~LocalScene() = default;
 
@@ -20,9 +20,9 @@ public:
         checker.update(viewMatrix);
 
         if(layer == LAYER_OPAQUE) {
-            opaqueOctree->iterate(checker);
+            opaqueOctree.iterate(checker);
         } else if(layer == LAYER_TRANSPARENT) {
-            transparentOctree->iterate(checker);
+            transparentOctree.iterate(checker);
         }
         for(const auto& nodeData : checker.visibleNodes) {
             callback.onVisibleNode((long)nodeData.node, nodeData.node->version);
@@ -60,7 +60,7 @@ public:
         std::cout << "LocalScene::loadScene() " << std::endl;
         auto startTime = std::chrono::steady_clock::now();
 
-        callback.loadScene(*opaqueOctree, *transparentOctree);
+        callback.loadScene(opaqueOctree, transparentOctree);
 
         auto endTime = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(endTime - startTime).count();
