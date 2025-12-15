@@ -21,6 +21,8 @@ OUT_DIR = bin
 
 # shader sources and generated SPIR-V
 SRCS := $(wildcard main.cpp utils/*.cpp vulkan/*.cpp widgets/*.cpp events/*.cpp math/*.cpp sdf/*.cpp space/*.cpp)
+# Exclude legacy utils Camera implementation (migrated to math/Camera)
+SRCS := $(filter-out utils/Camera.cpp,$(SRCS))
 OBJ_DIR := $(OUT_DIR)/obj
 OBJS := $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(SRCS))
 OUT = $(OUT_DIR)/app

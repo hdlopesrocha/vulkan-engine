@@ -4,7 +4,7 @@
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
-#include "utils/Camera.hpp"
+#include "math/Camera.hpp"
 #include "events/EventManager.hpp"
 #include "events/KeyboardPublisher.hpp"
 #include "events/GamepadPublisher.hpp"

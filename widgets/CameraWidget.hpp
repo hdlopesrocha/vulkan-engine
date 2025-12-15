@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../utils/Camera.hpp"
+#include "../math/Camera.hpp"
 #include <imgui.h>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/euler_angles.hpp>
