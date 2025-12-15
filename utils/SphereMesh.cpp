@@ -23,12 +23,12 @@ void SphereMesh::build(float radius, int longitudes, int latitudes, float texInd
             float pz = radius * sinPhi * sinTheta;
 
             Vertex vert;
-            vert.pos[0] = px; vert.pos[1] = py; vert.pos[2] = pz;
-            vert.color[0] = 1.0f; vert.color[1] = 1.0f; vert.color[2] = 1.0f;
-            vert.uv[0] = u; vert.uv[1] = v;
-            vert.normal[0] = px / radius; vert.normal[1] = py / radius; vert.normal[2] = pz / radius;
-            vert.texIndex = texIndex;
-            vert.tangent[0] = -sinTheta; vert.tangent[1] = 0.0f; vert.tangent[2] = cosTheta; vert.tangent[3] = 1.0f;
+            vert.position = glm::vec3(px, py, pz);
+            vert.color = glm::vec3(1.0f);
+            vert.texCoord = glm::vec2(u, v);
+            vert.normal = glm::vec3(px / radius, py / radius, pz / radius);
+            vert.texIndex = static_cast<int>(texIndex);
+            vert.tangent = glm::vec4(-sinTheta, 0.0f, cosTheta, 1.0f);
             vertices.push_back(vert);
         }
     }

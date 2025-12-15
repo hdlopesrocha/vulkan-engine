@@ -3,6 +3,7 @@
 #include <bit>
 #include <cstdint>
 #include <utility>
+#include <array>
 #include <tuple>
 #include <functional>
 
@@ -38,6 +39,15 @@ public:
     Vertex(glm::vec3 pos, glm::vec3 normal, glm::vec2 texCoord, int texIndex)
         : position(pos), color(glm::vec3(1.0f)), texCoord(texCoord), normal(normal), texIndex(texIndex), tangent(glm::vec4(0.0f)), _pad0(0) {
     }
+
+    // Compatibility constructor to allow aggregate-style initialization used across the codebase
+    Vertex(std::array<float,3> posArr, std::array<float,3> colorArr, std::array<float,2> texArr, std::array<float,3> normalArr, float texIndexF, std::array<float,4> tangentArr)
+        : position(posArr[0], posArr[1], posArr[2]),
+          color(colorArr[0], colorArr[1], colorArr[2]),
+          texCoord(texArr[0], texArr[1]),
+          normal(normalArr[0], normalArr[1], normalArr[2]),
+          tangent(tangentArr[0], tangentArr[1], tangentArr[2], tangentArr[3]),
+          texIndex(static_cast<int>(texIndexF)), _pad0(0) {}
 
     Vertex() : position(glm::vec3(0.0f)), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), texIndex(0), tangent(glm::vec4(0.0f)), _pad0(0) {}
 

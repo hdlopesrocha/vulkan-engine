@@ -41,8 +41,8 @@ const bool enableValidationLayers = true;
 class VulkanApp;
 struct MaterialProperties;
 
-// Vertex definition from utils
-#include "../utils/Vertex.hpp"
+// Vertex definition from math
+#include "../math/Vertex.hpp"
 
 
 // Small helper to create shader stage infos

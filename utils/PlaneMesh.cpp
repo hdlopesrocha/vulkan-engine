@@ -20,12 +20,12 @@ void PlaneMesh::build(float width, float height, int hSegments, int vSegments, f
             float vz = v * height - halfH;
 
             Vertex vert;
-            vert.pos[0] = vx; vert.pos[1] = vy; vert.pos[2] = vz;
-            vert.color[0] = 1.0f; vert.color[1] = 1.0f; vert.color[2] = 1.0f;
-            vert.uv[0] = u; vert.uv[1] = v;
-            vert.normal[0] = 0.0f; vert.normal[1] = 1.0f; vert.normal[2] = 0.0f;
-            vert.texIndex = texIndex;
-            vert.tangent[0] = 0.0f; vert.tangent[1] = 0.0f; vert.tangent[2] = 1.0f; vert.tangent[3] = 1.0f;
+            vert.position = glm::vec3(vx, vy, vz);
+            vert.color = glm::vec3(1.0f);
+            vert.texCoord = glm::vec2(u, v);
+            vert.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+            vert.texIndex = static_cast<int>(texIndex);
+            vert.tangent = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
             vertices.push_back(vert);
         }
     }

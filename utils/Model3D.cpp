@@ -17,9 +17,9 @@ void Model3D::computeNormals() {
         uint32_t i1 = indices[i+1];
         uint32_t i2 = indices[i+2];
 
-        glm::vec3 p0(vertices[i0].pos[0], vertices[i0].pos[1], vertices[i0].pos[2]);
-        glm::vec3 p1(vertices[i1].pos[0], vertices[i1].pos[1], vertices[i1].pos[2]);
-        glm::vec3 p2(vertices[i2].pos[0], vertices[i2].pos[1], vertices[i2].pos[2]);
+        glm::vec3 p0 = vertices[i0].position;
+        glm::vec3 p1 = vertices[i1].position;
+        glm::vec3 p2 = vertices[i2].position;
 
         glm::vec3 edge1 = p0 - p1;
         glm::vec3 edge2 = p0 - p2;
@@ -41,9 +41,7 @@ void Model3D::computeNormals() {
         } else {
             n = glm::vec3(0.0f, 0.0f, 1.0f);
         }
-        vertices[i].normal[0] = n.x;
-        vertices[i].normal[1] = n.y;
-        vertices[i].normal[2] = n.z;
+        vertices[i].normal = n;
     }
 }
 
@@ -56,13 +54,13 @@ void Model3D::computeTangents() {
         uint32_t i1 = indices[i+1];
         uint32_t i2 = indices[i+2];
 
-        glm::vec3 p0(vertices[i0].pos[0], vertices[i0].pos[1], vertices[i0].pos[2]);
-        glm::vec3 p1(vertices[i1].pos[0], vertices[i1].pos[1], vertices[i1].pos[2]);
-        glm::vec3 p2(vertices[i2].pos[0], vertices[i2].pos[1], vertices[i2].pos[2]);
+        glm::vec3 p0 = vertices[i0].position;
+        glm::vec3 p1 = vertices[i1].position;
+        glm::vec3 p2 = vertices[i2].position;
 
-        glm::vec2 uv0(vertices[i0].uv[0], vertices[i0].uv[1]);
-        glm::vec2 uv1(vertices[i1].uv[0], vertices[i1].uv[1]);
-        glm::vec2 uv2(vertices[i2].uv[0], vertices[i2].uv[1]);
+        glm::vec2 uv0 = vertices[i0].texCoord;
+        glm::vec2 uv1 = vertices[i1].texCoord;
+        glm::vec2 uv2 = vertices[i2].texCoord;
 
         glm::vec3 edge1 = p1 - p0;
         glm::vec3 edge2 = p2 - p0;
@@ -79,7 +77,7 @@ void Model3D::computeTangents() {
     }
 
     for (size_t i = 0; i < vertices.size(); ++i) {
-        glm::vec3 n(vertices[i].normal[0], vertices[i].normal[1], vertices[i].normal[2]);
+        glm::vec3 n = vertices[i].normal;
         glm::vec3 t = tanAccum[i];
         if (glm::length2(t) < 1e-8f) {
             glm::vec3 up = glm::abs(n.y) < 0.999f ? glm::vec3(0.0f,1.0f,0.0f) : glm::vec3(1.0f,0.0f,0.0f);
@@ -94,9 +92,6 @@ void Model3D::computeTangents() {
             b = glm::normalize(b - n * glm::dot(n, b));
         }
         float w = (glm::dot(glm::cross(n, t), b) < 0.0f) ? -1.0f : 1.0f;
-        vertices[i].tangent[0] = t.x;
-        vertices[i].tangent[1] = t.y;
-        vertices[i].tangent[2] = t.z;
-        vertices[i].tangent[3] = w;
+        vertices[i].tangent = glm::vec4(t.x, t.y, t.z, w);
     }
 }
