@@ -9,23 +9,9 @@
 #include <cstring>
 #include <functional>
 
-// Push constants for compute shader
-struct PerlinPushConstants {
-    float scale;
-    float octaves;
-    float persistence;
-    float lacunarity;
-    uint32_t seed;
-    float brightness;
-    float contrast;
-    uint32_t textureSize;
-    float time;  // Time parameter for animated noise
-    float padding[3];  // Padding for alignment
-};
-
 class EditableTextureSet : public Widget {
 public:
-    EditableTextureSet() : Widget("Editable Textures") {}
+    EditableTextureSet();
     
     void init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName = "Editable Textures");
     
@@ -43,13 +29,13 @@ public:
     void render() override;
     
     // Getters for individual textures
-    EditableTexture& getAlbedo() { return albedo; }
-    EditableTexture& getNormal() { return normal; }
-    EditableTexture& getBump() { return bump; }
-    
-    const EditableTexture& getAlbedo() const { return albedo; }
-    const EditableTexture& getNormal() const { return normal; }
-    const EditableTexture& getBump() const { return bump; }
+    EditableTexture& getAlbedo();
+    EditableTexture& getNormal();
+    EditableTexture& getBump();
+
+    const EditableTexture& getAlbedo() const;
+    const EditableTexture& getNormal() const;
+    const EditableTexture& getBump() const;
     
 private:
     VulkanApp* app = nullptr;

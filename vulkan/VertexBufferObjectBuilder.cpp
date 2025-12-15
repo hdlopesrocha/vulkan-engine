@@ -1,4 +1,5 @@
 #include "VertexBufferObjectBuilder.hpp"
+#include "VulkanApp.hpp"
 
 VertexBufferObject VertexBufferObjectBuilder::create(VulkanApp* app, const Model3D& model) {
     // Clone vertices and indices so we can call VulkanApp methods

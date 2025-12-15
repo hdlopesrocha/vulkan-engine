@@ -1,4 +1,5 @@
 #include "EditableTexture.hpp"
+#include "VulkanApp.hpp"
 #include <stdexcept>
 #include <backends/imgui_impl_vulkan.h>
 

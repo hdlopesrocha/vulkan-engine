@@ -103,3 +103,7 @@ void TextureViewer::render() {
 
     ImGui::End();
 }
+
+TextureViewer::TextureViewer() : Widget("Textures") {}
+
+void TextureViewer::init(TextureManager* manager) { this->manager = manager; }

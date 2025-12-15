@@ -1,5 +1,11 @@
 #include "Widget.hpp"
 
-// Auto-generated implementation stub for Widget
+Widget::Widget(const std::string& title) : title(title), isOpen(false) {}
+Widget::~Widget() = default;
 
-// Minimal no-op implementation to keep translation unit for build.
+bool Widget::isVisible() const { return isOpen; }
+void Widget::show() { isOpen = true; }
+void Widget::hide() { isOpen = false; }
+void Widget::toggle() { isOpen = !isOpen; }
+
+const std::string& Widget::getTitle() const { return title; }

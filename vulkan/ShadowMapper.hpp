@@ -23,7 +23,7 @@ public:
     VkSampler getShadowMapSampler() const { return shadowMapSampler; }
     VkDescriptorSet getImGuiDescriptorSet() const { return shadowMapImGuiDescSet; }
     uint32_t getShadowMapSize() const { return shadowMapSize; }
-    VkDescriptorSetLayout getShadowDescriptorSetLayout() const { return vulkanApp->getDescriptorSetLayout(); }
+    VkDescriptorSetLayout getShadowDescriptorSetLayout() const;
     // debug: read back depth image to host and write PGM
     void readbackShadowDepth();
     
@@ -54,5 +54,5 @@ private:
     void createShadowFramebuffer();
     void createShadowPipeline();
     // Request next shadow pass be rendered in wireframe and read back
-    void requestWireframeReadback() { requestWireframeReadbackFlag = true; }
+    void requestWireframeReadback();
 };

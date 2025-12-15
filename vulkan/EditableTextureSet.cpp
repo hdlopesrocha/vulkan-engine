@@ -1,7 +1,19 @@
 #include "EditableTextureSet.hpp"
+#include "VulkanApp.hpp"
 #include "FileReader.hpp"
+#include "PerlinPushConstants.hpp"
 #include <algorithm>
 #include <stdexcept>
+
+EditableTextureSet::EditableTextureSet() : Widget("Editable Textures") {}
+
+EditableTexture& EditableTextureSet::getAlbedo() { return albedo; }
+EditableTexture& EditableTextureSet::getNormal() { return normal; }
+EditableTexture& EditableTextureSet::getBump() { return bump; }
+
+const EditableTexture& EditableTextureSet::getAlbedo() const { return albedo; }
+const EditableTexture& EditableTextureSet::getNormal() const { return normal; }
+const EditableTexture& EditableTextureSet::getBump() const { return bump; }
 
 void EditableTextureSet::init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName) {
 	this->app = app;

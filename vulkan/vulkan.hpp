@@ -44,43 +44,18 @@ struct MaterialProperties;
 // Vertex definition from utils
 #include "../utils/Vertex.hpp"
 
-// Small helper types used across the Vulkan module
-struct Buffer {
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-};
-
-struct TextureImage {
-    VkImage image = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    VkImageView view = VK_NULL_HANDLE;
-    uint32_t mipLevels = 1;
-};
-
-struct VertexBufferObject {
-    Buffer vertexBuffer;
-    Buffer indexBuffer;
-    uint32_t indexCount = 0;
-    void destroy(VkDevice device) {
-        if (vertexBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, vertexBuffer.buffer, nullptr);
-        if (vertexBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(device, vertexBuffer.memory, nullptr);
-        if (indexBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, indexBuffer.buffer, nullptr);
-        if (indexBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(device, indexBuffer.memory, nullptr);
-    }
-};
 
 // Small helper to create shader stage infos
 #include "ShaderStage.hpp"
 
-// Queue family indices helper
-struct QueueFamilyIndices {
-    std::optional<uint32_t> graphicsFamily;
-    std::optional<uint32_t> presentFamily;
-    bool isComplete() const {
-        return graphicsFamily.has_value() && presentFamily.has_value();
-    }
-};
 
-// Include the full VulkanApp declaration so translation units including
-// `vulkan.hpp` get the concrete `VulkanApp` type as well.
-#include "VulkanApp.hpp"
+// Core Vulkan helper types used across the module
+#include "Buffer.hpp"
+#include "TextureImage.hpp"
+#include "QueueFamilyIndices.hpp"
+#include "VertexBufferObject.hpp"
+
+
+// Note: Do not include "VulkanApp.hpp" here to avoid circular includes.
+// Translation units that need the full `VulkanApp` definition should
+// include "VulkanApp.hpp" explicitly.

@@ -1,4 +1,11 @@
 // Auto-generated wrapper header for VertexBufferObject
 #pragma once
 
-#include "vulkan.hpp"
+#include "Buffer.hpp"
+
+struct VertexBufferObject {
+    Buffer vertexBuffer;
+    Buffer indexBuffer;
+    uint32_t indexCount = 0;
+    void destroy(VkDevice device);
+};

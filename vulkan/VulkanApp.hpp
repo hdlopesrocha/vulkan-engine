@@ -54,7 +54,7 @@ protected:
     double lastFrameTime = 0.0;
 
     // Allow derived classes to build ImGui UI per-frame
-    virtual void renderImGui() {}
+    virtual void renderImGui();
 
     // expose the GLFW window to derived classes for input polling
     GLFWwindow* getWindow();
@@ -145,6 +145,6 @@ protected:
         virtual void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) = 0;
         virtual void clean() = 0;
         // Called after a frame has been submitted/presented. Derived apps may override.
-        virtual void postSubmit() {}
+        virtual void postSubmit();
 
 };

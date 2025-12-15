@@ -1,4 +1,5 @@
 #include "ShadowMapper.hpp"
+#include "VulkanApp.hpp"
 #include "FileReader.hpp"
 #include <backends/imgui_impl_vulkan.h>
 #include <stdexcept>
@@ -11,6 +12,10 @@ ShadowMapper::ShadowMapper(VulkanApp* app, uint32_t shadowMapSize)
 ShadowMapper::~ShadowMapper() {
     // Don't call cleanup() here - it should be called explicitly before device destruction
     // The member variables are set to VK_NULL_HANDLE after cleanup, so this is safe
+}
+
+VkDescriptorSetLayout ShadowMapper::getShadowDescriptorSetLayout() const {
+    return vulkanApp->getDescriptorSetLayout();
 }
 
 void ShadowMapper::init() {
@@ -538,4 +543,8 @@ void ShadowMapper::readbackShadowDepth() {
     vkUnmapMemory(device, stagingBuffer.memory);
     vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
     vkFreeMemory(device, stagingBuffer.memory, nullptr);
+}
+
+void ShadowMapper::requestWireframeReadback() {
+    requestWireframeReadbackFlag = true;
 }

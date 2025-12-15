@@ -6,8 +6,8 @@
 
 class TextureViewer : public Widget {
 public:
-    TextureViewer() : Widget("Textures") {}
-    void init(TextureManager* manager) { this->manager = manager; }
+    TextureViewer();
+    void init(TextureManager* manager);
     void render() override;
 
 private:

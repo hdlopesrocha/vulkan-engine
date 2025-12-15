@@ -238,6 +238,15 @@ void VulkanApp::cleanupImGui() {
     }
 }
 
+// Default empty implementations for overridable hooks declared in the header.
+void VulkanApp::renderImGui() {
+    // No-op default
+}
+
+void VulkanApp::postSubmit() {
+    // No-op default
+}
+
 
 
 

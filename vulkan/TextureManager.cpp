@@ -1,4 +1,5 @@
 #include "TextureManager.hpp"
+#include "VulkanApp.hpp"
 #include <stdexcept>
 #include <backends/imgui_impl_vulkan.h>
 
@@ -113,4 +114,28 @@ ImTextureID TextureManager::getImTexture(size_t idx, int map) {
         default:
             return nullptr;
     }
+}
+
+void TextureManager::init(VulkanApp* a) {
+    this->app = a;
+}
+
+MaterialProperties& TextureManager::getMaterial(size_t idx) {
+    return triples.at(idx).material;
+}
+
+const MaterialProperties& TextureManager::getMaterial(size_t idx) const {
+    return triples.at(idx).material;
+}
+
+size_t TextureManager::count() const {
+    return triples.size();
+}
+
+const TextureManager::Triple& TextureManager::getTriple(size_t idx) const {
+    return triples.at(idx);
+}
+
+TextureManager::~TextureManager() {
+    destroyAll();
 }

@@ -4,7 +4,7 @@
 #include <imgui.h>
 #include <vector>
 #include <string>
-
+#include "TextureImage.hpp"
 // Material properties per texture (defined in separate header)
 #include "../utils/MaterialProperties.hpp"
 
@@ -30,7 +30,7 @@ public:
     };
 
     TextureManager() = default;
-    void init(VulkanApp* app) { this->app = app; }
+    void init(VulkanApp* app);
 
     // Loads a triple (albedo, normal, height). Returns index of the stored triple.
     size_t loadTriple(const std::string &albedoFile, const std::string &normalFile, const std::string &heightFile);
@@ -44,17 +44,17 @@ public:
     ImTextureID getImTexture(size_t idx, int map);
 
     // Access material properties
-    MaterialProperties& getMaterial(size_t idx) { return triples.at(idx).material; }
-    const MaterialProperties& getMaterial(size_t idx) const { return triples.at(idx).material; }
+    MaterialProperties& getMaterial(size_t idx);
+    const MaterialProperties& getMaterial(size_t idx) const;
 
     // number of loaded triples
-    size_t count() const { return triples.size(); }
+    size_t count() const;
 
-    const Triple& getTriple(size_t idx) const { return triples.at(idx); }
+    const Triple& getTriple(size_t idx) const;
 
     void destroyAll();
 
-    ~TextureManager() { destroyAll(); }
+    ~TextureManager();
 
 private:
     VulkanApp* app = nullptr;
