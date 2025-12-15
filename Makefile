@@ -20,7 +20,9 @@ LIBS = `pkg-config --libs glfw3 vulkan` -limgui -lstb -ljpeg -lgdal -lz
 OUT_DIR = bin
 
 # shader sources and generated SPIR-V
-SRC = main.cpp utils/*cpp vulkan/*cpp widgets/*cpp events/*cpp math/*cpp sdf/*cpp space/*cpp
+SRCS := $(wildcard main.cpp utils/*.cpp vulkan/*.cpp widgets/*.cpp events/*.cpp math/*.cpp sdf/*.cpp space/*.cpp)
+OBJ_DIR := $(OUT_DIR)/obj
+OBJS := $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(SRCS))
 OUT = $(OUT_DIR)/app
 
 # shader sources and generated SPIR-V
@@ -34,15 +36,26 @@ SPVS := $(SPVS:.tesc=.tesc.spv)
 SPVS := $(SPVS:.tese=.tese.spv)
 OUT_SPVS := $(patsubst shaders/%, $(OUT_DIR)/shaders/%, $(SPVS))
 
-all: shaders
+all: shaders $(OUT)
 	@mkdir -p $(OUT_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) $(SRC) -o $(OUT) $(LIBS)
+	@mkdir -p $(OBJ_DIR)
+	@echo "Sources to compile:"
+	@for f in $(SRCS); do echo "  $$f"; done
 
-	# Copy runtime resources into bin/
+$(OUT): $(OBJS)
+	$(CC) $(CFLAGS) $(INCLUDES) $(OBJS) -o $(OUT) $(LIBS)
+
 	@echo "Copying runtime resources to $(OUT_DIR)/"
 	@mkdir -p $(OUT_DIR)/shaders
 	@if [ -d textures ]; then cp -a textures $(OUT_DIR)/ || true; fi
 	@if [ -f imgui.ini ]; then cp imgui.ini $(OUT_DIR)/ || true; fi
+
+# Pattern rule: compile each .cpp into an object under $(OBJ_DIR), preserving subdirs
+$(OBJ_DIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	@echo "Compiling: $<"
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
 
 shaders: $(OUT_SPVS)
 	@# Copy compiled SPIR-V back to the source shaders/ folder so FileReader can load shaders/*.spv at runtime
