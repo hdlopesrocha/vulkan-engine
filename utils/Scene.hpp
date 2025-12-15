@@ -1,7 +1,9 @@
+#pragma once
+
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
-#include "Model3D.hpp"
+#include "../math/Model3D.hpp"
 #include "../space/Octree.hpp"
 
 enum Layer {

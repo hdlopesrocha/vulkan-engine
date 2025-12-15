@@ -35,6 +35,8 @@
 #include <memory>
 #include <iostream>
 #include <cmath>
+#include "utils/LocalScene.hpp"
+#include "utils/MainSceneLoader.hpp"
 
 struct UniformObject {
     glm::mat4 mvp;
@@ -70,6 +72,7 @@ struct UniformObject {
 #include "vulkan/VertexBufferObjectBuilder.hpp"
 
 class MyApp : public VulkanApp, public IEventHandler {
+    LocalScene * mainScene;
     public:
         MyApp() : shadowMapper(this, 8192) {}
 
@@ -657,6 +660,10 @@ class MyApp : public VulkanApp, public IEventHandler {
             widgetManager.addWidget(billboardCreator);
             
             createCommandBuffers();
+            mainScene = new LocalScene();
+
+            MainSceneLoader mainSceneLoader = MainSceneLoader();
+            mainScene->loadScene(mainSceneLoader);
         };
 
         // IEventHandler: handle top-level window events like close/fullscreen

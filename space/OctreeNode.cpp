@@ -9,10 +9,12 @@ const float INFINITY_ARRAY [8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,I
 
 
 OctreeNode::OctreeNode() {
+	version = 0u;
 	init(glm::vec3());
 }
 
 OctreeNode::OctreeNode(Vertex vertex) {
+	version = 0u;
 	init(vertex);
 }
 

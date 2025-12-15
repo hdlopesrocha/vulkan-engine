@@ -5,8 +5,8 @@
 
 class LocalScene : public Scene {
 
-    Octree * opaqueOctree = nullptr;
-    Octree * transparentOctree = nullptr;
+    Octree * opaqueOctree = NULL;
+    Octree * transparentOctree = NULL;
 
 public:
     LocalScene() {
@@ -16,7 +16,7 @@ public:
     ~LocalScene() = default;
 
     void requestVisibleNodes(Layer layer, glm::mat4 viewMatrix, VisibleNodeCallback& callback) override {
-        OctreeVisibilityChecker checker();
+        OctreeVisibilityChecker checker;
         checker.update(viewMatrix);
 
         if(layer == LAYER_OPAQUE) {
@@ -30,7 +30,8 @@ public:
     }
 
     void requestModel3D(Layer layer, long nodeId, Model3DCallback& callback) override {
-        Tesselator tesselator;
+        long tessCount = 0;
+        Tesselator tesselator(&tessCount, nullptr);
         OctreeNode* node = (OctreeNode*)nodeId;
         
         if(layer == LAYER_OPAQUE) {

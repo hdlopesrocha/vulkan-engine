@@ -1,4 +1,6 @@
 #include "Octree.hpp"
+#include <memory>
+#include <atomic>
 #include "../math/BrushMode.hpp"
 #include "NodeOperationResult.hpp"
 #include "OctreeNodeCubeSerialized.hpp"
@@ -35,12 +37,14 @@ static void initialize() {
 Octree::Octree(BoundingCube minCube, float chunkSize) : BoundingCube(minCube), allocator(new OctreeAllocator()) {
     this->chunkSize = chunkSize;
 	this->root = allocator->allocate()->init(glm::vec3(minCube.getCenter()));
+    this->shapeCounter = std::make_shared<std::atomic<int>>(0);
 	initialize();
 }
 
 Octree::Octree() : Octree(glm::vec3(0.0f), 1.0f) {
     this->chunkSize = 1.0f;
     this->root = NULL;
+    this->shapeCounter = std::make_shared<std::atomic<int>>(0);
     initialize();
 }
 

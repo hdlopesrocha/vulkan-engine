@@ -11,18 +11,20 @@
 #include "ShapeArgs.hpp"
 #include "OctreeSerialized.hpp"
 #include "../sdf/WrappedSignedDistanceFunction.hpp"
+#include <functional>
+#include "../math/BoundingCube.hpp"
+
 class IteratorHandler;
 
 class Octree: public BoundingCube {
     using BoundingCube::BoundingCube;
 public:
     float chunkSize;
-#include <functional>
-#include "../math/BoundingCube.hpp"
-    OctreeNode * root;
-typedef unsigned int uint;
 
-using IterateBorderHandler = std::function<void(const BoundingCube &childCube, const float sdf[8], uint level)>;
+    OctreeNode * root;
+    typedef unsigned int uint;
+
+    using IterateBorderHandler = std::function<void(const BoundingCube &childCube, const float sdf[8], uint level)>;
     OctreeAllocator * allocator;
     int threadsCreated;
     std::shared_ptr<std::atomic<int>> shapeCounter;

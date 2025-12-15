@@ -15,6 +15,7 @@ public:
     uint id;
     uint8_t bits;
     float sdf[8];
+    uint version;
 
     OctreeNode();
     OctreeNode(Vertex vertex);
