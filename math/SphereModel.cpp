@@ -1,8 +1,8 @@
-#include "SphereMesh.hpp"
+#include "SphereModel.hpp"
 #include <vector>
 #include <cmath>
 
-void SphereMesh::build(float radius, int longitudes, int latitudes, float texIndex) {
+void SphereModel::build(float radius, int longitudes, int latitudes, float texIndex) {
     std::vector<Vertex> vertices;
     std::vector<uint16_t> indices;
 

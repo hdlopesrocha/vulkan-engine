@@ -1,7 +1,7 @@
-#include "CubeMesh.hpp"
+#include "CubeModel.hpp"
 #include <vector>
 
-void CubeMesh::build(const std::vector<float>& faceTexIndices) {
+void CubeModel::build(const std::vector<float>& faceTexIndices) {
     auto texForFace = [&](int face)->float{
         if (faceTexIndices.size() == 6) return faceTexIndices[face];
         return 0.0f;

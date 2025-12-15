@@ -1,6 +1,6 @@
 #include "GamepadPublisher.hpp"
 #include "EventManager.hpp"
-#include "../utils/Camera.hpp"
+#include "../math/Camera.hpp"
 #include "TranslateCameraEvent.hpp"
 #include "RotateCameraEvent.hpp"
 

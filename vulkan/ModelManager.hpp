@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../utils/Model3D.hpp"
+#include "../math/Model3D.hpp"
 #include "vulkan.hpp"
 #include <vector>
 #include <glm/glm.hpp>

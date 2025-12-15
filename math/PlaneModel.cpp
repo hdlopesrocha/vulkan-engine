@@ -1,7 +1,7 @@
-#include "PlaneMesh.hpp"
+#include "PlaneModel.hpp"
 #include <vector>
 
-void PlaneMesh::build(float width, float height, int hSegments, int vSegments, float texIndex) {
+void PlaneModel::build(float width, float height, int hSegments, int vSegments, float texIndex) {
     int hSegs = std::max(1, hSegments);
     int vSegs = std::max(1, vSegments);
 

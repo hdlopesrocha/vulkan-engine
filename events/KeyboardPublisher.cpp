@@ -1,6 +1,6 @@
 #include "KeyboardPublisher.hpp"
 #include "EventManager.hpp"
-#include "../utils/Camera.hpp"
+#include "../math/Camera.hpp"
 
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>

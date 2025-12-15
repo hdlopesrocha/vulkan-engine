@@ -15,9 +15,9 @@
 #include "vulkan/TextureManager.hpp"
 #include "vulkan/AtlasManager.hpp"
 #include "utils/BillboardManager.hpp"
-#include "utils/CubeMesh.hpp"
-#include "utils/PlaneMesh.hpp"
-#include "utils/SphereMesh.hpp"
+#include "math/CubeModel.hpp"
+#include "math/PlaneModel.hpp"
+#include "math/SphereModel.hpp"
 #include "vulkan/EditableTextureSet.hpp"
 #include "vulkan/ShadowMapper.hpp"
 #include "vulkan/ModelManager.hpp"
@@ -561,17 +561,17 @@ class MyApp : public VulkanApp, public IEventHandler {
             }
 
             // build cube mesh and geometry (per-face tex indices all zero by default)
-            auto cube = std::make_unique<CubeMesh>();
+            auto cube = std::make_unique<CubeModel>();
             cube->build({});
             VertexBufferObject cubeVbo = VertexBufferObjectBuilder::create(this, *cube);
             
             // build ground plane mesh (20x20 units)
-            auto plane = std::make_unique<PlaneMesh>();
+            auto plane = std::make_unique<PlaneModel>();
             plane->build(20.0f, 20.0f, 0.0f); // Will use editable texture index
             VertexBufferObject planeVbo = VertexBufferObjectBuilder::create(this, *plane);
             
             // build sphere mesh
-            auto sphere = std::make_unique<SphereMesh>();
+            auto sphere = std::make_unique<SphereModel>();
             sphere->build(0.5f, 32, 16, 0.0f);
             VertexBufferObject sphereVbo = VertexBufferObjectBuilder::create(this, *sphere);
             // Store meshes and their GPU buffers for later use

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "vulkan.hpp"
-#include "../utils/Model3D.hpp"
+#include "../math/Model3D.hpp"
 
 class VertexBufferObjectBuilder {
 public:
