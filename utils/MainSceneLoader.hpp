@@ -25,7 +25,7 @@
 #include "../sdf/TorusDistanceFunction.hpp"
 #include "../sdf/ConeDistanceFunction.hpp"
 #include "../sdf/CylinderDistanceFunction.hpp"
-#include "OctreeDifferenceFunction.hpp"
+#include "../sdf/OctreeDifferenceFunction.hpp"
 
 #include "../sdf/WrappedHeightMap.hpp"
 #include "../sdf/WrappedBox.hpp"
@@ -40,7 +40,7 @@
 #include "../sdf/WrappedPerlinCarveDistanceEffect.hpp"
 #include "../sdf/WrappedSineDistortDistanceEffect.hpp"
 #include "../sdf/WrappedVoronoiCarveDistanceEffect.hpp"
-#include "WrappedOctreeDifference.hpp"
+#include "../sdf/WrappedOctreeDifference.hpp"
 
 // change handlers & brushes
 #include "LiquidSpaceChangeHandler.hpp"
@@ -56,10 +56,15 @@ public:
 
 	OctreeLayer<InstanceData> transparentLayerInfo;
     OctreeLayer<InstanceData> opaqueLayerInfo;    
-    LiquidSpaceChangeHandler transparentLayerChangeHandler = LiquidSpaceChangeHandler(&transparentLayerInfo);
-    SolidSpaceChangeHandler opaqueLayerChangeHandler = SolidSpaceChangeHandler(&opaqueLayerInfo);
+    LiquidSpaceChangeHandler transparentLayerChangeHandler;
+    SolidSpaceChangeHandler opaqueLayerChangeHandler;
     Simplifier simplifier = Simplifier(0.99f, 0.1f, true);
-    MainSceneLoader() = default;
+    MainSceneLoader(): 
+        transparentLayerChangeHandler(&transparentLayerInfo), 
+        opaqueLayerChangeHandler(&opaqueLayerInfo)
+    {
+
+    };
     ~MainSceneLoader() = default;
 
     void loadScene(Octree &opaqueLayer, Octree &transparentLayer) {

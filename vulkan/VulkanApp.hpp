@@ -124,6 +124,19 @@ protected:
         VkDevice getDevice() const;
         VkPipelineLayout getPipelineLayout() const;
 
+        // Public getters for runtime inspection (used by widgets)
+        VkInstance getInstance() const { return instance; }
+        VkPhysicalDevice getPhysicalDevice() const { return physicalDevice; }
+        VkQueue getGraphicsQueue() const { return graphicsQueue; }
+        VkQueue getPresentQueue() const { return presentQueue; }
+        VkSwapchainKHR getSwapchain() const { return swapchain; }
+        VkFormat getSwapchainImageFormat() const { return swapchainImageFormat; }
+        VkExtent2D getSwapchainExtent() const { return swapchainExtent; }
+        const std::vector<VkImage>& getSwapchainImages() const { return swapchainImages; }
+        const std::vector<VkImageView>& getSwapchainImageViews() const { return swapchainImageViews; }
+        VkDescriptorPool getDescriptorPool() const { return descriptorPool; }
+        VkDescriptorPool getImGuiDescriptorPool() const { return imguiDescriptorPool; }
+
         int getWidth();
         int getHeight();
         

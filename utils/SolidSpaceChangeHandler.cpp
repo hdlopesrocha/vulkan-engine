@@ -18,6 +18,6 @@ void SolidSpaceChangeHandler::update(OctreeNode* node) {
 
 void SolidSpaceChangeHandler::erase(OctreeNode* node) {
     if(node!= NULL) {
-        solidInfo->erase(node);
+     //   solidInfo->erase(node);
     }
 };

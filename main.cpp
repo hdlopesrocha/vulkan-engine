@@ -31,6 +31,7 @@
 #include "widgets/SkyWidget.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
 #include "widgets/BillboardCreator.hpp"
+#include "widgets/VulkanObjectsWidget.hpp"
 #include <string>
 #include <memory>
 #include <iostream>
@@ -641,6 +642,9 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Create sky widget (controls colors and parameters)
             skyWidget = std::make_shared<SkyWidget>();
             widgetManager.addWidget(skyWidget);
+            // Vulkan objects widget
+            auto vulkanObjectsWidget = std::make_shared<VulkanObjectsWidget>(this);
+            widgetManager.addWidget(vulkanObjectsWidget);
             if (skyWidget) {
                 uboStatic.skyHorizon = glm::vec4(skyWidget->getHorizonColor(), 1.0f);
                 uboStatic.skyZenith = glm::vec4(skyWidget->getZenithColor(), 1.0f);

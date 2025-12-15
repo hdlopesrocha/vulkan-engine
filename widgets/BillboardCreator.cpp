@@ -393,7 +393,7 @@ void BillboardCreator::composeBillboard(Billboard* billboard) {
     printf("Billboard composition complete\n");
 }
 
-BillboardCreator::AtlasTextureData BillboardCreator::loadAtlasTextures(int atlasIndex) {
+AtlasTextureData BillboardCreator::loadAtlasTextures(int atlasIndex) {
     AtlasTextureData data;
 
     std::string basePath = "textures/vegetation/";

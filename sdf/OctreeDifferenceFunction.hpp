@@ -1,10 +1,10 @@
 #pragma once
-#include "../sdf/SignedDistanceFunction.hpp"
-#include "../sdf/WrappedSignedDistanceFunction.hpp"
+#include "SignedDistanceFunction.hpp"
+#include "WrappedSignedDistanceFunction.hpp"
 #include "../math/BoundingBox.hpp"
 #include "../math/Transformation.hpp"
 #include "../space/Octree.hpp"
-#include "../sdf/SDF.hpp"
+#include "SDF.hpp"
 
 class OctreeDifferenceFunction : public SignedDistanceFunction {
     public:

@@ -16,6 +16,6 @@ void LiquidSpaceChangeHandler::update(OctreeNode* node) {
 
 void LiquidSpaceChangeHandler::erase(OctreeNode* node) {
     if(node!= NULL) {
-        liquidInfo->erase(node);
+       // liquidInfo->erase(node);
     }
 };

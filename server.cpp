@@ -3,14 +3,12 @@
 #include "utils/MainSceneLoader.hpp"
 
 
-LocalScene * mainScene;
-
 int main(int argc, char** argv) {
 
-    mainScene = new LocalScene();
+    LocalScene mainScene = LocalScene();
 
     MainSceneLoader mainSceneLoader = MainSceneLoader();
-    mainScene->loadScene(mainSceneLoader);
+    mainScene.loadScene(mainSceneLoader);
 
     std::cout << "server: started" << std::endl;
     return 0;

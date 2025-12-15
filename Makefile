@@ -7,9 +7,9 @@ CC = g++
 # or shortcuts: make debug  or make release
 BUILD ?= release
 ifeq ($(BUILD),debug)
-	CFLAGS = -std=c++20 -O0 -g -DDEBUG
+	CFLAGS = -std=c++20 -O0 -g -DDEBUG -pthread
 else
-	CFLAGS = -std=c++20 -O3 -march=native -DNDEBUG
+	CFLAGS = -std=c++20 -O3 -march=native -DNDEBUG -pthread
 endif
 
 # Use pkg-config for GLFW and Vulkan includes; also add common ImGui/stb include paths
@@ -139,8 +139,7 @@ run-debug: debug
 	@cd $(OUT_DIR) && ./app
 
 clean:
-	# Remove built executable and bin/ runtime bundle
-	rm -f $(OUT)
+	# Remove bin/ directory
 	rm -rf $(OUT_DIR)
 	# Remove generated SPIR-V files in shaders/ (if present)
 	-rm -f $(SPVS)

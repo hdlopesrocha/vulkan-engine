@@ -1,5 +1,5 @@
 #pragma once
-#include "../sdf/WrappedSignedDistanceFunction.hpp"
+#include "WrappedSignedDistanceFunction.hpp"
 #include "OctreeDifferenceFunction.hpp"
 
 class WrappedOctreeDifference : public WrappedSignedDistanceFunction {

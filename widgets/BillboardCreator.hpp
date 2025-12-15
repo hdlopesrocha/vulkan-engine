@@ -5,6 +5,7 @@
 #include "../vulkan/AtlasManager.hpp"
 #include "../vulkan/TextureManager.hpp"
 #include "../vulkan/EditableTexture.hpp"
+#include "../utils/AtlasTextureData.hpp"
 #include <imgui.h>
 #include <string>
 #include <algorithm>
@@ -53,14 +54,7 @@ private:
     
     void composeBillboard(Billboard* billboard);
     
-    struct AtlasTextureData {
-        unsigned char* albedoData = nullptr;
-        unsigned char* normalData = nullptr;
-        unsigned char* opacityData = nullptr;
-        int width = 0;
-        int height = 0;
-    };
-    
+
     AtlasTextureData loadAtlasTextures(int atlasIndex);
     
     void freeAtlasTextures(AtlasTextureData& data);
