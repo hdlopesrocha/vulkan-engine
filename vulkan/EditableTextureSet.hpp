@@ -2,6 +2,7 @@
 
 #include "EditableTexture.hpp"
 #include "TextureManager.hpp"
+#include "FileReader.hpp"
 #include "../widgets/Widget.hpp"
 #include <imgui.h>
 #include <random>

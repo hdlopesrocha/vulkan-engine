@@ -70,16 +70,7 @@ struct VertexBufferObject {
 };
 
 // Small helper to create shader stage infos
-struct ShaderStage {
-    VkPipelineShaderStageCreateInfo info{};
-    ShaderStage() = default;
-    ShaderStage(VkShaderModule module, VkShaderStageFlagBits stage) {
-        info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        info.stage = stage;
-        info.module = module;
-        info.pName = "main";
-    }
-};
+#include "ShaderStage.hpp"
 
 // Queue family indices helper
 struct QueueFamilyIndices {

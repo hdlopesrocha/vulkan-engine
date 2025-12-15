@@ -1,4 +1,5 @@
 #include "vulkan/vulkan.hpp"
+#include "vulkan/FileReader.hpp"
 
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
