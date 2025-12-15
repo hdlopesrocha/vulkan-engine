@@ -1,4 +1,11 @@
-// Auto-generated wrapper header for ToggleFullscreenEvent
 #pragma once
 
-#include "WindowEvents.hpp"
+#include "Event.hpp"
+#include <string>
+
+// Event: toggle fullscreen state (no payload)
+class ToggleFullscreenEvent : public Event {
+public:
+    ToggleFullscreenEvent() = default;
+    std::string name() const override { return "ToggleFullscreenEvent"; }
+};

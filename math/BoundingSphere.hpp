@@ -1,6 +1,4 @@
-#ifndef BOUNDING_SPHERE_HPP
-#define BOUNDING_SPHERE_HPP
-
+#pragma once
 #include "Common.hpp"
 #include "BoundingVolume.hpp"
 
@@ -16,4 +14,4 @@ public:
     void accept(BoundingVolumeVisitor& visitor) const;
 };
 
-#endif
+ 

@@ -1,6 +1,4 @@
-#ifndef SDF_WRAPPED_SINE_DISTORT_EFFECT_HPP
-#define SDF_WRAPPED_SINE_DISTORT_EFFECT_HPP
-
+#pragma once
 #include "WrappedSignedDistanceEffect.hpp"
 #include <glm/glm.hpp>
 
@@ -17,4 +15,4 @@ class WrappedSineDistortDistanceEffect : public WrappedSignedDistanceEffect {
     SdfType getType() const override { return SdfType::DISTORT_SINE; }
 };
 
-#endif
+ 

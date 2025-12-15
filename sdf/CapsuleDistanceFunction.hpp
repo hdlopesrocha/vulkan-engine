@@ -1,6 +1,4 @@
-#ifndef SDF_CAPSULE_DISTANCE_FUNCTION_HPP
-#define SDF_CAPSULE_DISTANCE_FUNCTION_HPP
-
+#pragma once
 #include "SignedDistanceFunction.hpp"
 #include <glm/glm.hpp>
 #include "../math/Transformation.hpp"
@@ -18,4 +16,4 @@ public:
     glm::vec3 getCenter(const Transformation &model) const override;
 };
 
-#endif
+ 

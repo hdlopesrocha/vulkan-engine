@@ -1,6 +1,4 @@
-#ifndef BOUNDING_BOX_HPP
-#define BOUNDING_BOX_HPP
-
+#pragma once
 #include "AbstractBoundingBox.hpp"
 
 class BoundingBox : public AbstractBoundingBox {
@@ -29,4 +27,4 @@ public:
     glm::vec3 getMax() const override;
 };
 
-#endif
+ 

@@ -1,6 +1,4 @@
-#ifndef SPACE_OCTREE_FILE_HPP
-#define SPACE_OCTREE_FILE_HPP
-
+#pragma once
 #include "Octree.hpp"
 #include "OctreeNodeSerialized.hpp"
 
@@ -16,4 +14,4 @@ public:
     uint saveRecursive(OctreeNode * node, std::vector<OctreeNodeSerialized> * nodes, float chunkSize, std::string filename, BoundingCube cube, std::string baseFolder);
 };
 
-#endif
+ 

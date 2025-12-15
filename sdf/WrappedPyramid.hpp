@@ -1,6 +1,4 @@
-#ifndef SDF_WRAPPED_PYRAMID_HPP
-#define SDF_WRAPPED_PYRAMID_HPP
-
+#pragma once
 #include "WrappedSignedDistanceFunction.hpp"
 #include "PyramidDistanceFunction.hpp"
 #include "../math/BoundingSphere.hpp"
@@ -18,4 +16,4 @@ class WrappedPyramid : public WrappedSignedDistanceFunction {
     const char* getLabel() const override;
 };
 
-#endif
+ 

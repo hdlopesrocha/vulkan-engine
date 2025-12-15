@@ -2,7 +2,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/quaternion.hpp>
-#include "../events/CameraEvents.hpp"
+#include "../events/TranslateCameraEvent.hpp"
+#include "../events/RotateCameraEvent.hpp"
 
 Camera::Camera(const glm::vec3 &pos)
     : position(pos), orientation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f)) {

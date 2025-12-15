@@ -1,6 +1,4 @@
-#ifndef SDF_SDFTYPE_HPP
-#define SDF_SDFTYPE_HPP
-
+#pragma once
 #include <glm/glm.hpp>
 
 enum SdfType {
@@ -21,4 +19,4 @@ enum SdfType {
 };
 const char* toString(SdfType t);
 
-#endif
+ 

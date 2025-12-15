@@ -1,7 +1,6 @@
-// Auto-generated wrapper header for Triangle
 #pragma once
 
-#include "Common.hpp"
+#include "Vertex.hpp"
 
 struct Triangle {
 public:

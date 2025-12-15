@@ -1,6 +1,4 @@
-#ifndef SDF_HEIGHTMAP_DISTANCE_FUNCTION_HPP
-#define SDF_HEIGHTMAP_DISTANCE_FUNCTION_HPP
-
+#pragma once
 #include "SignedDistanceFunction.hpp"
 #include <glm/glm.hpp>
 
@@ -16,4 +14,4 @@ public:
     glm::vec3 getCenter(const Transformation &model) const override;
 };
 
-#endif
+ 

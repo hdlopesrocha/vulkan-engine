@@ -1,6 +1,4 @@
-#ifndef TILE_HPP
-#define TILE_HPP
-
+#pragma once
 #include <glm/glm.hpp>
 
 struct Tile {
@@ -10,4 +8,4 @@ public:
     Tile(glm::vec2 size, glm::vec2 offset);
 };
 
-#endif
+ 

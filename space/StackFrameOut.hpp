@@ -1,4 +1,3 @@
-// Auto-generated wrapper header for StackFrameOut
 #pragma once
 
 #include "OctreeNodeData.hpp"

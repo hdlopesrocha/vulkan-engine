@@ -1,8 +1,7 @@
-// Auto-generated wrapper header for TripleHasher
 #pragma once
 
-#include "Common.hpp"
-
+#include "Triple.hpp"
+#include <functional>
 
 struct TripleHasher {
     std::size_t operator()(const Triple<uint,uint,uint> &v) const {

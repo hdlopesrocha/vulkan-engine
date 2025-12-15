@@ -1,6 +1,4 @@
-#ifndef PLANE_HPP
-#define PLANE_HPP
-
+#pragma once
 #include <glm/glm.hpp>
 #include "AbstractBoundingBox.hpp"
 
@@ -13,4 +11,4 @@ public:
     ContainmentType test(AbstractBoundingBox &box);
 };
 
-#endif
+ 

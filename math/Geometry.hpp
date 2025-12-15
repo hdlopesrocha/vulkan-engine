@@ -1,6 +1,4 @@
-#ifndef GEOMETRY_HPP
-#define GEOMETRY_HPP
-
+#pragma once
 #include "Vertex.hpp"
 #include "VertexHasher.hpp"
 #include <vector>
@@ -37,4 +35,4 @@ public:
 
 #include "Geometry.tpp"
 
-#endif
+ 

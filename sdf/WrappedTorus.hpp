@@ -1,6 +1,4 @@
-#ifndef SDF_WRAPPED_TORUS_HPP
-#define SDF_WRAPPED_TORUS_HPP
-
+#pragma once
 #include "WrappedSignedDistanceFunction.hpp"
 #include "TorusDistanceFunction.hpp"
 #include "../math/BoundingSphere.hpp"
@@ -17,4 +15,4 @@ class WrappedTorus : public WrappedSignedDistanceFunction {
     const char* getLabel() const override;
 };
 
-#endif
+ 

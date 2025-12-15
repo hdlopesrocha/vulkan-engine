@@ -1,6 +1,4 @@
-#ifndef SDF_WRAPPED_OCTAHEDRON_HPP
-#define SDF_WRAPPED_OCTAHEDRON_HPP
-
+#pragma once
 #include "WrappedSignedDistanceFunction.hpp"
 #include "OctahedronDistanceFunction.hpp"
 #include "../math/BoundingSphere.hpp"
@@ -17,4 +15,4 @@ class WrappedOctahedron : public WrappedSignedDistanceFunction {
     const char* getLabel() const override;
 };
 
-#endif
+ 

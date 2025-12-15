@@ -1,6 +1,4 @@
-#ifndef SDF_WRAPPED_SIGNED_DISTANCE_FUNCTION_HPP
-#define SDF_WRAPPED_SIGNED_DISTANCE_FUNCTION_HPP
-
+#pragma once
 #include <tsl/robin_map.h>
 #include <mutex>
 #include <glm/glm.hpp>
@@ -34,4 +32,4 @@ class WrappedSignedDistanceFunction : public SignedDistanceFunction {
     glm::vec3 getCenter(const Transformation &model) const override;
 };
 
-#endif
+ 

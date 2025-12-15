@@ -1,6 +1,4 @@
-#ifndef SDF_SIGNED_DISTANCE_FUNCTION_HPP
-#define SDF_SIGNED_DISTANCE_FUNCTION_HPP
-
+#pragma once
 #include <glm/glm.hpp>
 #include "../math/Transformation.hpp"
 #include "SdfType.hpp"
@@ -14,4 +12,4 @@ public:
     virtual SdfType getType() const = 0;
 };
 
-#endif
+ 

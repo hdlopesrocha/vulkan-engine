@@ -1,7 +1,4 @@
-// ConcurrentQueue.tpp - template implementations
-
-#ifndef SPACE_CONCURRENT_QUEUE_TPP
-#define SPACE_CONCURRENT_QUEUE_TPP
+#pragma once
 
 // header already includes this tpp; avoid recursive include
 
@@ -29,5 +26,3 @@ bool ConcurrentQueue<T>::empty() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return queue_.empty();
 }
-
-#endif // SPACE_CONCURRENT_QUEUE_TPP

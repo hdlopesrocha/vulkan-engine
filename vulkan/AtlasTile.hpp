@@ -1,4 +1,3 @@
-// Auto-generated wrapper header for AtlasTile
 #pragma once
 
 #include <string>

@@ -1,6 +1,4 @@
-#ifndef SPACE_OCTREE_NODE_HPP
-#define SPACE_OCTREE_NODE_HPP
-
+#pragma once
 #include "ChildBlock.hpp"
 #include "../math/Vertex.hpp"
 #include "../math/BoundingCube.hpp"
@@ -49,4 +47,4 @@ public:
     OctreeNode * compress(OctreeAllocator &allocator, BoundingCube * cube, BoundingCube chunk);
 };
 
-#endif
+ 

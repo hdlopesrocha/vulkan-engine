@@ -1,6 +1,4 @@
-#ifndef SPACE_OCTREE_ALLOCATOR_HPP
-#define SPACE_OCTREE_ALLOCATOR_HPP
-
+#pragma once
 #include "Allocator.hpp"
 #include "OctreeNode.hpp"
 #include "ChildBlock.hpp"
@@ -21,4 +19,4 @@ public:
     size_t getAllocatedBlocksCount();
 };
 
-#endif // SPACE_OCTREE_ALLOCATOR_HPP
+ 

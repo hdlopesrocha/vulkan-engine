@@ -1,6 +1,4 @@
-#ifndef THREAD_POOL_H
-#define THREAD_POOL_H
-
+#pragma once
 #include <vector>
 #include <queue>
 #include <memory>
@@ -43,4 +41,4 @@ private:
 // Enqueue a new task
 #include "ThreadPool.tpp"
 
-#endif
+ 

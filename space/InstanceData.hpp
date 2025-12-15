@@ -1,6 +1,4 @@
-#ifndef SPACE_INSTANCE_DATA_HPP
-#define SPACE_INSTANCE_DATA_HPP
-
+#pragma once
 #include <glm/glm.hpp>
 typedef unsigned int uint;
 
@@ -13,4 +11,4 @@ public:
 	InstanceData(uint animation, const glm::mat4 &matrix, float shift);
 };
 
-#endif
+ 

@@ -1,6 +1,4 @@
-#ifndef HEIGHT_MAP_HPP
-#define HEIGHT_MAP_HPP
-
+#pragma once
 #include "BoundingBox.hpp"
 #include "HeightFunction.hpp"
 
@@ -15,4 +13,4 @@ public:
     float distance(const glm::vec3 p) const;
 };
 
-#endif
+ 

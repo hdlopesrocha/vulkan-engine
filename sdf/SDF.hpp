@@ -1,6 +1,4 @@
-#ifndef SDF_HPP
-#define SDF_HPP
-
+#pragma once
 #include <glm/glm.hpp>
 
 //      6-----7
@@ -64,4 +62,4 @@ public:
     static bool isSurfaceNet2(const float sdf[8]);
 };
 
-#endif
+ 

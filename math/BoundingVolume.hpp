@@ -1,6 +1,4 @@
-#ifndef BOUNDING_VOLUME_HPP
-#define BOUNDING_VOLUME_HPP
-
+#pragma once
 #include "Common.hpp"
 
 class AbstractBoundingBox;
@@ -17,4 +15,5 @@ public:
     virtual ~BoundingVolume() = default;
 };
 
-#endif // BOUNDING_VOLUME_HPP
+ 
+ 

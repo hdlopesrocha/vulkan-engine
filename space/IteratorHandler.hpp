@@ -1,6 +1,4 @@
-#ifndef SPACE_ITERATOR_HANDLER_HPP
-#define SPACE_ITERATOR_HANDLER_HPP
-
+#pragma once
 #include <stack>
 
 #include "OctreeNodeData.hpp"
@@ -30,4 +28,4 @@ public:
     void iterateParallelBFS(const Octree &tree, OctreeNodeData &rootParams, ThreadPool& pool);
 };
 
-#endif
+ 

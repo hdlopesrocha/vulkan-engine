@@ -1,6 +1,4 @@
-#ifndef CACHED_HEIGHT_MAP_SURFACE_HPP
-#define CACHED_HEIGHT_MAP_SURFACE_HPP
-
+#pragma once
 #include "HeightFunction.hpp"
 #include "BoundingBox.hpp"
 #include "BoundingCube.hpp"
@@ -19,4 +17,4 @@ public:
     glm::vec2 getHeightRangeBetween(const BoundingCube &cube, int range) const;
 };
 
-#endif
+ 

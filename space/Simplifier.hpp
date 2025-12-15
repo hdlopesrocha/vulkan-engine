@@ -1,6 +1,4 @@
-#ifndef SPACE_SIMPLIFIER_HPP
-#define SPACE_SIMPLIFIER_HPP
-
+#pragma once
 #include "../math/BoundingCube.hpp"
 #include <utility>
 
@@ -15,4 +13,4 @@ public:
     std::pair<bool,int> simplify(const BoundingCube chunkCube, const BoundingCube cube, const float * sdf, NodeOperationResult * children);
 };
 
-#endif
+ 

@@ -1,6 +1,4 @@
-#ifndef SPACE_OCTREE_HPP
-#define SPACE_OCTREE_HPP
-
+#pragma once
 #include "Simplifier.hpp"
 #include "ThreadPool.hpp"
 #include <unordered_set>
@@ -72,4 +70,4 @@ private:
 
 // Simplifier is declared in Simplifier.hpp
 
-#endif
+ 

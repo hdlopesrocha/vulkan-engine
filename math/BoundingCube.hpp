@@ -1,6 +1,4 @@
-#ifndef BOUNDING_CUBE_HPP
-#define BOUNDING_CUBE_HPP
-
+#pragma once
 #include "AbstractBoundingBox.hpp"
 
 class BoundingCube : public AbstractBoundingBox {
@@ -44,4 +42,4 @@ public:
 
 
 
-#endif
+ 

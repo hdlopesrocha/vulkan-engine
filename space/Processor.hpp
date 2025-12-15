@@ -1,6 +1,4 @@
-#ifndef SPACE_PROCESSOR_HPP
-#define SPACE_PROCESSOR_HPP
-
+#pragma once
 #include "IteratorHandler.hpp"
 #include "Octree.hpp"
 #include "ThreadPool.hpp"
@@ -23,4 +21,4 @@ public:
     void virtualize(Octree * tree, const BoundingCube &cube, float * sdf, uint level, uint levels);
 };
 
-#endif
+ 

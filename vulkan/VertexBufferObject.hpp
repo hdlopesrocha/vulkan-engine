@@ -1,4 +1,3 @@
-// Auto-generated wrapper header for VertexBufferObject
 #pragma once
 
 #include "Buffer.hpp"

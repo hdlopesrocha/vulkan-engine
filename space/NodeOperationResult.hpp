@@ -1,4 +1,3 @@
-// Auto-generated wrapper header for NodeOperationResult
 #pragma once
 
 #include "../math/SpaceType.hpp"

@@ -1,8 +1,4 @@
-// Geometry.tpp - template implementations for InstanceGeometry
-
-#ifndef GEOMETRY_TPP
-#define GEOMETRY_TPP
-
+#pragma once
 #include "Geometry.hpp"
 
 template <typename T>
@@ -25,4 +21,3 @@ InstanceGeometry<T>::~InstanceGeometry() {
     }
 }
 
-#endif // GEOMETRY_TPP

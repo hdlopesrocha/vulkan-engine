@@ -1,6 +1,4 @@
-#ifndef SPHERE_GEOMETRY_HPP
-#define SPHERE_GEOMETRY_HPP
-
+#pragma once
 #include "Geometry.hpp"
 
 class SphereGeometry : public Geometry {
@@ -11,4 +9,4 @@ public:
     void addTriangle(glm::vec3 a,glm::vec3 b, glm::vec3 c);
 };
 
-#endif
+ 

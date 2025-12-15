@@ -1,4 +1,3 @@
-// Auto-generated wrapper header for OctreeChangeHandler
 #pragma once
 
 class OctreeNode;

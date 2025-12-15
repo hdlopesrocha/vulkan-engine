@@ -1,6 +1,4 @@
-#ifndef CAMERA_HPP
-#define CAMERA_HPP
-
+#pragma once
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/quaternion.hpp>
@@ -21,4 +19,4 @@ public:
     glm::mat4 getViewProjection();
 };
 
-#endif
+ 

@@ -1,6 +1,4 @@
-#ifndef HEIGHT_FUNCTION_HPP
-#define HEIGHT_FUNCTION_HPP
-
+#pragma once
 #include <glm/glm.hpp>
 #include "BoundingBox.hpp"
 
@@ -11,4 +9,4 @@ public:
     glm::vec3 getNormal(float x, float z, float delta) const;
 };
 
-#endif
+ 

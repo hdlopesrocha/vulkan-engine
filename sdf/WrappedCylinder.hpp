@@ -1,6 +1,4 @@
-#ifndef SDF_WRAPPED_CYLINDER_HPP
-#define SDF_WRAPPED_CYLINDER_HPP
-
+#pragma once
 #include "WrappedSignedDistanceFunction.hpp"
 #include "CylinderDistanceFunction.hpp"
 #include "../math/BoundingSphere.hpp"
@@ -17,4 +15,4 @@ class WrappedCylinder : public WrappedSignedDistanceFunction {
     const char* getLabel() const override;
 };
 
-#endif
+ 

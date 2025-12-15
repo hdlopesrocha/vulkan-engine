@@ -1,6 +1,4 @@
-#ifndef SPACE_OCTREE_VISIBILITY_CHECKER_HPP
-#define SPACE_OCTREE_VISIBILITY_CHECKER_HPP
-
+#pragma once
 #include "IteratorHandler.hpp"
 #include "Octree.hpp"
 #include "OctreeNode.hpp"
@@ -22,4 +20,4 @@ public:
     void getOrder(const Octree &tree, OctreeNodeData &params, uint8_t order[8]) override;
 };
 
-#endif
+ 

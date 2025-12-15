@@ -1,4 +1,3 @@
-// Auto-generated wrapper header for ShapeArgs
 #pragma once
 
 #include <glm/glm.hpp>

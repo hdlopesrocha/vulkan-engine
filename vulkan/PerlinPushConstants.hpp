@@ -1,6 +1,5 @@
-#include <cstdint>
-// Auto-generated wrapper header for PerlinPushConstants
 #pragma once
+#include <cstdint>
 
 // Push constants for compute shader
 struct PerlinPushConstants {

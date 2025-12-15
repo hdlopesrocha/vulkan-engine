@@ -1,6 +1,4 @@
-#ifndef BRUSH3D_HPP
-#define BRUSH3D_HPP
-
+#pragma once
 #include "Camera.hpp"
 
 class Brush3d {
@@ -11,4 +9,4 @@ public:
     void reset(Camera * camera);
 };
 
-#endif
+ 

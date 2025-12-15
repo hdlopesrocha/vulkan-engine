@@ -1,5 +1,4 @@
-#ifndef SPACE_CONCURRENT_QUEUE_HPP
-#define SPACE_CONCURRENT_QUEUE_HPP
+#pragma once
 #include <queue>
 #include <mutex>
 #include <condition_variable>
@@ -21,4 +20,5 @@ private:
 
 #include "ConcurrentQueue.tpp"
 
-#endif
+ 
+ 

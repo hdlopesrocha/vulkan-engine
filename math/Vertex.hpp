@@ -1,6 +1,4 @@
-#ifndef MATH_VERTEX_HPP
-#define MATH_VERTEX_HPP
-
+#pragma once
 #include <glm/glm.hpp>
 #include <bit>
 #include <cstdint>
@@ -98,4 +96,5 @@ template<> struct hash<glm::vec2> {
 
 } // namespace std
 
-#endif // MATH_VERTEX_HPP
+
+ 

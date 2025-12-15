@@ -1,6 +1,4 @@
-#ifndef SDF_WRAPPED_PERLIN_CARVE_EFFECT_HPP
-#define SDF_WRAPPED_PERLIN_CARVE_EFFECT_HPP
-
+#pragma once
 #include "WrappedSignedDistanceEffect.hpp"
 #include <glm/glm.hpp>
 #include "SDF.hpp"
@@ -22,4 +20,4 @@ class WrappedPerlinCarveDistanceEffect : public WrappedSignedDistanceEffect {
     SdfType getType() const override { return SdfType::CARVE_PERLIN; }
 };
 
-#endif
+ 

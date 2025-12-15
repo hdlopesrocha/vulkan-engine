@@ -1,7 +1,4 @@
-// Allocator.tpp - template implementations for Allocator<T>
-
-#ifndef SPACE_ALLOCATOR_TPP
-#define SPACE_ALLOCATOR_TPP
+#pragma once
 
 #include <cstdlib>
 #include <iostream>
@@ -168,4 +165,3 @@ size_t Allocator<T>::getAllocatedBlocksCount() {
     return blocks.size();
 }
 
-#endif // SPACE_ALLOCATOR_TPP

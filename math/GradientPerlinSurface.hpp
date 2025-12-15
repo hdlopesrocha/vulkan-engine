@@ -1,6 +1,4 @@
-#ifndef GRADIENT_PERLIN_SURFACE_HPP
-#define GRADIENT_PERLIN_SURFACE_HPP
-
+#pragma once
 #include "PerlinSurface.hpp"
 
 class GradientPerlinSurface : public PerlinSurface {
@@ -9,4 +7,4 @@ public:
     float getHeightAt(float x, float z) const override;
 };
 
-#endif
+ 

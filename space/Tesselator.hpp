@@ -1,6 +1,4 @@
-#ifndef SPACE_TESSELATOR_HPP
-#define SPACE_TESSELATOR_HPP
-
+#pragma once
 
 #include "OctreeNodeTriangleHandler.hpp"
 #include "ThreadContext.hpp"
@@ -15,4 +13,4 @@ public:
     void handle(Vertex &v0, Vertex &v1, Vertex &v2, bool sign) override;
 };
 
-#endif
+ 

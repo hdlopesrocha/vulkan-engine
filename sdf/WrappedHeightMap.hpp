@@ -1,6 +1,4 @@
-#ifndef SDF_WRAPPED_HEIGHTMAP_HPP
-#define SDF_WRAPPED_HEIGHTMAP_HPP
-
+#pragma once
 #include "WrappedSignedDistanceFunction.hpp"
 #include "HeightMapDistanceFunction.hpp"
 #include "../math/BoundingBox.hpp"
@@ -17,4 +15,4 @@ class WrappedHeightMap : public WrappedSignedDistanceFunction {
     const char* getLabel() const override;
 };
 
-#endif
+ 

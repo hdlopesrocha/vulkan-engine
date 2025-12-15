@@ -1,7 +1,4 @@
-// Auto-generated wrapper header for Triple
 #pragma once
-
-#include "Common.hpp"
 
 template<typename A, typename B, typename C>
 struct Triple {

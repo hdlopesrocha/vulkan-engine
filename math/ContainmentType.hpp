@@ -1,10 +1,8 @@
-#ifndef MATH_CONTAINMENTTYPE_HPP
-#define MATH_CONTAINMENTTYPE_HPP
-
+#pragma once
 enum ContainmentType {
     Contains,
     Intersects,
     Disjoint
 };
 
-#endif
+ 

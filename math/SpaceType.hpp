@@ -1,10 +1,8 @@
-#ifndef MATH_SPACETYPE_HPP
-#define MATH_SPACETYPE_HPP
-
+#pragma once
 enum SpaceType {
     Empty,
     Surface,
     Solid
 };
 
-#endif
+ 

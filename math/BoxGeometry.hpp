@@ -1,6 +1,4 @@
-#ifndef BOX_GEOMETRY_HPP
-#define BOX_GEOMETRY_HPP
-
+#pragma once
 #include "Geometry.hpp"
 #include "BoundingBox.hpp"
 
@@ -10,4 +8,4 @@ public:
     void addTriangle(glm::vec3 a,glm::vec3 b, glm::vec3 c);
 };
 
-#endif
+ 

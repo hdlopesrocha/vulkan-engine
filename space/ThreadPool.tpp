@@ -1,7 +1,4 @@
-// ThreadPool.tpp - template implementations
-
-#ifndef THREADPOOL_TPP
-#define THREADPOOL_TPP
+#pragma once
 
 #include "ThreadPool.hpp"
 
@@ -27,4 +24,3 @@ auto ThreadPool::enqueue(F&& f, Args&&... args)
     return res;
 }
 
-#endif // THREADPOOL_TPP

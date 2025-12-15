@@ -1,6 +1,4 @@
-#ifndef HEIGHT_MAP_TIF_HPP
-#define HEIGHT_MAP_TIF_HPP
-
+#pragma once
 #include "HeightFunction.hpp"
 #include "BoundingBox.hpp"
 #include <string>
@@ -18,4 +16,4 @@ public:
     float getHeightAt(float x, float z) const override;
 };
 
-#endif
+ 

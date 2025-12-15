@@ -1,6 +1,4 @@
-#ifndef MATH_COMMON_HPP
-#define MATH_COMMON_HPP
-
+#pragma once
 #include <glm/glm.hpp>
 #include <vector>
 #include <cstdint>
@@ -21,4 +19,4 @@ const std::array<glm::ivec3, 8> CUBE_CORNERS = {{
 #include "SpaceType.hpp"
 
 
-#endif
+ 

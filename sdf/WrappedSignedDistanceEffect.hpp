@@ -1,6 +1,4 @@
-#ifndef SDF_WRAPPED_SIGNED_DISTANCE_EFFECT_HPP
-#define SDF_WRAPPED_SIGNED_DISTANCE_EFFECT_HPP
-
+#pragma once
 #include "WrappedSignedDistanceFunction.hpp"
 #include <glm/glm.hpp>
 
@@ -15,4 +13,4 @@ class WrappedSignedDistanceEffect : public WrappedSignedDistanceFunction {
     void accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const override;
 };
 
-#endif
+ 

@@ -1,11 +1,13 @@
 #include "KeyboardPublisher.hpp"
 #include "EventManager.hpp"
-#include "CameraEvents.hpp"
-#include "WindowEvents.hpp"
 #include "../utils/Camera.hpp"
 
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include "TranslateCameraEvent.hpp"
+#include "RotateCameraEvent.hpp"
+#include "CloseWindowEvent.hpp"
+#include "ToggleFullscreenEvent.hpp"
 
 KeyboardPublisher::KeyboardPublisher(float moveSpeed_, float angularSpeedDeg_)
     : moveSpeed(moveSpeed_), angularSpeedDeg(angularSpeedDeg_) {}

@@ -1,6 +1,4 @@
-#ifndef MATH_UTILS_HPP
-#define MATH_UTILS_HPP
-
+#pragma once
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/matrix.hpp>
@@ -47,4 +45,4 @@ void ensureFolderExists(const std::string& folder);
 std::stringstream gzipDecompressFromIfstream(std::ifstream& inputFile);
 void gzipCompressToOfstream(std::istream& inputStream, std::ofstream& outputFile);
 
-#endif
+ 

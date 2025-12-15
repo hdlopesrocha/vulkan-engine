@@ -1,6 +1,4 @@
-#ifndef ABSTRACT_BOUNDING_BOX_HPP
-#define ABSTRACT_BOUNDING_BOX_HPP
-
+#pragma once
 #include "Common.hpp"
 #include "BoundingVolume.hpp"
 #include <glm/glm.hpp>
@@ -46,4 +44,4 @@ public:
     glm::vec3 getCorner(uint i) const;
 };
 
-#endif
+ 

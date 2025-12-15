@@ -1,6 +1,4 @@
-#ifndef TILEDRAW_HPP
-#define TILEDRAW_HPP
-
+#pragma once
 #include <glm/glm.hpp>
 
 struct TileDraw {
@@ -13,4 +11,4 @@ public:
     TileDraw(uint index,glm::vec2 size, glm::vec2 offset, glm::vec2 pivot, float angle);
 };
 
-#endif
+ 

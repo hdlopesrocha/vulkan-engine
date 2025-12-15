@@ -1,6 +1,4 @@
-#ifndef FRACTAL_PERLIN_SURFACE_HPP
-#define FRACTAL_PERLIN_SURFACE_HPP
-
+#pragma once
 #include "PerlinSurface.hpp"
 
 class FractalPerlinSurface : public PerlinSurface {
@@ -10,4 +8,4 @@ public:
     float getHeightAt(float x, float z) const override;
 };
 
-#endif
+ 

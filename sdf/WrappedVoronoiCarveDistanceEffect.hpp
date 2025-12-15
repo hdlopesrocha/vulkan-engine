@@ -1,6 +1,4 @@
-#ifndef SDF_WRAPPED_VORONOI_CARVE_EFFECT_HPP
-#define SDF_WRAPPED_VORONOI_CARVE_EFFECT_HPP
-
+#pragma once
 #include "WrappedSignedDistanceEffect.hpp"
 #include <glm/glm.hpp>
 #include "../math/Math.hpp"
@@ -25,4 +23,4 @@ class WrappedVoronoiCarveDistanceEffect : public WrappedSignedDistanceEffect {
     SdfType getType() const override { return SdfType::CARVE_VORONOI; }
 };
 
-#endif
+ 

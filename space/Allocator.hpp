@@ -1,6 +1,4 @@
-#ifndef SPACE_ALLOCATOR_HPP
-#define SPACE_ALLOCATOR_HPP
-
+#pragma once
 #include <vector>
 #include <unordered_set>
 #include <mutex>
@@ -63,5 +61,5 @@ public:
 };
 
 #include "Allocator.tpp"
-#endif // SPACE_ALLOCATOR_HPP
+ 
 

@@ -1,6 +1,4 @@
-#ifndef SDF_WRAPPED_CONE_HPP
-#define SDF_WRAPPED_CONE_HPP
-
+#pragma once
 #include "WrappedSignedDistanceFunction.hpp"
 #include "ConeDistanceFunction.hpp"
 #include "../math/BoundingSphere.hpp"
@@ -17,4 +15,4 @@ public:
     const char* getLabel() const override;
 };
 
-#endif
+ 

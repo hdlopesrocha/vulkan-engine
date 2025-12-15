@@ -1,6 +1,4 @@
-#ifndef SDF_WRAPPED_BOX_HPP
-#define SDF_WRAPPED_BOX_HPP
-
+#pragma once
 #include "WrappedSignedDistanceFunction.hpp"
 #include "BoxDistanceFunction.hpp"
 #include "../math/BoundingSphere.hpp"
@@ -17,4 +15,4 @@ class WrappedBox : public WrappedSignedDistanceFunction {
     const char* getLabel() const override;
 };
 
-#endif
+ 

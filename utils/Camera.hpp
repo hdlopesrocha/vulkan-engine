@@ -4,7 +4,6 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include "../events/IEventHandler.hpp"
-#include "../events/CameraEvents.hpp"
 
 class Camera : public IEventHandler {
 public:

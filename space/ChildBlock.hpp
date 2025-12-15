@@ -1,6 +1,4 @@
-#ifndef SPACE_CHILD_BLOCK_HPP
-#define SPACE_CHILD_BLOCK_HPP
-
+#pragma once
 #include "OctreeChangeHandler.hpp"
 
 class OctreeAllocator;
@@ -27,4 +25,4 @@ struct ChildBlock {
     OctreeNode * get(uint i, OctreeAllocator &allocator);
 };
 
-#endif
+ 

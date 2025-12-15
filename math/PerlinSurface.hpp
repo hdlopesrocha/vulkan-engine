@@ -1,6 +1,4 @@
-#ifndef PERLIN_SURFACE_HPP
-#define PERLIN_SURFACE_HPP
-
+#pragma once
 #include "HeightFunction.hpp"
 
 class PerlinSurface : public HeightFunction {
@@ -13,4 +11,4 @@ public:
     float getHeightAt(float x, float z) const override;
 };
 
-#endif
+ 
