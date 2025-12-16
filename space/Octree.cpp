@@ -371,7 +371,7 @@ void Octree::add(
   	expand(args);
     OctreeNodeFrame frame = OctreeNodeFrame(root, *this, 0, root->sdf, DISCARD_BRUSH_INDEX, false, *this);
     ThreadContext localChunkContext = ThreadContext(*this);
-    shape(frame, args, &localChunkContext);
+    shape(frame, args, &localChunkContext, ContainmentType::Intersects);
     std::cout << "\t\tOctree::add Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << std::endl; 
 }
 
@@ -388,7 +388,7 @@ void Octree::del(
     ShapeArgs args = ShapeArgs(SDF::opSubtraction, function, painter, model, translate, scale, simplifier, changeHandler, minSize);
     OctreeNodeFrame frame = OctreeNodeFrame(root, *this, 0, root->sdf, DISCARD_BRUSH_INDEX, false, *this);
     ThreadContext localChunkContext = ThreadContext(*this);
-    shape(frame, args, &localChunkContext);
+    shape(frame, args, &localChunkContext, ContainmentType::Intersects);
     std::cout << "\t\tOctree::del Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << std::endl; 
 }
 
@@ -410,8 +410,8 @@ bool Octree::isThreadNode(float length, float minSize, int threadSize) const {
     return minSize*threadSize < length;
 }
 
-NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext) {    
-    ContainmentType check = args.function->check(frame.cube, args.model, args.minSize);
+NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext, ContainmentType parentContainment) {    
+    ContainmentType check = parentContainment == ContainmentType::Intersects ? args.function->check(frame.cube, args.model, args.minSize) : parentContainment;
     OctreeNode * node = frame.node;
     bool process = true;
 
@@ -473,12 +473,12 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             if(isChildThread) {
                 ++threadsCreated;
                 NodeOperationResult * result = &childResult[i];
-                threads.emplace_back([this, childFrame, args, result]() {
+                threads.emplace_back([this, childFrame, args, result, check]() {
                    ThreadContext localThreadContext(childFrame.cube);
-                   *result = shape(childFrame, args, &localThreadContext);
+                   *result = shape(childFrame, args, &localThreadContext, check);
                 });
             } else {
-                childResult[i] = shape(childFrame, args, threadContext);
+                childResult[i] = shape(childFrame, args, threadContext, check);
             }
             
             (*shapeCounter)++;
