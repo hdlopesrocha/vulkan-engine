@@ -746,6 +746,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             // flip Y for Vulkan clip space
             proj[1][1] *= -1.0f;
 
+            camera.setProjection(proj);
             GLFWwindow* win = getWindow();
             if (win) {
                 // Apply sensitivity settings from UI
@@ -820,7 +821,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
             visibleModels.clear();
             // Request visible octree nodes from the main scene for the current camera view            
-            mainScene->requestVisibleNodes(Layer::LAYER_OPAQUE, camera.getViewMatrix(), [this](const OctreeNodeData& data){ 
+            mainScene->requestVisibleNodes(Layer::LAYER_OPAQUE, camera.getViewProjectionMatrix(), [this](const OctreeNodeData& data){ 
                 // Capture node/version locally to ensure lifetime for the async request callback
                 OctreeNode* node = data.node;
                 unsigned int version = node ? node->version : 0u;

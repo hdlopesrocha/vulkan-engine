@@ -19,6 +19,14 @@ glm::mat4 Camera::getViewMatrix() const {
     return glm::lookAt(position, position + f, u);
 }
 
+glm::mat4 Camera::getViewProjectionMatrix() const {
+    return projection * getViewMatrix();
+}
+
+void Camera::setProjection(const glm::mat4 &proj) {
+    projection = proj;
+}
+
 void Camera::rotateEuler(float yawDeg, float pitchDeg, float rollDeg) {
     // Convert degrees to radians and apply yaw (around world up), pitch (around right), roll (around forward)
     float yaw = glm::radians(yawDeg);
