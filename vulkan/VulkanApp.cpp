@@ -203,6 +203,13 @@ void VulkanApp::initImGui() {
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     ImGui::StyleColorsDark();
 
+    // Debug: print current ImGui window background color to help diagnose style issues
+    {
+        ImGuiStyle &style = ImGui::GetStyle();
+        ImVec4 bg = style.Colors[ImGuiCol_WindowBg];
+        printf("[ImGui Debug] WindowBg = %f,%f,%f,%f\n", bg.x, bg.y, bg.z, bg.w);
+    }
+
     ImGui_ImplGlfw_InitForVulkan(window, true);
 
     ImGui_ImplVulkan_InitInfo init_info{};

@@ -76,6 +76,7 @@ struct UniformObject {
 class MyApp : public VulkanApp, public IEventHandler {
     LocalScene * mainScene;
     std::unordered_map<OctreeNode*, Model3DVersion> nodeModelVersions;
+    std::vector<Model3D*> visibleModels;
 
     public:
         MyApp() : shadowMapper(this, 8192) {}
@@ -164,6 +165,9 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Subscribe camera and app to event manager
             eventManager.subscribe(&camera);
             eventManager.subscribe(this);
+
+            // Use ImGui dark theme for a darker UI appearance
+            ImGui::StyleColorsDark();
 
             // Initialize shadow mapper (moved after pipeline creation below)
             
@@ -704,10 +708,21 @@ class MyApp : public VulkanApp, public IEventHandler {
                 }
                 // Widget menu
                 widgetManager.renderMenu();
-                
-                ImGui::SameLine(ImGui::GetIO().DisplaySize.x - 120);
-                ImGui::Text("FPS: %.1f", imguiFps);
                 ImGui::EndMainMenuBar();
+
+                // Small top-left overlay under the main menu bar showing FPS and visible count (one per line)
+                {
+                    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+                    ImGui::SetNextWindowBgAlpha(0.35f);
+                    float padding = 10.0f;
+                    float y = ImGui::GetFrameHeight() + 6.0f; // position just under the main menu bar
+                    ImGui::SetNextWindowPos(ImVec2(padding, y), ImGuiCond_Always);
+                    if (ImGui::Begin("##stats_overlay", nullptr, flags)) {
+                        ImGui::Text("FPS: %.1f", imguiFps);
+                        ImGui::Text("Visible: %zu", visibleModels.size());
+                    }
+                    ImGui::End();
+                }
             }
 
             if (imguiShowDemo) ImGui::ShowDemoWindow(&imguiShowDemo);
@@ -803,9 +818,9 @@ class MyApp : public VulkanApp, public IEventHandler {
         };
 
         void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
-            std::vector<Model3D*> visibleModels;
-            
-            mainScene->requestVisibleNodes(Layer::LAYER_OPAQUE, camera.getViewMatrix(), [this, &visibleModels](const OctreeNodeData& data){ 
+            visibleModels.clear();
+            // Request visible octree nodes from the main scene for the current camera view            
+            mainScene->requestVisibleNodes(Layer::LAYER_OPAQUE, camera.getViewMatrix(), [this](const OctreeNodeData& data){ 
                 // Capture node/version locally to ensure lifetime for the async request callback
                 OctreeNode* node = data.node;
                 unsigned int version = node ? node->version : 0u;
