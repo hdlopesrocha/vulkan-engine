@@ -6,8 +6,14 @@
 size_t TextureManager::loadTriple(const std::string &albedoFile, const std::string &normalFile, const std::string &heightFile) {
     if (!app) throw std::runtime_error("TextureManager not initialized with VulkanApp pointer");
 
+    // Collect filenames for global arrays
+    albedoFiles.push_back(albedoFile);
+    normalFiles.push_back(normalFile);
+    heightFiles.push_back(heightFile);
+
     Triple t;
-    // create array textures with a single layer each (keeps current behavior but centralizes resource management)
+    t.layerIndex = triples.size(); // Will be set after push, but for now use size
+    // create array textures with a single layer each (for ImGui compatibility)
     t.albedo = app->createTextureImageArray({ albedoFile }, true);
     t.albedoSampler = app->createTextureSampler(t.albedo.mipLevels);
     // normal maps must be linear (UNORM) — do not use sRGB conversion
@@ -23,6 +29,7 @@ size_t TextureManager::loadTriple(const std::string &albedoFile, const std::stri
     t.material.shininess = 32.0f;
 
     triples.push_back(t);
+    triples.back().layerIndex = triples.size() - 1; // Set correct index
     return triples.size() - 1;
 }
 
@@ -45,6 +52,21 @@ size_t TextureManager::addTriple(const TextureImage& albedo, VkSampler albedoSam
     
     triples.push_back(t);
     return triples.size() - 1;
+}
+
+void TextureManager::createGlobalArrays() {
+    if (!app) throw std::runtime_error("TextureManager not initialized");
+    if (albedoFiles.empty()) return; // No textures loaded
+
+    // Create global arrays
+    globalAlbedoArray = app->createTextureImageArray(albedoFiles, true);
+    globalAlbedoSampler = app->createTextureSampler(globalAlbedoArray.mipLevels);
+
+    globalNormalArray = app->createTextureImageArray(normalFiles, false);
+    globalNormalSampler = app->createTextureSampler(globalNormalArray.mipLevels);
+
+    globalHeightArray = app->createTextureImageArray(heightFiles, false);
+    globalHeightSampler = app->createTextureSampler(globalHeightArray.mipLevels);
 }
 
 void TextureManager::destroyAll() {
@@ -95,6 +117,23 @@ void TextureManager::destroyAll() {
         }
     }
     triples.clear();
+
+    // Destroy global arrays
+    if (globalAlbedoSampler != VK_NULL_HANDLE) vkDestroySampler(device, globalAlbedoSampler, nullptr);
+    if (globalAlbedoArray.view != VK_NULL_HANDLE) vkDestroyImageView(device, globalAlbedoArray.view, nullptr);
+    if (globalAlbedoArray.image != VK_NULL_HANDLE) vkDestroyImage(device, globalAlbedoArray.image, nullptr);
+    if (globalAlbedoArray.memory != VK_NULL_HANDLE) vkFreeMemory(device, globalAlbedoArray.memory, nullptr);
+
+    if (globalNormalSampler != VK_NULL_HANDLE) vkDestroySampler(device, globalNormalSampler, nullptr);
+    if (globalNormalArray.view != VK_NULL_HANDLE) vkDestroyImageView(device, globalNormalArray.view, nullptr);
+    if (globalNormalArray.image != VK_NULL_HANDLE) vkDestroyImage(device, globalNormalArray.image, nullptr);
+    if (globalNormalArray.memory != VK_NULL_HANDLE) vkFreeMemory(device, globalNormalArray.memory, nullptr);
+
+    if (globalHeightSampler != VK_NULL_HANDLE) vkDestroySampler(device, globalHeightSampler, nullptr);
+    if (globalHeightArray.view != VK_NULL_HANDLE) vkDestroyImageView(device, globalHeightArray.view, nullptr);
+    if (globalHeightArray.image != VK_NULL_HANDLE) vkDestroyImage(device, globalHeightArray.image, nullptr);
+    if (globalHeightArray.memory != VK_NULL_HANDLE) vkFreeMemory(device, globalHeightArray.memory, nullptr);
+
     printf("[TextureManager] destroyAll done\n");
 }
 

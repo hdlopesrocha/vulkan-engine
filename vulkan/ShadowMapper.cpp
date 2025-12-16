@@ -390,13 +390,14 @@ void ShadowMapper::beginShadowPass(VkCommandBuffer commandBuffer, const glm::mat
 }
 
 void ShadowMapper::renderObject(VkCommandBuffer commandBuffer, const glm::mat4& modelMatrix, 
-                                 const VertexBufferObject& vbo, VkDescriptorSet descriptorSet) {
+                                 const VertexBufferObject& vbo, VkDescriptorSet descriptorSet, uint32_t dynamicOffset) {
     // Compute MVP for this object
     glm::mat4 mvp = currentLightSpaceMatrix * modelMatrix;
     
     // Bind descriptor set (includes UBO and image samplers) using the app's pipeline layout
+    // Pass dynamic offset for the dynamic uniform buffer binding
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                            vulkanApp->getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
+                            vulkanApp->getPipelineLayout(), 0, 1, &descriptorSet, 1, &dynamicOffset);
     
     // Bind vertex/index buffers
     VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };

@@ -95,6 +95,11 @@ class MyApp : public VulkanApp, public IEventHandler {
     // Model manager to handle all renderable objects
     ModelManager modelManager;
     
+    // Ground plane model
+    std::shared_ptr<Model3D> groundPlane;
+    
+    // Track previous texture index for updating ground plane
+    int previousTextureIndex = 0;
     // Store meshes (owned by app but not direct attributes)
     std::vector<std::unique_ptr<Mesh3D>> meshes;
     // Store simple model wrappers (mesh pointer + VBO reference + model matrix)
@@ -124,9 +129,11 @@ class MyApp : public VulkanApp, public IEventHandler {
         std::vector<Buffer> uniforms; // One uniform buffer per cube
         // Per-model-instance descriptor sets and uniform buffers (one UBO + set per Model3D)
         std::vector<VkDescriptorSet> instanceDescriptorSets;
-        std::vector<Buffer> instanceUniforms;
+        // Replaced per-instance buffers with a single dynamic uniform buffer (one for main, one for shadow)
+        Buffer instanceDynamicUniformBuffer;
+        Buffer instanceShadowDynamicUniformBuffer;
+        VkDeviceSize instanceUniformAlignedSize = 0;
         std::vector<VkDescriptorSet> instanceShadowDescriptorSets;
-        std::vector<Buffer> instanceShadowUniforms;
         // Additional per-texture uniform buffers and descriptor sets for sphere instances
         std::vector<VkDescriptorSet> sphereDescriptorSets;
         std::vector<Buffer> sphereUniforms;
@@ -144,7 +151,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         // store projection and view for per-cube MVP computation in draw()
         glm::mat4 projMat = glm::mat4(1.0f);
         glm::mat4 viewMat = glm::mat4(1.0f);
-        // static parts of the UBO that don't vary per-cube (we'll set model/mvp per draw)
+        // static parts of the UBO that don't vary per-cube (we'll set model/viewProjection per draw)
         UniformObject uboStatic{};
     // textureImage is now owned by TextureManager
         //VertexBufferObject vertexBufferObject; // now owned by CubeMesh
@@ -158,7 +165,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             ImGui::StyleColorsDark();
 
             // Initialize shadow mapper (moved after pipeline creation below)
-            
+                // reuse previously created DescriptorSetBuilder
             // Graphics Pipeline
             {
                 ShaderStage vertexShader = ShaderStage(
@@ -272,6 +279,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 m.mappingMode = false; // none
             }
 
+            // Create global texture arrays
+            textureManager.createGlobalArrays();
+
             // Initialize vegetation texture manager for billboard vegetation
             vegetationTextureManager.init(this);
 
@@ -295,6 +305,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 auto &vm = vegetationTextureManager.getMaterial(vi);
                     vm.mappingMode = false;
             }
+
+            // Create global texture arrays for vegetation
+            vegetationTextureManager.createGlobalArrays();
 
             // Auto-detect tiles from vegetation opacity maps
             std::cout << "Auto-detecting vegetation tiles from opacity maps..." << std::endl;
@@ -373,35 +386,39 @@ class MyApp : public VulkanApp, public IEventHandler {
             descriptorSets.resize(tripleCount, VK_NULL_HANDLE);
             shadowDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
 
-            // Use DescriptorSetBuilder to reduce repeated code
+            // Build descriptor sets using helper
             DescriptorSetBuilder dsBuilder(this, &textureManager, &shadowMapper);
+
+            // Use DescriptorSetBuilder to reduce repeated code
+            // reuse top-level DescriptorSetBuilder
             for (size_t i = 0; i < tripleCount; ++i) {
                 const auto &tr = textureManager.getTriple(i);
                 // main descriptor set
                 VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
-                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, uniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, uniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, 0);
                 descriptorSets[i] = ds;
 
                 // shadow descriptor set
-                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, 0);
                 shadowDescriptorSets[i] = sds;
             }
 
-            // Create per-texture descriptor sets and uniform buffers for sphere instances (one per texture triple)
+            // Use a single dynamic uniform buffer and one descriptor set (replicated) for sphere instances
             sphereDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
-            sphereUniforms.resize(tripleCount);
-            shadowSphereUniforms.resize(tripleCount);
+            sphereUniforms.clear(); sphereUniforms.resize(1);
+            shadowSphereUniforms.clear(); shadowSphereUniforms.resize(1);
             shadowSphereDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
+
+            VkDeviceSize ubSize = sizeof(UniformObject);
+            // Use the instance dynamic uniform buffers and the main instance descriptor set for spheres
+            // Replicate existing per-instance descriptor handle across sphere descriptor arrays
+            if (descriptorSets.empty()) {
+                // ensure descriptorSets has at least one entry
+                descriptorSets.assign(tripleCount, VK_NULL_HANDLE);
+            }
             for (size_t i = 0; i < tripleCount; ++i) {
-                // create uniform buffer for sphere instance
-                sphereUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                shadowSphereUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                const auto &tr = textureManager.getTriple(i);
-                VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
-                VkDescriptorSet ds = dsBuilder.createSphereDescriptorSet(tr, sphereUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
-                sphereDescriptorSets[i] = ds;
-                VkDescriptorSet sds = dsBuilder.createShadowSphereDescriptorSet(tr, shadowSphereUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
-                shadowSphereDescriptorSets[i] = sds;
+                sphereDescriptorSets[i] = descriptorSets[i];
+                shadowSphereDescriptorSets[i] = shadowDescriptorSets[i];
             }
 
         
@@ -473,32 +490,49 @@ class MyApp : public VulkanApp, public IEventHandler {
                 modelObjects.emplace_back(std::make_unique<Model3D>(spherePtr, meshVBOs.back(), sphereModel));
             }
             // Create per-model-instance uniform buffers and descriptor sets so each instance has its own UBO
+            // Create a single dynamic UBO large enough for one UniformObject per instance
             instanceDescriptorSets.clear();
-            instanceUniforms.clear();
             instanceShadowDescriptorSets.clear();
-            instanceShadowUniforms.clear();
-            instanceDescriptorSets.resize(modelObjects.size(), VK_NULL_HANDLE);
-            instanceUniforms.resize(modelObjects.size());
-            instanceShadowDescriptorSets.resize(modelObjects.size(), VK_NULL_HANDLE);
-            instanceShadowUniforms.resize(modelObjects.size());
-            {
-                DescriptorSetBuilder dsBuilder(this, &textureManager, &shadowMapper);
-                VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
-                for (size_t mi = 0; mi < modelObjects.size(); ++mi) {
-                    Model3D* m = modelObjects[mi].get();
-                    if (!m || !m->mesh) continue;
-                    // determine triple index from mesh vertex texIndex (plane was built with editableIndex)
-                    int texIdx = 0;
-                    if (!m->mesh->getVertices().empty()) texIdx = m->mesh->getVertices()[0].texIndex;
-                    if (texIdx < 0 || static_cast<size_t>(texIdx) >= textureManager.count()) texIdx = 0;
-                    const auto &tr = textureManager.getTriple(static_cast<size_t>(texIdx));
-                    // create per-instance uniform buffers
-                    instanceUniforms[mi] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                    instanceShadowUniforms[mi] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                    // create descriptor sets bound to the per-instance buffers
-                    instanceDescriptorSets[mi] = dsBuilder.createMainDescriptorSet(tr, instanceUniforms[mi], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(texIdx) * matElemSize : 0);
-                    instanceShadowDescriptorSets[mi] = dsBuilder.createShadowDescriptorSet(tr, instanceShadowUniforms[mi], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(texIdx) * matElemSize : 0);
+            size_t instanceCount = modelObjects.size();
+            instanceDescriptorSets.resize(instanceCount, VK_NULL_HANDLE);
+            instanceShadowDescriptorSets.resize(instanceCount, VK_NULL_HANDLE);
+            // reuse previously created DescriptorSetBuilder
+            // element size must be aligned to device requirements
+            VkDeviceSize elemSize = sizeof(UniformObject);
+            VkDeviceSize minAlign = getMinUniformBufferOffsetAlignment();
+            VkDeviceSize alignedElem = (elemSize + minAlign - 1) / minAlign * minAlign;
+            if (instanceDynamicUniformBuffer.buffer != VK_NULL_HANDLE) {
+                vkDestroyBuffer(getDevice(), instanceDynamicUniformBuffer.buffer, nullptr);
+                instanceDynamicUniformBuffer.buffer = VK_NULL_HANDLE;
+            }
+            if (instanceDynamicUniformBuffer.memory != VK_NULL_HANDLE && instanceDynamicUniformBuffer.buffer == VK_NULL_HANDLE) {
+                vkFreeMemory(getDevice(), instanceDynamicUniformBuffer.memory, nullptr);
+                instanceDynamicUniformBuffer.memory = VK_NULL_HANDLE;
+            }
+            if (instanceShadowDynamicUniformBuffer.buffer != VK_NULL_HANDLE) {
+                vkDestroyBuffer(getDevice(), instanceShadowDynamicUniformBuffer.buffer, nullptr);
+                instanceShadowDynamicUniformBuffer.buffer = VK_NULL_HANDLE;
+            }
+            if (instanceShadowDynamicUniformBuffer.memory != VK_NULL_HANDLE && instanceShadowDynamicUniformBuffer.buffer == VK_NULL_HANDLE) {
+                vkFreeMemory(getDevice(), instanceShadowDynamicUniformBuffer.memory, nullptr);
+                instanceShadowDynamicUniformBuffer.memory = VK_NULL_HANDLE;
+            }
+            if (instanceCount > 0) {
+                instanceDynamicUniformBuffer = createBuffer(alignedElem * instanceCount, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                instanceShadowDynamicUniformBuffer = createBuffer(alignedElem * instanceCount, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                instanceUniformAlignedSize = alignedElem;
+                // create one descriptor set and replicate it across instances
+                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(textureManager.getTriple(0), instanceDynamicUniformBuffer, materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, 0);
+                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(textureManager.getTriple(0), instanceShadowDynamicUniformBuffer, materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, 0);
+                for (size_t mi = 0; mi < instanceCount; ++mi) {
+                    instanceDescriptorSets[mi] = ds;
+                    instanceShadowDescriptorSets[mi] = sds;
                 }
+                // Replace per-texture descriptor sets with the single dynamic-backed set
+                size_t tripleCount = textureManager.count();
+                if (tripleCount == 0) tripleCount = 1;
+                descriptorSets.assign(tripleCount, ds);
+                shadowDescriptorSets.assign(tripleCount, sds);
             }
             
             // Initialize light space matrix BEFORE creating command buffers
@@ -704,9 +738,9 @@ class MyApp : public VulkanApp, public IEventHandler {
         void update(float deltaTime) override {
             // Process queued events (dispatch to handlers)
             eventManager.processQueued();
-            // compute MVP = proj * view * model
+            // compute viewProjection = proj * view
             glm::mat4 model = glm::mat4(1.0f);
-            glm::mat4 mvp = glm::mat4(1.0f);
+            glm::mat4 viewProj = glm::mat4(1.0f);
 
             float aspect = (float)getWidth() / (float) getHeight();
             glm::mat4 proj = glm::perspective(45.0f * 3.1415926f / 180.0f, aspect, 0.1f, 8192.0f);
@@ -731,13 +765,13 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // keep model identity (stop cube rotation)
             model = glm::mat4(1.0f);
-            mvp = proj * view * model;
+            viewProj = proj * view;
 
-            // store projection and view for per-cube MVP computation in draw()
+            // store projection and view for per-cube viewProjection computation in draw()
             projMat = proj;
             viewMat = view;
 
-            // prepare static parts of the UBO (viewPos, light, material flags) - model and mvp will be set per-cube in draw()
+            // prepare static parts of the UBO (viewPos, light, material flags) - model and viewProjection will be set per-cube in draw()
             uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
             // The UI `lightDirection` represents a vector TO the light. Shaders expect a light vector that points FROM the
             // light TOWARD the surface when performing lighting/shadow calculations. Send the negated direction to the GPU
@@ -838,9 +872,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // other objects use the first available texture descriptor (index 0) if present.
                 // Use per-instance descriptor set / uniform buffer created during setup
                 VkDescriptorSet ds = instanceDescriptorSets.size() > mi ? instanceDescriptorSets[mi] : VK_NULL_HANDLE;
-                Buffer* ub = instanceUniforms.size() > mi ? &instanceUniforms[mi] : nullptr;
+                Buffer* ub = &instanceDynamicUniformBuffer;
                 VkDescriptorSet sds = instanceShadowDescriptorSets.size() > mi ? instanceShadowDescriptorSets[mi] : VK_NULL_HANDLE;
-                Buffer* sub = instanceShadowUniforms.size() > mi ? &instanceShadowUniforms[mi] : nullptr;
+                Buffer* sub = &instanceShadowDynamicUniformBuffer;
                 // material index is encoded in mesh vertex `texIndex`; pass instance without materialIndex
                 modelManager.addInstance(m->mesh, vbo, transform, ds, ub, sds, sub);
             }
@@ -850,20 +884,21 @@ class MyApp : public VulkanApp, public IEventHandler {
                 shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
                 
                 // Render all instances to shadow map
-                for (const auto& instance : modelManager.getInstances()) {
+                auto &instances = modelManager.getInstances();
+                for (size_t ii = 0; ii < instances.size(); ++ii) {
+                    auto &instance = instances[ii];
                     // Update uniform buffer for shadow pass
-                    glm::mat4 shadowMvp = uboStatic.lightSpaceMatrix * instance.transform;
                     UniformObject shadowUbo = uboStatic;
                     shadowUbo.model = instance.transform;
-                    shadowUbo.mvp = shadowMvp;
+                    shadowUbo.viewProjection = uboStatic.lightSpaceMatrix;
                     shadowUbo.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
                     // Per-material mapping/mappingParams are read from the Materials SSBO in shaders.
                     shadowUbo.passParams = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 1.0
-    
-                    updateUniformBuffer(*instance.shadowUniformBuffer, &shadowUbo, sizeof(UniformObject));
-                    
-                    shadowMapper.renderObject(commandBuffer, instance.transform, instance.vbo,
-                                            instance.shadowDescriptorSet);
+                    // write into dynamic buffer slot for this instance
+                    VkDeviceSize dynOffset = ii * instanceUniformAlignedSize;
+                    updateUniformBufferRange(*instance.shadowUniformBuffer, dynOffset, &shadowUbo, sizeof(UniformObject));
+                    uint32_t dyn = static_cast<uint32_t>(dynOffset);
+                    shadowMapper.renderObject(commandBuffer, instance.transform, instance.vbo, instance.shadowDescriptorSet, dyn);
                 }
 
                 shadowMapper.endShadowPass(commandBuffer);
@@ -888,17 +923,20 @@ class MyApp : public VulkanApp, public IEventHandler {
             vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
             // --- Render sky sphere first: large sphere centered at camera ---
-            if (skyRenderer && meshes.size() > 2 && meshVBOs.size() > 2 && !sphereDescriptorSets.empty() && !sphereUniforms.empty()) {
+            if (skyRenderer && meshes.size() > 2 && meshVBOs.size() > 2 && !sphereDescriptorSets.empty() && instanceDynamicUniformBuffer.buffer != VK_NULL_HANDLE) {
                 if (skySphere) skySphere->update();
                 const auto &vbo = meshVBOs[2];
-                skyRenderer->render(commandBuffer, vbo, sphereDescriptorSets[0], sphereUniforms[0], uboStatic, projMat, viewMat);
+                // use dynamic offset 0 (first layer) for initial sky render
+                skyRenderer->render(commandBuffer, vbo, sphereDescriptorSets[0], instanceDynamicUniformBuffer, 0, uboStatic, projMat, viewMat);
             }
 
             // bind pipeline
             // We'll bind the appropriate pipeline per-instance (regular or tessellated)
 
             // Render all instances with main pass
-            for (const auto& instance : modelManager.getInstances()) {
+            auto &instancesMain = modelManager.getInstances();
+            for (size_t ii = 0; ii < instancesMain.size(); ++ii) {
+                const auto& instance = instancesMain[ii];
                 const auto& vbo = instance.vbo;
                 
                 // Bind vertex and index buffers
@@ -908,16 +946,17 @@ class MyApp : public VulkanApp, public IEventHandler {
                 vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
                 
                 // Update uniform buffer for this instance
-                glm::mat4 mvp = projMat * viewMat * instance.transform;
+                glm::mat4 viewProj = projMat * viewMat;
                 UniformObject ubo = uboStatic;
                 ubo.model = instance.transform;
-                ubo.mvp = mvp;
+                ubo.viewProjection = viewProj;
                 
                 // Static material properties are read from the GPU-side material buffer (SSBO).
                 // Determine material index from the mesh vertex `texIndex` and use it for per-instance overrides.
                 const MaterialProperties* instMat = nullptr;
+                int idx = 0;
                 if (instance.model && !instance.model->getVertices().empty()) {
-                    int idx = instance.model->getVertices()[0].texIndex;
+                    idx = instance.model->getVertices()[0].texIndex;
                     if (idx >= 0 && static_cast<size_t>(idx) < textureManager.count()) {
                         instMat = &textureManager.getMaterial(static_cast<size_t>(idx));
                     }
@@ -942,7 +981,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (settingsWidget) ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
                 else ubo.debugParams = glm::vec4(0.0f);
                 ubo.passParams = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 0.0
-                updateUniformBuffer(*instance.uniformBuffer, &ubo, sizeof(UniformObject));
+                // write per-instance UBO into aligned slot of dynamic buffer
+                VkDeviceSize dynOffset = ii * instanceUniformAlignedSize;
+                updateUniformBufferRange(*instance.uniformBuffer, dynOffset, &ubo, sizeof(UniformObject));
                 
                 // Bind descriptor set and draw
                 // Use a single pipeline (tessellation is enabled/disabled in the shader using mappingMode)
@@ -950,8 +991,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (wire && graphicsPipelineWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineWire);
                 else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
+                uint32_t dyn = static_cast<uint32_t>(dynOffset);
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                       getPipelineLayout(), 0, 1, &instance.descriptorSet, 0, nullptr);
+                                       getPipelineLayout(), 0, 1, &instance.descriptorSet, 1, &dyn);
                 vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
             }
 
@@ -994,20 +1036,12 @@ class MyApp : public VulkanApp, public IEventHandler {
             for (auto& uniformBuffer : uniforms) {
                 if (uniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniformBuffer.memory, nullptr);
             }
-            // per-instance uniform buffers cleanup
-            for (auto& uniformBuffer : instanceUniforms) {
-                if (uniformBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniformBuffer.buffer, nullptr);
-            }
-            for (auto& uniformBuffer : instanceUniforms) {
-                if (uniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniformBuffer.memory, nullptr);
-            }
-            // sphere uniform buffers cleanup
-            for (auto& uniformBuffer : sphereUniforms) {
-                if (uniformBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniformBuffer.buffer, nullptr);
-            }
-            for (auto& uniformBuffer : sphereUniforms) {
-                if (uniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniformBuffer.memory, nullptr);
-            }
+            // per-instance dynamic uniform buffers cleanup
+            if (instanceDynamicUniformBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), instanceDynamicUniformBuffer.buffer, nullptr);
+            if (instanceDynamicUniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), instanceDynamicUniformBuffer.memory, nullptr);
+            if (instanceShadowDynamicUniformBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), instanceShadowDynamicUniformBuffer.buffer, nullptr);
+            if (instanceShadowDynamicUniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), instanceShadowDynamicUniformBuffer.memory, nullptr);
+            // sphere uniform buffers were folded into instance dynamic buffers; nothing separate to free
             
             // editable textures cleanup
             if (editableTextures) editableTextures->cleanup();

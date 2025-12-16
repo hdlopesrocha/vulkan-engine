@@ -12,6 +12,7 @@ public:
     void setGeometry(const std::vector<Vertex>& vertices, const std::vector<uint16_t>& indices);
 
     // Access geometry
+    std::vector<Vertex>& getVertices() { return vertices; }
     const std::vector<Vertex>& getVertices() const { return vertices; }
     const std::vector<uint16_t>& getIndices() const { return indices; }
 

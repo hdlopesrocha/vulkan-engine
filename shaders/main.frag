@@ -4,7 +4,8 @@
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragNormal;
-layout(location = 5) flat in int fragTexIndex;
+layout(location = 5) flat in ivec3 fragTexIndices;
+layout(location = 11) in vec3 fragTexWeights;
 layout(location = 4) in vec3 fragPosWorld;
 layout(location = 6) in vec4 fragPosLightSpace;
 layout(location = 9) in vec4 fragTangent;
@@ -23,8 +24,8 @@ layout(location = 0) out vec4 outColor;
 #include "includes/shadows.glsl"
 
 void main() {
-    // Use the per-vertex texture index
-    int texIndex = fragTexIndex;
+    // Use the three tex indices and barycentric weights provided by the TES for blending
+    vec3 w = fragTexWeights;
 
     vec2 uv = fragUV;
     bool usedTriplanar = false;
@@ -43,21 +44,41 @@ void main() {
     bool haveTB = false;
     // Sample albedo texture (triplanar when enabled)
     vec3 albedoColor;
-    if (materials[texIndex].triplanarParams.z > 0.5) {
+    // Mix triplanar flag across the three materials
+    float triFlag = dot(vec3(materials[fragTexIndices.x].triplanarParams.z, materials[fragTexIndices.y].triplanarParams.z, materials[fragTexIndices.z].triplanarParams.z), w);
+    if (triFlag > 0.5) {
         usedTriplanar = true;
-        vec3 w = triW;
-        albedoColor = computeTriplanarAlbedo(fragPosWorld, w, texIndex);
-        // If normal mapping is enabled, compute triplanar normal as well
-        if (materials[texIndex].mappingParams.x > 0.5 || ubo.materialFlags.w > 0.5) {
-            worldNormal = computeTriplanarNormal(fragPosWorld, w, texIndex, N);
+        vec3 wTri = triW;
+        // compute triplanar albedo per-layer then blend
+        vec3 a0 = computeTriplanarAlbedo(fragPosWorld, wTri, fragTexIndices.x);
+        vec3 a1 = computeTriplanarAlbedo(fragPosWorld, wTri, fragTexIndices.y);
+        vec3 a2 = computeTriplanarAlbedo(fragPosWorld, wTri, fragTexIndices.z);
+        albedoColor = a0 * w.x + a1 * w.y + a2 * w.z;
+        // If normal mapping/triplanar normal enabled per-material or global, compute blended triplanar normal
+        float mapFlag0 = materials[fragTexIndices.x].mappingParams.x;
+        float mapFlag1 = materials[fragTexIndices.y].mappingParams.x;
+        float mapFlag2 = materials[fragTexIndices.z].mappingParams.x;
+        if ((mapFlag0 * w.x + mapFlag1 * w.y + mapFlag2 * w.z) > 0.5 || ubo.materialFlags.w > 0.5) {
+            vec3 n0 = computeTriplanarNormal(fragPosWorld, wTri, fragTexIndices.x, N);
+            vec3 n1 = computeTriplanarNormal(fragPosWorld, wTri, fragTexIndices.y, N);
+            vec3 n2 = computeTriplanarNormal(fragPosWorld, wTri, fragTexIndices.z, N);
+            worldNormal = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
         }
     } else {
-        albedoColor = texture(albedoArray, vec3(uv, float(texIndex))).rgb;
+        // Sample albedo from each layer and blend by barycentric weights
+        vec3 a0 = texture(albedoArray, vec3(uv, float(fragTexIndices.x))).rgb;
+        vec3 a1 = texture(albedoArray, vec3(uv, float(fragTexIndices.y))).rgb;
+        vec3 a2 = texture(albedoArray, vec3(uv, float(fragTexIndices.z))).rgb;
+        albedoColor = a0 * w.x + a1 * w.y + a2 * w.z;
     }
 
     // Compute normal mapping if enabled (per-material or global toggle)
-    if (!usedTriplanar && (materials[texIndex].mappingParams.x > 0.5 || ubo.materialFlags.w > 0.5)) {
-        vec3 nmap = texture(normalArray, vec3(uv, float(texIndex))).rgb * 2.0 - 1.0;
+    if (!usedTriplanar && ((materials[fragTexIndices.x].mappingParams.x * w.x + materials[fragTexIndices.y].mappingParams.x * w.y + materials[fragTexIndices.z].mappingParams.x * w.z) > 0.5 || ubo.materialFlags.w > 0.5)) {
+        // Sample normal map per-layer and blend in tangent space
+        vec3 n0 = texture(normalArray, vec3(uv, float(fragTexIndices.x))).rgb * 2.0 - 1.0;
+        vec3 n1 = texture(normalArray, vec3(uv, float(fragTexIndices.y))).rgb * 2.0 - 1.0;
+        vec3 n2 = texture(normalArray, vec3(uv, float(fragTexIndices.z))).rgb * 2.0 - 1.0;
+        vec3 nmap = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
         if (computeWorldNormalFromNormalMap(fragTangent, fragPosWorld, fragUV, N, nmap, worldNormal, T, B)) {
             haveTB = true;
         }
@@ -80,14 +101,23 @@ void main() {
     }
     float totalShadow = shadow;
 
-    vec3 ambient = albedoColor * materials[texIndex].materialFlags.z;
+    // Blend material parameters (ambient/specular) by barycentric weights
+    vec4 matFlags0 = materials[fragTexIndices.x].materialFlags;
+    vec4 matFlags1 = materials[fragTexIndices.y].materialFlags;
+    vec4 matFlags2 = materials[fragTexIndices.z].materialFlags;
+    vec4 blendedMatFlags = matFlags0 * w.x + matFlags1 * w.y + matFlags2 * w.z;
+    vec3 ambient = albedoColor * blendedMatFlags.z;
     vec3 diffuse = albedoColor * ubo.lightColor.rgb * NdotL * (1.0 - totalShadow);
 
     // Specular
     vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
     vec3 reflectDir = reflect(-toLight, worldNormal);
-    float spec = pow(max(dot(viewDir, reflectDir), 0.0), materials[texIndex].specularParams.y);
-    vec3 specular = ubo.lightColor.rgb * spec * (1.0 - totalShadow) * materials[texIndex].specularParams.x;
+    vec4 spec0 = materials[fragTexIndices.x].specularParams;
+    vec4 spec1 = materials[fragTexIndices.y].specularParams;
+    vec4 spec2 = materials[fragTexIndices.z].specularParams;
+    vec4 blendedSpec = spec0 * w.x + spec1 * w.y + spec2 * w.z;
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), blendedSpec.y);
+    vec3 specular = ubo.lightColor.rgb * spec * (1.0 - totalShadow) * blendedSpec.x;
 
     // Debug visualisation modes (0 = normal render)
     int debugMode = int(ubo.debugParams.x + 0.5);
@@ -134,17 +164,26 @@ void main() {
         return;
     }
     if (debugMode == 7) {
-        vec3 rawAlbedo = texture(albedoArray, vec3(fragUV, float(texIndex))).rgb;
+        vec3 ra0 = texture(albedoArray, vec3(fragUV, float(fragTexIndices.x))).rgb;
+        vec3 ra1 = texture(albedoArray, vec3(fragUV, float(fragTexIndices.y))).rgb;
+        vec3 ra2 = texture(albedoArray, vec3(fragUV, float(fragTexIndices.z))).rgb;
+        vec3 rawAlbedo = ra0 * w.x + ra1 * w.y + ra2 * w.z;
         outColor = vec4(rawAlbedo, 1.0);
         return;
     }
     if (debugMode == 8) {
-        vec3 rawNormalTex = texture(normalArray, vec3(fragUV, float(texIndex))).rgb;
+        vec3 rn0 = texture(normalArray, vec3(fragUV, float(fragTexIndices.x))).rgb;
+        vec3 rn1 = texture(normalArray, vec3(fragUV, float(fragTexIndices.y))).rgb;
+        vec3 rn2 = texture(normalArray, vec3(fragUV, float(fragTexIndices.z))).rgb;
+        vec3 rawNormalTex = rn0 * w.x + rn1 * w.y + rn2 * w.z;
         outColor = vec4(rawNormalTex, 1.0);
         return;
     }
     if (debugMode == 9) {
-        float h = texture(heightArray, vec3(fragUV, float(texIndex))).r;
+        float h0 = texture(heightArray, vec3(fragUV, float(fragTexIndices.x))).r;
+        float h1 = texture(heightArray, vec3(fragUV, float(fragTexIndices.y))).r;
+        float h2 = texture(heightArray, vec3(fragUV, float(fragTexIndices.z))).r;
+        float h = h0 * w.x + h1 * w.y + h2 * w.z;
         outColor = vec4(vec3(h), 1.0);
         return;
     }
@@ -174,6 +213,51 @@ void main() {
         // Visualize triplanar blend weights RGB (X/Y/Z projections)
         vec3 w = triW;
         outColor = vec4(w, 1.0);
+        return;
+    }
+
+    if (debugMode == 16) {
+        // Map each corner texIndex to a distinct color from a small palette, then blend by barycentric weights
+        const int PALETTE_SIZE = 16;
+        const vec3 palette[PALETTE_SIZE] = vec3[](
+            vec3(0.90, 0.10, 0.10), // red
+            vec3(0.10, 0.90, 0.10), // green
+            vec3(0.10, 0.10, 0.90), // blue
+            vec3(0.90, 0.90, 0.10), // yellow
+            vec3(0.90, 0.10, 0.90), // magenta
+            vec3(0.10, 0.90, 0.90), // cyan
+            vec3(1.00, 0.55, 0.10), // orange
+            vec3(0.55, 0.35, 0.15), // brown
+            vec3(0.60, 0.20, 0.80), // purple
+            vec3(1.00, 0.50, 0.70), // pink
+            vec3(0.70, 1.00, 0.30), // lime
+            vec3(0.00, 0.45, 0.55), // teal
+            vec3(0.05, 0.10, 0.35), // navy
+            vec3(0.45, 0.50, 0.10), // olive
+            vec3(0.60, 0.60, 0.60), // gray
+            vec3(1.00, 1.00, 1.00)  // white
+        );
+
+        vec3 c0 = palette[int(mod(float(fragTexIndices.x), float(PALETTE_SIZE)) + 0.5)];
+        vec3 c1 = palette[int(mod(float(fragTexIndices.y), float(PALETTE_SIZE)) + 0.5)];
+        vec3 c2 = palette[int(mod(float(fragTexIndices.z), float(PALETTE_SIZE)) + 0.5)];
+        vec3 blended = c0 * w.x + c1 * w.y + c2 * w.z;
+        outColor = vec4(blended, 1.0);
+        return;
+    }
+
+    if (debugMode == 17) {
+        // Visualize barycentric weights directly as RGB
+        outColor = vec4(clamp(w, 0.0, 1.0), 1.0);
+        return;
+    }
+
+    if (debugMode == 18) {
+        // Show the raw albedo samples for each corner packed into RGB (a0.r, a1.r, a2.r)
+        vec3 a0 = texture(albedoArray, vec3(fragUV, float(fragTexIndices.x))).rgb;
+        vec3 a1 = texture(albedoArray, vec3(fragUV, float(fragTexIndices.y))).rgb;
+        vec3 a2 = texture(albedoArray, vec3(fragUV, float(fragTexIndices.z))).rgb;
+        outColor = vec4(a0.r, a1.r, a2.r, 1.0);
         return;
     }
 

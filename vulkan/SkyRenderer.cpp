@@ -34,7 +34,7 @@ void SkyRenderer::init() {
     // Shader modules are owned/managed by the app helper; no need to destroy here
 }
 
-void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &uboStatic, const glm::mat4 &projMat, const glm::mat4 &viewMat) {
+void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, VkDeviceSize dynamicOffset, const UniformObject &uboStatic, const glm::mat4 &projMat, const glm::mat4 &viewMat) {
     if (skyPipeline == VK_NULL_HANDLE) return;
 
     // update sky uniform centered at camera
@@ -42,12 +42,14 @@ void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, Vk
     glm::vec3 camPos = glm::vec3(uboStatic.viewPos);
     glm::mat4 model = glm::translate(glm::mat4(1.0f), camPos) * glm::scale(glm::mat4(1.0f), glm::vec3(50.0f));
     skyUbo.model = model;
-    skyUbo.mvp = projMat * viewMat * model;
+    skyUbo.viewProjection = projMat * viewMat;
     skyUbo.passParams = glm::vec4(0.0f);
-    app->updateUniformBuffer(uniformBuffer, &skyUbo, sizeof(UniformObject));
+    app->updateUniformBufferRange(uniformBuffer, dynamicOffset, &skyUbo, sizeof(UniformObject));
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, app->getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
+    // Bind descriptor set with dynamic offset for this sky instance
+    uint32_t dyn = static_cast<uint32_t>(dynamicOffset);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, app->getPipelineLayout(), 0, 1, &descriptorSet, 1, &dyn);
 
     const VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
     const VkDeviceSize offsets[] = { 0 };

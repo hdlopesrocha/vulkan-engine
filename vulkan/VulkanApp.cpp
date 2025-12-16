@@ -974,12 +974,18 @@ VkSampler VulkanApp::createTextureSampler(uint32_t mipLevels) {
     return textureSampler;
 }
 
+VkDeviceSize VulkanApp::getMinUniformBufferOffsetAlignment() const {
+    VkPhysicalDeviceProperties deviceProperties{};
+    vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+    return static_cast<VkDeviceSize>(deviceProperties.limits.minUniformBufferOffsetAlignment);
+}
+
 void VulkanApp::createDescriptorSetLayout() {
-    // binding 0 : uniform buffer (vertex shader)
+    // binding 0 : dynamic uniform buffer (per-instance via dynamic offsets)
     VkDescriptorSetLayoutBinding uboLayoutBinding{};
     uboLayoutBinding.binding = 0;
     uboLayoutBinding.descriptorCount = 1;
-    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     uboLayoutBinding.pImmutableSamplers = nullptr;
     // UBO is referenced by vertex, fragment and tessellation stages
     uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
@@ -1374,6 +1380,14 @@ void VulkanApp::updateUniformBuffer(Buffer &uniform, void * data, size_t dataSiz
     void* bufferData;
     // map the exact size requested by the caller so different uniform sizes are supported
     vkMapMemory(device, uniform.memory, 0, dataSize, 0, &bufferData);
+    memcpy(bufferData, data, dataSize);
+    vkUnmapMemory(device, uniform.memory);
+}
+
+void VulkanApp::updateUniformBufferRange(Buffer &uniform, VkDeviceSize offset, void * data, size_t dataSize) {
+    void* bufferData;
+    // map the requested region at given offset
+    vkMapMemory(device, uniform.memory, offset, dataSize, 0, &bufferData);
     memcpy(bufferData, data, dataSize);
     vkUnmapMemory(device, uniform.memory);
 }
