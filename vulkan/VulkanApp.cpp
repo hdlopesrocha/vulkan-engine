@@ -1,6 +1,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 
 #include "VulkanApp.hpp"
+#include <glm/glm.hpp>
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
@@ -1278,6 +1279,14 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = (descriptorSetLayout != VK_NULL_HANDLE) ? 1u : 0u;
     pipelineLayoutInfo.pSetLayouts = (descriptorSetLayout != VK_NULL_HANDLE) ? &descriptorSetLayout : nullptr;
+
+    // Add push constant range for per-draw model matrix (mat4 = 64 bytes)
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(glm::mat4);
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
     // Create pipeline layout only once and reuse for multiple pipelines
     if (pipelineLayout == VK_NULL_HANDLE) {

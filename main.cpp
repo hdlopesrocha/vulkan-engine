@@ -889,7 +889,6 @@ class MyApp : public VulkanApp, public IEventHandler {
                     auto &instance = instances[ii];
                     // Update uniform buffer for shadow pass
                     UniformObject shadowUbo = uboStatic;
-                    shadowUbo.model = instance.transform;
                     shadowUbo.viewProjection = uboStatic.lightSpaceMatrix;
                     shadowUbo.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
                     // Per-material mapping/mappingParams are read from the Materials SSBO in shaders.
@@ -948,7 +947,6 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // Update uniform buffer for this instance
                 glm::mat4 viewProj = projMat * viewMat;
                 UniformObject ubo = uboStatic;
-                ubo.model = instance.transform;
                 ubo.viewProjection = viewProj;
                 
                 // Static material properties are read from the GPU-side material buffer (SSBO).
@@ -994,6 +992,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                 uint32_t dyn = static_cast<uint32_t>(dynOffset);
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                        getPipelineLayout(), 0, 1, &instance.descriptorSet, 1, &dyn);
+                // Push per-draw model matrix via push constants
+                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, 0, sizeof(instance.transform), &instance.transform);
                 vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
             }
 

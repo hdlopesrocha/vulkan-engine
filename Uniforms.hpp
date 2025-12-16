@@ -5,7 +5,6 @@
 
 struct UniformObject {
     glm::mat4 viewProjection;
-    glm::mat4 model;
     glm::vec4 viewPos; // world-space camera position
     glm::vec4 lightDir; // xyz = direction, w = unused (padding)
     glm::vec4 lightColor; // rgb = color, w = intensity

@@ -58,7 +58,7 @@ void main() {
     float mappingFlag = materials[texIndices.x].mappingParams.x * weights.x + materials[texIndices.y].mappingParams.x * weights.y + materials[texIndices.z].mappingParams.x * weights.z;
     if (mappingFlag > 0.5) {
         // Use triplanar or UV height sampling per-layer then blend
-        vec3 worldPosForSampling = (ubo.model * vec4(localPos, 1.0)).xyz;
+        vec3 worldPosForSampling = (pushConstants.model * vec4(localPos, 1.0)).xyz;
         float h0 = 0.0;
         float h1 = 0.0;
         float h2 = 0.0;
@@ -77,7 +77,7 @@ void main() {
     // displacement magnitude used only on-TES; no debug output
 
     // Compute world-space position and normals
-    vec4 worldPos = ubo.model * vec4(displacedLocalPos, 1.0);
+    vec4 worldPos = pushConstants.model * vec4(displacedLocalPos, 1.0);
     fragPosWorld = worldPos.xyz;
     if (!isShadowPass) {
         fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
@@ -89,11 +89,11 @@ void main() {
     fragTexIndices = texIndices;
     fragTexWeights = weights;
     // Output clip-space position using viewProjection * model
-    gl_Position = ubo.viewProjection * ubo.model * vec4(displacedLocalPos, 1.0);
+    gl_Position = ubo.viewProjection * pushConstants.model * vec4(displacedLocalPos, 1.0);
 
     // Compute fragNormal: do not apply normal mapping here — use transformed geometry normal
-    fragNormal = normalize(mat3(ubo.model) * localNormal);
+    fragNormal = normalize(mat3(pushConstants.model) * localNormal);
     // Compute world-space tangent handedness-aware
     vec4 tangentLocal = tc_fragTangent[0] * bc.x + tc_fragTangent[1] * bc.y + tc_fragTangent[2] * bc.z;
-    fragTangent = vec4(normalize(mat3(ubo.model) * tangentLocal.xyz), tangentLocal.w);
+    fragTangent = vec4(normalize(mat3(pushConstants.model) * tangentLocal.xyz), tangentLocal.w);
 }
