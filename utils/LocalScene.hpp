@@ -2,57 +2,55 @@
 #include "../space/Octree.hpp"
 #include "../space/OctreeVisibilityChecker.hpp"
 #include "../space/Tesselator.hpp"
+#include "../space/Processor.hpp"
 
 class LocalScene : public Scene {
 
     Octree opaqueOctree;
     Octree transparentOctree;
+	ThreadPool threadPool;
 
 public:
     LocalScene() : 
         opaqueOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)), 
-        transparentOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)) {
+        transparentOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)),
+        threadPool(std::thread::hardware_concurrency()) {
     };
     ~LocalScene() = default;
 
     void requestVisibleNodes(Layer layer, glm::mat4 viewMatrix, VisibleNodeCallback& callback) override {
+        Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
+
         OctreeVisibilityChecker checker;
         checker.update(viewMatrix);
-
-        if(layer == LAYER_OPAQUE) {
-            opaqueOctree.iterate(checker);
-        } else if(layer == LAYER_TRANSPARENT) {
-            transparentOctree.iterate(checker);
-        }
+        tree->iterate(checker);
         for(const auto& nodeData : checker.visibleNodes) {
-            callback.onVisibleNode((long)nodeData.node, nodeData.node->version);
+            callback.onVisibleNode(nodeData);
         }
     }
 
-    void requestModel3D(Layer layer, long nodeId, Model3DCallback& callback) override {
+    void requestModel3D(Layer layer, OctreeNodeData &data, Model3DCallback& callback) override {
         long tessCount = 0;
-        Tesselator tesselator(&tessCount, nullptr);
-        OctreeNode* node = (OctreeNode*)nodeId;
-        
-        if(layer == LAYER_OPAQUE) {
-            //TODO: tesselate opaque octree node
-        } else if(layer == LAYER_TRANSPARENT) {
-            //TODO: tesselate transparent octree node
+        Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
+        long trianglesCount = 0;
+        ThreadContext context = ThreadContext(data.cube);
+        Tesselator tesselator(&trianglesCount, &context);
+        std::vector<OctreeNodeTriangleHandler*> handlers;
+        handlers.emplace_back(&tesselator);
+        Processor processor(&trianglesCount, threadPool, &context, &handlers);
+        processor.iterateFlatIn(*tree, data);
+
+        if(tesselator.geometry->indices.size() > 0) {
+            InstanceGeometry<InstanceData> * pre = new InstanceGeometry<InstanceData>(tesselator.geometry);
+            pre->instances.emplace_back(InstanceData(0, glm::mat4(1.0), 0.0f));
+            Model3D model = Model3D();
+            model.setGeometry(pre->geometry->vertices, std::vector<uint16_t>(pre->geometry->indices.begin(), pre->geometry->indices.end()));
+            callback.onModel3DLoaded(model);
         }
-        // Local scene does not support dynamic loading; no models to provide
     }
 
-    bool isNodeUpToDate(Layer layer, long nodeId, uint version) override {
-        OctreeNode* node = (OctreeNode*)nodeId;       
-        if(layer == LAYER_OPAQUE) {
-            //TODO: check opaque octree node version
-        } else if(layer == LAYER_TRANSPARENT) {
-            //TODO: check transparent octree node version  
-        }
-        
-        // Local scene does not support dynamic updates; all nodes are considered up to date
-        //TODO: add version to octree node and compare
-        return true;
+    bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) override {
+        return data.node->version >= version;
     }
 
     void loadScene(SceneLoaderCallback& callback) override {

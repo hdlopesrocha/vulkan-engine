@@ -759,8 +759,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             glm::vec3 lightDir = glm::normalize(lightDirection);
             uboStatic.lightDir = glm::vec4(lightDir, 0.0f);
             // Debug: print UI lightDirection and sent UBO lightDir
-            std::cout << "[UBO] UI lightDirection=(" << lightDirection.x << ", " << lightDirection.y << ", " << lightDirection.z << ")\n";
-            std::cout << "[UBO] sent ubo.lightDir=(" << uboStatic.lightDir.x << ", " << uboStatic.lightDir.y << ", " << uboStatic.lightDir.z << ")\n";
+            //std::cout << "[UBO] UI lightDirection=(" << lightDirection.x << ", " << lightDirection.y << ", " << lightDirection.z << ")\n";
+            //std::cout << "[UBO] sent ubo.lightDir=(" << uboStatic.lightDir.x << ", " << uboStatic.lightDir.y << ", " << uboStatic.lightDir.z << ")\n";
             uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
             // Note: material flags and specularParams are set per-instance from material properties
             // Update sky UBO values from widget (if present)

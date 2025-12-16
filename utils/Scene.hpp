@@ -18,7 +18,7 @@ public:
     VisibleNodeCallback() = default;
     ~VisibleNodeCallback() = default;
 
-    virtual void onVisibleNode(long nodeId, uint version) = 0;
+    virtual void onVisibleNode(const OctreeNodeData &data) = 0;
 };
 
 class Model3DCallback {
@@ -44,6 +44,6 @@ public:
     ~Scene() = default;
     virtual void loadScene(SceneLoaderCallback& callback) = 0;
     virtual void requestVisibleNodes(Layer layer, glm::mat4 viewMatrix, VisibleNodeCallback& callback) = 0;
-    virtual void requestModel3D(Layer layer, long nodeId, Model3DCallback& callback) = 0;
-    virtual bool isNodeUpToDate(Layer layer, long nodeId, uint version) = 0;
+    virtual void requestModel3D(Layer layer, OctreeNodeData &data, Model3DCallback& callback) = 0;
+    virtual bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) = 0;
 };
