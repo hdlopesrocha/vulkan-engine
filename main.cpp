@@ -31,6 +31,7 @@
 #include "widgets/SkyWidget.hpp"
 #include "vulkan/SkySphere.hpp"
 #include "vulkan/DescriptorSetBuilder.hpp"
+#include "vulkan/SkyRenderer.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
 #include "widgets/BillboardCreator.hpp"
 #include "widgets/VulkanObjectsWidget.hpp"
@@ -41,36 +42,7 @@
 #include "utils/LocalScene.hpp"
 #include "utils/MainSceneLoader.hpp"
 
-struct UniformObject {
-    glm::mat4 mvp;
-    glm::mat4 model;
-    glm::vec4 viewPos; // world-space camera position
-    glm::vec4 lightDir; // xyz = direction, w = unused (padding)
-    glm::vec4 lightColor; // rgb = color, w = intensity
-    // Material flags
-    glm::vec4 materialFlags; // x=unused, y=unused, z=ambient, w=unused
-    glm::vec4 mappingParams; // x=mappingEnabled (0=off,1=on) toggles tessellation + bump mapping, y/z/w unused
-    glm::vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
-    glm::vec4 triplanarParams; // x=scaleU, y=scaleV, z=enabled(1.0), w=unused
-    glm::mat4 lightSpaceMatrix; // for shadow mapping
-    glm::vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
-    glm::vec4 debugParams; // x=debugMode (0=normal,1=normalVec,2=normalMap,3=uv,4=tangent,5=bitangent)
-    glm::vec4 skyHorizon; // rgb = horizon color, a = unused
-    glm::vec4 skyZenith;  // rgb = zenith color, a = unused
-    glm::vec4 skyParams;  // x = warmth, y = exponent, z/w = unused
-    glm::vec4 nightHorizon; // rgb = night horizon color
-    glm::vec4 nightZenith;  // rgb = night zenith color
-    glm::vec4 nightParams;  // x = night intensity, y = starIntensity
-    glm::vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
-    
-    // Set material properties from MaterialProperties struct
-        void setMaterial(const MaterialProperties& mat) {
-        materialFlags = glm::vec4(0.0f, 0.0f, mat.ambientFactor, 0.0f);
-        mappingParams = glm::vec4(mat.mappingMode ? 1.0f : 0.0f, mat.tessLevel, mat.invertHeight ? 1.0f : 0.0f, mat.tessHeightScale);
-        specularParams = glm::vec4(mat.specularStrength, mat.shininess, 0.0f, 0.0f);
-        triplanarParams = glm::vec4(mat.triplanarScaleU, mat.triplanarScaleV, mat.triplanar ? 1.0f : 0.0f, 0.0f);
-    }
-};
+#include "Uniforms.hpp"
 
 #include "vulkan/VertexBufferObjectBuilder.hpp"
 #include "utils/Model3DVersion.hpp"
@@ -97,7 +69,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     VkPipeline graphicsPipelineWire = VK_NULL_HANDLE;
     VkPipeline graphicsPipelineTess = VK_NULL_HANDLE;
     VkPipeline graphicsPipelineTessWire = VK_NULL_HANDLE;
-    VkPipeline skyPipeline = VK_NULL_HANDLE;
+    std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<SkySphere> skySphere;
     // texture manager handles albedo/normal/height triples
     TextureManager textureManager;
@@ -290,34 +262,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 vkDestroyShaderModule(getDevice(), fragmentShader.info.module, nullptr);
                 vkDestroyShaderModule(getDevice(), vertexShader.info.module, nullptr);
 
-                // Create sky pipeline (renders large inside-out sphere with no depth writes)
-                {
-                    ShaderStage skyVert = ShaderStage(
-                        createShaderModule(FileReader::readFile("shaders/sky.vert.spv")),
-                        VK_SHADER_STAGE_VERTEX_BIT
-                    );
-                    ShaderStage skyFrag = ShaderStage(
-                        createShaderModule(FileReader::readFile("shaders/sky.frag.spv")),
-                        VK_SHADER_STAGE_FRAGMENT_BIT
-                    );
-
-                    skyPipeline = createGraphicsPipeline(
-                        { skyVert.info, skyFrag.info },
-                        VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX },
-                        {
-                            VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-                            VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-                            VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
-                            VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
-                            VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
-                        },
-                        VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false
-                    );
-
-                    vkDestroyShaderModule(getDevice(), skyFrag.info.module, nullptr);
-                    vkDestroyShaderModule(getDevice(), skyVert.info.module, nullptr);
-                }
+                // Create sky pipeline via SkyRenderer
+                skyRenderer = std::make_unique<SkyRenderer>(this);
+                skyRenderer->init();
             }
 
             // Now that pipelines (and the app pipeline layout) have been created, initialize shadow mapper
@@ -572,12 +519,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             auto vulkanObjectsWidget = std::make_shared<VulkanObjectsWidget>(this);
             widgetManager.addWidget(vulkanObjectsWidget);
             if (skyWidget) {
-                uboStatic.skyHorizon = glm::vec4(skyWidget->getHorizonColor(), 1.0f);
-                uboStatic.skyZenith = glm::vec4(skyWidget->getZenithColor(), 1.0f);
-                uboStatic.skyParams = glm::vec4(skyWidget->getWarmth(), skyWidget->getExponent(), skyWidget->getSunFlare(), 0.0f);
-                uboStatic.nightHorizon = glm::vec4(skyWidget->getNightHorizon(), 1.0f);
-                uboStatic.nightZenith = glm::vec4(skyWidget->getNightZenith(), 1.0f);
-                uboStatic.nightParams = glm::vec4(skyWidget->getNightIntensity(), skyWidget->getStarIntensity(), 0.0f, 0.0f);
+                // Sky UBO is managed by SkySphere; SkyWidget values will be read and uploaded there.
             }
 
             // Initialize sky manager which creates and binds the sky UBO into descriptor sets
@@ -799,15 +741,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             //std::cout << "[UBO] sent ubo.lightDir=(" << uboStatic.lightDir.x << ", " << uboStatic.lightDir.y << ", " << uboStatic.lightDir.z << ")\n";
             uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
             // Note: material flags and specularParams are set per-instance from material properties
-            // Update sky UBO values from widget (if present)
-            if (skyWidget) {
-                uboStatic.skyHorizon = glm::vec4(skyWidget->getHorizonColor(), 1.0f);
-                uboStatic.skyZenith = glm::vec4(skyWidget->getZenithColor(), 1.0f);
-                uboStatic.skyParams = glm::vec4(skyWidget->getWarmth(), skyWidget->getExponent(), skyWidget->getSunFlare(), 0.0f);
-                uboStatic.nightHorizon = glm::vec4(skyWidget->getNightHorizon(), 1.0f);
-                uboStatic.nightZenith = glm::vec4(skyWidget->getNightZenith(), 1.0f);
-                uboStatic.nightParams = glm::vec4(skyWidget->getNightIntensity(), skyWidget->getStarIntensity(), 0.0f, 0.0f);
-            }
+            // Sky UBO updates are handled by SkySphere (reads SkyWidget directly)
             
             // Compute light space matrix for shadow mapping
             // Center shadow ortho on camera XZ so the shadow projection follows camera movement
@@ -995,29 +929,10 @@ class MyApp : public VulkanApp, public IEventHandler {
             vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
             // --- Render sky sphere first: large sphere centered at camera ---
-            if (skyPipeline != VK_NULL_HANDLE && meshes.size() > 2 && meshVBOs.size() > 2 && !sphereDescriptorSets.empty() && !sphereUniforms.empty()) {
-                    // Refresh sky UBO from widget each frame so UI changes appear immediately
-                    if (skySphere) skySphere->update();
-                // update sky uniform (centered at camera)
-                UniformObject skyUbo = uboStatic;
-                glm::vec3 camPos = glm::vec3(uboStatic.viewPos);
-                glm::mat4 model = glm::translate(glm::mat4(1.0f), camPos) * glm::scale(glm::mat4(1.0f), glm::vec3(50.0f));
-                skyUbo.model = model;
-                skyUbo.mvp = projMat * viewMat * model;
-                skyUbo.passParams = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 0.0
-                // use first sphere uniform buffer / descriptor set to bind UBO
-                updateUniformBuffer(sphereUniforms[0], &skyUbo, sizeof(UniformObject));
-
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &sphereDescriptorSets[0], 0, nullptr);
-
-                // bind sphere vertex/index buffers
+            if (skyRenderer && meshes.size() > 2 && meshVBOs.size() > 2 && !sphereDescriptorSets.empty() && !sphereUniforms.empty()) {
+                if (skySphere) skySphere->update();
                 const auto &vbo = meshVBOs[2];
-                VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
-                vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
+                skyRenderer->render(commandBuffer, vbo, sphereDescriptorSets[0], sphereUniforms[0], uboStatic, projMat, viewMat);
             }
 
             // bind pipeline
@@ -1104,7 +1019,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             if (graphicsPipelineWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineWire, nullptr);
             if (graphicsPipelineTess != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineTess, nullptr);
             if (graphicsPipelineTessWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineTessWire, nullptr);
-            if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), skyPipeline, nullptr);
+            if (skyRenderer) skyRenderer->cleanup();
             // texture cleanup via manager
             textureManager.destroyAll();
             // vertex/index buffers cleanup - destroy GPU buffers created from the meshes

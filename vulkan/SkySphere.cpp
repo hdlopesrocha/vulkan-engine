@@ -1,5 +1,6 @@
 #include "SkySphere.hpp"
 #include "../widgets/SkyWidget.hpp"
+#include "../Uniforms.hpp"
 #include <glm/glm.hpp>
 
 SkySphere::SkySphere(VulkanApp* app_) : app(app_) {}
@@ -12,8 +13,7 @@ void SkySphere::init(SkyWidget* widget,
                      std::vector<VkDescriptorSet>& sphereDescriptorSets,
                      std::vector<VkDescriptorSet>& shadowSphereDescriptorSets) {
     skyWidget = widget;
-    struct SkyGPU { glm::vec4 skyHorizon; glm::vec4 skyZenith; glm::vec4 skyParams; glm::vec4 nightHorizon; glm::vec4 nightZenith; glm::vec4 nightParams; };
-    VkDeviceSize sbSize = sizeof(SkyGPU);
+    VkDeviceSize sbSize = sizeof(SkyUniform);
 
     if (skyBuffer.buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(app->getDevice(), skyBuffer.buffer, nullptr);
@@ -27,7 +27,7 @@ void SkySphere::init(SkyWidget* widget,
     skyBufferSize = sbSize;
 
     // upload initial data
-    SkyGPU data{};
+    SkyUniform data{};
     if (skyWidget) {
         data.skyHorizon = glm::vec4(skyWidget->getHorizonColor(), 1.0f);
         data.skyZenith = glm::vec4(skyWidget->getZenithColor(), 1.0f);
@@ -71,8 +71,7 @@ void SkySphere::init(SkyWidget* widget,
 
 void SkySphere::update() {
     if (skyBuffer.buffer == VK_NULL_HANDLE) return;
-    struct SkyGPU { glm::vec4 skyHorizon; glm::vec4 skyZenith; glm::vec4 skyParams; glm::vec4 nightHorizon; glm::vec4 nightZenith; glm::vec4 nightParams; };
-    SkyGPU skyData;
+    SkyUniform skyData;
     if (skyWidget) {
         skyData.skyHorizon = glm::vec4(skyWidget->getHorizonColor(), 1.0f);
         skyData.skyZenith = glm::vec4(skyWidget->getZenithColor(), 1.0f);
