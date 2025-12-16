@@ -1,4 +1,5 @@
 #include "DescriptorSetBuilder.hpp"
+#include "../Uniforms.hpp"
 #include <cstring>
 
 DescriptorSetBuilder::DescriptorSetBuilder(VulkanApp* app_, TextureManager* texMgr_, ShadowMapper* shadowMapper_)
@@ -7,8 +8,8 @@ DescriptorSetBuilder::DescriptorSetBuilder(VulkanApp* app_, TextureManager* texM
 VkDescriptorSet DescriptorSetBuilder::createMainDescriptorSet(const TextureManager::Triple& tr, Buffer& uniformBuffer, bool bindMaterial, Buffer* materialBuffer, VkDeviceSize materialOffset) {
     VkDescriptorSet ds = app->createDescriptorSet(app->getDescriptorSetLayout());
 
-    VkDescriptorBufferInfo bufferInfo{ uniformBuffer.buffer, 0, VK_WHOLE_SIZE };
-    VkWriteDescriptorSet uboWrite{}; uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; uboWrite.dstSet = ds; uboWrite.dstBinding = 0; uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; uboWrite.descriptorCount = 1; uboWrite.pBufferInfo = &bufferInfo;
+    VkDescriptorBufferInfo bufferInfo{ uniformBuffer.buffer, 0, sizeof(UniformObject) };
+    VkWriteDescriptorSet uboWrite{}; uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; uboWrite.dstSet = ds; uboWrite.dstBinding = 0; uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; uboWrite.descriptorCount = 1; uboWrite.pBufferInfo = &bufferInfo;
 
     VkDescriptorImageInfo imageInfo{ texMgr->getGlobalAlbedoSampler(), texMgr->getGlobalAlbedoArray().view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkWriteDescriptorSet samplerWrite{}; samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; samplerWrite.dstSet = ds; samplerWrite.dstBinding = 1; samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; samplerWrite.descriptorCount = 1; samplerWrite.pImageInfo = &imageInfo;
@@ -34,8 +35,8 @@ VkDescriptorSet DescriptorSetBuilder::createMainDescriptorSet(const TextureManag
 
 VkDescriptorSet DescriptorSetBuilder::createShadowDescriptorSet(const TextureManager::Triple& tr, Buffer& shadowUniformBuffer, bool bindMaterial, Buffer* materialBuffer, VkDeviceSize materialOffset) {
     VkDescriptorSet ds = app->createDescriptorSet(app->getDescriptorSetLayout());
-    VkDescriptorBufferInfo bufferInfo{ shadowUniformBuffer.buffer, 0, VK_WHOLE_SIZE };
-    VkWriteDescriptorSet uboWrite{}; uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; uboWrite.dstSet = ds; uboWrite.dstBinding = 0; uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; uboWrite.descriptorCount = 1; uboWrite.pBufferInfo = &bufferInfo;
+    VkDescriptorBufferInfo bufferInfo{ shadowUniformBuffer.buffer, 0, sizeof(UniformObject) };
+    VkWriteDescriptorSet uboWrite{}; uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; uboWrite.dstSet = ds; uboWrite.dstBinding = 0; uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; uboWrite.descriptorCount = 1; uboWrite.pBufferInfo = &bufferInfo;
 
     VkDescriptorImageInfo imageInfo{ texMgr->getGlobalAlbedoSampler(), texMgr->getGlobalAlbedoArray().view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkWriteDescriptorSet samplerWrite{}; samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; samplerWrite.dstSet = ds; samplerWrite.dstBinding = 1; samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; samplerWrite.descriptorCount = 1; samplerWrite.pImageInfo = &imageInfo;

@@ -14,7 +14,7 @@ public:
     void init();
 
     // Render sky sphere using provided VBO/descriptor/uniform
-    void render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &uboStatic, const glm::mat4 &projMat, const glm::mat4 &viewMat);
+    void render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, VkDeviceSize dynamicOffset, const UniformObject &uboStatic, const glm::mat4 &projMat, const glm::mat4 &viewMat);
 
     void cleanup();
 

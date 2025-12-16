@@ -110,6 +110,10 @@ protected:
     TextureImage createTextureImageArray(const std::vector<std::string>& filenames, bool srgb = true);
         VkSampler createTextureSampler(uint32_t mipLevels);
         void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
+    // Update a region of a host-visible buffer at specified device offset
+        void updateUniformBufferRange(Buffer &uniform, VkDeviceSize offset, void * data, size_t dataSize);
+        // Return device's minUniformBufferOffsetAlignment
+        VkDeviceSize getMinUniformBufferOffsetAlignment() const;
     void createDescriptorPool(uint32_t uboCount, uint32_t samplerCount);
         VkDescriptorSet createDescriptorSet(VkDescriptorSetLayout layout);
         void updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors);
