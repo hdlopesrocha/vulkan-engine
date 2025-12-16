@@ -151,7 +151,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         // store projection and view for per-cube MVP computation in draw()
         glm::mat4 projMat = glm::mat4(1.0f);
         glm::mat4 viewMat = glm::mat4(1.0f);
-        // static parts of the UBO that don't vary per-cube (we'll set model/mvp per draw)
+        // static parts of the UBO that don't vary per-cube (we'll set model/viewProjection per draw)
         UniformObject uboStatic{};
     // textureImage is now owned by TextureManager
         //VertexBufferObject vertexBufferObject; // now owned by CubeMesh
@@ -738,9 +738,9 @@ class MyApp : public VulkanApp, public IEventHandler {
         void update(float deltaTime) override {
             // Process queued events (dispatch to handlers)
             eventManager.processQueued();
-            // compute MVP = proj * view * model
+            // compute viewProjection = proj * view
             glm::mat4 model = glm::mat4(1.0f);
-            glm::mat4 mvp = glm::mat4(1.0f);
+            glm::mat4 viewProj = glm::mat4(1.0f);
 
             float aspect = (float)getWidth() / (float) getHeight();
             glm::mat4 proj = glm::perspective(45.0f * 3.1415926f / 180.0f, aspect, 0.1f, 8192.0f);
@@ -765,13 +765,13 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // keep model identity (stop cube rotation)
             model = glm::mat4(1.0f);
-            mvp = proj * view * model;
+            viewProj = proj * view;
 
-            // store projection and view for per-cube MVP computation in draw()
+            // store projection and view for per-cube viewProjection computation in draw()
             projMat = proj;
             viewMat = view;
 
-            // prepare static parts of the UBO (viewPos, light, material flags) - model and mvp will be set per-cube in draw()
+            // prepare static parts of the UBO (viewPos, light, material flags) - model and viewProjection will be set per-cube in draw()
             uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
             // The UI `lightDirection` represents a vector TO the light. Shaders expect a light vector that points FROM the
             // light TOWARD the surface when performing lighting/shadow calculations. Send the negated direction to the GPU
@@ -888,10 +888,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 for (size_t ii = 0; ii < instances.size(); ++ii) {
                     auto &instance = instances[ii];
                     // Update uniform buffer for shadow pass
-                    glm::mat4 shadowMvp = uboStatic.lightSpaceMatrix * instance.transform;
                     UniformObject shadowUbo = uboStatic;
                     shadowUbo.model = instance.transform;
-                    shadowUbo.mvp = shadowMvp;
+                    shadowUbo.viewProjection = uboStatic.lightSpaceMatrix;
                     shadowUbo.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
                     // Per-material mapping/mappingParams are read from the Materials SSBO in shaders.
                     shadowUbo.passParams = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 1.0
@@ -947,10 +946,10 @@ class MyApp : public VulkanApp, public IEventHandler {
                 vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
                 
                 // Update uniform buffer for this instance
-                glm::mat4 mvp = projMat * viewMat * instance.transform;
+                glm::mat4 viewProj = projMat * viewMat;
                 UniformObject ubo = uboStatic;
                 ubo.model = instance.transform;
-                ubo.mvp = mvp;
+                ubo.viewProjection = viewProj;
                 
                 // Static material properties are read from the GPU-side material buffer (SSBO).
                 // Determine material index from the mesh vertex `texIndex` and use it for per-instance overrides.

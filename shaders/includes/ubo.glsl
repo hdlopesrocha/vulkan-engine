@@ -1,7 +1,7 @@
 // UBO layout must match the CPU-side UniformObject (std140-like):
-// mat4 mvp; mat4 model; vec4 viewPos; vec4 lightDir; vec4 lightColor;
+// mat4 viewProjection; mat4 model; vec4 viewPos; vec4 lightDir; vec4 lightColor;
 layout(binding = 0) uniform UBO {
-    mat4 mvp;
+    mat4 viewProjection;
     mat4 model;
     vec4 viewPos;
     vec4 lightDir;
@@ -9,14 +9,11 @@ layout(binding = 0) uniform UBO {
     // Material flags.
     // x=unused, y=unused, z=ambient, w=unused
     vec4 materialFlags;
-        // Note: per-material data (mapping/specular/triplanar) is stored in the Materials SSBO
-        // `materialFlags` kept here for small per-pass overrides (e.g. global normal-mapping toggle in .w)
     mat4 lightSpaceMatrix; // for shadow mapping
     vec4 shadowEffects; // x/y/z = unused, w=global shadows enabled (1.0 = on)
     vec4 debugParams; // x=debugMode (0=normal,1=fragment normal,2=normal map (world),3=uv,4=tangent,5=bitangent,6=geometry normal (world),7=albedo,8=normal texture,9=height/bump,10=lighting (N·L,shadow),11=normal from derivatives,12=light vector (rgb),13=N·L grayscale,14=shadow diagnostics)
-        // Sky parameters moved to a dedicated Sky UBO (see below)
-        vec4 tessParams; // x = tessNearDist, y = tessFarDist, z = tessMinLevel, w = tessMaxLevel
-        vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
+    vec4 tessParams; // x = tessNearDist, y = tessFarDist, z = tessMinLevel, w = tessMaxLevel
+    vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
 } ubo;
 
 // Packed material data uploaded once to GPU. Matches the CPU-side MaterialGPU (4 vec4s).

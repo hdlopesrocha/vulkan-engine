@@ -39,6 +39,6 @@ void main() {
     fragLocalNormal = inNormal;
     // pass tangent as a vec4: xyz = tangent, w = handedness sign
     fragTangent = vec4(normalize(mat3(ubo.model) * inTangent.xyz), inTangent.w);
-    // apply MVP transform to the vertex position (MVP already includes model transform)
-    gl_Position = ubo.mvp * vec4(inPos, 1.0);
+    // apply viewProjection * model transform to the vertex position
+    gl_Position = ubo.viewProjection * ubo.model * vec4(inPos, 1.0);
 }
