@@ -892,22 +892,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             
             // Add spheres above each cube instance (if sphere mesh is present)
 
-            // Helper: compute tessellation level for an instance based on camera distance and settings
-            auto computeTess = [&](const glm::mat4 &modelMat, const MaterialProperties* mat) -> float {
-                float baseTess = mat ? mat->tessLevel : 1.0f;
-                glm::vec3 camPosForTess = camera.getPosition();
-                glm::vec3 objPos = glm::vec3(modelMat[3]);
-                float dist = glm::distance(camPosForTess, objPos);
-                float tessForThis = baseTess;
-                if (settingsWidget && settingsWidget->getAdaptiveTessellation()) {
-                    float maxDist = settingsWidget->getTessMaxDistance();
-                    float t = glm::clamp(dist / maxDist, 0.0f, 1.0f);
-                    float maxLevel = settingsWidget->getTessMaxLevel() + baseTess;
-                    float minLevel = settingsWidget->getTessMinLevel();
-                    tessForThis = glm::mix(maxLevel, minLevel, t);
-                }
-                return glm::clamp(tessForThis, 1.0f, 64.0f);
-            };
+            // Tessellation is now computed on GPU; per-material base level is read from MaterialGPU.mappingParams.y
 
             // First pass: Render shadow map (skip if shadows globally disabled)
             if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
@@ -933,10 +918,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 shadowUbo.mvp = shadowMvp;
                 shadowUbo.materialFlags = materialFlags;
                 // Set mapping mode for tessellation displacement in shadow pass
-                float tessForThis = computeTess(instance.transform, instMat);
                 shadowUbo.mappingParams = glm::vec4(
                     instMat ? (instMat->mappingMode ? 1.0f : 0.0f) : 0.0f,
-                    tessForThis,
+                    instMat ? instMat->tessLevel : 1.0f,
                     instMat ? (instMat->invertHeight ? 1.0f : 0.0f) : 0.0f,
                     instMat ? instMat->tessHeightScale : 0.1f
                 );
@@ -1011,7 +995,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (instMatIdx >= 0 && static_cast<size_t>(instMatIdx) < textureManager.count()) {
                     instMat = &textureManager.getMaterial(static_cast<size_t>(instMatIdx));
                 }
-                ubo.mappingParams.y = computeTess(instance.transform, instMat);
+                ubo.mappingParams.y = instMat ? instMat->tessLevel : 1.0f;
                 // (temporary debug logging removed)
                 // Global normal mapping toggle (separate from tessellation/mappingMode)
                 if (settingsWidget) {

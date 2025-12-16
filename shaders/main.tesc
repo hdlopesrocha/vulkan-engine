@@ -40,10 +40,8 @@ void main() {
     int patchTexIndex = int(pc_inTexIndex[0] + 0.5);
     // mappingParams.x == mappingEnabled (0/1). mappingParams.y stores a per-material base/max tess level.
     bool mappingEnabled = (materials[patchTexIndex].mappingParams.x > 0.5);
-    float baseTess = max(materials[patchTexIndex].mappingParams.y, 1.0);
-    if (!mappingEnabled) {
-        baseTess = 1.0;
-    }
+    float materialLevel = materials[patchTexIndex].mappingParams.y;
+
 
     // Compute patch center in world space and distance to camera
     vec3 p0 = pc_inPosWorld[0];
@@ -59,18 +57,8 @@ void main() {
     float maxLevel = ubo.tessParams.w;
 
     // Compute an adaptive tess value in [minLevel, maxLevel] based on camera distance
-    float factor = 1.0 - smoothstep(nearDist, farDist, dist); // 1.0 at near, 0.0 at far
-    float adaptive = mix(minLevel, maxLevel, factor);
-
-    // Add per-material tess level on top of adaptive value (if mapping enabled)
-    float materialLevel = materials[patchTexIndex].mappingParams.y;
-    float tess = adaptive;
-    if (mappingEnabled) {
-        tess = adaptive + materialLevel;
-    }
-
-    // Final clamp to configured bounds
-    tess = clamp(tess, minLevel, maxLevel);
+    float factor = clamp(1.0 - smoothstep(nearDist, farDist, dist), 0.0, 1.0); // 1.0 at near, 0.0 at far
+    float tess = mix(minLevel, maxLevel, factor)+materialLevel;
 
     float outer = tess;
     float inner = tess;
