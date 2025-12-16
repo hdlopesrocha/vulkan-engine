@@ -70,15 +70,16 @@ VkDescriptorSet DescriptorSetBuilder::createShadowSphereDescriptorSet(const Text
 
 void DescriptorSetBuilder::updateMaterialBinding(std::vector<VkDescriptorSet>& sets, Buffer& materialBuffer, VkDeviceSize elementSize) {
     // Write material storage buffer into each provided descriptor set at binding 5.
-    for (size_t i = 0; i < sets.size(); ++i) {
-        VkDescriptorBufferInfo materialBufInfo{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * elementSize, elementSize };
-        VkWriteDescriptorSet materialWrite{};
-        materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        materialWrite.dstSet = sets[i];
-        materialWrite.dstBinding = 5;
-        materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        materialWrite.descriptorCount = 1;
-        materialWrite.pBufferInfo = &materialBufInfo;
-        app->updateDescriptorSet(sets[i], { materialWrite });
+    // Bind the entire buffer since shaders access materials[] array.
+    VkDescriptorBufferInfo materialBufInfo{ materialBuffer.buffer, 0, VK_WHOLE_SIZE };
+    VkWriteDescriptorSet materialWrite{};
+    materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    materialWrite.dstBinding = 5;
+    materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    materialWrite.descriptorCount = 1;
+    materialWrite.pBufferInfo = &materialBufInfo;
+    for (auto& ds : sets) {
+        materialWrite.dstSet = ds;
+        app->updateDescriptorSet(ds, { materialWrite });
     }
 }

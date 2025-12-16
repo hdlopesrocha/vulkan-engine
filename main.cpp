@@ -390,11 +390,11 @@ class MyApp : public VulkanApp, public IEventHandler {
                 const auto &tr = textureManager.getTriple(i);
                 // main descriptor set
                 VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
-                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, uniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, uniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, 0);
                 descriptorSets[i] = ds;
 
                 // shadow descriptor set
-                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, 0);
                 shadowDescriptorSets[i] = sds;
             }
 
@@ -409,9 +409,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 shadowSphereUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                 const auto &tr = textureManager.getTriple(i);
                 VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
-                VkDescriptorSet ds = dsBuilder.createSphereDescriptorSet(tr, sphereUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                VkDescriptorSet ds = dsBuilder.createSphereDescriptorSet(tr, sphereUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, 0);
                 sphereDescriptorSets[i] = ds;
-                VkDescriptorSet sds = dsBuilder.createShadowSphereDescriptorSet(tr, shadowSphereUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                VkDescriptorSet sds = dsBuilder.createShadowSphereDescriptorSet(tr, shadowSphereUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, 0);
                 shadowSphereDescriptorSets[i] = sds;
             }
 
@@ -507,8 +507,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                     instanceUniforms[mi] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                     instanceShadowUniforms[mi] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                     // create descriptor sets bound to the per-instance buffers
-                    instanceDescriptorSets[mi] = dsBuilder.createMainDescriptorSet(tr, instanceUniforms[mi], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(texIdx) * matElemSize : 0);
-                    instanceShadowDescriptorSets[mi] = dsBuilder.createShadowDescriptorSet(tr, instanceShadowUniforms[mi], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(texIdx) * matElemSize : 0);
+                    instanceDescriptorSets[mi] = dsBuilder.createMainDescriptorSet(tr, instanceUniforms[mi], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, 0);
+                    instanceShadowDescriptorSets[mi] = dsBuilder.createShadowDescriptorSet(tr, instanceShadowUniforms[mi], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, 0);
                 }
             }
             
