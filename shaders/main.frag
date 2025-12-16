@@ -23,8 +23,8 @@ layout(location = 0) out vec4 outColor;
 #include "includes/shadows.glsl"
 
 void main() {
-    // Always use layer 0 since each descriptor set points to different textures
-    int texIndex = 0;
+    // Use the per-vertex texture index
+    int texIndex = fragTexIndex;
 
     vec2 uv = fragUV;
     bool usedTriplanar = false;
@@ -43,12 +43,12 @@ void main() {
     bool haveTB = false;
     // Sample albedo texture (triplanar when enabled)
     vec3 albedoColor;
-    if (ubo.triplanarParams.z > 0.5) {
+    if (materials[texIndex].triplanarParams.z > 0.5) {
         usedTriplanar = true;
         vec3 w = triW;
         albedoColor = computeTriplanarAlbedo(fragPosWorld, w, texIndex);
         // If normal mapping is enabled, compute triplanar normal as well
-        if (ubo.mappingParams.x > 0.5 || ubo.materialFlags.w > 0.5) {
+        if (materials[texIndex].mappingParams.x > 0.5 || ubo.materialFlags.w > 0.5) {
             worldNormal = computeTriplanarNormal(fragPosWorld, w, texIndex, N);
         }
     } else {
@@ -56,7 +56,7 @@ void main() {
     }
 
     // Compute normal mapping if enabled (per-material or global toggle)
-    if (!usedTriplanar && (ubo.mappingParams.x > 0.5 || ubo.materialFlags.w > 0.5)) {
+    if (!usedTriplanar && (materials[texIndex].mappingParams.x > 0.5 || ubo.materialFlags.w > 0.5)) {
         vec3 nmap = texture(normalArray, vec3(uv, float(texIndex))).rgb * 2.0 - 1.0;
         if (computeWorldNormalFromNormalMap(fragTangent, fragPosWorld, fragUV, N, nmap, worldNormal, T, B)) {
             haveTB = true;
@@ -80,14 +80,14 @@ void main() {
     }
     float totalShadow = shadow;
 
-    vec3 ambient = albedoColor * ubo.materialFlags.z;
+    vec3 ambient = albedoColor * materials[texIndex].materialFlags.z;
     vec3 diffuse = albedoColor * ubo.lightColor.rgb * NdotL * (1.0 - totalShadow);
 
     // Specular
     vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
     vec3 reflectDir = reflect(-toLight, worldNormal);
-    float spec = pow(max(dot(viewDir, reflectDir), 0.0), ubo.specularParams.y);
-    vec3 specular = ubo.lightColor.rgb * spec * (1.0 - totalShadow) * ubo.specularParams.x;
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), materials[texIndex].specularParams.y);
+    vec3 specular = ubo.lightColor.rgb * spec * (1.0 - totalShadow) * materials[texIndex].specularParams.x;
 
     // Debug visualisation modes (0 = normal render)
     int debugMode = int(ubo.debugParams.x + 0.5);

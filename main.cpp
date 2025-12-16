@@ -152,6 +152,10 @@ class MyApp : public VulkanApp, public IEventHandler {
         std::vector<VkDescriptorSet> shadowDescriptorSets;
         std::vector<Buffer> shadowSphereUniforms;
         std::vector<VkDescriptorSet> shadowSphereDescriptorSets;
+        // One-time GPU buffer holding all material properties (uploaded once during setup)
+        Buffer materialBuffer;
+        size_t materialCount = 0;
+        VkDeviceSize materialBufferSize = 0;
         
         // store projection and view for per-cube MVP computation in draw()
         glm::mat4 projMat = glm::mat4(1.0f);
@@ -433,6 +437,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             // create descriptor sets - one per texture triple
             size_t tripleCount = textureManager.count();
             if (tripleCount == 0) tripleCount = 1; // ensure at least one
+            // Create/upload GPU-side material buffer (packed vec4-friendly struct)
+            updateMaterials();
             // Allocate descriptor pool sized for both cube and sphere descriptor sets (4 sets per texture triple)
             // uboCount = number of uniform descriptors (one per descriptor set), samplerCount = total combined image sampler descriptors
             createDescriptorPool(static_cast<uint32_t>(tripleCount * 4), static_cast<uint32_t>(tripleCount * 16));
@@ -497,10 +503,24 @@ class MyApp : public VulkanApp, public IEventHandler {
                 shadowWrite.descriptorCount = 1;
                 shadowWrite.pImageInfo = &shadowInfo;
 
-                updateDescriptorSet(
-                    ds,
-                    { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite }
-                );
+                // Material storage buffer descriptor (binding 5) - bind a single MaterialGPU per descriptor set
+                VkDescriptorBufferInfo materialBufInfo{ VK_NULL_HANDLE, 0, 0 };
+                VkWriteDescriptorSet materialWrite{};
+                if (materialCount > 0) {
+                    VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
+                    materialBufInfo.buffer = materialBuffer.buffer;
+                    materialBufInfo.offset = static_cast<VkDeviceSize>(i) * matElemSize; // point to this material
+                    materialBufInfo.range = matElemSize;
+                    materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    materialWrite.dstSet = ds;
+                    materialWrite.dstBinding = 5;
+                    materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    materialWrite.descriptorCount = 1;
+                    materialWrite.pBufferInfo = &materialBufInfo;
+                }
+
+                if (materialCount > 0) updateDescriptorSet(ds, { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite, materialWrite });
+                else updateDescriptorSet(ds, { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
 
                 // Create shadow descriptor set
                 VkDescriptorSet sds = createDescriptorSet(getDescriptorSetLayout());
@@ -523,10 +543,16 @@ class MyApp : public VulkanApp, public IEventHandler {
                 heightWrite.dstSet = sds;
                 shadowWrite.dstSet = sds;
 
-                updateDescriptorSet(
-                    sds,
-                    { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite }
-                );
+                // Also bind material buffer to shadow descriptor set (binding 5)
+                if (materialCount > 0) {
+                    // adjust offset to this material index for shadow descriptor set as well
+                    VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
+                    materialBufInfo.offset = static_cast<VkDeviceSize>(i) * matElemSize;
+                    materialWrite.dstSet = sds;
+                    updateDescriptorSet(sds, { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite, materialWrite });
+                } else {
+                    updateDescriptorSet(sds, { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
+                }
             }
 
             // Create per-texture descriptor sets and uniform buffers for sphere instances (one per texture triple)
@@ -556,7 +582,15 @@ class MyApp : public VulkanApp, public IEventHandler {
                 VkWriteDescriptorSet normalWrite{}; normalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; normalWrite.dstSet = ds; normalWrite.dstBinding = 2; normalWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; normalWrite.descriptorCount = 1; normalWrite.pImageInfo = &normalInfo;
                 VkWriteDescriptorSet heightWrite{}; heightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; heightWrite.dstSet = ds; heightWrite.dstBinding = 3; heightWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; heightWrite.descriptorCount = 1; heightWrite.pImageInfo = &heightInfo;
                 VkWriteDescriptorSet shadowWrite{}; shadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; shadowWrite.dstSet = ds; shadowWrite.dstBinding = 4; shadowWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; shadowWrite.descriptorCount = 1; shadowWrite.pImageInfo = &shadowInfo;
-                updateDescriptorSet(ds, { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
+                // If material buffer exists bind it as storage buffer (binding 5)
+                if (materialCount > 0) {
+                    VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
+                    VkDescriptorBufferInfo materialBufInfo{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * matElemSize, matElemSize };
+                    VkWriteDescriptorSet materialWrite{}; materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; materialWrite.dstSet = ds; materialWrite.dstBinding = 5; materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; materialWrite.descriptorCount = 1; materialWrite.pBufferInfo = &materialBufInfo;
+                    updateDescriptorSet(ds, { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite, materialWrite });
+                } else {
+                    updateDescriptorSet(ds, { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
+                }
 
                 // Create shadow descriptor set for spheres
                 VkDescriptorBufferInfo shadowBufferInfo { shadowSphereUniforms[i].buffer, 0 , sizeof(UniformObject) };
@@ -568,7 +602,14 @@ class MyApp : public VulkanApp, public IEventHandler {
                 normalWrite.dstSet = sds;
                 heightWrite.dstSet = sds;
                 shadowWrite.dstSet = sds;
-                updateDescriptorSet(sds, { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
+                if (materialCount > 0) {
+                    VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
+                    VkDescriptorBufferInfo materialBufInfo2{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * matElemSize, matElemSize };
+                    VkWriteDescriptorSet materialWrite2{}; materialWrite2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; materialWrite2.dstSet = sds; materialWrite2.dstBinding = 5; materialWrite2.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; materialWrite2.descriptorCount = 1; materialWrite2.pBufferInfo = &materialBufInfo2;
+                    updateDescriptorSet(sds, { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite, materialWrite2 });
+                } else {
+                    updateDescriptorSet(sds, { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
+                }
             }
 
             // build cube mesh and geometry (per-face tex indices all zero by default)
@@ -615,12 +656,19 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Initialize widgets
             textureViewer = std::make_shared<TextureViewer>();
             textureViewer->init(&textureManager);
+            // Rebuild GPU material buffer when materials are modified via the texture viewer
+            textureViewer->setOnMaterialChanged([this](size_t idx) {
+                (void)idx; // currently we rebuild entire buffer
+                updateMaterials();
+            });
             widgetManager.addWidget(textureViewer);
             
             // Add editable textures widget (already created above)
             editableTextures->setOnTextureGenerated([this, editableIndex]() {
                 // Material properties persist, just textures get updated
                 printf("Editable textures regenerated (index %zu)\n", editableIndex);
+                // refresh GPU-side material buffer to pick up any editable material changes
+                updateMaterials();
             });
             widgetManager.addWidget(editableTextures);
             
@@ -679,6 +727,99 @@ class MyApp : public VulkanApp, public IEventHandler {
             
         };
 
+        // Upload all materials into a GPU storage buffer (called once during setup)
+        void updateMaterials() {
+            materialCount = textureManager.count();
+            if (materialCount == 0) return;
+
+            struct MaterialGPU { glm::vec4 materialFlags; glm::vec4 mappingParams; glm::vec4 specularParams; glm::vec4 triplanarParams; };
+            VkDeviceSize matBufSize = sizeof(MaterialGPU) * materialCount;
+            // If the existing buffer is the right size, reuse it; otherwise recreate and remember size
+            bool recreated = false;
+            if (materialBuffer.buffer != VK_NULL_HANDLE && materialBufferSize != matBufSize) {
+                vkDestroyBuffer(getDevice(), materialBuffer.buffer, nullptr);
+                materialBuffer.buffer = VK_NULL_HANDLE;
+            }
+            if (materialBuffer.memory != VK_NULL_HANDLE && materialBuffer.buffer == VK_NULL_HANDLE) {
+                vkFreeMemory(getDevice(), materialBuffer.memory, nullptr);
+                materialBuffer.memory = VK_NULL_HANDLE;
+            }
+
+            if (materialBuffer.buffer == VK_NULL_HANDLE) {
+                materialBuffer = createBuffer(matBufSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                materialBufferSize = matBufSize;
+                recreated = true;
+            }
+
+            std::vector<MaterialGPU> tmp(materialCount);
+            for (size_t mi = 0; mi < materialCount; ++mi) {
+                const MaterialProperties &mat = textureManager.getMaterial(mi);
+                tmp[mi].materialFlags = glm::vec4(0.0f, 0.0f, mat.ambientFactor, 0.0f);
+                tmp[mi].mappingParams = glm::vec4(mat.mappingMode ? 1.0f : 0.0f, mat.tessLevel, mat.invertHeight ? 1.0f : 0.0f, mat.tessHeightScale);
+                tmp[mi].specularParams = glm::vec4(mat.specularStrength, mat.shininess, 0.0f, 0.0f);
+                tmp[mi].triplanarParams = glm::vec4(mat.triplanarScaleU, mat.triplanarScaleV, mat.triplanar ? 1.0f : 0.0f, 0.0f);
+            }
+
+            void* mapped = nullptr;
+            if (vkMapMemory(getDevice(), materialBuffer.memory, 0, matBufSize, 0, &mapped) == VK_SUCCESS) {
+                memcpy(mapped, tmp.data(), static_cast<size_t>(matBufSize));
+                vkUnmapMemory(getDevice(), materialBuffer.memory);
+            }
+
+            // If we recreated the buffer after descriptor sets were allocated, rebind it into all descriptor sets
+            if (recreated && !descriptorSets.empty()) {
+                VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
+                // Update main descriptor sets
+                for (size_t i = 0; i < descriptorSets.size(); ++i) {
+                    VkDescriptorBufferInfo materialBufInfo{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * matElemSize, matElemSize };
+                    VkWriteDescriptorSet materialWrite{};
+                    materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    materialWrite.dstSet = descriptorSets[i];
+                    materialWrite.dstBinding = 5;
+                    materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    materialWrite.descriptorCount = 1;
+                    materialWrite.pBufferInfo = &materialBufInfo;
+                    updateDescriptorSet(descriptorSets[i], { materialWrite });
+                }
+                // Update shadow descriptor sets
+                for (size_t i = 0; i < shadowDescriptorSets.size(); ++i) {
+                    VkDescriptorBufferInfo materialBufInfo{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * matElemSize, matElemSize };
+                    VkWriteDescriptorSet materialWrite{};
+                    materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    materialWrite.dstSet = shadowDescriptorSets[i];
+                    materialWrite.dstBinding = 5;
+                    materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    materialWrite.descriptorCount = 1;
+                    materialWrite.pBufferInfo = &materialBufInfo;
+                    updateDescriptorSet(shadowDescriptorSets[i], { materialWrite });
+                }
+                // Update sphere descriptor sets
+                for (size_t i = 0; i < sphereDescriptorSets.size(); ++i) {
+                    VkDescriptorBufferInfo materialBufInfo{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * matElemSize, matElemSize };
+                    VkWriteDescriptorSet materialWrite{};
+                    materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    materialWrite.dstSet = sphereDescriptorSets[i];
+                    materialWrite.dstBinding = 5;
+                    materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    materialWrite.descriptorCount = 1;
+                    materialWrite.pBufferInfo = &materialBufInfo;
+                    updateDescriptorSet(sphereDescriptorSets[i], { materialWrite });
+                }
+                // Update shadow sphere descriptor sets
+                for (size_t i = 0; i < shadowSphereDescriptorSets.size(); ++i) {
+                    VkDescriptorBufferInfo materialBufInfo{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * matElemSize, matElemSize };
+                    VkWriteDescriptorSet materialWrite{};
+                    materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    materialWrite.dstSet = shadowSphereDescriptorSets[i];
+                    materialWrite.dstBinding = 5;
+                    materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    materialWrite.descriptorCount = 1;
+                    materialWrite.pBufferInfo = &materialBufInfo;
+                    updateDescriptorSet(shadowSphereDescriptorSets[i], { materialWrite });
+                }
+            }
+        }
+
         // IEventHandler: handle top-level window events like close/fullscreen
         void onEvent(const EventPtr &event) override {
             if (!event) return;
@@ -735,18 +876,15 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Process queued events (dispatch to handlers)
             eventManager.processQueued();
             // compute MVP = proj * view * model
-            glm::mat4 proj = glm::mat4(1.0f);
-            glm::mat4 view = glm::mat4(1.0f);
             glm::mat4 model = glm::mat4(1.0f);
-            glm::mat4 tmp = glm::mat4(1.0f);
             glm::mat4 mvp = glm::mat4(1.0f);
 
             float aspect = (float)getWidth() / (float) getHeight();
-            proj = glm::perspective(45.0f * 3.1415926f / 180.0f, aspect, 0.1f, 100.0f);
+            glm::mat4 proj = glm::perspective(45.0f * 3.1415926f / 180.0f, aspect, 0.1f, 8192.0f);
             // flip Y for Vulkan clip space
             proj[1][1] *= -1.0f;
-
             camera.setProjection(proj);
+
             GLFWwindow* win = getWindow();
             if (win) {
                 // Apply sensitivity settings from UI
@@ -760,12 +898,10 @@ class MyApp : public VulkanApp, public IEventHandler {
             gamepad.update(&eventManager, camera, deltaTime, settingsWidget->getFlipGamepadRotation());
 
             // build view matrix from camera state (no cube rotation)
-            view = camera.getViewMatrix();
+            glm::mat4 view = camera.getViewMatrix();
 
             // keep model identity (stop cube rotation)
             model = glm::mat4(1.0f);
-
-            tmp = view * model;
             mvp = proj * view * model;
 
             // store projection and view for per-cube MVP computation in draw()
@@ -1022,10 +1158,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                 ubo.model = instance.transform;
                 ubo.mvp = mvp;
                 
-                // Apply per-texture material properties if available
-                if (instance.material) {
-                    ubo.setMaterial(*instance.material);
-                }
+                // Static material properties are now read from the GPU-side material buffer (SSBO)
+                // Keep only per-instance dynamic overrides (tess level is written below)
                 // Override tessellation level in mappingParams based on camera distance
                 ubo.mappingParams.y = computeTess(instance.transform, instance.material);
                 // (temporary debug logging removed)
@@ -1122,6 +1256,9 @@ class MyApp : public VulkanApp, public IEventHandler {
             
             // shadow map cleanup
             shadowMapper.cleanup();
+            // material buffer cleanup
+            if (materialBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), materialBuffer.buffer, nullptr);
+            if (materialBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), materialBuffer.memory, nullptr);
         }
 
 };

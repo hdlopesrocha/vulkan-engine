@@ -37,7 +37,8 @@ void main() {
     // local tangent removed
 
     // Read tessellation level from per-material mappingParams.y (set by host)
-    float tessLevel = clamp(ubo.mappingParams.y, 1.0, 64.0);
+    int patchTexIndex = int(pc_inTexIndex[0] + 0.5);
+    float tessLevel = clamp(materials[patchTexIndex].mappingParams.y, 1.0, 64.0);
     float outer = tessLevel;
     float inner = tessLevel;
     gl_TessLevelOuter[0] = outer;

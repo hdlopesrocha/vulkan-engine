@@ -1023,7 +1023,15 @@ void VulkanApp::createDescriptorSetLayout() {
     shadowSamplerBinding.pImmutableSamplers = nullptr;
     shadowSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 5> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding, shadowSamplerBinding};
+    // binding 5: storage buffer containing array of MaterialProperties (uploaded once)
+    VkDescriptorSetLayoutBinding materialBinding{};
+    materialBinding.binding = 5;
+    materialBinding.descriptorCount = 1;
+    materialBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    materialBinding.pImmutableSamplers = nullptr;
+    materialBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 6> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding, shadowSamplerBinding, materialBinding};
 
     // If we later add a normal map sampler (binding 2), extend bindings dynamically when required by the app.
 
@@ -1120,18 +1128,20 @@ void VulkanApp::createDepthResources() {
 }
 
 void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
-    // One uniform buffer and combined image samplers
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    // Reserve descriptors: uniform buffers, combined image samplers, and storage buffers for materials
+    std::array<VkDescriptorPoolSize, 3> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = uboCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = samplerCount;
+    poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[2].descriptorCount = uboCount; // one storage buffer descriptor per set
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = uboCount; // assuming maxSets is uboCount, but actually should be total sets
+    poolInfo.maxSets = uboCount; // keep existing behavior (uboCount equals number of sets expected)
 
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("failed to create descriptor pool!");

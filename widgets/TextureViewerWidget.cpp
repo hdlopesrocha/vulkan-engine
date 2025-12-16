@@ -49,53 +49,44 @@ void TextureViewer::render() {
         }
         if (ImGui::BeginTabItem("Material")) {
             MaterialProperties& mat = manager->getMaterial(currentIndex);
-            
+            bool dirty = false;
+
             ImGui::Spacing();
             ImGui::Text("Normal/Tangent Adjustments");
             ImGui::Separator();
-            
 
             bool triplanarBool = mat.triplanar;
-            if (ImGui::Checkbox("Enable Triplanar Mapping", &triplanarBool)) {
-                mat.triplanar = triplanarBool;
-            }
+            if (ImGui::Checkbox("Enable Triplanar Mapping", &triplanarBool)) { mat.triplanar = triplanarBool; dirty = true; }
             if (mat.triplanar) {
                 ImGui::Indent();
-                ImGui::SliderFloat("Triplanar Scale U", &mat.triplanarScaleU, 0.01f, 10.0f, "%.3f");
-                ImGui::SliderFloat("Triplanar Scale V", &mat.triplanarScaleV, 0.01f, 10.0f, "%.3f");
+                if (ImGui::SliderFloat("Triplanar Scale U", &mat.triplanarScaleU, 0.01f, 10.0f, "%.3f")) dirty = true;
+                if (ImGui::SliderFloat("Triplanar Scale V", &mat.triplanarScaleV, 0.01f, 10.0f, "%.3f")) dirty = true;
                 ImGui::Unindent();
             }
-            
+
             ImGui::Spacing();
             ImGui::Text("Lighting");
             ImGui::Separator();
-            
-            ImGui::SliderFloat("Ambient Factor", &mat.ambientFactor, 0.0f, 1.0f, "%.2f");
-            ImGui::SliderFloat("Specular Strength", &mat.specularStrength, 0.0f, 2.0f, "%.2f");
-            ImGui::SliderFloat("Shininess", &mat.shininess, 1.0f, 256.0f, "%.0f");
+
+            if (ImGui::SliderFloat("Ambient Factor", &mat.ambientFactor, 0.0f, 1.0f, "%.2f")) dirty = true;
+            if (ImGui::SliderFloat("Specular Strength", &mat.specularStrength, 0.0f, 2.0f, "%.2f")) dirty = true;
+            if (ImGui::SliderFloat("Shininess", &mat.shininess, 1.0f, 256.0f, "%.0f")) dirty = true;
 
             ImGui::Spacing();
             ImGui::Text("Mapping (Tessellation + Bump)");
             ImGui::Separator();
-            // mappingMode is now a boolean toggle
             bool mappingEnabled = mat.mappingMode;
-            if (ImGui::Checkbox("Enable Tessellation & Bump Mapping", &mappingEnabled)) {
-                mat.mappingMode = mappingEnabled;
-            }
-            // Height map interpretation: legacy inverted vs direct
+            if (ImGui::Checkbox("Enable Tessellation & Bump Mapping", &mappingEnabled)) { mat.mappingMode = mappingEnabled; dirty = true; }
             bool heightDirect = mat.invertHeight;
-            if (ImGui::Checkbox("Height Is Direct (white=high)", &heightDirect)) {
-                mat.invertHeight = heightDirect;
-            }
-            // Tessellation level (per-material). Only relevant when mapping is enabled
+            if (ImGui::Checkbox("Height Is Direct (white=high)", &heightDirect)) { mat.invertHeight = heightDirect; dirty = true; }
             if (mat.mappingMode) {
                 int tess = static_cast<int>(mat.tessLevel + 0.5f);
-                if (ImGui::SliderInt("Tessellation Level", &tess, 1, 64)) {
-                    mat.tessLevel = static_cast<float>(tess);
-                }
-                ImGui::SliderFloat("Tess Height Scale", &mat.tessHeightScale, 0.0f, 1.0f, "%.3f");
+                if (ImGui::SliderInt("Tessellation Level", &tess, 1, 64)) { mat.tessLevel = static_cast<float>(tess); dirty = true; }
+                if (ImGui::SliderFloat("Tess Height Scale", &mat.tessHeightScale, 0.0f, 1.0f, "%.3f")) dirty = true;
             }
-            
+
+            if (dirty && onMaterialChanged) onMaterialChanged(currentIndex);
+
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

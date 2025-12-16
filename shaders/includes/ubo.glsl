@@ -24,3 +24,16 @@ layout(binding = 0) uniform UBO {
         vec4 nightParams;  // x = night intensity (0..1), y = starIntensity, z/w unused
         vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
 } ubo;
+
+// Packed material data uploaded once to GPU. Matches the CPU-side MaterialGPU (4 vec4s).
+// Access this as `materials[texIndex]` from shaders. Uses std430 for tightly-packed vec4 alignment.
+struct MaterialGPU {
+    vec4 materialFlags;   // .z = ambientFactor
+    vec4 mappingParams;   // x = mappingEnabled (0/1), y = tessLevel, z = invertHeight (0/1), w = tessHeightScale
+    vec4 specularParams;  // x = specularStrength, y = shininess
+    vec4 triplanarParams; // x = scaleU, y = scaleV, z = triplanarEnabled (0/1)
+};
+
+layout(std430, binding = 5) readonly buffer Materials {
+    MaterialGPU materials[];
+};
