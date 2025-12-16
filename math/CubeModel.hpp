@@ -1,9 +1,9 @@
 #pragma once
 
-#include "Model3D.hpp"
+#include "Mesh3D.hpp"
 #include <vector>
 
-class CubeModel : public Model3D {
+class CubeModel : public Mesh3D {
 public:
     CubeModel() = default;
     

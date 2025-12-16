@@ -1,16 +1,16 @@
-#include "Model3D.hpp"
+#include "Mesh3D.hpp"
 #include <glm/gtc/constants.hpp>
 #include <glm/gtx/norm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/glm.hpp>
 #include <cmath>
 
-void Model3D::setGeometry(const std::vector<Vertex>& inVertices, const std::vector<uint16_t>& inIndices) {
+void Mesh3D::setGeometry(const std::vector<Vertex>& inVertices, const std::vector<uint16_t>& inIndices) {
     vertices = inVertices;
     indices = inIndices;
 }
 
-void Model3D::computeNormals() {
+void Mesh3D::computeNormals() {
     std::vector<glm::vec3> normAccum(vertices.size(), glm::vec3(0.0f));
     for (size_t i = 0; i < indices.size(); i += 3) {
         uint32_t i0 = indices[i];
@@ -45,7 +45,7 @@ void Model3D::computeNormals() {
     }
 }
 
-void Model3D::computeTangents() {
+void Mesh3D::computeTangents() {
     // compute per-vertex tangents using the same algorithm as before
     std::vector<glm::vec3> tanAccum(vertices.size(), glm::vec3(0.0f));
     std::vector<glm::vec3> bitAccum(vertices.size(), glm::vec3(0.0f));

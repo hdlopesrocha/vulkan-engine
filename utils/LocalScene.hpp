@@ -41,7 +41,7 @@ public:
         processor.iterateFlatIn(*tree, data);
 
         if(tesselator.geometry && !tesselator.geometry->indices.empty()) {
-            Model3D model;
+            Mesh3D model;
             // copy vertices
             const std::vector<Vertex> &verts = tesselator.geometry->vertices;
             // convert indices from uint to uint16_t (clamp if necessary)

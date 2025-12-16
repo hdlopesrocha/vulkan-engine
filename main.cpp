@@ -46,11 +46,12 @@
 
 #include "vulkan/VertexBufferObjectBuilder.hpp"
 #include "utils/Model3DVersion.hpp"
+#include "vulkan/Model3D.hpp"
 
 class MyApp : public VulkanApp, public IEventHandler {
     LocalScene * mainScene;
     std::unordered_map<OctreeNode*, Model3DVersion> nodeModelVersions;
-    std::vector<Model3D*> visibleModels;
+    std::vector<Mesh3D*> visibleModels;
 
     public:
         MyApp() : shadowMapper(this, 8192) {}
@@ -97,11 +98,15 @@ class MyApp : public VulkanApp, public IEventHandler {
     ModelManager modelManager;
     
     // Store meshes (owned by app but not direct attributes)
-    std::vector<std::unique_ptr<Model3D>> meshes;
+    std::vector<std::unique_ptr<Mesh3D>> meshes;
+    // Store simple model wrappers (mesh pointer + VBO reference + model matrix)
+    std::vector<std::unique_ptr<Model3D>> modelObjects;
     
     // UI: currently selected texture triple for preview
     size_t currentTextureIndex = 0;
     size_t editableTextureIndex = 0;  // Index of the editable texture triple in TextureManager
+    // Cached material for the ground plane (captured at setup and updated on texture regenerate)
+    MaterialProperties planeMaterial;
     
     // Shadow mapping
     ShadowMapper shadowMapper;
@@ -119,6 +124,11 @@ class MyApp : public VulkanApp, public IEventHandler {
     // (managed by TextureManager)
         std::vector<VkDescriptorSet> descriptorSets;
         std::vector<Buffer> uniforms; // One uniform buffer per cube
+        // Per-model-instance descriptor sets and uniform buffers (one UBO + set per Model3D)
+        std::vector<VkDescriptorSet> instanceDescriptorSets;
+        std::vector<Buffer> instanceUniforms;
+        std::vector<VkDescriptorSet> instanceShadowDescriptorSets;
+        std::vector<Buffer> instanceShadowUniforms;
         // Additional per-texture uniform buffers and descriptor sets for sphere instances
         std::vector<VkDescriptorSet> sphereDescriptorSets;
         std::vector<Buffer> sphereUniforms;
@@ -370,6 +380,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                 1.0f   // triplanarScaleV
             };
             editableTextureIndex = editableIndex;  // Store for plane rendering
+            // Initialize cached plane material from the editable texture triple
+            planeMaterial = textureManager.getMaterial(editableIndex);
 
             // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
             if (!loadedIndices.empty()) currentTextureIndex = loadedIndices[0];
@@ -390,9 +402,15 @@ class MyApp : public VulkanApp, public IEventHandler {
             if (tripleCount == 0) tripleCount = 1; // ensure at least one
             // Create/upload GPU-side material buffer (packed vec4-friendly struct)
             updateMaterials();
-            // Allocate descriptor pool sized for both cube and sphere descriptor sets (4 sets per texture triple)
-            // uboCount = number of uniform descriptors (one per descriptor set), samplerCount = total combined image sampler descriptors
-            createDescriptorPool(static_cast<uint32_t>(tripleCount * 4), static_cast<uint32_t>(tripleCount * 16));
+            // Allocate descriptor pool sized for descriptor sets. We need room for per-texture sets and
+            // per-model-instance sets (we'll create one descriptor set per Model3D instance later).
+            // Estimate: per-texture sets = tripleCount * 4, per-instance sets = (1 + 2*tripleCount) * 2 (main+shadow), add a small slack.
+            uint32_t estimatedPerTextureSets = static_cast<uint32_t>(tripleCount * 4);
+            uint32_t estimatedModelObjects = static_cast<uint32_t>(1 + 2 * tripleCount);
+            uint32_t estimatedPerInstanceSets = estimatedModelObjects * 2;
+            uint32_t totalSets = estimatedPerTextureSets + estimatedPerInstanceSets + 4;
+            // each descriptor set writes up to 4 combined image samplers (albedo/normal/height/shadow)
+            createDescriptorPool(totalSets, totalSets * 4);
 
             descriptorSets.resize(tripleCount, VK_NULL_HANDLE);
             shadowDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
@@ -430,27 +448,100 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         
 
-            // build cube mesh and geometry (per-face tex indices all zero by default)
-            auto cube = std::make_unique<CubeModel>();
-            cube->build({});
-            VertexBufferObject cubeVbo = VertexBufferObjectBuilder::create(this, *cube);
-            
-            // build ground plane mesh (20x20 units)
+            // build ground plane mesh (20x20 units) and keep editable texture index
             auto plane = std::make_unique<PlaneModel>();
-            plane->build(20.0f, 20.0f, 0.0f); // Will use editable texture index
+            // Build plane using the editable texture index (pass as last parameter)
+            plane->build(20.0f, 20.0f, 1, 1, static_cast<float>(editableIndex));
             VertexBufferObject planeVbo = VertexBufferObjectBuilder::create(this, *plane);
-            
-            // build sphere mesh
-            auto sphere = std::make_unique<SphereModel>();
-            sphere->build(0.5f, 32, 16, 0.0f);
-            VertexBufferObject sphereVbo = VertexBufferObjectBuilder::create(this, *sphere);
-            // Store meshes and their GPU buffers for later use
-            meshes.push_back(std::move(cube));
-            meshVBOs.push_back(cubeVbo);
+
+            // Store plane mesh/vbo first so index 0/1 are reserved
             meshes.push_back(std::move(plane));
             meshVBOs.push_back(planeVbo);
-            meshes.push_back(std::move(sphere));
-            meshVBOs.push_back(sphereVbo);
+
+            // Create per-material cube and sphere meshes (one pair per texture triple)
+            size_t n = descriptorSets.size();
+            if (n == 0) n = 1;
+            float spacing = 2.5f;
+            int cols = static_cast<int>(std::ceil(std::sqrt((float)n)));
+            int rows = static_cast<int>(std::ceil((float)n / cols));
+            float halfW = (cols - 1) * 0.5f * spacing;
+            float halfH = (rows - 1) * 0.5f * spacing;
+
+            modelObjects.clear();
+            modelObjects.reserve(n * 2 + 1);
+
+            // Reserve space for meshes and VBOs to avoid reallocation invalidating references
+            meshVBOs.reserve(1 + 2 * n);
+            meshes.reserve(1 + 2 * n);
+
+            // Add plane as a Model3D wrapper (uses editable texture index)
+            glm::mat4 planeModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.5f, 0.0f));
+            modelObjects.emplace_back(std::make_unique<Model3D>(meshes[0].get(), meshVBOs[0], planeModel));
+
+            for (size_t i = 0; i < n; ++i) {
+                // Build a cube mesh whose per-face tex indices point to this material index
+                auto cube = std::make_unique<CubeModel>();
+                std::vector<float> faceTex(6, static_cast<float>(i));
+                cube->build(faceTex);
+                VertexBufferObject cubeVbo = VertexBufferObjectBuilder::create(this, *cube);
+
+                Mesh3D* cubePtr = cube.get();
+                meshes.push_back(std::move(cube));
+                meshVBOs.push_back(cubeVbo);
+
+                // Position cube in a grid
+                int col = static_cast<int>(i % cols);
+                int row = static_cast<int>(i / cols);
+                float x = col * spacing - halfW;
+                float y = -1.0f; // Above the plane
+                float z = row * spacing - halfH;
+                glm::mat4 cubeModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, y, z));
+                modelObjects.emplace_back(std::make_unique<Model3D>(cubePtr, meshVBOs.back(), cubeModel));
+
+                // Build sphere mesh for this material
+                auto sphere = std::make_unique<SphereModel>();
+                sphere->build(0.5f, 32, 16, static_cast<float>(i));
+                VertexBufferObject sphereVbo = VertexBufferObjectBuilder::create(this, *sphere);
+                Mesh3D* spherePtr = sphere.get();
+                meshes.push_back(std::move(sphere));
+                meshVBOs.push_back(sphereVbo);
+
+                // Place sphere above cube
+                float sphereRadius = 0.5f;
+                float cubeHalfHeight = 0.5f;
+                float gap = 0.5f;
+                float sphereCenterY = y + cubeHalfHeight + sphereRadius + gap;
+                glm::mat4 sphereModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, sphereCenterY, z));
+                modelObjects.emplace_back(std::make_unique<Model3D>(spherePtr, meshVBOs.back(), sphereModel));
+            }
+            // Create per-model-instance uniform buffers and descriptor sets so each instance has its own UBO
+            instanceDescriptorSets.clear();
+            instanceUniforms.clear();
+            instanceShadowDescriptorSets.clear();
+            instanceShadowUniforms.clear();
+            instanceDescriptorSets.resize(modelObjects.size(), VK_NULL_HANDLE);
+            instanceUniforms.resize(modelObjects.size());
+            instanceShadowDescriptorSets.resize(modelObjects.size(), VK_NULL_HANDLE);
+            instanceShadowUniforms.resize(modelObjects.size());
+            {
+                DescriptorSetBuilder dsBuilder(this, &textureManager, &shadowMapper);
+                VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
+                for (size_t mi = 0; mi < modelObjects.size(); ++mi) {
+                    Model3D* m = modelObjects[mi].get();
+                    if (!m || !m->mesh) continue;
+                    // determine triple index from mesh vertex texIndex (plane was built with editableIndex)
+                    int texIdx = 0;
+                    if (!m->mesh->getVertices().empty()) texIdx = m->mesh->getVertices()[0].texIndex;
+                    if (texIdx < 0 || static_cast<size_t>(texIdx) >= textureManager.count()) texIdx = 0;
+                    const auto &tr = textureManager.getTriple(static_cast<size_t>(texIdx));
+                    // create per-instance uniform buffers
+                    instanceUniforms[mi] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                    instanceShadowUniforms[mi] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                    // create descriptor sets bound to the per-instance buffers
+                    instanceDescriptorSets[mi] = dsBuilder.createMainDescriptorSet(tr, instanceUniforms[mi], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(texIdx) * matElemSize : 0);
+                    instanceShadowDescriptorSets[mi] = dsBuilder.createShadowDescriptorSet(tr, instanceShadowUniforms[mi], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(texIdx) * matElemSize : 0);
+                }
+            }
             
             // Initialize light space matrix BEFORE creating command buffers
             // UI `lightDirection` is the direction FROM the camera/world TO the light (TO the light).
@@ -487,6 +578,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                 printf("Editable textures regenerated (index %zu)\n", editableIndex);
                 // refresh GPU-side material buffer to pick up any editable material changes
                 updateMaterials();
+                // Update cached plane material to reflect regenerated editable textures
+                planeMaterial = textureManager.getMaterial(editableIndex);
             });
             widgetManager.addWidget(editableTextures);
             
@@ -738,9 +831,9 @@ class MyApp : public VulkanApp, public IEventHandler {
 
                     // Request the Model3D and fill the stored Model3DVersion when available
                     // requestModel3D expects a non-const reference; cast away const here
-                    mainScene->requestModel3D(Layer::LAYER_OPAQUE, const_cast<OctreeNodeData&>(data), [this, node, version](Model3D& model) {
+                    mainScene->requestModel3D(Layer::LAYER_OPAQUE, const_cast<OctreeNodeData&>(data), [this, node, version](Mesh3D& model) {
                         // Store a heap-allocated copy to match Model3DVersion::model (pointer)
-                        Model3D* stored = new Model3D(model);
+                        Mesh3D* stored = new Mesh3D(model);
                         nodeModelVersions[node] = { stored, version };
                         std::cout << "[Model3D] Loaded model for node " << node << " (version " << version << ")\n";
                     });
@@ -758,11 +851,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             
             // Clear previous frame's instances
             modelManager.clear();
-            
-            // Get mesh pointers (cube at index 0, plane at index 1)
-            Model3D* cube = meshes[0].get();
-            Model3D* plane = meshes[1].get();
-            
+ 
             // Calculate grid layout for cubes
             size_t n = descriptorSets.size();
             float spacing = 2.5f;
@@ -772,39 +861,22 @@ class MyApp : public VulkanApp, public IEventHandler {
             float halfW = (cols - 1) * 0.5f * spacing;
             float halfH = (rows - 1) * 0.5f * spacing;
             
-            // Add plane instance (uses editable texture)
-            glm::mat4 planeModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.5f, 0.0f));
-            const MaterialProperties* planeMat = &textureManager.getMaterial(editableTextureIndex);
-            modelManager.addInstance(plane, meshVBOs[1], planeModel, descriptorSets[editableTextureIndex], &uniforms[editableTextureIndex], shadowDescriptorSets[editableTextureIndex], &shadowUniforms[editableTextureIndex], planeMat);
-            
-            // Add cube instances
-            for (size_t i = 0; i < descriptorSets.size(); ++i) {
-                // Skip the editable texture index (it's used for the plane)
-                if (i == editableTextureIndex) continue;
-                
-                int col = static_cast<int>(i % cols);
-                int row = static_cast<int>(i / cols);
-                
-                float x = col * spacing - halfW;
-                float y = -1.0f; // Above the plane
-                float z = row * spacing - halfH;
-                
-                glm::mat4 model_i = glm::translate(glm::mat4(1.0f), glm::vec3(x, y, z));
-                // Pass material properties for this texture
-                const MaterialProperties* mat = &textureManager.getMaterial(i);
-                modelManager.addInstance(cube, meshVBOs[0], model_i, descriptorSets[i], &uniforms[i], shadowDescriptorSets[i], &shadowUniforms[i], mat);
+            // Add instances from the simple Model3D wrappers created at setup
+            for (size_t mi = 0; mi < modelObjects.size(); ++mi) {
+                Model3D* m = modelObjects[mi].get();
+                if (!m || !m->mesh) continue;
+                VertexBufferObject &vbo = m->getVBO();
+                glm::mat4 transform = m->getModel();
 
-                // Create sphere above this cube if sphere mesh available
-                if (meshes.size() > 2) {
-                    Model3D* sphere = meshes[2].get();
-                    float sphereRadius = 0.5f; // match mesh radius
-                    // Place the sphere just above the cube top with a small gap to avoid intersection
-                    float cubeHalfHeight = 0.5f;
-                    float gap = 0.5f; // slightly larger gap to avoid numerical intersection
-                    float sphereCenterY = y + cubeHalfHeight + sphereRadius + gap; // place on top of cube
-                    glm::mat4 sphereModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, sphereCenterY, z));
-                    modelManager.addInstance(sphere, meshVBOs[2], sphereModel, sphereDescriptorSets[i], &sphereUniforms[i], shadowSphereDescriptorSets[i], &shadowSphereUniforms[i], mat);
-                }
+                // Select a descriptor/uniform set for the object. Plane uses the editable texture index,
+                // other objects use the first available texture descriptor (index 0) if present.
+                // Use per-instance descriptor set / uniform buffer created during setup
+                VkDescriptorSet ds = instanceDescriptorSets.size() > mi ? instanceDescriptorSets[mi] : VK_NULL_HANDLE;
+                Buffer* ub = instanceUniforms.size() > mi ? &instanceUniforms[mi] : nullptr;
+                VkDescriptorSet sds = instanceShadowDescriptorSets.size() > mi ? instanceShadowDescriptorSets[mi] : VK_NULL_HANDLE;
+                Buffer* sub = instanceShadowUniforms.size() > mi ? &instanceShadowUniforms[mi] : nullptr;
+                // material index is encoded in mesh vertex `texIndex`; pass instance without materialIndex
+                modelManager.addInstance(m->mesh, vbo, transform, ds, ub, sds, sub);
             }
             
             // Add spheres above each cube instance (if sphere mesh is present)
@@ -832,15 +904,15 @@ class MyApp : public VulkanApp, public IEventHandler {
                 
                 // Render all instances to shadow map
                 for (const auto& instance : modelManager.getInstances()) {
-                // Build material flags for shadow pass
+                // Build material flags for shadow pass (fetch material from mesh vertex `texIndex`)
                 glm::vec4 materialFlags(0.0f, 0.0f, 0.0f, 0.0f);
-                if (instance.material) {
-                    materialFlags = glm::vec4(
-                        0.0f,
-                        0.0f,
-                        0.0f, // ambient not used in shadow pass
-                        0.0f
-                    );
+                const MaterialProperties* instMat = nullptr;
+                int instMatIdx = 0;
+                if (instance.model && !instance.model->getVertices().empty()) {
+                    instMatIdx = instance.model->getVertices()[0].texIndex;
+                }
+                if (instMatIdx >= 0 && static_cast<size_t>(instMatIdx) < textureManager.count()) {
+                    instMat = &textureManager.getMaterial(static_cast<size_t>(instMatIdx));
                 }
 
                 // Update uniform buffer for shadow pass
@@ -850,14 +922,21 @@ class MyApp : public VulkanApp, public IEventHandler {
                 shadowUbo.mvp = shadowMvp;
                 shadowUbo.materialFlags = materialFlags;
                 // Set mapping mode for tessellation displacement in shadow pass
-                float tessForThis = computeTess(instance.transform, instance.material);
+                float tessForThis = computeTess(instance.transform, instMat);
                 shadowUbo.mappingParams = glm::vec4(
-                    instance.material ? (instance.material->mappingMode ? 1.0f : 0.0f) : 0.0f,
+                    instMat ? (instMat->mappingMode ? 1.0f : 0.0f) : 0.0f,
                     tessForThis,
-                    instance.material ? (instance.material->invertHeight ? 1.0f : 0.0f) : 0.0f,
-                    instance.material ? instance.material->tessHeightScale : 0.1f
+                    instMat ? (instMat->invertHeight ? 1.0f : 0.0f) : 0.0f,
+                    instMat ? instMat->tessHeightScale : 0.1f
                 );
                 shadowUbo.passParams = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 1.0
+                // Debug: log instance translation to verify model matrix is set
+                {
+                    glm::vec4 t = instance.transform[3];
+                    printf("[DBG][shadow] inst pos = %f %f %f (matIdx=%d)\n", t.x, t.y, t.z, instMatIdx);
+                    // Log descriptor set and bound uniform buffer handle for debugging
+                    printf("[DBG][shadow]  descSet=%p uboBuf=%p\n", (void*)instance.shadowDescriptorSet, (void*)(instance.shadowUniformBuffer ? instance.shadowUniformBuffer->buffer : VK_NULL_HANDLE));
+                }
                 updateUniformBuffer(*instance.shadowUniformBuffer, &shadowUbo, sizeof(UniformObject));
                 
                     shadowMapper.renderObject(commandBuffer, instance.transform, instance.vbo,
@@ -911,10 +990,17 @@ class MyApp : public VulkanApp, public IEventHandler {
                 ubo.model = instance.transform;
                 ubo.mvp = mvp;
                 
-                // Static material properties are now read from the GPU-side material buffer (SSBO)
-                // Keep only per-instance dynamic overrides (tess level is written below)
-                // Override tessellation level in mappingParams based on camera distance
-                ubo.mappingParams.y = computeTess(instance.transform, instance.material);
+                // Static material properties are read from the GPU-side material buffer (SSBO).
+                // Determine material index from the mesh vertex `texIndex` and use it for per-instance overrides.
+                const MaterialProperties* instMat = nullptr;
+                int instMatIdx = 0;
+                if (instance.model && !instance.model->getVertices().empty()) {
+                    instMatIdx = instance.model->getVertices()[0].texIndex;
+                }
+                if (instMatIdx >= 0 && static_cast<size_t>(instMatIdx) < textureManager.count()) {
+                    instMat = &textureManager.getMaterial(static_cast<size_t>(instMatIdx));
+                }
+                ubo.mappingParams.y = computeTess(instance.transform, instMat);
                 // (temporary debug logging removed)
                 // Global normal mapping toggle (separate from tessellation/mappingMode)
                 if (settingsWidget) {
@@ -934,11 +1020,18 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (settingsWidget) ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
                 else ubo.debugParams = glm::vec4(0.0f);
                 ubo.passParams = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 0.0
+                // Debug: log instance translation to verify model matrix is set
+                {
+                    glm::vec4 t = instance.transform[3];
+                    printf("[DBG][main]   inst pos = %f %f %f (matIdx=%d)\n", t.x, t.y, t.z, instMatIdx);
+                    // Log descriptor set and bound uniform buffer handle for debugging
+                    printf("[DBG][main]    descSet=%p uboBuf=%p\n", (void*)instance.descriptorSet, (void*)(instance.uniformBuffer ? instance.uniformBuffer->buffer : VK_NULL_HANDLE));
+                }
                 updateUniformBuffer(*instance.uniformBuffer, &ubo, sizeof(UniformObject));
                 
                 // Bind descriptor set and draw
                 // Choose pipeline based on per-material mapping enabled flag (false=none, true=tessellation+bump)
-                bool mappingEnabled = (instance.material) ? instance.material->mappingMode : false;
+                bool mappingEnabled = instMat ? instMat->mappingMode : false;
                 bool wire = settingsWidget ? settingsWidget->getWireframeEnabled() : false;
                 if (mappingEnabled && graphicsPipelineTess != VK_NULL_HANDLE) {
                     if (wire && graphicsPipelineTessWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineTessWire);
@@ -991,6 +1084,13 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (uniformBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniformBuffer.buffer, nullptr);
             }
             for (auto& uniformBuffer : uniforms) {
+                if (uniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniformBuffer.memory, nullptr);
+            }
+            // per-instance uniform buffers cleanup
+            for (auto& uniformBuffer : instanceUniforms) {
+                if (uniformBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), uniformBuffer.buffer, nullptr);
+            }
+            for (auto& uniformBuffer : instanceUniforms) {
                 if (uniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), uniformBuffer.memory, nullptr);
             }
             // sphere uniform buffers cleanup

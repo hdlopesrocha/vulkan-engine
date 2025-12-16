@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../math/Model3D.hpp"
+#include "../math/Mesh3D.hpp"
 #include "vulkan.hpp"
 #include <vector>
 #include <glm/glm.hpp>
@@ -16,10 +16,9 @@ public:
     ModelManager() = default;
     
     // Add a model instance to be rendered
-    void addInstance(Model3D* model, const VertexBufferObject& vbo, const glm::mat4& transform, 
+    void addInstance(Mesh3D* model, const VertexBufferObject& vbo, const glm::mat4& transform, 
                     VkDescriptorSet descriptorSet, Buffer* uniformBuffer,
-                    VkDescriptorSet shadowDescriptorSet, Buffer* shadowUniformBuffer,
-                    const MaterialProperties* material = nullptr);
+                    VkDescriptorSet shadowDescriptorSet, Buffer* shadowUniformBuffer);
     
     // Clear all instances
     void clear();

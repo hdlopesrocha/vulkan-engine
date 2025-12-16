@@ -4,9 +4,9 @@
 #include <vector>
 #include <glm/glm.hpp>
 
-class Model3D {
+class Mesh3D {
 public:
-    Model3D() = default;
+    Mesh3D() = default;
 
     // Set geometry
     void setGeometry(const std::vector<Vertex>& vertices, const std::vector<uint16_t>& indices);

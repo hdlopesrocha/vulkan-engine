@@ -4,7 +4,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 #include <functional>
-#include "../math/Model3D.hpp"
+#include "../math/Mesh3D.hpp"
 #include "../space/Octree.hpp"
 #include "../space/OctreeNodeData.hpp"
 
@@ -18,8 +18,8 @@ enum Layer {
 // Visible nodes are reported via a callback lambda taking an OctreeNodeData reference
 using VisibleNodeCallback = std::function<void(const OctreeNodeData&)>;
 
-// Model3D results are delivered via a callback lambda taking a Model3D reference
-using Model3DCallback = std::function<void(Model3D&)>;
+// Mesh3D results are delivered via a callback lambda taking a Model3D reference
+using Model3DCallback = std::function<void(Mesh3D&)>;
 
 class SceneLoaderCallback {
 public:
