@@ -13,6 +13,7 @@ public:
 
     // Access geometry
     std::vector<Vertex>& getVertices() { return vertices; }
+    const std::vector<Vertex>& getVertices() const { return vertices; }
     const std::vector<uint16_t>& getIndices() const { return indices; }
 
     // Compute normals and tangents

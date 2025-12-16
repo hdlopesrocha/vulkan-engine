@@ -1,5 +1,6 @@
 #include "EditableTexture.hpp"
 #include "VulkanApp.hpp"
+#include <vulkan/vulkan.h>
 #include <stdexcept>
 #include <backends/imgui_impl_vulkan.h>
 
@@ -19,7 +20,7 @@ void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt,
 					 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
 
 	// create view
-	VkImageViewCreateInfo viewInfo{};
+	VkImageViewCreateInfo viewInfo = {};
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	viewInfo.image = image;
 	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
