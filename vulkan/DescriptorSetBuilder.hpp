@@ -13,6 +13,9 @@ public:
     VkDescriptorSet createSphereDescriptorSet(const TextureManager::Triple& tr, Buffer& sphereUniformBuffer, bool bindMaterial, Buffer* materialBuffer = nullptr, VkDeviceSize materialOffset = 0);
     VkDescriptorSet createShadowSphereDescriptorSet(const TextureManager::Triple& tr, Buffer& shadowSphereUniformBuffer, bool bindMaterial, Buffer* materialBuffer = nullptr, VkDeviceSize materialOffset = 0);
 
+    // Update material storage buffer binding for a collection of descriptor sets.
+    void updateMaterialBinding(std::vector<VkDescriptorSet>& sets, Buffer& materialBuffer, VkDeviceSize elementSize);
+
 private:
     VulkanApp* app;
     TextureManager* texMgr;

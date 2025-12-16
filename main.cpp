@@ -588,54 +588,11 @@ class MyApp : public VulkanApp, public IEventHandler {
             // If we recreated the buffer after descriptor sets were allocated, rebind it into all descriptor sets
             if (recreated && !descriptorSets.empty()) {
                 VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
-                // Update main descriptor sets
-                for (size_t i = 0; i < descriptorSets.size(); ++i) {
-                    VkDescriptorBufferInfo materialBufInfo{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * matElemSize, matElemSize };
-                    VkWriteDescriptorSet materialWrite{};
-                    materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    materialWrite.dstSet = descriptorSets[i];
-                    materialWrite.dstBinding = 5;
-                    materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    materialWrite.descriptorCount = 1;
-                    materialWrite.pBufferInfo = &materialBufInfo;
-                    updateDescriptorSet(descriptorSets[i], { materialWrite });
-                }
-                // Update shadow descriptor sets
-                for (size_t i = 0; i < shadowDescriptorSets.size(); ++i) {
-                    VkDescriptorBufferInfo materialBufInfo{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * matElemSize, matElemSize };
-                    VkWriteDescriptorSet materialWrite{};
-                    materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    materialWrite.dstSet = shadowDescriptorSets[i];
-                    materialWrite.dstBinding = 5;
-                    materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    materialWrite.descriptorCount = 1;
-                    materialWrite.pBufferInfo = &materialBufInfo;
-                    updateDescriptorSet(shadowDescriptorSets[i], { materialWrite });
-                }
-                // Update sphere descriptor sets
-                for (size_t i = 0; i < sphereDescriptorSets.size(); ++i) {
-                    VkDescriptorBufferInfo materialBufInfo{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * matElemSize, matElemSize };
-                    VkWriteDescriptorSet materialWrite{};
-                    materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    materialWrite.dstSet = sphereDescriptorSets[i];
-                    materialWrite.dstBinding = 5;
-                    materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    materialWrite.descriptorCount = 1;
-                    materialWrite.pBufferInfo = &materialBufInfo;
-                    updateDescriptorSet(sphereDescriptorSets[i], { materialWrite });
-                }
-                // Update shadow sphere descriptor sets
-                for (size_t i = 0; i < shadowSphereDescriptorSets.size(); ++i) {
-                    VkDescriptorBufferInfo materialBufInfo{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * matElemSize, matElemSize };
-                    VkWriteDescriptorSet materialWrite{};
-                    materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    materialWrite.dstSet = shadowSphereDescriptorSets[i];
-                    materialWrite.dstBinding = 5;
-                    materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    materialWrite.descriptorCount = 1;
-                    materialWrite.pBufferInfo = &materialBufInfo;
-                    updateDescriptorSet(shadowSphereDescriptorSets[i], { materialWrite });
-                }
+                DescriptorSetBuilder dsBuilder(this, &textureManager, &shadowMapper);
+                dsBuilder.updateMaterialBinding(descriptorSets, materialBuffer, matElemSize);
+                dsBuilder.updateMaterialBinding(shadowDescriptorSets, materialBuffer, matElemSize);
+                dsBuilder.updateMaterialBinding(sphereDescriptorSets, materialBuffer, matElemSize);
+                dsBuilder.updateMaterialBinding(shadowSphereDescriptorSets, materialBuffer, matElemSize);
             }
         }
 

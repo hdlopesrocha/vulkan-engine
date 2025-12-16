@@ -67,3 +67,18 @@ VkDescriptorSet DescriptorSetBuilder::createSphereDescriptorSet(const TextureMan
 VkDescriptorSet DescriptorSetBuilder::createShadowSphereDescriptorSet(const TextureManager::Triple& tr, Buffer& shadowSphereUniformBuffer, bool bindMaterial, Buffer* materialBuffer, VkDeviceSize materialOffset) {
     return createShadowDescriptorSet(tr, shadowSphereUniformBuffer, bindMaterial, materialBuffer, materialOffset);
 }
+
+void DescriptorSetBuilder::updateMaterialBinding(std::vector<VkDescriptorSet>& sets, Buffer& materialBuffer, VkDeviceSize elementSize) {
+    // Write material storage buffer into each provided descriptor set at binding 5.
+    for (size_t i = 0; i < sets.size(); ++i) {
+        VkDescriptorBufferInfo materialBufInfo{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * elementSize, elementSize };
+        VkWriteDescriptorSet materialWrite{};
+        materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        materialWrite.dstSet = sets[i];
+        materialWrite.dstBinding = 5;
+        materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        materialWrite.descriptorCount = 1;
+        materialWrite.pBufferInfo = &materialBufInfo;
+        app->updateDescriptorSet(sets[i], { materialWrite });
+    }
+}
