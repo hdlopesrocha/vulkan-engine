@@ -30,6 +30,7 @@
 #include "widgets/LightWidget.hpp"
 #include "widgets/SkyWidget.hpp"
 #include "vulkan/SkySphere.hpp"
+#include "vulkan/DescriptorSetBuilder.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
 #include "widgets/BillboardCreator.hpp"
 #include "widgets/VulkanObjectsWidget.hpp"
@@ -448,114 +449,19 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             descriptorSets.resize(tripleCount, VK_NULL_HANDLE);
             shadowDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
+
+            // Use DescriptorSetBuilder to reduce repeated code
+            DescriptorSetBuilder dsBuilder(this, &textureManager, &shadowMapper);
             for (size_t i = 0; i < tripleCount; ++i) {
-                VkDescriptorSet ds = createDescriptorSet(getDescriptorSetLayout());
+                const auto &tr = textureManager.getTriple(i);
+                // main descriptor set
+                VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
+                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, uniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
                 descriptorSets[i] = ds;
 
-                // uniform buffer descriptor (binding 0) - use separate uniform buffer per cube
-                VkDescriptorBufferInfo bufferInfo { uniforms[i].buffer, 0 , sizeof(UniformObject) };
-
-                VkWriteDescriptorSet uboWrite{};
-                uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                uboWrite.dstSet = ds;
-                uboWrite.dstBinding = 0;
-                uboWrite.dstArrayElement = 0;
-                uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                uboWrite.descriptorCount = 1;
-                uboWrite.pBufferInfo = &bufferInfo;
-
-                // bind combined image sampler descriptors for texture arrays (single descriptor each)
-                const auto &tr = textureManager.getTriple(i);
-                VkDescriptorImageInfo imageInfo { tr.albedoSampler, tr.albedo.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-                VkWriteDescriptorSet samplerWrite{};
-                samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                samplerWrite.dstSet = ds;
-                samplerWrite.dstBinding = 1;
-                samplerWrite.dstArrayElement = 0;
-                samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                samplerWrite.descriptorCount = 1;
-                samplerWrite.pImageInfo = &imageInfo;
-
-                VkDescriptorImageInfo normalInfo { tr.normalSampler, tr.normal.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-                VkWriteDescriptorSet normalWrite{};
-                normalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                normalWrite.dstSet = ds;
-                normalWrite.dstBinding = 2;
-                normalWrite.dstArrayElement = 0;
-                normalWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                normalWrite.descriptorCount = 1;
-                normalWrite.pImageInfo = &normalInfo;
-
-                VkDescriptorImageInfo heightInfo { tr.heightSampler, tr.height.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-                VkWriteDescriptorSet heightWrite{};
-                heightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                heightWrite.dstSet = ds;
-                heightWrite.dstBinding = 3;
-                heightWrite.dstBinding = 3;
-                heightWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                heightWrite.descriptorCount = 1;
-                heightWrite.pImageInfo = &heightInfo;
-                
-                // Shadow map descriptor (binding 4)
-                VkDescriptorImageInfo shadowInfo { shadowMapper.getShadowMapSampler(), shadowMapper.getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
-                VkWriteDescriptorSet shadowWrite{};
-                shadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                shadowWrite.dstSet = ds;
-                shadowWrite.dstBinding = 4;
-                shadowWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                shadowWrite.descriptorCount = 1;
-                shadowWrite.pImageInfo = &shadowInfo;
-
-                // Material storage buffer descriptor (binding 5) - bind a single MaterialGPU per descriptor set
-                VkDescriptorBufferInfo materialBufInfo{ VK_NULL_HANDLE, 0, 0 };
-                VkWriteDescriptorSet materialWrite{};
-                if (materialCount > 0) {
-                    VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
-                    materialBufInfo.buffer = materialBuffer.buffer;
-                    materialBufInfo.offset = static_cast<VkDeviceSize>(i) * matElemSize; // point to this material
-                    materialBufInfo.range = matElemSize;
-                    materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    materialWrite.dstSet = ds;
-                    materialWrite.dstBinding = 5;
-                    materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    materialWrite.descriptorCount = 1;
-                    materialWrite.pBufferInfo = &materialBufInfo;
-                }
-
-                if (materialCount > 0) updateDescriptorSet(ds, { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite, materialWrite });
-                else updateDescriptorSet(ds, { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
-
-                // Create shadow descriptor set
-                VkDescriptorSet sds = createDescriptorSet(getDescriptorSetLayout());
+                // shadow descriptor set
+                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
                 shadowDescriptorSets[i] = sds;
-
-                // uniform buffer descriptor (binding 0) - use shadow uniform buffer
-                VkDescriptorBufferInfo shadowBufferInfo { shadowUniforms[i].buffer, 0 , sizeof(UniformObject) };
-                VkWriteDescriptorSet shadowUboWrite{};
-                shadowUboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                shadowUboWrite.dstSet = sds;
-                shadowUboWrite.dstBinding = 0;
-                shadowUboWrite.dstArrayElement = 0;
-                shadowUboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                shadowUboWrite.descriptorCount = 1;
-                shadowUboWrite.pBufferInfo = &shadowBufferInfo;
-
-                // Ensure sampler/texture writes target the shadow descriptor set as well
-                samplerWrite.dstSet = sds;
-                normalWrite.dstSet = sds;
-                heightWrite.dstSet = sds;
-                shadowWrite.dstSet = sds;
-
-                // Also bind material buffer to shadow descriptor set (binding 5)
-                if (materialCount > 0) {
-                    // adjust offset to this material index for shadow descriptor set as well
-                    VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
-                    materialBufInfo.offset = static_cast<VkDeviceSize>(i) * matElemSize;
-                    materialWrite.dstSet = sds;
-                    updateDescriptorSet(sds, { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite, materialWrite });
-                } else {
-                    updateDescriptorSet(sds, { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
-                }
             }
 
             // Create per-texture descriptor sets and uniform buffers for sphere instances (one per texture triple)
@@ -567,52 +473,12 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // create uniform buffer for sphere instance
                 sphereUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                 shadowSphereUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                VkDescriptorSet ds = createDescriptorSet(getDescriptorSetLayout());
-                sphereDescriptorSets[i] = ds;
-                VkDescriptorSet sds = createDescriptorSet(getDescriptorSetLayout());
-                shadowSphereDescriptorSets[i] = sds;
-
-                // reuse image samplers from texture triple i
                 const auto &tr = textureManager.getTriple(i);
-                VkDescriptorBufferInfo bufferInfo { sphereUniforms[i].buffer, 0 , sizeof(UniformObject) };
-                VkDescriptorImageInfo imageInfo { tr.albedoSampler, tr.albedo.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-                VkDescriptorImageInfo normalInfo { tr.normalSampler, tr.normal.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-                VkDescriptorImageInfo heightInfo { tr.heightSampler, tr.height.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-                VkDescriptorImageInfo shadowInfo { shadowMapper.getShadowMapSampler(), shadowMapper.getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
-
-                VkWriteDescriptorSet uboWrite{}; uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; uboWrite.dstSet = ds; uboWrite.dstBinding = 0; uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; uboWrite.descriptorCount = 1; uboWrite.pBufferInfo = &bufferInfo;
-                VkWriteDescriptorSet samplerWrite{}; samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; samplerWrite.dstSet = ds; samplerWrite.dstBinding = 1; samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; samplerWrite.descriptorCount = 1; samplerWrite.pImageInfo = &imageInfo;
-                VkWriteDescriptorSet normalWrite{}; normalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; normalWrite.dstSet = ds; normalWrite.dstBinding = 2; normalWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; normalWrite.descriptorCount = 1; normalWrite.pImageInfo = &normalInfo;
-                VkWriteDescriptorSet heightWrite{}; heightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; heightWrite.dstSet = ds; heightWrite.dstBinding = 3; heightWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; heightWrite.descriptorCount = 1; heightWrite.pImageInfo = &heightInfo;
-                VkWriteDescriptorSet shadowWrite{}; shadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; shadowWrite.dstSet = ds; shadowWrite.dstBinding = 4; shadowWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; shadowWrite.descriptorCount = 1; shadowWrite.pImageInfo = &shadowInfo;
-                // If material buffer exists bind it as storage buffer (binding 5)
-                if (materialCount > 0) {
-                    VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
-                    VkDescriptorBufferInfo materialBufInfo{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * matElemSize, matElemSize };
-                    VkWriteDescriptorSet materialWrite{}; materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; materialWrite.dstSet = ds; materialWrite.dstBinding = 5; materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; materialWrite.descriptorCount = 1; materialWrite.pBufferInfo = &materialBufInfo;
-                    updateDescriptorSet(ds, { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite, materialWrite });
-                } else {
-                    updateDescriptorSet(ds, { uboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
-                }
-
-                // Create shadow descriptor set for spheres
-                VkDescriptorBufferInfo shadowBufferInfo { shadowSphereUniforms[i].buffer, 0 , sizeof(UniformObject) };
-                VkWriteDescriptorSet shadowUboWrite = uboWrite;
-                shadowUboWrite.dstSet = sds;
-                shadowUboWrite.pBufferInfo = &shadowBufferInfo;
-                // Make sure the image sampler writes also target the shadow descriptor set
-                samplerWrite.dstSet = sds;
-                normalWrite.dstSet = sds;
-                heightWrite.dstSet = sds;
-                shadowWrite.dstSet = sds;
-                if (materialCount > 0) {
-                    VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
-                    VkDescriptorBufferInfo materialBufInfo2{ materialBuffer.buffer, static_cast<VkDeviceSize>(i) * matElemSize, matElemSize };
-                    VkWriteDescriptorSet materialWrite2{}; materialWrite2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; materialWrite2.dstSet = sds; materialWrite2.dstBinding = 5; materialWrite2.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; materialWrite2.descriptorCount = 1; materialWrite2.pBufferInfo = &materialBufInfo2;
-                    updateDescriptorSet(sds, { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite, materialWrite2 });
-                } else {
-                    updateDescriptorSet(sds, { shadowUboWrite, samplerWrite, normalWrite, heightWrite, shadowWrite });
-                }
+                VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
+                VkDescriptorSet ds = dsBuilder.createSphereDescriptorSet(tr, sphereUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                sphereDescriptorSets[i] = ds;
+                VkDescriptorSet sds = dsBuilder.createShadowSphereDescriptorSet(tr, shadowSphereUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                shadowSphereDescriptorSets[i] = sds;
             }
 
         
