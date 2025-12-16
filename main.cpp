@@ -156,6 +156,9 @@ class MyApp : public VulkanApp, public IEventHandler {
         Buffer materialBuffer;
         size_t materialCount = 0;
         VkDeviceSize materialBufferSize = 0;
+        // Small UBO for sky parameters (shared across sets)
+        Buffer skyBuffer;
+        VkDeviceSize skyBufferSize = 0;
         
         // store projection and view for per-cube MVP computation in draw()
         glm::mat4 projMat = glm::mat4(1.0f);
@@ -612,6 +615,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                 }
             }
 
+        
+
             // build cube mesh and geometry (per-face tex indices all zero by default)
             auto cube = std::make_unique<CubeModel>();
             cube->build({});
@@ -708,6 +713,80 @@ class MyApp : public VulkanApp, public IEventHandler {
                 uboStatic.nightZenith = glm::vec4(skyWidget->getNightZenith(), 1.0f);
                 uboStatic.nightParams = glm::vec4(skyWidget->getNightIntensity(), skyWidget->getStarIntensity(), 0.0f, 0.0f);
             }
+
+            // Create a small uniform buffer for sky parameters and bind it into all descriptor sets (binding 6)
+            struct SkyGPU { glm::vec4 skyHorizon; glm::vec4 skyZenith; glm::vec4 skyParams; glm::vec4 nightHorizon; glm::vec4 nightZenith; glm::vec4 nightParams; };
+            VkDeviceSize sbSize = sizeof(SkyGPU);
+            if (skyBuffer.buffer != VK_NULL_HANDLE) {
+                vkDestroyBuffer(getDevice(), skyBuffer.buffer, nullptr);
+                skyBuffer.buffer = VK_NULL_HANDLE;
+            }
+            if (skyBuffer.memory != VK_NULL_HANDLE) {
+                vkFreeMemory(getDevice(), skyBuffer.memory, nullptr);
+                skyBuffer.memory = VK_NULL_HANDLE;
+            }
+            skyBuffer = createBuffer(sbSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            skyBufferSize = sbSize;
+            SkyGPU skyData;
+            skyData.skyHorizon = uboStatic.skyHorizon;
+            skyData.skyZenith = uboStatic.skyZenith;
+            skyData.skyParams = uboStatic.skyParams;
+            skyData.nightHorizon = uboStatic.nightHorizon;
+            skyData.nightZenith = uboStatic.nightZenith;
+            skyData.nightParams = uboStatic.nightParams;
+            void* skyMap = nullptr;
+            if (vkMapMemory(getDevice(), skyBuffer.memory, 0, sbSize, 0, &skyMap) == VK_SUCCESS) {
+                memcpy(skyMap, &skyData, static_cast<size_t>(sbSize));
+                vkUnmapMemory(getDevice(), skyBuffer.memory);
+            }
+
+            // Bind sky buffer into all existing descriptor sets (binding 6)
+            if (skyBuffer.buffer != VK_NULL_HANDLE && !descriptorSets.empty()) {
+                for (size_t i = 0; i < descriptorSets.size(); ++i) {
+                    VkDescriptorBufferInfo skyBufInfo{ skyBuffer.buffer, 0, sbSize };
+                    VkWriteDescriptorSet skyWrite{};
+                    skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    skyWrite.dstSet = descriptorSets[i];
+                    skyWrite.dstBinding = 6;
+                    skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                    skyWrite.descriptorCount = 1;
+                    skyWrite.pBufferInfo = &skyBufInfo;
+                    updateDescriptorSet(descriptorSets[i], { skyWrite });
+                }
+                for (size_t i = 0; i < shadowDescriptorSets.size(); ++i) {
+                    VkDescriptorBufferInfo skyBufInfo{ skyBuffer.buffer, 0, sbSize };
+                    VkWriteDescriptorSet skyWrite{};
+                    skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    skyWrite.dstSet = shadowDescriptorSets[i];
+                    skyWrite.dstBinding = 6;
+                    skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                    skyWrite.descriptorCount = 1;
+                    skyWrite.pBufferInfo = &skyBufInfo;
+                    updateDescriptorSet(shadowDescriptorSets[i], { skyWrite });
+                }
+                for (size_t i = 0; i < sphereDescriptorSets.size(); ++i) {
+                    VkDescriptorBufferInfo skyBufInfo{ skyBuffer.buffer, 0, sbSize };
+                    VkWriteDescriptorSet skyWrite{};
+                    skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    skyWrite.dstSet = sphereDescriptorSets[i];
+                    skyWrite.dstBinding = 6;
+                    skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                    skyWrite.descriptorCount = 1;
+                    skyWrite.pBufferInfo = &skyBufInfo;
+                    updateDescriptorSet(sphereDescriptorSets[i], { skyWrite });
+                }
+                for (size_t i = 0; i < shadowSphereDescriptorSets.size(); ++i) {
+                    VkDescriptorBufferInfo skyBufInfo{ skyBuffer.buffer, 0, sbSize };
+                    VkWriteDescriptorSet skyWrite{};
+                    skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    skyWrite.dstSet = shadowSphereDescriptorSets[i];
+                    skyWrite.dstBinding = 6;
+                    skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                    skyWrite.descriptorCount = 1;
+                    skyWrite.pBufferInfo = &skyBufInfo;
+                    updateDescriptorSet(shadowSphereDescriptorSets[i], { skyWrite });
+                }
+            }
             
             // Create vegetation atlas editor widget
             auto vegAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureManager, &vegetationAtlasManager);
@@ -740,6 +819,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                 vkDestroyBuffer(getDevice(), materialBuffer.buffer, nullptr);
                 materialBuffer.buffer = VK_NULL_HANDLE;
             }
+
+        
             if (materialBuffer.memory != VK_NULL_HANDLE && materialBuffer.buffer == VK_NULL_HANDLE) {
                 vkFreeMemory(getDevice(), materialBuffer.memory, nullptr);
                 materialBuffer.memory = VK_NULL_HANDLE;
@@ -817,6 +898,34 @@ class MyApp : public VulkanApp, public IEventHandler {
                     materialWrite.pBufferInfo = &materialBufInfo;
                     updateDescriptorSet(shadowSphereDescriptorSets[i], { materialWrite });
                 }
+            }
+        }
+
+        // Refresh the shared sky uniform buffer from the SkyWidget (call per-frame when UI may change)
+        void updateSky() {
+            if (skyBuffer.buffer == VK_NULL_HANDLE) return;
+            struct SkyGPU { glm::vec4 skyHorizon; glm::vec4 skyZenith; glm::vec4 skyParams; glm::vec4 nightHorizon; glm::vec4 nightZenith; glm::vec4 nightParams; };
+            SkyGPU skyData;
+            if (skyWidget) {
+                skyData.skyHorizon = glm::vec4(skyWidget->getHorizonColor(), 1.0f);
+                skyData.skyZenith = glm::vec4(skyWidget->getZenithColor(), 1.0f);
+                skyData.skyParams = glm::vec4(skyWidget->getWarmth(), skyWidget->getExponent(), skyWidget->getSunFlare(), 0.0f);
+                skyData.nightHorizon = glm::vec4(skyWidget->getNightHorizon(), 1.0f);
+                skyData.nightZenith = glm::vec4(skyWidget->getNightZenith(), 1.0f);
+                skyData.nightParams = glm::vec4(skyWidget->getNightIntensity(), skyWidget->getStarIntensity(), 0.0f, 0.0f);
+            } else {
+                skyData.skyHorizon = uboStatic.skyHorizon;
+                skyData.skyZenith = uboStatic.skyZenith;
+                skyData.skyParams = uboStatic.skyParams;
+                skyData.nightHorizon = uboStatic.nightHorizon;
+                skyData.nightZenith = uboStatic.nightZenith;
+                skyData.nightParams = uboStatic.nightParams;
+            }
+            void* mapped = nullptr;
+            VkDeviceSize sbSize = skyBufferSize ? skyBufferSize : sizeof(SkyGPU);
+            if (vkMapMemory(getDevice(), skyBuffer.memory, 0, sbSize, 0, &mapped) == VK_SUCCESS) {
+                memcpy(mapped, &skyData, static_cast<size_t>(sbSize));
+                vkUnmapMemory(getDevice(), skyBuffer.memory);
             }
         }
 
@@ -1117,6 +1226,8 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // --- Render sky sphere first: large sphere centered at camera ---
             if (skyPipeline != VK_NULL_HANDLE && meshes.size() > 2 && meshVBOs.size() > 2 && !sphereDescriptorSets.empty() && !sphereUniforms.empty()) {
+                // Refresh sky UBO from widget each frame so UI changes appear immediately
+                updateSky();
                 // update sky uniform (centered at camera)
                 UniformObject skyUbo = uboStatic;
                 glm::vec3 camPos = glm::vec3(uboStatic.viewPos);
@@ -1259,6 +1370,9 @@ class MyApp : public VulkanApp, public IEventHandler {
             // material buffer cleanup
             if (materialBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), materialBuffer.buffer, nullptr);
             if (materialBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), materialBuffer.memory, nullptr);
+            // sky buffer cleanup
+            if (skyBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), skyBuffer.buffer, nullptr);
+            if (skyBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), skyBuffer.memory, nullptr);
         }
 
 };

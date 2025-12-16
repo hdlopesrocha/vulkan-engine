@@ -15,13 +15,7 @@ layout(binding = 0) uniform UBO {
     mat4 lightSpaceMatrix; // for shadow mapping
     vec4 shadowEffects; // x/y/z = unused, w=global shadows enabled (1.0 = on)
     vec4 debugParams; // x=debugMode (0=normal,1=fragment normal,2=normal map (world),3=uv,4=tangent,5=bitangent,6=geometry normal (world),7=albedo,8=normal texture,9=height/bump,10=lighting (N·L,shadow),11=normal from derivatives,12=light vector (rgb),13=N·L grayscale,14=shadow diagnostics)
-        // Sky parameters (configured by SkyWidget)
-        vec4 skyHorizon; // rgb = horizon color, a = unused
-        vec4 skyZenith;  // rgb = zenith color, a = unused
-        vec4 skyParams;  // x = warmth, y = exponent, z = sunFlare, w = unused
-        vec4 nightHorizon; // rgb = night horizon color
-        vec4 nightZenith;  // rgb = night zenith color
-        vec4 nightParams;  // x = night intensity (0..1), y = starIntensity, z/w unused
+        // Sky parameters moved to a dedicated Sky UBO (see below)
         vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
 } ubo;
 
@@ -37,3 +31,14 @@ struct MaterialGPU {
 layout(std430, binding = 5) readonly buffer Materials {
     MaterialGPU materials[];
 };
+
+// Dedicated UBO for skysphere parameters. Bound separately so sky shaders
+// can read a small, focused uniform block instead of the large scene UBO.
+layout(binding = 6) uniform SkyUBO {
+    vec4 skyHorizon; // rgb = horizon color, a = unused
+    vec4 skyZenith;  // rgb = zenith color, a = unused
+    vec4 skyParams;  // x = warmth, y = exponent, z = sunFlare, w = unused
+    vec4 nightHorizon; // rgb = night horizon color
+    vec4 nightZenith;  // rgb = night zenith color
+    vec4 nightParams;  // x = night intensity (0..1), y = starIntensity, z/w unused
+} sky;

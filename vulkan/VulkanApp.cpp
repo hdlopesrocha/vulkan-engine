@@ -1031,7 +1031,15 @@ void VulkanApp::createDescriptorSetLayout() {
     materialBinding.pImmutableSamplers = nullptr;
     materialBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 6> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding, shadowSamplerBinding, materialBinding};
+    // binding 6: dedicated Sky UBO (small uniform block used by sky shaders)
+    VkDescriptorSetLayoutBinding skyBinding{};
+    skyBinding.binding = 6;
+    skyBinding.descriptorCount = 1;
+    skyBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    skyBinding.pImmutableSamplers = nullptr;
+    skyBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 7> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding, shadowSamplerBinding, materialBinding, skyBinding};
 
     // If we later add a normal map sampler (binding 2), extend bindings dynamically when required by the app.
 
@@ -1131,7 +1139,9 @@ void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
     // Reserve descriptors: uniform buffers, combined image samplers, and storage buffers for materials
     std::array<VkDescriptorPoolSize, 3> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = uboCount;
+    // Each descriptor set will reference the per-set scene UBO (binding 0)
+    // and the shared Sky UBO (binding 6). Reserve two uniform descriptors per set.
+    poolSizes[0].descriptorCount = uboCount * 2;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = samplerCount;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
