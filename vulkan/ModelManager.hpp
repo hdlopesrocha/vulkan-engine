@@ -24,7 +24,7 @@ public:
     void clear();
     
     // Get all instances for rendering
-    const std::vector<ModelInstance>& getInstances() const { return instances; }
+    std::vector<ModelInstance>& getInstances() { return instances; }
     
     // Get number of instances
     size_t getInstanceCount() const { return instances.size(); }

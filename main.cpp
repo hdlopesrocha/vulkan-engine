@@ -95,6 +95,11 @@ class MyApp : public VulkanApp, public IEventHandler {
     // Model manager to handle all renderable objects
     ModelManager modelManager;
     
+    // Ground plane model
+    std::shared_ptr<Model3D> groundPlane;
+    
+    // Track previous texture index for updating ground plane
+    int previousTextureIndex = 0;
     // Store meshes (owned by app but not direct attributes)
     std::vector<std::unique_ptr<Mesh3D>> meshes;
     // Store simple model wrappers (mesh pointer + VBO reference + model matrix)
@@ -272,6 +277,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 m.mappingMode = false; // none
             }
 
+            // Create global texture arrays
+            textureManager.createGlobalArrays();
+
             // Initialize vegetation texture manager for billboard vegetation
             vegetationTextureManager.init(this);
 
@@ -295,6 +303,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 auto &vm = vegetationTextureManager.getMaterial(vi);
                     vm.mappingMode = false;
             }
+
+            // Create global texture arrays for vegetation
+            vegetationTextureManager.createGlobalArrays();
 
             // Auto-detect tiles from vegetation opacity maps
             std::cout << "Auto-detecting vegetation tiles from opacity maps..." << std::endl;
@@ -850,7 +861,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
                 
                 // Render all instances to shadow map
-                for (const auto& instance : modelManager.getInstances()) {
+                for (auto& instance : modelManager.getInstances()) {
                     // Update uniform buffer for shadow pass
                     glm::mat4 shadowMvp = uboStatic.lightSpaceMatrix * instance.transform;
                     UniformObject shadowUbo = uboStatic;
@@ -916,8 +927,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // Static material properties are read from the GPU-side material buffer (SSBO).
                 // Determine material index from the mesh vertex `texIndex` and use it for per-instance overrides.
                 const MaterialProperties* instMat = nullptr;
+                int idx = 0;
                 if (instance.model && !instance.model->getVertices().empty()) {
-                    int idx = instance.model->getVertices()[0].texIndex;
+                    idx = instance.model->getVertices()[0].texIndex;
                     if (idx >= 0 && static_cast<size_t>(idx) < textureManager.count()) {
                         instMat = &textureManager.getMaterial(static_cast<size_t>(idx));
                     }

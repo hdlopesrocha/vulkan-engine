@@ -9,7 +9,7 @@ layout(location = 0) in vec3 pc_inFragColor[];
 layout(location = 1) in vec2 pc_inUV[];
 layout(location = 2) in vec3 pc_inNormal[];
 layout(location = 4) in vec3 pc_inPosWorld[];
-layout(location = 5) in float pc_inTexIndex[];
+layout(location = 5) in int pc_inTexIndex[];
 layout(location = 9) in vec4 pc_inTangent[];
 layout(location = 7) in vec3 pc_inLocalPos[];
 layout(location = 8) in vec3 pc_inLocalNormal[];
@@ -18,7 +18,8 @@ layout(location = 0) out vec3 tc_fragColor[];
 layout(location = 1) out vec2 tc_fragUV[];
 layout(location = 2) out vec3 tc_fragNormal[];
 layout(location = 4) out vec3 tc_fragPosWorld[];
-layout(location = 5) flat out int tc_fragTexIndex[];
+layout(location = 5) flat out ivec3 tc_fragTexIndex[];
+layout(location = 11) out vec3 tc_fragTexWeights[];
 layout(location = 7) out vec3 tc_fragLocalPos[];
 layout(location = 8) out vec3 tc_fragLocalNormal[];
 layout(location = 9) out vec4 tc_fragTangent[];
@@ -30,14 +31,26 @@ void main() {
     tc_fragNormal[gl_InvocationID] = pc_inNormal[gl_InvocationID];
     tc_fragNormal[gl_InvocationID] = pc_inNormal[gl_InvocationID];
     tc_fragPosWorld[gl_InvocationID] = pc_inPosWorld[gl_InvocationID];
-    tc_fragTexIndex[gl_InvocationID] = int(pc_inTexIndex[gl_InvocationID] + 0.5);
+    // store texIndex in .x so each per-vertex array element corresponds to the invocation
+    // Provide per-corner barycentric weight basis vectors so TES can interpolate consistently
+    tc_fragTexIndex[gl_InvocationID] = ivec3(pc_inTexIndex[0], pc_inTexIndex[1], pc_inTexIndex[2]);
+
+    if (gl_InvocationID == 0) {
+        tc_fragTexWeights[gl_InvocationID] = vec3(1.0, 0.0, 0.0);
+    }
+    else if (gl_InvocationID == 1) {
+        tc_fragTexWeights[gl_InvocationID] = vec3(0.0, 1.0, 0.0);
+    }
+    else if (gl_InvocationID == 2) { 
+        tc_fragTexWeights[gl_InvocationID] = vec3(0.0, 0.0, 1.0);
+    }
     tc_fragLocalPos[gl_InvocationID] = pc_inLocalPos[gl_InvocationID];
     tc_fragLocalNormal[gl_InvocationID] = pc_inLocalNormal[gl_InvocationID];
     tc_fragTangent[gl_InvocationID] = pc_inTangent[gl_InvocationID];
     // local tangent removed
 
     // Compute tessellation level on GPU based on camera distance (adaptive)
-    int patchTexIndex = int(pc_inTexIndex[0] + 0.5);
+    int patchTexIndex = pc_inTexIndex[0];
     // mappingParams.x == mappingEnabled (0/1). mappingParams.y stores a per-material base/max tess level.
     bool mappingEnabled = (materials[patchTexIndex].mappingParams.x > 0.5);
     float materialLevel = materials[patchTexIndex].mappingParams.y;

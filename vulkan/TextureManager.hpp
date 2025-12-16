@@ -11,7 +11,8 @@
 class TextureManager {
 public:
     struct Triple {
-        TextureImage albedo;
+        int layerIndex = -1; // Index into the global texture arrays
+        TextureImage albedo; // Kept for ImGui display
         VkSampler albedoSampler = VK_NULL_HANDLE;
         TextureImage normal;
         VkSampler normalSampler = VK_NULL_HANDLE;
@@ -40,12 +41,23 @@ public:
                      const TextureImage& normal, VkSampler normalSampler,
                      const TextureImage& height, VkSampler heightSampler);
 
+    // Create global texture arrays from collected filenames
+    void createGlobalArrays();
+
     // Return an ImTextureID for ImGui rendering of the requested map (0=albedo,1=normal,2=height)
     ImTextureID getImTexture(size_t idx, int map);
 
     // Access material properties
     MaterialProperties& getMaterial(size_t idx);
     const MaterialProperties& getMaterial(size_t idx) const;
+
+    // Access global arrays
+    const TextureImage& getGlobalAlbedoArray() const { return globalAlbedoArray; }
+    VkSampler getGlobalAlbedoSampler() const { return globalAlbedoSampler; }
+    const TextureImage& getGlobalNormalArray() const { return globalNormalArray; }
+    VkSampler getGlobalNormalSampler() const { return globalNormalSampler; }
+    const TextureImage& getGlobalHeightArray() const { return globalHeightArray; }
+    VkSampler getGlobalHeightSampler() const { return globalHeightSampler; }
 
     // number of loaded triples
     size_t count() const;
@@ -59,5 +71,18 @@ public:
 private:
     VulkanApp* app = nullptr;
     std::vector<Triple> triples;
+
+    // Collected filenames for global arrays
+    std::vector<std::string> albedoFiles;
+    std::vector<std::string> normalFiles;
+    std::vector<std::string> heightFiles;
+
+    // Global texture arrays
+    TextureImage globalAlbedoArray;
+    VkSampler globalAlbedoSampler = VK_NULL_HANDLE;
+    TextureImage globalNormalArray;
+    VkSampler globalNormalSampler = VK_NULL_HANDLE;
+    TextureImage globalHeightArray;
+    VkSampler globalHeightSampler = VK_NULL_HANDLE;
 };
 
