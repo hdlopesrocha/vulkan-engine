@@ -68,8 +68,6 @@ class MyApp : public VulkanApp, public IEventHandler {
     // GPU buffers for the built meshes (parallel to `meshes`)
     std::vector<VertexBufferObject> meshVBOs;
     VkPipeline graphicsPipelineWire = VK_NULL_HANDLE;
-    VkPipeline graphicsPipelineTess = VK_NULL_HANDLE;
-    VkPipeline graphicsPipelineTessWire = VK_NULL_HANDLE;
     std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<SkySphere> skySphere;
     // texture manager handles albedo/normal/height triples
@@ -172,46 +170,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                     createShaderModule(FileReader::readFile("shaders/main.frag.spv")), 
                     VK_SHADER_STAGE_FRAGMENT_BIT
                 );
-
-                graphicsPipeline = createGraphicsPipeline(
-                    {
-                        vertexShader.info, 
-                        fragmentShader.info
-                    },
-                    VkVertexInputBindingDescription { 
-                        0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
-                    },
-                    {
-                        VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-                        VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-                        VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
-                        VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                        VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
-                        VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
-                    }
-                );
-
-                // Create wireframe variant (if device supports it)
-                graphicsPipelineWire = createGraphicsPipeline(
-                    {
-                        vertexShader.info,
-                        fragmentShader.info
-                    },
-                    VkVertexInputBindingDescription { 
-                        0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
-                    },
-                    {
-                        VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-                        VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-                        VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
-                        VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                        VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
-                        VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
-                    },
-                    VK_POLYGON_MODE_LINE
-                );
-
-                // create a tessellated pipeline as well (vertex + tesc + tese + fragment)
+                // Load tessellation shaders so pipeline always contains TCS/TES stages.
                 ShaderStage tescShader = ShaderStage(
                     createShaderModule(FileReader::readFile("shaders/main.tesc.spv")),
                     VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
@@ -221,8 +180,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                     VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
                 );
 
-                // Build tessellated pipeline
-                graphicsPipelineTess = createGraphicsPipeline(
+                graphicsPipeline = createGraphicsPipeline(
                     {
                         vertexShader.info,
                         tescShader.info,
@@ -242,8 +200,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                     }
                 );
 
-                // Build tessellated wireframe pipeline
-                graphicsPipelineTessWire = createGraphicsPipeline(
+                // Create wireframe variant (if device supports it), also includes tessellation stages
+                graphicsPipelineWire = createGraphicsPipeline(
                     {
                         vertexShader.info,
                         tescShader.info,
@@ -254,21 +212,21 @@ class MyApp : public VulkanApp, public IEventHandler {
                         0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
                     },
                     {
-                            VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-                            VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-                            VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
-                            VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                            VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
-                            VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
+                        VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+                        VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
+                        VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
+                        VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+                        VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
+                        VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
                     },
                     VK_POLYGON_MODE_LINE
                 );
 
-                // Destroy tess shader modules after pipeline creation
-                vkDestroyShaderModule(getDevice(), tescShader.info.module, nullptr);
-                vkDestroyShaderModule(getDevice(), teseShader.info.module, nullptr);
+                // Tessellation pipeline removed; tessellation is controlled inside the shader (main.tesc)
 
-                // Destroy vertex/fragment modules used to create the pipelines
+                // Destroy tessellation shader modules and vertex/fragment modules after pipeline creation
+                vkDestroyShaderModule(getDevice(), teseShader.info.module, nullptr);
+                vkDestroyShaderModule(getDevice(), tescShader.info.module, nullptr);
                 vkDestroyShaderModule(getDevice(), fragmentShader.info.module, nullptr);
                 vkDestroyShaderModule(getDevice(), vertexShader.info.module, nullptr);
 
@@ -786,9 +744,6 @@ class MyApp : public VulkanApp, public IEventHandler {
             // so both lighting and shadow projection use the same convention.
             glm::vec3 lightDir = glm::normalize(lightDirection);
             uboStatic.lightDir = glm::vec4(lightDir, 0.0f);
-            // Debug: print UI lightDirection and sent UBO lightDir
-            //std::cout << "[UBO] UI lightDirection=(" << lightDirection.x << ", " << lightDirection.y << ", " << lightDirection.z << ")\n";
-            //std::cout << "[UBO] sent ubo.lightDir=(" << uboStatic.lightDir.x << ", " << uboStatic.lightDir.y << ", " << uboStatic.lightDir.z << ")\n";
             uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
             // Tessellation parameters from UI: near/far distances and min/max tess levels
             if (settingsWidget) {
@@ -890,10 +845,6 @@ class MyApp : public VulkanApp, public IEventHandler {
                 modelManager.addInstance(m->mesh, vbo, transform, ds, ub, sds, sub);
             }
             
-            // Add spheres above each cube instance (if sphere mesh is present)
-
-            // Tessellation is now computed on GPU; per-material base level is read from MaterialGPU.mappingParams.y
-
             // First pass: Render shadow map (skip if shadows globally disabled)
             if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
                 shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
@@ -965,12 +916,11 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // Static material properties are read from the GPU-side material buffer (SSBO).
                 // Determine material index from the mesh vertex `texIndex` and use it for per-instance overrides.
                 const MaterialProperties* instMat = nullptr;
-                int instMatIdx = 0;
                 if (instance.model && !instance.model->getVertices().empty()) {
-                    instMatIdx = instance.model->getVertices()[0].texIndex;
-                }
-                if (instMatIdx >= 0 && static_cast<size_t>(instMatIdx) < textureManager.count()) {
-                    instMat = &textureManager.getMaterial(static_cast<size_t>(instMatIdx));
+                    int idx = instance.model->getVertices()[0].texIndex;
+                    if (idx >= 0 && static_cast<size_t>(idx) < textureManager.count()) {
+                        instMat = &textureManager.getMaterial(static_cast<size_t>(idx));
+                    }
                 }
                 // Per-material tess level is provided by the Materials SSBO; no per-instance override here.
                 // (temporary debug logging removed)
@@ -995,16 +945,10 @@ class MyApp : public VulkanApp, public IEventHandler {
                 updateUniformBuffer(*instance.uniformBuffer, &ubo, sizeof(UniformObject));
                 
                 // Bind descriptor set and draw
-                // Choose pipeline based on per-material mapping enabled flag (false=none, true=tessellation+bump)
-                bool mappingEnabled = instMat ? instMat->mappingMode : false;
+                // Use a single pipeline (tessellation is enabled/disabled in the shader using mappingMode)
                 bool wire = settingsWidget ? settingsWidget->getWireframeEnabled() : false;
-                if (mappingEnabled && graphicsPipelineTess != VK_NULL_HANDLE) {
-                    if (wire && graphicsPipelineTessWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineTessWire);
-                    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineTess);
-                } else {
-                    if (wire && graphicsPipelineWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineWire);
-                    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-                }
+                if (wire && graphicsPipelineWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineWire);
+                else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                        getPipelineLayout(), 0, 1, &instance.descriptorSet, 0, nullptr);
@@ -1032,8 +976,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipeline, nullptr);
             if (graphicsPipelineWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineWire, nullptr);
-            if (graphicsPipelineTess != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineTess, nullptr);
-            if (graphicsPipelineTessWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineTessWire, nullptr);
+            // Tessellation pipelines removed earlier; nothing to destroy here.
             if (skyRenderer) skyRenderer->cleanup();
             // texture cleanup via manager
             textureManager.destroyAll();
