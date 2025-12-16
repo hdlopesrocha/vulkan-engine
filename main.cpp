@@ -900,40 +900,17 @@ class MyApp : public VulkanApp, public IEventHandler {
                 
                 // Render all instances to shadow map
                 for (const auto& instance : modelManager.getInstances()) {
-                // Build material flags for shadow pass (fetch material from mesh vertex `texIndex`)
-                glm::vec4 materialFlags(0.0f, 0.0f, 0.0f, 0.0f);
-                const MaterialProperties* instMat = nullptr;
-                int instMatIdx = 0;
-                if (instance.model && !instance.model->getVertices().empty()) {
-                    instMatIdx = instance.model->getVertices()[0].texIndex;
-                }
-                if (instMatIdx >= 0 && static_cast<size_t>(instMatIdx) < textureManager.count()) {
-                    instMat = &textureManager.getMaterial(static_cast<size_t>(instMatIdx));
-                }
-
-                // Update uniform buffer for shadow pass
-                glm::mat4 shadowMvp = uboStatic.lightSpaceMatrix * instance.transform;
-                UniformObject shadowUbo = uboStatic;
-                shadowUbo.model = instance.transform;
-                shadowUbo.mvp = shadowMvp;
-                shadowUbo.materialFlags = materialFlags;
-                // Set mapping mode for tessellation displacement in shadow pass
-                shadowUbo.mappingParams = glm::vec4(
-                    instMat ? (instMat->mappingMode ? 1.0f : 0.0f) : 0.0f,
-                    instMat ? instMat->tessLevel : 1.0f,
-                    instMat ? (instMat->invertHeight ? 1.0f : 0.0f) : 0.0f,
-                    instMat ? instMat->tessHeightScale : 0.1f
-                );
-                shadowUbo.passParams = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 1.0
-                // Debug: log instance translation to verify model matrix is set
-                {
-                    glm::vec4 t = instance.transform[3];
-                    printf("[DBG][shadow] inst pos = %f %f %f (matIdx=%d)\n", t.x, t.y, t.z, instMatIdx);
-                    // Log descriptor set and bound uniform buffer handle for debugging
-                    printf("[DBG][shadow]  descSet=%p uboBuf=%p\n", (void*)instance.shadowDescriptorSet, (void*)(instance.shadowUniformBuffer ? instance.shadowUniformBuffer->buffer : VK_NULL_HANDLE));
-                }
-                updateUniformBuffer(*instance.shadowUniformBuffer, &shadowUbo, sizeof(UniformObject));
-                
+                    // Update uniform buffer for shadow pass
+                    glm::mat4 shadowMvp = uboStatic.lightSpaceMatrix * instance.transform;
+                    UniformObject shadowUbo = uboStatic;
+                    shadowUbo.model = instance.transform;
+                    shadowUbo.mvp = shadowMvp;
+                    shadowUbo.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+                    // Per-material mapping/mappingParams are read from the Materials SSBO in shaders.
+                    shadowUbo.passParams = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 1.0
+    
+                    updateUniformBuffer(*instance.shadowUniformBuffer, &shadowUbo, sizeof(UniformObject));
+                    
                     shadowMapper.renderObject(commandBuffer, instance.transform, instance.vbo,
                                             instance.shadowDescriptorSet);
                 }
@@ -995,7 +972,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (instMatIdx >= 0 && static_cast<size_t>(instMatIdx) < textureManager.count()) {
                     instMat = &textureManager.getMaterial(static_cast<size_t>(instMatIdx));
                 }
-                ubo.mappingParams.y = instMat ? instMat->tessLevel : 1.0f;
+                // Per-material tess level is provided by the Materials SSBO; no per-instance override here.
                 // (temporary debug logging removed)
                 // Global normal mapping toggle (separate from tessellation/mappingMode)
                 if (settingsWidget) {
@@ -1015,13 +992,6 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (settingsWidget) ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
                 else ubo.debugParams = glm::vec4(0.0f);
                 ubo.passParams = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 0.0
-                // Debug: log instance translation to verify model matrix is set
-                {
-                    glm::vec4 t = instance.transform[3];
-                    printf("[DBG][main]   inst pos = %f %f %f (matIdx=%d)\n", t.x, t.y, t.z, instMatIdx);
-                    // Log descriptor set and bound uniform buffer handle for debugging
-                    printf("[DBG][main]    descSet=%p uboBuf=%p\n", (void*)instance.descriptorSet, (void*)(instance.uniformBuffer ? instance.uniformBuffer->buffer : VK_NULL_HANDLE));
-                }
                 updateUniformBuffer(*instance.uniformBuffer, &ubo, sizeof(UniformObject));
                 
                 // Bind descriptor set and draw

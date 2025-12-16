@@ -11,9 +11,7 @@ struct UniformObject {
     glm::vec4 lightColor; // rgb = color, w = intensity
     // Material flags
     glm::vec4 materialFlags; // x=unused, y=unused, z=ambient, w=unused
-    glm::vec4 mappingParams; // x=mappingEnabled (0=off,1=on) toggles tessellation + bump mapping, y/z/w unused
-    glm::vec4 specularParams; // x=specularStrength, y=shininess, z=unused, w=unused
-    glm::vec4 triplanarParams; // x=scaleU, y=scaleV, z=enabled(1.0), w=unused
+    // Per-material properties are read from the GPU-side Materials SSBO; keep only per-pass flags here.
     glm::mat4 lightSpaceMatrix; // for shadow mapping
     glm::vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
     glm::vec4 debugParams; // x=debugMode (0=normal,1=normalVec,2=normalMap,3=uv,4=tangent,5=bitangent)
@@ -24,9 +22,7 @@ struct UniformObject {
 
     void setMaterial(const MaterialProperties& mat) {
         materialFlags = glm::vec4(0.0f, 0.0f, mat.ambientFactor, 0.0f);
-        mappingParams = glm::vec4(mat.mappingMode ? 1.0f : 0.0f, mat.tessLevel, mat.invertHeight ? 1.0f : 0.0f, mat.tessHeightScale);
-        specularParams = glm::vec4(mat.specularStrength, mat.shininess, 0.0f, 0.0f);
-        triplanarParams = glm::vec4(mat.triplanarScaleU, mat.triplanarScaleV, mat.triplanar ? 1.0f : 0.0f, 0.0f);
+        // Per-material values are provided by the Materials SSBO; do not duplicate here.
     }
 };
 

@@ -48,16 +48,16 @@ void main() {
     // Apply displacement
     vec3 displacedLocalPos = localPos;
     float disp = 0.0;
-    if (materials[0].mappingParams.x > 0.5) {
+    if (materials[texIndex].mappingParams.x > 0.5) {
         // Use triplanar height sampling if enabled
         vec3 worldPosForSampling = (ubo.model * vec4(localPos, 1.0)).xyz;
         float height = 0.0;
-        if (materials[0].triplanarParams.z > 0.5) {
+        if (materials[texIndex].triplanarParams.z > 0.5) {
             height = sampleHeightTriplanar(worldPosForSampling, localNormal, texIndex);
         } else {
             height = sampleHeight(uv, texIndex);
         }
-        float heightScale = materials[0].mappingParams.w;
+        float heightScale = materials[texIndex].mappingParams.w;
         // Displace outward along surface normal based on sampled height
         disp = height * heightScale;
         displacedLocalPos += localNormal * disp;
