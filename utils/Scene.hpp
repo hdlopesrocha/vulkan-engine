@@ -3,8 +3,10 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
+#include <functional>
 #include "../math/Model3D.hpp"
 #include "../space/Octree.hpp"
+#include "../space/OctreeNodeData.hpp"
 
 enum Layer {
     LAYER_OPAQUE = 0,
@@ -13,21 +15,11 @@ enum Layer {
     LAYER_COUNT = 3
 };
 
-class VisibleNodeCallback {
-public:
-    VisibleNodeCallback() = default;
-    ~VisibleNodeCallback() = default;
+// Visible nodes are reported via a callback lambda taking an OctreeNodeData reference
+using VisibleNodeCallback = std::function<void(const OctreeNodeData&)>;
 
-    virtual void onVisibleNode(const OctreeNodeData &data) = 0;
-};
-
-class Model3DCallback {
-public:
-    Model3DCallback() = default;
-    ~Model3DCallback() = default;
-
-    virtual void onModel3DLoaded(Model3D &model) = 0;
-};
+// Model3D results are delivered via a callback lambda taking a Model3D reference
+using Model3DCallback = std::function<void(Model3D&)>;
 
 class SceneLoaderCallback {
 public:
@@ -43,7 +35,7 @@ public:
     Scene() = default;
     ~Scene() = default;
     virtual void loadScene(SceneLoaderCallback& callback) = 0;
-    virtual void requestVisibleNodes(Layer layer, glm::mat4 viewMatrix, VisibleNodeCallback& callback) = 0;
-    virtual void requestModel3D(Layer layer, OctreeNodeData &data, Model3DCallback& callback) = 0;
+    virtual void requestVisibleNodes(Layer layer, glm::mat4 viewMatrix, const VisibleNodeCallback& callback) = 0;
+    virtual void requestModel3D(Layer layer, OctreeNodeData &data, const Model3DCallback& callback) = 0;
     virtual bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) = 0;
 };

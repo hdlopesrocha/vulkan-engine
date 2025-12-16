@@ -71,9 +71,12 @@ struct UniformObject {
 };
 
 #include "vulkan/VertexBufferObjectBuilder.hpp"
+#include "utils/Model3DVersion.hpp"
 
 class MyApp : public VulkanApp, public IEventHandler {
     LocalScene * mainScene;
+    std::unordered_map<OctreeNode*, Model3DVersion> nodeModelVersions;
+
     public:
         MyApp() : shadowMapper(this, 8192) {}
 
@@ -668,6 +671,8 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             MainSceneLoader mainSceneLoader = MainSceneLoader();
             mainScene->loadScene(mainSceneLoader);
+
+            
         };
 
         // IEventHandler: handle top-level window events like close/fullscreen
@@ -798,6 +803,32 @@ class MyApp : public VulkanApp, public IEventHandler {
         };
 
         void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
+            std::vector<Model3D*> visibleModels;
+            
+            mainScene->requestVisibleNodes(Layer::LAYER_OPAQUE, camera.getViewMatrix(), [this, &visibleModels](const OctreeNodeData& data){ 
+                // Capture node/version locally to ensure lifetime for the async request callback
+                OctreeNode* node = data.node;
+                unsigned int version = node ? node->version : 0u;
+
+                // If we don't have a Model3DVersion for this node yet, insert a default placeholder
+                if (nodeModelVersions.find(node) == nodeModelVersions.end()) {
+                    nodeModelVersions.try_emplace(node, Model3DVersion{});
+
+                    // Request the Model3D and fill the stored Model3DVersion when available
+                    // requestModel3D expects a non-const reference; cast away const here
+                    mainScene->requestModel3D(Layer::LAYER_OPAQUE, const_cast<OctreeNodeData&>(data), [this, node, version](Model3D& model) {
+                        // Store a heap-allocated copy to match Model3DVersion::model (pointer)
+                        Model3D* stored = new Model3D(model);
+                        nodeModelVersions[node] = { stored, version };
+                        std::cout << "[Model3D] Loaded model for node " << node << " (version " << version << ")\n";
+                    });
+                } else {
+                    visibleModels.push_back(nodeModelVersions[node].model);
+                }
+            });
+            
+            
+            
             VkCommandBufferBeginInfo beginInfo{};
             beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 

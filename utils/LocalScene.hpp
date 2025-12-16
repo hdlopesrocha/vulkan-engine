@@ -18,18 +18,18 @@ public:
     };
     ~LocalScene() = default;
 
-    void requestVisibleNodes(Layer layer, glm::mat4 viewMatrix, VisibleNodeCallback& callback) override {
+    void requestVisibleNodes(Layer layer, glm::mat4 viewMatrix, const VisibleNodeCallback& callback) override {
         Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
 
         OctreeVisibilityChecker checker;
         checker.update(viewMatrix);
         tree->iterate(checker);
         for(const auto& nodeData : checker.visibleNodes) {
-            callback.onVisibleNode(nodeData);
+            callback(nodeData);
         }
     }
 
-    void requestModel3D(Layer layer, OctreeNodeData &data, Model3DCallback& callback) override {
+    void requestModel3D(Layer layer, OctreeNodeData &data, const Model3DCallback& callback) override {
         long tessCount = 0;
         Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
         long trianglesCount = 0;
@@ -40,12 +40,20 @@ public:
         Processor processor(&trianglesCount, threadPool, &context, &handlers);
         processor.iterateFlatIn(*tree, data);
 
-        if(tesselator.geometry->indices.size() > 0) {
-            InstanceGeometry<InstanceData> * pre = new InstanceGeometry<InstanceData>(tesselator.geometry);
-            pre->instances.emplace_back(InstanceData(0, glm::mat4(1.0), 0.0f));
-            Model3D model = Model3D();
-            model.setGeometry(pre->geometry->vertices, std::vector<uint16_t>(pre->geometry->indices.begin(), pre->geometry->indices.end()));
-            callback.onModel3DLoaded(model);
+        if(tesselator.geometry && !tesselator.geometry->indices.empty()) {
+            Model3D model;
+            // copy vertices
+            const std::vector<Vertex> &verts = tesselator.geometry->vertices;
+            // convert indices from uint to uint16_t (clamp if necessary)
+            std::vector<uint16_t> indices;
+            indices.reserve(tesselator.geometry->indices.size());
+            for(uint idx : tesselator.geometry->indices) {
+                indices.push_back(static_cast<uint16_t>(idx));
+            }
+            model.setGeometry(verts, indices);
+            model.computeNormals();
+            model.computeTangents();
+            callback(model);
         }
     }
 
