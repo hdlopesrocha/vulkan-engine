@@ -36,11 +36,44 @@ void main() {
     tc_fragTangent[gl_InvocationID] = pc_inTangent[gl_InvocationID];
     // local tangent removed
 
-    // Read tessellation level from per-material mappingParams.y (set by host)
+    // Compute tessellation level on GPU based on camera distance (adaptive)
     int patchTexIndex = int(pc_inTexIndex[0] + 0.5);
-    float tessLevel = clamp(materials[patchTexIndex].mappingParams.y, 1.0, 64.0);
-    float outer = tessLevel;
-    float inner = tessLevel;
+    // mappingParams.x == mappingEnabled (0/1). mappingParams.y stores a per-material base/max tess level.
+    bool mappingEnabled = (materials[patchTexIndex].mappingParams.x > 0.5);
+    float baseTess = max(materials[patchTexIndex].mappingParams.y, 1.0);
+    if (!mappingEnabled) {
+        baseTess = 1.0;
+    }
+
+    // Compute patch center in world space and distance to camera
+    vec3 p0 = pc_inPosWorld[0];
+    vec3 p1 = pc_inPosWorld[1];
+    vec3 p2 = pc_inPosWorld[2];
+    vec3 center = (p0 + p1 + p2) / 3.0;
+    float dist = length(center - ubo.viewPos.xyz);
+
+    // Read tuning parameters from UBO: x=nearDist, y=farDist, z=minLevel, w=maxLevel
+    float nearDist = ubo.tessParams.x;
+    float farDist  = ubo.tessParams.y;
+    float minLevel = ubo.tessParams.z;
+    float maxLevel = ubo.tessParams.w;
+
+    // Compute an adaptive tess value in [minLevel, maxLevel] based on camera distance
+    float factor = 1.0 - smoothstep(nearDist, farDist, dist); // 1.0 at near, 0.0 at far
+    float adaptive = mix(minLevel, maxLevel, factor);
+
+    // Add per-material tess level on top of adaptive value (if mapping enabled)
+    float materialLevel = materials[patchTexIndex].mappingParams.y;
+    float tess = adaptive;
+    if (mappingEnabled) {
+        tess = adaptive + materialLevel;
+    }
+
+    // Final clamp to configured bounds
+    tess = clamp(tess, minLevel, maxLevel);
+
+    float outer = tess;
+    float inner = tess;
     gl_TessLevelOuter[0] = outer;
     gl_TessLevelOuter[1] = outer;
     gl_TessLevelOuter[2] = outer;

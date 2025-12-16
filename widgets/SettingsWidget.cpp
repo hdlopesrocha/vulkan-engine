@@ -16,6 +16,7 @@ void SettingsWidget::resetToDefaults() {
     tessMinLevel = 1.0f;
     tessMaxLevel = 32.0f;
     tessMaxDistance = 30.0f;
+    tessMinDistance = 10.0f;
 }
 
 void SettingsWidget::render() {
@@ -75,6 +76,7 @@ void SettingsWidget::render() {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable camera-distance driven tessellation level");
         ImGui::SliderFloat("Tess Min Level", &tessMinLevel, 1.0f, 64.0f, "%.1f");
         ImGui::SliderFloat("Tess Max Level", &tessMaxLevel, 1.0f, 64.0f, "%.1f");
+        ImGui::SliderFloat("Tess Min Distance", &tessMinDistance, 1.0f, 200.0f, "%.1f");
         ImGui::SliderFloat("Tess Max Distance", &tessMaxDistance, 1.0f, 200.0f, "%.1f");
 
         if (ImGui::Button("Reset to Defaults")) {

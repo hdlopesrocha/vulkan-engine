@@ -790,6 +790,17 @@ class MyApp : public VulkanApp, public IEventHandler {
             //std::cout << "[UBO] UI lightDirection=(" << lightDirection.x << ", " << lightDirection.y << ", " << lightDirection.z << ")\n";
             //std::cout << "[UBO] sent ubo.lightDir=(" << uboStatic.lightDir.x << ", " << uboStatic.lightDir.y << ", " << uboStatic.lightDir.z << ")\n";
             uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+            // Tessellation parameters from UI: near/far distances and min/max tess levels
+            if (settingsWidget) {
+                uboStatic.tessParams = glm::vec4(
+                    settingsWidget->getTessMinDistance(),
+                    settingsWidget->getTessMaxDistance(),
+                    settingsWidget->getTessMinLevel(),
+                    settingsWidget->getTessMaxLevel()
+                );
+            } else {
+                uboStatic.tessParams = glm::vec4(10.0f, 200.0f, 1.0f, 32.0f);
+            }
             // Note: material flags and specularParams are set per-instance from material properties
             // Sky UBO updates are handled by SkySphere (reads SkyWidget directly)
             

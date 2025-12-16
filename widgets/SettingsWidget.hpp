@@ -39,6 +39,7 @@ private:
     float tessMinLevel = 1.0f;
     float tessMaxLevel = 32.0f;
     float tessMaxDistance = 30.0f;
+    float tessMinDistance = 10.0f;
     
     void resetToDefaults();
 public:
@@ -47,4 +48,5 @@ public:
     float getTessMinLevel() const { return tessMinLevel; }
     float getTessMaxLevel() const { return tessMaxLevel; }
     float getTessMaxDistance() const { return tessMaxDistance; }
+    float getTessMinDistance() const { return tessMinDistance; }
 };

@@ -16,6 +16,7 @@ layout(binding = 0) uniform UBO {
     vec4 shadowEffects; // x/y/z = unused, w=global shadows enabled (1.0 = on)
     vec4 debugParams; // x=debugMode (0=normal,1=fragment normal,2=normal map (world),3=uv,4=tangent,5=bitangent,6=geometry normal (world),7=albedo,8=normal texture,9=height/bump,10=lighting (N·L,shadow),11=normal from derivatives,12=light vector (rgb),13=N·L grayscale,14=shadow diagnostics)
         // Sky parameters moved to a dedicated Sky UBO (see below)
+        vec4 tessParams; // x = tessNearDist, y = tessFarDist, z = tessMinLevel, w = tessMaxLevel
         vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
 } ubo;
 
