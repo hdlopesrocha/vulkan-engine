@@ -74,6 +74,8 @@ class MyApp : public VulkanApp, public IEventHandler {
     std::unique_ptr<SkySphere> skySphere;
     // texture manager handles albedo/normal/height triples
     TextureManager textureManager;
+    // GPU-side texture arrays (albedo/normal/bump) for sampler2DArray usage
+    TextureArrayManager textureArrayManager;
     
     // Vegetation texture manager for billboard vegetation (albedo/normal/opacity)
     TextureManager vegetationTextureManager;
@@ -241,6 +243,8 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // initialize texture manager and explicitly load known albedo/normal/height triples by filename
             textureManager.init(this);
+            // initialize texture array manager with room for 16 layers of 1024x1024
+            textureArrayManager.allocate(16, 1024, 1024, this);
             std::vector<size_t> loadedIndices;
 
             // Explicit per-name loads (one-by-one) with realistic material properties
@@ -261,10 +265,13 @@ class MyApp : public VulkanApp, public IEventHandler {
             for (const auto &entry : specs) {
                 const auto &files = entry.first;
                 const auto &matSpec = entry.second;
+                // keep legacy TextureManager entries for compatibility
                 size_t idx = textureManager.loadTriple(files[0], files[1], files[2]);
                 auto &mat = textureManager.getMaterial(idx);
                 mat = matSpec;
                 loadedIndices.push_back(idx);
+                // also load into the new TextureArrayManager (GPU-backed 2D texture arrays)
+                textureArrayManager.load(const_cast<char*>(files[0]), const_cast<char*>(files[1]), const_cast<char*>(files[2]));
             }
 
             // Disable mapping for all loaded materials: set mappingMode to false
@@ -403,6 +410,39 @@ class MyApp : public VulkanApp, public IEventHandler {
                 sphereDescriptorSets[i] = ds;
                 VkDescriptorSet sds = dsBuilder.createShadowSphereDescriptorSet(tr, shadowSphereUniforms[i], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
                 shadowSphereDescriptorSets[i] = sds;
+            }
+
+            // If texture arrays are allocated, overwrite bindings 1..3 in descriptor sets
+            // to point to the global texture arrays (sampler2DArray) so shaders can index by layer.
+            if (textureArrayManager.layerAmount > 0) {
+                VkDescriptorImageInfo albedoArrayInfo{ textureArrayManager.albedoSampler, textureArrayManager.albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                VkDescriptorImageInfo normalArrayInfo{ textureArrayManager.normalSampler, textureArrayManager.normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                VkDescriptorImageInfo bumpArrayInfo{ textureArrayManager.bumpSampler, textureArrayManager.bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+
+                for (size_t i = 0; i < descriptorSets.size(); ++i) {
+                    VkWriteDescriptorSet w1{}; w1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w1.dstSet = descriptorSets[i]; w1.dstBinding = 1; w1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w1.descriptorCount = 1; w1.pImageInfo = &albedoArrayInfo;
+                    VkWriteDescriptorSet w2{}; w2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w2.dstSet = descriptorSets[i]; w2.dstBinding = 2; w2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w2.descriptorCount = 1; w2.pImageInfo = &normalArrayInfo;
+                    VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = descriptorSets[i]; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
+                    updateDescriptorSet(descriptorSets[i], { w1, w2, w3 });
+                }
+                for (size_t i = 0; i < shadowDescriptorSets.size(); ++i) {
+                    VkWriteDescriptorSet w1{}; w1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w1.dstSet = shadowDescriptorSets[i]; w1.dstBinding = 1; w1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w1.descriptorCount = 1; w1.pImageInfo = &albedoArrayInfo;
+                    VkWriteDescriptorSet w2{}; w2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w2.dstSet = shadowDescriptorSets[i]; w2.dstBinding = 2; w2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w2.descriptorCount = 1; w2.pImageInfo = &normalArrayInfo;
+                    VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = shadowDescriptorSets[i]; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
+                    updateDescriptorSet(shadowDescriptorSets[i], { w1, w2, w3 });
+                }
+                for (size_t i = 0; i < sphereDescriptorSets.size(); ++i) {
+                    VkWriteDescriptorSet w1{}; w1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w1.dstSet = sphereDescriptorSets[i]; w1.dstBinding = 1; w1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w1.descriptorCount = 1; w1.pImageInfo = &albedoArrayInfo;
+                    VkWriteDescriptorSet w2{}; w2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w2.dstSet = sphereDescriptorSets[i]; w2.dstBinding = 2; w2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w2.descriptorCount = 1; w2.pImageInfo = &normalArrayInfo;
+                    VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = sphereDescriptorSets[i]; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
+                    updateDescriptorSet(sphereDescriptorSets[i], { w1, w2, w3 });
+                }
+                for (size_t i = 0; i < shadowSphereDescriptorSets.size(); ++i) {
+                    VkWriteDescriptorSet w1{}; w1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w1.dstSet = shadowSphereDescriptorSets[i]; w1.dstBinding = 1; w1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w1.descriptorCount = 1; w1.pImageInfo = &albedoArrayInfo;
+                    VkWriteDescriptorSet w2{}; w2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w2.dstSet = shadowSphereDescriptorSets[i]; w2.dstBinding = 2; w2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w2.descriptorCount = 1; w2.pImageInfo = &normalArrayInfo;
+                    VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = shadowSphereDescriptorSets[i]; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
+                    updateDescriptorSet(shadowSphereDescriptorSets[i], { w1, w2, w3 });
+                }
             }
 
         

@@ -119,8 +119,10 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 
 		out.mipLevels = mipLevels;
 
-		// Transition to SHADER_READ_ONLY_OPTIMAL so it's ready for sampling (no data yet)
-		app->transitionImageLayout(out.image, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		// Transition to TRANSFER_DST_OPTIMAL then to SHADER_READ_ONLY_OPTIMAL
+		// VulkanApp::transitionImageLayout supports these two-step transitions.
+		app->transitionImageLayout(out.image, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		app->transitionImageLayout(out.image, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	};
 
 	// Albedo uses sRGB format
