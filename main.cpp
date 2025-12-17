@@ -914,7 +914,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                         shadowUbo.viewProjection = uboStatic.lightSpaceMatrix;
                     shadowUbo.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
                     // Per-material mapping/mappingParams are read from the Materials SSBO in shaders.
-                    shadowUbo.passParams = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 1.0
+                    shadowUbo.passParams = glm::vec4(1.0f, settingsWidget ? (settingsWidget->getShadowTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
     
                     updateUniformBuffer(*instance.shadowUniformBuffer, &shadowUbo, sizeof(UniformObject));
                     // Push model matrix for this draw into the pipeline via push constants
@@ -999,7 +999,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // Triplanar settings from UI
                 if (settingsWidget) ubo.triplanarSettings = glm::vec4(settingsWidget->getTriplanarThreshold(), settingsWidget->getTriplanarExponent(), 0.0f, 0.0f);
                 else ubo.triplanarSettings = glm::vec4(0.12f, 3.0f, 0.0f, 0.0f);
-                ubo.passParams = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 0.0
+                // isShadowPass = 0.0; second component stores global tessellation enabled flag (1.0 = enabled)
+                ubo.passParams = glm::vec4(0.0f, settingsWidget ? (settingsWidget->getTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
                 updateUniformBuffer(*instance.uniformBuffer, &ubo, sizeof(UniformObject));
                 
                 // Bind descriptor set and draw

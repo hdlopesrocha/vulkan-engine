@@ -51,9 +51,8 @@ void main() {
 
     // Compute tessellation level on GPU based on camera distance (adaptive)
     int patchTexIndex = pc_inTexIndex[0];
-    // mappingParams.x == mappingEnabled (0/1). mappingParams.y stores a per-material base/max tess level.
-    bool mappingEnabled = (materials[patchTexIndex].mappingParams.x > 0.5);
     float materialLevel = materials[patchTexIndex].mappingParams.y;
+    bool tessEnabled = ubo.passParams.y > 0.5 && (materials[patchTexIndex].mappingParams.x > 0.5);
 
 
     // Compute patch center in world space and distance to camera
@@ -69,12 +68,20 @@ void main() {
     float minLevel = ubo.tessParams.z;
     float maxLevel = ubo.tessParams.w;
 
-    // Compute an adaptive tess value in [minLevel, maxLevel] based on camera distance
-    float factor = clamp(1.0 - smoothstep(nearDist, farDist, dist), 0.0, 1.0); // 1.0 at near, 0.0 at far
-    float tess = mix(minLevel, maxLevel, factor)+materialLevel;
+    float outer;
+    float inner;
+    // If global tessellation is disabled, or mapping is not enabled for this patch, force tessellation to 1 (no subdivision)
+    if (!tessEnabled) {
+        outer = 1.0;
+        inner = 1.0;
+    } else {
+        // Compute an adaptive tess value in [minLevel, maxLevel] based on camera distance
+        float factor = clamp(1.0 - smoothstep(nearDist, farDist, dist), 0.0, 1.0); // 1.0 at near, 0.0 at far
+        float tess = mix(minLevel, maxLevel, factor) + materialLevel;
+        outer = tess;
+        inner = tess;
+    }
 
-    float outer = tess;
-    float inner = tess;
     gl_TessLevelOuter[0] = outer;
     gl_TessLevelOuter[1] = outer;
     gl_TessLevelOuter[2] = outer;

@@ -56,8 +56,10 @@ void main() {
     vec3 worldNormal = normalize(mat3(pushConstants.model) * localNormal);
     vec4 worldPos = pushConstants.model * vec4(localPos, 1.0);
 
-    // Apply displacement    
+    // Apply displacement (only when global tessellation enabled)
     float mappingFlag = materials[texIndices.x].mappingParams.x * weights.x + materials[texIndices.y].mappingParams.x * weights.y + materials[texIndices.z].mappingParams.x * weights.z;
+    // Respect global tessellation enabled flag (passParams.y). If tessellation is disabled, mappingFlag becomes 0 and no displacement occurs
+    mappingFlag *= ubo.passParams.y;
     vec3 displacedLocalPos = mappingFlag > 0.5 ? applyDisplacement(localPos, localNormal, worldPos.xyz, worldNormal, uv, texIndices, weights) : localPos;
     
 

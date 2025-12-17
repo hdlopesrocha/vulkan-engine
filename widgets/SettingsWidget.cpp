@@ -75,6 +75,13 @@ void SettingsWidget::render() {
 
         ImGui::Text("Tessellation");
         ImGui::Separator();
+        if (ImGui::Checkbox("Enable Tessellation", &tessellationEnabled)) {
+            // toggled globally
+        }
+        if (ImGui::Checkbox("Enable Shadow Tessellation", &shadowTessellationEnabled)) {
+            // toggled globally
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Global toggle: when disabled, tessellation and displacement are skipped");
         ImGui::Checkbox("Adaptive Tessellation", &adaptiveTessellation);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable camera-distance driven tessellation level");
         ImGui::SliderFloat("Tess Min Level", &tessMinLevel, 1.0f, 64.0f, "%.1f");

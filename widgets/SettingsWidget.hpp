@@ -40,6 +40,8 @@ private:
     float triplanarThreshold = 0.5f; // small dead zone before blending starts
     float triplanarExponent = 5.0f;   // >1 makes transitions steeper
     // Tessellation settings
+    bool tessellationEnabled = true; // global toggle to disable all tessellation + displacement
+    bool shadowTessellationEnabled = true; // global toggle to disable all tessellation + displacement
     bool adaptiveTessellation = true;
     float tessMinLevel = 1.0f;
     float tessMaxLevel = 32.0f;
@@ -49,6 +51,8 @@ private:
     void resetToDefaults();
 public:
     // Tessellation getters
+    bool getTessellationEnabled() const { return tessellationEnabled; }
+    bool getShadowTessellationEnabled() const { return shadowTessellationEnabled; }
     bool getAdaptiveTessellation() const { return adaptiveTessellation; }
     float getTessMinLevel() const { return tessMinLevel; }
     float getTessMaxLevel() const { return tessMaxLevel; }
