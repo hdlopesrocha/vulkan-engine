@@ -26,7 +26,7 @@
 #include <glm/gtx/norm.hpp> 
 #include <glm/matrix.hpp>
 
-#include "FileReader.hpp"
+#include "../utils/FileReader.hpp"
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;

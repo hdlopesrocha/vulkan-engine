@@ -1,11 +1,11 @@
 #include "EditableTextureSet.hpp"
 #include "VulkanApp.hpp"
-#include "FileReader.hpp"
+#include "../utils/FileReader.hpp"
 #include "PerlinPushConstants.hpp"
 #include <algorithm>
 #include <stdexcept>
 
-EditableTextureSet::EditableTextureSet() : Widget("Editable Textures") {}
+EditableTextureSet::EditableTextureSet() {}
 
 EditableTexture& EditableTextureSet::getAlbedo() { return albedo; }
 EditableTexture& EditableTextureSet::getNormal() { return normal; }
@@ -17,7 +17,6 @@ const EditableTexture& EditableTextureSet::getBump() const { return bump; }
 
 void EditableTextureSet::init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName) {
 	this->app = app;
-	this->title = windowName;
 
 	albedo.init(app, width, height, VK_FORMAT_R8G8B8A8_UNORM, "Albedo");
 	normal.init(app, width, height, VK_FORMAT_R8G8B8A8_UNORM, "Normal");
@@ -66,143 +65,6 @@ void EditableTextureSet::cleanup() {
 	}
 }
 
-void EditableTextureSet::render() {
-	if (!ImGui::Begin(title.c_str(), &isOpen, ImGuiWindowFlags_None)) {
-		ImGui::End();
-		return;
-	}
-
-	if (ImGui::BeginTabBar("TextureTabBar")) {
-		if (ImGui::BeginTabItem("Albedo")) {
-			renderTextureTab(albedo);
-			ImGui::EndTabItem();
-		}
-		if (ImGui::BeginTabItem("Normal")) {
-			renderTextureTab(normal);
-			ImGui::EndTabItem();
-		}
-		if (ImGui::BeginTabItem("Bump")) {
-			renderTextureTab(bump);
-			ImGui::EndTabItem();
-		}
-		ImGui::EndTabBar();
-	}
-
-	ImGui::End();
-}
-
-void EditableTextureSet::renderTextureTab(EditableTexture& texture) {
-	ImGui::Text("Size: %dx%d", texture.getWidth(), texture.getHeight());
-
-	const char* formatName = "Unknown";
-	if (texture.getBytesPerPixel() == 4) {
-		formatName = "RGBA8";
-	} else if (texture.getBytesPerPixel() == 1) {
-		formatName = "R8";
-	}
-	ImGui::Text("Format: %s", formatName);
-
-	if (texture.getDirty()) {
-		ImGui::TextColored(ImVec4(1, 1, 0, 1), "Texture has unsaved changes");
-		if (ImGui::Button("Upload to GPU")) {
-			texture.updateGPU();
-		}
-	} else {
-		ImGui::TextColored(ImVec4(0, 1, 0, 1), "Texture is up to date");
-	}
-
-	ImGui::Separator();
-
-	ImGui::Text("Perlin Noise Generator");
-
-	bool paramsChanged = false;
-
-	// Texture selection UI removed — EditableTextureSet generates textures independently
-
-	ImGui::Separator();
-	ImGui::Text("Noise Parameters");
-
-	int scaleInt = (int)perlinScale;
-	if (ImGui::SliderInt("Scale", &scaleInt, 1, 32)) {
-		perlinScale = (float)scaleInt;
-		paramsChanged = true;
-	}
-	if (ImGui::SliderFloat("Octaves", &perlinOctaves, 1.0f, 8.0f)) {
-		paramsChanged = true;
-	}
-	if (ImGui::SliderFloat("Persistence", &perlinPersistence, 0.0f, 1.0f)) {
-		paramsChanged = true;
-	}
-	if (ImGui::SliderFloat("Lacunarity", &perlinLacunarity, 1.0f, 4.0f)) {
-		paramsChanged = true;
-	}
-	if (ImGui::SliderFloat("Time", &perlinTime, 0.0f, 100.0f)) {
-		paramsChanged = true;
-	}
-
-	ImGui::Separator();
-	ImGui::Text("Adjustments");
-
-	if (ImGui::SliderFloat("Brightness", &perlinBrightness, -1.0f, 1.0f)) {
-		paramsChanged = true;
-	}
-	if (ImGui::SliderFloat("Contrast", &perlinContrast, 0.0f, 5.0f)) {
-		paramsChanged = true;
-	}
-
-	if (paramsChanged) {
-		generatePerlinNoise(albedo);
-		generatePerlinNoise(normal);
-		generatePerlinNoise(bump);
-		prevPerlinScale = perlinScale;
-		prevPerlinOctaves = perlinOctaves;
-		prevPerlinPersistence = perlinPersistence;
-		prevPerlinLacunarity = perlinLacunarity;
-		prevPerlinBrightness = perlinBrightness;
-		prevPerlinContrast = perlinContrast;
-		prevPerlinTime = perlinTime;
-		prevPrimaryTextureIdx = primaryTextureIdx;
-		prevSecondaryTextureIdx = secondaryTextureIdx;
-	}
-
-	if (ImGui::Button("Generate Perlin Noise")) {
-		generatePerlinNoise(texture);
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Randomize Seed")) {
-		std::random_device rd;
-		perlinSeed = rd();
-		generatePerlinNoise(texture);
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Generate All")) {
-		generatePerlinNoise(albedo);
-		generatePerlinNoise(normal);
-		generatePerlinNoise(bump);
-		prevPerlinScale = perlinScale;
-		prevPerlinOctaves = perlinOctaves;
-		prevPerlinPersistence = perlinPersistence;
-		prevPerlinLacunarity = perlinLacunarity;
-		prevPerlinBrightness = perlinBrightness;
-		prevPerlinContrast = perlinContrast;
-		prevPerlinTime = perlinTime;
-		prevPrimaryTextureIdx = primaryTextureIdx;
-		prevSecondaryTextureIdx = secondaryTextureIdx;
-	}
-
-	ImGui::Separator();
-
-	float previewSize = 512.0f;
-	ImVec2 imageSize(previewSize, previewSize);
-	ImGui::Text("Preview:");
-
-	VkDescriptorSet descSet = texture.getImGuiDescriptorSet();
-	if (descSet != VK_NULL_HANDLE) {
-		ImGui::Image((ImTextureID)descSet, imageSize);
-	} else {
-		ImGui::Text("Texture preview not available");
-	}
-}
 
 void EditableTextureSet::createComputePipeline() {
 	VkDescriptorSetLayoutBinding bindings[3] = {};
@@ -431,4 +293,37 @@ void EditableTextureSet::generatePerlinNoise(EditableTexture& texture) {
 	if (onTextureGeneratedCallback) {
 		onTextureGeneratedCallback();
 	}
+}
+
+void EditableTextureSet::generatePerlinNoiseWithParams(EditableTexture& texture, float scale, float octaves, float persistence, float lacunarity, float brightness, float contrast, float time, uint32_t seed) {
+	// Temporarily override internal parameters and invoke generator
+	float oldScale = perlinScale;
+	float oldOctaves = perlinOctaves;
+	float oldPersistence = perlinPersistence;
+	float oldLacunarity = perlinLacunarity;
+	float oldBrightness = perlinBrightness;
+	float oldContrast = perlinContrast;
+	float oldTime = perlinTime;
+	uint32_t oldSeed = perlinSeed;
+
+	perlinScale = scale;
+	perlinOctaves = octaves;
+	perlinPersistence = persistence;
+	perlinLacunarity = lacunarity;
+	perlinBrightness = brightness;
+	perlinContrast = contrast;
+	perlinTime = time;
+	perlinSeed = seed;
+
+	generatePerlinNoise(texture);
+
+	// restore
+	perlinScale = oldScale;
+	perlinOctaves = oldOctaves;
+	perlinPersistence = oldPersistence;
+	perlinLacunarity = oldLacunarity;
+	perlinBrightness = oldBrightness;
+	perlinContrast = oldContrast;
+	perlinTime = oldTime;
+	perlinSeed = oldSeed;
 }

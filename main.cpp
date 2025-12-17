@@ -1,5 +1,5 @@
 #include "vulkan/VulkanApp.hpp"
-#include "vulkan/FileReader.hpp"
+#include "utils/FileReader.hpp"
 
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
@@ -20,6 +20,7 @@
 #include "math/PlaneModel.hpp"
 #include "math/SphereModel.hpp"
 #include "vulkan/EditableTextureSet.hpp"
+#include "widgets/AnimatedTextureWidget.hpp"
 #include "vulkan/ShadowMapper.hpp"
 #include "vulkan/ModelManager.hpp"
 #include "widgets/WidgetManager.hpp"
@@ -92,7 +93,8 @@ class MyApp : public VulkanApp, public IEventHandler {
     
     // Widgets (shared pointers for widget manager)
     std::shared_ptr<TextureViewer> textureViewer;
-    std::shared_ptr<EditableTextureSet> editableTextures;
+    std::shared_ptr<EditableTextureSet> editableTextures; // Vulkan compute + textures
+    std::shared_ptr<AnimatedTextureWidget> editableTexturesWidget; // ImGui wrapper
     std::shared_ptr<SettingsWidget> settingsWidget;
     std::shared_ptr<BillboardCreator> billboardCreator;
     std::shared_ptr<SkyWidget> skyWidget;
@@ -312,12 +314,16 @@ class MyApp : public VulkanApp, public IEventHandler {
             int wildTiles = vegetationAtlasManager.autoDetectTiles(2, "textures/vegetation/wild_opacity.jpg", 10);
             std::cout << "  Wild: detected " << wildTiles << " tiles" << std::endl;
 
-            // Initialize and add editable textures BEFORE creating descriptor sets
+            // Initialize Vulkan-side editable textures BEFORE creating descriptor sets
             editableTextures = std::make_shared<EditableTextureSet>();
             editableTextures->init(this, 1024, 1024, "Editable Textures");
             // EditableTextureSet no longer requires a TextureManager
             editableTextures->generateInitialTextures();
-            
+
+            // Create ImGui widget that wraps the Vulkan editable textures and add it to widget manager
+            editableTexturesWidget = std::make_shared<AnimatedTextureWidget>(editableTextures, "Editable Textures");
+            widgetManager.addWidget(editableTexturesWidget);
+
             // Add editable textures as an entry in `materials` and keep their images managed by the EditableTextureSet
             size_t editableIndex = materials.size();
             materials.push_back(MaterialProperties{});
@@ -339,7 +345,6 @@ class MyApp : public VulkanApp, public IEventHandler {
             editableTextureIndex = editableIndex;  // Store for plane rendering
             // Initialize cached plane material from the editable texture triple
             planeMaterial = materials[editableIndex];
-
             // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
             if (!loadedIndices.empty()) currentTextureIndex = loadedIndices[0];
             
@@ -600,16 +605,12 @@ class MyApp : public VulkanApp, public IEventHandler {
             });
             widgetManager.addWidget(textureViewer);
             
-            // Add editable textures widget (already created above)
+            // Hook Vulkan editable texture regeneration callback so materials are refreshed
             editableTextures->setOnTextureGenerated([this, editableIndex]() {
-                // Material properties persist, just textures get updated
                 printf("Editable textures regenerated (index %zu)\n", editableIndex);
-                // refresh GPU-side material buffer to pick up any editable material changes
                 updateMaterials();
-                // Update cached plane material to reflect regenerated editable textures
                 planeMaterial = materials[editableIndex];
             });
-            widgetManager.addWidget(editableTextures);
             
             // Create other widgets
             auto cameraWidget = std::make_shared<CameraWidget>(&camera);

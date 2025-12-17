@@ -1,5 +1,5 @@
 #include "SkyRenderer.hpp"
-#include "FileReader.hpp"
+#include "../utils/FileReader.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 
 SkyRenderer::SkyRenderer(VulkanApp* app_) : app(app_) {}

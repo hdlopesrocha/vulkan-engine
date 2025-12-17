@@ -1,6 +1,6 @@
 #include "ShadowMapper.hpp"
 #include "VulkanApp.hpp"
-#include "FileReader.hpp"
+#include "../utils/FileReader.hpp"
 #include <backends/imgui_impl_vulkan.h>
 #include <stdexcept>
 #include <fstream>
