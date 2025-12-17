@@ -32,26 +32,34 @@ void TextureViewer::render() {
 
     std::string tabBarId = std::string("tabs_") + std::to_string(currentIndex);
     if (ImGui::BeginTabBar(tabBarId.c_str())) {
+        const float previewSize = 128.0f; // 25% of previous size
         if (ImGui::BeginTabItem("Albedo")) {
             ImTextureID tex = arrayManager->getImTexture(currentIndex, 0);
-            if (tex) ImGui::Image(tex, ImVec2(512,512));
+            if (tex) ImGui::Image(tex, ImVec2(previewSize, previewSize));
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Normal")) {
             ImTextureID tex = arrayManager->getImTexture(currentIndex, 1);
-            if (tex) ImGui::Image(tex, ImVec2(512,512));
+            if (tex) ImGui::Image(tex, ImVec2(previewSize, previewSize));
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Height")) {
             ImTextureID tex = arrayManager->getImTexture(currentIndex, 2);
-            if (tex) ImGui::Image(tex, ImVec2(512,512));
+            if (tex) ImGui::Image(tex, ImVec2(previewSize, previewSize));
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Material")) {
+        // Material tab removed from tabs — material UI will be shown under the preview
+        ImGui::EndTabBar();
+
+        // Material controls shown under the preview tabs
+        {
             MaterialProperties& mat = (*materials)[currentIndex];
             bool dirty = false;
 
             ImGui::Spacing();
+            ImGui::Text("Material");
+            ImGui::Separator();
+
             ImGui::Text("Normal/Tangent Adjustments");
             ImGui::Separator();
 
@@ -86,10 +94,7 @@ void TextureViewer::render() {
             }
 
             if (dirty && onMaterialChanged) onMaterialChanged(currentIndex);
-
-            ImGui::EndTabItem();
         }
-        ImGui::EndTabBar();
     }
 
     ImGui::End();

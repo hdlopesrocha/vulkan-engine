@@ -98,7 +98,7 @@ void AnimatedTextureWidget::renderTextureTab(EditableTexture& texture, int map) 
 
     ImGui::Separator();
 
-    float previewSize = 512.0f;
+    float previewSize = 128.0f; // scaled down to 25%
     ImVec2 imageSize(previewSize, previewSize);
     ImGui::Text("Preview:");
 
