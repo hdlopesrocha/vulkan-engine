@@ -2,14 +2,14 @@
 #include <string>
 
 void TextureViewer::render() {
-    if (!manager) return;
+    if (!arrayManager || !materials) return;
 
     if (!ImGui::Begin(title.c_str(), &isOpen)) {
         ImGui::End();
         return;
     }
     
-    size_t tc = manager->count();
+    size_t tc = materials->size();
     if (tc == 0) {
         ImGui::Text("No textures loaded");
         ImGui::End();
@@ -33,22 +33,22 @@ void TextureViewer::render() {
     std::string tabBarId = std::string("tabs_") + std::to_string(currentIndex);
     if (ImGui::BeginTabBar(tabBarId.c_str())) {
         if (ImGui::BeginTabItem("Albedo")) {
-            ImTextureID tex = manager->getImTexture(currentIndex, 0);
+            ImTextureID tex = arrayManager->getImTexture(currentIndex, 0);
             if (tex) ImGui::Image(tex, ImVec2(512,512));
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Normal")) {
-            ImTextureID tex = manager->getImTexture(currentIndex, 1);
+            ImTextureID tex = arrayManager->getImTexture(currentIndex, 1);
             if (tex) ImGui::Image(tex, ImVec2(512,512));
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Height")) {
-            ImTextureID tex = manager->getImTexture(currentIndex, 2);
+            ImTextureID tex = arrayManager->getImTexture(currentIndex, 2);
             if (tex) ImGui::Image(tex, ImVec2(512,512));
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Material")) {
-            MaterialProperties& mat = manager->getMaterial(currentIndex);
+            MaterialProperties& mat = (*materials)[currentIndex];
             bool dirty = false;
 
             ImGui::Spacing();
@@ -97,4 +97,7 @@ void TextureViewer::render() {
 
 TextureViewer::TextureViewer() : Widget("Textures") {}
 
-void TextureViewer::init(TextureManager* manager) { this->manager = manager; }
+void TextureViewer::init(TextureArrayManager* arrayManager, std::vector<MaterialProperties>* materials) {
+    this->arrayManager = arrayManager;
+    this->materials = materials;
+}

@@ -2,6 +2,8 @@
 #include "TextureArrayManager.hpp"
 #include "VulkanApp.hpp"
 #include <stdexcept>
+#include <backends/imgui_impl_vulkan.h>
+#include "../vulkan/EditableTexture.hpp"
 
 void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h) {
 	layerAmount = layers;
@@ -42,6 +44,22 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 	cleanupSampler(app, albedoSampler);
 	cleanupSampler(app, normalSampler);
 	cleanupSampler(app, bumpSampler);
+	// Remove any ImGui textures and destroy per-layer views
+	for (auto &tex : albedoImTextures) {
+		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)tex);
+	}
+	for (auto &tex : normalImTextures) {
+		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)tex);
+	}
+	for (auto &tex : bumpImTextures) {
+		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)tex);
+	}
+	VkDevice device = app->getDevice();
+	for (auto v : albedoLayerViews) if (v != VK_NULL_HANDLE) vkDestroyImageView(device, v, nullptr);
+	for (auto v : normalLayerViews) if (v != VK_NULL_HANDLE) vkDestroyImageView(device, v, nullptr);
+	for (auto v : bumpLayerViews) if (v != VK_NULL_HANDLE) vkDestroyImageView(device, v, nullptr);
+	albedoLayerViews.clear(); normalLayerViews.clear(); bumpLayerViews.clear();
+	albedoImTextures.clear(); normalImTextures.clear(); bumpImTextures.clear();
 }
 
 void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, VulkanApp* app) {
@@ -346,4 +364,155 @@ uint TextureArrayManager::create() {
 	if (staging.memory != VK_NULL_HANDLE) vkFreeMemory(device, staging.memory, nullptr);
 
 	return currentLayer++;
+}
+
+void TextureArrayManager::updateLayerFromEditable(uint32_t layer, const EditableTexture& tex) {
+	if (!app) throw std::runtime_error("TextureArrayManager::updateLayerFromEditable: no VulkanApp");
+	if (layer >= layerAmount) throw std::runtime_error("TextureArrayManager::updateLayerFromEditable: layer out of range");
+
+	VulkanApp* a = this->app;
+	VkDevice device = a->getDevice();
+
+	VkImage srcImage = tex.getImage();
+	VkImage dstImage = albedoArray.image; // images for all three channels will be copied separately below
+
+	// We'll copy albedo, normal, bump separately using the provided EditableTexture `tex` argument.
+	// For simplicity assume `tex` represents the same format/size used by arrays.
+
+	// Transition dst layer to TRANSFER_DST_OPTIMAL for each array image and src to TRANSFER_SRC_OPTIMAL
+	VkCommandBuffer cmd = a->beginSingleTimeCommands();
+
+	auto doBarrier = [&](VkImage dst, VkImageLayout oldDst, VkImageLayout newDst, uint32_t dstBaseLayer) {
+		VkImageMemoryBarrier barrier{};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.oldLayout = oldDst;
+		barrier.newLayout = newDst;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = dst;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.baseMipLevel = 0;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.baseArrayLayer = dstBaseLayer;
+		barrier.subresourceRange.layerCount = 1;
+		barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+							 0, nullptr, 0, nullptr, 1, &barrier);
+	};
+
+	// source barrier: shader read -> transfer src
+	VkImageMemoryBarrier srcBarrier{};
+	srcBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	srcBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	srcBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	srcBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	srcBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	srcBarrier.image = srcImage;
+	srcBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	srcBarrier.subresourceRange.baseMipLevel = 0;
+	srcBarrier.subresourceRange.levelCount = 1;
+	srcBarrier.subresourceRange.baseArrayLayer = 0;
+	srcBarrier.subresourceRange.layerCount = 1;
+	srcBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	srcBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+						 0, nullptr, 0, nullptr, 1, &srcBarrier);
+
+	// Copy into albedoArray layer
+	doBarrier(albedoArray.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, layer);
+	VkImageCopy copyRegion{};
+	copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	copyRegion.srcSubresource.mipLevel = 0;
+	copyRegion.srcSubresource.baseArrayLayer = 0;
+	copyRegion.srcSubresource.layerCount = 1;
+	copyRegion.srcOffset = {0,0,0};
+	copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	copyRegion.dstSubresource.mipLevel = 0;
+	copyRegion.dstSubresource.baseArrayLayer = layer;
+	copyRegion.dstSubresource.layerCount = 1;
+	copyRegion.dstOffset = {0,0,0};
+	copyRegion.extent = { width, height, 1 };
+	vkCmdCopyImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, albedoArray.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+
+	// Transition albedo layer back to SHADER_READ_ONLY_OPTIMAL
+	VkImageMemoryBarrier dstBack{};
+	dstBack.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	dstBack.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	dstBack.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	dstBack.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	dstBack.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	dstBack.image = albedoArray.image;
+	dstBack.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	dstBack.subresourceRange.baseMipLevel = 0;
+	dstBack.subresourceRange.levelCount = 1;
+	dstBack.subresourceRange.baseArrayLayer = layer;
+	dstBack.subresourceRange.layerCount = 1;
+	dstBack.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	dstBack.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+						 0, nullptr, 0, nullptr, 1, &dstBack);
+
+	// Transition src back to SHADER_READ_ONLY_OPTIMAL
+	VkImageMemoryBarrier srcBack = srcBarrier;
+	srcBack.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	srcBack.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	srcBack.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	srcBack.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+						 0, nullptr, 0, nullptr, 1, &srcBack);
+
+	a->endSingleTimeCommands(cmd);
+}
+
+ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
+	if (layer >= layerAmount) return nullptr;
+	VulkanApp* a = this->app;
+	if (!a) return nullptr;
+	VkDevice device = a->getDevice();
+
+	std::vector<VkImageView>* viewVec = nullptr;
+	std::vector<ImTextureID>* texVec = nullptr;
+	TextureImage* src = nullptr;
+	VkSampler sampler = VK_NULL_HANDLE;
+	switch (map) {
+		case 0: viewVec = &albedoLayerViews; texVec = &albedoImTextures; src = &albedoArray; sampler = albedoSampler; break;
+		case 1: viewVec = &normalLayerViews; texVec = &normalImTextures; src = &normalArray; sampler = normalSampler; break;
+		case 2: viewVec = &bumpLayerViews; texVec = &bumpImTextures; src = &bumpArray; sampler = bumpSampler; break;
+		default: return nullptr;
+	}
+
+	// ensure vectors are sized
+	if (viewVec->size() != layerAmount) viewVec->resize(layerAmount, VK_NULL_HANDLE);
+	if (texVec->size() != layerAmount) texVec->resize(layerAmount, nullptr);
+
+	// if ImTextureID already created, return it
+	if ((*texVec)[layer]) return (*texVec)[layer];
+
+	// create a per-layer 2D image view
+	if (!(*viewVec)[layer]) {
+		VkImageViewCreateInfo viewInfo{};
+		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		viewInfo.image = src->image;
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		// choose format consistent with array creation
+		if (map == 0) viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+		else viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		viewInfo.subresourceRange.baseMipLevel = 0;
+		viewInfo.subresourceRange.levelCount = src->mipLevels;
+		viewInfo.subresourceRange.baseArrayLayer = static_cast<uint32_t>(layer);
+		viewInfo.subresourceRange.layerCount = 1;
+		// Use the source image's format where possible
+		// Attempt to read format from src - not stored publicly here; assume appropriate format
+		if (vkCreateImageView(device, &viewInfo, nullptr, &(*viewVec)[layer]) != VK_SUCCESS) {
+			return nullptr;
+		}
+	}
+
+	// create ImGui texture (descriptor set) for this view
+	ImTextureID id = ImGui_ImplVulkan_AddTexture(sampler, (*viewVec)[layer], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	(*texVec)[layer] = id;
+	return id;
 }

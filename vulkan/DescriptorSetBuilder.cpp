@@ -1,10 +1,9 @@
 #include "DescriptorSetBuilder.hpp"
 #include <cstring>
+DescriptorSetBuilder::DescriptorSetBuilder(VulkanApp* app_, ShadowMapper* shadowMapper_)
+    : app(app_), shadow(shadowMapper_) {}
 
-DescriptorSetBuilder::DescriptorSetBuilder(VulkanApp* app_, TextureManager* texMgr_, ShadowMapper* shadowMapper_)
-    : app(app_), texMgr(texMgr_), shadow(shadowMapper_) {}
-
-VkDescriptorSet DescriptorSetBuilder::createMainDescriptorSet(const TextureManager::Triple& tr, Buffer& uniformBuffer, bool bindMaterial, Buffer* materialBuffer, VkDeviceSize materialOffset) {
+VkDescriptorSet DescriptorSetBuilder::createMainDescriptorSet(const Triple& tr, Buffer& uniformBuffer, bool bindMaterial, Buffer* materialBuffer, VkDeviceSize materialOffset, Buffer* instanceBuffer) {
     VkDescriptorSet ds = app->createDescriptorSet(app->getDescriptorSetLayout());
 
     VkDescriptorBufferInfo bufferInfo{ uniformBuffer.buffer, 0, VK_WHOLE_SIZE };
@@ -32,7 +31,7 @@ VkDescriptorSet DescriptorSetBuilder::createMainDescriptorSet(const TextureManag
     return ds;
 }
 
-VkDescriptorSet DescriptorSetBuilder::createShadowDescriptorSet(const TextureManager::Triple& tr, Buffer& shadowUniformBuffer, bool bindMaterial, Buffer* materialBuffer, VkDeviceSize materialOffset) {
+VkDescriptorSet DescriptorSetBuilder::createShadowDescriptorSet(const Triple& tr, Buffer& shadowUniformBuffer, bool bindMaterial, Buffer* materialBuffer, VkDeviceSize materialOffset, Buffer* instanceBuffer) {
     VkDescriptorSet ds = app->createDescriptorSet(app->getDescriptorSetLayout());
     VkDescriptorBufferInfo bufferInfo{ shadowUniformBuffer.buffer, 0, VK_WHOLE_SIZE };
     VkWriteDescriptorSet uboWrite{}; uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; uboWrite.dstSet = ds; uboWrite.dstBinding = 0; uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; uboWrite.descriptorCount = 1; uboWrite.pBufferInfo = &bufferInfo;
@@ -58,13 +57,15 @@ VkDescriptorSet DescriptorSetBuilder::createShadowDescriptorSet(const TextureMan
     return ds;
 }
 
-VkDescriptorSet DescriptorSetBuilder::createSphereDescriptorSet(const TextureManager::Triple& tr, Buffer& sphereUniformBuffer, bool bindMaterial, Buffer* materialBuffer, VkDeviceSize materialOffset) {
+VkDescriptorSet DescriptorSetBuilder::createSphereDescriptorSet(const Triple& tr, Buffer& sphereUniformBuffer, bool bindMaterial, Buffer* materialBuffer, VkDeviceSize materialOffset, Buffer* instanceBuffer) {
+    (void)instanceBuffer;
     // Same as main descriptor set but uses sphereUniformBuffer
-    return createMainDescriptorSet(tr, sphereUniformBuffer, bindMaterial, materialBuffer, materialOffset);
+    return createMainDescriptorSet(tr, sphereUniformBuffer, bindMaterial, materialBuffer, materialOffset, nullptr);
 }
 
-VkDescriptorSet DescriptorSetBuilder::createShadowSphereDescriptorSet(const TextureManager::Triple& tr, Buffer& shadowSphereUniformBuffer, bool bindMaterial, Buffer* materialBuffer, VkDeviceSize materialOffset) {
-    return createShadowDescriptorSet(tr, shadowSphereUniformBuffer, bindMaterial, materialBuffer, materialOffset);
+VkDescriptorSet DescriptorSetBuilder::createShadowSphereDescriptorSet(const Triple& tr, Buffer& shadowSphereUniformBuffer, bool bindMaterial, Buffer* materialBuffer, VkDeviceSize materialOffset, Buffer* instanceBuffer) {
+    (void)instanceBuffer;
+    return createShadowDescriptorSet(tr, shadowSphereUniformBuffer, bindMaterial, materialBuffer, materialOffset, nullptr);
 }
 
 void DescriptorSetBuilder::updateMaterialBinding(std::vector<VkDescriptorSet>& sets, Buffer& materialBuffer, VkDeviceSize elementSize) {
@@ -81,3 +82,6 @@ void DescriptorSetBuilder::updateMaterialBinding(std::vector<VkDescriptorSet>& s
         app->updateDescriptorSet(sets[i], { materialWrite });
     }
 }
+
+// Note: functions accept an `instanceBuffer` parameter for backward compatibility
+// but do not currently use it. Callers may pass nullptr.

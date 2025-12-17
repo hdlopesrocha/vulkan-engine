@@ -24,20 +24,14 @@ void EditableTextureSet::init(VulkanApp* app, uint32_t width, uint32_t height, c
 	bump.init(app, width, height, VK_FORMAT_R8G8B8A8_UNORM, "Bump");
 }
 
-void EditableTextureSet::setTextureManager(TextureManager* texMgr) {
-	this->textureMgr = texMgr;
-	createComputePipeline();
-}
+// setTextureManager removed — EditableTextureSet creates its own compute sampler
+// and compute pipeline during init
 
 void EditableTextureSet::setOnTextureGenerated(std::function<void()> callback) {
 	onTextureGeneratedCallback = callback;
 }
 
 void EditableTextureSet::generateInitialTextures() {
-	if (!textureMgr || textureMgr->count() == 0) {
-		printf("Cannot generate initial textures: No textures in TextureManager\n");
-		return;
-	}
 	printf("Generating initial textures (Albedo, Normal, Bump)...\n");
 	generatePerlinNoise(albedo);
 	generatePerlinNoise(normal);
@@ -64,6 +58,11 @@ void EditableTextureSet::cleanup() {
 	if (computeDescriptorPool != VK_NULL_HANDLE) {
 		vkDestroyDescriptorPool(app->getDevice(), computeDescriptorPool, nullptr);
 		computeDescriptorPool = VK_NULL_HANDLE;
+	}
+
+	if (computeSampler != VK_NULL_HANDLE) {
+		vkDestroySampler(app->getDevice(), computeSampler, nullptr);
+		computeSampler = VK_NULL_HANDLE;
 	}
 }
 
@@ -118,29 +117,7 @@ void EditableTextureSet::renderTextureTab(EditableTexture& texture) {
 
 	bool paramsChanged = false;
 
-	if (textureMgr && textureMgr->count() > 0) {
-		ImGui::Text("Texture Selection:");
-
-		if (ImGui::Combo("Primary Texture", &primaryTextureIdx, [](void* data, int idx, const char** out_text) {
-			static char buf[32];
-			snprintf(buf, sizeof(buf), "Texture %d", idx);
-			*out_text = buf;
-			return true;
-		}, nullptr, textureMgr->count())) {
-			paramsChanged = true;
-		}
-
-		if (ImGui::Combo("Secondary Texture", &secondaryTextureIdx, [](void* data, int idx, const char** out_text) {
-			static char buf[32];
-			snprintf(buf, sizeof(buf), "Texture %d", idx);
-			*out_text = buf;
-			return true;
-		}, nullptr, textureMgr->count())) {
-			paramsChanged = true;
-		}
-	} else {
-		ImGui::TextColored(ImVec4(1, 0, 0, 1), "No textures loaded in TextureManager");
-	}
+	// Texture selection UI removed — EditableTextureSet generates textures independently
 
 	ImGui::Separator();
 	ImGui::Text("Noise Parameters");
@@ -335,14 +312,25 @@ void EditableTextureSet::createComputeDescriptorSet(EditableTexture& texture, Vk
 	descriptorWrite.descriptorCount = 1;
 	descriptorWrite.pImageInfo = &imageInfo;
 
-	vkUpdateDescriptorSets(app->getDevice(), 1, &descriptorWrite, 0, nullptr);
+	// Ensure we have a sampler to bind as primary/secondary inputs for the compute shader.
+	if (computeSampler == VK_NULL_HANDLE) {
+		computeSampler = app->createTextureSampler(1);
+	}
+
+	VkDescriptorImageInfo samplerInfo{};
+	samplerInfo.imageView = texture.getView();
+	samplerInfo.sampler = computeSampler;
+	samplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+	VkWriteDescriptorSet samplerWrite1{}; samplerWrite1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; samplerWrite1.dstSet = descSet; samplerWrite1.dstBinding = 1; samplerWrite1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; samplerWrite1.descriptorCount = 1; samplerWrite1.pImageInfo = &samplerInfo;
+	VkWriteDescriptorSet samplerWrite2{}; samplerWrite2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; samplerWrite2.dstSet = descSet; samplerWrite2.dstBinding = 2; samplerWrite2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; samplerWrite2.descriptorCount = 1; samplerWrite2.pImageInfo = &samplerInfo;
+
+	VkWriteDescriptorSet writes[3] = { descriptorWrite, samplerWrite1, samplerWrite2 };
+	vkUpdateDescriptorSets(app->getDevice(), 3, writes, 0, nullptr);
 }
 
 void EditableTextureSet::generatePerlinNoise(EditableTexture& texture) {
-	if (!textureMgr || textureMgr->count() == 0) {
-		printf("Cannot generate: No textures in TextureManager\n");
-		return;
-	}
+	// generate regardless of external texture lists
 
 	VkDescriptorSet descSet = VK_NULL_HANDLE;
 	int textureType = 0;
@@ -362,57 +350,7 @@ void EditableTextureSet::generatePerlinNoise(EditableTexture& texture) {
 		return;
 	}
 
-	int primIdx = std::min(primaryTextureIdx, (int)textureMgr->count() - 1);
-	int secIdx = std::min(secondaryTextureIdx, (int)textureMgr->count() - 1);
-
-	const auto& primaryTriple = textureMgr->getTriple(primIdx);
-	const auto& secondaryTriple = textureMgr->getTriple(secIdx);
-
-	VkDescriptorImageInfo primaryImageInfo{};
-	VkDescriptorImageInfo secondaryImageInfo{};
-	primaryImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	secondaryImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-	switch(textureType) {
-		case 0:
-			primaryImageInfo.imageView = primaryTriple.albedo.view;
-			primaryImageInfo.sampler = primaryTriple.albedoSampler;
-			secondaryImageInfo.imageView = secondaryTriple.albedo.view;
-			secondaryImageInfo.sampler = secondaryTriple.albedoSampler;
-			break;
-		case 1:
-			primaryImageInfo.imageView = primaryTriple.normal.view;
-			primaryImageInfo.sampler = primaryTriple.normalSampler;
-			secondaryImageInfo.imageView = secondaryTriple.normal.view;
-			secondaryImageInfo.sampler = secondaryTriple.normalSampler;
-			break;
-		case 2:
-			primaryImageInfo.imageView = primaryTriple.height.view;
-			primaryImageInfo.sampler = primaryTriple.heightSampler;
-			secondaryImageInfo.imageView = secondaryTriple.height.view;
-			secondaryImageInfo.sampler = secondaryTriple.heightSampler;
-			break;
-	}
-
-	VkWriteDescriptorSet descriptorWrites[2] = {};
-
-	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	descriptorWrites[0].dstSet = descSet;
-	descriptorWrites[0].dstBinding = 1;
-	descriptorWrites[0].dstArrayElement = 0;
-	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	descriptorWrites[0].descriptorCount = 1;
-	descriptorWrites[0].pImageInfo = &primaryImageInfo;
-
-	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	descriptorWrites[1].dstSet = descSet;
-	descriptorWrites[1].dstBinding = 2;
-	descriptorWrites[1].dstArrayElement = 0;
-	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	descriptorWrites[1].descriptorCount = 1;
-	descriptorWrites[1].pImageInfo = &secondaryImageInfo;
-
-	vkUpdateDescriptorSets(app->getDevice(), 2, descriptorWrites, 0, nullptr);
+	// Descriptor sets for compute already bind the texture itself as primary/secondary samplers
 
 	PerlinPushConstants pushConstants;
 	pushConstants.scale = perlinScale;
@@ -430,7 +368,7 @@ void EditableTextureSet::generatePerlinNoise(EditableTexture& texture) {
 	printf("Generating %s Perlin noise: scale=%.2f, octaves=%.0f, persistence=%.2f, lacunarity=%.2f, brightness=%.2f, contrast=%.2f, seed=%u\n",
 		   typeNames[textureType], pushConstants.scale, pushConstants.octaves, pushConstants.persistence, pushConstants.lacunarity,
 		   pushConstants.brightness, pushConstants.contrast, pushConstants.seed);
-	printf("Primary texture: %d, Secondary texture: %d\n", primIdx, secIdx);
+	printf("Primary texture: %d, Secondary texture: %d\n", primaryTextureIdx, secondaryTextureIdx);
 	printf("Texture size: %dx%d, dispatch groups: %dx%d\n",
 		   texture.getWidth(), texture.getHeight(),
 		   (texture.getWidth() + 15) / 16, (texture.getHeight() + 15) / 16);

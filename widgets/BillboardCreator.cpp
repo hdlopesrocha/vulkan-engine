@@ -6,7 +6,7 @@
 #include <cstdio>
 
 // Constructor moved from header
-BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureManager* textureMgr)
+BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr)
     : Widget("Billboard Creator"), billboardManager(billboardMgr), atlasManager(atlasMgr), textureManager(textureMgr) {
     isOpen = false; // Start closed
 }
@@ -315,7 +315,7 @@ void BillboardCreator::renderBillboardPreview(Billboard* billboard) {
 }
 
 void BillboardCreator::composeBillboard(Billboard* billboard) {
-    if (!texturesInitialized || !textureManager || !atlasManager) {
+    if (!texturesInitialized || !atlasManager) {
         printf("Cannot compose billboard: textures not initialized\n");
         return;
     }
@@ -571,7 +571,7 @@ void BillboardCreator::drawCheckerboard(ImDrawList* drawList, ImVec2 pos, float 
 // BillboardCreator::render moved from header
 void BillboardCreator::render() {
     if (!isOpen) return;
-    if (!billboardManager || !atlasManager || !textureManager) return;
+    if (!billboardManager || !atlasManager) return;
 
     ImGui::SetNextWindowSize(ImVec2(900, 700), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin(title.c_str(), &isOpen)) {

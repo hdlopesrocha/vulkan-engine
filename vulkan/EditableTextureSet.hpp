@@ -1,7 +1,6 @@
 #pragma once
 
 #include "EditableTexture.hpp"
-#include "TextureManager.hpp"
 #include "FileReader.hpp"
 #include "../widgets/Widget.hpp"
 #include <imgui.h>
@@ -15,7 +14,7 @@ public:
     
     void init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName = "Editable Textures");
     
-    void setTextureManager(TextureManager* texMgr);
+    // removed TextureManager dependency; EditableTextureSet manages its own compute sampler
     
     // Set callback to be called after texture generation
     void setOnTextureGenerated(std::function<void()> callback);
@@ -39,7 +38,7 @@ public:
     
 private:
     VulkanApp* app = nullptr;
-    TextureManager* textureMgr = nullptr;
+    VkSampler computeSampler = VK_NULL_HANDLE;
     EditableTexture albedo;
     EditableTexture normal;
     EditableTexture bump;

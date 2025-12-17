@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../vulkan/TextureManager.hpp"
+#include "../vulkan/TextureArrayManager.hpp"
 #include "../vulkan/AtlasManager.hpp"
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
@@ -11,7 +11,7 @@
 
 class VegetationAtlasEditor : public Widget {
 public:
-    VegetationAtlasEditor(TextureManager* vegTextureManager, AtlasManager* atlasManager);
+    VegetationAtlasEditor(TextureArrayManager* vegTextureArrayManager, AtlasManager* atlasManager);
     ~VegetationAtlasEditor();
     
     // We will request ImGui texture IDs from the TextureManager at render time.
@@ -19,7 +19,7 @@ public:
     void render() override;
     
 private:
-    TextureManager* vegetationTextureManager;
+    TextureArrayManager* vegetationTextureManager;
     AtlasManager* atlasManager;
     int currentTextureIndex = 0;  // Which vegetation texture (0=foliage, 1=grass, 2=wild)
     int selectedTileIndex = -1;   // Currently selected tile for editing

@@ -3,7 +3,7 @@
 #include "Widget.hpp"
 #include "../utils/BillboardManager.hpp"
 #include "../vulkan/AtlasManager.hpp"
-#include "../vulkan/TextureManager.hpp"
+#include "../vulkan/TextureArrayManager.hpp"
 #include "../vulkan/EditableTexture.hpp"
 #include "../utils/AtlasTextureData.hpp"
 #include <imgui.h>
@@ -15,7 +15,7 @@
 
 class BillboardCreator : public Widget {
 public:
-    BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureManager* textureMgr);
+    BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr);
 
     void setVulkanApp(class VulkanApp* app);
     void initializeTextures();
@@ -32,7 +32,7 @@ public:
 private:
     BillboardManager* billboardManager;
     AtlasManager* atlasManager;
-    TextureManager* textureManager;
+    TextureArrayManager* textureManager;
     VulkanApp* vulkanApp = nullptr;
     
     int currentBillboardIndex = -1;

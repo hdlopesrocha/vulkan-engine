@@ -3,6 +3,8 @@
 
 #include <cstdint>
 #include "TextureImage.hpp"
+#include <vector>
+#include <backends/imgui_impl_vulkan.h>
 
 class TextureArrayManager {
 public:
@@ -23,6 +25,13 @@ public:
     // Back-reference to the VulkanApp used to allocate resources (optional)
     class VulkanApp* app = nullptr;
     uint currentLayer = 0;
+    // Per-layer 2D views and ImGui texture IDs (created on demand for UI display)
+    std::vector<VkImageView> albedoLayerViews;
+    std::vector<VkImageView> normalLayerViews;
+    std::vector<VkImageView> bumpLayerViews;
+    std::vector<ImTextureID> albedoImTextures;
+    std::vector<ImTextureID> normalImTextures;
+    std::vector<ImTextureID> bumpImTextures;
     TextureArrayManager() = default;
     TextureArrayManager(uint32_t layers, uint32_t w, uint32_t h)
         : layerAmount(layers), width(w), height(h) {}
@@ -38,4 +47,10 @@ public:
     uint load(char* albedoFile, char* normalFile, char* bumpFile);
     // Create an empty (zeroed) triple at the current layer for later editing, then increment layer counter
     uint create();
+
+    // Return an ImGui texture handle for a given array layer and map (0=albedo,1=normal,2=bump)
+    ImTextureID getImTexture(size_t layer, int map);
+
+    // Update a specific array layer from an EditableTexture (copies image -> array layer)
+    void updateLayerFromEditable(uint32_t layer, const class EditableTexture& tex);
 };

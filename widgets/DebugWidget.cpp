@@ -1,7 +1,7 @@
 #include "DebugWidget.hpp"
 
-DebugWidget::DebugWidget(TextureManager* textureManager, Camera* camera, size_t* cubeCount)
-    : Widget("Debug"), textureManager(textureManager), camera(camera), cubeCount(cubeCount) {
+DebugWidget::DebugWidget(std::vector<MaterialProperties>* materials, Camera* camera, size_t* cubeCount)
+    : Widget("Debug"), materials(materials), camera(camera), cubeCount(cubeCount) {
 }
 
 void DebugWidget::render() {
@@ -10,7 +10,8 @@ void DebugWidget::render() {
         return;
     }
 
-    ImGui::Text("Loaded texture triples: %zu", textureManager->count());
+    size_t texCount = materials ? materials->size() : 0;
+    ImGui::Text("Loaded texture triples: %zu", texCount);
     ImGui::Text("Rendered cubes: %zu", *cubeCount);
     glm::vec3 camPos = camera->getPosition();
     ImGui::Text("Camera pos: %.2f %.2f %.2f", camPos.x, camPos.y, camPos.z);

@@ -12,8 +12,8 @@
 #include "events/RotateCameraEvent.hpp"
 #include "events/CloseWindowEvent.hpp"
 #include "events/ToggleFullscreenEvent.hpp"
-#include "vulkan/TextureManager.hpp"
 #include "vulkan/TextureArrayManager.hpp"
+#include "vulkan/TextureTriple.hpp"
 #include "vulkan/AtlasManager.hpp"
 #include "utils/BillboardManager.hpp"
 #include "math/CubeModel.hpp"
@@ -72,13 +72,12 @@ class MyApp : public VulkanApp, public IEventHandler {
     VkPipeline graphicsPipelineWire = VK_NULL_HANDLE;
     std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<SkySphere> skySphere;
-    // texture manager handles albedo/normal/height triples
-    TextureManager textureManager;
+    // materials list (replaces legacy TextureManager storage) - each entry corresponds
+    // to a layer/index in `textureArrayManager` when arrays are used.
+    std::vector<MaterialProperties> materials;
     // GPU-side texture arrays (albedo/normal/bump) for sampler2DArray usage
     TextureArrayManager textureArrayManager;
     
-    // Vegetation texture manager for billboard vegetation (albedo/normal/opacity)
-    TextureManager vegetationTextureManager;
     // GPU-side texture array for vegetation (albedo/normal/opacity)
     TextureArrayManager vegetationTextureArrayManager;
     
@@ -243,9 +242,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Now that pipelines (and the app pipeline layout) have been created, initialize shadow mapper
             shadowMapper.init();
 
-            // initialize texture manager and explicitly load known albedo/normal/height triples by filename
-            textureManager.init(this);
             // initialize texture array manager with room for 16 layers of 1024x1024
+            // (we no longer use the legacy TextureManager for storage; `materials` tracks per-layer properties)
             textureArrayManager.allocate(16, 1024, 1024, this);
             std::vector<size_t> loadedIndices;
 
@@ -267,10 +265,9 @@ class MyApp : public VulkanApp, public IEventHandler {
             for (const auto &entry : specs) {
                 const auto &files = entry.first;
                 const auto &matSpec = entry.second;
-                // keep legacy TextureManager entries for compatibility
-                size_t idx = textureManager.loadTriple(files[0], files[1], files[2]);
-                auto &mat = textureManager.getMaterial(idx);
-                mat = matSpec;
+                // record material properties and load into GPU texture arrays
+                size_t idx = materials.size();
+                materials.push_back(matSpec);
                 loadedIndices.push_back(idx);
                 // also load into the new TextureArrayManager (GPU-backed 2D texture arrays)
                 textureArrayManager.load(const_cast<char*>(files[0]), const_cast<char*>(files[1]), const_cast<char*>(files[2]));
@@ -278,12 +275,9 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // Disable mapping for all loaded materials: set mappingMode to false
             for (size_t idx : loadedIndices) {
-                auto &m = textureManager.getMaterial(idx);
+                auto &m = materials[idx];
                 m.mappingMode = false; // none
             }
-
-            // Initialize vegetation texture manager for billboard vegetation
-            vegetationTextureManager.init(this);
 
             // Load vegetation textures (albedo/normal/opacity triples) and initialize MaterialProperties
             // Note: We use the height slot for opacity masks
@@ -295,20 +289,16 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // allocate vegetation GPU texture arrays sized to the number of veg layers
             vegetationTextureArrayManager.allocate(static_cast<uint32_t>(vegSpecs.size()), 1024, 1024, this);
-
+            // append vegetation materials to `materials` and load texture data into vegetation arrays
+            size_t vegBase = materials.size();
             for (const auto &entry : vegSpecs) {
                 const auto &files = entry.first;
                 const auto &mp = entry.second;
-                size_t idx = vegetationTextureManager.loadTriple(files[0], files[1], files[2]);
-                auto &mat = vegetationTextureManager.getMaterial(idx);
-                mat = mp;
-                // also load into the vegetation GPU texture array
+                materials.push_back(mp);
                 vegetationTextureArrayManager.load(const_cast<char*>(files[0]), const_cast<char*>(files[1]), const_cast<char*>(files[2]));
             }
-
-            for (size_t vi = 0; vi < vegetationTextureManager.count(); ++vi) {
-                auto &vm = vegetationTextureManager.getMaterial(vi);
-                    vm.mappingMode = false;
+            for (size_t vi = vegBase; vi < materials.size(); ++vi) {
+                materials[vi].mappingMode = false;
             }
 
             // Auto-detect tiles from vegetation opacity maps
@@ -325,20 +315,14 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Initialize and add editable textures BEFORE creating descriptor sets
             editableTextures = std::make_shared<EditableTextureSet>();
             editableTextures->init(this, 1024, 1024, "Editable Textures");
-            editableTextures->setTextureManager(&textureManager);
+            // EditableTextureSet no longer requires a TextureManager
             editableTextures->generateInitialTextures();
             
-            // Add editable textures to TextureManager as a regular triple
-            size_t editableIndex = textureManager.addTriple(
-                editableTextures->getAlbedo().getTextureImage(),
-                editableTextures->getAlbedo().getSampler(),
-                editableTextures->getNormal().getTextureImage(),
-                editableTextures->getNormal().getSampler(),
-                editableTextures->getBump().getTextureImage(),
-                editableTextures->getBump().getSampler()
-            );
+            // Add editable textures as an entry in `materials` and keep their images managed by the EditableTextureSet
+            size_t editableIndex = materials.size();
+            materials.push_back(MaterialProperties{});
             // Apply editable material properties in a single-line initializer
-            textureManager.getMaterial(editableIndex) = MaterialProperties{
+            materials[editableIndex] = MaterialProperties{
                 false,  // mappingMode (none)
                 false, // invertHeight
                 0.2f,  // tessHeightScale (unused)
@@ -354,24 +338,24 @@ class MyApp : public VulkanApp, public IEventHandler {
             };
             editableTextureIndex = editableIndex;  // Store for plane rendering
             // Initialize cached plane material from the editable texture triple
-            planeMaterial = textureManager.getMaterial(editableIndex);
+            planeMaterial = materials[editableIndex];
 
             // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
             if (!loadedIndices.empty()) currentTextureIndex = loadedIndices[0];
             
-            // create uniform buffers - one per texture (including editable texture)
-            uniforms.resize(textureManager.count());
+            // create uniform buffers - one per material entry (including editable texture)
+            uniforms.resize(materials.size());
             for (size_t i = 0; i < uniforms.size(); ++i) {
                 uniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             }
             // create shadow uniform buffers
-            shadowUniforms.resize(textureManager.count());
+            shadowUniforms.resize(materials.size());
             for (size_t i = 0; i < shadowUniforms.size(); ++i) {
                 shadowUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             }
             
             // create descriptor sets - one per texture triple
-            size_t tripleCount = textureManager.count();
+            size_t tripleCount = materials.size();
             if (tripleCount == 0) tripleCount = 1; // ensure at least one
             // Create/upload GPU-side material buffer (packed vec4-friendly struct)
             updateMaterials();
@@ -389,9 +373,18 @@ class MyApp : public VulkanApp, public IEventHandler {
             shadowDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
 
             // Use DescriptorSetBuilder to reduce repeated code
-            DescriptorSetBuilder dsBuilder(this, &textureManager, &shadowMapper);
+            DescriptorSetBuilder dsBuilder(this, &shadowMapper);
             for (size_t i = 0; i < tripleCount; ++i) {
-                const auto &tr = textureManager.getTriple(i);
+                // Construct a transient Triple that points into the global texture arrays so
+                // DescriptorSetBuilder can create descriptor sets. Bindings will be overwritten
+                // with array descriptors below when arrays are present.
+                Triple tr;
+                tr.albedo.view = textureArrayManager.albedoArray.view;
+                tr.albedoSampler = textureArrayManager.albedoSampler;
+                tr.normal.view = textureArrayManager.normalArray.view;
+                tr.normalSampler = textureArrayManager.normalSampler;
+                tr.height.view = textureArrayManager.bumpArray.view;
+                tr.heightSampler = textureArrayManager.bumpSampler;
                 // main descriptor set
                 VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
                 VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, uniforms[i], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
@@ -411,7 +404,13 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // create uniform buffer for sphere instance
                 sphereUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                 shadowSphereUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                const auto &tr = textureManager.getTriple(i);
+                Triple tr;
+                tr.albedo.view = textureArrayManager.albedoArray.view;
+                tr.albedoSampler = textureArrayManager.albedoSampler;
+                tr.normal.view = textureArrayManager.normalArray.view;
+                tr.normalSampler = textureArrayManager.normalSampler;
+                tr.height.view = textureArrayManager.bumpArray.view;
+                tr.heightSampler = textureArrayManager.bumpSampler;
                 VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
                 VkDescriptorSet ds = dsBuilder.createSphereDescriptorSet(tr, sphereUniforms[i], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
                 sphereDescriptorSets[i] = ds;
@@ -530,7 +529,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             instanceShadowDescriptorSets.resize(modelObjects.size(), VK_NULL_HANDLE);
             instanceShadowUniforms.resize(modelObjects.size());
             {
-                DescriptorSetBuilder dsBuilder(this, &textureManager, &shadowMapper);
+                DescriptorSetBuilder dsBuilder(this, &shadowMapper);
                 VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
                 for (size_t mi = 0; mi < modelObjects.size(); ++mi) {
                     Model3D* m = modelObjects[mi].get();
@@ -538,8 +537,15 @@ class MyApp : public VulkanApp, public IEventHandler {
                     // determine triple index from mesh vertex texIndex (plane was built with editableIndex)
                     int texIdx = 0;
                     if (!m->mesh->getVertices().empty()) texIdx = m->mesh->getVertices()[0].texIndex;
-                    if (texIdx < 0 || static_cast<size_t>(texIdx) >= textureManager.count()) texIdx = 0;
-                    const auto &tr = textureManager.getTriple(static_cast<size_t>(texIdx));
+                        if (texIdx < 0 || static_cast<size_t>(texIdx) >= materials.size()) texIdx = 0;
+                        // transient Triple backed by the global texture arrays
+                            Triple tr;
+                        tr.albedo.view = textureArrayManager.albedoArray.view;
+                        tr.albedoSampler = textureArrayManager.albedoSampler;
+                        tr.normal.view = textureArrayManager.normalArray.view;
+                        tr.normalSampler = textureArrayManager.normalSampler;
+                        tr.height.view = textureArrayManager.bumpArray.view;
+                        tr.heightSampler = textureArrayManager.bumpSampler;
                     // create per-instance uniform buffers
                     instanceUniforms[mi] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                     instanceShadowUniforms[mi] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -570,7 +576,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             
             // Initialize widgets
             textureViewer = std::make_shared<TextureViewer>();
-            textureViewer->init(&textureManager);
+            textureViewer->init(&textureArrayManager, &materials);
             // Rebuild GPU material buffer when materials are modified via the texture viewer
             textureViewer->setOnMaterialChanged([this](size_t idx) {
                 (void)idx; // currently we rebuild entire buffer
@@ -585,7 +591,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // refresh GPU-side material buffer to pick up any editable material changes
                 updateMaterials();
                 // Update cached plane material to reflect regenerated editable textures
-                planeMaterial = textureManager.getMaterial(editableIndex);
+                planeMaterial = materials[editableIndex];
             });
             widgetManager.addWidget(editableTextures);
             
@@ -593,7 +599,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             auto cameraWidget = std::make_shared<CameraWidget>(&camera);
             widgetManager.addWidget(cameraWidget);
             
-            auto debugWidget = std::make_shared<DebugWidget>(&textureManager, &camera, &currentTextureIndex);
+            auto debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &currentTextureIndex);
             widgetManager.addWidget(debugWidget);
             
             auto shadowWidget = std::make_shared<ShadowMapWidget>(&shadowMapper);
@@ -626,11 +632,11 @@ class MyApp : public VulkanApp, public IEventHandler {
             skySphere->init(skyWidget.get(), descriptorSets, shadowDescriptorSets, sphereDescriptorSets, shadowSphereDescriptorSets);
             
             // Create vegetation atlas editor widget
-            auto vegAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureManager, &vegetationAtlasManager);
+            auto vegAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
             widgetManager.addWidget(vegAtlasEditor);
             
             // Create billboard creator widget
-            billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureManager);
+            billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureArrayManager);
             billboardCreator->setVulkanApp(this);
             widgetManager.addWidget(billboardCreator);
             
@@ -645,29 +651,20 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Upload all materials into a GPU storage buffer (called once during setup)
         void updateMaterials() {
-            // Include both regular textures and vegetation textures in the GPU materials array
-            size_t baseCount = textureManager.count();
-            size_t vegCount = vegetationTextureManager.count();
-            materialCount = baseCount + vegCount;
+            materialCount = materials.size();
             if (materialCount == 0) return;
 
             // Allocate GPU buffer via MaterialManager and upload per-index materials
             materialManager.allocate(materialCount, this);
-            // upload base (textureManager) materials
-            for (size_t mi = 0; mi < baseCount; ++mi) {
-                const MaterialProperties &mat = textureManager.getMaterial(mi);
+            for (size_t mi = 0; mi < materialCount; ++mi) {
+                const MaterialProperties &mat = materials[mi];
                 materialManager.update(mi, mat, this);
-            }
-            // upload vegetation materials after base materials
-            for (size_t vi = 0; vi < vegCount; ++vi) {
-                const MaterialProperties &mat = vegetationTextureManager.getMaterial(vi);
-                materialManager.update(baseCount + vi, mat, this);
             }
 
             // Rebind material buffer into descriptor sets so shaders read the new GPU buffer
             if (!descriptorSets.empty()) {
                 VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
-                DescriptorSetBuilder dsBuilder(this, &textureManager, &shadowMapper);
+                DescriptorSetBuilder dsBuilder(this, &shadowMapper);
                 dsBuilder.updateMaterialBinding(descriptorSets, materialManager.getBuffer(), matElemSize);
                 dsBuilder.updateMaterialBinding(shadowDescriptorSets, materialManager.getBuffer(), matElemSize);
                 dsBuilder.updateMaterialBinding(sphereDescriptorSets, materialManager.getBuffer(), matElemSize);
@@ -943,8 +940,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                 const MaterialProperties* instMat = nullptr;
                 if (instance.model && !instance.model->getVertices().empty()) {
                     int idx = instance.model->getVertices()[0].texIndex;
-                    if (idx >= 0 && static_cast<size_t>(idx) < textureManager.count()) {
-                        instMat = &textureManager.getMaterial(static_cast<size_t>(idx));
+                    if (idx >= 0 && static_cast<size_t>(idx) < materials.size()) {
+                        instMat = &materials[static_cast<size_t>(idx)];
                     }
                 }
                 // Per-material tess level is provided by the Materials SSBO; no per-instance override here.
@@ -1005,8 +1002,10 @@ class MyApp : public VulkanApp, public IEventHandler {
             if (graphicsPipelineWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineWire, nullptr);
             // Tessellation pipelines removed earlier; nothing to destroy here.
             if (skyRenderer) skyRenderer->cleanup();
-            // texture cleanup via manager
-            textureManager.destroyAll();
+            // texture cleanup via managers
+            // legacy texture managers removed; arrays handle GPU textures now
+            textureArrayManager.destroy(this);
+            vegetationTextureArrayManager.destroy(this);
             // vertex/index buffers cleanup - destroy GPU buffers created from the meshes
             for (auto& vbo : meshVBOs) {
                 vbo.destroy(getDevice());

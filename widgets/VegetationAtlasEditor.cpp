@@ -1,8 +1,8 @@
 // Implementation for VegetationAtlasEditor
 #include "VegetationAtlasEditor.hpp"
 
-VegetationAtlasEditor::VegetationAtlasEditor(TextureManager* vegTextureManager, AtlasManager* atlasManager)
-    : Widget("Vegetation Atlas Editor"), vegetationTextureManager(vegTextureManager), atlasManager(atlasManager) {
+VegetationAtlasEditor::VegetationAtlasEditor(TextureArrayManager* vegTextureArrayManager, AtlasManager* atlasManager)
+    : Widget("Vegetation Atlas Editor"), vegetationTextureManager(vegTextureArrayManager), atlasManager(atlasManager) {
     isOpen = false; // Start closed to avoid crashes on startup
 }
 
@@ -191,7 +191,7 @@ void VegetationAtlasEditor::render() {
         ImGui::Spacing();
 
         // Preview area with actual texture
-        if (vegetationTextureManager && currentTextureIndex < (int)vegetationTextureManager->count()) {
+        if (vegetationTextureManager && currentTextureIndex < (int)vegetationTextureManager->layerAmount) {
             ImTextureID texID = nullptr;
             try {
                 texID = vegetationTextureManager->getImTexture((size_t)currentTextureIndex, currentTextureView);
