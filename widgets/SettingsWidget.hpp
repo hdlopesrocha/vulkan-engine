@@ -37,8 +37,8 @@ private:
     bool normalMappingEnabled = true;          // Global toggle for normal mapping
     std::function<void()> onDumpShadowDepth;
     // Triplanar settings
-    float triplanarThreshold = 0.12f; // small dead zone before blending starts
-    float triplanarExponent = 3.0f;   // >1 makes transitions steeper
+    float triplanarThreshold = 0.5f; // small dead zone before blending starts
+    float triplanarExponent = 5.0f;   // >1 makes transitions steeper
     // Tessellation settings
     bool adaptiveTessellation = true;
     float tessMinLevel = 1.0f;
