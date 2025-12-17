@@ -44,6 +44,7 @@
 #include "utils/MainSceneLoader.hpp"
 
 #include "Uniforms.hpp"
+#include "vulkan/MaterialManager.hpp"
 
 #include "vulkan/VertexBufferObjectBuilder.hpp"
 #include "utils/Model3DVersion.hpp"
@@ -136,10 +137,9 @@ class MyApp : public VulkanApp, public IEventHandler {
         std::vector<VkDescriptorSet> shadowDescriptorSets;
         std::vector<Buffer> shadowSphereUniforms;
         std::vector<VkDescriptorSet> shadowSphereDescriptorSets;
-        // One-time GPU buffer holding all material properties (uploaded once during setup)
-        Buffer materialBuffer;
+        // Material manager for GPU-side packed materials
+        MaterialManager materialManager;
         size_t materialCount = 0;
-        VkDeviceSize materialBufferSize = 0;
         // Small UBO for sky parameters is managed by SkySphere
         
         // store projection and view for per-cube MVP computation in draw()
@@ -380,11 +380,11 @@ class MyApp : public VulkanApp, public IEventHandler {
                 const auto &tr = textureManager.getTriple(i);
                 // main descriptor set
                 VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
-                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, uniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, uniforms[i], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
                 descriptorSets[i] = ds;
 
                 // shadow descriptor set
-                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniforms[i], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
                 shadowDescriptorSets[i] = sds;
             }
 
@@ -399,9 +399,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 shadowSphereUniforms[i] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                 const auto &tr = textureManager.getTriple(i);
                 VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
-                VkDescriptorSet ds = dsBuilder.createSphereDescriptorSet(tr, sphereUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                VkDescriptorSet ds = dsBuilder.createSphereDescriptorSet(tr, sphereUniforms[i], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
                 sphereDescriptorSets[i] = ds;
-                VkDescriptorSet sds = dsBuilder.createShadowSphereDescriptorSet(tr, shadowSphereUniforms[i], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                VkDescriptorSet sds = dsBuilder.createShadowSphereDescriptorSet(tr, shadowSphereUniforms[i], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
                 shadowSphereDescriptorSets[i] = sds;
             }
 
@@ -497,8 +497,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                     instanceUniforms[mi] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                     instanceShadowUniforms[mi] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                     // create descriptor sets bound to the per-instance buffers
-                    instanceDescriptorSets[mi] = dsBuilder.createMainDescriptorSet(tr, instanceUniforms[mi], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(texIdx) * matElemSize : 0);
-                    instanceShadowDescriptorSets[mi] = dsBuilder.createShadowDescriptorSet(tr, instanceShadowUniforms[mi], materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, materialCount > 0 ? static_cast<VkDeviceSize>(texIdx) * matElemSize : 0);
+                    instanceDescriptorSets[mi] = dsBuilder.createMainDescriptorSet(tr, instanceUniforms[mi], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(texIdx) * matElemSize : 0);
+                    instanceShadowDescriptorSets[mi] = dsBuilder.createShadowDescriptorSet(tr, instanceShadowUniforms[mi], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(texIdx) * matElemSize : 0);
                 }
             }
             
@@ -601,50 +601,21 @@ class MyApp : public VulkanApp, public IEventHandler {
             materialCount = textureManager.count();
             if (materialCount == 0) return;
 
-            struct MaterialGPU { glm::vec4 materialFlags; glm::vec4 mappingParams; glm::vec4 specularParams; glm::vec4 triplanarParams; };
-            VkDeviceSize matBufSize = sizeof(MaterialGPU) * materialCount;
-            // If the existing buffer is the right size, reuse it; otherwise recreate and remember size
-            bool recreated = false;
-            if (materialBuffer.buffer != VK_NULL_HANDLE && materialBufferSize != matBufSize) {
-                vkDestroyBuffer(getDevice(), materialBuffer.buffer, nullptr);
-                materialBuffer.buffer = VK_NULL_HANDLE;
-            }
-
-        
-            if (materialBuffer.memory != VK_NULL_HANDLE && materialBuffer.buffer == VK_NULL_HANDLE) {
-                vkFreeMemory(getDevice(), materialBuffer.memory, nullptr);
-                materialBuffer.memory = VK_NULL_HANDLE;
-            }
-
-            if (materialBuffer.buffer == VK_NULL_HANDLE) {
-                materialBuffer = createBuffer(matBufSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                materialBufferSize = matBufSize;
-                recreated = true;
-            }
-
-            std::vector<MaterialGPU> tmp(materialCount);
+            // Allocate GPU buffer via MaterialManager and upload per-index materials
+            materialManager.allocate(materialCount, this);
             for (size_t mi = 0; mi < materialCount; ++mi) {
                 const MaterialProperties &mat = textureManager.getMaterial(mi);
-                tmp[mi].materialFlags = glm::vec4(0.0f, 0.0f, mat.ambientFactor, 0.0f);
-                tmp[mi].mappingParams = glm::vec4(mat.mappingMode ? 1.0f : 0.0f, mat.tessLevel, mat.invertHeight ? 1.0f : 0.0f, mat.tessHeightScale);
-                tmp[mi].specularParams = glm::vec4(mat.specularStrength, mat.shininess, 0.0f, 0.0f);
-                tmp[mi].triplanarParams = glm::vec4(mat.triplanarScaleU, mat.triplanarScaleV, mat.triplanar ? 1.0f : 0.0f, 0.0f);
+                materialManager.update(mi, mat, this);
             }
 
-            void* mapped = nullptr;
-            if (vkMapMemory(getDevice(), materialBuffer.memory, 0, matBufSize, 0, &mapped) == VK_SUCCESS) {
-                memcpy(mapped, tmp.data(), static_cast<size_t>(matBufSize));
-                vkUnmapMemory(getDevice(), materialBuffer.memory);
-            }
-
-            // If we recreated the buffer after descriptor sets were allocated, rebind it into all descriptor sets
-            if (recreated && !descriptorSets.empty()) {
+            // Rebind material buffer into descriptor sets so shaders read the new GPU buffer
+            if (!descriptorSets.empty()) {
                 VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
                 DescriptorSetBuilder dsBuilder(this, &textureManager, &shadowMapper);
-                dsBuilder.updateMaterialBinding(descriptorSets, materialBuffer, matElemSize);
-                dsBuilder.updateMaterialBinding(shadowDescriptorSets, materialBuffer, matElemSize);
-                dsBuilder.updateMaterialBinding(sphereDescriptorSets, materialBuffer, matElemSize);
-                dsBuilder.updateMaterialBinding(shadowSphereDescriptorSets, materialBuffer, matElemSize);
+                dsBuilder.updateMaterialBinding(descriptorSets, materialManager.getBuffer(), matElemSize);
+                dsBuilder.updateMaterialBinding(shadowDescriptorSets, materialManager.getBuffer(), matElemSize);
+                dsBuilder.updateMaterialBinding(sphereDescriptorSets, materialManager.getBuffer(), matElemSize);
+                dsBuilder.updateMaterialBinding(shadowSphereDescriptorSets, materialManager.getBuffer(), matElemSize);
             }
         }
 
@@ -1017,9 +988,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             
             // shadow map cleanup
             shadowMapper.cleanup();
-            // material buffer cleanup
-            if (materialBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), materialBuffer.buffer, nullptr);
-            if (materialBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), materialBuffer.memory, nullptr);
+            // material manager cleanup
+            materialManager.destroy(this);
             // sky resources cleanup via SkySphere
             if (skySphere) skySphere->cleanup();
         }
