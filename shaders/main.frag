@@ -55,20 +55,19 @@ void main() {
     float triFlag = dot(vec3(materials[fragTexIndices.x].triplanarParams.z, materials[fragTexIndices.y].triplanarParams.z, materials[fragTexIndices.z].triplanarParams.z), w);
     if (triFlag > 0.5) {
         usedTriplanar = true;
-        vec3 wTri = triW;
         // compute triplanar albedo per-layer then blend
-        vec3 a0 = computeTriplanarAlbedo(fragPosWorldNotDisplaced, wTri, fragTexIndices.x);
-        vec3 a1 = computeTriplanarAlbedo(fragPosWorldNotDisplaced, wTri, fragTexIndices.y);
-        vec3 a2 = computeTriplanarAlbedo(fragPosWorldNotDisplaced, wTri, fragTexIndices.z);
+        vec3 a0 = computeTriplanarAlbedo(fragPosWorldNotDisplaced, triW, fragTexIndices.x);
+        vec3 a1 = computeTriplanarAlbedo(fragPosWorldNotDisplaced, triW, fragTexIndices.y);
+        vec3 a2 = computeTriplanarAlbedo(fragPosWorldNotDisplaced, triW, fragTexIndices.z);
         albedoColor = a0 * w.x + a1 * w.y + a2 * w.z;
         // If normal mapping/triplanar normal enabled per-material or global, compute blended triplanar normal
         float mapFlag0 = materials[fragTexIndices.x].mappingParams.x;
         float mapFlag1 = materials[fragTexIndices.y].mappingParams.x;
         float mapFlag2 = materials[fragTexIndices.z].mappingParams.x;
         if ((mapFlag0 * w.x + mapFlag1 * w.y + mapFlag2 * w.z) > 0.5 || ubo.materialFlags.w > 0.5) {
-            vec3 n0 = computeTriplanarNormal(fragPosWorldNotDisplaced, wTri, fragTexIndices.x, N);
-            vec3 n1 = computeTriplanarNormal(fragPosWorldNotDisplaced, wTri, fragTexIndices.y, N);
-            vec3 n2 = computeTriplanarNormal(fragPosWorldNotDisplaced, wTri, fragTexIndices.z, N);
+            vec3 n0 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.x, N);
+            vec3 n1 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.y, N);
+            vec3 n2 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.z, N);
             worldNormal = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
         }
     } else {
