@@ -18,11 +18,15 @@ float sampleHeightTriplanar(vec3 worldPos, vec3 normal, int texIndex) {
     vec2 uvX = worldPos.yz * vec2(materials[texIndex].triplanarParams.x, materials[texIndex].triplanarParams.y);
     vec2 uvY = worldPos.xz * vec2(materials[texIndex].triplanarParams.x, materials[texIndex].triplanarParams.y);
     vec2 uvZ = worldPos.xy * vec2(materials[texIndex].triplanarParams.x, materials[texIndex].triplanarParams.y);
-    // Calculate blend weights from world normal
+    // Calculate blend weights from world normal using global triplanar settings (threshold + exponent)
     vec3 w = abs(normal);
-    w = w * w;
-    float sum = w.x + w.y + w.z + 1e-6;
-    w /= sum;
+    // apply threshold (dead-zone) and exponent (steepness)
+    float t = ubo.triplanarSettings.x; // threshold
+    vec3 wt = max(vec3(0.0), w - vec3(t));
+    float e = max(1.0, ubo.triplanarSettings.y);
+    wt = pow(wt, vec3(e));
+    float sum = wt.x + wt.y + wt.z + 1e-6;
+    w = wt / sum;
     // Sample heights
     float hX = texture(heightArray, vec3(uvX, float(texIndex))).r;
     float hY = texture(heightArray, vec3(uvY, float(texIndex))).r;

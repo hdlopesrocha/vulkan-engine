@@ -9,7 +9,10 @@ vec3 applyDisplacement(vec3 localPos, vec3 localNormal, vec2 uv, int texIndex) {
         vec3 worldPosForSampling = (pushConstants.model * vec4(localPos, 1.0)).xyz;
         float height = 0.0;
             if (materials[texIndex].triplanarParams.z > 0.5) {
-                height = sampleHeightTriplanar(worldPosForSampling, localNormal, texIndex);
+                // Transform local normal to world space using the inverse-transpose of model matrix
+                mat3 normalMat = mat3(transpose(inverse(pushConstants.model)));
+                vec3 worldNormalForSampling = normalize(normalMat * localNormal);
+                height = sampleHeightTriplanar(worldPosForSampling, worldNormalForSampling, texIndex);
             } else {
                 height = sampleHeight(uv, texIndex);
             }

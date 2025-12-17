@@ -34,10 +34,16 @@ void main() {
     vec3 N = normalize(fragNormal);
     vec3 worldNormal = N;
     // Precompute triplanar blend weights from geometric normal (abs^2 normalized)
+    // Compute triplanar weights with a configurable dead-zone threshold and adjustable steepness
     vec3 triW = abs(N);
-    triW = triW * triW;
-    float triWSum = triW.x + triW.y + triW.z + 1e-6;
-    triW /= triWSum;
+    // Subtract threshold and clamp so small components remain zero until threshold is exceeded
+    float t = ubo.triplanarSettings.x; // threshold (0..1)
+    vec3 wt = max(vec3(0.0), triW - vec3(t));
+    // Apply exponent to make transitions steeper
+    float e = max(1.0, ubo.triplanarSettings.y);
+    wt = pow(wt, vec3(e));
+    float triWSum = wt.x + wt.y + wt.z + 1e-6;
+    triW = wt / triWSum;
     // Tangent & bitangent (world-space) from vertex tangents (preferred), otherwise compute via derivatives
     vec3 T = vec3(0.0, 0.0, 0.0);
     vec3 B = vec3(0.0, 0.0, 0.0);
@@ -258,6 +264,116 @@ void main() {
         vec3 a1 = texture(albedoArray, vec3(fragUV, float(fragTexIndices.y))).rgb;
         vec3 a2 = texture(albedoArray, vec3(fragUV, float(fragTexIndices.z))).rgb;
         outColor = vec4(a0.r, a1.r, a2.r, 1.0);
+        return;
+    }
+
+    if (debugMode == 19) {
+        // Visualize triplanar-sampled albedo blended across the three material indices
+        vec3 ta0 = computeTriplanarAlbedo(fragPosWorld, triW, fragTexIndices.x);
+        vec3 ta1 = computeTriplanarAlbedo(fragPosWorld, triW, fragTexIndices.y);
+        vec3 ta2 = computeTriplanarAlbedo(fragPosWorld, triW, fragTexIndices.z);
+        vec3 tAlbedo = ta0 * w.x + ta1 * w.y + ta2 * w.z;
+        outColor = vec4(tAlbedo, 1.0);
+        return;
+    }
+
+    if (debugMode == 20) {
+        // Show per-projection triplanar heights for each corner packed into RGB
+        float th0x = texture(heightArray, vec3(fragPosWorld.yz * vec2(materials[fragTexIndices.x].triplanarParams.x, materials[fragTexIndices.x].triplanarParams.y), float(fragTexIndices.x))).r;
+        float th0y = texture(heightArray, vec3(fragPosWorld.xz * vec2(materials[fragTexIndices.x].triplanarParams.x, materials[fragTexIndices.x].triplanarParams.y), float(fragTexIndices.x))).r;
+        float th0z = texture(heightArray, vec3(fragPosWorld.xy * vec2(materials[fragTexIndices.x].triplanarParams.x, materials[fragTexIndices.x].triplanarParams.y), float(fragTexIndices.x))).r;
+        // Pack the three projection samples as RGB for the first material (useful to see which projection contributes height)
+        outColor = vec4(th0x, th0y, th0z, 1.0);
+        return;
+    }
+
+    if (debugMode == 21) {
+        // Show difference between UV-blended height and triplanar-blended height (abs difference)
+        float h_uv0 = texture(heightArray, vec3(fragUV, float(fragTexIndices.x))).r;
+        float h_uv1 = texture(heightArray, vec3(fragUV, float(fragTexIndices.y))).r;
+        float h_uv2 = texture(heightArray, vec3(fragUV, float(fragTexIndices.z))).r;
+        float h_uv = h_uv0 * w.x + h_uv1 * w.y + h_uv2 * w.z;
+        float h_tri0 = sampleHeightTriplanar(fragPosWorld, N, fragTexIndices.x);
+        float h_tri1 = sampleHeightTriplanar(fragPosWorld, N, fragTexIndices.y);
+        float h_tri2 = sampleHeightTriplanar(fragPosWorld, N, fragTexIndices.z);
+        float h_tri = h_tri0 * w.x + h_tri1 * w.y + h_tri2 * w.z;
+        float d = abs(h_uv - h_tri);
+        outColor = vec4(vec3(d * 5.0), 1.0); // amplify differences for visibility
+        return;
+    }
+
+    if (debugMode == 22) {
+        // Visualize triplanar-sampled normal blended across the three material indices
+        vec3 tn0 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.x, N);
+        vec3 tn1 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.y, N);
+        vec3 tn2 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.z, N);
+        vec3 tNormal = normalize(tn0 * w.x + tn1 * w.y + tn2 * w.z);
+        outColor = vec4(tNormal * 0.5 + 0.5, 1.0);
+        return;
+    }
+
+    if (debugMode == 23) {
+        // Show per-projection triplanar normals for the first material packed into RGB
+        vec3 nX = computeTriplanarNormal(fragPosWorld, vec3(1.0, 0.0, 0.0), fragTexIndices.x, N);
+        vec3 nY = computeTriplanarNormal(fragPosWorld, vec3(0.0, 1.0, 0.0), fragTexIndices.x, N);
+        vec3 nZ = computeTriplanarNormal(fragPosWorld, vec3(0.0, 0.0, 1.0), fragTexIndices.x, N);
+        // Pack single components of each projection to RGB so we can visually inspect contributions
+        outColor = vec4(nX.x * 0.5 + 0.5, nY.y * 0.5 + 0.5, nZ.z * 0.5 + 0.5, 1.0);
+        return;
+    }
+
+    if (debugMode == 24) {
+        // Show difference between UV-sampled normal (converted to world-space) and triplanar-blended normal
+        vec3 nu0 = texture(normalArray, vec3(fragUV, float(fragTexIndices.x))).rgb * 2.0 - 1.0;
+        vec3 nu1 = texture(normalArray, vec3(fragUV, float(fragTexIndices.y))).rgb * 2.0 - 1.0;
+        vec3 nu2 = texture(normalArray, vec3(fragUV, float(fragTexIndices.z))).rgb * 2.0 - 1.0;
+        vec3 nmap = normalize(nu0 * w.x + nu1 * w.y + nu2 * w.z);
+        vec3 uvWorld;
+        vec3 tmpT, tmpB;
+        if (!computeWorldNormalFromNormalMap(fragTangent, fragPosWorld, fragUV, N, nmap, uvWorld, tmpT, tmpB)) {
+            uvWorld = N; // fallback
+        }
+        vec3 tn0 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.x, N);
+        vec3 tn1 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.y, N);
+        vec3 tn2 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.z, N);
+        vec3 triWorld = normalize(tn0 * w.x + tn1 * w.y + tn2 * w.z);
+        float angle = acos(clamp(dot(normalize(uvWorld), triWorld), -1.0, 1.0));
+        float d = angle / 3.14159265; // normalize to 0..1
+        outColor = vec4(vec3(d * 5.0), 1.0);
+        return;
+    }
+
+    if (debugMode == 25) {
+        // Visualize triplanar-sampled bump (height) blended across the three material indices
+        float b0 = sampleHeightTriplanar(fragPosWorld, worldNormal, fragTexIndices.x);
+        float b1 = sampleHeightTriplanar(fragPosWorld, worldNormal, fragTexIndices.y);
+        float b2 = sampleHeightTriplanar(fragPosWorld, worldNormal, fragTexIndices.z);
+        float b = b0 * w.x + b1 * w.y + b2 * w.z;
+        outColor = vec4(vec3(b), 1.0);
+        return;
+    }
+
+    if (debugMode == 26) {
+        // Show per-projection triplanar heights using sampleHeightTriplanar for the first material packed into RGB
+        float ph0x = sampleHeightTriplanar(fragPosWorld, vec3(1.0, 0.0, 0.0), fragTexIndices.x);
+        float ph0y = sampleHeightTriplanar(fragPosWorld, vec3(0.0, 1.0, 0.0), fragTexIndices.x);
+        float ph0z = sampleHeightTriplanar(fragPosWorld, vec3(0.0, 0.0, 1.0), fragTexIndices.x);
+        outColor = vec4(ph0x, ph0y, ph0z, 1.0);
+        return;
+    }
+
+    if (debugMode == 27) {
+        // Show difference between UV-blended height and triplanar-blended height using worldNormal (abs difference)
+        float h_uv0 = texture(heightArray, vec3(fragUV, float(fragTexIndices.x))).r;
+        float h_uv1 = texture(heightArray, vec3(fragUV, float(fragTexIndices.y))).r;
+        float h_uv2 = texture(heightArray, vec3(fragUV, float(fragTexIndices.z))).r;
+        float h_uv = h_uv0 * w.x + h_uv1 * w.y + h_uv2 * w.z;
+        float h_tri0 = sampleHeightTriplanar(fragPosWorld, worldNormal, fragTexIndices.x);
+        float h_tri1 = sampleHeightTriplanar(fragPosWorld, worldNormal, fragTexIndices.y);
+        float h_tri2 = sampleHeightTriplanar(fragPosWorld, worldNormal, fragTexIndices.z);
+        float h_tri = h_tri0 * w.x + h_tri1 * w.y + h_tri2 * w.z;
+        float d = abs(h_uv - h_tri);
+        outColor = vec4(vec3(d * 5.0), 1.0); // amplify differences for visibility
         return;
     }
 

@@ -1002,6 +1002,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // Debug visualization mode (set by SettingsWidget)
                 if (settingsWidget) ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
                 else ubo.debugParams = glm::vec4(0.0f);
+                // Triplanar settings from UI
+                if (settingsWidget) ubo.triplanarSettings = glm::vec4(settingsWidget->getTriplanarThreshold(), settingsWidget->getTriplanarExponent(), 0.0f, 0.0f);
+                else ubo.triplanarSettings = glm::vec4(0.12f, 3.0f, 0.0f, 0.0f);
                 ubo.passParams = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 0.0
                 updateUniformBuffer(*instance.uniformBuffer, &ubo, sizeof(UniformObject));
                 

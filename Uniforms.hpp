@@ -14,6 +14,8 @@ struct UniformObject {
     glm::mat4 lightSpaceMatrix; // for shadow mapping
     glm::vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
     glm::vec4 debugParams; // x=debugMode (0=normal,1=normalVec,2=normalMap,3=uv,4=tangent,5=bitangent)
+    // Triplanar settings: x = threshold (dead-zone), y = exponent/steepness
+    glm::vec4 triplanarSettings;
     glm::vec4 tessParams; // x = tessNearDist, y = tessFarDist, z = tessMinLevel, w = tessMaxLevel
     glm::vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
 

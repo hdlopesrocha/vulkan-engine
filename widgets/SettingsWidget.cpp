@@ -17,6 +17,9 @@ void SettingsWidget::resetToDefaults() {
     tessMaxLevel = 32.0f;
     tessMaxDistance = 30.0f;
     tessMinDistance = 10.0f;
+    // Triplanar defaults
+    triplanarThreshold = 0.12f;
+    triplanarExponent = 3.0f;
 }
 
 void SettingsWidget::render() {
@@ -79,6 +82,16 @@ void SettingsWidget::render() {
         ImGui::SliderFloat("Tess Min Distance", &tessMinDistance, 1.0f, 200.0f, "%.1f");
         ImGui::SliderFloat("Tess Max Distance", &tessMaxDistance, 1.0f, 200.0f, "%.1f");
 
+        ImGui::Separator();
+        ImGui::Text("Triplanar Mapping");
+        ImGui::Separator();
+        if (ImGui::SliderFloat("Triplanar Threshold", &triplanarThreshold, 0.0f, 0.5f, "%.3f")) {
+            ImGui::SameLine(); ImGui::TextDisabled("? (dead-zone before blending)");
+        }
+        if (ImGui::SliderFloat("Triplanar Exponent", &triplanarExponent, 1.0f, 12.0f, "%.2f")) {
+            ImGui::SameLine(); ImGui::TextDisabled("? (>1 = steeper)");
+        }
+
         if (ImGui::Button("Reset to Defaults")) {
             resetToDefaults();
         }
@@ -91,7 +104,7 @@ void SettingsWidget::render() {
         ImGui::Separator();
         ImGui::Text("Debug Visualisation");
         ImGui::Separator();
-        const char* debugItems[] = { "Default Render", "Fragment Normal", "World Normal", "UV Coordinates", "Tangent (TBN)", "Bitangent (TBN)", "Normal (TBN)", "Albedo Texture", "Normal Texture", "Bump Texture", "Height Pre-Projection", "Normal from Derivatives", "Light Vector (RGB)", "N·L (grayscale)", "Shadow Diagnostics", "Triplanar Weights", "Tex Indices (RGB)", "Barycentric Weights (RGB)", "Albedo Samples (R/G/B)" };
+        const char* debugItems[] = { "Default Render", "Fragment Normal", "World Normal", "UV Coordinates", "Tangent (TBN)", "Bitangent (TBN)", "Normal (TBN)", "Albedo Texture", "Normal Texture", "Bump Texture", "Height Pre-Projection", "Normal from Derivatives", "Light Vector (RGB)", "N·L (grayscale)", "Shadow Diagnostics", "Triplanar Weights", "Tex Indices (RGB)", "Barycentric Weights (RGB)", "Albedo Samples (R/G/B)", "Triplanar Albedo", "Per-Projection Triplanar Heights (RGB)", "UV vs Triplanar Height Diff", "Triplanar Normal", "Per-Projection Triplanar Normals (RGB)", "UV vs Triplanar Normal Diff", "Triplanar Bump (Height)", "Per-Projection Triplanar Bump (RGB)", "UV vs Triplanar Bump Diff" };
         int current = debugMode;
         if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {
             debugMode = current;

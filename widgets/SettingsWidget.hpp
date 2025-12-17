@@ -19,6 +19,8 @@ public:
     bool getWireframeEnabled() const { return wireframeMode; }
         int getDebugMode() const { return debugMode; }
     bool getNormalMappingEnabled() const { return normalMappingEnabled; }
+    float getTriplanarThreshold() const { return triplanarThreshold; }
+    float getTriplanarExponent() const { return triplanarExponent; }
 
     // Callback setter for debug actions
     void setDumpShadowDepthCallback(std::function<void()> cb) { onDumpShadowDepth = cb; }
@@ -34,6 +36,9 @@ private:
         int debugMode = 0;                         // 0=Default,1=Fragment Normal,2=World Normal,3=UV,4=Tangent,5=Bitangent,6=Normal (TBN),7=Albedo,8=Normal Tex,9=Bump,10=Pre-Projection,11=Normal from Derivatives,12=Light Vector,13=N·L,14=Shadow Diagnostics,15=Triplanar Weights
     bool normalMappingEnabled = true;          // Global toggle for normal mapping
     std::function<void()> onDumpShadowDepth;
+    // Triplanar settings
+    float triplanarThreshold = 0.12f; // small dead zone before blending starts
+    float triplanarExponent = 3.0f;   // >1 makes transitions steeper
     // Tessellation settings
     bool adaptiveTessellation = true;
     float tessMinLevel = 1.0f;

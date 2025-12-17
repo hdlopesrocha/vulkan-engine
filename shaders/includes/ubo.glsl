@@ -12,7 +12,9 @@ layout(set = 1, binding = 0) uniform UBO {
         // `materialFlags` kept here for small per-pass overrides (e.g. global normal-mapping toggle in .w)
     mat4 lightSpaceMatrix; // for shadow mapping
     vec4 shadowEffects; // x/y/z = unused, w=global shadows enabled (1.0 = on)
-    vec4 debugParams; // x=debugMode (0=normal,1=fragment normal,2=normal map (world),3=uv,4=tangent,5=bitangent,6=geometry normal (world),7=albedo,8=normal texture,9=height/bump,10=lighting (N·L,shadow),11=normal from derivatives,12=light vector (rgb),13=N·L grayscale,14=shadow diagnostics)
+    vec4 debugParams; // x=debugMode (0=normal,1=fragment normal,2=normal map (world),3=uv,4=tangent,5=bitangent,6=geometry normal (world),7=albedo,8=normal texture,9=height/bump,10=lighting (N·L,shadow),11=normal from derivatives,12=light vector (rgb),13=N·L grayscale,14=shadow diagnostics,15=triplanar weights,16=tex indices (RGB),17=barycentric weights,18=albedo samples (R/G/B),19=triplanar albedo,20=per-projection triplanar heights (RGB),21=UV vs triplanar height diff,22=triplanar normal,23=per-projection triplanar normals (RGB),24=UV vs triplanar normal diff,25=triplanar bump (height),26=per-projection triplanar bump (RGB),27=UV vs triplanar bump diff)
+        // Triplanar blending parameters: x = threshold (dead-zone before blending starts), y = exponent/steepness (>1 steepens transitions)
+        vec4 triplanarSettings;
         // Sky parameters moved to a dedicated Sky UBO (see below)
         vec4 tessParams; // x = tessNearDist, y = tessFarDist, z = tessMinLevel, w = tessMaxLevel
         vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
