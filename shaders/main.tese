@@ -22,6 +22,7 @@ layout(location = 2) out vec3 fragNormal; // world-space normal
 layout(location = 5) flat out ivec3 fragTexIndices;
 layout(location = 11) out vec3 fragTexWeights;
 layout(location = 4) out vec3 fragPosWorld;
+layout(location = 7) out vec3 fragPosWorldNotDisplaced;
 layout(location = 6) out vec4 fragPosLightSpace;
 layout(location = 9) out vec4 fragTangent;
 
@@ -61,7 +62,9 @@ void main() {
     
 
     // Compute world-space position and normals
+    fragPosWorldNotDisplaced = worldPos.xyz;
     worldPos = pushConstants.model * vec4(displacedLocalPos, 1.0);
+
     fragPosWorld = worldPos.xyz;
     if (!isShadowPass) {
         fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;

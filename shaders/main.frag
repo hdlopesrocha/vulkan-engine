@@ -9,6 +9,7 @@ layout(location = 11) in vec3 fragTexWeights;
 layout(location = 4) in vec3 fragPosWorld;
 layout(location = 6) in vec4 fragPosLightSpace;
 layout(location = 9) in vec4 fragTangent;
+layout(location = 7) in vec3 fragPosWorldNotDisplaced;
 
 #include "includes/ubo.glsl"
 
@@ -56,18 +57,18 @@ void main() {
         usedTriplanar = true;
         vec3 wTri = triW;
         // compute triplanar albedo per-layer then blend
-        vec3 a0 = computeTriplanarAlbedo(fragPosWorld, wTri, fragTexIndices.x);
-        vec3 a1 = computeTriplanarAlbedo(fragPosWorld, wTri, fragTexIndices.y);
-        vec3 a2 = computeTriplanarAlbedo(fragPosWorld, wTri, fragTexIndices.z);
+        vec3 a0 = computeTriplanarAlbedo(fragPosWorldNotDisplaced, wTri, fragTexIndices.x);
+        vec3 a1 = computeTriplanarAlbedo(fragPosWorldNotDisplaced, wTri, fragTexIndices.y);
+        vec3 a2 = computeTriplanarAlbedo(fragPosWorldNotDisplaced, wTri, fragTexIndices.z);
         albedoColor = a0 * w.x + a1 * w.y + a2 * w.z;
         // If normal mapping/triplanar normal enabled per-material or global, compute blended triplanar normal
         float mapFlag0 = materials[fragTexIndices.x].mappingParams.x;
         float mapFlag1 = materials[fragTexIndices.y].mappingParams.x;
         float mapFlag2 = materials[fragTexIndices.z].mappingParams.x;
         if ((mapFlag0 * w.x + mapFlag1 * w.y + mapFlag2 * w.z) > 0.5 || ubo.materialFlags.w > 0.5) {
-            vec3 n0 = computeTriplanarNormal(fragPosWorld, wTri, fragTexIndices.x, N);
-            vec3 n1 = computeTriplanarNormal(fragPosWorld, wTri, fragTexIndices.y, N);
-            vec3 n2 = computeTriplanarNormal(fragPosWorld, wTri, fragTexIndices.z, N);
+            vec3 n0 = computeTriplanarNormal(fragPosWorldNotDisplaced, wTri, fragTexIndices.x, N);
+            vec3 n1 = computeTriplanarNormal(fragPosWorldNotDisplaced, wTri, fragTexIndices.y, N);
+            vec3 n2 = computeTriplanarNormal(fragPosWorldNotDisplaced, wTri, fragTexIndices.z, N);
             worldNormal = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
         }
     } else {
