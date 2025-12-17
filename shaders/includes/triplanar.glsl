@@ -11,9 +11,10 @@ void computeTriplanarUVs(in vec3 fragPosWorld, in int texIndex, out vec2 uvX, ou
 vec3 computeTriplanarAlbedo(in vec3 fragPosWorld, in vec3 triW, in int texIndex) {
     vec2 uvX, uvY, uvZ;
     computeTriplanarUVs(fragPosWorld, texIndex, uvX, uvY, uvZ);
-    vec3 cX = texture(albedoArray, vec3(uvX, float(texIndex))).rgb;
-    vec3 cY = texture(albedoArray, vec3(uvY, float(texIndex))).rgb;
-    vec3 cZ = texture(albedoArray, vec3(uvZ, float(texIndex))).rgb;
+    vec3 cX = triW.x > 0.0 ? texture(albedoArray, vec3(uvX, float(texIndex))).rgb : vec3(0.0);
+    vec3 cY = triW.y > 0.0 ? texture(albedoArray, vec3(uvY, float(texIndex))).rgb : vec3(0.0);
+    vec3 cZ = triW.z > 0.0 ? texture(albedoArray, vec3(uvZ, float(texIndex))).rgb : vec3(0.0);
+   
     return cX * triW.x + cY * triW.y + cZ * triW.z;
 }
 
@@ -31,31 +32,38 @@ vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex,
     vec2 uvX, uvY, uvZ;
     computeTriplanarUVs(fragPosWorld, texIndex, uvX, uvY, uvZ);
 
-    vec3 nX = texture(normalArray, vec3(uvX, float(texIndex))).rgb * 2.0 - 1.0;
-    vec3 nY = texture(normalArray, vec3(uvY, float(texIndex))).rgb * 2.0 - 1.0;
-    vec3 nZ = texture(normalArray, vec3(uvZ, float(texIndex))).rgb * 2.0 - 1.0;
+    vec3 nmX = vec3(0.0);
+    vec3 nmY = vec3(0.0);
+    vec3 nmZ = vec3(0.0);
 
-    // Treat normals as vectors: normalize each sample and try to detect inverted normal maps
-    nX = normalize(nX);
-    nY = normalize(nY);
-    nZ = normalize(nZ);
-    if (nX.z < 0.0) nX = -nX;
-    if (nY.z < 0.0) nY = -nY;
-    if (nZ.z < 0.0) nZ = -nZ;
+    if(triW.x > 0.0) {
+        vec3 tX, bX;
+        vec3 nX = texture(normalArray, vec3(uvX, float(texIndex))).rgb * 2.0 - 1.0;
+        nX = normalize(nX);
+        if (nX.z < 0.0) nX = -nX;
+        vec3 axisX = vec3(geomN.x >= 0.0 ? 1.0 : -1.0, 0.0, 0.0);
+        buildTBFromAxis(axisX, tX, bX);
+        nmX = normalFromNormalMap(nX, tX, bX, axisX);
+    }
+    if(triW.y > 0.0) {
+        vec3 tY, bY;
+        vec3 nY = texture(normalArray, vec3(uvY, float(texIndex))).rgb * 2.0 - 1.0;
+        nY = normalize(nY);
+        if (nY.z < 0.0) nY = -nY;
+        vec3 axisY = vec3(0.0, geomN.y >= 0.0 ? 1.0 : -1.0, 0.0);
+        buildTBFromAxis(axisY, tY, bY);
+        nmY = normalFromNormalMap(nY, tY, bY, axisY);
+    }
+    if(triW.z > 0.0) {
+        vec3 tZ, bZ;
+        vec3 nZ = texture(normalArray, vec3(uvZ, float(texIndex))).rgb * 2.0 - 1.0;
+        nZ = normalize(nZ);
+        if (nZ.z < 0.0) nZ = -nZ;
+        vec3 axisZ = vec3(0.0, 0.0, geomN.z >= 0.0 ? 1.0 : -1.0);
+        buildTBFromAxis(axisZ, tZ, bZ);
+        nmZ = normalFromNormalMap(nZ, tZ, bZ, axisZ);
+    }
 
-    // Build stable per-axis T/B bases that respect the projection axis sign (from geomN)
-    vec3 axisX = vec3(geomN.x >= 0.0 ? 1.0 : -1.0, 0.0, 0.0);
-    vec3 axisY = vec3(0.0, geomN.y >= 0.0 ? 1.0 : -1.0, 0.0);
-    vec3 axisZ = vec3(0.0, 0.0, geomN.z >= 0.0 ? 1.0 : -1.0);
-
-    vec3 tX, bX, tY, bY, tZ, bZ;
-    buildTBFromAxis(axisX, tX, bX);
-    buildTBFromAxis(axisY, tY, bY);
-    buildTBFromAxis(axisZ, tZ, bZ);
-
-    vec3 nmX = normalFromNormalMap(nX, tX, bX, axisX);
-    vec3 nmY = normalFromNormalMap(nY, tY, bY, axisY);
-    vec3 nmZ = normalFromNormalMap(nZ, tZ, bZ, axisZ);
 
     return normalize(nmX * triW.x + nmY * triW.y + nmZ * triW.z);
 }
