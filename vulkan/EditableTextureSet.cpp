@@ -107,6 +107,10 @@ void EditableTextureSet::renderTextureTab(EditableTexture& texture) {
 		ImGui::TextColored(ImVec4(1, 1, 0, 1), "Texture has unsaved changes");
 		if (ImGui::Button("Upload to GPU")) {
 			texture.updateGPU();
+			// After uploading the edited texture to the GPU, rebuild global arrays
+			// so shader-indexed arrays include the updated editable textures.
+			if (textureMgr) textureMgr->createGlobalArrays();
+			if (onTextureGeneratedCallback) onTextureGeneratedCallback();
 		}
 	} else {
 		ImGui::TextColored(ImVec4(0, 1, 0, 1), "Texture is up to date");
@@ -489,6 +493,11 @@ void EditableTextureSet::generatePerlinNoise(EditableTexture& texture) {
 	app->endSingleTimeCommands(commandBuffer);
 
 	printf("Perlin noise generation complete!\n");
+
+	// Rebuild global texture arrays so editable textures are included in shader-indexed arrays.
+	if (textureMgr) {
+		textureMgr->createGlobalArrays();
+	}
 
 	if (onTextureGeneratedCallback) {
 		onTextureGeneratedCallback();

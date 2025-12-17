@@ -69,6 +69,13 @@ private:
     
     // Callback function to notify when textures are generated
     std::function<void()> onTextureGeneratedCallback;
+
+    // Index of the editable triple in TextureManager (set by caller)
+    size_t editableLayerIndex = SIZE_MAX;
+
+public:
+    // Set the layer index corresponding to the editable triple in TextureManager
+    void setEditableLayerIndex(size_t idx) { editableLayerIndex = idx; }
     
     // Previous parameter values for change detection
     float prevPerlinScale = 8.0f;
