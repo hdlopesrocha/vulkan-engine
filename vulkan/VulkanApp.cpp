@@ -1273,6 +1273,15 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     pipelineLayoutInfo.setLayoutCount = (descriptorSetLayout != VK_NULL_HANDLE) ? 1u : 0u;
     pipelineLayoutInfo.pSetLayouts = (descriptorSetLayout != VK_NULL_HANDLE) ? &descriptorSetLayout : nullptr;
 
+    // Expose a push-constant range for per-draw model matrix (mat4 = 16 floats = 64 bytes)
+    VkPushConstantRange pushRange{};
+    // Push constants used by vertex and tessellation evaluation shaders
+    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+    pushRange.offset = 0;
+    pushRange.size = static_cast<uint32_t>(sizeof(float) * 16);
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+
     // Create pipeline layout only once and reuse for multiple pipelines
     if (pipelineLayout == VK_NULL_HANDLE) {
         if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {

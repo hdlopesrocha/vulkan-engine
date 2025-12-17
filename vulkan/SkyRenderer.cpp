@@ -41,13 +41,14 @@ void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, Vk
     UniformObject skyUbo = uboStatic;
     glm::vec3 camPos = glm::vec3(uboStatic.viewPos);
     glm::mat4 model = glm::translate(glm::mat4(1.0f), camPos) * glm::scale(glm::mat4(1.0f), glm::vec3(50.0f));
-    skyUbo.model = model;
     skyUbo.viewProjection = projMat * viewMat;
     skyUbo.passParams = glm::vec4(0.0f);
     app->updateUniformBuffer(uniformBuffer, &skyUbo, sizeof(UniformObject));
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, app->getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
+    // Push sky model matrix via push constants (visible to vertex + tessellation stages)
+    vkCmdPushConstants(cmd, app->getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &model);
 
     const VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
     const VkDeviceSize offsets[] = { 0 };

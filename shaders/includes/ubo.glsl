@@ -1,8 +1,7 @@
 // UBO layout must match the CPU-side UniformObject (std140-like):
-// mat4 viewProjection; mat4 model; vec4 viewPos; vec4 lightDir; vec4 lightColor;
+// mat4 viewProjection; vec4 viewPos; vec4 lightDir; vec4 lightColor;
 layout(binding = 0) uniform UBO {
     mat4 viewProjection;
-    mat4 model;
     vec4 viewPos;
     vec4 lightDir;
     vec4 lightColor;
@@ -18,6 +17,11 @@ layout(binding = 0) uniform UBO {
         vec4 tessParams; // x = tessNearDist, y = tessFarDist, z = tessMinLevel, w = tessMaxLevel
         vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
 } ubo;
+
+    // Per-draw push constants: small, frequently-updated per-object data such as model matrix.
+    layout(push_constant) uniform PushConstants {
+        mat4 model;
+    } pushConstants;
 
 // Packed material data uploaded once to GPU. Matches the CPU-side MaterialGPU (4 vec4s).
 // Access this as `materials[texIndex]` from shaders. Uses std430 for tightly-packed vec4 alignment.
