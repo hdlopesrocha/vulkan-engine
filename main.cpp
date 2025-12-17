@@ -335,8 +335,16 @@ class MyApp : public VulkanApp, public IEventHandler {
                 editableTextures->getNormal().getTextureImage(),
                 editableTextures->getNormal().getSampler(),
                 editableTextures->getBump().getTextureImage(),
-                editableTextures->getBump().getSampler()
+                editableTextures->getBump().getSampler(),
+                editableTextures->getAlbedo().getWidth(),
+                editableTextures->getAlbedo().getHeight(),
+                editableTextures->getAlbedo().getBytesPerPixel(),
+                editableTextures->getAlbedo().getPixelData(),
+                editableTextures->getNormal().getPixelData(),
+                editableTextures->getBump().getPixelData()
             );
+            // Rebuild global arrays to include the newly-added editable triple
+            textureManager.createGlobalArrays();
             // Apply editable material properties in a single-line initializer
             textureManager.getMaterial(editableIndex) = MaterialProperties{
                 false,  // mappingMode (none)
@@ -585,6 +593,14 @@ class MyApp : public VulkanApp, public IEventHandler {
                 updateMaterials();
                 // Update cached plane material to reflect regenerated editable textures
                 planeMaterial = textureManager.getMaterial(editableIndex);
+                // Update descriptor sets that may reference this triple (main, shadow, instances)
+                std::vector<VkDescriptorSet> setsToUpdate;
+                // include base descriptor sets used for per-texture sampling
+                for (auto &ds : descriptorSets) if (ds != VK_NULL_HANDLE) setsToUpdate.push_back(ds);
+                for (auto &sds : shadowDescriptorSets) if (sds != VK_NULL_HANDLE) setsToUpdate.push_back(sds);
+                // also include instance descriptor sets
+                for (auto &ids : instanceDescriptorSets) if (ids != VK_NULL_HANDLE) setsToUpdate.push_back(ids);
+                textureManager.updateDescriptorsForTriple(editableIndex, setsToUpdate);
             });
             widgetManager.addWidget(editableTextures);
             

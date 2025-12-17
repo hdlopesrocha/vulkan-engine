@@ -636,6 +636,11 @@ void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t tex
     endSingleTimeCommands(commandBuffer);
 }
 
+void VulkanApp::generateMipmapsForImage(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount) {
+    // Delegate to protected implementation
+    generateMipmaps(image, imageFormat, texWidth, texHeight, mipLevels, layerCount);
+}
+
 void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
     VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 

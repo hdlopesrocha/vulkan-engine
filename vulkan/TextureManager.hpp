@@ -28,6 +28,16 @@ public:
         
         // Ownership flag - if false, resources are managed externally (e.g., EditableTextureSet)
         bool ownsResources = true;
+        // Optional CPU-side pixel data (used for rebuilding global arrays)
+        uint32_t pixelWidth = 0;
+        uint32_t pixelHeight = 0;
+        uint32_t bytesPerPixel = 0;
+        bool hasCpuAlbedo = false;
+        std::vector<uint8_t> cpuAlbedo;
+        bool hasCpuNormal = false;
+        std::vector<uint8_t> cpuNormal;
+        bool hasCpuHeight = false;
+        std::vector<uint8_t> cpuHeight;
     };
 
     TextureManager() = default;
@@ -37,9 +47,13 @@ public:
     size_t loadTriple(const std::string &albedoFile, const std::string &normalFile, const std::string &heightFile);
 
     // Add an existing triple (e.g., from EditableTextureSet). Returns index of the stored triple.
+    // Add an existing triple (e.g., from EditableTextureSet). If CPU pixel pointers are provided
+    // they will be captured so `createGlobalArrays()` can include these textures in the global arrays.
     size_t addTriple(const TextureImage& albedo, VkSampler albedoSampler,
                      const TextureImage& normal, VkSampler normalSampler,
-                     const TextureImage& height, VkSampler heightSampler);
+                     const TextureImage& height, VkSampler heightSampler,
+                     uint32_t pixelWidth = 0, uint32_t pixelHeight = 0, uint32_t bytesPerPixel = 4,
+                     const uint8_t* albedoPixels = nullptr, const uint8_t* normalPixels = nullptr, const uint8_t* heightPixels = nullptr);
 
     // Create global texture arrays from collected filenames
     void createGlobalArrays();
@@ -63,6 +77,9 @@ public:
     size_t count() const;
 
     const Triple& getTriple(size_t idx) const;
+
+    // Update image bindings in provided descriptor sets for a specific triple
+    void updateDescriptorsForTriple(size_t idx, const std::vector<VkDescriptorSet>& sets);
 
     void destroyAll();
 
