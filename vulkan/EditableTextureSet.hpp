@@ -78,6 +78,16 @@ private:
 
     // Callback function to notify when textures are generated
     std::function<void()> onTextureGeneratedCallback;
+    // If editable textures are represented inside a TextureArrayManager, store the layer index
+public:
+    // If editable textures are represented inside a TextureArrayManager, store the layer index
+    uint32_t editableLayer = UINT32_MAX;
+
+    void setEditableLayer(uint32_t layer) { editableLayer = layer; }
+    // Return an ImGui descriptor for previewing the requested map (0=albedo,1=normal,2=bump)
+    VkDescriptorSet getPreviewDescriptor(int map);
+private:
+
 
     void createComputePipeline();
     void createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet);

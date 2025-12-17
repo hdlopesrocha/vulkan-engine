@@ -15,15 +15,15 @@ void AnimatedTextureWidget::render() {
 
     if (ImGui::BeginTabBar("TextureTabBar")) {
         if (ImGui::BeginTabItem("Albedo")) {
-            renderTextureTab(textures->getAlbedo());
+            renderTextureTab(textures->getAlbedo(), 0);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Normal")) {
-            renderTextureTab(textures->getNormal());
+            renderTextureTab(textures->getNormal(), 1);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Bump")) {
-            renderTextureTab(textures->getBump());
+            renderTextureTab(textures->getBump(), 2);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -32,7 +32,7 @@ void AnimatedTextureWidget::render() {
     ImGui::End();
 }
 
-void AnimatedTextureWidget::renderTextureTab(EditableTexture& texture) {
+void AnimatedTextureWidget::renderTextureTab(EditableTexture& texture, int map) {
     ImGui::Text("Size: %dx%d", texture.getWidth(), texture.getHeight());
 
     const char* formatName = "Unknown";
@@ -102,13 +102,13 @@ void AnimatedTextureWidget::renderTextureTab(EditableTexture& texture) {
     ImVec2 imageSize(previewSize, previewSize);
     ImGui::Text("Preview:");
 
-    // Debug info: show descriptor/view/sampler handles and dirty state
-    VkDescriptorSet descSet = texture.getImGuiDescriptorSet();
+    // Debug info: prefer array-layer ImGui descriptor when available (keeps sRGB sampling consistent with cube rendering)
+    VkDescriptorSet descSet = textures->getPreviewDescriptor(map);
     VkImageView view = texture.getView();
     VkSampler sampler = texture.getSampler();
     bool dirty = texture.getDirty();
-    printf("[AnimatedTextureWidget] Preview info: desc=%p view=%p sampler=%p size=%dx%d bytes=%u dirty=%d\n",
-           (void*)descSet, (void*)view, (void*)sampler, texture.getWidth(), texture.getHeight(), texture.getBytesPerPixel(), dirty ? 1 : 0);
+    printf("[AnimatedTextureWidget] Preview info: desc=%p view=%p sampler=%p size=%dx%d bytes=%u dirty=%d map=%d\n",
+           (void*)descSet, (void*)view, (void*)sampler, texture.getWidth(), texture.getHeight(), texture.getBytesPerPixel(), dirty ? 1 : 0, map);
 
     if (ImGui::Button("Refresh Preview")) {
         // Force upload and re-create ImGui descriptor if needed

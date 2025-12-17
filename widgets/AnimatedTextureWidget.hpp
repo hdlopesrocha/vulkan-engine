@@ -22,5 +22,5 @@ private:
     float perlinTime = 0.0f;
     unsigned int perlinSeed = 12345u;
 
-    void renderTextureTab(EditableTexture& texture);
+    void renderTextureTab(EditableTexture& texture, int map);
 };

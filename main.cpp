@@ -359,6 +359,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             textureArrayManager.updateLayerFromEditableMap(editableLayer, editableTextures->getAlbedo(), 0);
             textureArrayManager.updateLayerFromEditableMap(editableLayer, editableTextures->getNormal(), 1);
             textureArrayManager.updateLayerFromEditableMap(editableLayer, editableTextures->getBump(), 2);
+            // Inform EditableTextureSet which layer was reserved so the widget can show sRGB preview from array
+            editableTextures->setEditableLayer(editableLayer);
             // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
             if (!loadedIndices.empty()) currentTextureIndex = loadedIndices[0];
             

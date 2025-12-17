@@ -285,6 +285,17 @@ void EditableTextureSet::createTripleComputeDescriptorSet() {
 	vkUpdateDescriptorSets(app->getDevice(), 6, writes, 0, nullptr);
 }
 
+VkDescriptorSet EditableTextureSet::getPreviewDescriptor(int map) {
+	if (textureArrayManager && editableLayer != UINT32_MAX) {
+		ImTextureID id = textureArrayManager->getImTexture(editableLayer, map);
+		return (VkDescriptorSet)id;
+	}
+	// Fallback to editable texture descriptor
+	if (map == 0) return albedo.getImGuiDescriptorSet();
+	if (map == 1) return normal.getImGuiDescriptorSet();
+	return bump.getImGuiDescriptorSet();
+}
+
 void EditableTextureSet::createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet) {
 	VkDescriptorSetAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;

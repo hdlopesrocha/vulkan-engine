@@ -141,6 +141,14 @@ float fbm(vec3 p) {
     return value;
 }
 
+// Convert linear color to sRGB (approximate)
+vec3 linearToSRGB(vec3 c) {
+    vec3 lt = c * 12.92;
+    vec3 gt = 1.055 * pow(c, vec3(1.0/2.4)) - 0.055;
+    vec3 srgb = mix(lt, gt, step(0.0031308, c));
+    return clamp(srgb, 0.0, 1.0);
+}
+
 void main() {
     ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(albedoResultImage);
@@ -182,8 +190,8 @@ void main() {
     vec3 bumpSecondary = texture(bumpArray, vec3(uv, float(params.secondaryLayer))).rgb;
     vec3 bumpBlended = mix(bumpPrimary, bumpSecondary, noise);
 
-    // Write to images
-    imageStore(albedoResultImage, texelCoord, vec4(albedoBlended, 1.0));
+    // Write results (albedo encoded to sRGB because arrays are sRGB)
+    imageStore(albedoResultImage, texelCoord, vec4(linearToSRGB(albedoBlended), 1.0));
     imageStore(normalResultImage, texelCoord, vec4(normalBlended, 1.0));
     imageStore(bumpResultImage, texelCoord, vec4(bumpBlended, 1.0));
 }
