@@ -2,6 +2,7 @@
 #include "VulkanApp.hpp"
 #include "../utils/FileReader.hpp"
 #include "PerlinPushConstants.hpp"
+#include "TextureArrayManager.hpp"
 #include <algorithm>
 #include <stdexcept>
 
@@ -15,12 +16,22 @@ const EditableTexture& EditableTextureSet::getAlbedo() const { return albedo; }
 const EditableTexture& EditableTextureSet::getNormal() const { return normal; }
 const EditableTexture& EditableTextureSet::getBump() const { return bump; }
 
-void EditableTextureSet::init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName) {
+void EditableTextureSet::init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName, TextureArrayManager* textureArrayManager) {
 	this->app = app;
+	this->textureArrayManager = textureArrayManager;
 
 	albedo.init(app, width, height, VK_FORMAT_R8G8B8A8_UNORM, "Albedo");
 	normal.init(app, width, height, VK_FORMAT_R8G8B8A8_UNORM, "Normal");
 	bump.init(app, width, height, VK_FORMAT_R8G8B8A8_UNORM, "Bump");
+
+	// Create compute pipeline and descriptor sets so we can generate textures on demand
+	createComputePipeline();
+	printf("[EditableTextureSet] Compute pipeline created for editable textures\n");
+}
+
+// Backwards-compatible overload: callers that don't pass a TextureArrayManager
+void EditableTextureSet::init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName) {
+	init(app, width, height, windowName, nullptr);
 }
 
 // setTextureManager removed — EditableTextureSet creates its own compute sampler
@@ -67,26 +78,48 @@ void EditableTextureSet::cleanup() {
 
 
 void EditableTextureSet::createComputePipeline() {
-	VkDescriptorSetLayoutBinding bindings[3] = {};
+	// Descriptor layout: three storage images (albedo, normal, bump) and three sampler arrays
+	VkDescriptorSetLayoutBinding bindings[6] = {};
 
+	// binding 0: albedo storage image (writeonly)
 	bindings[0].binding = 0;
 	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	bindings[0].descriptorCount = 1;
 	bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+	// binding 1: albedo sampler2DArray
 	bindings[1].binding = 1;
 	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[1].descriptorCount = 1;
 	bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+	// binding 2: normal sampler2DArray
 	bindings[2].binding = 2;
 	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[2].descriptorCount = 1;
 	bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+	// binding 3: bump sampler2DArray
+	bindings[3].binding = 3;
+	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[3].descriptorCount = 1;
+	bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	// binding 4: normal storage image (writeonly)
+	bindings[4].binding = 4;
+	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[4].descriptorCount = 1;
+	bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	// binding 5: bump storage image (writeonly)
+	bindings[5].binding = 5;
+	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[5].descriptorCount = 1;
+	bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
 	VkDescriptorSetLayoutCreateInfo layoutInfo{};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 3;
+	layoutInfo.bindingCount = 6;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(app->getDevice(), &layoutInfo, nullptr, &computeDescriptorSetLayout) != VK_SUCCESS) {
@@ -131,9 +164,9 @@ void EditableTextureSet::createComputePipeline() {
 
 	VkDescriptorPoolSize poolSizes[2] = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	poolSizes[0].descriptorCount = 3;
+	poolSizes[0].descriptorCount = 3; // albedo, normal, bump
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSizes[1].descriptorCount = 6;
+	poolSizes[1].descriptorCount = 3; // albedo array, normal array, bump array
 
 	VkDescriptorPoolCreateInfo poolInfo{};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -145,9 +178,111 @@ void EditableTextureSet::createComputePipeline() {
 		throw std::runtime_error("failed to create compute descriptor pool!");
 	}
 
-	createComputeDescriptorSet(albedo, albedoComputeDescSet);
-	createComputeDescriptorSet(normal, normalComputeDescSet);
-	createComputeDescriptorSet(bump, bumpComputeDescSet);
+	// Create a single descriptor set that binds albedo/normal/bump storage images and samplers
+	createTripleComputeDescriptorSet();
+	// For backward compatibility, set individual handles to the triple set
+	albedoComputeDescSet = normalComputeDescSet = bumpComputeDescSet = tripleComputeDescSet;
+}
+
+void EditableTextureSet::createTripleComputeDescriptorSet() {
+	VkDescriptorSetAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocInfo.descriptorPool = computeDescriptorPool;
+	allocInfo.descriptorSetCount = 1;
+	allocInfo.pSetLayouts = &computeDescriptorSetLayout;
+
+	if (vkAllocateDescriptorSets(app->getDevice(), &allocInfo, &tripleComputeDescSet) != VK_SUCCESS) {
+		throw std::runtime_error("failed to allocate compute triple descriptor set!");
+	}
+
+	// Storage image infos: albedo (binding 0), normal (binding 4), bump (binding 5)
+	VkDescriptorImageInfo albedoImageInfo{};
+	albedoImageInfo.imageView = albedo.getView();
+	albedoImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+	VkDescriptorImageInfo normalImageInfo{};
+	normalImageInfo.imageView = normal.getView();
+	normalImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+	VkDescriptorImageInfo bumpImageInfo{};
+	bumpImageInfo.imageView = bump.getView();
+	bumpImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+	// Sampler infos for the three arrays (binding 1,2,3)
+	VkDescriptorImageInfo albedoSamplerInfo{};
+	VkDescriptorImageInfo normalSamplerInfo{};
+	VkDescriptorImageInfo bumpSamplerInfo{};
+
+	if (textureArrayManager) {
+		albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view;
+		albedoSamplerInfo.sampler = textureArrayManager->albedoSampler;
+		albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+		normalSamplerInfo.imageView = textureArrayManager->normalArray.view;
+		normalSamplerInfo.sampler = textureArrayManager->normalSampler;
+		normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+		bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view;
+		bumpSamplerInfo.sampler = textureArrayManager->bumpSampler;
+		bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	} else {
+		// Fallback to individual editable textures with computeSampler
+		if (computeSampler == VK_NULL_HANDLE) computeSampler = app->createTextureSampler(1);
+		albedoSamplerInfo.imageView = albedo.getView(); albedoSamplerInfo.sampler = computeSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		normalSamplerInfo.imageView = normal.getView(); normalSamplerInfo.sampler = computeSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		bumpSamplerInfo.imageView = bump.getView(); bumpSamplerInfo.sampler = computeSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	}
+
+	VkWriteDescriptorSet writes[6] = {};
+	// binding 0 - albedo storage image
+	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[0].dstSet = tripleComputeDescSet;
+	writes[0].dstBinding = 0;
+	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	writes[0].descriptorCount = 1;
+	writes[0].pImageInfo = &albedoImageInfo;
+
+	// binding 1 - albedo sampler array
+	writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[1].dstSet = tripleComputeDescSet;
+	writes[1].dstBinding = 1;
+	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	writes[1].descriptorCount = 1;
+	writes[1].pImageInfo = &albedoSamplerInfo;
+
+	// binding 2 - normal sampler array
+	writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[2].dstSet = tripleComputeDescSet;
+	writes[2].dstBinding = 2;
+	writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	writes[2].descriptorCount = 1;
+	writes[2].pImageInfo = &normalSamplerInfo;
+
+	// binding 3 - bump sampler array
+	writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[3].dstSet = tripleComputeDescSet;
+	writes[3].dstBinding = 3;
+	writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	writes[3].descriptorCount = 1;
+	writes[3].pImageInfo = &bumpSamplerInfo;
+
+	// binding 4 - normal storage image
+	writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[4].dstSet = tripleComputeDescSet;
+	writes[4].dstBinding = 4;
+	writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	writes[4].descriptorCount = 1;
+	writes[4].pImageInfo = &normalImageInfo;
+
+	// binding 5 - bump storage image
+	writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[5].dstSet = tripleComputeDescSet;
+	writes[5].dstBinding = 5;
+	writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	writes[5].descriptorCount = 1;
+	writes[5].pImageInfo = &bumpImageInfo;
+
+	vkUpdateDescriptorSets(app->getDevice(), 6, writes, 0, nullptr);
 }
 
 void EditableTextureSet::createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet) {
@@ -180,9 +315,17 @@ void EditableTextureSet::createComputeDescriptorSet(EditableTexture& texture, Vk
 	}
 
 	VkDescriptorImageInfo samplerInfo{};
-	samplerInfo.imageView = texture.getView();
-	samplerInfo.sampler = computeSampler;
-	samplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	// If a TextureArrayManager was provided, bind its array view and sampler so compute samples from arrays
+	if (textureArrayManager) {
+		samplerInfo.imageView = textureArrayManager->albedoArray.view;
+		samplerInfo.sampler = textureArrayManager->albedoSampler;
+		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	} else {
+		// Fallback: bind the editable texture itself as the sampler input
+		samplerInfo.imageView = texture.getView();
+		samplerInfo.sampler = computeSampler;
+		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	}
 
 	VkWriteDescriptorSet samplerWrite1{}; samplerWrite1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; samplerWrite1.dstSet = descSet; samplerWrite1.dstBinding = 1; samplerWrite1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; samplerWrite1.descriptorCount = 1; samplerWrite1.pImageInfo = &samplerInfo;
 	VkWriteDescriptorSet samplerWrite2{}; samplerWrite2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; samplerWrite2.dstSet = descSet; samplerWrite2.dstBinding = 2; samplerWrite2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; samplerWrite2.descriptorCount = 1; samplerWrite2.pImageInfo = &samplerInfo;
@@ -194,25 +337,9 @@ void EditableTextureSet::createComputeDescriptorSet(EditableTexture& texture, Vk
 void EditableTextureSet::generatePerlinNoise(EditableTexture& texture) {
 	// generate regardless of external texture lists
 
-	VkDescriptorSet descSet = VK_NULL_HANDLE;
-	int textureType = 0;
-
-	if (&texture == &albedo) {
-		descSet = albedoComputeDescSet;
-		textureType = 0;
-	} else if (&texture == &normal) {
-		descSet = normalComputeDescSet;
-		textureType = 1;
-	} else if (&texture == &bump) {
-		descSet = bumpComputeDescSet;
-		textureType = 2;
-	}
-
-	if (descSet == VK_NULL_HANDLE) {
-		return;
-	}
-
-	// Descriptor sets for compute already bind the texture itself as primary/secondary samplers
+	// We now perform a single dispatch that writes all three images (albedo, normal, bump)
+	VkDescriptorSet descSet = tripleComputeDescSet;
+	if (descSet == VK_NULL_HANDLE) return;
 
 	PerlinPushConstants pushConstants;
 	pushConstants.scale = perlinScale;
@@ -224,33 +351,32 @@ void EditableTextureSet::generatePerlinNoise(EditableTexture& texture) {
 	pushConstants.seed = perlinSeed;
 	pushConstants.textureSize = texture.getWidth();
 	pushConstants.time = perlinTime;
+    // Primary/secondary layer indices refer to layers in the texture array manager
+	pushConstants.primaryLayer = static_cast<uint32_t>(primaryTextureIdx);
+	pushConstants.secondaryLayer = static_cast<uint32_t>(secondaryTextureIdx);
 
-	const char* typeNames[] = {"Albedo", "Normal", "Bump"};
-
-	printf("Generating %s Perlin noise: scale=%.2f, octaves=%.0f, persistence=%.2f, lacunarity=%.2f, brightness=%.2f, contrast=%.2f, seed=%u\n",
-		   typeNames[textureType], pushConstants.scale, pushConstants.octaves, pushConstants.persistence, pushConstants.lacunarity,
-		   pushConstants.brightness, pushConstants.contrast, pushConstants.seed);
-	printf("Primary texture: %d, Secondary texture: %d\n", primaryTextureIdx, secondaryTextureIdx);
-	printf("Texture size: %dx%d, dispatch groups: %dx%d\n",
-		   texture.getWidth(), texture.getHeight(),
-		   (texture.getWidth() + 15) / 16, (texture.getHeight() + 15) / 16);
 
 	VkCommandBuffer commandBuffer = app->beginSingleTimeCommands();
 
-	VkImageMemoryBarrier barrier{};
-	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = texture.getImage();
-	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	barrier.subresourceRange.baseMipLevel = 0;
-	barrier.subresourceRange.levelCount = 1;
-	barrier.subresourceRange.baseArrayLayer = 0;
-	barrier.subresourceRange.layerCount = 1;
-	barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	// Transition the three target images to GENERAL for compute write
+	VkImageMemoryBarrier barriers[3]{};
+	for (int i = 0; i < 3; ++i) {
+		barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barriers[i].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barriers[i].subresourceRange.baseMipLevel = 0;
+		barriers[i].subresourceRange.levelCount = 1;
+		barriers[i].subresourceRange.baseArrayLayer = 0;
+		barriers[i].subresourceRange.layerCount = 1;
+		barriers[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		barriers[i].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	}
+	barriers[0].image = albedo.getImage();
+	barriers[1].image = normal.getImage();
+	barriers[2].image = bump.getImage();
 
 	vkCmdPipelineBarrier(
 		commandBuffer,
@@ -259,7 +385,7 @@ void EditableTextureSet::generatePerlinNoise(EditableTexture& texture) {
 		0,
 		0, nullptr,
 		0, nullptr,
-		1, &barrier
+		3, barriers
 	);
 
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
@@ -269,12 +395,16 @@ void EditableTextureSet::generatePerlinNoise(EditableTexture& texture) {
 
 	uint32_t groupCountX = (texture.getWidth() + 15) / 16;
 	uint32_t groupCountY = (texture.getHeight() + 15) / 16;
+
 	vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
 
-	barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	// Transition images back to SHADER_READ_ONLY_OPTIMAL
+	for (int i = 0; i < 3; ++i) {
+		barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barriers[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		barriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	}
 
 	vkCmdPipelineBarrier(
 		commandBuffer,
@@ -283,7 +413,7 @@ void EditableTextureSet::generatePerlinNoise(EditableTexture& texture) {
 		0,
 		0, nullptr,
 		0, nullptr,
-		1, &barrier
+		3, barriers
 	);
 
 	app->endSingleTimeCommands(commandBuffer);

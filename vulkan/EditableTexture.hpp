@@ -28,6 +28,9 @@ public:
     
     // Render ImGui widget
     void renderImGui();
+
+    // Debug: read back the first pixel from GPU and print its values
+    void debugDumpFirstPixel();
     
     VkImageView getView() const;
     VkSampler getSampler() const;
@@ -36,7 +39,7 @@ public:
     uint32_t getWidth() const;
     uint32_t getHeight() const;
     uint32_t getBytesPerPixel() const;
-    VkDescriptorSet getImGuiDescriptorSet() const;
+    VkDescriptorSet getImGuiDescriptorSet();
     const uint8_t* getPixelData() const;
     
     // Get as TextureImage for TextureManager compatibility

@@ -10,15 +10,17 @@ void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt,
 	format = fmt;
 	name = nm ? nm : "Editable Texture";
 	bytesPerPixel = (format == VK_FORMAT_R8_UNORM) ? 1 : 4;
-	cpuData.assign(width * height * bytesPerPixel, 0);
-	isDirty = false;
+    printf("[EditableTexture::init] name='%s' w=%u h=%u bytes=%u\n", name.c_str(), width, height, bytesPerPixel);
 
-	// Create GPU resources
-	app->createImage(width, height, format, VK_IMAGE_TILING_OPTIMAL, 1,
-					 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-					 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
+    cpuData.assign((size_t)width * (size_t)height * (size_t)bytesPerPixel, 0);
+    isDirty = false;
 
-	// create view
+    // Create GPU resources
+    app->createImage(width, height, format, VK_IMAGE_TILING_OPTIMAL, 1,
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
+
+    // create view
 	VkImageViewCreateInfo viewInfo{};
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	viewInfo.image = image;
@@ -143,7 +145,10 @@ bool EditableTexture::getDirty() const { return isDirty; }
 uint32_t EditableTexture::getWidth() const { return width; }
 uint32_t EditableTexture::getHeight() const { return height; }
 uint32_t EditableTexture::getBytesPerPixel() const { return bytesPerPixel; }
-VkDescriptorSet EditableTexture::getImGuiDescriptorSet() const { return imguiDescSet; }
+VkDescriptorSet EditableTexture::getImGuiDescriptorSet() {
+    if (imguiDescSet == VK_NULL_HANDLE) createImGuiDescriptor();
+    return imguiDescSet;
+}
 const uint8_t* EditableTexture::getPixelData() const { return cpuData.empty() ? nullptr : cpuData.data(); }
 
 TextureImage EditableTexture::getTextureImage() const {
@@ -159,6 +164,11 @@ void EditableTexture::createImGuiDescriptor() {
 	if (imguiDescSet != VK_NULL_HANDLE) return;
 	ImTextureID id = ImGui_ImplVulkan_AddTexture(sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	imguiDescSet = (VkDescriptorSet)id;
+	if (imguiDescSet == VK_NULL_HANDLE) {
+		printf("[EditableTexture] Failed to create ImGui descriptor for '%s'\n", name.c_str());
+	} else {
+		printf("[EditableTexture] Created ImGui descriptor %p for '%s'\n", (void*)imguiDescSet, name.c_str());
+	}
 }
 
 void EditableTexture::transitionImageLayout(VkImageLayout oldLayout, VkImageLayout newLayout) {
@@ -167,4 +177,74 @@ void EditableTexture::transitionImageLayout(VkImageLayout oldLayout, VkImageLayo
 
 void EditableTexture::copyBufferToImage(VkBuffer buffer) {
 	app->copyBufferToImage(buffer, image, width, height);
+}
+
+void EditableTexture::debugDumpFirstPixel() {
+	// Create a staging buffer large enough for one row
+	VkDevice device = app->getDevice();
+	size_t pixelSize = bytesPerPixel;
+	size_t bufSize = pixelSize * width * height; // read whole image for simplicity
+
+	Buffer staging = app->createBuffer(bufSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+	VkCommandBuffer cmd = app->beginSingleTimeCommands();
+
+	// Transition image to TRANSFER_SRC
+	VkImageMemoryBarrier barrier{};
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = image;
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.baseMipLevel = 0;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.baseArrayLayer = 0;
+	barrier.subresourceRange.layerCount = 1;
+	barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+	VkBufferImageCopy region{};
+	region.bufferOffset = 0;
+	region.bufferRowLength = 0;
+	region.bufferImageHeight = 0;
+	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.imageSubresource.mipLevel = 0;
+	region.imageSubresource.baseArrayLayer = 0;
+	region.imageSubresource.layerCount = 1;
+	region.imageOffset = {0, 0, 0};
+	region.imageExtent = { width, height, 1 };
+
+	vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging.buffer, 1, &region);
+
+	// Transition back
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+	app->endSingleTimeCommands(cmd);
+
+	// Map and read first pixel
+	void* data;
+	vkMapMemory(device, staging.memory, 0, pixelSize, 0, &data);
+	uint8_t *bytes = reinterpret_cast<uint8_t*>(data);
+	if (bytesPerPixel == 4) {
+		printf("[EditableTexture] First pixel RGBA = %u %u %u %u\n", bytes[0], bytes[1], bytes[2], bytes[3]);
+	} else if (bytesPerPixel == 1) {
+		printf("[EditableTexture] First pixel R = %u\n", bytes[0]);
+	} else {
+		printf("[EditableTexture] First pixel raw bytes: ");
+		for (size_t i=0;i<pixelSize;i++) printf("%02x ", bytes[i]);
+		printf("\n");
+	}
+	vkUnmapMemory(device, staging.memory);
+
+	if (staging.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, staging.buffer, nullptr);
+	if (staging.memory != VK_NULL_HANDLE) vkFreeMemory(device, staging.memory, nullptr);
 }

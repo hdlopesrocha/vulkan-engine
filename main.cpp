@@ -110,6 +110,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     // UI: currently selected texture triple for preview
     size_t currentTextureIndex = 0;
     size_t editableTextureIndex = 0;  // Index of the editable texture triple in TextureManager
+    size_t editableLayerIndex = SIZE_MAX; // Texture array layer index reserved for editable textures
     // Cached material for the ground plane (captured at setup and updated on texture regenerate)
     MaterialProperties planeMaterial;
     
@@ -316,13 +317,18 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // Initialize Vulkan-side editable textures BEFORE creating descriptor sets
             editableTextures = std::make_shared<EditableTextureSet>();
-            editableTextures->init(this, 1024, 1024, "Editable Textures");
+            // Provide the global TextureArrayManager so compute shaders can sample from arrays
+            editableTextures->init(this, 1024, 1024, "Editable Textures", &textureArrayManager);
             // EditableTextureSet no longer requires a TextureManager
             editableTextures->generateInitialTextures();
+            // Debug: dump first pixel of albedo to verify compute output
+            editableTextures->getAlbedo().debugDumpFirstPixel();
 
             // Create ImGui widget that wraps the Vulkan editable textures and add it to widget manager
             editableTexturesWidget = std::make_shared<AnimatedTextureWidget>(editableTextures, "Editable Textures");
             widgetManager.addWidget(editableTexturesWidget);
+            // Show the editable textures widget by default so users see the previews on startup
+            editableTexturesWidget->show();
 
             // Add editable textures as an entry in `materials` and keep their images managed by the EditableTextureSet
             size_t editableIndex = materials.size();
@@ -345,6 +351,14 @@ class MyApp : public VulkanApp, public IEventHandler {
             editableTextureIndex = editableIndex;  // Store for plane rendering
             // Initialize cached plane material from the editable texture triple
             planeMaterial = materials[editableIndex];
+
+            // Allocate a layer in the texture arrays for this editable material and upload initial textures
+            uint32_t editableLayer = textureArrayManager.create();
+            editableLayerIndex = editableLayer;
+            printf("[Main] Allocated texture array layer %u for editable textures (material index %zu)\n", editableLayer, editableIndex);
+            textureArrayManager.updateLayerFromEditableMap(editableLayer, editableTextures->getAlbedo(), 0);
+            textureArrayManager.updateLayerFromEditableMap(editableLayer, editableTextures->getNormal(), 1);
+            textureArrayManager.updateLayerFromEditableMap(editableLayer, editableTextures->getBump(), 2);
             // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
             if (!loadedIndices.empty()) currentTextureIndex = loadedIndices[0];
             
@@ -608,6 +622,12 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Hook Vulkan editable texture regeneration callback so materials are refreshed
             editableTextures->setOnTextureGenerated([this, editableIndex]() {
                 printf("Editable textures regenerated (index %zu)\n", editableIndex);
+                // Update texture arrays so shaders sample the new images
+                if (editableLayerIndex != SIZE_MAX) {
+                    textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), editableTextures->getAlbedo(), 0);
+                    textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), editableTextures->getNormal(), 1);
+                    textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), editableTextures->getBump(), 2);
+                }
                 updateMaterials();
                 planeMaterial = materials[editableIndex];
             });

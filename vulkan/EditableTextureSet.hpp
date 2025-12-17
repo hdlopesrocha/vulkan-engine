@@ -14,7 +14,12 @@ class EditableTextureSet {
 public:
     EditableTextureSet();
 
+    // Pass optional TextureArrayManager so compute can sample from arrays
+    // Backwards-compatible init: old callers that don't pass a TextureArrayManager
     void init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName = "Editable Textures");
+
+    // New init that accepts an optional TextureArrayManager so compute can sample from arrays
+    void init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName, class TextureArrayManager* textureArrayManager);
 
     // Set callback to be called after texture generation
     void setOnTextureGenerated(std::function<void()> callback);
@@ -43,6 +48,9 @@ private:
     EditableTexture normal;
     EditableTexture bump;
 
+    // Optional reference to global texture arrays so compute can sample from them
+    class TextureArrayManager* textureArrayManager = nullptr;
+
     // Compute pipeline for Perlin noise generation
     VkPipeline computePipeline = VK_NULL_HANDLE;
     VkPipelineLayout computePipelineLayout = VK_NULL_HANDLE;
@@ -51,6 +59,8 @@ private:
     VkDescriptorSet albedoComputeDescSet = VK_NULL_HANDLE;
     VkDescriptorSet normalComputeDescSet = VK_NULL_HANDLE;
     VkDescriptorSet bumpComputeDescSet = VK_NULL_HANDLE;
+    // Single descriptor set that binds the three storage images (albedo, normal, bump)
+    VkDescriptorSet tripleComputeDescSet = VK_NULL_HANDLE;
 
     // Default Perlin parameters (kept here for compatibility)
     float perlinScale = 8.0f;
@@ -71,6 +81,7 @@ private:
 
     void createComputePipeline();
     void createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet);
+    void createTripleComputeDescriptorSet();
     void generatePerlinNoise(EditableTexture& texture);
 };
 

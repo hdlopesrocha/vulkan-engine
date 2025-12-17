@@ -53,4 +53,7 @@ public:
 
     // Update a specific array layer from an EditableTexture (copies image -> array layer)
     void updateLayerFromEditable(uint32_t layer, const class EditableTexture& tex);
+
+    // Update a specific array layer and map (0=albedo,1=normal,2=bump) from an EditableTexture
+    void updateLayerFromEditableMap(uint32_t layer, const class EditableTexture& tex, int map);
 };

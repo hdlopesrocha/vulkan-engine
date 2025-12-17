@@ -367,19 +367,25 @@ uint TextureArrayManager::create() {
 }
 
 void TextureArrayManager::updateLayerFromEditable(uint32_t layer, const EditableTexture& tex) {
-	if (!app) throw std::runtime_error("TextureArrayManager::updateLayerFromEditable: no VulkanApp");
-	if (layer >= layerAmount) throw std::runtime_error("TextureArrayManager::updateLayerFromEditable: layer out of range");
+	// Keep backward-compatible behavior (copy into albedo array)
+	updateLayerFromEditableMap(layer, tex, 0);
+}
+
+void TextureArrayManager::updateLayerFromEditableMap(uint32_t layer, const EditableTexture& tex, int map) {
+	if (!app) throw std::runtime_error("TextureArrayManager::updateLayerFromEditableMap: no VulkanApp");
+	if (layer >= layerAmount) throw std::runtime_error("TextureArrayManager::updateLayerFromEditableMap: layer out of range");
 
 	VulkanApp* a = this->app;
 	VkDevice device = a->getDevice();
 
 	VkImage srcImage = tex.getImage();
-	VkImage dstImage = albedoArray.image; // images for all three channels will be copied separately below
+	VkImage dstImage = VK_NULL_HANDLE;
+	if (map == 0) dstImage = albedoArray.image;
+	else if (map == 1) dstImage = normalArray.image;
+	else if (map == 2) dstImage = bumpArray.image;
+	else throw std::runtime_error("TextureArrayManager::updateLayerFromEditableMap: invalid map");
 
-	// We'll copy albedo, normal, bump separately using the provided EditableTexture `tex` argument.
-	// For simplicity assume `tex` represents the same format/size used by arrays.
-
-	// Transition dst layer to TRANSFER_DST_OPTIMAL for each array image and src to TRANSFER_SRC_OPTIMAL
+	// Transition dst layer to TRANSFER_DST_OPTIMAL for the selected array image and src to TRANSFER_SRC_OPTIMAL
 	VkCommandBuffer cmd = a->beginSingleTimeCommands();
 
 	auto doBarrier = [&](VkImage dst, VkImageLayout oldDst, VkImageLayout newDst, uint32_t dstBaseLayer) {
@@ -398,7 +404,7 @@ void TextureArrayManager::updateLayerFromEditable(uint32_t layer, const Editable
 		barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-							 0, nullptr, 0, nullptr, 1, &barrier);
+					  0, nullptr, 0, nullptr, 1, &barrier);
 	};
 
 	// source barrier: shader read -> transfer src
@@ -418,10 +424,10 @@ void TextureArrayManager::updateLayerFromEditable(uint32_t layer, const Editable
 	srcBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 
 	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-						 0, nullptr, 0, nullptr, 1, &srcBarrier);
+					  0, nullptr, 0, nullptr, 1, &srcBarrier);
 
-	// Copy into albedoArray layer
-	doBarrier(albedoArray.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, layer);
+	// Copy into selected array layer
+	doBarrier(dstImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, layer);
 	VkImageCopy copyRegion{};
 	copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	copyRegion.srcSubresource.mipLevel = 0;
@@ -434,17 +440,16 @@ void TextureArrayManager::updateLayerFromEditable(uint32_t layer, const Editable
 	copyRegion.dstSubresource.layerCount = 1;
 	copyRegion.dstOffset = {0,0,0};
 	copyRegion.extent = { width, height, 1 };
-	vkCmdCopyImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, albedoArray.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+	vkCmdCopyImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
-	// Transition albedo layer back to SHADER_READ_ONLY_OPTIMAL
+	// Transition dst layer back to SHADER_READ_ONLY_OPTIMAL
 	VkImageMemoryBarrier dstBack{};
 	dstBack.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 	dstBack.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 	dstBack.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	dstBack.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	dstBack.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	dstBack.image = albedoArray.image;
-	dstBack.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	dstBack.image = dstImage;
 	dstBack.subresourceRange.baseMipLevel = 0;
 	dstBack.subresourceRange.levelCount = 1;
 	dstBack.subresourceRange.baseArrayLayer = layer;

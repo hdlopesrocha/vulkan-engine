@@ -12,5 +12,7 @@ struct PerlinPushConstants {
     float contrast;
     uint32_t textureSize;
     float time;  // Time parameter for animated noise
-    float padding[3];  // Padding for alignment
+    uint32_t primaryLayer;
+    uint32_t secondaryLayer;
+    float padding[2];  // Padding for alignment
 };
