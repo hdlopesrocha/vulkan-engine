@@ -51,33 +51,17 @@ void main() {
         fragColor = vec3(0.0);
     }
 
-    // Apply displacement
-    vec3 displacedLocalPos = localPos;
-    float disp = 0.0;
-    // Determine if any of the three corner materials enable mapping (blend by barycentric weights)
+    // Compute world position and normal for triplanar sampling
+    vec3 worldNormal = normalize(mat3(pushConstants.model) * localNormal);
+    vec4 worldPos = pushConstants.model * vec4(localPos, 1.0);
+
+    // Apply displacement    
     float mappingFlag = materials[texIndices.x].mappingParams.x * weights.x + materials[texIndices.y].mappingParams.x * weights.y + materials[texIndices.z].mappingParams.x * weights.z;
-    if (mappingFlag > 0.5) {
-        // Use triplanar or UV height sampling per-layer then blend
-        vec3 worldPosForSampling = (pushConstants.model * vec4(localPos, 1.0)).xyz;
-        float h0 = 0.0;
-        float h1 = 0.0;
-        float h2 = 0.0;
-        if (materials[texIndices.x].triplanarParams.z > 0.5) h0 = sampleHeightTriplanar(worldPosForSampling, localNormal, texIndices.x);
-        else h0 = sampleHeight(uv, texIndices.x);
-        if (materials[texIndices.y].triplanarParams.z > 0.5) h1 = sampleHeightTriplanar(worldPosForSampling, localNormal, texIndices.y);
-        else h1 = sampleHeight(uv, texIndices.y);
-        if (materials[texIndices.z].triplanarParams.z > 0.5) h2 = sampleHeightTriplanar(worldPosForSampling, localNormal, texIndices.z);
-        else h2 = sampleHeight(uv, texIndices.z);
-        float height = h0 * weights.x + h1 * weights.y + h2 * weights.z;
-        float heightScale = materials[texIndices.x].mappingParams.w * weights.x + materials[texIndices.y].mappingParams.w * weights.y + materials[texIndices.z].mappingParams.w * weights.z;
-        // Displace outward along surface normal based on sampled height
-        disp = height * heightScale;
-        displacedLocalPos += localNormal * disp;
-    }
-    // displacement magnitude used only on-TES; no debug output
+    vec3 displacedLocalPos = mappingFlag > 0.5 ? applyDisplacement(localPos, localNormal, worldPos.xyz, worldNormal, uv, texIndices, weights) : localPos;
+    
 
     // Compute world-space position and normals
-    vec4 worldPos = pushConstants.model * vec4(displacedLocalPos, 1.0);
+    worldPos = pushConstants.model * vec4(displacedLocalPos, 1.0);
     fragPosWorld = worldPos.xyz;
     if (!isShadowPass) {
         fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
