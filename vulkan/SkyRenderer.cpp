@@ -42,7 +42,7 @@ void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, Vk
     glm::vec3 camPos = glm::vec3(uboStatic.viewPos);
     glm::mat4 model = glm::translate(glm::mat4(1.0f), camPos) * glm::scale(glm::mat4(1.0f), glm::vec3(50.0f));
     skyUbo.model = model;
-    skyUbo.mvp = projMat * viewMat * model;
+    skyUbo.viewProjection = projMat * viewMat;
     skyUbo.passParams = glm::vec4(0.0f);
     app->updateUniformBuffer(uniformBuffer, &skyUbo, sizeof(UniformObject));
 

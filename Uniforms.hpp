@@ -4,7 +4,7 @@
 #include "utils/MaterialProperties.hpp"
 
 struct UniformObject {
-    glm::mat4 mvp;
+    glm::mat4 viewProjection;
     glm::mat4 model;
     glm::vec4 viewPos; // world-space camera position
     glm::vec4 lightDir; // xyz = direction, w = unused (padding)

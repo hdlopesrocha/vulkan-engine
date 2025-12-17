@@ -13,5 +13,5 @@ void main() {
     vec3 worldPos = inPosition * 50.0 + ubo.viewPos.xyz; // Large radius
     fragPosWorld = worldPos;
     fragNormal = inNormal;
-    gl_Position = ubo.mvp * vec4(worldPos, 1.0);
+    gl_Position = ubo.viewProjection * vec4(worldPos, 1.0);
 }

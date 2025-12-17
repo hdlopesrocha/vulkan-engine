@@ -75,8 +75,8 @@ void main() {
 
     fragUV = uv;
     fragTexIndex = texIndex;
-    // Output clip-space position using MVP (MVP includes model matrix)
-    gl_Position = ubo.mvp * vec4(displacedLocalPos, 1.0);
+    // Output clip-space position using viewProjection * model
+    gl_Position = ubo.viewProjection * ubo.model * vec4(displacedLocalPos, 1.0);
 
     // Compute fragNormal: do not apply normal mapping here — use transformed geometry normal
     fragNormal = normalize(mat3(ubo.model) * localNormal);

@@ -1,7 +1,7 @@
 // UBO layout must match the CPU-side UniformObject (std140-like):
-// mat4 mvp; mat4 model; vec4 viewPos; vec4 lightDir; vec4 lightColor;
+// mat4 viewProjection; mat4 model; vec4 viewPos; vec4 lightDir; vec4 lightColor;
 layout(binding = 0) uniform UBO {
-    mat4 mvp;
+    mat4 viewProjection;
     mat4 model;
     vec4 viewPos;
     vec4 lightDir;
