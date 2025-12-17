@@ -13,6 +13,7 @@
 #include "events/CloseWindowEvent.hpp"
 #include "events/ToggleFullscreenEvent.hpp"
 #include "vulkan/TextureManager.hpp"
+#include "vulkan/TextureArrayManager.hpp"
 #include "vulkan/AtlasManager.hpp"
 #include "utils/BillboardManager.hpp"
 #include "math/CubeModel.hpp"
