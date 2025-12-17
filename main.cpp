@@ -133,6 +133,8 @@ class MyApp : public VulkanApp, public IEventHandler {
         Buffer instanceDynamicUniformBuffer;
         Buffer instanceShadowDynamicUniformBuffer;
         VkDeviceSize instanceUniformAlignedSize = 0;
+        // Buffer holding per-instance model matrices for instanced draws
+        Buffer instanceModelBuffer;
         std::vector<VkDescriptorSet> instanceShadowDescriptorSets;
         // Additional per-texture uniform buffers and descriptor sets for sphere instances
         std::vector<VkDescriptorSet> sphereDescriptorSets;
@@ -521,7 +523,18 @@ class MyApp : public VulkanApp, public IEventHandler {
                 instanceDynamicUniformBuffer = createBuffer(alignedElem * instanceCount, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                 instanceShadowDynamicUniformBuffer = createBuffer(alignedElem * instanceCount, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                 instanceUniformAlignedSize = alignedElem;
-                // create one descriptor set and replicate it across instances
+                // Create instance model buffer (storage buffer) and upload initial model matrices
+                instanceModelBuffer = createBuffer(sizeof(glm::mat4) * instanceCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                std::vector<glm::mat4> instanceModels;
+                instanceModels.reserve(instanceCount);
+                for (size_t imi = 0; imi < instanceCount; ++imi) {
+                    if (imi < modelObjects.size() && modelObjects[imi]) instanceModels.push_back(modelObjects[imi]->getModel());
+                    else instanceModels.push_back(glm::mat4(1.0f));
+                }
+                if (!instanceModels.empty()) {
+                    updateUniformBuffer(instanceModelBuffer, instanceModels.data(), sizeof(glm::mat4) * instanceModels.size());
+                }
+                // create one descriptor set and replicate it across instances; pass instanceModelBuffer so shaders can read transforms
                 VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(textureManager.getTriple(0), instanceDynamicUniformBuffer, materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, 0);
                 VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(textureManager.getTriple(0), instanceShadowDynamicUniformBuffer, materialCount > 0, materialCount > 0 ? &materialBuffer : nullptr, 0);
                 for (size_t mi = 0; mi < instanceCount; ++mi) {
@@ -885,19 +898,39 @@ class MyApp : public VulkanApp, public IEventHandler {
                 
                 // Render all instances to shadow map
                 auto &instances = modelManager.getInstances();
-                for (size_t ii = 0; ii < instances.size(); ++ii) {
-                    auto &instance = instances[ii];
-                    // Update uniform buffer for shadow pass
-                    UniformObject shadowUbo = uboStatic;
-                    shadowUbo.viewProjection = uboStatic.lightSpaceMatrix;
-                    shadowUbo.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
-                    // Per-material mapping/mappingParams are read from the Materials SSBO in shaders.
-                    shadowUbo.passParams = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 1.0
-                    // write into dynamic buffer slot for this instance
-                    VkDeviceSize dynOffset = ii * instanceUniformAlignedSize;
-                    updateUniformBufferRange(*instance.shadowUniformBuffer, dynOffset, &shadowUbo, sizeof(UniformObject));
-                    uint32_t dyn = static_cast<uint32_t>(dynOffset);
-                    shadowMapper.renderObject(commandBuffer, instance.transform, instance.vbo, instance.shadowDescriptorSet, dyn);
+                if (!instances.empty()) {
+                    // Prepare batched shadow UBOs and upload in one mapping (reduces map/unmap overhead)
+                    std::vector<UniformObject> shadowUbos;
+                    shadowUbos.reserve(instances.size());
+                    for (size_t ii = 0; ii < instances.size(); ++ii) {
+                        UniformObject shadowUbo = uboStatic;
+                        shadowUbo.viewProjection = uboStatic.lightSpaceMatrix;
+                        shadowUbo.materialFlags = glm::vec4(0.0f);
+                        shadowUbo.passParams = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+                        shadowUbos.push_back(shadowUbo);
+                    }
+                    Buffer *shadowBuf = instances[0].shadowUniformBuffer;
+                    if (shadowBuf && instanceUniformAlignedSize > 0) {
+                        updateUniformBufferBatched(*shadowBuf, instanceUniformAlignedSize, instances.size(), shadowUbos.data(), sizeof(UniformObject));
+                        // Render using the appropriate dynamic offsets
+                        for (size_t ii = 0; ii < instances.size(); ++ii) {
+                            auto &instance = instances[ii];
+                            uint32_t dyn = static_cast<uint32_t>(ii * instanceUniformAlignedSize);
+                            shadowMapper.renderObject(commandBuffer, instance.transform, instance.vbo, instance.shadowDescriptorSet, dyn);
+                        }
+                    } else {
+                        for (size_t ii = 0; ii < instances.size(); ++ii) {
+                            auto &instance = instances[ii];
+                            UniformObject shadowUbo = uboStatic;
+                            shadowUbo.viewProjection = uboStatic.lightSpaceMatrix;
+                            shadowUbo.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+                            shadowUbo.passParams = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+                            VkDeviceSize dynOffset = ii * instanceUniformAlignedSize;
+                            updateUniformBufferRange(*instance.shadowUniformBuffer, dynOffset, &shadowUbo, sizeof(UniformObject));
+                            uint32_t dyn = static_cast<uint32_t>(dynOffset);
+                            shadowMapper.renderObject(commandBuffer, instance.transform, instance.vbo, instance.shadowDescriptorSet, dyn);
+                        }
+                    }
                 }
 
                 shadowMapper.endShadowPass(commandBuffer);
@@ -934,67 +967,70 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // Render all instances with main pass
             auto &instancesMain = modelManager.getInstances();
-            for (size_t ii = 0; ii < instancesMain.size(); ++ii) {
-                const auto& instance = instancesMain[ii];
-                const auto& vbo = instance.vbo;
-                
-                // Bind vertex and index buffers
-                VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
-                
-                // Update uniform buffer for this instance
+            if (!instancesMain.empty()) {
+                // Batch-update all per-instance UBO slots in one mapped write
+                std::vector<UniformObject> ubos;
+                ubos.reserve(instancesMain.size());
                 glm::mat4 viewProj = projMat * viewMat;
-                UniformObject ubo = uboStatic;
-                ubo.viewProjection = viewProj;
-                
-                // Static material properties are read from the GPU-side material buffer (SSBO).
-                // Determine material index from the mesh vertex `texIndex` and use it for per-instance overrides.
-                const MaterialProperties* instMat = nullptr;
-                int idx = 0;
-                if (instance.model && !instance.model->getVertices().empty()) {
-                    idx = instance.model->getVertices()[0].texIndex;
-                    if (idx >= 0 && static_cast<size_t>(idx) < textureManager.count()) {
-                        instMat = &textureManager.getMaterial(static_cast<size_t>(idx));
+                for (size_t ii = 0; ii < instancesMain.size(); ++ii) {
+                    UniformObject ubo = uboStatic;
+                    ubo.viewProjection = viewProj;
+                    // Global normal mapping toggle (separate from tessellation/mappingMode)
+                    if (settingsWidget) ubo.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
+                    else ubo.materialFlags.w = 1.0f;
+                    ubo.shadowEffects = glm::vec4(0.0f, 0.0f, 0.0f, settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f);
+                    if (settingsWidget) ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
+                    else ubo.debugParams = glm::vec4(0.0f);
+                    ubo.passParams = glm::vec4(0.0f);
+                    ubos.push_back(ubo);
+                }
+                Buffer *mainBuf = instancesMain[0].uniformBuffer;
+                if (mainBuf && instanceUniformAlignedSize > 0) {
+                    updateUniformBufferBatched(*mainBuf, instanceUniformAlignedSize, instancesMain.size(), ubos.data(), sizeof(UniformObject));
+                    // Bind and draw each instance using pre-filled dynamic offsets
+                    for (size_t ii = 0; ii < instancesMain.size(); ++ii) {
+                        const auto& instance = instancesMain[ii];
+                        const auto& vbo = instance.vbo;
+                        VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
+                        VkDeviceSize offsets[] = { 0 };
+                        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+                        vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
+
+                        bool wire = settingsWidget ? settingsWidget->getWireframeEnabled() : false;
+                        if (wire && graphicsPipelineWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineWire);
+                        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+
+                        uint32_t dyn = static_cast<uint32_t>(ii * instanceUniformAlignedSize);
+                        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                               getPipelineLayout(), 0, 1, &instance.descriptorSet, 1, &dyn);
+                        vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, 0, sizeof(instance.transform), &instance.transform);
+                        vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
+                    }
+                } else {
+                    // Fallback: update each instance individually
+                    for (size_t ii = 0; ii < instancesMain.size(); ++ii) {
+                        const auto& instance = instancesMain[ii];
+                        const auto& vbo = instance.vbo;
+                        VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
+                        VkDeviceSize offsets[] = { 0 };
+                        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+                        vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
+
+                        UniformObject ubo = ubos[ii];
+                        VkDeviceSize dynOffset = ii * instanceUniformAlignedSize;
+                        updateUniformBufferRange(*instance.uniformBuffer, dynOffset, &ubo, sizeof(UniformObject));
+
+                        bool wire = settingsWidget ? settingsWidget->getWireframeEnabled() : false;
+                        if (wire && graphicsPipelineWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineWire);
+                        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+
+                        uint32_t dyn = static_cast<uint32_t>(dynOffset);
+                        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                               getPipelineLayout(), 0, 1, &instance.descriptorSet, 1, &dyn);
+                        vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, 0, sizeof(instance.transform), &instance.transform);
+                        vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
                     }
                 }
-                // Per-material tess level is provided by the Materials SSBO; no per-instance override here.
-                // (temporary debug logging removed)
-                // Global normal mapping toggle (separate from tessellation/mappingMode)
-                if (settingsWidget) {
-                    ubo.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
-                } else {
-                    ubo.materialFlags.w = 1.0f;
-                }
-                
-                // Apply shadow settings: 
-                ubo.shadowEffects = glm::vec4(
-                    0.0f, 
-                    0.0f, // shadow displacement disabled
-                    0.0f, 
-                    settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f  // global shadows enabled
-                );
-                // Debug visualization mode (set by SettingsWidget)
-                if (settingsWidget) ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
-                else ubo.debugParams = glm::vec4(0.0f);
-                ubo.passParams = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // isShadowPass = 0.0
-                // write per-instance UBO into aligned slot of dynamic buffer
-                VkDeviceSize dynOffset = ii * instanceUniformAlignedSize;
-                updateUniformBufferRange(*instance.uniformBuffer, dynOffset, &ubo, sizeof(UniformObject));
-                
-                // Bind descriptor set and draw
-                // Use a single pipeline (tessellation is enabled/disabled in the shader using mappingMode)
-                bool wire = settingsWidget ? settingsWidget->getWireframeEnabled() : false;
-                if (wire && graphicsPipelineWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineWire);
-                else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-
-                uint32_t dyn = static_cast<uint32_t>(dynOffset);
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                       getPipelineLayout(), 0, 1, &instance.descriptorSet, 1, &dyn);
-                // Push per-draw model matrix via push constants
-                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, 0, sizeof(instance.transform), &instance.transform);
-                vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
             }
 
             // render ImGui draw data inside the same command buffer (must be inside render pass)

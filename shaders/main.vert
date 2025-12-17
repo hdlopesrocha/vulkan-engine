@@ -2,6 +2,13 @@
 
 #include "includes/ubo.glsl"
 
+// Instance model buffer for per-instance transforms. Only declared in stages
+// that have access to `gl_InstanceIndex` (vertex/TES) to avoid compile errors
+// in other stages that include the shared UBO include.
+// Instance SSBO is available for future instanced draws, but current draw path
+// uses per-draw push constants. Prefer pushConstants.model to avoid reading
+// the first SSBO element for non-instanced draws.
+
 
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inColor;
@@ -25,11 +32,12 @@ void main() {
     fragUV = inUV;
     // Transform normal to world space using the model matrix (push constant)
     // For uniform scaling, mat3(model) works. For non-uniform scaling, use transpose(inverse(model))
-    fragNormal = normalize(mat3(pushConstants.model) * inNormal);
+    mat4 model = pushConstants.model;
+    fragNormal = normalize(mat3(model) * inNormal);
     // Provide per-vertex tex index for TCS to assemble per-patch indices
     fragTexIndex = inTexIndex;
     // compute world-space position and pass to fragment
-    vec4 worldPos = pushConstants.model * vec4(inPos, 1.0);
+    vec4 worldPos = model * vec4(inPos, 1.0);
     fragPosWorld = worldPos.xyz;
     // compute light-space position for shadow mapping
     fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
@@ -38,7 +46,7 @@ void main() {
     // also pass local-space normal for tessellation/displacement
     fragLocalNormal = inNormal;
     // pass tangent as a vec4: xyz = tangent, w = handedness sign
-    fragTangent = vec4(normalize(mat3(pushConstants.model) * inTangent.xyz), inTangent.w);
+    fragTangent = vec4(normalize(mat3(model) * inTangent.xyz), inTangent.w);
     // apply viewProjection * model transform to the vertex position
-    gl_Position = ubo.viewProjection * pushConstants.model * vec4(inPos, 1.0);
+    gl_Position = ubo.viewProjection * model * vec4(inPos, 1.0);
 }

@@ -1401,6 +1401,23 @@ void VulkanApp::updateUniformBufferRange(Buffer &uniform, VkDeviceSize offset, v
     vkUnmapMemory(device, uniform.memory);
 }
 
+void VulkanApp::updateUniformBufferBatched(Buffer &uniform, VkDeviceSize elementStride, size_t elementCount, void *data, size_t elementSize) {
+    if (elementCount == 0 || data == nullptr) return;
+    // Map the whole region covering all elements in one shot
+    VkDeviceSize totalSize = elementStride * elementCount;
+    void* mapped = nullptr;
+    if (vkMapMemory(device, uniform.memory, 0, totalSize, 0, &mapped) != VK_SUCCESS) {
+        throw std::runtime_error("failed to map uniform memory for batched update");
+    }
+    // Copy each element into the mapped region respecting the stride
+    uint8_t* dst = reinterpret_cast<uint8_t*>(mapped);
+    uint8_t* src = reinterpret_cast<uint8_t*>(data);
+    for (size_t i = 0; i < elementCount; ++i) {
+        memcpy(dst + i * elementStride, src + i * elementSize, elementSize);
+    }
+    vkUnmapMemory(device, uniform.memory);
+}
+
 Buffer VulkanApp::createVertexBuffer(std::vector<Vertex> &vertices) {
 
     VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();

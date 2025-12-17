@@ -112,6 +112,8 @@ protected:
         void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
     // Update a region of a host-visible buffer at specified device offset
         void updateUniformBufferRange(Buffer &uniform, VkDeviceSize offset, void * data, size_t dataSize);
+        // Update a contiguous array of uniformly-sized elements in a single mapped write.
+        void updateUniformBufferBatched(Buffer &uniform, VkDeviceSize elementStride, size_t elementCount, void *data, size_t elementSize);
         // Return device's minUniformBufferOffsetAlignment
         VkDeviceSize getMinUniformBufferOffsetAlignment() const;
     void createDescriptorPool(uint32_t uboCount, uint32_t samplerCount);

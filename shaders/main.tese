@@ -4,6 +4,8 @@ layout(triangles, equal_spacing, cw) in;
 
 #include "includes/ubo.glsl"
 
+// Tessellation stage uses push constants for the model matrix (avoid built-ins here).
+
 // Inputs from TCS (per-vertex arrays)
 layout(location = 0) in vec3 tc_fragColor[];
 layout(location = 1) in vec2 tc_fragUV[];
@@ -97,3 +99,4 @@ void main() {
     vec4 tangentLocal = tc_fragTangent[0] * bc.x + tc_fragTangent[1] * bc.y + tc_fragTangent[2] * bc.z;
     fragTangent = vec4(normalize(mat3(pushConstants.model) * tangentLocal.xyz), tangentLocal.w);
 }
+
