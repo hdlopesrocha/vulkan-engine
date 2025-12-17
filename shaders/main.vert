@@ -8,7 +8,7 @@ layout(location = 1) in vec3 inColor;
 layout(location = 2) in vec2 inUV;
 layout(location = 3) in vec3 inNormal;
 layout(location = 4) in vec4 inTangent;
-layout(location = 5) in float inTexIndex;
+layout(location = 5) in int inTexIndex;
 
 layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec2 fragUV;
@@ -23,9 +23,11 @@ layout(location = 9) out vec4 fragTangent;
 void main() {
     fragColor = inColor;
     fragUV = inUV;
-    // Transform normal to world space using the model matrix provided via push constants
+    // Transform normal to world space using the model matrix
+    // For uniform scaling, mat3(model) works. For non-uniform scaling, use transpose(inverse(model))
     fragNormal = normalize(mat3(pushConstants.model) * inNormal);
-    fragTexIndex = int(inTexIndex + 0.5);
+    // Provide per-vertex tex index for TCS to assemble per-patch indices
+    fragTexIndex = inTexIndex;
     // compute world-space position and pass to fragment
     vec4 worldPos = pushConstants.model * vec4(inPos, 1.0);
     fragPosWorld = worldPos.xyz;
@@ -37,6 +39,6 @@ void main() {
     fragLocalNormal = inNormal;
     // pass tangent as a vec4: xyz = tangent, w = handedness sign
     fragTangent = vec4(normalize(mat3(pushConstants.model) * inTangent.xyz), inTangent.w);
-    // apply viewProjection * model to the vertex position
+    // apply MVP transform to the vertex position (MVP already includes model transform)
     gl_Position = ubo.viewProjection * worldPos;
 }

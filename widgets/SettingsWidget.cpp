@@ -91,7 +91,7 @@ void SettingsWidget::render() {
         ImGui::Separator();
         ImGui::Text("Debug Visualisation");
         ImGui::Separator();
-        const char* debugItems[] = { "Default Render", "Fragment Normal", "World Normal", "UV Coordinates", "Tangent (TBN)", "Bitangent (TBN)", "Normal (TBN)", "Albedo Texture", "Normal Texture", "Bump Texture", "Height Pre-Projection", "Normal from Derivatives", "Light Vector (RGB)", "N·L (grayscale)", "Shadow Diagnostics", "Triplanar Weights" };
+        const char* debugItems[] = { "Default Render", "Fragment Normal", "World Normal", "UV Coordinates", "Tangent (TBN)", "Bitangent (TBN)", "Normal (TBN)", "Albedo Texture", "Normal Texture", "Bump Texture", "Height Pre-Projection", "Normal from Derivatives", "Light Vector (RGB)", "N·L (grayscale)", "Shadow Diagnostics", "Triplanar Weights", "Tex Indices (RGB)", "Barycentric Weights (RGB)", "Albedo Samples (R/G/B)" };
         int current = debugMode;
         if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {
             debugMode = current;
