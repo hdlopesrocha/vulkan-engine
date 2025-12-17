@@ -128,6 +128,7 @@ void VulkanApp::cleanup() {
     if (depthImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, depthImageMemory, nullptr);
     if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
     if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+    if (materialDescriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, materialDescriptorSetLayout, nullptr);
 
     // destroy pipeline
     if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
@@ -1017,14 +1018,8 @@ void VulkanApp::createDescriptorSetLayout() {
     shadowSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     // binding 5: storage buffer containing array of MaterialProperties (uploaded once)
-    VkDescriptorSetLayoutBinding materialBinding{};
-    materialBinding.binding = 5;
-    materialBinding.descriptorCount = 1;
-    materialBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    materialBinding.pImmutableSamplers = nullptr;
-    materialBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-
-    // binding 6: dedicated Sky UBO (small uniform block used by sky shaders)
+    // NOTE: move material binding into a dedicated set layout so we can bind the whole
+    // Materials SSBO once as a global descriptor set (set 0).
     VkDescriptorSetLayoutBinding skyBinding{};
     skyBinding.binding = 6;
     skyBinding.descriptorCount = 1;
@@ -1032,9 +1027,8 @@ void VulkanApp::createDescriptorSetLayout() {
     skyBinding.pImmutableSamplers = nullptr;
     skyBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 7> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding, shadowSamplerBinding, materialBinding, skyBinding};
-
-    // If we later add a normal map sampler (binding 2), extend bindings dynamically when required by the app.
+    // Per-instance / per-draw descriptor set uses bindings: 0 (UBO), 1..3 (samplers), 4 (shadow), 6 (sky UBO)
+    std::array<VkDescriptorSetLayoutBinding, 6> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding, shadowSamplerBinding, skyBinding};
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1044,6 +1038,25 @@ void VulkanApp::createDescriptorSetLayout() {
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
         throw std::runtime_error("failed to create descriptor set layout!");
     }
+
+    // Create a separate descriptor set layout for Materials (binding 5 only)
+    VkDescriptorSetLayoutBinding materialBinding{};
+    materialBinding.binding = 5;
+    materialBinding.descriptorCount = 1;
+    materialBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    materialBinding.pImmutableSamplers = nullptr;
+    materialBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+
+    VkDescriptorSetLayoutCreateInfo materialLayoutInfo{};
+    materialLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    materialLayoutInfo.bindingCount = 1;
+    materialLayoutInfo.pBindings = &materialBinding;
+
+    if (vkCreateDescriptorSetLayout(device, &materialLayoutInfo, nullptr, &materialDescriptorSetLayout) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create material descriptor set layout!");
+    }
+
+    // If we later add a normal map sampler (binding 2), extend bindings dynamically when required by the app.
 }
 
 void VulkanApp::createDepthResources() {
@@ -1165,6 +1178,11 @@ VkDescriptorSet VulkanApp::createDescriptorSet(VkDescriptorSetLayout layout) {
     return descriptorSet;
 }
 
+VkDescriptorSet VulkanApp::createMaterialDescriptorSet() {
+    if (materialDescriptorSetLayout == VK_NULL_HANDLE) return VK_NULL_HANDLE;
+    return createDescriptorSet(materialDescriptorSetLayout);
+}
+
 void VulkanApp::updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors) {
     std::vector<VkWriteDescriptorSet> descriptorWrites(descriptors);
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
@@ -1268,17 +1286,22 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &colorBlendAttachment;
 
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = (descriptorSetLayout != VK_NULL_HANDLE) ? 1u : 0u;
-    pipelineLayoutInfo.pSetLayouts = (descriptorSetLayout != VK_NULL_HANDLE) ? &descriptorSetLayout : nullptr;
-
-    // Expose a push-constant range for per-draw model matrix (mat4 = 16 floats = 64 bytes)
     VkPushConstantRange pushRange{};
     // Push constants used by vertex and tessellation evaluation shaders
     pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
     pushRange.offset = 0;
     pushRange.size = static_cast<uint32_t>(sizeof(float) * 16);
+
+    // Build set layout array: material set (set 0) followed by per-instance set (set 1)
+    std::vector<VkDescriptorSetLayout> setLayouts;
+    if (materialDescriptorSetLayout != VK_NULL_HANDLE) setLayouts.push_back(materialDescriptorSetLayout);
+    if (descriptorSetLayout != VK_NULL_HANDLE) setLayouts.push_back(descriptorSetLayout);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
+    pipelineLayoutInfo.pSetLayouts = setLayouts.empty() ? nullptr : setLayouts.data();
+
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushRange;
 

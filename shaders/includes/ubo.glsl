@@ -1,6 +1,6 @@
 // UBO layout must match the CPU-side UniformObject (std140-like):
 // mat4 viewProjection; vec4 viewPos; vec4 lightDir; vec4 lightColor;
-layout(binding = 0) uniform UBO {
+layout(set = 1, binding = 0) uniform UBO {
     mat4 viewProjection;
     vec4 viewPos;
     vec4 lightDir;
@@ -18,10 +18,10 @@ layout(binding = 0) uniform UBO {
         vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
 } ubo;
 
-    // Per-draw push constants: small, frequently-updated per-object data such as model matrix.
-    layout(push_constant) uniform PushConstants {
-        mat4 model;
-    } pushConstants;
+// Per-draw push constants: small, frequently-updated per-object data such as model matrix.
+layout(push_constant) uniform PushConstants {
+    mat4 model;
+} pushConstants;
 
 // Packed material data uploaded once to GPU. Matches the CPU-side MaterialGPU (4 vec4s).
 // Access this as `materials[texIndex]` from shaders. Uses std430 for tightly-packed vec4 alignment.
@@ -32,13 +32,13 @@ struct MaterialGPU {
     vec4 triplanarParams; // x = scaleU, y = scaleV, z = triplanarEnabled (0/1)
 };
 
-layout(std430, binding = 5) readonly buffer Materials {
+layout(std430, set = 0, binding = 5) readonly buffer Materials {
     MaterialGPU materials[];
 };
 
 // Dedicated UBO for skysphere parameters. Bound separately so sky shaders
 // can read a small, focused uniform block instead of the large scene UBO.
-layout(binding = 6) uniform SkyUBO {
+layout(set = 1, binding = 6) uniform SkyUBO {
     vec4 skyHorizon; // rgb = horizon color, a = unused
     vec4 skyZenith;  // rgb = zenith color, a = unused
     vec4 skyParams;  // x = warmth, y = exponent, z = sunFlare, w = unused

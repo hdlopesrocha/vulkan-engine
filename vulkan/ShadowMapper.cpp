@@ -394,9 +394,15 @@ void ShadowMapper::renderObject(VkCommandBuffer commandBuffer, const glm::mat4& 
     // Compute MVP for this object
     glm::mat4 mvp = currentLightSpaceMatrix * modelMatrix;
     
-    // Bind descriptor set (includes UBO and image samplers) using the app's pipeline layout
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                            vulkanApp->getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
+    // Bind descriptor sets: material set (set 0) and per-instance set (set 1) if available.
+    VkDescriptorSet matDs = vulkanApp->getMaterialDescriptorSet();
+    if (matDs != VK_NULL_HANDLE) {
+        VkDescriptorSet sets[2] = { matDs, descriptorSet };
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkanApp->getPipelineLayout(), 0, 2, sets, 0, nullptr);
+    } else {
+        // Fallback: bind only the provided instance set at set 0 for compatibility
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkanApp->getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
+    }
     
     // Bind vertex/index buffers
     VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };

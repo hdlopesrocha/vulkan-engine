@@ -28,6 +28,10 @@ class VulkanApp {
     // texture and descriptor
 
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    // Dedicated descriptor set layout for global materials (binding 5)
+    VkDescriptorSetLayout materialDescriptorSetLayout = VK_NULL_HANDLE;
+    // Global material descriptor set (bound once and updated when materials change)
+    VkDescriptorSet materialDescriptorSet = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     // depth resources
     VkImage depthImage = VK_NULL_HANDLE;
@@ -112,7 +116,11 @@ protected:
         void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
     void createDescriptorPool(uint32_t uboCount, uint32_t samplerCount);
         VkDescriptorSet createDescriptorSet(VkDescriptorSetLayout layout);
+        VkDescriptorSet createMaterialDescriptorSet();
         void updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors);
+        VkDescriptorSetLayout getMaterialDescriptorSetLayout() const { return materialDescriptorSetLayout; }
+        void setMaterialDescriptorSet(VkDescriptorSet ds) { materialDescriptorSet = ds; }
+        VkDescriptorSet getMaterialDescriptorSet() const { return materialDescriptorSet; }
         VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
 
         Buffer createVertexBuffer(std::vector<Vertex> &vertices);

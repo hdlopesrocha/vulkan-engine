@@ -46,7 +46,14 @@ void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, Vk
     app->updateUniformBuffer(uniformBuffer, &skyUbo, sizeof(UniformObject));
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, app->getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
+    // Bind material set (set 0) and sky descriptor set (set 1) if material set exists
+    VkDescriptorSet matDs = app->getMaterialDescriptorSet();
+    if (matDs != VK_NULL_HANDLE) {
+        VkDescriptorSet sets[2] = { matDs, descriptorSet };
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, app->getPipelineLayout(), 0, 2, sets, 0, nullptr);
+    } else {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, app->getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
+    }
     // Push sky model matrix via push constants (visible to vertex + tessellation stages)
     vkCmdPushConstants(cmd, app->getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &model);
 

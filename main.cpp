@@ -365,9 +365,22 @@ class MyApp : public VulkanApp, public IEventHandler {
             uint32_t estimatedPerTextureSets = static_cast<uint32_t>(tripleCount * 4);
             uint32_t estimatedModelObjects = static_cast<uint32_t>(1 + 2 * tripleCount);
             uint32_t estimatedPerInstanceSets = estimatedModelObjects * 2;
-            uint32_t totalSets = estimatedPerTextureSets + estimatedPerInstanceSets + 4;
+            // Reserve one extra set for the global material descriptor
+            uint32_t totalSets = estimatedPerTextureSets + estimatedPerInstanceSets + 4 + 1;
             // each descriptor set writes up to 4 combined image samplers (albedo/normal/height/shadow)
             createDescriptorPool(totalSets, totalSets * 4);
+
+            // Create a global material descriptor set (binding 5) so we can bind the whole
+            // Materials SSBO once (set 0) and avoid per-instance/per-texture material bindings.
+            VkDescriptorSet globalMatDS = VK_NULL_HANDLE;
+            if (materialManager.count() > 0) {
+                globalMatDS = createDescriptorSet(getMaterialDescriptorSetLayout());
+                VkDescriptorBufferInfo materialBufInfo{ materialManager.getBuffer().buffer, 0, VK_WHOLE_SIZE };
+                VkWriteDescriptorSet matWrite{}; matWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; matWrite.dstSet = globalMatDS; matWrite.dstBinding = 5; matWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; matWrite.descriptorCount = 1; matWrite.pBufferInfo = &materialBufInfo;
+                updateDescriptorSet(globalMatDS, { matWrite });
+                // Expose via VulkanApp helper for other subsystems
+                setMaterialDescriptorSet(globalMatDS);
+            }
 
             descriptorSets.resize(tripleCount, VK_NULL_HANDLE);
             shadowDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
@@ -387,11 +400,12 @@ class MyApp : public VulkanApp, public IEventHandler {
                 tr.heightSampler = textureArrayManager.bumpSampler;
                 // main descriptor set
                 VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
-                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, uniforms[i], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                // create per-texture descriptor sets (no per-set material binding anymore)
+                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, uniforms[i], false, nullptr, 0);
                 descriptorSets[i] = ds;
 
-                // shadow descriptor set
-                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniforms[i], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                // shadow descriptor set (no material bound here)
+                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniforms[i], false, nullptr, 0);
                 shadowDescriptorSets[i] = sds;
             }
 
@@ -412,9 +426,9 @@ class MyApp : public VulkanApp, public IEventHandler {
                 tr.height.view = textureArrayManager.bumpArray.view;
                 tr.heightSampler = textureArrayManager.bumpSampler;
                 VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
-                VkDescriptorSet ds = dsBuilder.createSphereDescriptorSet(tr, sphereUniforms[i], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                VkDescriptorSet ds = dsBuilder.createSphereDescriptorSet(tr, sphereUniforms[i], false, nullptr, 0);
                 sphereDescriptorSets[i] = ds;
-                VkDescriptorSet sds = dsBuilder.createShadowSphereDescriptorSet(tr, shadowSphereUniforms[i], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(i) * matElemSize : 0);
+                VkDescriptorSet sds = dsBuilder.createShadowSphereDescriptorSet(tr, shadowSphereUniforms[i], false, nullptr, 0);
                 shadowSphereDescriptorSets[i] = sds;
             }
 
@@ -530,30 +544,32 @@ class MyApp : public VulkanApp, public IEventHandler {
             instanceShadowUniforms.resize(modelObjects.size());
             {
                 DescriptorSetBuilder dsBuilder(this, &shadowMapper);
-                VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
                 for (size_t mi = 0; mi < modelObjects.size(); ++mi) {
                     Model3D* m = modelObjects[mi].get();
                     if (!m || !m->mesh) continue;
                     // determine triple index from mesh vertex texIndex (plane was built with editableIndex)
                     int texIdx = 0;
                     if (!m->mesh->getVertices().empty()) texIdx = m->mesh->getVertices()[0].texIndex;
-                        if (texIdx < 0 || static_cast<size_t>(texIdx) >= materials.size()) texIdx = 0;
-                        // transient Triple backed by the global texture arrays
-                            Triple tr;
-                        tr.albedo.view = textureArrayManager.albedoArray.view;
-                        tr.albedoSampler = textureArrayManager.albedoSampler;
-                        tr.normal.view = textureArrayManager.normalArray.view;
-                        tr.normalSampler = textureArrayManager.normalSampler;
-                        tr.height.view = textureArrayManager.bumpArray.view;
-                        tr.heightSampler = textureArrayManager.bumpSampler;
+                    if (texIdx < 0 || static_cast<size_t>(texIdx) >= materials.size()) texIdx = 0;
+                    // transient Triple backed by the global texture arrays
+                    Triple tr;
+                    tr.albedo.view = textureArrayManager.albedoArray.view;
+                    tr.albedoSampler = textureArrayManager.albedoSampler;
+                    tr.normal.view = textureArrayManager.normalArray.view;
+                    tr.normalSampler = textureArrayManager.normalSampler;
+                    tr.height.view = textureArrayManager.bumpArray.view;
+                    tr.heightSampler = textureArrayManager.bumpSampler;
                     // create per-instance uniform buffers
                     instanceUniforms[mi] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
                     instanceShadowUniforms[mi] = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                    // create descriptor sets bound to the per-instance buffers
-                    instanceDescriptorSets[mi] = dsBuilder.createMainDescriptorSet(tr, instanceUniforms[mi], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(texIdx) * matElemSize : 0);
-                    instanceShadowDescriptorSets[mi] = dsBuilder.createShadowDescriptorSet(tr, instanceShadowUniforms[mi], materialManager.count() > 0, materialManager.count() > 0 ? &materialManager.getBuffer() : nullptr, materialManager.count() > 0 ? static_cast<VkDeviceSize>(texIdx) * matElemSize : 0);
+                    // create descriptor sets bound to the per-instance buffers (do NOT bind per-set material here)
+                    instanceDescriptorSets[mi] = dsBuilder.createMainDescriptorSet(tr, instanceUniforms[mi], false, nullptr, 0);
+                    instanceShadowDescriptorSets[mi] = dsBuilder.createShadowDescriptorSet(tr, instanceShadowUniforms[mi], false, nullptr, 0);
                 }
             }
+            // Material SSBO is bound into a single global descriptor set; updateMaterials() will
+            // refresh that set if it exists.
+            updateMaterials();
             
             // Initialize light space matrix BEFORE creating command buffers
             // UI `lightDirection` is the direction FROM the camera/world TO the light (TO the light).
@@ -661,15 +677,15 @@ class MyApp : public VulkanApp, public IEventHandler {
                 materialManager.update(mi, mat, this);
             }
 
-            // Rebind material buffer into descriptor sets so shaders read the new GPU buffer
-            if (!descriptorSets.empty()) {
-                VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
-                DescriptorSetBuilder dsBuilder(this, &shadowMapper);
-                dsBuilder.updateMaterialBinding(descriptorSets, materialManager.getBuffer(), matElemSize);
-                dsBuilder.updateMaterialBinding(shadowDescriptorSets, materialManager.getBuffer(), matElemSize);
-                dsBuilder.updateMaterialBinding(sphereDescriptorSets, materialManager.getBuffer(), matElemSize);
-                dsBuilder.updateMaterialBinding(shadowSphereDescriptorSets, materialManager.getBuffer(), matElemSize);
+            // Rebind material buffer into the SINGLE global material descriptor set (binding 5)
+            // so shaders can index `materials[...]` and we avoid per-instance descriptor updates.
+            VkDescriptorSet matDS = getMaterialDescriptorSet();
+            if (matDS != VK_NULL_HANDLE) {
+                VkDescriptorBufferInfo materialBufInfo{ materialManager.getBuffer().buffer, 0, VK_WHOLE_SIZE };
+                VkWriteDescriptorSet matWrite{}; matWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; matWrite.dstSet = matDS; matWrite.dstBinding = 5; matWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; matWrite.descriptorCount = 1; matWrite.pBufferInfo = &materialBufInfo;
+                updateDescriptorSet(matDS, { matWrite });
             }
+
         }
 
         // Sky updates are handled by SkySphere
@@ -972,8 +988,21 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (wire && graphicsPipelineWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineWire);
                 else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                       getPipelineLayout(), 0, 1, &instance.descriptorSet, 0, nullptr);
+                // Bind global material descriptor set (set 0) and per-instance descriptor set (set 1)
+                VkDescriptorSet setsToBind[2];
+                uint32_t bindCount = 0;
+                VkDescriptorSet matDs = getMaterialDescriptorSet();
+                if (matDs != VK_NULL_HANDLE) {
+                    setsToBind[bindCount++] = matDs;
+                }
+                if (instance.descriptorSet != VK_NULL_HANDLE) {
+                    setsToBind[bindCount++] = instance.descriptorSet;
+                }
+                if (bindCount == 2) {
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 2, setsToBind, 0, nullptr);
+                } else if (bindCount == 1) {
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, setsToBind, 0, nullptr);
+                }
                 // Push per-draw model matrix via push constants (visible to vertex + tessellation stages)
                 vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance.transform);
                 vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
