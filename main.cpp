@@ -79,6 +79,8 @@ class MyApp : public VulkanApp, public IEventHandler {
     
     // Vegetation texture manager for billboard vegetation (albedo/normal/opacity)
     TextureManager vegetationTextureManager;
+    // GPU-side texture array for vegetation (albedo/normal/opacity)
+    TextureArrayManager vegetationTextureArrayManager;
     
     // Atlas manager for vegetation tile definitions
     AtlasManager vegetationAtlasManager;
@@ -291,12 +293,17 @@ class MyApp : public VulkanApp, public IEventHandler {
                 {{"textures/vegetation/wild_color.jpg",    "textures/vegetation/wild_normal.jpg",    "textures/vegetation/wild_opacity.jpg"},    MaterialProperties{true, false, 0.0f, 1.0f, 0.32f, 0.3f, 8.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}}
             };
 
+            // allocate vegetation GPU texture arrays sized to the number of veg layers
+            vegetationTextureArrayManager.allocate(static_cast<uint32_t>(vegSpecs.size()), 1024, 1024, this);
+
             for (const auto &entry : vegSpecs) {
                 const auto &files = entry.first;
                 const auto &mp = entry.second;
                 size_t idx = vegetationTextureManager.loadTriple(files[0], files[1], files[2]);
                 auto &mat = vegetationTextureManager.getMaterial(idx);
                 mat = mp;
+                // also load into the vegetation GPU texture array
+                vegetationTextureArrayManager.load(const_cast<char*>(files[0]), const_cast<char*>(files[1]), const_cast<char*>(files[2]));
             }
 
             for (size_t vi = 0; vi < vegetationTextureManager.count(); ++vi) {
@@ -638,14 +645,23 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Upload all materials into a GPU storage buffer (called once during setup)
         void updateMaterials() {
-            materialCount = textureManager.count();
+            // Include both regular textures and vegetation textures in the GPU materials array
+            size_t baseCount = textureManager.count();
+            size_t vegCount = vegetationTextureManager.count();
+            materialCount = baseCount + vegCount;
             if (materialCount == 0) return;
 
             // Allocate GPU buffer via MaterialManager and upload per-index materials
             materialManager.allocate(materialCount, this);
-            for (size_t mi = 0; mi < materialCount; ++mi) {
+            // upload base (textureManager) materials
+            for (size_t mi = 0; mi < baseCount; ++mi) {
                 const MaterialProperties &mat = textureManager.getMaterial(mi);
                 materialManager.update(mi, mat, this);
+            }
+            // upload vegetation materials after base materials
+            for (size_t vi = 0; vi < vegCount; ++vi) {
+                const MaterialProperties &mat = vegetationTextureManager.getMaterial(vi);
+                materialManager.update(baseCount + vi, mat, this);
             }
 
             // Rebind material buffer into descriptor sets so shaders read the new GPU buffer
