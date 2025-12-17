@@ -1,6 +1,6 @@
 // Minimal implementation file for TextureArrayManager
-#include "vulkan/TextureArrayManager.hpp"
-#include "vulkan/VulkanApp.hpp"
+#include "TextureArrayManager.hpp"
+#include "VulkanApp.hpp"
 #include <stdexcept>
 
 void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h) {

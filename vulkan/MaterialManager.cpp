@@ -1,5 +1,5 @@
-#include "vulkan/MaterialManager.hpp"
-#include "vulkan/VulkanApp.hpp"
+#include "MaterialManager.hpp"
+#include "VulkanApp.hpp"
 #include <stdexcept>
 #include <cstring>
 

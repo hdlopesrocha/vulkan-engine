@@ -2,7 +2,7 @@
 #pragma once
 
 #include <cstdint>
-#include "vulkan/TextureImage.hpp"
+#include "TextureImage.hpp"
 
 class TextureArrayManager {
 public:

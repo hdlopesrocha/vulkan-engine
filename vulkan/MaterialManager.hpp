@@ -1,6 +1,6 @@
 #pragma once
 
-#include "vulkan/vulkan.hpp"
+#include "vulkan.hpp"
 #include "Buffer.hpp"
 #include "../utils/MaterialProperties.hpp"
 #include <vector>
