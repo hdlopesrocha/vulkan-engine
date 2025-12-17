@@ -10,6 +10,7 @@ void PlaneModel::build(float width, float height, int hSegments, int vSegments, 
 
     std::vector<Vertex> vertices;
     std::vector<uint16_t> indices;
+int blendTestTex = 0;
 
     for (int y = 0; y <= vSegs; ++y) {
         for (int x = 0; x <= hSegs; ++x) {
@@ -24,7 +25,7 @@ void PlaneModel::build(float width, float height, int hSegments, int vSegments, 
             vert.color = glm::vec3(1.0f);
             vert.texCoord = glm::vec2(u, v);
             vert.normal = glm::vec3(0.0f, 1.0f, 0.0f);
-            vert.texIndex = static_cast<int>(texIndex);
+            vert.texIndex = static_cast<int>(blendTestTex++);
             vert.tangent = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
             vertices.push_back(vert);
         }
