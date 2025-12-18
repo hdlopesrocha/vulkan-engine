@@ -143,7 +143,9 @@ void Allocator<T>::reset() {
     #ifndef NDEBUG
     deallocatedSet.clear();
     #endif
-    for (auto &b : blocks) {
+
+    for (auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
+        auto &b = *it;
         for (size_t i = 0; i < blockSize; ++i) {
             T* ptr = &b.data[i];
             freeList.push_back(ptr);
