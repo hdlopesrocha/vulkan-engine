@@ -136,7 +136,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         // (removed — descriptor sets are now global per-material)
         // Additional per-texture descriptor sets
         std::vector<VkDescriptorSet> descriptorSets;
-        std::vector<VkDescriptorSet> shadowDescriptorSets;
+        VkDescriptorSet shadowDescriptorSet = VK_NULL_HANDLE;
         // Material manager for GPU-side packed materials
         MaterialManager materialManager;
         size_t materialCount = 0;
@@ -385,7 +385,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             }
 
             descriptorSets.resize(tripleCount, VK_NULL_HANDLE);
-            shadowDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
+            // single global shadow descriptor set (one set is enough since we use texture arrays)
+            shadowDescriptorSet = VK_NULL_HANDLE;
 
             // Use DescriptorSetBuilder to reduce repeated code
             DescriptorSetBuilder dsBuilder(this, &shadowMapper);
@@ -406,9 +407,11 @@ class MyApp : public VulkanApp, public IEventHandler {
                 VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, mainUniform, false, nullptr, 0);
                 descriptorSets[i] = ds;
 
-                // shadow descriptor set (no material bound here)
-                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniform, false, nullptr, 0);
-                shadowDescriptorSets[i] = sds;
+                // shadow descriptor set (create only once, reuse globally)
+                if (shadowDescriptorSet == VK_NULL_HANDLE) {
+                    VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniform, false, nullptr, 0);
+                    shadowDescriptorSet = sds;
+                }
             }
 
             // Sphere-specific descriptor sets removed; spheres use the per-material `descriptorSets`/`shadowDescriptorSets`.
@@ -426,11 +429,11 @@ class MyApp : public VulkanApp, public IEventHandler {
                     VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = descriptorSets[i]; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
                     updateDescriptorSet(descriptorSets[i], { w1, w2, w3 });
                 }
-                for (size_t i = 0; i < shadowDescriptorSets.size(); ++i) {
-                    VkWriteDescriptorSet w1{}; w1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w1.dstSet = shadowDescriptorSets[i]; w1.dstBinding = 1; w1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w1.descriptorCount = 1; w1.pImageInfo = &albedoArrayInfo;
-                    VkWriteDescriptorSet w2{}; w2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w2.dstSet = shadowDescriptorSets[i]; w2.dstBinding = 2; w2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w2.descriptorCount = 1; w2.pImageInfo = &normalArrayInfo;
-                    VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = shadowDescriptorSets[i]; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
-                    updateDescriptorSet(shadowDescriptorSets[i], { w1, w2, w3 });
+                if (shadowDescriptorSet != VK_NULL_HANDLE) {
+                    VkWriteDescriptorSet w1{}; w1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w1.dstSet = shadowDescriptorSet; w1.dstBinding = 1; w1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w1.descriptorCount = 1; w1.pImageInfo = &albedoArrayInfo;
+                    VkWriteDescriptorSet w2{}; w2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w2.dstSet = shadowDescriptorSet; w2.dstBinding = 2; w2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w2.descriptorCount = 1; w2.pImageInfo = &normalArrayInfo;
+                    VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = shadowDescriptorSet; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
+                    updateDescriptorSet(shadowDescriptorSet, { w1, w2, w3 });
                 }
                 // Sphere-specific descriptor updates removed; per-material descriptor sets were already updated above.
             }
@@ -584,7 +587,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // Initialize sky manager which creates and binds the sky UBO into descriptor sets
             skySphere = std::make_unique<SkySphere>(this);
-            skySphere->init(skyWidget.get(), descriptorSets, shadowDescriptorSets);
+            skySphere->init(skyWidget.get(), descriptorSets, shadowDescriptorSet);
             
             // Create vegetation atlas editor widget
             auto vegAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
@@ -835,18 +838,14 @@ class MyApp : public VulkanApp, public IEventHandler {
 
                     // Use a global (per-material) shadow uniform buffer and descriptor set instead
                     // of the per-instance buffer. Determine material index from the mesh's texIndex.
-                    int texIdx = 0;
-                    if (instance.model && !instance.model->getVertices().empty()) {
-                        texIdx = instance.model->getVertices()[0].texIndex;
-                    }
-                    if (texIdx < 0 || static_cast<size_t>(texIdx) >= shadowDescriptorSets.size()) texIdx = 0;
+                    // single global shadow descriptor set is used; no per-instance selection needed
 
                     updateUniformBuffer(shadowUniform, &shadowUbo, sizeof(UniformObject));
                     // Push model matrix for this draw into the pipeline via push constants
                     vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance.transform);
 
                     VkDescriptorSet sds = VK_NULL_HANDLE;
-                    if (static_cast<size_t>(texIdx) < shadowDescriptorSets.size()) sds = shadowDescriptorSets[static_cast<size_t>(texIdx)];
+                    if (shadowDescriptorSet != VK_NULL_HANDLE) sds = shadowDescriptorSet;
                     shadowMapper.renderObject(commandBuffer, instance.transform, instance.vbo, sds);
                 }
 
