@@ -51,11 +51,11 @@ void AnimatedTextureWidget::render() {
     if (ImGui::SliderFloat("Brightness", &perlinBrightness, -1.0f, 1.0f)) paramsChanged = true;
     if (ImGui::SliderFloat("Contrast", &perlinContrast, 0.0f, 5.0f)) paramsChanged = true;
 
+    MixerParameters params = MixerParameters({ 0, 1, 2, (float)perlinScale, perlinOctaves, perlinPersistence, perlinLacunarity, perlinBrightness, perlinContrast, perlinSeed, perlinTime });
+
     if (paramsChanged) {
         // apply params to all textures
-        textures->generatePerlinNoiseWithParams(textures->getAlbedo(), (float)perlinScale, perlinOctaves, perlinPersistence, perlinLacunarity, perlinBrightness, perlinContrast, perlinTime, perlinSeed);
-        textures->generatePerlinNoiseWithParams(textures->getNormal(), (float)perlinScale, perlinOctaves, perlinPersistence, perlinLacunarity, perlinBrightness, perlinContrast, perlinTime, perlinSeed);
-        textures->generatePerlinNoiseWithParams(textures->getBump(), (float)perlinScale, perlinOctaves, perlinPersistence, perlinLacunarity, perlinBrightness, perlinContrast, perlinTime, perlinSeed);
+        textures->generatePerlinNoiseWithParams(1024, 1024, params);
     }
 
     ImGui::Separator();

@@ -255,10 +255,14 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Apply editable material properties in a single-line initializer
         materials.push_back(MaterialProperties{ false, false, 0.2f, 16.0f, 0.5f, 0.05f, 32.0f, 0.0f, 0.0f, false, 1.0f, 1.0f});
 
+        std::vector<MixerParameters> mixerParams = {
+            MixerParameters({ 0, 1, 2, 4.0f, 6, 0.5f, 2.0f, 0.0f, 1.0f, 42, 0.0f })
+        };
+
         // Initialize Vulkan-side editable textures BEFORE creating descriptor sets
         textureMixer = std::make_shared<TextureMixer>();
         textureMixer->init(this, 1024, 1024, &textureArrayManager);
-        textureMixer->generateInitialTextures();
+        textureMixer->generateInitialTextures(mixerParams);
 
 
         // Load vegetation textures (albedo/normal/opacity triples) and initialize MaterialProperties

@@ -10,10 +10,26 @@
 
 // Vulkan-only helper that manages compute pipelines and the EditableTexture instances.
 // UI is handled by `widgets::AnimatedTextureWidget`.
+struct MixerParameters {
+    uint targetLayer;
+    uint primaryTextureIdx;
+    uint secondaryTextureIdx;
+    // Default Perlin parameters (kept here for compatibility)
+    float perlinScale = 8.0f;
+    float perlinOctaves = 4.0f;
+    float perlinPersistence = 0.5f;
+    float perlinLacunarity = 2.0f;
+    float perlinBrightness = 0.0f;  // -1.0 to 1.0
+    float perlinContrast = 5.0f;    // 0.0 to 5.0
+    uint32_t perlinSeed = 12345;    // Fixed seed for consistent generation
+    float perlinTime = 0.0f;        // Time parameter for noise evolution
+};
+
+
 class TextureMixer {
 public:
     TextureMixer();
-
+    
     // Pass optional TextureArrayManager so compute can sample from arrays
     // Backwards-compatible init: old callers that don't pass a TextureArrayManager
     void init(VulkanApp* app, uint32_t width, uint32_t height);
@@ -25,7 +41,7 @@ public:
     void setOnTextureGenerated(std::function<void()> callback);
 
     // Generate all textures initially
-    void generateInitialTextures();
+    void generateInitialTextures(std::vector<MixerParameters> &mixerParams);
 
     void cleanup();
 
@@ -39,7 +55,7 @@ public:
     const EditableTexture& getBump() const;
 
     // Generate Perlin noise for a texture using explicit parameters (used by UI widget)
-    void generatePerlinNoiseWithParams(EditableTexture& texture, float scale, float octaves, float persistence, float lacunarity, float brightness, float contrast, float time, uint32_t seed);
+    void generatePerlinNoiseWithParams(int width, int height, MixerParameters &params);
 
 private:
     VulkanApp* app = nullptr;
@@ -62,19 +78,6 @@ private:
     // Single descriptor set that binds the three storage images (albedo, normal, bump)
     VkDescriptorSet tripleComputeDescSet = VK_NULL_HANDLE;
 
-    // Default Perlin parameters (kept here for compatibility)
-    float perlinScale = 8.0f;
-    float perlinOctaves = 4.0f;
-    float perlinPersistence = 0.5f;
-    float perlinLacunarity = 2.0f;
-    float perlinBrightness = 0.0f;  // -1.0 to 1.0
-    float perlinContrast = 5.0f;    // 0.0 to 5.0
-    uint32_t perlinSeed = 12345;    // Fixed seed for consistent generation
-    float perlinTime = 0.0f;        // Time parameter for noise evolution
-
-    // Texture selection indices (grass=3, sand=8)
-    int primaryTextureIdx = 3;      // Grass texture
-    int secondaryTextureIdx = 8;    // Sand texture
 
     // Callback function to notify when textures are generated
     std::function<void()> onTextureGeneratedCallback;
@@ -92,6 +95,6 @@ private:
     void createComputePipeline();
     void createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet);
     void createTripleComputeDescriptorSet();
-    void generatePerlinNoise(EditableTexture& texture);
+    void generatePerlinNoise(int width, int height, MixerParameters &params);
 };
 

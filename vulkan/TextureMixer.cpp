@@ -41,11 +41,9 @@ void TextureMixer::setOnTextureGenerated(std::function<void()> callback) {
 	onTextureGeneratedCallback = callback;
 }
 
-void TextureMixer::generateInitialTextures() {
+void TextureMixer::generateInitialTextures(std::vector<MixerParameters> &mixerParams) {
 	printf("Generating initial textures (Albedo, Normal, Bump)...\n");
-	generatePerlinNoise(albedo);
-	generatePerlinNoise(normal);
-	generatePerlinNoise(bump);
+	generatePerlinNoise(1024, 1024, mixerParams[0]);
 }
 
 void TextureMixer::cleanup() {
@@ -345,7 +343,7 @@ void TextureMixer::createComputeDescriptorSet(EditableTexture& texture, VkDescri
 	vkUpdateDescriptorSets(app->getDevice(), 3, writes, 0, nullptr);
 }
 
-void TextureMixer::generatePerlinNoise(EditableTexture& texture) {
+void TextureMixer::generatePerlinNoise(int width, int height, MixerParameters &params) {
 	// generate regardless of external texture lists
 
 	// We now perform a single dispatch that writes all three images (albedo, normal, bump)
@@ -353,18 +351,18 @@ void TextureMixer::generatePerlinNoise(EditableTexture& texture) {
 	if (descSet == VK_NULL_HANDLE) return;
 
 	PerlinPushConstants pushConstants;
-	pushConstants.scale = perlinScale;
-	pushConstants.octaves = perlinOctaves;
-	pushConstants.persistence = perlinPersistence;
-	pushConstants.lacunarity = perlinLacunarity;
-	pushConstants.brightness = perlinBrightness;
-	pushConstants.contrast = perlinContrast;
-	pushConstants.seed = perlinSeed;
-	pushConstants.textureSize = texture.getWidth();
-	pushConstants.time = perlinTime;
+	pushConstants.scale = params.perlinScale;
+	pushConstants.octaves = params.perlinOctaves;
+	pushConstants.persistence = params.perlinPersistence;
+	pushConstants.lacunarity = params.perlinLacunarity;
+	pushConstants.brightness = params.perlinBrightness;
+	pushConstants.contrast = params.perlinContrast;
+	pushConstants.seed = params.perlinSeed;
+	pushConstants.textureSize = width;
+	pushConstants.time = params.perlinTime;
     // Primary/secondary layer indices refer to layers in the texture array manager
-	pushConstants.primaryLayer = static_cast<uint32_t>(primaryTextureIdx);
-	pushConstants.secondaryLayer = static_cast<uint32_t>(secondaryTextureIdx);
+	pushConstants.primaryLayer = static_cast<uint32_t>(params.primaryTextureIdx);
+	pushConstants.secondaryLayer = static_cast<uint32_t>(params.secondaryTextureIdx);
 
 
 	VkCommandBuffer commandBuffer = app->beginSingleTimeCommands();
@@ -404,8 +402,8 @@ void TextureMixer::generatePerlinNoise(EditableTexture& texture) {
 
 	vkCmdPushConstants(commandBuffer, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PerlinPushConstants), &pushConstants);
 
-	uint32_t groupCountX = (texture.getWidth() + 15) / 16;
-	uint32_t groupCountY = (texture.getHeight() + 15) / 16;
+	uint32_t groupCountX = (width + 15) / 16;
+	uint32_t groupCountY = (height + 15) / 16;
 
 	vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
 
@@ -436,35 +434,6 @@ void TextureMixer::generatePerlinNoise(EditableTexture& texture) {
 	}
 }
 
-void TextureMixer::generatePerlinNoiseWithParams(EditableTexture& texture, float scale, float octaves, float persistence, float lacunarity, float brightness, float contrast, float time, uint32_t seed) {
-	// Temporarily override internal parameters and invoke generator
-	float oldScale = perlinScale;
-	float oldOctaves = perlinOctaves;
-	float oldPersistence = perlinPersistence;
-	float oldLacunarity = perlinLacunarity;
-	float oldBrightness = perlinBrightness;
-	float oldContrast = perlinContrast;
-	float oldTime = perlinTime;
-	uint32_t oldSeed = perlinSeed;
-
-	perlinScale = scale;
-	perlinOctaves = octaves;
-	perlinPersistence = persistence;
-	perlinLacunarity = lacunarity;
-	perlinBrightness = brightness;
-	perlinContrast = contrast;
-	perlinTime = time;
-	perlinSeed = seed;
-
-	generatePerlinNoise(texture);
-
-	// restore
-	perlinScale = oldScale;
-	perlinOctaves = oldOctaves;
-	perlinPersistence = oldPersistence;
-	perlinLacunarity = oldLacunarity;
-	perlinBrightness = oldBrightness;
-	perlinContrast = oldContrast;
-	perlinTime = oldTime;
-	perlinSeed = oldSeed;
+void TextureMixer::generatePerlinNoiseWithParams(int width, int height, MixerParameters &params) {
+	generatePerlinNoise(width, height, params);
 }
