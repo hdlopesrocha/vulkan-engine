@@ -389,11 +389,9 @@ void ShadowMapper::beginShadowPass(VkCommandBuffer commandBuffer, const glm::mat
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
 }
 
-void ShadowMapper::renderObject(VkCommandBuffer commandBuffer, const glm::mat4& modelMatrix, 
+void ShadowMapper::renderObject(VkCommandBuffer commandBuffer, 
                                  const VertexBufferObject& vbo, VkDescriptorSet descriptorSet) {
-    // Compute MVP for this object
-    glm::mat4 mvp = currentLightSpaceMatrix * modelMatrix;
-    
+
     // Bind descriptor sets: material set (set 0) and per-instance set (set 1) if available.
     VkDescriptorSet matDs = vulkanApp->getMaterialDescriptorSet();
     if (matDs != VK_NULL_HANDLE) {

@@ -22,7 +22,6 @@
 #include "vulkan/EditableTextureSet.hpp"
 #include "widgets/AnimatedTextureWidget.hpp"
 #include "vulkan/ShadowMapper.hpp"
-#include "vulkan/ModelManager.hpp"
 #include "widgets/WidgetManager.hpp"
 #include "widgets/CameraWidget.hpp"
 #include "widgets/DebugWidget.hpp"
@@ -98,9 +97,6 @@ class MyApp : public VulkanApp, public IEventHandler {
     std::shared_ptr<SettingsWidget> settingsWidget;
     std::shared_ptr<BillboardCreator> billboardCreator;
     std::shared_ptr<SkyWidget> skyWidget;
-    
-    // Model manager to handle all renderable objects
-    ModelManager modelManager;
     
     // Store meshes (owned by app but not direct attributes)
     std::vector<std::unique_ptr<Mesh3D>> meshes;
@@ -808,9 +804,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
         vkBeginCommandBuffer(commandBuffer, &beginInfo);
-        
-        // Clear previous frame's instances
-        modelManager.clear();
+    
 
         // Calculate grid layout for cubes
         size_t n = materials.size();
@@ -821,24 +815,13 @@ class MyApp : public VulkanApp, public IEventHandler {
         float halfW = (cols - 1) * 0.5f * spacing;
         float halfH = (rows - 1) * 0.5f * spacing;
         
-        // Add instances from the simple Model3D wrappers created at setup
-        for (size_t mi = 0; mi < visibleModels.size(); ++mi) {
-            Model3D* m = visibleModels[mi];
-            VertexBufferObject &vbo = m->getVBO();
-            glm::mat4 transform = m->getModel();
 
-            // Select a descriptor/uniform set for the object. Plane uses the editable texture index,
-            // other objects use the first available texture descriptor (index 0) if present.
-            // material index is encoded in mesh vertex `texIndex`; instances do not store descriptor sets
-            modelManager.addInstance(vbo, transform);
-        }
-        
         // First pass: Render shadow map (skip if shadows globally disabled)
         if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
             shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
             
             // Render all instances to shadow map
-            for (const auto& instance : modelManager.getInstances()) {
+            for (const auto& instance : visibleModels) {
                 // Update uniform buffer for shadow pass: set viewProjection = lightSpaceMatrix
                 UniformObject shadowUbo = uboStatic;
                 shadowUbo.viewProjection = uboStatic.lightSpaceMatrix;
@@ -852,9 +835,9 @@ class MyApp : public VulkanApp, public IEventHandler {
 
                 updateUniformBuffer(shadowUniform, &shadowUbo, sizeof(UniformObject));
                 // Push model matrix for this draw into the pipeline via push constants
-                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance.transform);
+                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance->model);
 
-                shadowMapper.renderObject(commandBuffer, instance.transform, instance.vbo, shadowDescriptorSet);
+                shadowMapper.renderObject(commandBuffer, instance->vbo, shadowDescriptorSet);
             }
 
             shadowMapper.endShadowPass(commandBuffer);
@@ -889,8 +872,8 @@ class MyApp : public VulkanApp, public IEventHandler {
         // We'll bind the appropriate pipeline per-instance (regular or tessellated)
 
         // Render all instances with main pass
-        for (const auto& instance : modelManager.getInstances()) {
-            const auto& vbo = instance.vbo;
+        for (const auto& instance : visibleModels) {
+            const auto& vbo = instance->vbo;
             
             // Bind vertex and index buffers
             VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
@@ -953,7 +936,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, setsToBind, 0, nullptr);
             }
             // Push per-draw model matrix via push constants (visible to vertex + tessellation stages)
-            vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance.transform);
+            vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance->model);
             vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
         }
 

@@ -15,7 +15,7 @@ public:
     void endShadowPass(VkCommandBuffer commandBuffer);
     
     // Render a single object to shadow map
-    void renderObject(VkCommandBuffer commandBuffer, const glm::mat4& modelMatrix, 
+    void renderObject(VkCommandBuffer commandBuffer, 
                       const VertexBufferObject& vbo, VkDescriptorSet descriptorSet);
     
     // Getters for resources

@@ -19,7 +19,7 @@ void CameraWidget::render() {
 	glm::vec3 euler = glm::degrees(glm::eulerAngles(orient));
 	ImGui::Text("Euler (deg): X=%.1f Y=%.1f Z=%.1f", euler.x, euler.y, euler.z);
 	if (ImGui::Button("Reset Orientation")) {
-		*camera = Camera(camera->getPosition());
+		*camera = Camera(camera->getPosition(), camera->getOrientation());
 	}
 
 	ImGui::End();
