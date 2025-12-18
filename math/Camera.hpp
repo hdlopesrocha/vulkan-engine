@@ -7,7 +7,7 @@
 
 class Camera : public IEventHandler {
 public:
-    Camera(const glm::vec3 &pos = glm::vec3(0.0f, 0.0f, 2.5f));
+    Camera(const glm::vec3 &pos, const glm::quat &orient);
 
     // Camera is now event-driven. Use events to control translation/rotation.
 

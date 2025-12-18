@@ -28,6 +28,7 @@ OctreeNode * OctreeNode::init(Vertex vertex) {
 	this->setType(SpaceType::Empty);
 	this->vertex = vertex;
 	this->id = UINT_MAX;
+	this->version = 0u;	
 	return this;
 }
 

@@ -10,9 +10,8 @@ struct MaterialProperties;
 
 // Represents an instance of a model with its transform
 struct ModelInstance {
-    Mesh3D* model;
     VertexBufferObject vbo;
     glm::mat4 transform;
     
-    ModelInstance(Mesh3D* m, const VertexBufferObject& v, const glm::mat4& t);
+    ModelInstance(const VertexBufferObject& v, const glm::mat4& t);
 };

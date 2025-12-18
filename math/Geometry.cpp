@@ -32,8 +32,8 @@ void Geometry::setCenter(){
 
 void Geometry::addTriangle(const Vertex &v0, const Vertex &v1, const Vertex &v2) {
     addVertex(v0);
-    addVertex(v1);
     addVertex(v2);
+    addVertex(v1);
 }
 
 void Geometry::addVertex(const Vertex &vertex) {

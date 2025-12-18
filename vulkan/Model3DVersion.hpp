@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../math/Mesh3D.hpp"
+#include "Model3D.hpp"
 struct Model3DVersion
 {
-    Mesh3D * model;
+    Model3D * model;
     uint version;
 };

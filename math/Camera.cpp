@@ -5,9 +5,8 @@
 #include "../events/TranslateCameraEvent.hpp"
 #include "../events/RotateCameraEvent.hpp"
 
-Camera::Camera(const glm::vec3 &pos)
-    : position(pos), orientation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f)) {
-}
+Camera::Camera(const glm::vec3 &pos, const glm::quat &orient)
+    : position(pos), orientation(orient), projection(glm::mat4(1.0f)) {};
 
 // Camera input is now event-driven. Keyboard handling is performed by a separate
 // KeyboardPublisher which converts key state into camera/window events and

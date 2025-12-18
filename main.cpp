@@ -48,13 +48,13 @@
 #include "vulkan/MaterialManager.hpp"
 
 #include "vulkan/VertexBufferObjectBuilder.hpp"
-#include "utils/Model3DVersion.hpp"
+#include "vulkan/Model3DVersion.hpp"
 #include "vulkan/Model3D.hpp"
 
 class MyApp : public VulkanApp, public IEventHandler {
     LocalScene * mainScene;
     std::unordered_map<OctreeNode*, Model3DVersion> nodeModelVersions;
-    std::vector<Mesh3D*> visibleModels;
+    std::vector<Model3D*> visibleModels;
 
     public:
         MyApp() : shadowMapper(this, 8192) {}
@@ -106,6 +106,8 @@ class MyApp : public VulkanApp, public IEventHandler {
     std::vector<std::unique_ptr<Mesh3D>> meshes;
     // Store simple model wrappers (mesh pointer + VBO reference + model matrix)
     std::vector<std::unique_ptr<Model3D>> modelObjects;
+    // VBOs created asynchronously for requested scene nodes (heap-owned pointers)
+    std::vector<std::unique_ptr<VertexBufferObject>> dynamicMeshVBOs;
     
     // UI: currently selected texture triple for preview
     size_t currentTextureIndex = 0;
@@ -119,10 +121,10 @@ class MyApp : public VulkanApp, public IEventHandler {
     
     // Light direction (controlled by LightWidget)
     glm::vec3 lightDirection = glm::normalize(glm::vec3(-1.0f, -1.0f, -1.0f));
-    
+    glm::quat quaternion = Math::eulerToQuat(0, 0, 0);
     // Camera
     // start the camera further back so multiple cubes are visible
-    Camera camera = Camera(glm::vec3(0.0f, 0.0f, 8.0f));
+    Camera camera = Camera(glm::vec3(3456, 915, -750), quaternion);
     // Event manager for app-wide pub/sub
     EventManager eventManager;
     KeyboardPublisher keyboard;
@@ -238,13 +240,13 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Explicit per-name loads (one-by-one) with realistic material properties
         const std::vector<std::pair<std::array<const char*,3>, MaterialProperties>> specs = {
+            {{"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg"}, MaterialProperties{false, false, 0.01f, 1.0f, 0.15f, 0.3f, 16.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
             {{"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg"}, MaterialProperties{false, false, 0.08f, 4.0f, 0.12f, 0.5f, 32.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
             {{"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg"}, MaterialProperties{false, false, 0.05f, 1.0f, 0.15f, 0.5f, 32.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
             {{"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg"}, MaterialProperties{false, false, 0.06f, 1.0f, 0.18f, 0.5f, 32.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
             {{"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg"}, MaterialProperties{false, false, 0.04f, 1.0f, 0.5f, 0.5f, 32.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
             {{"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg"}, MaterialProperties{false, false, 0.03f, 1.0f, 0.4f, 0.5f, 32.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
             {{"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg"}, MaterialProperties{true, false, 0.5f, 1.0f, 0.1f, 0.8f, 64.0f, 0.0f, 0.0f, true, 1.0f, 1.0f}},
-            {{"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg"}, MaterialProperties{false, false, 0.01f, 1.0f, 0.15f, 0.3f, 16.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
             {{"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg"}, MaterialProperties{false, false, 0.1f, 1.0f, 0.1f, 0.4f, 32.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
             {{"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg"}, MaterialProperties{false, false, 0.03f, 1.0f, 0.5f, 0.2f, 16.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
             {{"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg"}, MaterialProperties{false, false, 0.04f, 1.0f, 0.1f, 0.1f, 8.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
@@ -462,7 +464,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Add plane as a Model3D wrapper (uses editable texture index)
         glm::mat4 planeModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.5f, 0.0f));
-        modelObjects.emplace_back(std::make_unique<Model3D>(meshes[0].get(), meshVBOs[0], planeModel));
+        modelObjects.emplace_back(std::make_unique<Model3D>( meshVBOs[0], planeModel));
 
         for (size_t i = 0; i < n; ++i) {
             // Build a cube mesh whose per-face tex indices point to this material index
@@ -471,7 +473,6 @@ class MyApp : public VulkanApp, public IEventHandler {
             cube->build(faceTex);
             VertexBufferObject cubeVbo = VertexBufferObjectBuilder::create(this, *cube);
 
-            Mesh3D* cubePtr = cube.get();
             meshes.push_back(std::move(cube));
             meshVBOs.push_back(cubeVbo);
 
@@ -482,13 +483,12 @@ class MyApp : public VulkanApp, public IEventHandler {
             float y = -1.0f; // Above the plane
             float z = row * spacing - halfH;
             glm::mat4 cubeModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, y, z));
-            modelObjects.emplace_back(std::make_unique<Model3D>(cubePtr, meshVBOs.back(), cubeModel));
+            modelObjects.emplace_back(std::make_unique<Model3D>(meshVBOs.back(), cubeModel));
 
             // Build sphere mesh for this material
             auto sphere = std::make_unique<SphereModel>();
             sphere->build(0.5f, 32, 16, static_cast<float>(i));
             VertexBufferObject sphereVbo = VertexBufferObjectBuilder::create(this, *sphere);
-            Mesh3D* spherePtr = sphere.get();
             meshes.push_back(std::move(sphere));
             meshVBOs.push_back(sphereVbo);
 
@@ -498,7 +498,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             float gap = 0.5f;
             float sphereCenterY = y + cubeHalfHeight + sphereRadius + gap;
             glm::mat4 sphereModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, sphereCenterY, z));
-            modelObjects.emplace_back(std::make_unique<Model3D>(spherePtr, meshVBOs.back(), sphereModel));
+            modelObjects.emplace_back(std::make_unique<Model3D>(meshVBOs.back(), sphereModel));
         }
         // Per-instance descriptor sets removed — use per-material/global descriptor sets instead.
         // Material SSBO is bound into a single global descriptor set; updateMaterials() will
@@ -766,23 +766,40 @@ class MyApp : public VulkanApp, public IEventHandler {
         mainScene->requestVisibleNodes(Layer::LAYER_OPAQUE, camera.getViewProjectionMatrix(), [this](const OctreeNodeData& data){ 
             // Capture node/version locally to ensure lifetime for the async request callback
             OctreeNode* node = data.node;
-            unsigned int version = node ? node->version : 0u;
+            // skip null nodes
+            if (!node) return;
+            unsigned int version = node->version;
 
-            // If we don't have a Model3DVersion for this node yet, insert a default placeholder
-            if (nodeModelVersions.find(node) == nodeModelVersions.end()) {
-                nodeModelVersions.try_emplace(node, Model3DVersion{});
+            // Find existing entry and remove it if version changed
+            auto it = nodeModelVersions.find(node);
+            if (it != nodeModelVersions.end()) {
+                if (it->second.version != version) {
+                    if (it->second.model) delete it->second.model;
+                    nodeModelVersions.erase(it);
+                    it = nodeModelVersions.end();
+                }
+            }
 
-                // Request the Model3D and fill the stored Model3DVersion when available
+            if (it == nodeModelVersions.end()) {
+                // Insert placeholder and request async model load
+                auto em = nodeModelVersions.emplace(node, Model3DVersion{});
+                it = em.first;
                 // requestModel3D expects a non-const reference; cast away const here
-                mainScene->requestModel3D(Layer::LAYER_OPAQUE, const_cast<OctreeNodeData&>(data), [this, node, version](Mesh3D& model) {
-                    // Store a heap-allocated copy to match Model3DVersion::model (pointer)
-                    Mesh3D* stored = new Mesh3D(model);
-                    nodeModelVersions[node] = { stored, version };
+                mainScene->requestModel3D(Layer::LAYER_OPAQUE, const_cast<OctreeNodeData&>(data), [this, node, version](Mesh3D& mesh) {
+                    VertexBufferObject vbo = VertexBufferObjectBuilder::create(this, mesh);
+                    // Keep the VBO alive by storing it in dynamicMeshVBOs (stable heap ownership)
+                    dynamicMeshVBOs.push_back(std::make_unique<VertexBufferObject>(std::move(vbo)));
+                    // Create Model3D referencing the stored VBO
+                    Model3D * model = new Model3D(*dynamicMeshVBOs.back(), glm::mat4(1.0f));
+                    nodeModelVersions[node] = { model, version };
                     std::cout << "[Model3D] Loaded model for node " << node << " (version " << version << ")\n";
                 });
-            } else {
-                visibleModels.push_back(nodeModelVersions[node].model);
             }
+
+            // Only add fully-loaded models to visibleModels
+            Model3D* loadedModel = nodeModelVersions[node].model;
+            if (loadedModel) visibleModels.push_back(loadedModel);
+            
         });
         
         
@@ -805,16 +822,15 @@ class MyApp : public VulkanApp, public IEventHandler {
         float halfH = (rows - 1) * 0.5f * spacing;
         
         // Add instances from the simple Model3D wrappers created at setup
-        for (size_t mi = 0; mi < modelObjects.size(); ++mi) {
-            Model3D* m = modelObjects[mi].get();
-            if (!m || !m->mesh) continue;
+        for (size_t mi = 0; mi < visibleModels.size(); ++mi) {
+            Model3D* m = visibleModels[mi];
             VertexBufferObject &vbo = m->getVBO();
             glm::mat4 transform = m->getModel();
 
             // Select a descriptor/uniform set for the object. Plane uses the editable texture index,
             // other objects use the first available texture descriptor (index 0) if present.
             // material index is encoded in mesh vertex `texIndex`; instances do not store descriptor sets
-            modelManager.addInstance(m->mesh, vbo, transform);
+            modelManager.addInstance(vbo, transform);
         }
         
         // First pass: Render shadow map (skip if shadows globally disabled)
@@ -886,15 +902,6 @@ class MyApp : public VulkanApp, public IEventHandler {
             UniformObject ubo = uboStatic;
             ubo.viewProjection = projMat * viewMat;
             
-            // Static material properties are read from the GPU-side material buffer (SSBO).
-            // Determine material index from the mesh vertex `texIndex` and use it for per-instance overrides.
-            const MaterialProperties* instMat = nullptr;
-            if (instance.model && !instance.model->getVertices().empty()) {
-                int idx = instance.model->getVertices()[0].texIndex;
-                if (idx >= 0 && static_cast<size_t>(idx) < materials.size()) {
-                    instMat = &materials[static_cast<size_t>(idx)];
-                }
-            }
             // Per-material tess level is provided by the Materials SSBO; no per-instance override here.
             // (temporary debug logging removed)
             // Global normal mapping toggle (separate from tessellation/mappingMode)
@@ -919,12 +926,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             else ubo.triplanarSettings = glm::vec4(0.12f, 3.0f, 0.0f, 0.0f);
             // isShadowPass = 0.0; second component stores global tessellation enabled flag (1.0 = enabled)
             ubo.passParams = glm::vec4(0.0f, settingsWidget ? (settingsWidget->getTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
-            // Update the global per-material uniform buffer instead of a per-instance buffer
-            int matIdx = 0;
-            if (instance.model && !instance.model->getVertices().empty()) {
-                matIdx = instance.model->getVertices()[0].texIndex;
-                if (matIdx < 0 || static_cast<size_t>(matIdx) >= materials.size()) matIdx = 0;
-            }
+ 
             updateUniformBuffer(mainUniform, &ubo, sizeof(UniformObject));
             
             // Bind descriptor set and draw
@@ -988,6 +990,18 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
         meshVBOs.clear();
         meshes.clear();
+
+        // destroy any dynamically created VBOs from async-loaded models
+        for (auto &pv : dynamicMeshVBOs) {
+            if (pv) pv->destroy(getDevice());
+        }
+        dynamicMeshVBOs.clear();
+
+        // delete any heap-allocated Model3D instances created for async nodes
+        for (auto &entry : nodeModelVersions) {
+            if (entry.second.model) delete entry.second.model;
+        }
+        nodeModelVersions.clear();
 
         // global uniform buffers cleanup (main, shadow, sky)
         if (mainUniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), mainUniform.buffer, nullptr);

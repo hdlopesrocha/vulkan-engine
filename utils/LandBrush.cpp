@@ -3,16 +3,16 @@
 
 LandBrush::LandBrush() {
     this->underground = DISCARD_BRUSH_INDEX;
-    this->grass = 3;
-    this->sand = 4;
-    this->softSand = 15;
-    this->rock = 5;
-    this->snow = 6;
-    this->grassMixSand = 10;
-    this->grassMixSnow = 11;
-    this->rockMixGrass = 12;
-    this->rockMixSnow = 13;
-    this->rockMixSand = 14;
+    this->grass = 4;
+    this->sand = 8;
+    this->softSand = 10;
+    this->rock = 7;
+    this->snow = 9;
+    this->grassMixSand = 0;
+    this->grassMixSnow = 0;
+    this->rockMixGrass = 0;
+    this->rockMixSnow = 0;
+    this->rockMixSand = 0;
 }
 
 int LandBrush::paint(const Vertex &vertex, glm::vec4 translate, glm::vec4 scale) const {

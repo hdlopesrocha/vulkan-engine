@@ -16,7 +16,7 @@ public:
     ModelManager() = default;
     
     // Add a model instance to be rendered
-    void addInstance(Mesh3D* model, const VertexBufferObject& vbo, const glm::mat4& transform);
+    void addInstance(const VertexBufferObject& vbo, const glm::mat4& transform);
     
     // Clear all instances
     void clear();
