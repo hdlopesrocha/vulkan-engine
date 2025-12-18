@@ -8,7 +8,7 @@ SkySphere::SkySphere(VulkanApp* app_) : app(app_) {}
 SkySphere::~SkySphere() { cleanup(); }
 
 void SkySphere::init(SkyWidget* widget,
-                     std::vector<VkDescriptorSet>& descriptorSets,
+                     VkDescriptorSet descriptorSet,
                      VkDescriptorSet shadowDescriptorSet) {
     skyWidget = widget;
     VkDeviceSize sbSize = sizeof(SkyUniform);
@@ -49,9 +49,9 @@ void SkySphere::init(SkyWidget* widget,
     skyWrite.descriptorCount = 1;
     skyWrite.pBufferInfo = &skyBufInfo;
 
-    for (auto &ds : descriptorSets) {
-        skyWrite.dstSet = ds;
-        app->updateDescriptorSet(ds, { skyWrite });
+    if (descriptorSet != VK_NULL_HANDLE) {
+        skyWrite.dstSet = descriptorSet;
+        app->updateDescriptorSet(descriptorSet, { skyWrite });
     }
     if (shadowDescriptorSet != VK_NULL_HANDLE) {
         skyWrite.dstSet = shadowDescriptorSet;
