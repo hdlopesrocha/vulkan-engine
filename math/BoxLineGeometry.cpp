@@ -8,7 +8,7 @@ namespace {
 }
 
 
-BoxLineGeometry::BoxLineGeometry(const BoundingBox &box) : Geometry(true) {
+BoxLineGeometry::BoxLineGeometry(const BoundingBox &box) : Geometry() {
     glm::vec3 corners[8] = {
         {box.getMinX(), box.getMinY(), box.getMinZ()},
         {box.getMaxX(), box.getMinY(), box.getMinZ()},

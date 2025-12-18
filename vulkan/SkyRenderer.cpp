@@ -60,7 +60,7 @@ void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, Vk
     const VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
     const VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
-    vkCmdBindIndexBuffer(cmd, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
+    vkCmdBindIndexBuffer(cmd, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(cmd, vbo.indexCount, 1, 0, 0, 0);
 }
 

@@ -2,9 +2,7 @@
 #include <vector>
 #include <cmath>
 
-void SphereModel::build(float radius, int longitudes, int latitudes, float texIndex) {
-    std::vector<Vertex> vertices;
-    std::vector<uint16_t> indices;
+SphereModel::SphereModel(float radius, int longitudes, int latitudes, float texIndex) : Geometry() {
 
     for (int y = 0; y <= latitudes; ++y) {
         for (int x = 0; x <= longitudes; ++x) {
@@ -46,6 +44,4 @@ void SphereModel::build(float radius, int longitudes, int latitudes, float texIn
         }
     }
 
-    setGeometry(vertices, indices);
-    computeTangents();
 }

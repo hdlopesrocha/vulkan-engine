@@ -127,8 +127,8 @@ protected:
         VkDescriptorSet getMaterialDescriptorSet() const { return materialDescriptorSet; }
         VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
 
-        Buffer createVertexBuffer(std::vector<Vertex> &vertices);
-        Buffer createIndexBuffer(std::vector<uint16_t> &indices);
+        Buffer createVertexBuffer(const std::vector<Vertex> &vertices);
+        Buffer createIndexBuffer(const std::vector<uint> &indices);
         VkShaderModule createShaderModule(const std::vector<char>& code);
     VkPipeline createGraphicsPipeline(std::initializer_list<VkPipelineShaderStageCreateInfo> stages, VkVertexInputBindingDescription bindingDescription, std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions, VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL, VkCullModeFlagBits cullMode = VK_CULL_MODE_BACK_BIT, bool depthWrite = true);
         std::vector<VkCommandBuffer> createCommandBuffers();

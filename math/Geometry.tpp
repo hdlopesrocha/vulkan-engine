@@ -16,8 +16,6 @@ InstanceGeometry<T>::InstanceGeometry(Geometry * geometry, std::vector<T> &insta
 
 template <typename T>
 InstanceGeometry<T>::~InstanceGeometry() {
-    if(!geometry->reusable){
-        delete geometry;
-    }
+
 }
 

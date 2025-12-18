@@ -29,7 +29,7 @@ public:
         }
     }
 
-    void requestModel3D(Layer layer, OctreeNodeData &data, const Model3DCallback& callback) override {
+    void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback) override {
         long tessCount = 0;
         Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
         long trianglesCount = 0;
@@ -40,20 +40,8 @@ public:
         Processor processor(&trianglesCount, threadPool, &context, &handlers);
         processor.iterateFlatIn(*tree, data);
 
-        if(tesselator.geometry && !tesselator.geometry->indices.empty()) {
-            Mesh3D model;
-            // copy vertices
-            const std::vector<Vertex> &verts = tesselator.geometry->vertices;
-            // convert indices from uint to uint16_t (clamp if necessary)
-            std::vector<uint16_t> indices;
-            indices.reserve(tesselator.geometry->indices.size());
-            for(uint idx : tesselator.geometry->indices) {
-                indices.push_back(static_cast<uint16_t>(idx));
-            }
-            model.setGeometry(verts, indices);
-            model.computeNormals();
-            model.computeTangents();
-            callback(model);
+        if(!tesselator.geometry.indices.empty()) {
+            callback(tesselator.geometry);
         }
     }
 

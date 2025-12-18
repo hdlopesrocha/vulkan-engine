@@ -8,7 +8,7 @@
 class Tesselator : public OctreeNodeTriangleHandler{
     ThreadContext * context;
 public:
-    Geometry * geometry;
+    Geometry geometry;
     Tesselator(long * count, ThreadContext * context);
     void handle(Vertex &v0, Vertex &v1, Vertex &v2, bool sign) override;
 };

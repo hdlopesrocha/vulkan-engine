@@ -1414,7 +1414,7 @@ void VulkanApp::updateUniformBuffer(Buffer &uniform, void * data, size_t dataSiz
     vkUnmapMemory(device, uniform.memory);
 }
 
-Buffer VulkanApp::createVertexBuffer(std::vector<Vertex> &vertices) {
+Buffer VulkanApp::createVertexBuffer(const std::vector<Vertex> &vertices) {
     VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
     Buffer vertexBuffer = createBuffer(bufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     void* data;
@@ -1424,15 +1424,13 @@ Buffer VulkanApp::createVertexBuffer(std::vector<Vertex> &vertices) {
     return vertexBuffer;
 }
 
-Buffer VulkanApp::createIndexBuffer(std::vector<uint16_t> &indices) {
+Buffer VulkanApp::createIndexBuffer(const std::vector<uint> &indices) {
     VkDeviceSize bufferSize = sizeof(indices[0]) * indices.size();
     Buffer indexBuffer = createBuffer(bufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     void* data;
     vkMapMemory(device, indexBuffer.memory, 0, bufferSize, 0, &data);
     memcpy(data, indices.data(), (size_t)bufferSize);
     vkUnmapMemory(device, indexBuffer.memory);
-    // store index count for draw
-    uint32_t indexCount = static_cast<uint32_t>(indices.size());
     return indexBuffer;
 }
 

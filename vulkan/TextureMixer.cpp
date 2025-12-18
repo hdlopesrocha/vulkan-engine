@@ -654,8 +654,3 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 		onTextureGeneratedCallback();
 	}
 }
-
-void TextureMixer::generatePerlinNoiseWithParams(MixerParameters &params) {
-	// Update internal size if caller provided different dimensions
-	generatePerlinNoise(params);
-}

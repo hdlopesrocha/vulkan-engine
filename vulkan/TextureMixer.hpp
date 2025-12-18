@@ -55,7 +55,7 @@ public:
     const EditableTexture& getBump() const;
 
     // Generate Perlin noise for a texture using explicit parameters (used by UI widget)
-    void generatePerlinNoiseWithParams(MixerParameters &params);
+    void generatePerlinNoise(MixerParameters &params);
 
 private:
     VulkanApp* app = nullptr;
@@ -101,6 +101,5 @@ private:
     void createTripleComputeDescriptorSet();
     // Helper to create a descriptor set targeting a single editable texture as storage image
     void createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet, int map);
-    void generatePerlinNoise(MixerParameters &params);
 };
 

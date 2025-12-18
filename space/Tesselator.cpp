@@ -3,8 +3,8 @@
 #include "IteratorHandler.hpp"
 
 
-Tesselator::Tesselator(long * count, ThreadContext * context): OctreeNodeTriangleHandler(count), context(context) {
-    this->geometry = new Geometry(false);
+Tesselator::Tesselator(long * count, ThreadContext * context): OctreeNodeTriangleHandler(count), context(context), geometry() {
+
 }
 
 
@@ -50,7 +50,7 @@ void Tesselator::handle(Vertex &v0, Vertex &v1, Vertex &v2, bool reverse) {
             v1.texCoord = triplanarMapping(v1.position, plane)*triplanarScale;
             v2.texCoord = triplanarMapping(v2.position, plane)*triplanarScale;
         }
-        geometry->addTriangle(reverse ? v2 : v0, v1, reverse ? v0 : v2);
+        geometry.addTriangle(reverse ? v2 : v0, v1, reverse ? v0 : v2);
         ++(*count);
     }
 }

@@ -1,9 +1,8 @@
 #pragma once
 
-#include "Mesh3D.hpp"
+#include "Geometry.hpp"
 
-class SphereModel : public Mesh3D {
+class SphereModel : public Geometry {
 public:
-    SphereModel() = default;
-    void build(float radius = 0.5f, int longitudes = 16, int latitudes = 12, float texIndex = 0.0f);
+    SphereModel(float radius = 0.5f, int longitudes = 16, int latitudes = 12, float texIndex = 0.0f);
 };

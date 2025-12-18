@@ -97,10 +97,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     std::shared_ptr<SettingsWidget> settingsWidget;
     std::shared_ptr<BillboardCreator> billboardCreator;
     std::shared_ptr<SkyWidget> skyWidget;
-    
-    // VBOs created asynchronously for requested scene nodes (heap-owned pointers)
-    std::vector<std::unique_ptr<VertexBufferObject>> dynamicMeshVBOs;
-    
+
     // UI: currently selected texture triple for preview
     size_t currentTextureIndex = 0;
     size_t editableLayerIndex = SIZE_MAX; // Texture array layer index reserved for editable textures
@@ -221,24 +218,24 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Now that pipelines (and the app pipeline layout) have been created, initialize shadow mapper
         shadowMapper.init();
 
-        // initialize texture array manager with room for 16 layers of 1024x1024
+        // initialize texture array manager with room for 24 layers of 1024x1024
         // (we no longer use the legacy TextureManager for storage; `materials` tracks per-layer properties)
-        textureArrayManager.allocate(16, 1024, 1024, this);
+        textureArrayManager.allocate(24, 1024, 1024, this);
         std::vector<size_t> loadedIndices;
 
         // Explicit per-name loads (one-by-one) with realistic material properties
         const std::vector<std::pair<std::array<const char*,3>, MaterialProperties>> specs = {
-            {{"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg"}, MaterialProperties{false, false, 0.01f, 1.0f, 0.15f, 0.3f, 16.0f, 0.0f, 0.0f, true, 0.004f, 0.004f}},
-            {{"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg"}, MaterialProperties{false, false, 0.08f, 4.0f, 0.12f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.004f, 0.004f}},
-            {{"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg"}, MaterialProperties{false, false, 0.05f, 1.0f, 0.15f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.004f, 0.004f}},
-            {{"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg"}, MaterialProperties{false, false, 0.06f, 1.0f, 0.18f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.004f, 0.004f}},
-            {{"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg"}, MaterialProperties{false, false, 0.04f, 1.0f, 0.5f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.004f, 0.004f}},
-            {{"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg"}, MaterialProperties{false, false, 0.03f, 1.0f, 0.4f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.004f, 0.004f}},
-            {{"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg"}, MaterialProperties{true, false, 0.5f, 1.0f, 0.1f, 0.8f, 64.0f, 0.0f, 0.0f, true, 0.004f, 0.004f}},
-            {{"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg"}, MaterialProperties{false, false, 0.1f, 1.0f, 0.1f, 0.4f, 32.0f, 0.0f, 0.0f, true, 0.004f, 0.004f}},
-            {{"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg"}, MaterialProperties{false, false, 0.03f, 1.0f, 0.5f, 0.2f, 16.0f, 0.0f, 0.0f, true, 0.004f, 0.004f}},
-            {{"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg"}, MaterialProperties{false, false, 0.04f, 1.0f, 0.1f, 0.1f, 8.0f, 0.0f, 0.0f, true, 0.004f, 0.004f}},
-            {{"textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg"}, MaterialProperties{false, false, 0.025f, 1.0f, 0.22f, 0.3f, 16.0f, 0.0f, 0.0f, true, 0.004f, 0.004f}}
+            {{"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg"}, MaterialProperties{false, false, 0.01f, 1.0f, 0.15f, 0.3f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
+            {{"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg"}, MaterialProperties{false, false, 0.08f, 4.0f, 0.12f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
+            {{"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg"}, MaterialProperties{false, false, 0.05f, 1.0f, 0.15f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
+            {{"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg"}, MaterialProperties{false, false, 0.06f, 1.0f, 0.18f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
+            {{"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg"}, MaterialProperties{false, false, 0.04f, 1.0f, 0.5f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
+            {{"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg"}, MaterialProperties{false, false, 0.03f, 1.0f, 0.4f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
+            {{"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg"}, MaterialProperties{true, false, 0.5f, 1.0f, 0.1f, 0.8f, 64.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
+            {{"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg"}, MaterialProperties{false, false, 0.1f, 1.0f, 0.1f, 0.4f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
+            {{"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg"}, MaterialProperties{false, false, 0.03f, 1.0f, 0.5f, 0.2f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
+            {{"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg"}, MaterialProperties{false, false, 0.04f, 1.0f, 0.1f, 0.1f, 8.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
+            {{"textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg"}, MaterialProperties{false, false, 0.025f, 1.0f, 0.22f, 0.3f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}}
         };
 
         for (const auto &entry : specs) {
@@ -255,15 +252,21 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Add editable textures as an entry in `materials` and keep their images managed by the EditableTextureSet
         // Allocate array layers FIRST so MixerParameters.targetLayer contains a valid array layer index
         uint32_t editableLayerA = textureArrayManager.create();
-        uint32_t editableLayerB = textureArrayManager.create();
+        
 
         // Apply editable material properties in a single-line initializer
         mixerParams = {
-            MixerParameters({ editableLayerA, 1, 2, 4.0f, 6, 0.5f, 2.0f, 0.0f, 1.0f, 42, 0.0f }),
-            MixerParameters({ editableLayerB, 3, 4, 4.0f, 6, 0.5f, 2.0f, 0.0f, 1.0f, 42, 0.0f })
+            MixerParameters({ editableLayerA, 4, 8, 8.0f, 8, 0.5f, 2.0f, 0.0f, 5.0f, 42, 0.0f }),
+            MixerParameters({ textureArrayManager.create(), 4, 9, 8.0f, 8, 0.5f, 2.0f, 0.0f, 5.0f, 42, 0.0f }),
+            MixerParameters({ textureArrayManager.create(), 4, 7, 8.0f, 8, 0.5f, 2.0f, 0.0f, 5.0f, 42, 0.0f }),
+            MixerParameters({ textureArrayManager.create(), 7, 9, 8.0f, 8, 0.5f, 2.0f, 0.0f, 5.0f, 42, 0.0f }),
+            MixerParameters({ textureArrayManager.create(), 7, 8, 8.0f, 8, 0.5f, 2.0f, 0.0f, 5.0f, 42, 0.0f })        
         };
-        materials.push_back(MaterialProperties{ false, false, 0.2f, 16.0f, 0.5f, 0.05f, 32.0f, 0.0f, 0.0f, false, 1.0f, 1.0f});
-        materials.push_back(MaterialProperties{ false, false, 0.3f, 17.0f, 0.3f, 0.03f, 16.0f, 0.0f, 0.0f, false, 0.5f, 0.5f});
+        materials.push_back(MaterialProperties{ false, false, 0.2f, 16.0f, 0.5f, 0.05f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f});
+        materials.push_back(MaterialProperties{ false, false, 0.3f, 17.0f, 0.3f, 0.03f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f});
+        materials.push_back(MaterialProperties{ false, false, 0.3f, 17.0f, 0.3f, 0.03f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f});
+        materials.push_back(MaterialProperties{ false, false, 0.3f, 17.0f, 0.3f, 0.03f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f});
+        materials.push_back(MaterialProperties{ false, false, 0.3f, 17.0f, 0.3f, 0.03f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f});
 
         // Initialize Vulkan-side editable textures BEFORE creating descriptor sets
         textureMixer = std::make_shared<TextureMixer>();
@@ -405,9 +408,8 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
 
         // Build sphere mesh for this material
-        auto sphere = std::make_unique<SphereModel>();
-        sphere->build(0.5f, 32, 16, 0);
-        skyVBO = VertexBufferObjectBuilder::create(this, *sphere);
+        auto sphere = SphereModel(0.5f, 32, 16, 0);
+        skyVBO = VertexBufferObjectBuilder::create(this, sphere);
         
         // Per-instance descriptor sets removed — use per-material/global descriptor sets instead.
         // Material SSBO is bound into a single global descriptor set; updateMaterials() will
@@ -693,12 +695,11 @@ class MyApp : public VulkanApp, public IEventHandler {
                 auto em = nodeModelVersions.emplace(node, Model3DVersion{});
                 it = em.first;
                 // requestModel3D expects a non-const reference; cast away const here
-                mainScene->requestModel3D(Layer::LAYER_OPAQUE, const_cast<OctreeNodeData&>(data), [this, node, version](Mesh3D& mesh) {
-                    VertexBufferObject vbo = VertexBufferObjectBuilder::create(this, mesh);
-                    // Keep the VBO alive by storing it in dynamicMeshVBOs (stable heap ownership)
-                    dynamicMeshVBOs.push_back(std::make_unique<VertexBufferObject>(std::move(vbo)));
-                    // Create Model3D referencing the stored VBO
-                    Model3D * model = new Model3D(*dynamicMeshVBOs.back(), glm::mat4(1.0f));
+                mainScene->requestModel3D(Layer::LAYER_OPAQUE, const_cast<OctreeNodeData&>(data), [this, node, version](const Geometry& mesh) {
+                    Model3D * model = new Model3D(
+                        VertexBufferObjectBuilder::create(this, mesh), 
+                        glm::mat4(1.0f)
+                    );
                     nodeModelVersions[node] = { model, version };
                     std::cout << "[Model3D] Loaded model for node " << node << " (version " << version << ")\n";
                 });
@@ -790,7 +791,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
             VkDeviceSize offsets[] = { 0 };
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-            vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
+            vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
             
             // Update uniform buffer for this instance: set viewProjection and model separately
             UniformObject ubo = uboStatic;
@@ -880,10 +881,10 @@ class MyApp : public VulkanApp, public IEventHandler {
         vegetationTextureArrayManager.destroy(this);
  
         // destroy any dynamically created VBOs from async-loaded models
-        for (auto &pv : dynamicMeshVBOs) {
-            if (pv) pv->destroy(getDevice());
-        }
-        dynamicMeshVBOs.clear();
+       // for (auto &pv : dynamicMeshVBOs) {
+       //     if (pv) pv->destroy(getDevice());
+       // }
+       // dynamicMeshVBOs.clear();
 
         // delete any heap-allocated Model3D instances created for async nodes
         for (auto &entry : nodeModelVersions) {

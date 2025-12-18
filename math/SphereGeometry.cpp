@@ -16,7 +16,7 @@
         addVertex(getVertex(c, plane));
     }
 
-    SphereGeometry::SphereGeometry(int lats, int longs) : Geometry(true) {
+    SphereGeometry::SphereGeometry(int lats, int longs) : Geometry() {
         float PI = glm::pi<float>();
 
         for(int i = 0; i <= lats; i++) {

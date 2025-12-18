@@ -8,7 +8,7 @@ namespace {
     }
 }
 
-BoxGeometry::BoxGeometry(const BoundingBox &box) : Geometry(true) {
+BoxGeometry::BoxGeometry(const BoundingBox &box) : Geometry() {
     glm::vec3 min = box.getMin();
     glm::vec3 max = box.getMax();
 

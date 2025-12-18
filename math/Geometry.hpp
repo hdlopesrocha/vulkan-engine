@@ -13,9 +13,8 @@ public:
     tsl::robin_map<Vertex, size_t, VertexHasher> compactMap;
 
     glm::vec3 center;
-    bool reusable;
 
-    Geometry(bool reusable);
+    Geometry();
     ~Geometry();
 
     void addVertex(const Vertex &vertex);

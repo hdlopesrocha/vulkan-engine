@@ -406,7 +406,7 @@ void ShadowMapper::renderObject(VkCommandBuffer commandBuffer,
     VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
     VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-    vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
+    vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
     
     // Draw
     vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);

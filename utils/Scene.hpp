@@ -4,7 +4,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 #include <functional>
-#include "../math/Mesh3D.hpp"
+#include "../math/Geometry.hpp"
 #include "../space/Octree.hpp"
 #include "../space/OctreeNodeData.hpp"
 
@@ -19,7 +19,7 @@ enum Layer {
 using VisibleNodeCallback = std::function<void(const OctreeNodeData&)>;
 
 // Mesh3D results are delivered via a callback lambda taking a Model3D reference
-using Model3DCallback = std::function<void(Mesh3D&)>;
+using GeometryCallback = std::function<void(const Geometry&)>;
 
 class SceneLoaderCallback {
 public:
@@ -36,6 +36,6 @@ public:
     ~Scene() = default;
     virtual void loadScene(SceneLoaderCallback& callback) = 0;
     virtual void requestVisibleNodes(Layer layer, glm::mat4 viewMatrix, const VisibleNodeCallback& callback) = 0;
-    virtual void requestModel3D(Layer layer, OctreeNodeData &data, const Model3DCallback& callback) = 0;
+    virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback) = 0;
     virtual bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) = 0;
 };
