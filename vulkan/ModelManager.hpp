@@ -17,8 +17,8 @@ public:
     
     // Add a model instance to be rendered
     void addInstance(Mesh3D* model, const VertexBufferObject& vbo, const glm::mat4& transform, 
-                    VkDescriptorSet descriptorSet, Buffer* uniformBuffer,
-                    VkDescriptorSet shadowDescriptorSet, Buffer* shadowUniformBuffer);
+                    VkDescriptorSet descriptorSet,
+                    VkDescriptorSet shadowDescriptorSet);
     
     // Clear all instances
     void clear();

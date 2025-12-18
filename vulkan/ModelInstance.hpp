@@ -14,9 +14,7 @@ struct ModelInstance {
     VertexBufferObject vbo;
     glm::mat4 transform;
     VkDescriptorSet descriptorSet;
-    Buffer* uniformBuffer;
     VkDescriptorSet shadowDescriptorSet;
-    Buffer* shadowUniformBuffer;
     
-    ModelInstance(Mesh3D* m, const VertexBufferObject& v, const glm::mat4& t, VkDescriptorSet ds, Buffer* ub, VkDescriptorSet sds, Buffer* sub);
+    ModelInstance(Mesh3D* m, const VertexBufferObject& v, const glm::mat4& t, VkDescriptorSet ds, VkDescriptorSet sds);
 };
