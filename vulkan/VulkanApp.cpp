@@ -507,6 +507,10 @@ void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, Vk
         throw std::runtime_error("failed to create image!");
     }
 
+    // Debug: log the created image handle and requested usage flags
+    printf("[VulkanApp::createImage] created image=%p usage=0x%08x size=%ux%u format=%d mipLevels=%u arrayLayers=%u\n",
+           (void*)image, (unsigned int)usage, width, height, (int)format, mipLevelCount, imageInfo.arrayLayers);
+
     VkMemoryRequirements memRequirements;
     vkGetImageMemoryRequirements(device, image, &memRequirements);
 

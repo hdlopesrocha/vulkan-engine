@@ -73,6 +73,8 @@ class MyApp : public VulkanApp, public IEventHandler {
     // materials list (replaces legacy TextureManager storage) - each entry corresponds
     // to a layer/index in `textureArrayManager` when arrays are used.
     std::vector<MaterialProperties> materials;
+    // Mixer parameters for editable textures (persistent storage — avoid dangling refs)
+    std::vector<MixerParameters> mixerParams;
     // GPU-side texture arrays (albedo/normal/bump) for sampler2DArray usage
     TextureArrayManager textureArrayManager;
     
@@ -251,17 +253,22 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
 
         // Add editable textures as an entry in `materials` and keep their images managed by the EditableTextureSet
-        size_t editableIndex = materials.size();
-        // Apply editable material properties in a single-line initializer
-        materials.push_back(MaterialProperties{ false, false, 0.2f, 16.0f, 0.5f, 0.05f, 32.0f, 0.0f, 0.0f, false, 1.0f, 1.0f});
+        // Allocate array layers FIRST so MixerParameters.targetLayer contains a valid array layer index
+        uint32_t editableLayerA = textureArrayManager.create();
+        uint32_t editableLayerB = textureArrayManager.create();
 
-        std::vector<MixerParameters> mixerParams = {
-            MixerParameters({ 0, 1, 2, 4.0f, 6, 0.5f, 2.0f, 0.0f, 1.0f, 42, 0.0f })
+        // Apply editable material properties in a single-line initializer
+        mixerParams = {
+            MixerParameters({ editableLayerA, 1, 2, 4.0f, 6, 0.5f, 2.0f, 0.0f, 1.0f, 42, 0.0f }),
+            MixerParameters({ editableLayerB, 3, 4, 4.0f, 6, 0.5f, 2.0f, 0.0f, 1.0f, 42, 0.0f })
         };
+        materials.push_back(MaterialProperties{ false, false, 0.2f, 16.0f, 0.5f, 0.05f, 32.0f, 0.0f, 0.0f, false, 1.0f, 1.0f});
+        materials.push_back(MaterialProperties{ false, false, 0.3f, 17.0f, 0.3f, 0.03f, 16.0f, 0.0f, 0.0f, false, 0.5f, 0.5f});
 
         // Initialize Vulkan-side editable textures BEFORE creating descriptor sets
         textureMixer = std::make_shared<TextureMixer>();
         textureMixer->init(this, 1024, 1024, &textureArrayManager);
+        // Generate initial textures directly into the allocated array layers
         textureMixer->generateInitialTextures(mixerParams);
 
 
@@ -295,22 +302,20 @@ class MyApp : public VulkanApp, public IEventHandler {
         std::cout << "  Wild: detected " << wildTiles << " tiles" << std::endl;
 
         // Create ImGui widget that wraps the Vulkan editable textures and add it to widget manager
-        editableTexturesWidget = std::make_shared<AnimatedTextureWidget>(textureMixer, "Editable Textures");
+        editableTexturesWidget = std::make_shared<AnimatedTextureWidget>(textureMixer, mixerParams, "Editable Textures");
         widgetManager.addWidget(editableTexturesWidget);
         // Show the editable textures widget by default so users see the previews on startup
         //editableTexturesWidget->show();
 
         
 
-        // Allocate a layer in the texture arrays for this editable material and upload initial textures
-        uint32_t editableLayer = textureArrayManager.create();
-        editableLayerIndex = editableLayer;
-        printf("[Main] Allocated texture array layer %u for editable textures (material index %zu)\n", editableLayer, editableIndex);
-        textureArrayManager.updateLayerFromEditableMap(editableLayer, textureMixer->getAlbedo(), 0);
-        textureArrayManager.updateLayerFromEditableMap(editableLayer, textureMixer->getNormal(), 1);
-        textureArrayManager.updateLayerFromEditableMap(editableLayer, textureMixer->getBump(), 2);
-        // Inform EditableTextureSet which layer was reserved so the widget can show sRGB preview from array
-        textureMixer->setEditableLayer(editableLayer);
+        // We already allocated array layers (`editableLayerA`/`editableLayerB`) before
+        // generating initial textures. Use the first allocated layer as the default
+        // editable layer for the widget previews.
+        editableLayerIndex = editableLayerA;
+        printf("[Main] Using pre-allocated editable array layer %d for previews\n", editableLayerIndex);
+        // Inform TextureMixer which layer to use for ImGui previews
+        textureMixer->setEditableLayer(editableLayerIndex);
         // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
         if (!loadedIndices.empty()) currentTextureIndex = loadedIndices[0];
         
@@ -440,8 +445,8 @@ class MyApp : public VulkanApp, public IEventHandler {
         widgetManager.addWidget(textureViewer);
         
         // Hook Vulkan editable texture regeneration callback so materials are refreshed
-        textureMixer->setOnTextureGenerated([this, editableIndex]() {
-            printf("Editable textures regenerated (index %zu)\n", editableIndex);
+        textureMixer->setOnTextureGenerated([this]() {
+            printf("Editable textures regenerated (layer %u)\n", static_cast<unsigned int>(editableLayerIndex));
             // Update texture arrays so shaders sample the new images
             if (editableLayerIndex != SIZE_MAX) {
                 textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), textureMixer->getAlbedo(), 0);

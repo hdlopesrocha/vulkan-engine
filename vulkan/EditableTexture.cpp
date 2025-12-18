@@ -15,10 +15,10 @@ void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt,
     cpuData.assign((size_t)width * (size_t)height * (size_t)bytesPerPixel, 0);
     isDirty = false;
 
-    // Create GPU resources
-    app->createImage(width, height, format, VK_IMAGE_TILING_OPTIMAL, 1,
-                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
+	// Create GPU resources (allow transfer-src so we can copy from this image)
+	app->createImage(width, height, format, VK_IMAGE_TILING_OPTIMAL, 1,
+					 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+					 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
 
     // create view
 	VkImageViewCreateInfo viewInfo{};

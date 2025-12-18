@@ -11,7 +11,7 @@
 // Vulkan-only helper that manages compute pipelines and the EditableTexture instances.
 // UI is handled by `widgets::AnimatedTextureWidget`.
 struct MixerParameters {
-    uint targetLayer;
+    size_t targetLayer;
     uint primaryTextureIdx;
     uint secondaryTextureIdx;
     // Default Perlin parameters (kept here for compatibility)
@@ -56,6 +56,8 @@ public:
 
     // Generate Perlin noise for a texture using explicit parameters (used by UI widget)
     void generatePerlinNoiseWithParams(int width, int height, MixerParameters &params);
+    // Generate a single map (0=albedo,1=normal,2=bump)
+    void generatePerlinNoiseForMap(int width, int height, MixerParameters &params, int map);
 
 private:
     VulkanApp* app = nullptr;
@@ -89,11 +91,15 @@ public:
     void setEditableLayer(uint32_t layer) { editableLayer = layer; }
     // Return an ImGui descriptor for previewing the requested map (0=albedo,1=normal,2=bump)
     VkDescriptorSet getPreviewDescriptor(int map);
+    // Return an ImGui descriptor for previewing the requested map at a specific array layer
+    VkDescriptorSet getPreviewDescriptor(int map, uint32_t layer);
+    // Return number of layers in the attached TextureArrayManager (0 if none)
+    uint32_t getArrayLayerCount() const;
 private:
 
 
     void createComputePipeline();
-    void createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet);
+    void createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet, int map);
     void createTripleComputeDescriptorSet();
     void generatePerlinNoise(int width, int height, MixerParameters &params);
 };

@@ -32,6 +32,8 @@ public:
     std::vector<ImTextureID> albedoImTextures;
     std::vector<ImTextureID> normalImTextures;
     std::vector<ImTextureID> bumpImTextures;
+    // Track which layers have been initialized (contains valid data)
+    std::vector<char> layerInitialized;
     TextureArrayManager() = default;
     TextureArrayManager(uint32_t layers, uint32_t w, uint32_t h)
         : layerAmount(layers), width(w), height(h) {}
@@ -56,4 +58,7 @@ public:
 
     // Update a specific array layer and map (0=albedo,1=normal,2=bump) from an EditableTexture
     void updateLayerFromEditableMap(uint32_t layer, const class EditableTexture& tex, int map);
+    // Query/set layer initialized state
+    bool isLayerInitialized(uint32_t layer) const;
+    void setLayerInitialized(uint32_t layer, bool v=true);
 };

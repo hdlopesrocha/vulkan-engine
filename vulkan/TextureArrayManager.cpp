@@ -159,6 +159,9 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	bumpSampler = app->createTextureSampler(mipLevels);
 	// store app reference for later load() calls
 	this->app = app;
+	// initialize layer initialized flags
+	layerInitialized.clear();
+	layerInitialized.resize(layerAmount, 0);
 }
 
 // Nearest-neighbor resize (RGBA8)
@@ -278,6 +281,7 @@ uint TextureArrayManager::load(char* albedoFile, char* normalFile, char* bumpFil
 	}
 
 	// increment current layer
+	setLayerInitialized(currentLayer, true);
 	return currentLayer++;
 }
 
@@ -363,6 +367,7 @@ uint TextureArrayManager::create() {
 	if (staging.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, staging.buffer, nullptr);
 	if (staging.memory != VK_NULL_HANDLE) vkFreeMemory(device, staging.memory, nullptr);
 
+	setLayerInitialized(currentLayer, true);
 	return currentLayer++;
 }
 
@@ -469,6 +474,72 @@ void TextureArrayManager::updateLayerFromEditableMap(uint32_t layer, const Edita
 						 0, nullptr, 0, nullptr, 1, &srcBack);
 
 	a->endSingleTimeCommands(cmd);
+
+	// Recreate ImGui descriptor for this layer so previews show updated data
+	{
+		std::vector<ImTextureID>* texVec = nullptr;
+		auto viewVec = &albedoLayerViews;
+		VkSampler sampler = albedoSampler;
+		switch (map) {
+			case 0: texVec = &albedoImTextures; viewVec = &albedoLayerViews; sampler = albedoSampler; break;
+			case 1: texVec = &normalImTextures; viewVec = &normalLayerViews; sampler = normalSampler; break;
+			case 2: texVec = &bumpImTextures; viewVec = &bumpLayerViews; sampler = bumpSampler; break;
+		}
+
+		if (texVec) {
+			if (texVec->size() != layerAmount) texVec->resize(layerAmount, nullptr);
+			if (viewVec->size() != layerAmount) viewVec->resize(layerAmount, VK_NULL_HANDLE);
+
+			// If an ImGui descriptor exists for this layer, remove it so we can recreate a fresh one
+			if ((*texVec)[layer] && (VkDescriptorSet)(*texVec)[layer] != VK_NULL_HANDLE) {
+				ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)(*texVec)[layer]);
+				(*texVec)[layer] = nullptr;
+			}
+
+
+			// Ensure a per-layer view exists (create if missing)
+			if (!(*viewVec)[layer]) {
+				TextureImage* arrImg = nullptr;
+				switch (map) {
+					case 0: arrImg = &albedoArray; break;
+					case 1: arrImg = &normalArray; break;
+					case 2: arrImg = &bumpArray; break;
+				}
+				if (arrImg && arrImg->image != VK_NULL_HANDLE) {
+					VkImageViewCreateInfo viewInfo{};
+					viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+					viewInfo.image = arrImg->image;
+					viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+					if (map == 0) viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+					else viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+					viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+					viewInfo.subresourceRange.baseMipLevel = 0;
+					viewInfo.subresourceRange.levelCount = arrImg->mipLevels;
+					viewInfo.subresourceRange.baseArrayLayer = static_cast<uint32_t>(layer);
+					viewInfo.subresourceRange.layerCount = 1;
+					if (vkCreateImageView(device, &viewInfo, nullptr, &(*viewVec)[layer]) != VK_SUCCESS) {
+						// Failed to create view; leave tex as nullptr
+					}
+				}
+			}
+
+			// Create new ImGui descriptor for this layer
+			if (!(*texVec)[layer] && (*viewVec)[layer] && sampler != VK_NULL_HANDLE) {
+				ImTextureID id = ImGui_ImplVulkan_AddTexture(sampler, (*viewVec)[layer], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+				(*texVec)[layer] = id;
+			}
+		}
+	}
+}
+
+bool TextureArrayManager::isLayerInitialized(uint32_t layer) const {
+	if (layer >= layerInitialized.size()) return false;
+	return layerInitialized[layer] != 0;
+}
+
+void TextureArrayManager::setLayerInitialized(uint32_t layer, bool v) {
+	if (layer >= layerInitialized.size()) return;
+	layerInitialized[layer] = v ? 1 : 0;
 }
 
 ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
