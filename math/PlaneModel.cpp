@@ -25,7 +25,7 @@ int blendTestTex = 0;
             vert.color = glm::vec3(1.0f);
             vert.texCoord = glm::vec2(u, v);
             vert.normal = glm::vec3(0.0f, 1.0f, 0.0f);
-            vert.texIndex = static_cast<int>(blendTestTex++);
+            vert.texIndex = static_cast<int>(blendTestTex++ % 2);
             vert.tangent = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
             vertices.push_back(vert);
         }

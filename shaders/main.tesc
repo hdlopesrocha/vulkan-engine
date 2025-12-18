@@ -31,19 +31,28 @@ void main() {
     tc_fragNormal[gl_InvocationID] = pc_inNormal[gl_InvocationID];
     tc_fragNormal[gl_InvocationID] = pc_inNormal[gl_InvocationID];
     tc_fragPosWorld[gl_InvocationID] = pc_inPosWorld[gl_InvocationID];
-    // store texIndex in .x so each per-vertex array element corresponds to the invocation
-    // Provide per-corner barycentric weight basis vectors so TES can interpolate consistently
-    tc_fragTexIndex[gl_InvocationID] = ivec3(pc_inTexIndex[0], pc_inTexIndex[1], pc_inTexIndex[2]);
+    // Compress the patch's texture indices into up to three unique slots
+    int i0 = pc_inTexIndex[0];
+    int i1 = pc_inTexIndex[1];
+    int i2 = pc_inTexIndex[2];
 
-    if (gl_InvocationID == 0) {
-        tc_fragTexWeights[gl_InvocationID] = vec3(1.0, 0.0, 0.0);
-    }
-    else if (gl_InvocationID == 1) {
-        tc_fragTexWeights[gl_InvocationID] = vec3(0.0, 1.0, 0.0);
-    }
-    else if (gl_InvocationID == 2) { 
-        tc_fragTexWeights[gl_InvocationID] = vec3(0.0, 0.0, 1.0);
-    }
+    int u0 = i0;
+    int u1 = (i1 == u0) ? -1 : i1;
+    int u2;
+    if (i2 == u0 || (u1 != -1 && i2 == u1)) u2 = -1;
+    else u2 = i2;
+
+    // Store the unique indices (use -1 for empty slots)
+    tc_fragTexIndex[gl_InvocationID] = ivec3(u0, u1, u2);
+
+    // Map this corner's barycentric basis into the matching unique-slot
+    int myIdx = pc_inTexIndex[gl_InvocationID];
+    vec3 texWeights = vec3(0.0);
+    if (myIdx == u0) texWeights.x = 1.0;
+    else if (myIdx == u1) texWeights.y = 1.0;
+    else if (myIdx == u2) texWeights.z = 1.0;
+
+    tc_fragTexWeights[gl_InvocationID] = texWeights;
     tc_fragLocalPos[gl_InvocationID] = pc_inLocalPos[gl_InvocationID];
     tc_fragLocalNormal[gl_InvocationID] = pc_inLocalNormal[gl_InvocationID];
     tc_fragTangent[gl_InvocationID] = pc_inTangent[gl_InvocationID];

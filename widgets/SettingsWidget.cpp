@@ -111,7 +111,36 @@ void SettingsWidget::render() {
         ImGui::Separator();
         ImGui::Text("Debug Visualisation");
         ImGui::Separator();
-        const char* debugItems[] = { "Default Render", "Fragment Normal", "World Normal", "UV Coordinates", "Tangent (TBN)", "Bitangent (TBN)", "Normal (TBN)", "Albedo Texture", "Normal Texture", "Bump Texture", "Height Pre-Projection", "Normal from Derivatives", "Light Vector (RGB)", "N·L (grayscale)", "Shadow Diagnostics", "Triplanar Weights", "Tex Indices (RGB)", "Barycentric Weights (RGB)", "Albedo Samples (R/G/B)", "Triplanar Albedo", "Per-Projection Triplanar Heights (RGB)", "UV vs Triplanar Height Diff", "Triplanar Normal", "Per-Projection Triplanar Normals (RGB)", "UV vs Triplanar Normal Diff", "Triplanar Bump (Height)", "Per-Projection Triplanar Bump (RGB)", "UV vs Triplanar Bump Diff" };
+        const char* debugItems[] = { 
+            "Default Render", 
+            "Fragment Normal", 
+            "World Normal", 
+            "UV Coordinates", 
+            "Tangent (TBN)", 
+            "Bitangent (TBN)", 
+            "Normal (TBN)", 
+            "Albedo Texture", 
+            "Normal Texture", 
+            "Bump Texture", 
+            "Height Pre-Projection", 
+            "Normal from Derivatives", 
+            "Light Vector (RGB)", 
+            "N·L (grayscale)", 
+            "Shadow Diagnostics", 
+            "Triplanar Weights", 
+            "Tex Indices (RGB)", 
+            "Tex Weights (RGB)", 
+            "Albedo Samples (R/G/B)", 
+            "Triplanar Albedo", 
+            "Per-Projection Triplanar Heights (RGB)", 
+            "UV vs Triplanar Height Diff", 
+            "Triplanar Normal", 
+            "Per-Projection Triplanar Normals (RGB)", 
+            "UV vs Triplanar Normal Diff", 
+            "Triplanar Bump (Height)", 
+            "Per-Projection Triplanar Bump (RGB)", 
+            "UV vs Triplanar Bump Diff" 
+        };
         int current = debugMode;
         if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {
             debugMode = current;
