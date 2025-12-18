@@ -75,7 +75,8 @@ uint Allocator<T>::getIndex(T* ptr) {
 
     std::shared_lock lock(mutex); // multiple allowed
 
-    for (auto &b : blocks) {
+    for (auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
+        auto &b = *it;
         if (ptr >= b.data && ptr < b.data + blockSize) {
             return static_cast<uint>(b.startIndex + (ptr - b.data));
         }
