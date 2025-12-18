@@ -59,7 +59,8 @@ void Allocator<T>::deallocate(T* ptr) {
     #endif
     // check pointer belongs to a block
     bool valid = false;
-    for (auto &b : blocks) {
+    for (auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
+        auto &b = *it;
         if (ptr >= b.data && ptr < b.data + blockSize) { valid = true; break; }
     }
     assert(valid && "Pointer does not belong to allocator");
