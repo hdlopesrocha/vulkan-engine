@@ -374,6 +374,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             updateDescriptorSet(globalMatDS, { matWrite });
             // Expose via VulkanApp helper for other subsystems
             setMaterialDescriptorSet(globalMatDS);
+                // register for runtime inspection
+                registerDescriptorSet(globalMatDS);
         }
 
         // single main descriptor set (one set is sufficient when using texture arrays)
@@ -397,19 +399,19 @@ class MyApp : public VulkanApp, public IEventHandler {
             // main descriptor set
             VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
             // create main descriptor set (create once, reuse)
-            if (descriptorSet == VK_NULL_HANDLE) {
-                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, mainUniform, false, nullptr, 0);
-                descriptorSet = ds;
-            }
+                if (descriptorSet == VK_NULL_HANDLE) {
+                    VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, mainUniform, false, nullptr, 0);
+                    descriptorSet = ds;
+                    registerDescriptorSet(descriptorSet);
+                }
 
             // shadow descriptor set (create only once, reuse globally)
-            if (shadowDescriptorSet == VK_NULL_HANDLE) {
-                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniform, false, nullptr, 0);
-                shadowDescriptorSet = sds;
-            }
+                if (shadowDescriptorSet == VK_NULL_HANDLE) {
+                    VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniform, false, nullptr, 0);
+                    shadowDescriptorSet = sds;
+                    registerDescriptorSet(shadowDescriptorSet);
+                }
         }
-
-        // Sphere-specific descriptor sets removed; spheres use the single `descriptorSet`/`shadowDescriptorSet`.
 
         // If texture arrays are allocated, overwrite bindings 1..3 in descriptor sets
         // to point to the global texture arrays (sampler2DArray) so shaders can index by layer.
@@ -430,10 +432,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = shadowDescriptorSet; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
                 updateDescriptorSet(shadowDescriptorSet, { w1, w2, w3 });
             }
-            // Sphere-specific descriptor updates removed; per-material descriptor sets were already updated above.
         }
-
-    
 
         // build ground plane mesh (20x20 units) and keep editable texture index
         auto plane = std::make_unique<PlaneModel>();

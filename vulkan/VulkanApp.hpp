@@ -33,6 +33,8 @@ class VulkanApp {
     // Global material descriptor set (bound once and updated when materials change)
     VkDescriptorSet materialDescriptorSet = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    // Registered descriptor sets for runtime inspection (widgets can read these)
+    std::vector<VkDescriptorSet> registeredDescriptorSets;
     // depth resources
     VkImage depthImage = VK_NULL_HANDLE;
     VkDeviceMemory depthImageMemory = VK_NULL_HANDLE;
@@ -118,6 +120,8 @@ protected:
         VkDescriptorSet createDescriptorSet(VkDescriptorSetLayout layout);
         VkDescriptorSet createMaterialDescriptorSet();
         void updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors);
+        void registerDescriptorSet(VkDescriptorSet ds) { if (ds != VK_NULL_HANDLE) registeredDescriptorSets.push_back(ds); }
+        const std::vector<VkDescriptorSet>& getRegisteredDescriptorSets() const { return registeredDescriptorSets; }
         VkDescriptorSetLayout getMaterialDescriptorSetLayout() const { return materialDescriptorSetLayout; }
         void setMaterialDescriptorSet(VkDescriptorSet ds) { materialDescriptorSet = ds; }
         VkDescriptorSet getMaterialDescriptorSet() const { return materialDescriptorSet; }

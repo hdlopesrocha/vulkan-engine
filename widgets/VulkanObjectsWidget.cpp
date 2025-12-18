@@ -56,5 +56,19 @@ void VulkanObjectsWidget::render() {
     ImGui::Text("DescriptorPool: %s", handleToString(reinterpret_cast<uint64_t>(app->getDescriptorPool()), showHex).c_str());
     ImGui::Text("ImGui DescriptorPool: %s", handleToString(reinterpret_cast<uint64_t>(app->getImGuiDescriptorPool()), showHex).c_str());
 
+    const auto &ds = app->getRegisteredDescriptorSets();
+    if (ImGui::TreeNode("Descriptor Sets")) {
+        if (ds.empty()) {
+            ImGui::TextUnformatted("(none registered)");
+        } else {
+            for (size_t i = 0; i < ds.size(); ++i) {
+                ImGui::Bullet(); ImGui::SameLine();
+                std::string label = "Set "; label += std::to_string(i);
+                ImGui::Text("%s: %s", label.c_str(), handleToString(reinterpret_cast<uint64_t>(ds[i]), showHex).c_str());
+            }
+        }
+        ImGui::TreePop();
+    }
+
     ImGui::End();
 }

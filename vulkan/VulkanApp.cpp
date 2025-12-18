@@ -1606,6 +1606,27 @@ void VulkanApp::recreateSwapchain() {
     createFramebuffers();
     createCommandBuffers();
 
+    // Re-create ImGui Vulkan backend objects so they use the updated swapchain image count.
+    // ImGui_ImplVulkan_Init stores internal arrays sized by ImageCount; when the swapchain
+    // changes we must reinit the backend (but keep the ImGui context and descriptor pool).
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplVulkan_InitInfo init_info{};
+    init_info.Instance = instance;
+    init_info.PhysicalDevice = physicalDevice;
+    init_info.Device = device;
+    init_info.QueueFamily = findQueueFamilies(physicalDevice).graphicsFamily.value();
+    init_info.Queue = graphicsQueue;
+    init_info.PipelineCache = VK_NULL_HANDLE;
+    init_info.DescriptorPool = imguiDescriptorPool;
+    init_info.MinImageCount = 2;
+    init_info.ImageCount = static_cast<uint32_t>(swapchainImages.size());
+    init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    init_info.Allocator = nullptr;
+    ImGui_ImplVulkan_Init(&init_info, renderPass);
+    // Re-upload fonts (creates/destroys temporary upload objects)
+    ImGui_ImplVulkan_CreateFontsTexture();
+    ImGui_ImplVulkan_DestroyFontsTexture();
+
     framebufferResized = false;
 }
 
