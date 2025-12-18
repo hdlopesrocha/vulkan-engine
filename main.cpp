@@ -132,8 +132,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Global uniform buffers: one for main pass, one for shadow pass, one for sky/sphere
         Buffer mainUniform;
         // Per-model-instance descriptor sets (no per-instance uniform buffers)
-        std::vector<VkDescriptorSet> instanceDescriptorSets;
-        std::vector<VkDescriptorSet> instanceShadowDescriptorSets;
+        // (removed — descriptor sets are now global per-material)
         // Additional per-texture descriptor sets for spheres
         std::vector<VkDescriptorSet> sphereDescriptorSets;
         // Global uniforms for shadow and sky
@@ -533,33 +532,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 glm::mat4 sphereModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, sphereCenterY, z));
                 modelObjects.emplace_back(std::make_unique<Model3D>(spherePtr, meshVBOs.back(), sphereModel));
             }
-            // Create per-model-instance descriptor sets (use global uniform buffers)
-            instanceDescriptorSets.clear();
-            instanceShadowDescriptorSets.clear();
-            instanceDescriptorSets.resize(modelObjects.size(), VK_NULL_HANDLE);
-            instanceShadowDescriptorSets.resize(modelObjects.size(), VK_NULL_HANDLE);
-            {
-                DescriptorSetBuilder dsBuilder(this, &shadowMapper);
-                for (size_t mi = 0; mi < modelObjects.size(); ++mi) {
-                    Model3D* m = modelObjects[mi].get();
-                    if (!m || !m->mesh) continue;
-                    // determine triple index from mesh vertex texIndex (plane was built with editableIndex)
-                    int texIdx = 0;
-                    if (!m->mesh->getVertices().empty()) texIdx = m->mesh->getVertices()[0].texIndex;
-                    if (texIdx < 0 || static_cast<size_t>(texIdx) >= materials.size()) texIdx = 0;
-                    // transient Triple backed by the global texture arrays
-                    Triple tr;
-                    tr.albedo.view = textureArrayManager.albedoArray.view;
-                    tr.albedoSampler = textureArrayManager.albedoSampler;
-                    tr.normal.view = textureArrayManager.normalArray.view;
-                    tr.normalSampler = textureArrayManager.normalSampler;
-                    tr.height.view = textureArrayManager.bumpArray.view;
-                    tr.heightSampler = textureArrayManager.bumpSampler;
-                    // create descriptor sets bound to the global uniform buffers
-                    instanceDescriptorSets[mi] = dsBuilder.createMainDescriptorSet(tr, mainUniform, false, nullptr, 0);
-                    instanceShadowDescriptorSets[mi] = dsBuilder.createShadowDescriptorSet(tr, shadowUniform, false, nullptr, 0);
-                }
-            }
+            // Per-instance descriptor sets removed — use per-material/global descriptor sets instead.
             // Material SSBO is bound into a single global descriptor set; updateMaterials() will
             // refresh that set if it exists.
             updateMaterials();
@@ -872,11 +845,8 @@ class MyApp : public VulkanApp, public IEventHandler {
 
                 // Select a descriptor/uniform set for the object. Plane uses the editable texture index,
                 // other objects use the first available texture descriptor (index 0) if present.
-                // Use per-instance descriptor set / uniform buffer created during setup
-                VkDescriptorSet ds = instanceDescriptorSets.size() > mi ? instanceDescriptorSets[mi] : VK_NULL_HANDLE;
-                VkDescriptorSet sds = instanceShadowDescriptorSets.size() > mi ? instanceShadowDescriptorSets[mi] : VK_NULL_HANDLE;
-                // material index is encoded in mesh vertex `texIndex`; pass instance without materialIndex
-                modelManager.addInstance(m->mesh, vbo, transform, ds, sds);
+                // material index is encoded in mesh vertex `texIndex`; instances do not store descriptor sets
+                modelManager.addInstance(m->mesh, vbo, transform);
             }
             
             // First pass: Render shadow map (skip if shadows globally disabled)
@@ -1001,7 +971,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (wire && graphicsPipelineWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineWire);
                 else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
-                // Bind global material descriptor set (set 0) and per-instance descriptor set (set 1)
+                // Bind global material descriptor set (set 0) and per-material descriptor set (set 1)
                 VkDescriptorSet setsToBind[2];
                 uint32_t bindCount = 0;
                 VkDescriptorSet matDs = getMaterialDescriptorSet();
@@ -1014,7 +984,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                     int matIdx = instance.model->getVertices()[0].texIndex;
                     if (matIdx >= 0 && static_cast<size_t>(matIdx) < descriptorSets.size()) perTexDs = descriptorSets[static_cast<size_t>(matIdx)];
                 }
-                if (perTexDs == VK_NULL_HANDLE && instance.descriptorSet != VK_NULL_HANDLE) perTexDs = instance.descriptorSet;
+                // no per-instance fallback — per-material descriptor sets are used
                 if (perTexDs != VK_NULL_HANDLE) setsToBind[bindCount++] = perTexDs;
                 if (bindCount == 2) {
                     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 2, setsToBind, 0, nullptr);
