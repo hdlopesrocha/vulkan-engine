@@ -1,6 +1,7 @@
 #include "Tesselator.hpp"
 #include "Octree.hpp"
 #include "IteratorHandler.hpp"
+#include <cmath>
 
 
 Tesselator::Tesselator(long * count, ThreadContext * context): OctreeNodeTriangleHandler(count), context(context), geometry() {
@@ -49,6 +50,13 @@ void Tesselator::handle(Vertex &v0, Vertex &v1, Vertex &v2, bool reverse) {
             v0.texCoord = triplanarMapping(v0.position, plane)*triplanarScale;
             v1.texCoord = triplanarMapping(v1.position, plane)*triplanarScale;
             v2.texCoord = triplanarMapping(v2.position, plane)*triplanarScale;
+        }
+        // Compute per-triangle tangent (with handedness) and store in each vertex
+        {
+            //TOD: calculate tangents
+            v0.tangent = glm::vec4(0.0);
+            v1.tangent = glm::vec4(0.0);
+            v2.tangent = glm::vec4(0.0);
         }
         geometry.addTriangle(reverse ? v2 : v0, v1, reverse ? v0 : v2);
         ++(*count);

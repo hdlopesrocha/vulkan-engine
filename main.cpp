@@ -68,6 +68,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     // GPU buffers for the built meshes (parallel to `meshes`)
     VertexBufferObject skyVBO;
     VkPipeline graphicsPipelineWire = VK_NULL_HANDLE;
+    VkPipeline depthPrePassPipeline = VK_NULL_HANDLE;
     std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<SkySphere> skySphere;
     // materials list (replaces legacy TextureManager storage) - each entry corresponds
@@ -178,6 +179,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                     VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
                     VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
                 }
+                , VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, false, true, VK_COMPARE_OP_EQUAL
             );
 
             // Create wireframe variant (if device supports it), also includes tessellation stages
@@ -199,20 +201,49 @@ class MyApp : public VulkanApp, public IEventHandler {
                     VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
                     VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
                 },
-                VK_POLYGON_MODE_LINE
+                VK_POLYGON_MODE_LINE,
+                VK_CULL_MODE_BACK_BIT,
+                false, // depthWrite disabled for main pass (pre-pass handles depth)
+                true,  // colorWrite enabled
+                VK_COMPARE_OP_EQUAL
             );
 
             // Tessellation pipeline removed; tessellation is controlled inside the shader (main.tesc)
+
+            // Create sky pipeline via SkyRenderer
+            skyRenderer = std::make_unique<SkyRenderer>(this);
+            skyRenderer->init();
+
+            // Create a depth-only pre-pass pipeline (disable color writes)
+            depthPrePassPipeline = createGraphicsPipeline(
+                {
+                    vertexShader.info,
+                    tescShader.info,
+                    teseShader.info,
+                    fragmentShader.info
+                },
+                VkVertexInputBindingDescription { 
+                    0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
+                },
+                {
+                    VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+                    VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
+                    VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
+                    VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+                    VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
+                    VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
+                },
+                VK_POLYGON_MODE_FILL,
+                VK_CULL_MODE_BACK_BIT,
+                true, // depthWrite
+                false // colorWrite disabled for depth pre-pass
+            );
 
             // Destroy tessellation shader modules and vertex/fragment modules after pipeline creation
             vkDestroyShaderModule(getDevice(), teseShader.info.module, nullptr);
             vkDestroyShaderModule(getDevice(), tescShader.info.module, nullptr);
             vkDestroyShaderModule(getDevice(), fragmentShader.info.module, nullptr);
             vkDestroyShaderModule(getDevice(), vertexShader.info.module, nullptr);
-
-            // Create sky pipeline via SkyRenderer
-            skyRenderer = std::make_unique<SkyRenderer>(this);
-            skyRenderer->init();
         }
 
         // Now that pipelines (and the app pipeline layout) have been created, initialize shadow mapper
@@ -431,8 +462,8 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
         glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, worldUp);
         // Increase ortho size significantly to ensure all cubes and plane are captured
-        float orthoSize = 25.0f; // Much larger to be safe
-        glm::mat4 lightProjection = glm::ortho(-orthoSize, orthoSize, -orthoSize, orthoSize, 1.0f, 50.0f);
+        float orthoSize = 1024.0f; // Much larger to be safe
+        glm::mat4 lightProjection = glm::ortho(-orthoSize, orthoSize, -orthoSize, orthoSize, 1.0f, orthoSize);
         uboStatic.lightSpaceMatrix = lightProjection * lightView;
         
         // Initialize widgets
@@ -774,6 +805,36 @@ class MyApp : public VulkanApp, public IEventHandler {
         scissor.extent = { (uint32_t)getWidth(), (uint32_t)getHeight() };
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+        // --- Depth pre-pass: fill depth buffer with geometry depths (color writes disabled) ---
+        if (depthPrePassPipeline != VK_NULL_HANDLE) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
+            // Draw all instances to populate depth buffer
+            for (const auto& instance : visibleModels) {
+                const auto& vbo = instance->vbo;
+                VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
+                VkDeviceSize offsets[] = { 0 };
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+                UniformObject ubo = uboStatic;
+                ubo.viewProjection = projMat * viewMat;
+                updateUniformBuffer(mainUniform, &ubo, sizeof(UniformObject));
+
+                // Bind descriptor sets if available (material/global + per-texture)
+                VkDescriptorSet setsToBind[2];
+                uint32_t bindCount = 0;
+                VkDescriptorSet matDs = getMaterialDescriptorSet();
+                if (matDs != VK_NULL_HANDLE) setsToBind[bindCount++] = matDs;
+                VkDescriptorSet perTexDs = VK_NULL_HANDLE;
+                if (descriptorSet != VK_NULL_HANDLE) perTexDs = descriptorSet;
+                if (perTexDs != VK_NULL_HANDLE) setsToBind[bindCount++] = perTexDs;
+                if (bindCount > 0) vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, bindCount, setsToBind, 0, nullptr);
+
+                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance->model);
+                vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
+            }
+        }
+
         // --- Render sky sphere first: large sphere centered at camera ---
         if (skyRenderer && descriptorSet != VK_NULL_HANDLE) {
             if (skySphere) skySphere->update();
@@ -873,6 +934,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipeline, nullptr);
         if (graphicsPipelineWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineWire, nullptr);
+        if (depthPrePassPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), depthPrePassPipeline, nullptr);
         // Tessellation pipelines removed earlier; nothing to destroy here.
         if (skyRenderer) skyRenderer->cleanup();
         // texture cleanup via managers

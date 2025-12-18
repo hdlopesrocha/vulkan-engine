@@ -1217,7 +1217,7 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
     VkVertexInputBindingDescription bindingDescription,
     std::initializer_list<VkVertexInputAttributeDescription> descriptions,
-    VkPolygonMode polygonMode, VkCullModeFlagBits cullMode, bool depthWrite) {
+    VkPolygonMode polygonMode, VkCullModeFlagBits cullMode, bool depthWrite, bool colorWrite, VkCompareOp depthCompare) {
     
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages(stages);
 
@@ -1281,7 +1281,11 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
     VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    if (colorWrite) {
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    } else {
+        colorBlendAttachment.colorWriteMask = 0;
+    }
     colorBlendAttachment.blendEnable = VK_FALSE;
 
     VkPipelineColorBlendStateCreateInfo colorBlending{};
@@ -1320,7 +1324,7 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = VK_TRUE;
     depthStencil.depthWriteEnable = depthWrite ? VK_TRUE : VK_FALSE;
-    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthCompareOp = depthCompare;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
 
