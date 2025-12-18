@@ -16,8 +16,6 @@
 #include "vulkan/TextureTriple.hpp"
 #include "vulkan/AtlasManager.hpp"
 #include "utils/BillboardManager.hpp"
-#include "math/CubeModel.hpp"
-#include "math/PlaneModel.hpp"
 #include "math/SphereModel.hpp"
 #include "vulkan/EditableTextureSet.hpp"
 #include "widgets/AnimatedTextureWidget.hpp"
@@ -68,7 +66,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     
     // GPU buffers for the built meshes (parallel to `meshes`)
-    std::vector<VertexBufferObject> meshVBOs;
+    VertexBufferObject skyVBO;
     VkPipeline graphicsPipelineWire = VK_NULL_HANDLE;
     std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<SkySphere> skySphere;
@@ -99,7 +97,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     std::shared_ptr<SkyWidget> skyWidget;
     
     // Store meshes (owned by app but not direct attributes)
-    std::vector<std::unique_ptr<Mesh3D>> meshes;
+
     // Store simple model wrappers (mesh pointer + VBO reference + model matrix)
     std::vector<std::unique_ptr<Model3D>> modelObjects;
     // VBOs created asynchronously for requested scene nodes (heap-owned pointers)
@@ -432,15 +430,6 @@ class MyApp : public VulkanApp, public IEventHandler {
             }
         }
 
-        // build ground plane mesh (20x20 units) and keep editable texture index
-        auto plane = std::make_unique<PlaneModel>();
-        // Build plane using the editable texture index (pass as last parameter)
-        plane->build(20.0f, 20.0f, 1, 1, static_cast<float>(editableIndex));
-        VertexBufferObject planeVbo = VertexBufferObjectBuilder::create(this, *plane);
-
-        // Store plane mesh/vbo first so index 0/1 are reserved
-        meshes.push_back(std::move(plane));
-        meshVBOs.push_back(planeVbo);
 
         // Create per-material cube and sphere meshes (one pair per texture triple)
         size_t n = tripleCount;
@@ -454,48 +443,13 @@ class MyApp : public VulkanApp, public IEventHandler {
         modelObjects.clear();
         modelObjects.reserve(n * 2 + 1);
 
-        // Reserve space for meshes and VBOs to avoid reallocation invalidating references
-        meshVBOs.reserve(1 + 2 * n);
-        meshes.reserve(1 + 2 * n);
 
-        // Add plane as a Model3D wrapper (uses editable texture index)
-        glm::mat4 planeModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.5f, 0.0f));
-        modelObjects.emplace_back(std::make_unique<Model3D>( meshVBOs[0], planeModel));
+        // Build sphere mesh for this material
+        auto sphere = std::make_unique<SphereModel>();
+        sphere->build(0.5f, 32, 16, 0);
+        skyVBO = VertexBufferObjectBuilder::create(this, *sphere);
 
-        for (size_t i = 0; i < n; ++i) {
-            // Build a cube mesh whose per-face tex indices point to this material index
-            auto cube = std::make_unique<CubeModel>();
-            std::vector<float> faceTex(6, static_cast<float>(i));
-            cube->build(faceTex);
-            VertexBufferObject cubeVbo = VertexBufferObjectBuilder::create(this, *cube);
-
-            meshes.push_back(std::move(cube));
-            meshVBOs.push_back(cubeVbo);
-
-            // Position cube in a grid
-            int col = static_cast<int>(i % cols);
-            int row = static_cast<int>(i / cols);
-            float x = col * spacing - halfW;
-            float y = -1.0f; // Above the plane
-            float z = row * spacing - halfH;
-            glm::mat4 cubeModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, y, z));
-            modelObjects.emplace_back(std::make_unique<Model3D>(meshVBOs.back(), cubeModel));
-
-            // Build sphere mesh for this material
-            auto sphere = std::make_unique<SphereModel>();
-            sphere->build(0.5f, 32, 16, static_cast<float>(i));
-            VertexBufferObject sphereVbo = VertexBufferObjectBuilder::create(this, *sphere);
-            meshes.push_back(std::move(sphere));
-            meshVBOs.push_back(sphereVbo);
-
-            // Place sphere above cube
-            float sphereRadius = 0.5f;
-            float cubeHalfHeight = 0.5f;
-            float gap = 0.5f;
-            float sphereCenterY = y + cubeHalfHeight + sphereRadius + gap;
-            glm::mat4 sphereModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, sphereCenterY, z));
-            modelObjects.emplace_back(std::make_unique<Model3D>(meshVBOs.back(), sphereModel));
-        }
+        
         // Per-instance descriptor sets removed — use per-material/global descriptor sets instead.
         // Material SSBO is bound into a single global descriptor set; updateMaterials() will
         // refresh that set if it exists.
@@ -862,10 +816,9 @@ class MyApp : public VulkanApp, public IEventHandler {
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
         // --- Render sky sphere first: large sphere centered at camera ---
-        if (skyRenderer && meshes.size() > 2 && meshVBOs.size() > 2 && descriptorSet != VK_NULL_HANDLE) {
+        if (skyRenderer && descriptorSet != VK_NULL_HANDLE) {
             if (skySphere) skySphere->update();
-            const auto &vbo = meshVBOs[2];
-            skyRenderer->render(commandBuffer, vbo, descriptorSet, mainUniform, uboStatic, projMat, viewMat);
+            skyRenderer->render(commandBuffer, skyVBO, descriptorSet, mainUniform, uboStatic, projMat, viewMat);
         }
 
         // bind pipeline
@@ -967,13 +920,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         // legacy texture managers removed; arrays handle GPU textures now
         textureArrayManager.destroy(this);
         vegetationTextureArrayManager.destroy(this);
-        // vertex/index buffers cleanup - destroy GPU buffers created from the meshes
-        for (auto& vbo : meshVBOs) {
-            vbo.destroy(getDevice());
-        }
-        meshVBOs.clear();
-        meshes.clear();
-
+ 
         // destroy any dynamically created VBOs from async-loaded models
         for (auto &pv : dynamicMeshVBOs) {
             if (pv) pv->destroy(getDevice());
