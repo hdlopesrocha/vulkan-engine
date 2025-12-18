@@ -96,10 +96,6 @@ class MyApp : public VulkanApp, public IEventHandler {
     std::shared_ptr<BillboardCreator> billboardCreator;
     std::shared_ptr<SkyWidget> skyWidget;
     
-    // Store meshes (owned by app but not direct attributes)
-
-    // Store simple model wrappers (mesh pointer + VBO reference + model matrix)
-    std::vector<std::unique_ptr<Model3D>> modelObjects;
     // VBOs created asynchronously for requested scene nodes (heap-owned pointers)
     std::vector<std::unique_ptr<VertexBufferObject>> dynamicMeshVBOs;
     
@@ -107,18 +103,14 @@ class MyApp : public VulkanApp, public IEventHandler {
     size_t currentTextureIndex = 0;
     size_t editableTextureIndex = 0;  // Index of the editable texture triple in TextureManager
     size_t editableLayerIndex = SIZE_MAX; // Texture array layer index reserved for editable textures
-    // Cached material for the ground plane (captured at setup and updated on texture regenerate)
-    MaterialProperties planeMaterial;
-    
+
     // Shadow mapping
     ShadowMapper shadowMapper;
     
     // Light direction (controlled by LightWidget)
     glm::vec3 lightDirection = glm::normalize(glm::vec3(-1.0f, -1.0f, -1.0f));
-    glm::quat quaternion = Math::eulerToQuat(0, 0, 0);
     // Camera
-    // start the camera further back so multiple cubes are visible
-    Camera camera = Camera(glm::vec3(3456, 915, -750), quaternion);
+    Camera camera = Camera(glm::vec3(3456, 915, -750), Math::eulerToQuat(0, 0, 0));
     // Event manager for app-wide pub/sub
     EventManager eventManager;
     KeyboardPublisher keyboard;
@@ -297,8 +289,6 @@ class MyApp : public VulkanApp, public IEventHandler {
         editableTextures->init(this, 1024, 1024, "Editable Textures", &textureArrayManager);
         // EditableTextureSet no longer requires a TextureManager
         editableTextures->generateInitialTextures();
-        // Debug: dump first pixel of albedo to verify compute output
-        editableTextures->getAlbedo().debugDumpFirstPixel();
 
         // Create ImGui widget that wraps the Vulkan editable textures and add it to widget manager
         editableTexturesWidget = std::make_shared<AnimatedTextureWidget>(editableTextures, "Editable Textures");
@@ -325,8 +315,6 @@ class MyApp : public VulkanApp, public IEventHandler {
             1.0f   // triplanarScaleV
         };
         editableTextureIndex = editableIndex;  // Store for plane rendering
-        // Initialize cached plane material from the editable texture triple
-        planeMaterial = materials[editableIndex];
 
         // Allocate a layer in the texture arrays for this editable material and upload initial textures
         uint32_t editableLayer = textureArrayManager.create();
@@ -368,15 +356,11 @@ class MyApp : public VulkanApp, public IEventHandler {
             VkDescriptorBufferInfo materialBufInfo{ materialManager.getBuffer().buffer, 0, VK_WHOLE_SIZE };
             VkWriteDescriptorSet matWrite{}; matWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; matWrite.dstSet = globalMatDS; matWrite.dstBinding = 5; matWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; matWrite.descriptorCount = 1; matWrite.pBufferInfo = &materialBufInfo;
             updateDescriptorSet(globalMatDS, { matWrite });
-            // Expose via VulkanApp helper for other subsystems
             setMaterialDescriptorSet(globalMatDS);
-                // register for runtime inspection
-                registerDescriptorSet(globalMatDS);
+            registerDescriptorSet(globalMatDS);
         }
 
-        // single main descriptor set (one set is sufficient when using texture arrays)
         descriptorSet = VK_NULL_HANDLE;
-        // single global shadow descriptor set (one set is enough since we use texture arrays)
         shadowDescriptorSet = VK_NULL_HANDLE;
 
         // Use DescriptorSetBuilder to reduce repeated code
@@ -395,18 +379,18 @@ class MyApp : public VulkanApp, public IEventHandler {
             // main descriptor set
             VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
             // create main descriptor set (create once, reuse)
-                if (descriptorSet == VK_NULL_HANDLE) {
-                    VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, mainUniform, false, nullptr, 0);
-                    descriptorSet = ds;
-                    registerDescriptorSet(descriptorSet);
-                }
+            if (descriptorSet == VK_NULL_HANDLE) {
+                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, mainUniform, false, nullptr, 0);
+                descriptorSet = ds;
+                registerDescriptorSet(descriptorSet);
+            }
 
             // shadow descriptor set (create only once, reuse globally)
-                if (shadowDescriptorSet == VK_NULL_HANDLE) {
-                    VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniform, false, nullptr, 0);
-                    shadowDescriptorSet = sds;
-                    registerDescriptorSet(shadowDescriptorSet);
-                }
+            if (shadowDescriptorSet == VK_NULL_HANDLE) {
+                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniform, false, nullptr, 0);
+                shadowDescriptorSet = sds;
+                registerDescriptorSet(shadowDescriptorSet);
+            }
         }
 
         // If texture arrays are allocated, overwrite bindings 1..3 in descriptor sets
@@ -430,25 +414,10 @@ class MyApp : public VulkanApp, public IEventHandler {
             }
         }
 
-
-        // Create per-material cube and sphere meshes (one pair per texture triple)
-        size_t n = tripleCount;
-        if (n == 0) n = 1;
-        float spacing = 2.5f;
-        int cols = static_cast<int>(std::ceil(std::sqrt((float)n)));
-        int rows = static_cast<int>(std::ceil((float)n / cols));
-        float halfW = (cols - 1) * 0.5f * spacing;
-        float halfH = (rows - 1) * 0.5f * spacing;
-
-        modelObjects.clear();
-        modelObjects.reserve(n * 2 + 1);
-
-
         // Build sphere mesh for this material
         auto sphere = std::make_unique<SphereModel>();
         sphere->build(0.5f, 32, 16, 0);
         skyVBO = VertexBufferObjectBuilder::create(this, *sphere);
-
         
         // Per-instance descriptor sets removed — use per-material/global descriptor sets instead.
         // Material SSBO is bound into a single global descriptor set; updateMaterials() will
@@ -494,7 +463,6 @@ class MyApp : public VulkanApp, public IEventHandler {
                 textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), editableTextures->getBump(), 2);
             }
             updateMaterials();
-            planeMaterial = materials[editableIndex];
         });
         
         // Create other widgets
