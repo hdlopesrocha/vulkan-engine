@@ -9,9 +9,7 @@ SkySphere::~SkySphere() { cleanup(); }
 
 void SkySphere::init(SkyWidget* widget,
                      std::vector<VkDescriptorSet>& descriptorSets,
-                     std::vector<VkDescriptorSet>& shadowDescriptorSets,
-                     std::vector<VkDescriptorSet>& sphereDescriptorSets,
-                     std::vector<VkDescriptorSet>& shadowSphereDescriptorSets) {
+                     std::vector<VkDescriptorSet>& shadowDescriptorSets) {
     skyWidget = widget;
     VkDeviceSize sbSize = sizeof(SkyUniform);
 
@@ -59,14 +57,7 @@ void SkySphere::init(SkyWidget* widget,
         skyWrite.dstSet = ds;
         app->updateDescriptorSet(ds, { skyWrite });
     }
-    for (auto &ds : sphereDescriptorSets) {
-        skyWrite.dstSet = ds;
-        app->updateDescriptorSet(ds, { skyWrite });
-    }
-    for (auto &ds : shadowSphereDescriptorSets) {
-        skyWrite.dstSet = ds;
-        app->updateDescriptorSet(ds, { skyWrite });
-    }
+
 }
 
 void SkySphere::update() {

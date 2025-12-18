@@ -128,17 +128,15 @@ class MyApp : public VulkanApp, public IEventHandler {
     KeyboardPublisher keyboard;
     GamepadPublisher gamepad;
     // (managed by TextureManager)
-        std::vector<VkDescriptorSet> descriptorSets;
+        // descriptorSets declared below
         // Global uniform buffers: one for main pass, one for shadow pass, one for sky/sphere
         Buffer mainUniform;
+        Buffer shadowUniform;
         // Per-model-instance descriptor sets (no per-instance uniform buffers)
         // (removed — descriptor sets are now global per-material)
-        // Additional per-texture descriptor sets for spheres
-        std::vector<VkDescriptorSet> sphereDescriptorSets;
-        // Global uniforms for shadow and sky
-        Buffer shadowUniform;
+        // Additional per-texture descriptor sets
+        std::vector<VkDescriptorSet> descriptorSets;
         std::vector<VkDescriptorSet> shadowDescriptorSets;
-        std::vector<VkDescriptorSet> shadowSphereDescriptorSets;
         // Material manager for GPU-side packed materials
         MaterialManager materialManager;
         size_t materialCount = 0;
@@ -413,23 +411,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 shadowDescriptorSets[i] = sds;
             }
 
-            // Create per-texture descriptor sets and uniform buffers for sphere instances (one per texture triple)
-            sphereDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
-            shadowSphereDescriptorSets.resize(tripleCount, VK_NULL_HANDLE);
-            for (size_t i = 0; i < tripleCount; ++i) {
-                Triple tr;
-                tr.albedo.view = textureArrayManager.albedoArray.view;
-                tr.albedoSampler = textureArrayManager.albedoSampler;
-                tr.normal.view = textureArrayManager.normalArray.view;
-                tr.normalSampler = textureArrayManager.normalSampler;
-                tr.height.view = textureArrayManager.bumpArray.view;
-                tr.heightSampler = textureArrayManager.bumpSampler;
-                VkDeviceSize matElemSize = sizeof(glm::vec4) * 4;
-                VkDescriptorSet ds = dsBuilder.createSphereDescriptorSet(tr, mainUniform, false, nullptr, 0);
-                sphereDescriptorSets[i] = ds;
-                VkDescriptorSet sds = dsBuilder.createShadowSphereDescriptorSet(tr, shadowUniform, false, nullptr, 0);
-                shadowSphereDescriptorSets[i] = sds;
-            }
+            // Sphere-specific descriptor sets removed; spheres use the per-material `descriptorSets`/`shadowDescriptorSets`.
 
             // If texture arrays are allocated, overwrite bindings 1..3 in descriptor sets
             // to point to the global texture arrays (sampler2DArray) so shaders can index by layer.
@@ -450,18 +432,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                     VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = shadowDescriptorSets[i]; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
                     updateDescriptorSet(shadowDescriptorSets[i], { w1, w2, w3 });
                 }
-                for (size_t i = 0; i < sphereDescriptorSets.size(); ++i) {
-                    VkWriteDescriptorSet w1{}; w1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w1.dstSet = sphereDescriptorSets[i]; w1.dstBinding = 1; w1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w1.descriptorCount = 1; w1.pImageInfo = &albedoArrayInfo;
-                    VkWriteDescriptorSet w2{}; w2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w2.dstSet = sphereDescriptorSets[i]; w2.dstBinding = 2; w2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w2.descriptorCount = 1; w2.pImageInfo = &normalArrayInfo;
-                    VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = sphereDescriptorSets[i]; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
-                    updateDescriptorSet(sphereDescriptorSets[i], { w1, w2, w3 });
-                }
-                for (size_t i = 0; i < shadowSphereDescriptorSets.size(); ++i) {
-                    VkWriteDescriptorSet w1{}; w1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w1.dstSet = shadowSphereDescriptorSets[i]; w1.dstBinding = 1; w1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w1.descriptorCount = 1; w1.pImageInfo = &albedoArrayInfo;
-                    VkWriteDescriptorSet w2{}; w2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w2.dstSet = shadowSphereDescriptorSets[i]; w2.dstBinding = 2; w2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w2.descriptorCount = 1; w2.pImageInfo = &normalArrayInfo;
-                    VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = shadowSphereDescriptorSets[i]; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
-                    updateDescriptorSet(shadowSphereDescriptorSets[i], { w1, w2, w3 });
-                }
+                // Sphere-specific descriptor updates removed; per-material descriptor sets were already updated above.
             }
 
         
@@ -613,7 +584,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // Initialize sky manager which creates and binds the sky UBO into descriptor sets
             skySphere = std::make_unique<SkySphere>(this);
-            skySphere->init(skyWidget.get(), descriptorSets, shadowDescriptorSets, sphereDescriptorSets, shadowSphereDescriptorSets);
+            skySphere->init(skyWidget.get(), descriptorSets, shadowDescriptorSets);
             
             // Create vegetation atlas editor widget
             auto vegAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
@@ -901,10 +872,10 @@ class MyApp : public VulkanApp, public IEventHandler {
             vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
             // --- Render sky sphere first: large sphere centered at camera ---
-            if (skyRenderer && meshes.size() > 2 && meshVBOs.size() > 2 && !sphereDescriptorSets.empty()) {
+            if (skyRenderer && meshes.size() > 2 && meshVBOs.size() > 2 && !descriptorSets.empty()) {
                 if (skySphere) skySphere->update();
                 const auto &vbo = meshVBOs[2];
-                skyRenderer->render(commandBuffer, vbo, sphereDescriptorSets[0], mainUniform, uboStatic, projMat, viewMat);
+                skyRenderer->render(commandBuffer, vbo, descriptorSets[0], mainUniform, uboStatic, projMat, viewMat);
             }
 
             // bind pipeline
