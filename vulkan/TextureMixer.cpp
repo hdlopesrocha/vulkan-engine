@@ -659,9 +659,3 @@ void TextureMixer::generatePerlinNoiseWithParams(MixerParameters &params) {
 	// Update internal size if caller provided different dimensions
 	generatePerlinNoise(params);
 }
-
-void TextureMixer::generatePerlinNoiseForMap(MixerParameters &params, int map) {
-	if (map < 0 || map > 2) return;
-	// For simplicity use the unified triple-dispatch path which generates all maps.
-	generatePerlinNoise(params);
-}

@@ -102,7 +102,7 @@ void AnimatedTextureWidget::render() {
 
         if (paramsChanged) {
             // Regenerate only the currently active map to avoid updating all three editable textures
-            textures->generatePerlinNoiseForMap(mp, activeMap);
+            textures->generatePerlinNoiseWithParams(mp);
         }
     }
 

@@ -56,8 +56,6 @@ public:
 
     // Generate Perlin noise for a texture using explicit parameters (used by UI widget)
     void generatePerlinNoiseWithParams(MixerParameters &params);
-    // Generate a single map (0=albedo,1=normal,2=bump)
-    void generatePerlinNoiseForMap(MixerParameters &params, int map);
 
 private:
     VulkanApp* app = nullptr;

@@ -313,7 +313,6 @@ class MyApp : public VulkanApp, public IEventHandler {
         // generating initial textures. Use the first allocated layer as the default
         // editable layer for the widget previews.
         editableLayerIndex = editableLayerA;
-        printf("[Main] Using pre-allocated editable array layer %d for previews\n", editableLayerIndex);
         // Inform TextureMixer which layer to use for ImGui previews
         textureMixer->setEditableLayer(editableLayerIndex);
         // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
