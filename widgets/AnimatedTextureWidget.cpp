@@ -73,7 +73,7 @@ void AnimatedTextureWidget::render() {
 
         // If the selection changed, generate the Perlin preview for the newly selected mixer once
         if (previousIndex != currentMixerIndex) {
-            textures->generatePerlinNoiseWithParams(1024, 1024, mp);
+            textures->generatePerlinNoiseWithParams(mp);
         }
 
         ImGui::Separator();
@@ -102,7 +102,7 @@ void AnimatedTextureWidget::render() {
 
         if (paramsChanged) {
             // Regenerate only the currently active map to avoid updating all three editable textures
-            textures->generatePerlinNoiseForMap(1024, 1024, mp, activeMap);
+            textures->generatePerlinNoiseForMap(mp, activeMap);
         }
     }
 

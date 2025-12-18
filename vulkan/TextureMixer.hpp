@@ -55,9 +55,9 @@ public:
     const EditableTexture& getBump() const;
 
     // Generate Perlin noise for a texture using explicit parameters (used by UI widget)
-    void generatePerlinNoiseWithParams(int width, int height, MixerParameters &params);
+    void generatePerlinNoiseWithParams(MixerParameters &params);
     // Generate a single map (0=albedo,1=normal,2=bump)
-    void generatePerlinNoiseForMap(int width, int height, MixerParameters &params, int map);
+    void generatePerlinNoiseForMap(MixerParameters &params, int map);
 
 private:
     VulkanApp* app = nullptr;
@@ -65,7 +65,7 @@ private:
     EditableTexture albedo;
     EditableTexture normal;
     EditableTexture bump;
-
+    uint32_t width = 0, height = 0;
     // Optional reference to global texture arrays so compute can sample from them
     class TextureArrayManager* textureArrayManager = nullptr;
 
@@ -74,11 +74,12 @@ private:
     VkPipelineLayout computePipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout computeDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool computeDescriptorPool = VK_NULL_HANDLE;
+    // Single descriptor set that binds the three storage images (albedo, normal, bump)
+    VkDescriptorSet tripleComputeDescSet = VK_NULL_HANDLE;
+    // Per-map descriptor sets (allow generating a single map)
     VkDescriptorSet albedoComputeDescSet = VK_NULL_HANDLE;
     VkDescriptorSet normalComputeDescSet = VK_NULL_HANDLE;
     VkDescriptorSet bumpComputeDescSet = VK_NULL_HANDLE;
-    // Single descriptor set that binds the three storage images (albedo, normal, bump)
-    VkDescriptorSet tripleComputeDescSet = VK_NULL_HANDLE;
 
 
     // Callback function to notify when textures are generated
@@ -99,8 +100,9 @@ private:
 
 
     void createComputePipeline();
-    void createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet, int map);
     void createTripleComputeDescriptorSet();
-    void generatePerlinNoise(int width, int height, MixerParameters &params);
+    // Helper to create a descriptor set targeting a single editable texture as storage image
+    void createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet, int map);
+    void generatePerlinNoise(MixerParameters &params);
 };
 
