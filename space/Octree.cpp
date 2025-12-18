@@ -628,6 +628,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         node->setType(resultType);
         node->setChunk(isChunk);
         node->setDirty(true);
+        ++node->version;
         node->setSimplified(isSimplified);
         node->setLeaf(isLeaf);
     }

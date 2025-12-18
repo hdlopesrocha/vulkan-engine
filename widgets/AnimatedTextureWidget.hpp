@@ -2,15 +2,15 @@
 
 #include "Widget.hpp"
 #include <memory>
-#include "../vulkan/EditableTextureSet.hpp"
+#include "../vulkan/TextureMixer.hpp"
 
 class AnimatedTextureWidget : public Widget {
 public:
-    AnimatedTextureWidget(std::shared_ptr<EditableTextureSet> textures, const char* title = "Editable Textures");
+    AnimatedTextureWidget(std::shared_ptr<TextureMixer> textures, const char* title = "Editable Textures");
     void render() override;
 
 private:
-    std::shared_ptr<EditableTextureSet> textures;
+    std::shared_ptr<TextureMixer> textures;
 
     // UI state for Perlin parameters
     int perlinScale = 8;

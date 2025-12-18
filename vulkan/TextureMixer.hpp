@@ -10,16 +10,16 @@
 
 // Vulkan-only helper that manages compute pipelines and the EditableTexture instances.
 // UI is handled by `widgets::AnimatedTextureWidget`.
-class EditableTextureSet {
+class TextureMixer {
 public:
-    EditableTextureSet();
+    TextureMixer();
 
     // Pass optional TextureArrayManager so compute can sample from arrays
     // Backwards-compatible init: old callers that don't pass a TextureArrayManager
-    void init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName = "Editable Textures");
+    void init(VulkanApp* app, uint32_t width, uint32_t height);
 
     // New init that accepts an optional TextureArrayManager so compute can sample from arrays
-    void init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName, class TextureArrayManager* textureArrayManager);
+    void init(VulkanApp* app, uint32_t width, uint32_t height, class TextureArrayManager* textureArrayManager);
 
     // Set callback to be called after texture generation
     void setOnTextureGenerated(std::function<void()> callback);

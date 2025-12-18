@@ -32,7 +32,7 @@ void TextureViewer::render() {
 
     std::string tabBarId = std::string("tabs_") + std::to_string(currentIndex);
     if (ImGui::BeginTabBar(tabBarId.c_str())) {
-        const float previewSize = 128.0f; // 25% of previous size
+        const float previewSize = 256.0f; // 25% of previous size
         if (ImGui::BeginTabItem("Albedo")) {
             ImTextureID tex = arrayManager->getImTexture(currentIndex, 0);
             if (tex) ImGui::Image(tex, ImVec2(previewSize, previewSize));

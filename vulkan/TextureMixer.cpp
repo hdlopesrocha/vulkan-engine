@@ -1,4 +1,4 @@
-#include "EditableTextureSet.hpp"
+#include "TextureMixer.hpp"
 #include "VulkanApp.hpp"
 #include "../utils/FileReader.hpp"
 #include "PerlinPushConstants.hpp"
@@ -6,17 +6,17 @@
 #include <algorithm>
 #include <stdexcept>
 
-EditableTextureSet::EditableTextureSet() {}
+TextureMixer::TextureMixer() {}
 
-EditableTexture& EditableTextureSet::getAlbedo() { return albedo; }
-EditableTexture& EditableTextureSet::getNormal() { return normal; }
-EditableTexture& EditableTextureSet::getBump() { return bump; }
+EditableTexture& TextureMixer::getAlbedo() { return albedo; }
+EditableTexture& TextureMixer::getNormal() { return normal; }
+EditableTexture& TextureMixer::getBump() { return bump; }
 
-const EditableTexture& EditableTextureSet::getAlbedo() const { return albedo; }
-const EditableTexture& EditableTextureSet::getNormal() const { return normal; }
-const EditableTexture& EditableTextureSet::getBump() const { return bump; }
+const EditableTexture& TextureMixer::getAlbedo() const { return albedo; }
+const EditableTexture& TextureMixer::getNormal() const { return normal; }
+const EditableTexture& TextureMixer::getBump() const { return bump; }
 
-void EditableTextureSet::init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName, TextureArrayManager* textureArrayManager) {
+void TextureMixer::init(VulkanApp* app, uint32_t width, uint32_t height, TextureArrayManager* textureArrayManager) {
 	this->app = app;
 	this->textureArrayManager = textureArrayManager;
 
@@ -30,25 +30,25 @@ void EditableTextureSet::init(VulkanApp* app, uint32_t width, uint32_t height, c
 }
 
 // Backwards-compatible overload: callers that don't pass a TextureArrayManager
-void EditableTextureSet::init(VulkanApp* app, uint32_t width, uint32_t height, const char* windowName) {
-	init(app, width, height, windowName, nullptr);
+void TextureMixer::init(VulkanApp* app, uint32_t width, uint32_t height) {
+	init(app, width, height, nullptr);
 }
 
 // setTextureManager removed — EditableTextureSet creates its own compute sampler
 // and compute pipeline during init
 
-void EditableTextureSet::setOnTextureGenerated(std::function<void()> callback) {
+void TextureMixer::setOnTextureGenerated(std::function<void()> callback) {
 	onTextureGeneratedCallback = callback;
 }
 
-void EditableTextureSet::generateInitialTextures() {
+void TextureMixer::generateInitialTextures() {
 	printf("Generating initial textures (Albedo, Normal, Bump)...\n");
 	generatePerlinNoise(albedo);
 	generatePerlinNoise(normal);
 	generatePerlinNoise(bump);
 }
 
-void EditableTextureSet::cleanup() {
+void TextureMixer::cleanup() {
 	albedo.cleanup();
 	normal.cleanup();
 	bump.cleanup();
@@ -77,7 +77,7 @@ void EditableTextureSet::cleanup() {
 }
 
 
-void EditableTextureSet::createComputePipeline() {
+void TextureMixer::createComputePipeline() {
 	// Descriptor layout: three storage images (albedo, normal, bump) and three sampler arrays
 	VkDescriptorSetLayoutBinding bindings[6] = {};
 
@@ -184,7 +184,7 @@ void EditableTextureSet::createComputePipeline() {
 	albedoComputeDescSet = normalComputeDescSet = bumpComputeDescSet = tripleComputeDescSet;
 }
 
-void EditableTextureSet::createTripleComputeDescriptorSet() {
+void TextureMixer::createTripleComputeDescriptorSet() {
 	VkDescriptorSetAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	allocInfo.descriptorPool = computeDescriptorPool;
@@ -285,7 +285,7 @@ void EditableTextureSet::createTripleComputeDescriptorSet() {
 	vkUpdateDescriptorSets(app->getDevice(), 6, writes, 0, nullptr);
 }
 
-VkDescriptorSet EditableTextureSet::getPreviewDescriptor(int map) {
+VkDescriptorSet TextureMixer::getPreviewDescriptor(int map) {
 	if (textureArrayManager && editableLayer != UINT32_MAX) {
 		ImTextureID id = textureArrayManager->getImTexture(editableLayer, map);
 		return (VkDescriptorSet)id;
@@ -296,7 +296,7 @@ VkDescriptorSet EditableTextureSet::getPreviewDescriptor(int map) {
 	return bump.getImGuiDescriptorSet();
 }
 
-void EditableTextureSet::createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet) {
+void TextureMixer::createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet) {
 	VkDescriptorSetAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	allocInfo.descriptorPool = computeDescriptorPool;
@@ -345,7 +345,7 @@ void EditableTextureSet::createComputeDescriptorSet(EditableTexture& texture, Vk
 	vkUpdateDescriptorSets(app->getDevice(), 3, writes, 0, nullptr);
 }
 
-void EditableTextureSet::generatePerlinNoise(EditableTexture& texture) {
+void TextureMixer::generatePerlinNoise(EditableTexture& texture) {
 	// generate regardless of external texture lists
 
 	// We now perform a single dispatch that writes all three images (albedo, normal, bump)
@@ -436,7 +436,7 @@ void EditableTextureSet::generatePerlinNoise(EditableTexture& texture) {
 	}
 }
 
-void EditableTextureSet::generatePerlinNoiseWithParams(EditableTexture& texture, float scale, float octaves, float persistence, float lacunarity, float brightness, float contrast, float time, uint32_t seed) {
+void TextureMixer::generatePerlinNoiseWithParams(EditableTexture& texture, float scale, float octaves, float persistence, float lacunarity, float brightness, float contrast, float time, uint32_t seed) {
 	// Temporarily override internal parameters and invoke generator
 	float oldScale = perlinScale;
 	float oldOctaves = perlinOctaves;

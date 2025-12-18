@@ -17,7 +17,7 @@
 #include "vulkan/AtlasManager.hpp"
 #include "utils/BillboardManager.hpp"
 #include "math/SphereModel.hpp"
-#include "vulkan/EditableTextureSet.hpp"
+#include "vulkan/TextureMixer.hpp"
 #include "widgets/AnimatedTextureWidget.hpp"
 #include "vulkan/ShadowMapper.hpp"
 #include "widgets/WidgetManager.hpp"
@@ -90,7 +90,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     
     // Widgets (shared pointers for widget manager)
     std::shared_ptr<TextureViewer> textureViewer;
-    std::shared_ptr<EditableTextureSet> editableTextures; // Vulkan compute + textures
+    std::shared_ptr<TextureMixer> textureMixer; // Vulkan compute + textures
     std::shared_ptr<AnimatedTextureWidget> editableTexturesWidget; // ImGui wrapper
     std::shared_ptr<SettingsWidget> settingsWidget;
     std::shared_ptr<BillboardCreator> billboardCreator;
@@ -101,7 +101,6 @@ class MyApp : public VulkanApp, public IEventHandler {
     
     // UI: currently selected texture triple for preview
     size_t currentTextureIndex = 0;
-    size_t editableTextureIndex = 0;  // Index of the editable texture triple in TextureManager
     size_t editableLayerIndex = SIZE_MAX; // Texture array layer index reserved for editable textures
 
     // Shadow mapping
@@ -134,6 +133,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Subscribe camera and app to event manager
         eventManager.subscribe(&camera);
         eventManager.subscribe(this);
+        visibleModels.reserve(1000);
 
         // Use ImGui dark theme for a darker UI appearance
         ImGui::StyleColorsDark();
@@ -250,26 +250,33 @@ class MyApp : public VulkanApp, public IEventHandler {
             textureArrayManager.load(const_cast<char*>(files[0]), const_cast<char*>(files[1]), const_cast<char*>(files[2]));
         }
 
+        // Add editable textures as an entry in `materials` and keep their images managed by the EditableTextureSet
+        size_t editableIndex = materials.size();
+        // Apply editable material properties in a single-line initializer
+        materials.push_back(MaterialProperties{ false, false, 0.2f, 16.0f, 0.5f, 0.05f, 32.0f, 0.0f, 0.0f, false, 1.0f, 1.0f});
+
+        // Initialize Vulkan-side editable textures BEFORE creating descriptor sets
+        textureMixer = std::make_shared<TextureMixer>();
+        textureMixer->init(this, 1024, 1024, &textureArrayManager);
+        textureMixer->generateInitialTextures();
+
+
         // Load vegetation textures (albedo/normal/opacity triples) and initialize MaterialProperties
         // Note: We use the height slot for opacity masks
         const std::vector<std::pair<std::array<const char*,3>, MaterialProperties>> vegSpecs = {
-            {{"textures/vegetation/foliage_color.jpg", "textures/vegetation/foliage_normal.jpg", "textures/vegetation/foliage_opacity.jpg"}, MaterialProperties{true, false, 0.0f, 1.0f, 0.3f, 0.3f, 8.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
-            {{"textures/vegetation/grass_color.jpg",   "textures/vegetation/grass_normal.jpg",   "textures/vegetation/grass_opacity.jpg"},   MaterialProperties{true, false, 0.0f, 1.0f, 0.35f, 0.3f, 8.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
-            {{"textures/vegetation/wild_color.jpg",    "textures/vegetation/wild_normal.jpg",    "textures/vegetation/wild_opacity.jpg"},    MaterialProperties{true, false, 0.0f, 1.0f, 0.32f, 0.3f, 8.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}}
+            {{"textures/vegetation/foliage_color.jpg", "textures/vegetation/foliage_normal.jpg", "textures/vegetation/foliage_opacity.jpg"}, MaterialProperties{false, false, 0.0f, 1.0f, 0.3f, 0.3f, 8.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
+            {{"textures/vegetation/grass_color.jpg",   "textures/vegetation/grass_normal.jpg",   "textures/vegetation/grass_opacity.jpg"},   MaterialProperties{false, false, 0.0f, 1.0f, 0.35f, 0.3f, 8.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
+            {{"textures/vegetation/wild_color.jpg",    "textures/vegetation/wild_normal.jpg",    "textures/vegetation/wild_opacity.jpg"},    MaterialProperties{false, false, 0.0f, 1.0f, 0.32f, 0.3f, 8.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}}
         };
 
         // allocate vegetation GPU texture arrays sized to the number of veg layers
         vegetationTextureArrayManager.allocate(static_cast<uint32_t>(vegSpecs.size()), 1024, 1024, this);
         // append vegetation materials to `materials` and load texture data into vegetation arrays
-        size_t vegBase = materials.size();
         for (const auto &entry : vegSpecs) {
             const auto &files = entry.first;
             const auto &mp = entry.second;
             materials.push_back(mp);
             vegetationTextureArrayManager.load(const_cast<char*>(files[0]), const_cast<char*>(files[1]), const_cast<char*>(files[2]));
-        }
-        for (size_t vi = vegBase; vi < materials.size(); ++vi) {
-            materials[vi].mappingMode = false;
         }
 
         // Auto-detect tiles from vegetation opacity maps
@@ -283,48 +290,23 @@ class MyApp : public VulkanApp, public IEventHandler {
         int wildTiles = vegetationAtlasManager.autoDetectTiles(2, "textures/vegetation/wild_opacity.jpg", 10);
         std::cout << "  Wild: detected " << wildTiles << " tiles" << std::endl;
 
-        // Initialize Vulkan-side editable textures BEFORE creating descriptor sets
-        editableTextures = std::make_shared<EditableTextureSet>();
-        // Provide the global TextureArrayManager so compute shaders can sample from arrays
-        editableTextures->init(this, 1024, 1024, "Editable Textures", &textureArrayManager);
-        // EditableTextureSet no longer requires a TextureManager
-        editableTextures->generateInitialTextures();
-
         // Create ImGui widget that wraps the Vulkan editable textures and add it to widget manager
-        editableTexturesWidget = std::make_shared<AnimatedTextureWidget>(editableTextures, "Editable Textures");
+        editableTexturesWidget = std::make_shared<AnimatedTextureWidget>(textureMixer, "Editable Textures");
         widgetManager.addWidget(editableTexturesWidget);
         // Show the editable textures widget by default so users see the previews on startup
         //editableTexturesWidget->show();
 
-        // Add editable textures as an entry in `materials` and keep their images managed by the EditableTextureSet
-        size_t editableIndex = materials.size();
-        materials.push_back(MaterialProperties{});
-        // Apply editable material properties in a single-line initializer
-        materials[editableIndex] = MaterialProperties{
-            false,  // mappingMode (none)
-            false, // invertHeight
-            0.2f,  // tessHeightScale (unused)
-            16.0f, // tessLevel (unused)
-            0.5f, // ambientFactor
-            0.05f,  // specularStrength
-            32.0f, // shininess
-            0.0f,  // padding1
-            0.0f,  // padding2
-            false, // triplanar
-            1.0f,  // triplanarScaleU
-            1.0f   // triplanarScaleV
-        };
-        editableTextureIndex = editableIndex;  // Store for plane rendering
+        
 
         // Allocate a layer in the texture arrays for this editable material and upload initial textures
         uint32_t editableLayer = textureArrayManager.create();
         editableLayerIndex = editableLayer;
         printf("[Main] Allocated texture array layer %u for editable textures (material index %zu)\n", editableLayer, editableIndex);
-        textureArrayManager.updateLayerFromEditableMap(editableLayer, editableTextures->getAlbedo(), 0);
-        textureArrayManager.updateLayerFromEditableMap(editableLayer, editableTextures->getNormal(), 1);
-        textureArrayManager.updateLayerFromEditableMap(editableLayer, editableTextures->getBump(), 2);
+        textureArrayManager.updateLayerFromEditableMap(editableLayer, textureMixer->getAlbedo(), 0);
+        textureArrayManager.updateLayerFromEditableMap(editableLayer, textureMixer->getNormal(), 1);
+        textureArrayManager.updateLayerFromEditableMap(editableLayer, textureMixer->getBump(), 2);
         // Inform EditableTextureSet which layer was reserved so the widget can show sRGB preview from array
-        editableTextures->setEditableLayer(editableLayer);
+        textureMixer->setEditableLayer(editableLayer);
         // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
         if (!loadedIndices.empty()) currentTextureIndex = loadedIndices[0];
         
@@ -454,13 +436,13 @@ class MyApp : public VulkanApp, public IEventHandler {
         widgetManager.addWidget(textureViewer);
         
         // Hook Vulkan editable texture regeneration callback so materials are refreshed
-        editableTextures->setOnTextureGenerated([this, editableIndex]() {
+        textureMixer->setOnTextureGenerated([this, editableIndex]() {
             printf("Editable textures regenerated (index %zu)\n", editableIndex);
             // Update texture arrays so shaders sample the new images
             if (editableLayerIndex != SIZE_MAX) {
-                textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), editableTextures->getAlbedo(), 0);
-                textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), editableTextures->getNormal(), 1);
-                textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), editableTextures->getBump(), 2);
+                textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), textureMixer->getAlbedo(), 0);
+                textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), textureMixer->getNormal(), 1);
+                textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), textureMixer->getBump(), 2);
             }
             updateMaterials();
         });
@@ -909,7 +891,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Sky UBO is managed by SkySphere and cleaned up there.
         
         // editable textures cleanup
-        if (editableTextures) editableTextures->cleanup();
+        if (textureMixer) textureMixer->cleanup();
         
         // billboard creator cleanup
         if (billboardCreator) billboardCreator->cleanup();
