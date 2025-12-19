@@ -8,7 +8,7 @@ void CameraWidget::render() {
 		return;
 	}
 
-	ImGui::DragFloat("Move Speed", &camera->speed, 0.1f, 0.0f, 50.0f);
+	ImGui::DragFloat("Move Speed", &camera->speed, 0.1f, 0.0f, 512.0f);
 	float angDeg = glm::degrees(camera->angularSpeedRad);
 	if (ImGui::SliderFloat("Angular Speed (deg/s)", &angDeg, 1.0f, 360.0f)) {
 		camera->angularSpeedRad = glm::radians(angDeg);

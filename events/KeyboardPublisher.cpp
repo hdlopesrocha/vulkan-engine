@@ -20,8 +20,9 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
     glm::vec3 up = cam.getUp();
     glm::vec3 right = cam.getRight();
 
-    float velocity = moveSpeed * deltaTime;
-    float angDeg = angularSpeedDeg * deltaTime;
+    // Use Camera's configured speeds so UI changes in CameraWidget take effect.
+    float velocity = cam.speed * deltaTime;
+    float angDeg = glm::degrees(cam.angularSpeedRad) * deltaTime;
     float rotSign = flipRotation ? -1.0f : 1.0f;
 
     // Translation keys (continuous while held)
