@@ -181,6 +181,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                 }
                 , VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, false, true, VK_COMPARE_OP_EQUAL
             );
+            // Expose the main graphics pipeline to helpers so they can reuse it
+            setAppGraphicsPipeline(graphicsPipeline);
 
             // Create wireframe variant (if device supports it), also includes tessellation stages
             graphicsPipelineWire = createGraphicsPipeline(

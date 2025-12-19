@@ -32,10 +32,6 @@ void ShadowMapper::cleanup() {
         ImGui_ImplVulkan_RemoveTexture(shadowMapImGuiDescSet);
         shadowMapImGuiDescSet = VK_NULL_HANDLE;
     }
-    if (shadowPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device, shadowPipeline, nullptr);
-        shadowPipeline = VK_NULL_HANDLE;
-    }
     // shadow pipeline uses the main app's pipeline layout; don't destroy it here
     // shadow uses the main app's descriptor set layout; do not destroy it here
     if (shadowFramebuffer != VK_NULL_HANDLE) {
@@ -54,13 +50,25 @@ void ShadowMapper::cleanup() {
         vkDestroyImageView(device, shadowMapView, nullptr);
         shadowMapView = VK_NULL_HANDLE;
     }
+    if (shadowColorImageView != VK_NULL_HANDLE) {
+        vkDestroyImageView(device, shadowColorImageView, nullptr);
+        shadowColorImageView = VK_NULL_HANDLE;
+    }
     if (shadowMapImage != VK_NULL_HANDLE) {
         vkDestroyImage(device, shadowMapImage, nullptr);
         shadowMapImage = VK_NULL_HANDLE;
     }
+    if (shadowColorImage != VK_NULL_HANDLE) {
+        vkDestroyImage(device, shadowColorImage, nullptr);
+        shadowColorImage = VK_NULL_HANDLE;
+    }
     if (shadowMapMemory != VK_NULL_HANDLE) {
         vkFreeMemory(device, shadowMapMemory, nullptr);
         shadowMapMemory = VK_NULL_HANDLE;
+    }
+    if (shadowColorImageMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, shadowColorImageMemory, nullptr);
+        shadowColorImageMemory = VK_NULL_HANDLE;
     }
 }
 
@@ -142,11 +150,67 @@ void ShadowMapper::createShadowMap() {
         shadowMapView, 
         VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
     );
+
+    // Create a transient color image so the shadow renderpass has a color attachment
+    VkFormat colorFormat = vulkanApp->getSwapchainImageFormat();
+    VkImageCreateInfo colorInfo{};
+    colorInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    colorInfo.imageType = VK_IMAGE_TYPE_2D;
+    colorInfo.extent.width = shadowMapSize;
+    colorInfo.extent.height = shadowMapSize;
+    colorInfo.extent.depth = 1;
+    colorInfo.mipLevels = 1;
+    colorInfo.arrayLayers = 1;
+    colorInfo.format = colorFormat;
+    colorInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    colorInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    colorInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateImage(device, &colorInfo, nullptr, &shadowColorImage) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create shadow color image!");
+    }
+
+    vkGetImageMemoryRequirements(device, shadowColorImage, &memRequirements);
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = vulkanApp->findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &shadowColorImageMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate shadow color image memory!");
+    }
+    vkBindImageMemory(device, shadowColorImage, shadowColorImageMemory, 0);
+
+    // color image view
+    VkImageViewCreateInfo colorViewInfo{};
+    colorViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    colorViewInfo.image = shadowColorImage;
+    colorViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    colorViewInfo.format = colorFormat;
+    colorViewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    colorViewInfo.subresourceRange.baseMipLevel = 0;
+    colorViewInfo.subresourceRange.levelCount = 1;
+    colorViewInfo.subresourceRange.baseArrayLayer = 0;
+    colorViewInfo.subresourceRange.layerCount = 1;
+    if (vkCreateImageView(device, &colorViewInfo, nullptr, &shadowColorImageView) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create shadow color image view!");
+    }
 }
 
 void ShadowMapper::createShadowRenderPass() {
     VkDevice device = vulkanApp->getDevice();
-    
+    // Create a render pass with a color + depth attachment so it's compatible with the
+    // main render pass (same attachment count and formats). The color attachment is
+    // unused but allows pipeline objects to be shared between passes.
+    VkAttachmentDescription colorAttachment{};
+    colorAttachment.format = vulkanApp->getSwapchainImageFormat();
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
     VkAttachmentDescription depthAttachment{};
     depthAttachment.format = VK_FORMAT_D32_SFLOAT;
     depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -156,16 +220,21 @@ void ShadowMapper::createShadowRenderPass() {
     depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    
+
+    VkAttachmentReference colorAttachmentRef{};
+    colorAttachmentRef.attachment = 0;
+    colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
     VkAttachmentReference depthAttachmentRef{};
-    depthAttachmentRef.attachment = 0;
+    depthAttachmentRef.attachment = 1;
     depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    
+
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 0;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorAttachmentRef;
     subpass.pDepthStencilAttachment = &depthAttachmentRef;
-    
+
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.dstSubpass = 0;
@@ -173,16 +242,18 @@ void ShadowMapper::createShadowRenderPass() {
     dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependency.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
     dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    
+
+    std::array<VkAttachmentDescription, 2> attachments = { colorAttachment, depthAttachment };
+
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = 1;
-    renderPassInfo.pAttachments = &depthAttachment;
+    renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    renderPassInfo.pAttachments = attachments.data();
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
     renderPassInfo.dependencyCount = 1;
     renderPassInfo.pDependencies = &dependency;
-    
+
     if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &shadowRenderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create shadow render pass!");
     }
@@ -190,163 +261,28 @@ void ShadowMapper::createShadowRenderPass() {
 
 void ShadowMapper::createShadowFramebuffer() {
     VkDevice device = vulkanApp->getDevice();
-    
+    VkImageView attachments[] = { shadowColorImageView, shadowMapView };
+
     VkFramebufferCreateInfo framebufferInfo{};
     framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     framebufferInfo.renderPass = shadowRenderPass;
-    framebufferInfo.attachmentCount = 1;
-    framebufferInfo.pAttachments = &shadowMapView;
+    framebufferInfo.attachmentCount = 2;
+    framebufferInfo.pAttachments = attachments;
     framebufferInfo.width = shadowMapSize;
     framebufferInfo.height = shadowMapSize;
     framebufferInfo.layers = 1;
-    
+
     if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &shadowFramebuffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to create shadow framebuffer!");
     }
 }
 
 void ShadowMapper::createShadowPipeline() {
-    VkDevice device = vulkanApp->getDevice();
-    
-    // Use the main app's descriptor set layout so shadow pipeline and main pipeline share bindings
-    VkDescriptorSetLayout sharedLayout = vulkanApp->getDescriptorSetLayout();
-    
-    ShaderStage shadowVertexShader = ShaderStage(
-        vulkanApp->createShaderModule(FileReader::readFile("shaders/main.vert.spv")),
-        VK_SHADER_STAGE_VERTEX_BIT
-    );
-
-    // Build a list of ShaderStage objects (so their .info members remain valid)
-    std::vector<ShaderStage> shaderObjs;
-    shaderObjs.push_back(shadowVertexShader);
-
-    // Attempt to load tessellation stages for shadow pipeline (displacement in shadow pass)
-    bool hasTess = false;
-    try {
-        auto tescCode = FileReader::readFile("shaders/main.tesc.spv");
-        auto teseCode = FileReader::readFile("shaders/main.tese.spv");
-        if (!tescCode.empty() && !teseCode.empty()) {
-            shaderObjs.emplace_back(vulkanApp->createShaderModule(tescCode), VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
-            shaderObjs.emplace_back(vulkanApp->createShaderModule(teseCode), VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
-            hasTess = true;
-        }
-    } catch (...) {
-        hasTess = false;
-    }
-
-    shaderObjs.emplace_back(vulkanApp->createShaderModule(FileReader::readFile("shaders/shadow.frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
-
-    VkGraphicsPipelineCreateInfo pipelineInfo{};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-
-    // Assemble shader stage list from shaderObjs
-    std::vector<VkPipelineShaderStageCreateInfo> stages;
-    for (const auto &s : shaderObjs) stages.push_back(s.info);
-    pipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
-    // Keep the shader stages array alive until pipeline creation
-    std::vector<VkPipelineShaderStageCreateInfo> shaderStageVec = stages;
-    pipelineInfo.pStages = shaderStageVec.data();
-    
-    // Vertex input
-    VkVertexInputBindingDescription bindingDescription{};
-    bindingDescription.binding = 0;
-    bindingDescription.stride = sizeof(Vertex);
-    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    
-    std::vector<VkVertexInputAttributeDescription> attributeDescriptions = {
-        VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-        VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-        VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
-        VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-        VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) },
-        VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
-    };
-    
-    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = 1;
-    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
-    pipelineInfo.pVertexInputState = &vertexInputInfo;
-    
-    // Input assembly
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = hasTess ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    inputAssembly.primitiveRestartEnable = VK_FALSE;
-    pipelineInfo.pInputAssemblyState = &inputAssembly;
-    
-    // Viewport state
-    VkPipelineViewportStateCreateInfo viewportState{};
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
-    pipelineInfo.pViewportState = &viewportState;
-    
-    // Rasterization
-    VkPipelineRasterizationStateCreateInfo rasterizer{};
-    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer.depthClampEnable = VK_TRUE;
-    rasterizer.rasterizerDiscardEnable = VK_FALSE;
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;  // Back to standard culling
-    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rasterizer.depthBiasEnable = VK_TRUE;
-    pipelineInfo.pRasterizationState = &rasterizer;
-    
-    // Multisample
-    VkPipelineMultisampleStateCreateInfo multisampling{};
-    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.sampleShadingEnable = VK_FALSE;
-    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    pipelineInfo.pMultisampleState = &multisampling;
-    
-    // Depth stencil
-    VkPipelineDepthStencilStateCreateInfo depthStencil{};
-    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = VK_TRUE;
-    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-    depthStencil.depthBoundsTestEnable = VK_FALSE;
-    depthStencil.stencilTestEnable = VK_FALSE;
-    pipelineInfo.pDepthStencilState = &depthStencil;
-    
-    // Color blend - no color attachments for shadow pass
-    VkPipelineColorBlendStateCreateInfo colorBlending{};
-    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.logicOpEnable = VK_FALSE;
-    colorBlending.attachmentCount = 0;
-    pipelineInfo.pColorBlendState = &colorBlending;
-    
-    // Dynamic state
-    VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS };
-    VkPipelineDynamicStateCreateInfo dynamicState{};
-    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = 3;
-    dynamicState.pDynamicStates = dynamicStates;
-    pipelineInfo.pDynamicState = &dynamicState;
-    
-    // Reuse the application's pipeline layout so descriptor bindings/push constants match exactly
-    pipelineInfo.layout = vulkanApp->getPipelineLayout();
-    pipelineInfo.renderPass = shadowRenderPass;
-    pipelineInfo.subpass = 0;
-    VkPipelineTessellationStateCreateInfo tessState{};
-    if (hasTess) {
-        tessState.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
-        tessState.patchControlPoints = 3;
-        pipelineInfo.pTessellationState = &tessState;
-    }
-
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &shadowPipeline) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create shadow pipeline!");
-    }
-
-    // Destroy shader modules we created
-    for (const auto &s : shaderObjs) {
-        vkDestroyShaderModule(device, s.info.module, nullptr);
-    }
+    // ShadowMapper should reuse the application's main graphics pipeline created by the app
+    // (main.cpp creates the pipeline and registers it via setAppGraphicsPipeline()).
+    shadowPipeline = vulkanApp->getAppGraphicsPipeline();
+    // If the app hasn't set the pipeline yet, leave shadowPipeline as VK_NULL_HANDLE.
+    // beginShadowPass will bind the app pipeline directly to avoid double ownership.
 }
 
 void ShadowMapper::beginShadowPass(VkCommandBuffer commandBuffer, const glm::mat4& lightSpaceMatrix) {
@@ -386,7 +322,11 @@ void ShadowMapper::beginShadowPass(VkCommandBuffer commandBuffer, const glm::mat
     vkCmdSetDepthBias(commandBuffer, -1.5f, 0.0f, -2.0f);
     
     // Bind the shadow pipeline
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
+    // Bind the app's main graphics pipeline (preferred) or fall back to any
+    // locally stored pipeline handle.
+    VkPipeline p = vulkanApp->getAppGraphicsPipeline();
+    if (p == VK_NULL_HANDLE) p = shadowPipeline;
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
 }
 
 void ShadowMapper::renderObject(VkCommandBuffer commandBuffer, 

@@ -25,6 +25,8 @@ class VulkanApp {
     VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
     VkFence inFlightFence = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    // Application main graphics pipeline (owner: app / main.cpp)
+    VkPipeline appGraphicsPipeline = VK_NULL_HANDLE;
     // texture and descriptor
 
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
@@ -126,6 +128,10 @@ protected:
         void setMaterialDescriptorSet(VkDescriptorSet ds) { materialDescriptorSet = ds; }
         VkDescriptorSet getMaterialDescriptorSet() const { return materialDescriptorSet; }
         VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
+
+        // App-owned graphics pipeline accessor
+        void setAppGraphicsPipeline(VkPipeline p) { appGraphicsPipeline = p; }
+        VkPipeline getAppGraphicsPipeline() const { return appGraphicsPipeline; }
 
         Buffer createVertexBuffer(const std::vector<Vertex> &vertices);
         Buffer createIndexBuffer(const std::vector<uint> &indices);

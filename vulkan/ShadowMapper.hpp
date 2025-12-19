@@ -35,6 +35,10 @@ private:
     VkImage shadowMapImage = VK_NULL_HANDLE;
     VkDeviceMemory shadowMapMemory = VK_NULL_HANDLE;
     VkImageView shadowMapView = VK_NULL_HANDLE;
+    // Color attachment to make renderpass compatible with main pass
+    VkImage shadowColorImage = VK_NULL_HANDLE;
+    VkDeviceMemory shadowColorImageMemory = VK_NULL_HANDLE;
+    VkImageView shadowColorImageView = VK_NULL_HANDLE;
     VkSampler shadowMapSampler = VK_NULL_HANDLE;
     VkFramebuffer shadowFramebuffer = VK_NULL_HANDLE;
     VkRenderPass shadowRenderPass = VK_NULL_HANDLE;
