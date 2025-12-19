@@ -25,6 +25,12 @@ layout(location = 0) out vec4 outColor;
 #include "includes/shadows.glsl"
 
 void main() {
+    // Fast-path for shadow pass: skip expensive lighting/texture work.
+    // `ubo.passParams.x` is set to 1.0 for shadow-rendering passes.
+    if (ubo.passParams.x > 0.5) {
+        outColor = vec4(0.0);
+        return;
+    }
     // Use the three tex indices and barycentric weights provided by the TES for blending
     vec3 w = fragTexWeights;
 
