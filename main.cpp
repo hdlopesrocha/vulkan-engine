@@ -769,46 +769,17 @@ class MyApp : public VulkanApp, public IEventHandler {
         viewport.maxDepth = 1.0f;
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
-        VkRect2D scissor{};
-        scissor.offset = {0, 0};
-        scissor.extent = { (uint32_t)getWidth(), (uint32_t)getHeight() };
-        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-
-        // --- Depth pre-pass: fill depth buffer with geometry depths (color writes disabled) ---
-        if (depthPrePassPipeline != VK_NULL_HANDLE) {
-            UniformObject ubo = uboStatic;
-            ubo.viewProjection = projMat * viewMat;
-            updateUniformBuffer(mainUniform, &ubo, sizeof(UniformObject));
-
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
-            // Draw all instances to populate depth buffer
-            for (const auto& instance : visibleModels) {
-                const auto& vbo = instance->vbo;
-                VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-                
-                // Bind descriptor sets if available (material/global + per-texture)
-                VkDescriptorSet setsToBind[2];
-                uint32_t bindCount = 0;
-                VkDescriptorSet matDs = getMaterialDescriptorSet();
-                if (matDs != VK_NULL_HANDLE) setsToBind[bindCount++] = matDs;
-                VkDescriptorSet perTexDs = VK_NULL_HANDLE;
-                if (descriptorSet != VK_NULL_HANDLE) perTexDs = descriptorSet;
-                if (perTexDs != VK_NULL_HANDLE) setsToBind[bindCount++] = perTexDs;
-                if (bindCount > 0) vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, bindCount, setsToBind, 0, nullptr);
-
-                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance->model);
-                vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
-            }
-        }
-
         // --- Render sky sphere first: large sphere centered at camera ---
         if (skyRenderer && descriptorSet != VK_NULL_HANDLE) {
             if (skySphere) skySphere->update();
             skyRenderer->render(commandBuffer, skyVBO, descriptorSet, mainUniform, uboStatic, projMat, viewMat);
         }
+
+
+        VkRect2D scissor{};
+        scissor.offset = {0, 0};
+        scissor.extent = { (uint32_t)getWidth(), (uint32_t)getHeight() };
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
         // Update uniform buffer for this instance: set viewProjection and model separately
         UniformObject ubo = uboStatic;
@@ -820,24 +791,46 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         updateUniformBuffer(mainUniform, &ubo, sizeof(UniformObject));
 
-        // Render all instances with main pass
-        for (const auto& instance : visibleModels) {
-            const auto& vbo = instance->vbo;
-            
-            // Bind vertex and index buffers
-            VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
-            VkDeviceSize offsets[] = { 0 };
-            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-            vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-            
-            
-            // Bind descriptor set and draw
-            // Use a single pipeline (tessellation is enabled/disabled in the shader using mappingMode)
-            bool wire = settingsWidget ? settingsWidget->getWireframeEnabled() : false;
-            if (wire && graphicsPipelineWire != VK_NULL_HANDLE) vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineWire);
-            else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+        // Bind descriptor sets if available (material/global + per-texture)
+        { 
+            VkDescriptorSet setsToBind[2];
+            uint32_t bindCount = 0;
+            VkDescriptorSet matDs = getMaterialDescriptorSet();
+            if (matDs != VK_NULL_HANDLE) setsToBind[bindCount++] = matDs;
+            VkDescriptorSet perTexDs = VK_NULL_HANDLE;
+            if (descriptorSet != VK_NULL_HANDLE) perTexDs = descriptorSet;
+            if (perTexDs != VK_NULL_HANDLE) 
+                setsToBind[bindCount++] = perTexDs;
+            if (bindCount > 0) 
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, bindCount, setsToBind, 0, nullptr);
+        }
 
-            // Bind global material descriptor set (set 0) and per-material descriptor set (set 1)
+        // --- Depth pre-pass: fill depth buffer with geometry depths (color writes disabled) ---
+        if (depthPrePassPipeline != VK_NULL_HANDLE) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
+            // Draw all instances to populate depth buffer
+            for (const auto& instance : visibleModels) {
+                const auto& vbo = instance->vbo;
+                VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
+                VkDeviceSize offsets[] = { 0 };
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+                
+                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance->model);
+                vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
+            }
+        }
+
+
+        // Bind descriptor set and draw
+        // Use a single pipeline (tessellation is enabled/disabled in the shader using mappingMode)
+        if (settingsWidget->getWireframeEnabled() && graphicsPipelineWire != VK_NULL_HANDLE) 
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineWire);
+        else 
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+     
+        // Bind global material descriptor set (set 0) and per-material descriptor set (set 1)  
+        {
             VkDescriptorSet setsToBind[2];
             uint32_t bindCount = 0;
             VkDescriptorSet matDs = getMaterialDescriptorSet();
@@ -854,6 +847,18 @@ class MyApp : public VulkanApp, public IEventHandler {
             } else if (bindCount == 1) {
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, setsToBind, 0, nullptr);
             }
+        }
+        
+        // Render all instances with main pass
+        for (const auto& instance : visibleModels) {
+            const auto& vbo = instance->vbo;
+            
+            // Bind vertex and index buffers
+            VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
+            VkDeviceSize offsets[] = { 0 };
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+            vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+            
             // Push per-draw model matrix via push constants (visible to vertex + tessellation stages)
             vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance->model);
             vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
