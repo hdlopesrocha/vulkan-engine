@@ -70,5 +70,20 @@ void VulkanObjectsWidget::render() {
         ImGui::TreePop();
     }
 
+    const auto &pips = app->getRegisteredPipelines();
+    if (ImGui::TreeNode("Graphics Pipelines")) {
+        if (pips.empty()) {
+            ImGui::TextUnformatted("(none registered)");
+        } else {
+            ImGui::Text("Count: %zu", pips.size());
+            for (size_t i = 0; i < pips.size(); ++i) {
+                ImGui::Bullet(); ImGui::SameLine();
+                std::string label = "Pipeline "; label += std::to_string(i);
+                ImGui::Text("%s: %s", label.c_str(), handleToString(reinterpret_cast<uint64_t>(pips[i]), showHex).c_str());
+            }
+        }
+        ImGui::TreePop();
+    }
+
     ImGui::End();
 }

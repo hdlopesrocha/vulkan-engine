@@ -37,6 +37,8 @@ class VulkanApp {
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     // Registered descriptor sets for runtime inspection (widgets can read these)
     std::vector<VkDescriptorSet> registeredDescriptorSets;
+    // Registered graphics pipelines for runtime inspection
+    std::vector<VkPipeline> registeredPipelines;
     // depth resources
     VkImage depthImage = VK_NULL_HANDLE;
     VkDeviceMemory depthImageMemory = VK_NULL_HANDLE;
@@ -132,6 +134,7 @@ protected:
         // App-owned graphics pipeline accessor
         void setAppGraphicsPipeline(VkPipeline p) { appGraphicsPipeline = p; }
         VkPipeline getAppGraphicsPipeline() const { return appGraphicsPipeline; }
+        const std::vector<VkPipeline>& getRegisteredPipelines() const { return registeredPipelines; }
 
         Buffer createVertexBuffer(const std::vector<Vertex> &vertices);
         Buffer createIndexBuffer(const std::vector<uint> &indices);

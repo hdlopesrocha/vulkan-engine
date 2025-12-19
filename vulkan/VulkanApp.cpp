@@ -1364,6 +1364,8 @@ VkPipeline VulkanApp::createGraphicsPipeline(
         throw std::runtime_error("failed to create graphics pipeline!");
     }
     std::cerr << "graphics pipeline created\n";
+    // register pipeline for runtime inspection (widgets)
+    registeredPipelines.push_back(graphicsPipeline);
     return graphicsPipeline;
 }
 
