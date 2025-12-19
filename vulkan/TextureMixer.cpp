@@ -10,24 +10,26 @@ uint32_t TextureMixer::getArrayLayerCount() const {
 	return textureArrayManager ? textureArrayManager->layerAmount : 0;
 }
 
+uint32_t TextureMixer::getLayerWidth() const {
+	return textureArrayManager ? textureArrayManager->width : width;
+}
+
+uint32_t TextureMixer::getLayerHeight() const {
+	return textureArrayManager ? textureArrayManager->height : height;
+}
+
+int TextureMixer::getBytesPerPixel() const {
+	return 4; // RGBA8
+}
+
 TextureMixer::TextureMixer() {}
-
-EditableTexture& TextureMixer::getAlbedo() { return albedo; }
-EditableTexture& TextureMixer::getNormal() { return normal; }
-EditableTexture& TextureMixer::getBump() { return bump; }
-
-const EditableTexture& TextureMixer::getAlbedo() const { return albedo; }
-const EditableTexture& TextureMixer::getNormal() const { return normal; }
-const EditableTexture& TextureMixer::getBump() const { return bump; }
 
 void TextureMixer::init(VulkanApp* app, uint32_t width, uint32_t height, TextureArrayManager* textureArrayManager) {
 	this->app = app;
 	this->textureArrayManager = textureArrayManager;
 	this->width = width;
 	this->height = height;
-	albedo.init(app, width, height, VK_FORMAT_R8G8B8A8_UNORM, "Albedo");
-	normal.init(app, width, height, VK_FORMAT_R8G8B8A8_UNORM, "Normal");
-	bump.init(app, width, height, VK_FORMAT_R8G8B8A8_UNORM, "Bump");
+	// No editable textures created anymore; we will write directly into texture arrays when available
 
 	// Create compute pipeline and descriptor sets so we can generate textures on demand
 	createComputePipeline();
@@ -55,9 +57,7 @@ void TextureMixer::generateInitialTextures(std::vector<MixerParameters> &mixerPa
 
 
 void TextureMixer::cleanup() {
-	albedo.cleanup();
-	normal.cleanup();
-	bump.cleanup();
+	// No editable textures to cleanup when using global texture arrays
 
 	if (computePipeline != VK_NULL_HANDLE) {
 		vkDestroyPipeline(app->getDevice(), computePipeline, nullptr);
@@ -190,9 +190,9 @@ void TextureMixer::createComputePipeline() {
 	// Create a single descriptor set that binds albedo/normal/bump storage images and samplers
 	createTripleComputeDescriptorSet();
 	// Also create per-map descriptor sets so single-map generation is possible
-	createComputeDescriptorSet(albedo, albedoComputeDescSet, 0);
-	createComputeDescriptorSet(normal, normalComputeDescSet, 1);
-	createComputeDescriptorSet(bump, bumpComputeDescSet, 2);
+	createComputeDescriptorSet(0, albedoComputeDescSet);
+	createComputeDescriptorSet(1, normalComputeDescSet);
+	createComputeDescriptorSet(2, bumpComputeDescSet);
 }
 
 void TextureMixer::createTripleComputeDescriptorSet() {
@@ -208,15 +208,18 @@ void TextureMixer::createTripleComputeDescriptorSet() {
 
 	// Storage image infos: albedo (binding 0), normal (binding 4), bump (binding 5)
 	VkDescriptorImageInfo albedoImageInfo{};
-	albedoImageInfo.imageView = albedo.getView();
+	if (textureArrayManager) albedoImageInfo.imageView = textureArrayManager->albedoArray.view;
+	else albedoImageInfo.imageView = VK_NULL_HANDLE;
 	albedoImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 	VkDescriptorImageInfo normalImageInfo{};
-	normalImageInfo.imageView = normal.getView();
+	if (textureArrayManager) normalImageInfo.imageView = textureArrayManager->normalArray.view;
+	else normalImageInfo.imageView = VK_NULL_HANDLE;
 	normalImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 	VkDescriptorImageInfo bumpImageInfo{};
-	bumpImageInfo.imageView = bump.getView();
+	if (textureArrayManager) bumpImageInfo.imageView = textureArrayManager->bumpArray.view;
+	else bumpImageInfo.imageView = VK_NULL_HANDLE;
 	bumpImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 	// Sampler infos for the three arrays (binding 1,2,3)
@@ -237,11 +240,10 @@ void TextureMixer::createTripleComputeDescriptorSet() {
 		bumpSamplerInfo.sampler = textureArrayManager->bumpSampler;
 		bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	} else {
-		// Fallback to individual editable textures with computeSampler
-		if (computeSampler == VK_NULL_HANDLE) computeSampler = app->createTextureSampler(1);
-		albedoSamplerInfo.imageView = albedo.getView(); albedoSamplerInfo.sampler = computeSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		normalSamplerInfo.imageView = normal.getView(); normalSamplerInfo.sampler = computeSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		bumpSamplerInfo.imageView = bump.getView(); bumpSamplerInfo.sampler = computeSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		// No TextureArrayManager: leave sampler imageViews null (not supported)
+		albedoSamplerInfo.imageView = VK_NULL_HANDLE; albedoSamplerInfo.sampler = VK_NULL_HANDLE; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		normalSamplerInfo.imageView = VK_NULL_HANDLE; normalSamplerInfo.sampler = VK_NULL_HANDLE; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		bumpSamplerInfo.imageView = VK_NULL_HANDLE; bumpSamplerInfo.sampler = VK_NULL_HANDLE; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	}
 
 	VkWriteDescriptorSet writes[6] = {};
@@ -302,9 +304,7 @@ VkDescriptorSet TextureMixer::getPreviewDescriptor(int map) {
 		return (VkDescriptorSet)id;
 	}
 	// Fallback to editable texture descriptor
-	if (map == 0) return albedo.getImGuiDescriptorSet();
-	if (map == 1) return normal.getImGuiDescriptorSet();
-	return bump.getImGuiDescriptorSet();
+	return VK_NULL_HANDLE;
 }
 
 VkDescriptorSet TextureMixer::getPreviewDescriptor(int map, uint32_t layer) {
@@ -316,7 +316,7 @@ VkDescriptorSet TextureMixer::getPreviewDescriptor(int map, uint32_t layer) {
 	return getPreviewDescriptor(map);
 }
 
-void TextureMixer::createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet, int map) {
+void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet) {
 	VkDescriptorSetAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	allocInfo.descriptorPool = computeDescriptorPool;
@@ -328,7 +328,14 @@ void TextureMixer::createComputeDescriptorSet(EditableTexture& texture, VkDescri
 	}
 
 	VkDescriptorImageInfo imageInfo{};
-	imageInfo.imageView = texture.getView();
+	// Storage image for per-map generation: bind the array view (entire array) and use push constant to select layer
+	if (textureArrayManager) {
+		if (map == 0) imageInfo.imageView = textureArrayManager->albedoArray.view;
+		else if (map == 1) imageInfo.imageView = textureArrayManager->normalArray.view;
+		else imageInfo.imageView = textureArrayManager->bumpArray.view;
+	} else {
+		imageInfo.imageView = VK_NULL_HANDLE; // no fallback; caller should provide TextureArrayManager
+	}
 	imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 	VkWriteDescriptorSet descriptorWrite{};
@@ -360,10 +367,9 @@ void TextureMixer::createComputeDescriptorSet(EditableTexture& texture, VkDescri
 		}
 		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	} else {
-		// Fallback: bind the editable texture itself as the sampler input
-		samplerInfo.imageView = texture.getView();
-		samplerInfo.sampler = computeSampler;
-		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		samplerInfo.imageView = VK_NULL_HANDLE;
+		samplerInfo.sampler = VK_NULL_HANDLE;
+		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	}
 
 	VkWriteDescriptorSet samplerWrite1{}; samplerWrite1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; samplerWrite1.dstSet = descSet; samplerWrite1.dstBinding = 1; samplerWrite1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; samplerWrite1.descriptorCount = 1; samplerWrite1.pImageInfo = &samplerInfo;
@@ -375,6 +381,10 @@ void TextureMixer::createComputeDescriptorSet(EditableTexture& texture, VkDescri
 
 void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 	// generate regardless of external texture lists
+	if(params.targetLayer == params.primaryTextureIdx || 
+	   params.targetLayer == params.secondaryTextureIdx) {
+		return; // avoid sampling and writing to the same layer
+	}
 
 	// We now perform a single dispatch that writes all three images (albedo, normal, bump)
 	VkDescriptorSet descSet = tripleComputeDescSet;
@@ -393,7 +403,12 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
     // Primary/secondary layer indices refer to layers in the texture array manager
 	pushConstants.primaryLayer = static_cast<uint32_t>(params.primaryTextureIdx);
 	pushConstants.secondaryLayer = static_cast<uint32_t>(params.secondaryTextureIdx);
+    // Destination layer to write into (if using array layers)
+    pushConstants.targetLayer = static_cast<uint32_t>(params.targetLayer);
 
+
+	// Require a TextureArrayManager for array-based generation
+	if (!textureArrayManager) throw std::runtime_error("TextureMixer requires a TextureArrayManager for array-based generation");
 
 	VkCommandBuffer commandBuffer = app->beginSingleTimeCommands();
 
@@ -417,7 +432,8 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 
 	// If a TextureArrayManager is present and a valid target layer was specified,
 	// update the storage-image descriptors to point at the per-layer 2D views
-	// and transition the corresponding array image/layer instead of the editable textures.
+	// so the compute shader can write directly into the array layer. Otherwise
+	// write into the editable 2D textures as before.
 	bool useArrayLayer = false;
 	uint32_t targetLayer = 0;
 	if (textureArrayManager) {
@@ -429,22 +445,27 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 			textureArrayManager->getImTexture(targetLayer, 1);
 			textureArrayManager->getImTexture(targetLayer, 2);
 
-			// Instead of writing directly into the array layer via storage-image views,
-			// we generate into the editable 2D textures (default storage images) and
-			// then copy those editable images into the specified array layer.
-			// Prepare barriers so the editable textures are transitioned to GENERAL
-			// for compute writes (they are already the default storage-image targets).
-			barriers[0].image = albedo.getImage();
-			barriers[1].image = normal.getImage();
-			barriers[2].image = bump.getImage();
-			// baseArrayLayer remains 0 for these 2D editable images
+			// Transition array image layers to GENERAL for compute write
+			barriers[0].image = textureArrayManager->albedoArray.image;
+			barriers[0].subresourceRange.baseArrayLayer = targetLayer;
+			barriers[1].image = textureArrayManager->normalArray.image;
+			barriers[1].subresourceRange.baseArrayLayer = targetLayer;
+			barriers[2].image = textureArrayManager->bumpArray.image;
+			barriers[2].subresourceRange.baseArrayLayer = targetLayer;
+
+			// If the target array layer hasn't been initialized yet it may be in UNDEFINED
+			for (int i = 0; i < 3; ++i) {
+				if (textureArrayManager->isLayerInitialized(targetLayer)) barriers[i].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				else barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+				barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+				barriers[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				barriers[i].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			}
 		}
 	}
 
 	if (!useArrayLayer) {
-		barriers[0].image = albedo.getImage();
-		barriers[1].image = normal.getImage();
-		barriers[2].image = bump.getImage();
+		throw std::runtime_error("TextureMixer: invalid target layer or missing TextureArrayManager");
 	}
 
 	vkCmdPipelineBarrier(
@@ -467,152 +488,49 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 
 	vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
 	if (useArrayLayer && textureArrayManager) {
-		// After compute wrote into the editable 2D images, copy each editable image
-		// into the corresponding array image layer.
-
-		// Transition editable images (src) to TRANSFER_SRC_OPTIMAL and
-		// array images (dst, specific layer) to TRANSFER_DST_OPTIMAL.
-		VkImageMemoryBarrier copyBarriers[6]{};
-		// editable -> TRANSFER_SRC
-		for (int i = 0; i < 3; ++i) {
-			copyBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			copyBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-			copyBarriers[i].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-			copyBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			copyBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			copyBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			copyBarriers[i].subresourceRange.baseMipLevel = 0;
-			copyBarriers[i].subresourceRange.levelCount = 1;
-			copyBarriers[i].subresourceRange.baseArrayLayer = 0;
-			copyBarriers[i].subresourceRange.layerCount = 1;
-			copyBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-			copyBarriers[i].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-		}
-
-		// array layer -> TRANSFER_DST
-		copyBarriers[0].image = albedo.getImage();
-		copyBarriers[1].image = normal.getImage();
-		copyBarriers[2].image = bump.getImage();
-
-		copyBarriers[3].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		// If the target array layer hasn't been initialized yet it may be in UNDEFINED
-		if (textureArrayManager->isLayerInitialized(targetLayer)) copyBarriers[3].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		else copyBarriers[3].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		copyBarriers[3].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		copyBarriers[3].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		copyBarriers[3].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		copyBarriers[3].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		copyBarriers[3].subresourceRange.baseMipLevel = 0;
-		copyBarriers[3].subresourceRange.levelCount = 1;
-		copyBarriers[3].subresourceRange.baseArrayLayer = targetLayer;
-		copyBarriers[3].subresourceRange.layerCount = 1;
-		copyBarriers[3].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		copyBarriers[3].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		copyBarriers[3].image = textureArrayManager->albedoArray.image;
-
-		copyBarriers[4] = copyBarriers[3];
-		copyBarriers[4].image = textureArrayManager->normalArray.image;
-
-		copyBarriers[5] = copyBarriers[3];
-		copyBarriers[5].image = textureArrayManager->bumpArray.image;
-
-		// Mark the layer initialized after the copy will complete
-		textureArrayManager->setLayerInitialized(targetLayer, true);
-
-		printf("[TextureMixer] copy: srcImages albedo=%p normal=%p bump=%p\n", (void*)albedo.getImage(), (void*)normal.getImage(), (void*)bump.getImage());
-		printf("[TextureMixer] copy: dstArrayImages albedo=%p normal=%p bump=%p targetLayer=%u\n",
-			(void*)textureArrayManager->albedoArray.image, (void*)textureArrayManager->normalArray.image, (void*)textureArrayManager->bumpArray.image, targetLayer);
-
-		vkCmdPipelineBarrier(
-			commandBuffer,
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			VK_PIPELINE_STAGE_TRANSFER_BIT,
-			0,
-			0, nullptr,
-			0, nullptr,
-			6, copyBarriers
-		);
-
-		// Copy regions
-		VkImageCopy copyRegion{};
-		copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		copyRegion.srcSubresource.mipLevel = 0;
-		copyRegion.srcSubresource.baseArrayLayer = 0;
-		copyRegion.srcSubresource.layerCount = 1;
-		copyRegion.srcOffset = {0,0,0};
-		copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		copyRegion.dstSubresource.mipLevel = 0;
-		copyRegion.dstSubresource.baseArrayLayer = targetLayer;
-		copyRegion.dstSubresource.layerCount = 1;
-		copyRegion.dstOffset = {0,0,0};
-		copyRegion.extent = { (uint32_t)width, (uint32_t)height, 1 };
-
-		vkCmdCopyImage(commandBuffer,
-			albedo.getImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			textureArrayManager->albedoArray.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			1, &copyRegion);
-
-		vkCmdCopyImage(commandBuffer,
-			normal.getImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			textureArrayManager->normalArray.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			1, &copyRegion);
-
-		vkCmdCopyImage(commandBuffer,
-			bump.getImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			textureArrayManager->bumpArray.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			1, &copyRegion);
-
-		// Transition array layers and editable images back to SHADER_READ_ONLY_OPTIMAL
-		VkImageMemoryBarrier postBarriers[6]{};
-
-		// editable images: TRANSFER_SRC_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
+		// After compute wrote directly into the array layer, transition it back to SHADER_READ_ONLY_OPTIMAL
+		VkImageMemoryBarrier postBarriers[3]{};
 		for (int i = 0; i < 3; ++i) {
 			postBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			postBarriers[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			postBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 			postBarriers[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			postBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			postBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			postBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			postBarriers[i].subresourceRange.baseMipLevel = 0;
 			postBarriers[i].subresourceRange.levelCount = 1;
-			postBarriers[i].subresourceRange.baseArrayLayer = 0;
+			postBarriers[i].subresourceRange.baseArrayLayer = targetLayer;
 			postBarriers[i].subresourceRange.layerCount = 1;
-			postBarriers[i].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			postBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 			postBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		}
-		postBarriers[0].image = albedo.getImage();
-		postBarriers[1].image = normal.getImage();
-		postBarriers[2].image = bump.getImage();
-
-		// array layers: TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
-		for (int i = 0; i < 3; ++i) {
-			postBarriers[3 + i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			postBarriers[3 + i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			postBarriers[3 + i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			postBarriers[3 + i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			postBarriers[3 + i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			postBarriers[3 + i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			postBarriers[3 + i].subresourceRange.baseMipLevel = 0;
-			postBarriers[3 + i].subresourceRange.levelCount = 1;
-			postBarriers[3 + i].subresourceRange.baseArrayLayer = targetLayer;
-			postBarriers[3 + i].subresourceRange.layerCount = 1;
-			postBarriers[3 + i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			postBarriers[3 + i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		}
-		postBarriers[3].image = textureArrayManager->albedoArray.image;
-		postBarriers[4].image = textureArrayManager->normalArray.image;
-		postBarriers[5].image = textureArrayManager->bumpArray.image;
+		postBarriers[0].image = textureArrayManager->albedoArray.image;
+		postBarriers[1].image = textureArrayManager->normalArray.image;
+		postBarriers[2].image = textureArrayManager->bumpArray.image;
 
 		vkCmdPipelineBarrier(
 			commandBuffer,
-			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 			0,
 			0, nullptr,
 			0, nullptr,
-			6, postBarriers
+			3, postBarriers
 		);
 
+
+
+
+		// Mark the layer initialized after the write
+		textureArrayManager->setLayerInitialized(targetLayer, true);
+
+		// Additional debug: print sampler handles and the array view used for sampling
+		printf("[TextureMixer] albedoSampler=%p albedoArray.view=%p\n",
+			(void*)textureArrayManager->albedoSampler, (void*)textureArrayManager->albedoArray.view);
+		printf("[TextureMixer] normalSampler=%p normalArray.view=%p\n",
+			(void*)textureArrayManager->normalSampler, (void*)textureArrayManager->normalArray.view);
+		printf("[TextureMixer] bumpSampler=%p bumpArray.view=%p\n",
+			(void*)textureArrayManager->bumpSampler, (void*)textureArrayManager->bumpArray.view);
 		app->endSingleTimeCommands(commandBuffer);
 	} else {
 		// Transition images back to SHADER_READ_ONLY_OPTIMAL
@@ -644,8 +562,6 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 		printf("[TextureMixer] albedoArray.image=%p albedoLayerView=%p\n", (void*)textureArrayManager->albedoArray.image, (void*)textureArrayManager->albedoLayerViews[targetLayer]);
 		printf("[TextureMixer] normalArray.image=%p normalLayerView=%p\n", (void*)textureArrayManager->normalArray.image, (void*)textureArrayManager->normalLayerViews[targetLayer]);
 		printf("[TextureMixer] bumpArray.image=%p bumpLayerView=%p\n", (void*)textureArrayManager->bumpArray.image, (void*)textureArrayManager->bumpLayerViews[targetLayer]);
-	} else {
-		printf("[TextureMixer] editable images: albedo=%p normal=%p bump=%p\n", (void*)albedo.getImage(), (void*)normal.getImage(), (void*)bump.getImage());
 	}
 
 	printf("Perlin noise generation complete!\n");

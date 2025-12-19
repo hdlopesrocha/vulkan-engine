@@ -23,5 +23,5 @@ private:
     // Active tab (0=albedo,1=normal,2=bump) — used to regenerate only the selected map
     int activeMap = 0;
 
-    void renderTextureTab(EditableTexture& texture, int map);
+    void renderTextureTab(int map);
 };

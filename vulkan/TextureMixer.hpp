@@ -2,7 +2,9 @@
 
 #pragma once
 
-#include "EditableTexture.hpp"
+#include <cstdint>
+#include <vulkan/vulkan.h>
+class VulkanApp;
 #include "../utils/FileReader.hpp"
 #include <random>
 #include <cstring>
@@ -45,14 +47,11 @@ public:
 
     void cleanup();
 
-    // Getters for individual textures
-    EditableTexture& getAlbedo();
-    EditableTexture& getNormal();
-    EditableTexture& getBump();
-
-    const EditableTexture& getAlbedo() const;
-    const EditableTexture& getNormal() const;
-    const EditableTexture& getBump() const;
+    // Query array layer dimensions (0 if none)
+    uint32_t getLayerWidth() const;
+    uint32_t getLayerHeight() const;
+    // Bytes per pixel for array textures (RGBA8 -> 4)
+    int getBytesPerPixel() const;
 
     // Generate Perlin noise for a texture using explicit parameters (used by UI widget)
     void generatePerlinNoise(MixerParameters &params);
@@ -60,9 +59,7 @@ public:
 private:
     VulkanApp* app = nullptr;
     VkSampler computeSampler = VK_NULL_HANDLE;
-    EditableTexture albedo;
-    EditableTexture normal;
-    EditableTexture bump;
+    // EditableTexture instances removed; use TextureArrayManager arrays instead
     uint32_t width = 0, height = 0;
     // Optional reference to global texture arrays so compute can sample from them
     class TextureArrayManager* textureArrayManager = nullptr;
@@ -99,7 +96,7 @@ private:
 
     void createComputePipeline();
     void createTripleComputeDescriptorSet();
-    // Helper to create a descriptor set targeting a single editable texture as storage image
-    void createComputeDescriptorSet(EditableTexture& texture, VkDescriptorSet& descSet, int map);
+    // Helper to create a descriptor set targeting a single map (map index: 0=albedo,1=normal,2=bump)
+    void createComputeDescriptorSet(int map, VkDescriptorSet& descSet);
 };
 

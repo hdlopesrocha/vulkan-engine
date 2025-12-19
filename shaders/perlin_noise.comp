@@ -3,12 +3,12 @@
 layout (local_size_x = 16, local_size_y = 16) in;
 
 // Use rgba8 for compatibility - we'll handle single-channel formats separately
-layout (binding = 0, rgba8) uniform writeonly image2D albedoResultImage;
 layout (binding = 1) uniform sampler2DArray albedoArray;   // Albedo texture array to blend from
 layout (binding = 2) uniform sampler2DArray normalArray;   // Normal texture array to blend from
 layout (binding = 3) uniform sampler2DArray bumpArray;     // Bump/height texture array to blend from
-layout (binding = 4, rgba8) uniform writeonly image2D normalResultImage;
-layout (binding = 5, rgba8) uniform writeonly image2D bumpResultImage;
+layout (binding = 0, rgba8) uniform writeonly image2DArray albedoResultImage;
+layout (binding = 4, rgba8) uniform writeonly image2DArray normalResultImage;
+layout (binding = 5, rgba8) uniform writeonly image2DArray bumpResultImage;
 
 layout (push_constant) uniform PushConstants {
     float scale;
@@ -22,6 +22,7 @@ layout (push_constant) uniform PushConstants {
     float time;       // Time parameter for noise evolution
     uint primaryLayer;    // layer index into arrays
     uint secondaryLayer;  // layer index into arrays
+    uint targetLayer;     // destination layer to write into
 } params;
 
 // Hash function for random number generation
@@ -151,14 +152,14 @@ vec3 linearToSRGB(vec3 c) {
 
 void main() {
     ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(albedoResultImage);
-    
-    if (texelCoord.x >= size.x || texelCoord.y >= size.y) {
+    ivec3 size3 = imageSize(albedoResultImage);
+
+    if (texelCoord.x >= size3.x || texelCoord.y >= size3.y) {
         return;
     }
-    
+
     // Normalized coordinates [0, 1]
-    vec2 uv = vec2(texelCoord) / vec2(size);
+    vec2 uv = vec2(texelCoord) / vec2(size3.xy);
     
     // Generate 3D Perlin noise with time as the Z coordinate
     // Scale time down to slow the rate of change (0.1 = 10x slower)
@@ -178,20 +179,21 @@ void main() {
     noise = clamp(noise, 0.0, 1.0);
     
     // Sample albedo/normal/bump from their respective texture arrays using the provided layer indices
-    vec3 albedoPrimary = texture(albedoArray, vec3(uv, float(params.primaryLayer))).rgb;
-    vec3 albedoSecondary = texture(albedoArray, vec3(uv, float(params.secondaryLayer))).rgb;
+    vec3 albedoPrimary = textureLod(albedoArray, vec3(uv, float(params.primaryLayer)), 0.0).rgb;
+    vec3 albedoSecondary = textureLod(albedoArray, vec3(uv, float(params.secondaryLayer)), 0.0).rgb;
     vec3 albedoBlended = mix(albedoPrimary, albedoSecondary, noise);
 
-    vec3 normalPrimary = texture(normalArray, vec3(uv, float(params.primaryLayer))).rgb;
-    vec3 normalSecondary = texture(normalArray, vec3(uv, float(params.secondaryLayer))).rgb;
+    vec3 normalPrimary = textureLod(normalArray, vec3(uv, float(params.primaryLayer)), 0.0).rgb;
+    vec3 normalSecondary = textureLod(normalArray, vec3(uv, float(params.secondaryLayer)), 0.0).rgb;
     vec3 normalBlended = mix(normalPrimary, normalSecondary, noise);
 
-    vec3 bumpPrimary = texture(bumpArray, vec3(uv, float(params.primaryLayer))).rgb;
-    vec3 bumpSecondary = texture(bumpArray, vec3(uv, float(params.secondaryLayer))).rgb;
+    vec3 bumpPrimary = textureLod(bumpArray, vec3(uv, float(params.primaryLayer)), 0.0).rgb;
+    vec3 bumpSecondary = textureLod(bumpArray, vec3(uv, float(params.secondaryLayer)), 0.0).rgb;
     vec3 bumpBlended = mix(bumpPrimary, bumpSecondary, noise);
 
     // Write results (albedo encoded to sRGB because arrays are sRGB)
-    imageStore(albedoResultImage, texelCoord, vec4(linearToSRGB(albedoBlended), 1.0));
-    imageStore(normalResultImage, texelCoord, vec4(normalBlended, 1.0));
-    imageStore(bumpResultImage, texelCoord, vec4(bumpBlended, 1.0));
+    ivec3 outCoord = ivec3(texelCoord, int(params.targetLayer));
+    imageStore(albedoResultImage, outCoord, vec4(linearToSRGB(albedoBlended), 1.0));
+    imageStore(normalResultImage, outCoord, vec4(normalBlended, 1.0));
+    imageStore(bumpResultImage, outCoord, vec4(bumpBlended, 1.0));
 }

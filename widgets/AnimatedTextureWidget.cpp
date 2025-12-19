@@ -16,17 +16,17 @@ void AnimatedTextureWidget::render() {
     if (ImGui::BeginTabBar("TextureTabBar")) {
         if (ImGui::BeginTabItem("Albedo")) {
             activeMap = 0;
-            renderTextureTab(textures->getAlbedo(), 0);
+            renderTextureTab(0);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Normal")) {
             activeMap = 1;
-            renderTextureTab(textures->getNormal(), 1);
+            renderTextureTab(1);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Bump")) {
             activeMap = 2;
-            renderTextureTab(textures->getBump(), 2);
+            renderTextureTab(2);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -111,12 +111,9 @@ void AnimatedTextureWidget::render() {
     ImGui::End();
 }
 
-void AnimatedTextureWidget::renderTextureTab(EditableTexture& texture, int map) {
+void AnimatedTextureWidget::renderTextureTab(int map) {
     float previewSize = 256.0f; // scaled down to 25%
     ImVec2 imageSize(previewSize, previewSize);
-    // Ensure editable texture GPU contents are uploaded before previewing
-    texture.updateGPU();
-
     // Use ImTextureID to represent ImGui Vulkan texture handles (returned by ImGui_ImplVulkan_AddTexture)
     ImTextureID texID = nullptr;
     // If we have MixerParameters configured, request the preview for the selected mixer's target layer
@@ -153,13 +150,6 @@ void AnimatedTextureWidget::renderTextureTab(EditableTexture& texture, int map) 
         ImGui::Text("Texture preview not available");
     }
 
-    ImGui::Text("Size: %dx%d", texture.getWidth(), texture.getHeight());
-
-    const char* formatName = "Unknown";
-    if (texture.getBytesPerPixel() == 4) {
-        formatName = "RGBA8";
-    } else if (texture.getBytesPerPixel() == 1) {
-        formatName = "R8";
-    }
-    ImGui::Text("Format: %s", formatName);
+    ImGui::Text("Size: %dx%d", textures->getLayerWidth(), textures->getLayerHeight());
+    ImGui::Text("Format: RGBA8");
 }

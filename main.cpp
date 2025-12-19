@@ -479,12 +479,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Hook Vulkan editable texture regeneration callback so materials are refreshed
         textureMixer->setOnTextureGenerated([this]() {
             printf("Editable textures regenerated (layer %u)\n", static_cast<unsigned int>(editableLayerIndex));
-            // Update texture arrays so shaders sample the new images
-            if (editableLayerIndex != SIZE_MAX) {
-                textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), textureMixer->getAlbedo(), 0);
-                textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), textureMixer->getNormal(), 1);
-                textureArrayManager.updateLayerFromEditableMap(static_cast<uint32_t>(editableLayerIndex), textureMixer->getBump(), 2);
-            }
+            // Textures are written directly into the texture arrays by the compute shader
             updateMaterials();
         });
         

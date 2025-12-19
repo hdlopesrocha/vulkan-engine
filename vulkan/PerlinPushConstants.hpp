@@ -14,5 +14,6 @@ struct PerlinPushConstants {
     float time;  // Time parameter for animated noise
     uint32_t primaryLayer;
     uint32_t secondaryLayer;
-    float padding[2];  // Padding for alignment
+    uint32_t targetLayer;
+    float padding[1];  // Padding for alignment
 };
