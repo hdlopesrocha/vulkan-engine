@@ -117,7 +117,6 @@ class MyApp : public VulkanApp, public IEventHandler {
     Buffer mainUniform;
     Buffer shadowUniform;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-    VkDescriptorSet shadowDescriptorSet = VK_NULL_HANDLE;
     MaterialManager materialManager;
     size_t materialCount = 0;
     
@@ -387,7 +386,6 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
 
         descriptorSet = VK_NULL_HANDLE;
-        shadowDescriptorSet = VK_NULL_HANDLE;
 
         // Use DescriptorSetBuilder to reduce repeated code
         DescriptorSetBuilder dsBuilder(this, &shadowMapper);
@@ -411,12 +409,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 registerDescriptorSet(descriptorSet);
             }
 
-            // shadow descriptor set (create only once, reuse globally)
-            if (shadowDescriptorSet == VK_NULL_HANDLE) {
-                VkDescriptorSet sds = dsBuilder.createShadowDescriptorSet(tr, shadowUniform, false, nullptr, 0);
-                shadowDescriptorSet = sds;
-                registerDescriptorSet(shadowDescriptorSet);
-            }
+            // Shadow descriptor set reuses `descriptorSet` (no separate allocation).
         }
 
         // If texture arrays are allocated, overwrite bindings 1..3 in descriptor sets
@@ -432,12 +425,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = descriptorSet; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
                 updateDescriptorSet(descriptorSet, { w1, w2, w3 });
             }
-            if (shadowDescriptorSet != VK_NULL_HANDLE) {
-                VkWriteDescriptorSet w1{}; w1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w1.dstSet = shadowDescriptorSet; w1.dstBinding = 1; w1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w1.descriptorCount = 1; w1.pImageInfo = &albedoArrayInfo;
-                VkWriteDescriptorSet w2{}; w2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w2.dstSet = shadowDescriptorSet; w2.dstBinding = 2; w2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w2.descriptorCount = 1; w2.pImageInfo = &normalArrayInfo;
-                VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = shadowDescriptorSet; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
-                updateDescriptorSet(shadowDescriptorSet, { w1, w2, w3 });
-            }
+            // No separate shadow descriptor update required (reusing `descriptorSet`).
         }
 
         // Build sphere mesh for this material
@@ -519,7 +507,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Initialize sky manager which creates and binds the sky UBO into descriptor sets
         skySphere = std::make_unique<SkySphere>(this);
-        skySphere->init(skyWidget.get(), descriptorSet, shadowDescriptorSet);
+        skySphere->init(skyWidget.get(), descriptorSet);
         
         // Create vegetation atlas editor widget
         auto vegAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
@@ -740,45 +728,29 @@ class MyApp : public VulkanApp, public IEventHandler {
         });
         
         
-        
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
         vkBeginCommandBuffer(commandBuffer, &beginInfo);
     
-
-        // Calculate grid layout for cubes
-        size_t n = materials.size();
-        float spacing = 2.5f;
-        if (n == 0) n = 1;
-        int cols = static_cast<int>(std::ceil(std::sqrt((float)n)));
-        int rows = static_cast<int>(std::ceil((float)n / cols));
-        float halfW = (cols - 1) * 0.5f * spacing;
-        float halfH = (rows - 1) * 0.5f * spacing;
-        
-
         // First pass: Render shadow map (skip if shadows globally disabled)
         if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
             shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
             
+            // Update uniform buffer for shadow pass: set viewProjection = lightSpaceMatrix
+            UniformObject shadowUbo = uboStatic;
+            shadowUbo.viewProjection = uboStatic.lightSpaceMatrix;
+            shadowUbo.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+            shadowUbo.passParams = glm::vec4(1.0f, settingsWidget ? (settingsWidget->getShadowTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
+            updateUniformBuffer(shadowUniform, &shadowUbo, sizeof(UniformObject));
+            
+
             // Render all instances to shadow map
             for (const auto& instance : visibleModels) {
-                // Update uniform buffer for shadow pass: set viewProjection = lightSpaceMatrix
-                UniformObject shadowUbo = uboStatic;
-                shadowUbo.viewProjection = uboStatic.lightSpaceMatrix;
-                shadowUbo.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
-                // Per-material mapping/mappingParams are read from the Materials SSBO in shaders.
-                shadowUbo.passParams = glm::vec4(1.0f, settingsWidget ? (settingsWidget->getShadowTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
-
-                // Use a global (per-material) shadow uniform buffer and descriptor set instead
-                // of the per-instance buffer. Determine material index from the mesh's texIndex.
-                // single global shadow descriptor set is used; no per-instance selection needed
-
-                updateUniformBuffer(shadowUniform, &shadowUbo, sizeof(UniformObject));
                 // Push model matrix for this draw into the pipeline via push constants
                 vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance->model);
 
-                shadowMapper.renderObject(commandBuffer, instance->vbo, shadowDescriptorSet);
+                shadowMapper.renderObject(commandBuffer, instance->vbo, descriptorSet);
             }
 
             shadowMapper.endShadowPass(commandBuffer);
@@ -804,6 +776,10 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // --- Depth pre-pass: fill depth buffer with geometry depths (color writes disabled) ---
         if (depthPrePassPipeline != VK_NULL_HANDLE) {
+            UniformObject ubo = uboStatic;
+            ubo.viewProjection = projMat * viewMat;
+            updateUniformBuffer(mainUniform, &ubo, sizeof(UniformObject));
+
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
             // Draw all instances to populate depth buffer
             for (const auto& instance : visibleModels) {
@@ -812,11 +788,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 VkDeviceSize offsets[] = { 0 };
                 vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-                UniformObject ubo = uboStatic;
-                ubo.viewProjection = projMat * viewMat;
-                updateUniformBuffer(mainUniform, &ubo, sizeof(UniformObject));
-
+                
                 // Bind descriptor sets if available (material/global + per-texture)
                 VkDescriptorSet setsToBind[2];
                 uint32_t bindCount = 0;
@@ -838,8 +810,15 @@ class MyApp : public VulkanApp, public IEventHandler {
             skyRenderer->render(commandBuffer, skyVBO, descriptorSet, mainUniform, uboStatic, projMat, viewMat);
         }
 
-        // bind pipeline
-        // We'll bind the appropriate pipeline per-instance (regular or tessellated)
+        // Update uniform buffer for this instance: set viewProjection and model separately
+        UniformObject ubo = uboStatic;
+        ubo.viewProjection = projMat * viewMat;
+        ubo.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
+        ubo.shadowEffects = glm::vec4(0.0f, 0.0f, 0.0f,  settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f);
+        ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);        ubo.triplanarSettings = glm::vec4(settingsWidget->getTriplanarThreshold(), settingsWidget->getTriplanarExponent(), 0.0f, 0.0f);
+        ubo.passParams = glm::vec4(0.0f, settingsWidget ? (settingsWidget->getTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
+
+        updateUniformBuffer(mainUniform, &ubo, sizeof(UniformObject));
 
         // Render all instances with main pass
         for (const auto& instance : visibleModels) {
@@ -851,36 +830,6 @@ class MyApp : public VulkanApp, public IEventHandler {
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
             vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
             
-            // Update uniform buffer for this instance: set viewProjection and model separately
-            UniformObject ubo = uboStatic;
-            ubo.viewProjection = projMat * viewMat;
-            
-            // Per-material tess level is provided by the Materials SSBO; no per-instance override here.
-            // (temporary debug logging removed)
-            // Global normal mapping toggle (separate from tessellation/mappingMode)
-            if (settingsWidget) {
-                ubo.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
-            } else {
-                ubo.materialFlags.w = 1.0f;
-            }
-            
-            // Apply shadow settings: 
-            ubo.shadowEffects = glm::vec4(
-                0.0f, 
-                0.0f, // shadow displacement disabled
-                0.0f, 
-                settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f  // global shadows enabled
-            );
-            // Debug visualization mode (set by SettingsWidget)
-            if (settingsWidget) ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
-            else ubo.debugParams = glm::vec4(0.0f);
-            // Triplanar settings from UI
-            if (settingsWidget) ubo.triplanarSettings = glm::vec4(settingsWidget->getTriplanarThreshold(), settingsWidget->getTriplanarExponent(), 0.0f, 0.0f);
-            else ubo.triplanarSettings = glm::vec4(0.12f, 3.0f, 0.0f, 0.0f);
-            // isShadowPass = 0.0; second component stores global tessellation enabled flag (1.0 = enabled)
-            ubo.passParams = glm::vec4(0.0f, settingsWidget ? (settingsWidget->getTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
- 
-            updateUniformBuffer(mainUniform, &ubo, sizeof(UniformObject));
             
             // Bind descriptor set and draw
             // Use a single pipeline (tessellation is enabled/disabled in the shader using mappingMode)

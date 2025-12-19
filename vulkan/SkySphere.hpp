@@ -13,8 +13,7 @@ public:
 
     // Initialize sky buffer and bind into provided descriptor sets (binding 6)
     void init(SkyWidget* widget,
-              VkDescriptorSet descriptorSet,
-              VkDescriptorSet shadowDescriptorSet);
+              VkDescriptorSet descriptorSet);
 
     // Update sky UBO contents from widget (call per-frame if UI may change)
     void update();
