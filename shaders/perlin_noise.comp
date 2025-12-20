@@ -174,16 +174,16 @@ void main() {
     noise = clamp(noise, 0.0, 1.0);
     
     // Sample albedo/normal/bump from their respective texture arrays using the provided layer indices
-    vec3 albedoPrimary = texture(albedoArray, vec3(uv, float(params.primaryLayer))).rgb;
-    vec3 albedoSecondary = texture(albedoArray, vec3(uv, float(params.secondaryLayer))).rgb;
+    vec3 albedoPrimary = textureLod(albedoArray, vec3(uv, float(params.primaryLayer)), 0.0).rgb;
+    vec3 albedoSecondary = textureLod(albedoArray, vec3(uv, float(params.secondaryLayer)), 0.0).rgb;
     vec3 albedoBlended = mix(albedoPrimary, albedoSecondary, noise);
 
-    vec3 normalPrimary = texture(normalArray, vec3(uv, float(params.primaryLayer))).rgb;
-    vec3 normalSecondary = texture(normalArray, vec3(uv, float(params.secondaryLayer))).rgb;
+    vec3 normalPrimary = textureLod(normalArray, vec3(uv, float(params.primaryLayer)), 0.0).rgb;
+    vec3 normalSecondary = textureLod(normalArray, vec3(uv, float(params.secondaryLayer)), 0.0).rgb;
     vec3 normalBlended = mix(normalPrimary, normalSecondary, noise);
 
-    vec3 bumpPrimary = texture(bumpArray, vec3(uv, float(params.primaryLayer))).rgb;
-    vec3 bumpSecondary = texture(bumpArray, vec3(uv, float(params.secondaryLayer))).rgb;
+    vec3 bumpPrimary = textureLod(bumpArray, vec3(uv, float(params.primaryLayer)), 0.0).rgb;
+    vec3 bumpSecondary = textureLod(bumpArray, vec3(uv, float(params.secondaryLayer)), 0.0).rgb;
     vec3 bumpBlended = mix(bumpPrimary, bumpSecondary, noise);
 
     // Write results (albedo stored as linear UNORM)
