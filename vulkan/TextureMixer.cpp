@@ -521,6 +521,50 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 
 
 
+		// Prepare base level for mipmap generation and flush commands
+		VkImageMemoryBarrier prepBarriers[3]{};
+		for (int i = 0; i < 3; ++i) {
+			prepBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			prepBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			prepBarriers[i].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			prepBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			prepBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			prepBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			prepBarriers[i].subresourceRange.baseMipLevel = 0;
+			prepBarriers[i].subresourceRange.levelCount = 1;
+			prepBarriers[i].subresourceRange.baseArrayLayer = targetLayer;
+			prepBarriers[i].subresourceRange.layerCount = 1;
+			prepBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			prepBarriers[i].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		}
+		prepBarriers[0].image = textureArrayManager->albedoArray.image;
+		prepBarriers[1].image = textureArrayManager->normalArray.image;
+		prepBarriers[2].image = textureArrayManager->bumpArray.image;
+
+		vkCmdPipelineBarrier(
+			commandBuffer,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			0,
+			0, nullptr,
+			0, nullptr,
+			3, prepBarriers
+		);
+
+		// End the command buffer so we can run mipmap generation commands
+		app->endSingleTimeCommands(commandBuffer);
+
+		// Generate mipmaps for the target layer on each array (if they have multiple mip levels)
+		if (textureArrayManager->albedoArray.mipLevels > 1) {
+app->generateMipmaps(textureArrayManager->albedoArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->albedoArray.mipLevels, 1, targetLayer);
+			}
+			if (textureArrayManager->normalArray.mipLevels > 1) {
+				app->generateMipmaps(textureArrayManager->normalArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->normalArray.mipLevels, 1, targetLayer);
+			}
+			if (textureArrayManager->bumpArray.mipLevels > 1) {
+				app->generateMipmaps(textureArrayManager->bumpArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->bumpArray.mipLevels, 1, targetLayer);
+		}
+
 		// Mark the layer initialized after the write
 		textureArrayManager->setLayerInitialized(targetLayer, true);
 
@@ -531,7 +575,6 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 			(void*)textureArrayManager->normalSampler, (void*)textureArrayManager->normalArray.view);
 		printf("[TextureMixer] bumpSampler=%p bumpArray.view=%p\n",
 			(void*)textureArrayManager->bumpSampler, (void*)textureArrayManager->bumpArray.view);
-		app->endSingleTimeCommands(commandBuffer);
 	} else {
 		// Transition images back to SHADER_READ_ONLY_OPTIMAL
 		for (int i = 0; i < 3; ++i) {

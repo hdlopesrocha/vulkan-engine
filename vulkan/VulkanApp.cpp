@@ -4,8 +4,22 @@
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
+#include <cmath>
 
-
+// Convert in-place 8-bit RGBA sRGB values to linear (also 8-bit)
+static void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount) {
+    for (size_t i = 0; i < pixelCount; ++i) {
+        unsigned char* p = data + i * 4;
+        for (int c = 0; c < 3; ++c) {
+            float srgb = p[c] / 255.0f;
+            float lin = (srgb <= 0.04045f) ? (srgb / 12.92f) : std::pow((srgb + 0.055f) / 1.055f, 2.4f);
+            int v = static_cast<int>(std::round(lin * 255.0f));
+            if (v < 0) v = 0; if (v > 255) v = 255;
+            p[c] = static_cast<unsigned char>(v);
+        }
+        // alpha channel left as-is
+    }
+}
 
 const std::vector<const char*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
@@ -526,7 +540,7 @@ void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, Vk
     vkBindImageMemory(device, image, imageMemory, 0);
 }
 
-void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount) {
+void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount, uint32_t baseArrayLayer) {
     // Check if image format supports linear blitting
     VkFormatProperties formatProperties;
     vkGetPhysicalDeviceFormatProperties(physicalDevice, imageFormat, &formatProperties);
@@ -550,11 +564,12 @@ void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t tex
     for (uint32_t layer = 0; layer < layerCount; ++layer) {
         int32_t mipWidth = texWidth;
         int32_t mipHeight = texHeight;
+        uint32_t targetLayer = baseArrayLayer + layer;
 
         for (uint32_t i = 1; i < mipLevels; i++) {
             // transition current mip level i to TRANSFER_DST_OPTIMAL from UNDEFINED
             barrier.subresourceRange.baseMipLevel = i;
-            barrier.subresourceRange.baseArrayLayer = layer;
+            barrier.subresourceRange.baseArrayLayer = targetLayer;
             barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
             barrier.srcAccessMask = 0;
@@ -573,7 +588,7 @@ void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t tex
             barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
             barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            barrier.subresourceRange.baseArrayLayer = layer;
+            barrier.subresourceRange.baseArrayLayer = targetLayer;
 
             vkCmdPipelineBarrier(commandBuffer,
                                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -587,14 +602,14 @@ void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t tex
             blit.srcOffsets[1] = {mipWidth, mipHeight, 1};
             blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             blit.srcSubresource.mipLevel = i - 1;
-            blit.srcSubresource.baseArrayLayer = layer;
+            blit.srcSubresource.baseArrayLayer = targetLayer;
             blit.srcSubresource.layerCount = 1;
 
             blit.dstOffsets[0] = {0, 0, 0};
             blit.dstOffsets[1] = { std::max(1, mipWidth / 2), std::max(1, mipHeight / 2), 1 };
             blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             blit.dstSubresource.mipLevel = i;
-            blit.dstSubresource.baseArrayLayer = layer;
+            blit.dstSubresource.baseArrayLayer = targetLayer;
             blit.dstSubresource.layerCount = 1;
 
             vkCmdBlitImage(commandBuffer,
@@ -608,7 +623,7 @@ void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t tex
             barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             barrier.subresourceRange.baseMipLevel = i - 1;
-            barrier.subresourceRange.baseArrayLayer = layer;
+            barrier.subresourceRange.baseArrayLayer = targetLayer;
 
             vkCmdPipelineBarrier(commandBuffer,
                                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -623,7 +638,7 @@ void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t tex
 
         // Transition last mip level for this layer to SHADER_READ_ONLY_OPTIMAL
         barrier.subresourceRange.baseMipLevel = mipLevels - 1;
-        barrier.subresourceRange.baseArrayLayer = layer;
+        barrier.subresourceRange.baseArrayLayer = targetLayer;
         barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -751,6 +766,9 @@ TextureImage VulkanApp::createTextureImage(const char * filename) {
 
     Buffer stagingBuffer = createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
+    // Convert sRGB -> linear (stored as UNORM) to preserve previous sampling behavior
+    convertSRGB8ToLinearInPlace(pixels, static_cast<size_t>(texWidth) * static_cast<size_t>(texHeight));
+
     void* data;
     vkMapMemory(device, stagingBuffer.memory, 0, imageSize, 0, &data);
     memcpy(data, pixels, static_cast<size_t>(imageSize));
@@ -758,14 +776,14 @@ TextureImage VulkanApp::createTextureImage(const char * filename) {
 
     stbi_image_free(pixels);
 
-    // use sRGB format so the GPU performs correct sRGB -> linear conversion when sampling
+    // use UNORM format (no automatic sRGB->linear conversion)
     textureImage.mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
-    createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, textureImage.mipLevels, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage.image, textureImage.memory);
+    createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, textureImage.mipLevels, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage.image, textureImage.memory);
 
-    transitionImageLayout(textureImage.image, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    transitionImageLayout(textureImage.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     copyBufferToImage(stagingBuffer.buffer, textureImage.image, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
     // generate the mipmap chain
-    generateMipmaps(textureImage.image, VK_FORMAT_R8G8B8A8_SRGB, texWidth, texHeight, textureImage.mipLevels);
+    generateMipmaps(textureImage.image, VK_FORMAT_R8G8B8A8_UNORM, texWidth, texHeight, textureImage.mipLevels);
 
     vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
     vkFreeMemory(device, stagingBuffer.memory, nullptr);
@@ -795,6 +813,13 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
     VkDeviceSize layerSize = texWidth * texHeight * 4;
     VkDeviceSize imageSize = layerSize * layerCount;
 
+    // If the caller requested sRGB handling, convert loaded sRGB data to linear before storing as UNORM
+    if (srgb) {
+        for (uint32_t i = 0; i < layerCount; ++i) {
+            convertSRGB8ToLinearInPlace(layersData[i], static_cast<size_t>(texWidth) * static_cast<size_t>(texHeight));
+        }
+    }
+
     // create staging buffer containing all layers consecutively
     Buffer stagingBuffer = createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     void* data;
@@ -808,8 +833,8 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
 
     textureImage.mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
 
-    // choose format: sRGB for color/albedo textures, UNORM for normal/height maps
-    VkFormat chosenFormat = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    // choose format: use UNORM for array textures
+    VkFormat chosenFormat = VK_FORMAT_R8G8B8A8_UNORM;
 
     // create image with arrayLayers = layerCount
     VkImageCreateInfo imageInfo{};
@@ -932,8 +957,8 @@ void VulkanApp::createTextureImageView(TextureImage &textureImage) {
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = textureImage.image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    // match the image format (use sRGB view so sampling applies correct conversion)
-    viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    // match the image format (use UNORM view)
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = textureImage.mipLevels;

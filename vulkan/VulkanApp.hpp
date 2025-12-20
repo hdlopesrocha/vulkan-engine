@@ -82,8 +82,12 @@ protected:
         void createRenderPass();
         void createFramebuffers();
         void createCommandPool();
-        void generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount = 1);
         void createDepthResources();
+
+    public:
+        // Generate mipmaps for an image. Works on array textures by specifying
+        // layerCount and baseArrayLayer to affect a subset of layers.
+        void generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount = 1, uint32_t baseArrayLayer = 0);
         void createDescriptorSetLayout();
     void cleanupSwapchain();
     void recreateSwapchain();
@@ -117,7 +121,7 @@ protected:
     public:
         Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties);
         TextureImage createTextureImage(const char * filename);
-    TextureImage createTextureImageArray(const std::vector<std::string>& filenames, bool srgb = true);
+    TextureImage createTextureImageArray(const std::vector<std::string>& filenames, bool srgb = false);
         VkSampler createTextureSampler(uint32_t mipLevels);
         void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
     void createDescriptorPool(uint32_t uboCount, uint32_t samplerCount);

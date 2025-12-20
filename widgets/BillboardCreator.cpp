@@ -1,5 +1,21 @@
 // Implementation for BillboardCreator - moved from header
 #include "BillboardCreator.hpp"
+#include <cmath>
+
+// Convert in-place 8-bit RGBA sRGB values to linear (also 8-bit)
+static void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount) {
+    for (size_t i = 0; i < pixelCount; ++i) {
+        unsigned char* p = data + i * 4;
+        for (int c = 0; c < 3; ++c) {
+            float srgb = p[c] / 255.0f;
+            float lin = (srgb <= 0.04045f) ? (srgb / 12.92f) : std::pow((srgb + 0.055f) / 1.055f, 2.4f);
+            int v = static_cast<int>(std::round(lin * 255.0f));
+            if (v < 0) v = 0; if (v > 255) v = 255;
+            p[c] = static_cast<unsigned char>(v);
+        }
+        // alpha channel left as-is
+    }
+}
 #include "../vulkan/VulkanApp.hpp"
 #include <map>
 #include <vector>
@@ -423,6 +439,11 @@ AtlasTextureData BillboardCreator::loadAtlasTextures(int atlasIndex) {
         if (!data.normalData) printf("    - Normal texture failed\n");
         if (!data.opacityData) printf("    - Opacity texture failed\n");
         freeAtlasTextures(data);
+    }
+
+    // Convert albedo (color) atlas texture from sRGB to linear so subsequent compositing uses linear values
+    if (data.albedoData) {
+        convertSRGB8ToLinearInPlace(data.albedoData, static_cast<size_t>(data.width) * static_cast<size_t>(data.height));
     }
 
     return data;

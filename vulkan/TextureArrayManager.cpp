@@ -4,6 +4,22 @@
 #include <stdexcept>
 #include <backends/imgui_impl_vulkan.h>
 #include "../vulkan/EditableTexture.hpp"
+#include <cmath>
+
+// Convert in-place 8-bit RGBA sRGB values to linear (also 8-bit)
+static void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount) {
+    for (size_t i = 0; i < pixelCount; ++i) {
+        unsigned char* p = data + i * 4;
+        for (int c = 0; c < 3; ++c) {
+            float srgb = p[c] / 255.0f;
+            float lin = (srgb <= 0.04045f) ? (srgb / 12.92f) : std::pow((srgb + 0.055f) / 1.055f, 2.4f);
+            int v = static_cast<int>(std::round(lin * 255.0f));
+            if (v < 0) v = 0; if (v > 255) v = 255;
+            p[c] = static_cast<unsigned char>(v);
+        }
+        // alpha channel left as-is
+    }
+}
 
 void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h) {
 	layerAmount = layers;
@@ -74,8 +90,8 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	cleanupTextureImage(app, normalArray);
 	cleanupTextureImage(app, bumpArray);
 
-	// We'll create 2D array images with a single mip level for now
-	uint32_t mipLevels = 1;
+	// Compute mip level count and create 2D array image
+	uint32_t mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
 
 	auto createArray = [&](TextureImage &out, VkFormat format, bool srgb){
 		VkImageCreateInfo imageInfo{};
@@ -145,8 +161,8 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 		app->transitionImageLayout(out.image, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	};
 
-	// Albedo uses sRGB format
-	createArray(albedoArray, VK_FORMAT_R8G8B8A8_SRGB, true);
+	// Albedo: use UNORM format (no automatic sRGB->linear conversion)
+	createArray(albedoArray, VK_FORMAT_R8G8B8A8_UNORM, true);
 	// Normal and bump maps use UNORM
 	createArray(normalArray, VK_FORMAT_R8G8B8A8_UNORM, false);
 	createArray(bumpArray, VK_FORMAT_R8G8B8A8_UNORM, false);
@@ -190,7 +206,7 @@ uint TextureArrayManager::load(char* albedoFile, char* normalFile, char* bumpFil
 	VkDevice device = a->getDevice();
 
 	struct Img { char* path; TextureImage* dstImage; VkFormat format; bool srgb; } imgs[3] = {
-		{ albedoFile, &albedoArray, VK_FORMAT_R8G8B8A8_SRGB, true },
+		{ albedoFile, &albedoArray, VK_FORMAT_R8G8B8A8_UNORM, true },
 		{ normalFile, &normalArray, VK_FORMAT_R8G8B8A8_UNORM, false },
 		{ bumpFile,   &bumpArray,   VK_FORMAT_R8G8B8A8_UNORM, false }
 	};
@@ -209,6 +225,11 @@ uint TextureArrayManager::load(char* albedoFile, char* normalFile, char* bumpFil
 			unsigned char* r = resizeNearest(pixels, texW, texH, static_cast<int>(width), static_cast<int>(height));
 			uploadData = r;
 			resized = true;
+		}
+
+		// If this image is flagged as sRGB (color/albedo), convert to linear before storing as UNORM
+		if (imgs[i].srgb) {
+			convertSRGB8ToLinearInPlace(uploadData, static_cast<size_t>(width) * static_cast<size_t>(height));
 		}
 
 		VkDeviceSize imageSize = static_cast<VkDeviceSize>(width) * height * 4;
@@ -256,28 +277,34 @@ uint TextureArrayManager::load(char* albedoFile, char* normalFile, char* bumpFil
 
 		vkCmdCopyBufferToImage(cmd, staging.buffer, imgs[i].dstImage->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-		// Transition back to SHADER_READ_ONLY_OPTIMAL
-		VkImageMemoryBarrier barrier2{};
-		barrier2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		barrier2.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		barrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier2.image = imgs[i].dstImage->image;
-		barrier2.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier2.subresourceRange.baseMipLevel = 0;
-		barrier2.subresourceRange.levelCount = imgs[i].dstImage->mipLevels;
-		barrier2.subresourceRange.baseArrayLayer = currentLayer;
-		barrier2.subresourceRange.layerCount = 1;
-		barrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		barrier2.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-							 0, nullptr, 0, nullptr, 1, &barrier2);
-
+		// finish the short-lived command buffer so the copy is flushed
 		a->endSingleTimeCommands(cmd);
 
-		// cleanup staging
+		// Generate mipmaps for the uploaded layer (this will transition mip levels to correct layouts)
+		if (imgs[i].dstImage->mipLevels > 1) {
+			a->generateMipmaps(imgs[i].dstImage->image, imgs[i].format, static_cast<int32_t>(width), static_cast<int32_t>(height), imgs[i].dstImage->mipLevels, 1, currentLayer);
+		} else {
+			// single-level: transition layer to SHADER_READ_ONLY_OPTIMAL
+			VkCommandBuffer cmd2 = a->beginSingleTimeCommands();
+			VkImageMemoryBarrier barrier{};
+			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image = imgs[i].dstImage->image;
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			barrier.subresourceRange.baseMipLevel = 0;
+			barrier.subresourceRange.levelCount = imgs[i].dstImage->mipLevels;
+			barrier.subresourceRange.baseArrayLayer = currentLayer;
+			barrier.subresourceRange.layerCount = 1;
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+			vkCmdPipelineBarrier(cmd2, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+					 0, nullptr, 0, nullptr, 1, &barrier);
+			a->endSingleTimeCommands(cmd2);
+		}
 		if (staging.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, staging.buffer, nullptr);
 		if (staging.memory != VK_NULL_HANDLE) vkFreeMemory(device, staging.memory, nullptr);
 	}
@@ -363,7 +390,10 @@ uint TextureArrayManager::create() {
 							 0, nullptr, 0, nullptr, 1, &barrier2);
 
 		a->endSingleTimeCommands(cmd);
-	}
+		// Generate mipmaps for this layer if necessary
+		if (dst->mipLevels > 1) {
+			a->generateMipmaps(dst->image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), dst->mipLevels, 1, currentLayer);
+		}	}
 
 	// cleanup staging
 	if (staging.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, staging.buffer, nullptr);
@@ -477,8 +507,18 @@ void TextureArrayManager::updateLayerFromEditableMap(uint32_t layer, const Edita
 
 	a->endSingleTimeCommands(cmd);
 
-	// Recreate ImGui descriptor for this layer so previews show updated data
-	{
+		// Generate mipmaps for the updated layer if needed
+		{
+			uint32_t mipLevels = 1;
+			switch (map) {
+				case 0: mipLevels = albedoArray.mipLevels; break;
+				case 1: mipLevels = normalArray.mipLevels; break;
+				case 2: mipLevels = bumpArray.mipLevels; break;
+			}
+			if (mipLevels > 1) {
+				a->generateMipmaps(dstImage, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), mipLevels, 1, layer);
+			}
+		}
 		std::vector<ImTextureID>* texVec = nullptr;
 		auto viewVec = &albedoLayerViews;
 		VkSampler sampler = albedoSampler;
@@ -512,7 +552,7 @@ void TextureArrayManager::updateLayerFromEditableMap(uint32_t layer, const Edita
 					viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 					viewInfo.image = arrImg->image;
 					viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-					if (map == 0) viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+				if (map == 0) viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
 					else viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
 					viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 					viewInfo.subresourceRange.baseMipLevel = 0;
@@ -532,7 +572,6 @@ void TextureArrayManager::updateLayerFromEditableMap(uint32_t layer, const Edita
 			}
 		}
 	}
-}
 
 bool TextureArrayManager::isLayerInitialized(uint32_t layer) const {
 	if (layer >= layerInitialized.size()) return false;
@@ -575,8 +614,7 @@ ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
 		viewInfo.image = src->image;
 		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
 		// choose format consistent with array creation
-		if (map == 0) viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
-		else viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+			viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
 		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		viewInfo.subresourceRange.baseMipLevel = 0;
 		viewInfo.subresourceRange.levelCount = src->mipLevels;
