@@ -296,10 +296,11 @@ void ShadowMapper::beginShadowPass(VkCommandBuffer commandBuffer, const glm::mat
     shadowRenderPassInfo.renderArea.offset = {0, 0};
     shadowRenderPassInfo.renderArea.extent = {shadowMapSize, shadowMapSize};
     
-    VkClearValue clearDepth;
-    clearDepth.depthStencil = {1.0f, 0};
-    shadowRenderPassInfo.clearValueCount = 1;
-    shadowRenderPassInfo.pClearValues = &clearDepth;
+    VkClearValue clearValues[2] = {};
+    clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    clearValues[1].depthStencil = {1.0f, 0};
+    shadowRenderPassInfo.clearValueCount = 2;
+    shadowRenderPassInfo.pClearValues = clearValues;
     
     vkCmdBeginRenderPass(commandBuffer, &shadowRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
     

@@ -118,8 +118,12 @@ void VulkanApp::cleanup() {
     if (device != VK_NULL_HANDLE) vkDeviceWaitIdle(device);
 
     // destroy sync objects
-    if (inFlightFence != VK_NULL_HANDLE) vkDestroyFence(device, inFlightFence, nullptr);
-    if (renderFinishedSemaphore != VK_NULL_HANDLE) vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
+    for (auto f : inFlightFences) {
+        if (f != VK_NULL_HANDLE) vkDestroyFence(device, f, nullptr);
+    }
+    for (auto s : renderFinishedSemaphores) {
+        if (s != VK_NULL_HANDLE) vkDestroySemaphore(device, s, nullptr);
+    }
     if (imageAvailableSemaphore != VK_NULL_HANDLE) vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
 
     // command pool
@@ -408,6 +412,16 @@ void VulkanApp::createRenderPass() {
     depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
+    VkAttachmentDescription dummyAttachment{};
+    dummyAttachment.format = swapchainImageFormat;
+    dummyAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    dummyAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    dummyAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    dummyAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    dummyAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    dummyAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    dummyAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
     VkAttachmentReference colorAttachmentRef{};
     colorAttachmentRef.attachment = 0;
     colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -422,7 +436,15 @@ void VulkanApp::createRenderPass() {
     subpass.pColorAttachments = &colorAttachmentRef;
     subpass.pDepthStencilAttachment = &depthAttachmentRef;
 
-    std::array<VkAttachmentDescription, 2> attachments = { colorAttachment, depthAttachment };
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependency.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    std::array<VkAttachmentDescription, 3> attachments = { colorAttachment, depthAttachment, dummyAttachment };
 
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -430,6 +452,8 @@ void VulkanApp::createRenderPass() {
     renderPassInfo.pAttachments = attachments.data();
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
 
     if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create render pass!");
@@ -439,12 +463,12 @@ void VulkanApp::createRenderPass() {
 void VulkanApp::createFramebuffers() {
     swapchainFramebuffers.resize(swapchainImageViews.size());
     for (size_t i = 0; i < swapchainImageViews.size(); i++) {
-        VkImageView attachments[] = { swapchainImageViews[i], depthImageView };
+        VkImageView attachments[] = { swapchainImageViews[i], depthImageView, depthImageView };
 
         VkFramebufferCreateInfo framebufferInfo{};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         framebufferInfo.renderPass = renderPass;
-        framebufferInfo.attachmentCount = 2;
+        framebufferInfo.attachmentCount = 3;
         framebufferInfo.pAttachments = attachments;
         framebufferInfo.width = swapchainExtent.width;
         framebufferInfo.height = swapchainExtent.height;
@@ -747,10 +771,18 @@ void VulkanApp::createSyncObjects() {
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphore) != VK_SUCCESS ||
-        vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphore) != VK_SUCCESS ||
-        vkCreateFence(device, &fenceInfo, nullptr, &inFlightFence) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create synchronization objects for a frame!");
+    if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphore) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create image available semaphore!");
+    }
+
+    renderFinishedSemaphores.resize(swapchainImages.size());
+    inFlightFences.resize(swapchainImages.size());
+
+    for (size_t i = 0; i < swapchainImages.size(); i++) {
+        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
+            vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create synchronization objects for frame " + std::to_string(i));
+        }
     }
 }
 
@@ -1466,9 +1498,6 @@ Buffer VulkanApp::createIndexBuffer(const std::vector<uint> &indices) {
 }
 
 void VulkanApp::drawFrame() {
-    vkWaitForFences(device, 1, &inFlightFence, VK_TRUE, UINT64_MAX);
-    vkResetFences(device, 1, &inFlightFence);
-
     uint32_t imageIndex;
     VkResult r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -1478,6 +1507,9 @@ void VulkanApp::drawFrame() {
         std::cerr << "vkAcquireNextImageKHR failed: " << r << std::endl;
         return;
     }
+
+    vkWaitForFences(device, 1, &inFlightFences[imageIndex], VK_TRUE, UINT64_MAX);
+    vkResetFences(device, 1, &inFlightFences[imageIndex]);
     // compute deltaTime for this frame
     double frameNow = glfwGetTime();
     float deltaTime = 0.0f;
@@ -1518,7 +1550,7 @@ void VulkanApp::drawFrame() {
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    VkSemaphore signalSemaphores[] = { renderFinishedSemaphore };
+    VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[imageIndex] };
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
@@ -1530,16 +1562,17 @@ void VulkanApp::drawFrame() {
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = swapchainExtent;
 
-    std::array<VkClearValue, 2> clearValues{};
+    VkClearValue clearValues[3] = {};
     clearValues[0].color = {{0.0f, 0.4f, 0.6f, 1.0f}};
     clearValues[1].depthStencil = {1.0f, 0};
-    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-    renderPassInfo.pClearValues = clearValues.data();
+    clearValues[2].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    renderPassInfo.clearValueCount = 3;
+    renderPassInfo.pClearValues = clearValues;
 
 
     ImGui::Render();
     draw(commandBuffer, renderPassInfo);
-    r = vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFence);
+    r = vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[imageIndex]);
     if (r != VK_SUCCESS) {
         std::cerr << "vkQueueSubmit failed: " << r << std::endl;
         return;

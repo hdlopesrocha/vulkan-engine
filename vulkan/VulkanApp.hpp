@@ -22,8 +22,8 @@ class VulkanApp {
     VkCommandPool commandPool = VK_NULL_HANDLE;
 
     VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
-    VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
-    VkFence inFlightFence = VK_NULL_HANDLE;
+    std::vector<VkSemaphore> renderFinishedSemaphores;
+    std::vector<VkFence> inFlightFences;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     // Application main graphics pipeline (owner: app / main.cpp)
     VkPipeline appGraphicsPipeline = VK_NULL_HANDLE;

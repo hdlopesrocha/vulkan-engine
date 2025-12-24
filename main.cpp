@@ -888,10 +888,17 @@ class MyApp : public VulkanApp, public IEventHandler {
         if (depthPrePassPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), depthPrePassPipeline, nullptr);
         // Tessellation pipelines removed earlier; nothing to destroy here.
         if (skyRenderer) skyRenderer->cleanup();
+        skyVBO.destroy(getDevice());
         // texture cleanup via managers
         // legacy texture managers removed; arrays handle GPU textures now
         textureArrayManager.destroy(this);
         vegetationTextureArrayManager.destroy(this);
+ 
+        // destroy uniform buffers
+        vkDestroyBuffer(getDevice(), mainUniform.buffer, nullptr);
+        vkFreeMemory(getDevice(), mainUniform.memory, nullptr);
+        vkDestroyBuffer(getDevice(), shadowUniform.buffer, nullptr);
+        vkFreeMemory(getDevice(), shadowUniform.memory, nullptr);
  
         // destroy any dynamically created VBOs from async-loaded models
        // for (auto &pv : dynamicMeshVBOs) {
