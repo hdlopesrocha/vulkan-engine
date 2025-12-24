@@ -171,7 +171,7 @@ void TextureMixer::createComputePipeline() {
 	VkDescriptorPoolSize poolSizes[2] = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	// triple set uses 3 storage images, plus one per-map storage image each (3)
-	poolSizes[0].descriptorCount = 10; // provide extra slack
+	poolSizes[0].descriptorCount = 20; // provide extra slack
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	// triple set uses 3 combined samplers, per-map sets use 2 each (6) => total 9
 	poolSizes[1].descriptorCount = 20; // provide extra slack for samplers
@@ -230,15 +230,15 @@ void TextureMixer::createTripleComputeDescriptorSet() {
 	if (textureArrayManager) {
 		albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view;
 		albedoSamplerInfo.sampler = textureArrayManager->albedoSampler;
-		albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 		normalSamplerInfo.imageView = textureArrayManager->normalArray.view;
 		normalSamplerInfo.sampler = textureArrayManager->normalSampler;
-		normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 		bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view;
 		bumpSamplerInfo.sampler = textureArrayManager->bumpSampler;
-		bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 	} else {
 		// No TextureArrayManager: leave sampler imageViews null (not supported)
 		albedoSamplerInfo.imageView = VK_NULL_HANDLE; albedoSamplerInfo.sampler = VK_NULL_HANDLE; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -416,7 +416,7 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 	VkImageMemoryBarrier barriers[3]{};
 	for (int i = 0; i < 3; ++i) {
 		barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barriers[i].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 		barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
 		barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -455,7 +455,7 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 
 			// If the target array layer hasn't been initialized yet it may be in UNDEFINED
 			for (int i = 0; i < 3; ++i) {
-				if (textureArrayManager->isLayerInitialized(targetLayer)) barriers[i].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				if (textureArrayManager->isLayerInitialized(targetLayer)) barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 				else barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 				barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
 				barriers[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -493,7 +493,7 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 		for (int i = 0; i < 3; ++i) {
 			postBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 			postBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-			postBarriers[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			postBarriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
 			postBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			postBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			postBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;

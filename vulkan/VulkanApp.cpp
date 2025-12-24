@@ -412,16 +412,6 @@ void VulkanApp::createRenderPass() {
     depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-    VkAttachmentDescription dummyAttachment{};
-    dummyAttachment.format = swapchainImageFormat;
-    dummyAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    dummyAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    dummyAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    dummyAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    dummyAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    dummyAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    dummyAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
     VkAttachmentReference colorAttachmentRef{};
     colorAttachmentRef.attachment = 0;
     colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -444,7 +434,7 @@ void VulkanApp::createRenderPass() {
     dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
-    std::array<VkAttachmentDescription, 3> attachments = { colorAttachment, depthAttachment, dummyAttachment };
+    std::array<VkAttachmentDescription, 2> attachments = { colorAttachment, depthAttachment };
 
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -463,12 +453,12 @@ void VulkanApp::createRenderPass() {
 void VulkanApp::createFramebuffers() {
     swapchainFramebuffers.resize(swapchainImageViews.size());
     for (size_t i = 0; i < swapchainImageViews.size(); i++) {
-        VkImageView attachments[] = { swapchainImageViews[i], depthImageView, depthImageView };
+        VkImageView attachments[] = { swapchainImageViews[i], depthImageView };
 
         VkFramebufferCreateInfo framebufferInfo{};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         framebufferInfo.renderPass = renderPass;
-        framebufferInfo.attachmentCount = 3;
+        framebufferInfo.attachmentCount = 2;
         framebufferInfo.pAttachments = attachments;
         framebufferInfo.width = swapchainExtent.width;
         framebufferInfo.height = swapchainExtent.height;
@@ -1106,7 +1096,7 @@ void VulkanApp::createDescriptorSetLayout() {
     materialBinding.descriptorCount = 1;
     materialBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     materialBinding.pImmutableSamplers = nullptr;
-    materialBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+    materialBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
     VkDescriptorSetLayoutCreateInfo materialLayoutInfo{};
     materialLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1562,11 +1552,10 @@ void VulkanApp::drawFrame() {
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = swapchainExtent;
 
-    VkClearValue clearValues[3] = {};
+    VkClearValue clearValues[2] = {};
     clearValues[0].color = {{0.0f, 0.4f, 0.6f, 1.0f}};
     clearValues[1].depthStencil = {1.0f, 0};
-    clearValues[2].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-    renderPassInfo.clearValueCount = 3;
+    renderPassInfo.clearValueCount = 2;
     renderPassInfo.pClearValues = clearValues;
 
 
@@ -1867,6 +1856,8 @@ void VulkanApp::createLogicalDevice() {
     if (supportedFeatures.fillModeNonSolid) {
         deviceFeatures.fillModeNonSolid = VK_TRUE;
     }
+    deviceFeatures.tessellationShader = VK_TRUE;
+    deviceFeatures.samplerAnisotropy = VK_TRUE;
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
