@@ -47,11 +47,13 @@
 #include "vulkan/VertexBufferObjectBuilder.hpp"
 #include "vulkan/Model3DVersion.hpp"
 #include "vulkan/Model3D.hpp"
+#include "vulkan/IndirectRenderer.hpp"
 
 class MyApp : public VulkanApp, public IEventHandler {
     LocalScene * mainScene;
     std::unordered_map<OctreeNode*, Model3DVersion> nodeModelVersions;
-    std::vector<Model3D*> visibleModels;
+    std::vector<uint32_t> visibleMeshes;
+    IndirectRenderer indirectRenderer;
 
     public:
         MyApp() : shadowMapper(this, 8192) {}
@@ -132,7 +134,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Subscribe camera and app to event manager
         eventManager.subscribe(&camera);
         eventManager.subscribe(this);
-        visibleModels.reserve(1000);
+        visibleMeshes.reserve(1000);
 
         // Use ImGui dark theme for a darker UI appearance
         ImGui::StyleColorsDark();
@@ -428,7 +430,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             // No separate shadow descriptor update required (reusing `descriptorSet`).
         }
 
-        // Build sphere mesh for this material
+        // Build sphere mesh for this material (used by sky renderer)
         auto sphere = SphereModel(0.5f, 32, 16, 0);
         skyVBO = VertexBufferObjectBuilder::create(this, sphere);
         
@@ -518,6 +520,9 @@ class MyApp : public VulkanApp, public IEventHandler {
         billboardCreator->setVulkanApp(this);
         widgetManager.addWidget(billboardCreator);
         
+        // initialize indirect renderer
+        indirectRenderer.init(this);
+
         createCommandBuffers();
         mainScene = new LocalScene();
 
@@ -592,7 +597,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 ImGui::SetNextWindowPos(ImVec2(padding, y), ImGuiCond_Always);
                 if (ImGui::Begin("##stats_overlay", nullptr, flags)) {
                     ImGui::Text("FPS: %.1f", imguiFps);
-                    ImGui::Text("Visible: %zu", visibleModels.size());
+                    ImGui::Text("Visible: %zu", visibleMeshes.size());
                 }
                 ImGui::End();
             }
@@ -687,7 +692,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     };
 
     void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
-        visibleModels.clear();
+        visibleMeshes.clear();
         // Request visible octree nodes from the main scene for the current camera view            
         mainScene->requestVisibleNodes(Layer::LAYER_OPAQUE, camera.getViewProjectionMatrix(), [this](const OctreeNodeData& data){ 
             // Capture node/version locally to ensure lifetime for the async request callback
@@ -700,7 +705,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             auto it = nodeModelVersions.find(node);
             if (it != nodeModelVersions.end()) {
                 if (it->second.version != version) {
-                    if (it->second.model) delete it->second.model;
+                    if (it->second.meshId != UINT32_MAX) indirectRenderer.removeMesh(it->second.meshId);
                     nodeModelVersions.erase(it);
                     it = nodeModelVersions.end();
                 }
@@ -712,18 +717,15 @@ class MyApp : public VulkanApp, public IEventHandler {
                 it = em.first;
                 // requestModel3D expects a non-const reference; cast away const here
                 mainScene->requestModel3D(Layer::LAYER_OPAQUE, const_cast<OctreeNodeData&>(data), [this, node, version](const Geometry& mesh) {
-                    Model3D * model = new Model3D(
-                        VertexBufferObjectBuilder::create(this, mesh), 
-                        glm::mat4(1.0f)
-                    );
-                    nodeModelVersions[node] = { model, version };
-                    std::cout << "[Model3D] Loaded model for node " << node << " (version " << version << ")\n";
+                    uint32_t meshId = indirectRenderer.addMesh(this, mesh, glm::mat4(1.0f));
+                    nodeModelVersions[node] = { meshId, version };
+                    std::cout << "[Model3D] Loaded model for node " << node << " (version " << version << ") meshId=" << meshId << "\n";
                 });
             }
 
-            // Only add fully-loaded models to visibleModels
-            Model3D* loadedModel = nodeModelVersions[node].model;
-            if (loadedModel) visibleModels.push_back(loadedModel);
+            // Only add fully-loaded meshes to visibleMeshes
+            uint32_t loadedMeshId = nodeModelVersions[node].meshId;
+            if (loadedMeshId != UINT32_MAX) visibleMeshes.push_back(loadedMeshId);
             
         });
         
@@ -745,12 +747,22 @@ class MyApp : public VulkanApp, public IEventHandler {
             updateUniformBuffer(shadowUniform, &shadowUbo, sizeof(UniformObject));
             
 
-            // Render all instances to shadow map
-            for (const auto& instance : visibleModels) {
-                // Push model matrix for this draw into the pipeline via push constants
-                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance->model);
-
-                shadowMapper.renderObject(commandBuffer, instance->vbo, descriptorSet);
+            // Render all instances to shadow map using indirect draws
+            for (const auto& meshId : visibleMeshes) {
+                VkDescriptorSet matDs = getMaterialDescriptorSet();
+                if (matDs != VK_NULL_HANDLE) {
+                    VkDescriptorSet sets[2] = { matDs, descriptorSet };
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 2, sets, 0, nullptr);
+                } else {
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
+                }
+                auto info = indirectRenderer.getMeshInfo(meshId);
+                VkBuffer vbs[] = { info.vertexBuffer.buffer };
+                VkDeviceSize offsets[] = { 0 };
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vbs, offsets);
+                vkCmdBindIndexBuffer(commandBuffer, info.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &info.model);
+                indirectRenderer.drawIndirect(commandBuffer, meshId);
             }
 
             shadowMapper.endShadowPass(commandBuffer);
@@ -808,16 +820,15 @@ class MyApp : public VulkanApp, public IEventHandler {
         // --- Depth pre-pass: fill depth buffer with geometry depths (color writes disabled) ---
         if (depthPrePassPipeline != VK_NULL_HANDLE) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
-            // Draw all instances to populate depth buffer
-            for (const auto& instance : visibleModels) {
-                const auto& vbo = instance->vbo;
-                VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
+            // Draw all instances to populate depth buffer using indirect draws
+            for (const auto& meshId : visibleMeshes) {
+                auto info = indirectRenderer.getMeshInfo(meshId);
+                VkBuffer vertexBuffers[] = { info.vertexBuffer.buffer };
                 VkDeviceSize offsets[] = { 0 };
                 vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-                
-                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance->model);
-                vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
+                vkCmdBindIndexBuffer(commandBuffer, info.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &info.model);
+                indirectRenderer.drawIndirect(commandBuffer, meshId);
             }
         }
 
@@ -850,18 +861,18 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
         
         // Render all instances with main pass
-        for (const auto& instance : visibleModels) {
-            const auto& vbo = instance->vbo;
-            
+        for (const auto& meshId : visibleMeshes) {
+            auto info = indirectRenderer.getMeshInfo(meshId);
+
             // Bind vertex and index buffers
-            VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
+            VkBuffer vertexBuffers[] = { info.vertexBuffer.buffer };
             VkDeviceSize offsets[] = { 0 };
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-            vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-            
+            vkCmdBindIndexBuffer(commandBuffer, info.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
             // Push per-draw model matrix via push constants (visible to vertex + tessellation stages)
-            vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance->model);
-            vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
+            vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &info.model);
+            indirectRenderer.drawIndirect(commandBuffer, meshId);
         }
 
         // render ImGui draw data inside the same command buffer (must be inside render pass)
@@ -906,9 +917,9 @@ class MyApp : public VulkanApp, public IEventHandler {
        // }
        // dynamicMeshVBOs.clear();
 
-        // delete any heap-allocated Model3D instances created for async nodes
+        // Remove any meshes created for async nodes from indirect renderer
         for (auto &entry : nodeModelVersions) {
-            if (entry.second.model) delete entry.second.model;
+            if (entry.second.meshId != UINT32_MAX) indirectRenderer.removeMesh(entry.second.meshId);
         }
         nodeModelVersions.clear();
 
@@ -931,6 +942,8 @@ class MyApp : public VulkanApp, public IEventHandler {
         materialManager.destroy(this);
         // sky resources cleanup via SkySphere
         if (skySphere) skySphere->cleanup();
+        // cleanup indirect renderer resources
+        indirectRenderer.cleanup(this);
     }
 
 };
