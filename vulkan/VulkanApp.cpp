@@ -1090,7 +1090,7 @@ void VulkanApp::createDescriptorSetLayout() {
         throw std::runtime_error("failed to create descriptor set layout!");
     }
 
-    // Create a separate descriptor set layout for Materials (binding 5 only)
+    // Create a separate descriptor set layout for Materials (binding 5) and Models SSBO (binding 6)
     VkDescriptorSetLayoutBinding materialBinding{};
     materialBinding.binding = 5;
     materialBinding.descriptorCount = 1;
@@ -1098,10 +1098,18 @@ void VulkanApp::createDescriptorSetLayout() {
     materialBinding.pImmutableSamplers = nullptr;
     materialBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
+    VkDescriptorSetLayoutBinding modelsBinding{};
+    modelsBinding.binding = 6;
+    modelsBinding.descriptorCount = 1;
+    modelsBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    modelsBinding.pImmutableSamplers = nullptr;
+    modelsBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+
+    VkDescriptorSetLayoutBinding matBindings[2] = { materialBinding, modelsBinding };
     VkDescriptorSetLayoutCreateInfo materialLayoutInfo{};
     materialLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    materialLayoutInfo.bindingCount = 1;
-    materialLayoutInfo.pBindings = &materialBinding;
+    materialLayoutInfo.bindingCount = 2;
+    materialLayoutInfo.pBindings = matBindings;
 
     if (vkCreateDescriptorSetLayout(device, &materialLayoutInfo, nullptr, &materialDescriptorSetLayout) != VK_SUCCESS) {
         throw std::runtime_error("failed to create material descriptor set layout!");

@@ -1,7 +1,11 @@
 #version 450
 
+// Enable draw parameters built-in to access gl_DrawID for multi-draw
+#extension GL_ARB_shader_draw_parameters : enable
+
 #include "includes/ubo.glsl"
 
+layout(std430, set = 0, binding = 6) readonly buffer Models { mat4 models[]; };
 
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inColor;
@@ -23,13 +27,18 @@ layout(location = 9) out vec4 fragTangent;
 void main() {
     fragColor = inColor;
     fragUV = inUV;
+    // read model matrix from GPU SSBO indexed by draw id (fallback to push constants if unavailable)
+    mat4 model = pushConstants.model;
+#ifdef GL_ARB_shader_draw_parameters
+    model = models[gl_DrawIDARB];
+#endif
     // Transform normal to world space using the model matrix
     // For uniform scaling, mat3(model) works. For non-uniform scaling, use transpose(inverse(model))
-    fragNormal = normalize(mat3(pushConstants.model) * inNormal);
+    fragNormal = normalize(mat3(model) * inNormal);
     // Provide per-vertex tex index for TCS to assemble per-patch indices
     fragTexIndex = inTexIndex;
     // compute world-space position and pass to fragment
-    vec4 worldPos = pushConstants.model * vec4(inPos, 1.0);
+    vec4 worldPos = model * vec4(inPos, 1.0);
     fragPosWorld = worldPos.xyz;
     // compute light-space position for shadow mapping
     fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
@@ -38,7 +47,7 @@ void main() {
     // also pass local-space normal for tessellation/displacement
     fragLocalNormal = inNormal;
     // pass tangent as a vec4: xyz = tangent, w = handedness sign
-    fragTangent = vec4(normalize(mat3(pushConstants.model) * inTangent.xyz), inTangent.w);
+    fragTangent = vec4(normalize(mat3(model) * inTangent.xyz), inTangent.w);
     // apply MVP transform to the vertex position (MVP already includes model transform)
     gl_Position = ubo.viewProjection * worldPos;
 }

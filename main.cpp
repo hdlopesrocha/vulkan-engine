@@ -119,6 +119,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     Buffer mainUniform;
     Buffer shadowUniform;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSet modelsDescriptorSet = VK_NULL_HANDLE;
     MaterialManager materialManager;
     size_t materialCount = 0;
     
@@ -385,6 +386,13 @@ class MyApp : public VulkanApp, public IEventHandler {
             updateDescriptorSet(globalMatDS, { matWrite });
             setMaterialDescriptorSet(globalMatDS);
             registerDescriptorSet(globalMatDS);
+            // Use the same global material descriptor set to also hold the Models SSBO (binding 6)
+            modelsDescriptorSet = globalMatDS;
+            indirectRenderer.setModelsDescriptorSet(modelsDescriptorSet);
+            // Do not automatically update the app's global material descriptor set
+            // from the renderer; descriptor set layout/usage may differ. The
+            // renderer keeps its Models SSBO available via getModelsBuffer()
+            // so the app can create/update a compatible descriptor set itself.
         }
 
         descriptorSet = VK_NULL_HANDLE;
@@ -747,22 +755,24 @@ class MyApp : public VulkanApp, public IEventHandler {
             updateUniformBuffer(shadowUniform, &shadowUbo, sizeof(UniformObject));
             
 
-            // Render all instances to shadow map using indirect draws
-            for (const auto& meshId : visibleMeshes) {
+            // Render all instances to shadow map using merged buffers + indirect draws
+            {
                 VkDescriptorSet matDs = getMaterialDescriptorSet();
                 if (matDs != VK_NULL_HANDLE) {
-                    VkDescriptorSet sets[2] = { matDs, descriptorSet };
-                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 2, sets, 0, nullptr);
+                    VkDescriptorSet setsArr[3] = { matDs, descriptorSet, modelsDescriptorSet };
+                    uint32_t cnt = 0;
+                    if (matDs != VK_NULL_HANDLE) cnt++;
+                    if (descriptorSet != VK_NULL_HANDLE) cnt++;
+                    if (modelsDescriptorSet != VK_NULL_HANDLE) cnt++;
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, cnt, setsArr, 0, nullptr);
                 } else {
-                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
+                    VkDescriptorSet setsArr[2] = { descriptorSet, modelsDescriptorSet };
+                    uint32_t cnt = 0;
+                    if (descriptorSet != VK_NULL_HANDLE) cnt++;
+                    if (modelsDescriptorSet != VK_NULL_HANDLE) cnt++;
+                    if (cnt > 0) vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, cnt, setsArr, 0, nullptr);
                 }
-                auto info = indirectRenderer.getMeshInfo(meshId);
-                VkBuffer vbs[] = { info.vertexBuffer.buffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vbs, offsets);
-                vkCmdBindIndexBuffer(commandBuffer, info.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &info.model);
-                indirectRenderer.drawIndirect(commandBuffer, meshId);
+                indirectRenderer.drawVisibleMerged(commandBuffer, visibleMeshes, this);
             }
 
             shadowMapper.endShadowPass(commandBuffer);
@@ -805,14 +815,14 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Bind descriptor sets if available (material/global + per-texture)
         { 
-            VkDescriptorSet setsToBind[2];
+            VkDescriptorSet setsToBind[3];
             uint32_t bindCount = 0;
             VkDescriptorSet matDs = getMaterialDescriptorSet();
             if (matDs != VK_NULL_HANDLE) setsToBind[bindCount++] = matDs;
             VkDescriptorSet perTexDs = VK_NULL_HANDLE;
             if (descriptorSet != VK_NULL_HANDLE) perTexDs = descriptorSet;
-            if (perTexDs != VK_NULL_HANDLE) 
-                setsToBind[bindCount++] = perTexDs;
+            if (perTexDs != VK_NULL_HANDLE) setsToBind[bindCount++] = perTexDs;
+            if (modelsDescriptorSet != VK_NULL_HANDLE) setsToBind[bindCount++] = modelsDescriptorSet;
             if (bindCount > 0) 
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, bindCount, setsToBind, 0, nullptr);
         }
@@ -820,16 +830,8 @@ class MyApp : public VulkanApp, public IEventHandler {
         // --- Depth pre-pass: fill depth buffer with geometry depths (color writes disabled) ---
         if (depthPrePassPipeline != VK_NULL_HANDLE) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
-            // Draw all instances to populate depth buffer using indirect draws
-            for (const auto& meshId : visibleMeshes) {
-                auto info = indirectRenderer.getMeshInfo(meshId);
-                VkBuffer vertexBuffers[] = { info.vertexBuffer.buffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffer, info.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &info.model);
-                indirectRenderer.drawIndirect(commandBuffer, meshId);
-            }
+            // Draw all instances to populate depth buffer using merged buffers + indirect draws
+            indirectRenderer.drawVisibleMerged(commandBuffer, visibleMeshes, this);
         }
 
 
@@ -842,7 +844,7 @@ class MyApp : public VulkanApp, public IEventHandler {
      
         // Bind global material descriptor set (set 0) and per-material descriptor set (set 1)  
         {
-            VkDescriptorSet setsToBind[2];
+            VkDescriptorSet setsToBind[3];
             uint32_t bindCount = 0;
             VkDescriptorSet matDs = getMaterialDescriptorSet();
             if (matDs != VK_NULL_HANDLE) {
@@ -853,27 +855,14 @@ class MyApp : public VulkanApp, public IEventHandler {
             if (descriptorSet != VK_NULL_HANDLE) perTexDs = descriptorSet;
             // bind the single per-texture descriptor set if available
             if (perTexDs != VK_NULL_HANDLE) setsToBind[bindCount++] = perTexDs;
-            if (bindCount == 2) {
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 2, setsToBind, 0, nullptr);
-            } else if (bindCount == 1) {
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, setsToBind, 0, nullptr);
+            if (modelsDescriptorSet != VK_NULL_HANDLE) setsToBind[bindCount++] = modelsDescriptorSet;
+            if (bindCount > 0) {
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, bindCount, setsToBind, 0, nullptr);
             }
         }
         
-        // Render all instances with main pass
-        for (const auto& meshId : visibleMeshes) {
-            auto info = indirectRenderer.getMeshInfo(meshId);
-
-            // Bind vertex and index buffers
-            VkBuffer vertexBuffers[] = { info.vertexBuffer.buffer };
-            VkDeviceSize offsets[] = { 0 };
-            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-            vkCmdBindIndexBuffer(commandBuffer, info.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-            // Push per-draw model matrix via push constants (visible to vertex + tessellation stages)
-            vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &info.model);
-            indirectRenderer.drawIndirect(commandBuffer, meshId);
-        }
+        // Render all instances with main pass using merged buffers + indirect draws
+        indirectRenderer.drawVisibleMerged(commandBuffer, visibleMeshes, this);
 
         // render ImGui draw data inside the same command buffer (must be inside render pass)
         ImDrawData* draw_data = ImGui::GetDrawData();
@@ -905,11 +894,17 @@ class MyApp : public VulkanApp, public IEventHandler {
         textureArrayManager.destroy(this);
         vegetationTextureArrayManager.destroy(this);
  
-        // destroy uniform buffers
-        vkDestroyBuffer(getDevice(), mainUniform.buffer, nullptr);
-        vkFreeMemory(getDevice(), mainUniform.memory, nullptr);
-        vkDestroyBuffer(getDevice(), shadowUniform.buffer, nullptr);
-        vkFreeMemory(getDevice(), shadowUniform.memory, nullptr);
+        // destroy uniform buffers (if present)
+        if (mainUniform.buffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(getDevice(), mainUniform.buffer, nullptr);
+            vkFreeMemory(getDevice(), mainUniform.memory, nullptr);
+            mainUniform = {};
+        }
+        if (shadowUniform.buffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(getDevice(), shadowUniform.buffer, nullptr);
+            vkFreeMemory(getDevice(), shadowUniform.memory, nullptr);
+            shadowUniform = {};
+        }
  
         // destroy any dynamically created VBOs from async-loaded models
        // for (auto &pv : dynamicMeshVBOs) {
@@ -923,11 +918,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
         nodeModelVersions.clear();
 
-        // global uniform buffers cleanup (main, shadow, sky)
-        if (mainUniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), mainUniform.buffer, nullptr);
-        if (mainUniform.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), mainUniform.memory, nullptr);
-        if (shadowUniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), shadowUniform.buffer, nullptr);
-        if (shadowUniform.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), shadowUniform.memory, nullptr);
+        // global uniform buffers cleanup (already handled above)
         // Sky UBO is managed by SkySphere and cleaned up there.
         
         // editable textures cleanup
