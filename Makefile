@@ -83,7 +83,7 @@ $(OUT_DIR)/shaders/%.vert.spv: shaders/%.vert
 	@if command -v glslc >/dev/null 2>&1; then \
 		glslc -I shaders/includes $< -o $@; \
 	else \
-		glslangValidator -I shaders/includes -V $< -o $@; \
+		glslangValidator -I shaders/includes -V --target-env vulkan1.1 $< -o $@; \
 	fi
 
 $(OUT_DIR)/shaders/%.frag.spv: shaders/%.frag
@@ -92,7 +92,7 @@ $(OUT_DIR)/shaders/%.frag.spv: shaders/%.frag
 	@if command -v glslc >/dev/null 2>&1; then \
 		glslc -I shaders/includes $< -o $@; \
 	else \
-		glslangValidator -I shaders/includes -V $< -o $@; \
+		glslangValidator -I shaders/includes -V --target-env vulkan1.1 $< -o $@; \
 	fi
 
 $(OUT_DIR)/shaders/%.comp.spv: shaders/%.comp
@@ -101,7 +101,7 @@ $(OUT_DIR)/shaders/%.comp.spv: shaders/%.comp
 	@if command -v glslc >/dev/null 2>&1; then \
 		glslc -I shaders/includes $< -o $@; \
 	else \
-		glslangValidator -I shaders/includes -V $< -o $@; \
+		glslangValidator -I shaders/includes -V --target-env vulkan1.1 $< -o $@; \
 	fi
 
 $(OUT_DIR)/shaders/%.tesc.spv: shaders/%.tesc
@@ -110,7 +110,7 @@ $(OUT_DIR)/shaders/%.tesc.spv: shaders/%.tesc
 	@if command -v glslc >/dev/null 2>&1; then \
 		glslc -I shaders/includes $< -o $@; \
 	else \
-		glslangValidator -I shaders/includes -V $< -o $@; \
+		glslangValidator -I shaders/includes -V --target-env vulkan1.1 $< -o $@; \
 	fi
 
 $(OUT_DIR)/shaders/%.tese.spv: shaders/%.tese

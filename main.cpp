@@ -20,6 +20,7 @@
 #include "vulkan/TextureMixer.hpp"
 #include "widgets/AnimatedTextureWidget.hpp"
 #include "vulkan/ShadowMapper.hpp"
+#include "vulkan/IndirectRenderer.hpp"
 #include "widgets/WidgetManager.hpp"
 #include "widgets/CameraWidget.hpp"
 #include "widgets/DebugWidget.hpp"
@@ -51,7 +52,7 @@
 class MyApp : public VulkanApp, public IEventHandler {
     LocalScene * mainScene;
     std::unordered_map<OctreeNode*, Model3DVersion> nodeModelVersions;
-    std::vector<Model3D*> visibleModels;
+    std::vector<uint32_t> visibleModels; // store mesh ids for indirect renderer
 
     public:
         MyApp() : shadowMapper(this, 8192) {}
@@ -105,6 +106,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
     // Shadow mapping
     ShadowMapper shadowMapper;
+    IndirectRenderer indirectRenderer;
     
     // Light direction (controlled by LightWidget)
     glm::vec3 lightDirection = glm::normalize(glm::vec3(-1.0f, -1.0f, -1.0f));
@@ -249,6 +251,9 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Now that pipelines (and the app pipeline layout) have been created, initialize shadow mapper
         shadowMapper.init();
+
+        // Initialize indirect renderer (creates compute pipeline for GPU cull and manages merged buffers)
+        indirectRenderer.init(this);
 
         // initialize texture array manager with room for 24 layers of 1024x1024
         // (we no longer use the legacy TextureManager for storage; `materials` tracks per-layer properties)
@@ -700,7 +705,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             auto it = nodeModelVersions.find(node);
             if (it != nodeModelVersions.end()) {
                 if (it->second.version != version) {
-                    if (it->second.model) delete it->second.model;
+                    if (it->second.meshId != UINT32_MAX) indirectRenderer.removeMesh(it->second.meshId);
                     nodeModelVersions.erase(it);
                     it = nodeModelVersions.end();
                 }
@@ -712,22 +717,25 @@ class MyApp : public VulkanApp, public IEventHandler {
                 it = em.first;
                 // requestModel3D expects a non-const reference; cast away const here
                 mainScene->requestModel3D(Layer::LAYER_OPAQUE, const_cast<OctreeNodeData&>(data), [this, node, version](const Geometry& mesh) {
-                    Model3D * model = new Model3D(
-                        VertexBufferObjectBuilder::create(this, mesh), 
-                        glm::mat4(1.0f)
-                    );
-                    nodeModelVersions[node] = { model, version };
-                    std::cout << "[Model3D] Loaded model for node " << node << " (version " << version << ")\n";
+                    // Add the loaded mesh into the IndirectRenderer and record its meshId
+                    uint32_t id = indirectRenderer.addMesh(this, mesh, glm::mat4(1.0f));
+                    nodeModelVersions[node] = { id, version };
+                    // Ensure models SSBO is bound; let the renderer allocate a compatible set
+                    indirectRenderer.updateModelsDescriptorSet(this, VK_NULL_HANDLE);
+                    std::cout << "[IndirectRenderer] Added mesh id " << id << " for node " << node << " (version " << version << ")\n";
                 });
             }
 
-            // Only add fully-loaded models to visibleModels
-            Model3D* loadedModel = nodeModelVersions[node].model;
-            if (loadedModel) visibleModels.push_back(loadedModel);
+            // Only add fully-loaded meshes (indirect renderer ids) to visible list
+            uint32_t meshId = nodeModelVersions[node].meshId;
+            if (meshId != UINT32_MAX) visibleModels.push_back(meshId);
             
         });
         
         
+        // Ensure renderer rebuilt on main thread after any async adds/removes
+        indirectRenderer.rebuild(this);
+
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
@@ -735,6 +743,8 @@ class MyApp : public VulkanApp, public IEventHandler {
     
         // First pass: Render shadow map (skip if shadows globally disabled)
         if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
+            // Prepare GPU cull before starting the shadow render pass
+            indirectRenderer.prepareCull(commandBuffer, uboStatic.lightSpaceMatrix);
             shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
             
             // Update uniform buffer for shadow pass: set viewProjection = lightSpaceMatrix
@@ -745,17 +755,26 @@ class MyApp : public VulkanApp, public IEventHandler {
             updateUniformBuffer(shadowUniform, &shadowUbo, sizeof(UniformObject));
             
 
-            // Render all instances to shadow map
-            for (const auto& instance : visibleModels) {
-                // Push model matrix for this draw into the pipeline via push constants
-                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance->model);
-
-                shadowMapper.renderObject(commandBuffer, instance->vbo, descriptorSet);
+            // Draw all visible meshes into the shadow map using the IndirectRenderer (GPU cull + multi-draw)
+            // Bind material/per-texture descriptor sets so shaders can access Models SSBO and textures
+            {
+                VkDescriptorSet setsToBind[2];
+                uint32_t bindCount = 0;
+                VkDescriptorSet matDs = getMaterialDescriptorSet();
+                if (matDs != VK_NULL_HANDLE) setsToBind[bindCount++] = matDs;
+                if (descriptorSet != VK_NULL_HANDLE) setsToBind[bindCount++] = descriptorSet;
+                if (bindCount > 0) vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, bindCount, setsToBind, 0, nullptr);
             }
+
+            // Issue CPU-driven draws for visible meshes into the shadow pass
+            indirectRenderer.drawVisibleMerged(commandBuffer, visibleModels, this);
 
             shadowMapper.endShadowPass(commandBuffer);
         }
         
+        // Prepare GPU cull for main passes (must be outside render pass)
+        indirectRenderer.prepareCull(commandBuffer, projMat * viewMat);
+
         // Second pass: Render scene with shadows
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         
@@ -808,17 +827,14 @@ class MyApp : public VulkanApp, public IEventHandler {
         // --- Depth pre-pass: fill depth buffer with geometry depths (color writes disabled) ---
         if (depthPrePassPipeline != VK_NULL_HANDLE) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
-            // Draw all instances to populate depth buffer
-            for (const auto& instance : visibleModels) {
-                const auto& vbo = instance->vbo;
-                VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-                
-                vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance->model);
-                vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
+            // Ensure material/models descriptor is bound (models SSBO expected in material set)
+            VkDescriptorSet matDs = getMaterialDescriptorSet();
+            if (matDs != VK_NULL_HANDLE) {
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &matDs, 0, nullptr);
             }
+            // Prepare GPU cull before depth pre-pass (must be outside render pass)
+            // Issue CPU-driven draws for visible meshes into the depth pre-pass
+            indirectRenderer.drawVisibleMerged(commandBuffer, visibleModels, this);
         }
 
 
@@ -849,20 +865,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             }
         }
         
-        // Render all instances with main pass
-        for (const auto& instance : visibleModels) {
-            const auto& vbo = instance->vbo;
-            
-            // Bind vertex and index buffers
-            VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
-            VkDeviceSize offsets[] = { 0 };
-            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-            vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-            
-            // Push per-draw model matrix via push constants (visible to vertex + tessellation stages)
-            vkCmdPushConstants(commandBuffer, getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &instance->model);
-            vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
-        }
+        // Render all visible meshes using IndirectRenderer (CPU-driven push-constant draws)
+        indirectRenderer.drawVisibleMerged(commandBuffer, visibleModels, this);
 
         // render ImGui draw data inside the same command buffer (must be inside render pass)
         ImDrawData* draw_data = ImGui::GetDrawData();
@@ -894,11 +898,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         textureArrayManager.destroy(this);
         vegetationTextureArrayManager.destroy(this);
  
-        // destroy uniform buffers
-        vkDestroyBuffer(getDevice(), mainUniform.buffer, nullptr);
-        vkFreeMemory(getDevice(), mainUniform.memory, nullptr);
-        vkDestroyBuffer(getDevice(), shadowUniform.buffer, nullptr);
-        vkFreeMemory(getDevice(), shadowUniform.memory, nullptr);
+        // uniform buffers will be destroyed later with null checks
  
         // destroy any dynamically created VBOs from async-loaded models
        // for (auto &pv : dynamicMeshVBOs) {
@@ -906,11 +906,14 @@ class MyApp : public VulkanApp, public IEventHandler {
        // }
        // dynamicMeshVBOs.clear();
 
-        // delete any heap-allocated Model3D instances created for async nodes
+        // Remove any meshes registered in the IndirectRenderer and clear tracking
         for (auto &entry : nodeModelVersions) {
-            if (entry.second.model) delete entry.second.model;
+            if (entry.second.meshId != UINT32_MAX) indirectRenderer.removeMesh(entry.second.meshId);
         }
         nodeModelVersions.clear();
+
+        // Cleanup indirect renderer resources
+        indirectRenderer.cleanup(this);
 
         // global uniform buffers cleanup (main, shadow, sky)
         if (mainUniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), mainUniform.buffer, nullptr);

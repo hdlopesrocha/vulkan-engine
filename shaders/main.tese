@@ -32,6 +32,8 @@ layout(location = 9) out vec4 fragTangent;
 
 #include "includes/displacement.glsl"
 
+
+
 void main() {
     // barycentric coordinates
     vec3 bc = gl_TessCoord;
@@ -52,9 +54,11 @@ void main() {
         fragColor = vec3(0.0);
     }
 
+    mat4 model = pushConstants.model;
+
     // Compute world position and normal for triplanar sampling
-    vec3 worldNormal = normalize(mat3(pushConstants.model) * localNormal);
-    vec4 worldPos = pushConstants.model * vec4(localPos, 1.0);
+    vec3 worldNormal = normalize(mat3(model) * localNormal);
+    vec4 worldPos = model * vec4(localPos, 1.0);
 
     // Apply displacement (only when global tessellation enabled)
     float mappingFlag = materials[texIndices.x].mappingParams.x * weights.x + materials[texIndices.y].mappingParams.x * weights.y + materials[texIndices.z].mappingParams.x * weights.z;
@@ -65,7 +69,7 @@ void main() {
 
     // Compute world-space position and normals
     fragPosWorldNotDisplaced = worldPos.xyz;
-    worldPos = pushConstants.model * vec4(displacedLocalPos, 1.0);
+    worldPos = model * vec4(displacedLocalPos, 1.0);
 
     fragPosWorld = worldPos.xyz;
     if (!isShadowPass) {
@@ -78,11 +82,11 @@ void main() {
     fragTexIndices = texIndices;
     fragTexWeights = weights;
     // Output clip-space position using MVP (MVP includes model matrix)
-    gl_Position = ubo.viewProjection * pushConstants.model * vec4(displacedLocalPos, 1.0);
+    gl_Position = ubo.viewProjection * model * vec4(displacedLocalPos, 1.0);
 
     // Compute fragNormal: do not apply normal mapping here — use transformed geometry normal
-    fragNormal = normalize(mat3(pushConstants.model) * localNormal);
+    fragNormal = normalize(mat3(model) * localNormal);
     // Compute world-space tangent handedness-aware
     vec4 tangentLocal = tc_fragTangent[0] * bc.x + tc_fragTangent[1] * bc.y + tc_fragTangent[2] * bc.z;
-    fragTangent = vec4(normalize(mat3(pushConstants.model) * tangentLocal.xyz), tangentLocal.w);
+    fragTangent = vec4(normalize(mat3(model) * tangentLocal.xyz), tangentLocal.w);
 }

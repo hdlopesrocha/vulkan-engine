@@ -23,7 +23,7 @@ layout(location = 9) out vec4 fragTangent;
 void main() {
     fragColor = inColor;
     fragUV = inUV;
-    // Transform normal to world space using the model matrix
+    // Transform normal to world space using the model matrix from push constants
     // For uniform scaling, mat3(model) works. For non-uniform scaling, use transpose(inverse(model))
     fragNormal = normalize(mat3(pushConstants.model) * inNormal);
     // Provide per-vertex tex index for TCS to assemble per-patch indices
