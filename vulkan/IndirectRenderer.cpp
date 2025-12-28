@@ -213,7 +213,8 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     models.reserve(meshes.size());
     for (size_t i = 0; i < meshes.size(); ++i) {
         if (!meshes[i].active) continue;
-        models.push_back(meshes[i].model);
+        // Use identity matrices for all draws (caller requested identity-only transforms)
+        models.push_back(glm::mat4(1.0f));
     }
 
     VkDeviceSize modelsSize = sizeof(glm::mat4) * models.size();
@@ -506,12 +507,17 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, VulkanApp* app, uint32_
     VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
     vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+    // Ensure shaders use identity model matrix for all draws
+    glm::mat4 identity = glm::mat4(1.0f);
+    vkCmdPushConstants(cmd, app->getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &identity);
 
-    uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
+    // Issue a single indirect-draw call; compute shader compacts only visible commands
     if (cmdDrawIndexedIndirectCount) {
-        cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffer.buffer, 0, visibleCountBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+        // Use indirect-count variant to let the GPU supply the visible count, but limit to 1 draw call
+        cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffer.buffer, 0, visibleCountBuffer.buffer, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
     } else {
-        vkCmdDrawIndexedIndirect(cmd, compactIndirectBuffer.buffer, 0, static_cast<uint32_t>(indirectCommands.size()), sizeof(VkDrawIndexedIndirectCommand));
+        // Fallback: issue one draw from compact buffer (the compute shader is expected to place visible data at offset 0)
+        vkCmdDrawIndexedIndirect(cmd, compactIndirectBuffer.buffer, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
     }
 }
 
