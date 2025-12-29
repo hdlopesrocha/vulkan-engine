@@ -3,7 +3,6 @@
 #include "VertexBufferObject.hpp"
 #include <glm/glm.hpp>
 
-class Mesh3D; // forward declare to avoid include cycles
 
 class Model3D {
 public:

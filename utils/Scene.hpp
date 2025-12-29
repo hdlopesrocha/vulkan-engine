@@ -17,8 +17,6 @@ enum Layer {
 
 // Visible nodes are reported via a callback lambda taking an OctreeNodeData reference
 using VisibleNodeCallback = std::function<void(const OctreeNodeData&)>;
-
-// Mesh3D results are delivered via a callback lambda taking a Model3D reference
 using GeometryCallback = std::function<void(const Geometry&)>;
 
 class SceneLoaderCallback {

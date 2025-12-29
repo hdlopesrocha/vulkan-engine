@@ -5,7 +5,6 @@
 #include "VertexBufferObject.hpp"   
 #include "Buffer.hpp"
 
-struct Mesh3D;
 struct MaterialProperties;
 
 // Represents an instance of a model with its transform
