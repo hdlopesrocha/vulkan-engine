@@ -24,13 +24,34 @@ layout(location = 7) out vec3 tc_fragLocalPos[];
 layout(location = 8) out vec3 tc_fragLocalNormal[];
 layout(location = 9) out vec4 tc_fragTangent[];
 
+
 void main() {
     // Pass through per-vertex data to evaluation stage
     tc_fragColor[gl_InvocationID] = pc_inFragColor[gl_InvocationID];
     tc_fragUV[gl_InvocationID] = pc_inUV[gl_InvocationID];
     tc_fragNormal[gl_InvocationID] = pc_inNormal[gl_InvocationID];
-    tc_fragNormal[gl_InvocationID] = pc_inNormal[gl_InvocationID];
     tc_fragPosWorld[gl_InvocationID] = pc_inPosWorld[gl_InvocationID];
+
+    // --- Triplanar tangent calculation ---
+    vec3 n = normalize(pc_inNormal[gl_InvocationID]);
+    vec3 absN = abs(n);
+    vec3 tangent;
+    // Match the axis logic from triplanarPlane
+    if (absN.x > absN.y && absN.x > absN.z) {
+        // X axis dominant
+        tangent = (n.x > 0.0) ? vec3(0,0,-1) : vec3(0,0,1);
+    } else if (absN.y > absN.x && absN.y > absN.z) {
+        // Y axis dominant
+        tangent = (n.y > 0.0) ? vec3(0,0,1) : vec3(0,0,-1);
+    } else {
+        // Z axis dominant
+        tangent = (n.z > 0.0) ? vec3(1,0,0) : vec3(-1,0,0);
+    }
+    // Orthogonalize tangent to normal
+    tangent = normalize(tangent - n * dot(n, tangent));
+    // Set w to 1 (right-handed)
+    tc_fragTangent[gl_InvocationID] = vec4(tangent, 1.0);
+
     // Compress the patch's texture indices into up to three unique slots
     int i0 = pc_inTexIndex[0];
     int i1 = pc_inTexIndex[1];
@@ -55,8 +76,6 @@ void main() {
     tc_fragTexWeights[gl_InvocationID] = texWeights;
     tc_fragLocalPos[gl_InvocationID] = pc_inLocalPos[gl_InvocationID];
     tc_fragLocalNormal[gl_InvocationID] = pc_inLocalNormal[gl_InvocationID];
-    tc_fragTangent[gl_InvocationID] = pc_inTangent[gl_InvocationID];
-    // local tangent removed
 
     // Compute tessellation level on GPU based on camera distance (adaptive)
     int patchTexIndex = pc_inTexIndex[0];

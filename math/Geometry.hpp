@@ -7,10 +7,14 @@
 
 class Geometry
 {
+
 public:
     std::vector<Vertex> vertices;
     std::vector<uint> indices;
     tsl::robin_map<Vertex, size_t, VertexHasher> compactMap;
+
+    // Calculates tangents for all vertices using indexed triangles
+    void calculateTangents();
 
     glm::vec3 center;
 

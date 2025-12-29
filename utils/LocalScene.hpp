@@ -39,8 +39,9 @@ public:
         handlers.emplace_back(&tesselator);
         Processor processor(&trianglesCount, threadPool, &context, &handlers);
         processor.iterateFlatIn(*tree, data);
-
+        
         if(!tesselator.geometry.indices.empty()) {
+            tesselator.geometry.calculateTangents();
             callback(tesselator.geometry);
         }
     }
