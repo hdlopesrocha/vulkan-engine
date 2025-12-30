@@ -22,5 +22,9 @@ struct MaterialProperties {
     bool triplanar = false;
     float triplanarScaleU = 1.0f;
     float triplanarScaleV = 1.0f;
+
+    // Normal map conventions (defaults keep existing behavior)
+    bool normalFlipY = false;   // flip normal map Y (green) channel if true
+    bool normalSwapXZ = false;  // swap R/B channels (X/Z) if true
         // default: legacy invert behavior for backward compatibility
 };

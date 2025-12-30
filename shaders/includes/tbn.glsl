@@ -36,24 +36,33 @@ bool computeTBFromDerivatives(in vec3 fragPosWorld, in vec2 fragUV, in vec3 N, o
 }
 
 // Convert sampled tangent-space normal (nmap) into world-space using T/B/N
-// NOTE: swap X and Z of the final world normal to match asset convention (fixes X/Z swap observed in rendering)
 vec3 normalFromNormalMap(in vec3 nmap, in vec3 T, in vec3 B, in vec3 N) {
-    vec3 worldN = normalize(nmap.x * T + nmap.y * B + nmap.z * N);
-    // swap X and Z to correct axis mismatch
-    return vec3(worldN.z, worldN.y, worldN.x);
+    return normalize(nmap.x * T + nmap.y * B + nmap.z * N);
+}
+
+// Apply per-material normal map conventions: flip Y and swap X/Z channels
+vec3 applyNormalConvention(in vec3 n, in vec4 normalParams) {
+    vec3 nn = n;
+    if (normalParams.x > 0.5) nn.y = -nn.y; // flip Y
+    if (normalParams.y > 0.5) nn = vec3(nn.z, nn.y, nn.x); // swap X/Z
+    return nn;
 }
 
 // Try to compute world-space normal from a normal map using either vertex tangent or derivative-based TBN
-bool computeWorldNormalFromNormalMap(in vec4 fragTangent, in vec3 fragPosWorld, in vec2 fragUV, in vec3 N, in vec3 nmap, out vec3 worldNormal, out vec3 T, out vec3 B) {
+bool computeWorldNormalFromNormalMap(in vec4 fragTangent, in vec3 fragPosWorld, in vec2 fragUV, in vec3 N, in vec3 nmap, in vec4 normalParams, out vec3 worldNormal, out vec3 T, out vec3 B) {
+    // Apply per-material convention first
+    vec3 nmap2 = applyNormalConvention(nmap, normalParams);
     // Prefer vertex tangent if available
     if (computeTBFromVertex(fragTangent, N, T, B)) {
-        worldNormal = normalFromNormalMap(nmap, T, B, N);
+        worldNormal = normalFromNormalMap(nmap2, T, B, N);
         return true;
     }
     // Fallback to derivatives
     if (computeTBFromDerivatives(fragPosWorld, fragUV, N, T, B)) {
-        worldNormal = normalFromNormalMap(nmap, T, B, N);
+        worldNormal = normalFromNormalMap(nmap2, T, B, N);
         return true;
     }
     return false;
 }
+
+

@@ -335,7 +335,9 @@ void main() {
         vec3 nmap = normalize(nu0 * w.x + nu1 * w.y + nu2 * w.z);
         vec3 uvWorld;
         vec3 tmpT, tmpB;
-        if (!computeWorldNormalFromNormalMap(fragTangent, fragPosWorld, uv, N, nmap, uvWorld, tmpT, tmpB)) {
+        // Blend per-material normal convention flags by barycentric weights
+        vec4 blendedNormalParams = materials[fragTexIndices.x].normalParams * w.x + materials[fragTexIndices.y].normalParams * w.y + materials[fragTexIndices.z].normalParams * w.z;
+        if (!computeWorldNormalFromNormalMap(fragTangent, fragPosWorld, uv, N, nmap, blendedNormalParams, uvWorld, tmpT, tmpB)) {
             uvWorld = N; // fallback
         }
         vec3 tn0 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.x, geomN, fragTangent);

@@ -59,6 +59,8 @@ vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex,
     if(triW.x > 0.0) {
         vec3 nX = texture(normalArray, vec3(uvX, float(texIndex))).rgb * 2.0 - 1.0;
         nX = normalize(nX);
+        // Apply material-specific normal conventions (flip Y / swap XZ) before conversion
+        nX = applyNormalConvention(nX, materials[texIndex].normalParams);
         // Axis uses same convention as CPU code (pointing opposite to geomN sign as before)
         vec3 axisX = vec3(geomN.x >= 0.0 ? -1.0 : 1.0, 0.0, 0.0);
         // CPU mapping: X projection samples (u,v) = (-z, -y) for +X, (z, -y) for -X
@@ -73,6 +75,8 @@ vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex,
     if(triW.y > 0.0) {
         vec3 nY = texture(normalArray, vec3(uvY, float(texIndex))).rgb * 2.0 - 1.0;
         nY = normalize(nY);
+        // Apply material-specific normal conventions (flip Y / swap XZ) before conversion
+        nY = applyNormalConvention(nY, materials[texIndex].normalParams);
         vec3 axisY = vec3(0.0, geomN.y >= 0.0 ? -1.0 : 1.0, 0.0);
         // CPU mapping: Y projection samples (u,v) = (x, z) for +Y, (x, -z) for -Y
         vec3 uDirY = vec3(1.0, 0.0, 0.0);
@@ -86,6 +90,8 @@ vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex,
     if(triW.z > 0.0) {
         vec3 nZ = texture(normalArray, vec3(uvZ, float(texIndex))).rgb * 2.0 - 1.0;
         nZ = normalize(nZ);
+        // Apply material-specific normal conventions (flip Y / swap XZ) before conversion
+        nZ = applyNormalConvention(nZ, materials[texIndex].normalParams);
         vec3 axisZ = vec3(0.0, 0.0, geomN.z >= 0.0 ? -1.0 : 1.0);
         // CPU mapping: Z projection samples (u,v) = (x, -y) for +Z, (-x, -y) for -Z
         vec3 uDirZ = vec3((geomN.z >= 0.0 ? 1.0 : -1.0), 0.0, 0.0);

@@ -406,7 +406,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             tr.height.view = textureArrayManager.bumpArray.view;
             tr.heightSampler = textureArrayManager.bumpSampler;
             // main descriptor set
-            VkDeviceSize matElemSize = sizeof(glm::vec4) * 4; // size of MaterialGPU
+            VkDeviceSize matElemSize = sizeof(glm::vec4) * 5; // size of MaterialGPU (now includes normalParams)
             // create main descriptor set (create once, reuse)
             if (descriptorSet == VK_NULL_HANDLE) {
                 VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, mainUniform, false, nullptr, 0);

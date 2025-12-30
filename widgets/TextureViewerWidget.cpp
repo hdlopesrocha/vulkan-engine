@@ -63,6 +63,12 @@ void TextureViewer::render() {
             ImGui::Text("Normal/Tangent Adjustments");
             ImGui::Separator();
 
+            // Normal map conventions
+            bool flipY = mat.normalFlipY;
+            if (ImGui::Checkbox("Flip Normal Y (green)", &flipY)) { mat.normalFlipY = flipY; dirty = true; }
+            bool swapXZ = mat.normalSwapXZ;
+            if (ImGui::Checkbox("Swap Normal X/Z (R <-> B)", &swapXZ)) { mat.normalSwapXZ = swapXZ; dirty = true; }
+
             bool triplanarBool = mat.triplanar;
             if (ImGui::Checkbox("Enable Triplanar Mapping", &triplanarBool)) { mat.triplanar = triplanarBool; dirty = true; }
             if (mat.triplanar) {

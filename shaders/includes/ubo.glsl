@@ -32,6 +32,7 @@ struct MaterialGPU {
     vec4 mappingParams;   // x = mappingEnabled (0/1), y = tessLevel, z = invertHeight (0/1), w = tessHeightScale
     vec4 specularParams;  // x = specularStrength, y = shininess
     vec4 triplanarParams; // x = scaleU, y = scaleV, z = triplanarEnabled (0/1)
+    vec4 normalParams;   // x = flipNormalY (0/1), y = swapNormalXZ (0/1), z/w = reserved
 };
 
 layout(std430, set = 0, binding = 5) readonly buffer Materials {
