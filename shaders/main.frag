@@ -57,31 +57,10 @@ void main() {
     float triWSum = wt.x + wt.y + wt.z + 1e-6;
     triW = wt / triWSum;
     
-    // Compute fragment tangent aligned with the dominant triplanar axis.
-    // This mirrors the CPU-side triplanar conventions so T/B are stable.
-    vec3 tAxis;
-    float ax = abs(geomN.x), ay = abs(geomN.y), az = abs(geomN.z);
-    if (ax >= ay && ax >= az) {
-        float s = (geomN.x >= 0.0) ? 1.0 : -1.0;
-        vec3 axisX = vec3(-s, 0.0, 0.0);
-        vec3 uDirX = vec3(0.0, 0.0, -s);
-        tAxis = normalize(uDirX - axisX * dot(axisX, uDirX));
-    } else if (ay >= ax && ay >= az) {
-        float s = (geomN.y >= 0.0) ? 1.0 : -1.0;
-        vec3 axisY = vec3(0.0, -s, 0.0);
-        vec3 uDirY = vec3(1.0, 0.0, 0.0);
-        tAxis = normalize(uDirY - axisY * dot(axisY, uDirY));
-    } else {
-        float s = (geomN.z >= 0.0) ? 1.0 : -1.0;
-        vec3 axisZ = vec3(0.0, 0.0, -s);
-        vec3 uDirZ = vec3(s, 0.0, 0.0);
-        tAxis = normalize(uDirZ - axisZ * dot(axisZ, uDirZ));
-    }
-    vec3 tang = normalize(tAxis - N * dot(N, tAxis));
-    float handed = 1.0;
-    vec4 fragTangent = vec4(tang, handed);
-    vec3 T = normalize(fragTangent.xyz);
-    vec3 B = cross(N, T) * fragTangent.w;
+    // Compute blended triplanar tangent/bitangent via helper
+    vec3 T;
+    vec3 B;
+    vec4 fragTangent = computeTriplanarTangent(geomN, triW, fragPosWorld, fragUV, N, T, B);
     bool haveTB = true;
 
     // Sample albedo texture (triplanar when enabled)

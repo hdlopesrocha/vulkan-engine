@@ -106,3 +106,62 @@ vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex,
 
     return normalize(nmX * triW.x + nmY * triW.y + nmZ * triW.z);
 }
+
+// Compute a blended tangent/bitangent (and handedness) derived from triplanar projection bases.
+// Returns a vec4 where xyz = tangent (world-space, orthonormalized against N) and w = handedness (+1/-1).
+// Also outputs `T` and `B` via out parameters for convenience.
+vec4 computeTriplanarTangent(in vec3 geomN, in vec3 triW, in vec3 fragPosWorld, in vec2 fragUV, in vec3 N, out vec3 T, out vec3 B) {
+    vec3 tX = vec3(0.0), bX = vec3(0.0);
+    vec3 tY = vec3(0.0), bY = vec3(0.0);
+    vec3 tZ = vec3(0.0), bZ = vec3(0.0);
+
+    if (triW.x > 0.0) {
+        vec3 axisX = vec3(geomN.x >= 0.0 ? -1.0 : 1.0, 0.0, 0.0);
+        vec3 uDirX = vec3(0.0, 0.0, -(geomN.x >= 0.0 ? 1.0 : -1.0));
+        vec3 vDirX = vec3(0.0, -1.0, 0.0);
+        tX = normalize(uDirX - axisX * dot(axisX, uDirX));
+        bX = normalize(cross(axisX, tX));
+        if (dot(bX, vDirX) < 0.0) bX = -bX;
+    }
+
+    if (triW.y > 0.0) {
+        vec3 axisY = vec3(0.0, geomN.y >= 0.0 ? -1.0 : 1.0, 0.0);
+        vec3 uDirY = vec3(1.0, 0.0, 0.0);
+        vec3 vDirY = vec3(0.0, 0.0, (geomN.y >= 0.0 ? 1.0 : -1.0));
+        tY = normalize(uDirY - axisY * dot(axisY, uDirY));
+        bY = normalize(cross(axisY, tY));
+        if (dot(bY, vDirY) < 0.0) bY = -bY;
+    }
+
+    if (triW.z > 0.0) {
+        vec3 axisZ = vec3(0.0, 0.0, geomN.z >= 0.0 ? -1.0 : 1.0);
+        vec3 uDirZ = vec3((geomN.z >= 0.0 ? 1.0 : -1.0), 0.0, 0.0);
+        vec3 vDirZ = vec3(0.0, -1.0, 0.0);
+        tZ = normalize(uDirZ - axisZ * dot(axisZ, uDirZ));
+        bZ = normalize(cross(axisZ, tZ));
+        if (dot(bZ, vDirZ) < 0.0) bZ = -bZ;
+    }
+
+    vec3 blendedT = tX * triW.x + tY * triW.y + tZ * triW.z;
+    vec3 blendedB = bX * triW.x + bY * triW.y + bZ * triW.z;
+
+    float handed = 1.0;
+    // Fallback to derivative-based TBN if blended tangent is degenerate
+    if (length(blendedT) < 1e-6) {
+        vec3 tmpT, tmpB;
+        if (computeTBFromDerivatives(fragPosWorld, fragUV, N, tmpT, tmpB)) {
+            T = normalize(tmpT);
+            B = normalize(tmpB);
+        } else {
+            T = vec3(1.0, 0.0, 0.0);
+            B = vec3(0.0, 1.0, 0.0);
+        }
+    } else {
+        T = normalize(blendedT - N * dot(N, blendedT));
+        B = normalize(cross(N, T));
+        handed = (dot(cross(N, T), blendedB) < 0.0) ? -1.0 : 1.0;
+        if (handed < 0.0) B = -B;
+    }
+
+    return vec4(T, handed);
+}
