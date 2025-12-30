@@ -60,8 +60,40 @@ void main() {
     // Compute blended triplanar tangent/bitangent via helper
     vec3 T;
     vec3 B;
-    vec4 fragTangent = computeTriplanarTangent(geomN, triW, fragPosWorld, fragUV, N, T, B);
+    // Compute tangent/bitangent blended across the three materials (per-material triplanar TB)
+    vec4 fragTangent = computeTriplanarTangent(fragTexIndices, w, geomN, triW, fragPosWorld, fragUV, N, T, B);
     bool haveTB = true;
+
+    // Recompute per-projection bases locally for debug visualisation (matches computeTriplanarNormal)
+    vec3 dbg_tX = vec3(0.0), dbg_bX = vec3(0.0);
+    vec3 dbg_tY = vec3(0.0), dbg_bY = vec3(0.0);
+    vec3 dbg_tZ = vec3(0.0), dbg_bZ = vec3(0.0);
+    if (triW.x > 0.0) {
+        vec3 axisX = vec3(geomN.x >= 0.0 ? -1.0 : 1.0, 0.0, 0.0);
+        vec3 uDirX = vec3(0.0, 0.0, -(geomN.x >= 0.0 ? 1.0 : -1.0));
+        vec3 vDirX = vec3(0.0, -1.0, 0.0);
+        dbg_tX = normalize(uDirX - axisX * dot(axisX, uDirX));
+        dbg_bX = normalize(cross(axisX, dbg_tX));
+        if (dot(dbg_bX, vDirX) < 0.0) dbg_bX = -dbg_bX;
+    }
+    if (triW.y > 0.0) {
+        vec3 axisY = vec3(0.0, geomN.y >= 0.0 ? -1.0 : 1.0, 0.0);
+        vec3 uDirY = vec3(1.0, 0.0, 0.0);
+        vec3 vDirY = vec3(0.0, 0.0, (geomN.y >= 0.0 ? 1.0 : -1.0));
+        dbg_tY = normalize(uDirY - axisY * dot(axisY, uDirY));
+        dbg_bY = normalize(cross(axisY, dbg_tY));
+        if (dot(dbg_bY, vDirY) < 0.0) dbg_bY = -dbg_bY;
+    }
+    if (triW.z > 0.0) {
+        vec3 axisZ = vec3(0.0, 0.0, geomN.z >= 0.0 ? -1.0 : 1.0);
+        vec3 uDirZ = vec3((geomN.z >= 0.0 ? 1.0 : -1.0), 0.0, 0.0);
+        vec3 vDirZ = vec3(0.0, -1.0, 0.0);
+        dbg_tZ = normalize(uDirZ - axisZ * dot(axisZ, uDirZ));
+        dbg_bZ = normalize(cross(axisZ, dbg_tZ));
+        if (dot(dbg_bZ, vDirZ) < 0.0) dbg_bZ = -dbg_bZ;
+    }
+    vec3 dbg_blendedT = dbg_tX * triW.x + dbg_tY * triW.y + dbg_tZ * triW.z;
+    vec3 dbg_blendedB = dbg_bX * triW.x + dbg_bY * triW.y + dbg_bZ * triW.z;
 
     // Sample albedo texture (triplanar when enabled)
     vec3 albedoColor;

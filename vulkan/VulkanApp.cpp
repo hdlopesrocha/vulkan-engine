@@ -124,7 +124,9 @@ void VulkanApp::cleanup() {
     for (auto s : renderFinishedSemaphores) {
         if (s != VK_NULL_HANDLE) vkDestroySemaphore(device, s, nullptr);
     }
-    if (imageAvailableSemaphore != VK_NULL_HANDLE) vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
+    for (auto s : imageAvailableSemaphores) {
+        if (s != VK_NULL_HANDLE) vkDestroySemaphore(device, s, nullptr);
+    }
 
     // command pool
     if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
@@ -754,6 +756,9 @@ std::vector<VkCommandBuffer> VulkanApp::createCommandBuffers() {
 }
 
 void VulkanApp::createSyncObjects() {
+    // Use a small number of CPU frames-in-flight (2) and create per-frame semaphores/fences.
+    const uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
@@ -761,19 +766,21 @@ void VulkanApp::createSyncObjects() {
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphore) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create image available semaphore!");
-    }
+    imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+    renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+    inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
 
-    renderFinishedSemaphores.resize(swapchainImages.size());
-    inFlightFences.resize(swapchainImages.size());
-
-    for (size_t i = 0; i < swapchainImages.size(); i++) {
-        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
+            vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
             vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
             throw std::runtime_error("failed to create synchronization objects for frame " + std::to_string(i));
         }
     }
+
+    // imagesInFlight tracks which fence is using each swapchain image (initialized null)
+    imagesInFlight.clear();
+    imagesInFlight.resize(swapchainImages.size(), VK_NULL_HANDLE);
 }
 
 TextureImage VulkanApp::createTextureImage(const char * filename) {
@@ -1498,18 +1505,48 @@ Buffer VulkanApp::createIndexBuffer(const std::vector<uint> &indices) {
 }
 
 void VulkanApp::drawFrame() {
+    const uint32_t MAX_FRAMES_IN_FLIGHT = static_cast<uint32_t>(imageAvailableSemaphores.size());
     uint32_t imageIndex;
-    VkResult r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+
+    // Wait for the CPU frame fence for the current frame
+    VkResult waitForFrameFence = vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+    if (waitForFrameFence == VK_ERROR_DEVICE_LOST) return;
+    if (waitForFrameFence != VK_SUCCESS) {
+        std::cerr << "vkWaitForFences failed: " << waitForFrameFence << std::endl;
+        return;
+    }
+
+    VkResult r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreateSwapchain();
+        return;
+    } else if (r == VK_ERROR_DEVICE_LOST) {
         return;
     } else if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
         std::cerr << "vkAcquireNextImageKHR failed: " << r << std::endl;
         return;
     }
 
-    vkWaitForFences(device, 1, &inFlightFences[imageIndex], VK_TRUE, UINT64_MAX);
-    vkResetFences(device, 1, &inFlightFences[imageIndex]);
+    // If a previous frame is using this image, wait on its fence before overwriting
+    if (imagesInFlight.size() > imageIndex && imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+        VkResult res = vkWaitForFences(device, 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+        if (res == VK_ERROR_DEVICE_LOST) return;
+        if (res != VK_SUCCESS) {
+            std::cerr << "vkWaitForFences (image) failed: " << res << std::endl;
+            return;
+        }
+    }
+
+    // Mark this image as now being used by the current frame's fence
+    if (imagesInFlight.size() > imageIndex) imagesInFlight[imageIndex] = inFlightFences[currentFrame];
+
+    // reset current frame fence so vkQueueSubmit can signal it
+    VkResult resetFenceResult = vkResetFences(device, 1, &inFlightFences[currentFrame]);
+    if (resetFenceResult == VK_ERROR_DEVICE_LOST) return;
+    if (resetFenceResult != VK_SUCCESS) {
+        std::cerr << "vkResetFences failed: " << resetFenceResult << std::endl;
+        return;
+    }
     // compute deltaTime for this frame
     double frameNow = glfwGetTime();
     float deltaTime = 0.0f;
@@ -1536,7 +1573,7 @@ void VulkanApp::drawFrame() {
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-    VkSemaphore waitSemaphores[] = { imageAvailableSemaphore };
+    VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
     VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
     submitInfo.waitSemaphoreCount = 1;
     submitInfo.pWaitSemaphores = waitSemaphores;
@@ -1545,12 +1582,18 @@ void VulkanApp::drawFrame() {
     VkCommandBuffer &commandBuffer = commandBuffers[imageIndex];
 
     // reset the command buffer so we can re-record it for this frame
-    vkResetCommandBuffer(commandBuffer, 0);
+    VkResult resetCmdResult = vkResetCommandBuffer(commandBuffer, 0);
+    if (resetCmdResult == VK_ERROR_DEVICE_LOST) {
+        return;
+    } else if (resetCmdResult != VK_SUCCESS) {
+        std::cerr << "vkResetCommandBuffer failed: " << resetCmdResult << std::endl;
+        return;
+    }
 
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[imageIndex] };
+    VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
@@ -1571,8 +1614,10 @@ void VulkanApp::drawFrame() {
 
     ImGui::Render();
     draw(commandBuffer, renderPassInfo);
-    r = vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[imageIndex]);
-    if (r != VK_SUCCESS) {
+    r = vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]);
+    if (r == VK_ERROR_DEVICE_LOST) {
+        return;
+    } else if (r != VK_SUCCESS) {
         std::cerr << "vkQueueSubmit failed: " << r << std::endl;
         return;
     }
@@ -1592,6 +1637,8 @@ void VulkanApp::drawFrame() {
         framebufferResized = false;
         recreateSwapchain();
         return;
+    } else if (r == VK_ERROR_DEVICE_LOST) {
+        return;
     } else if (r != VK_SUCCESS) {
         std::cerr << "vkQueuePresentKHR failed: " << r << std::endl;
         return;
@@ -1600,6 +1647,9 @@ void VulkanApp::drawFrame() {
 
     // Hook for derived apps to run post-submit instrumentation (e.g., readback)
     postSubmit();
+
+    // Advance to next CPU frame
+    currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 void VulkanApp::cleanupSwapchain() {
@@ -1643,6 +1693,7 @@ void VulkanApp::cleanupSwapchain() {
         swapchain = VK_NULL_HANDLE;
     }
     swapchainImages.clear();
+    imagesInFlight.clear();
 }
 
 void VulkanApp::recreateSwapchain() {
@@ -1653,7 +1704,10 @@ void VulkanApp::recreateSwapchain() {
         glfwWaitEvents();
     }
 
-    vkDeviceWaitIdle(device);
+    VkResult waitResult = vkDeviceWaitIdle(device);
+    if (waitResult == VK_ERROR_DEVICE_LOST) {
+        return;
+    }
     cleanupSwapchain();
 
     createSwapchain();
@@ -1661,6 +1715,10 @@ void VulkanApp::recreateSwapchain() {
     createDepthResources();
     createFramebuffers();
     createCommandBuffers();
+
+    // Ensure imagesInFlight matches the new swapchain image count
+    imagesInFlight.clear();
+    imagesInFlight.resize(swapchainImages.size(), VK_NULL_HANDLE);
 
     // Re-create ImGui Vulkan backend objects so they use the updated swapchain image count.
     // ImGui_ImplVulkan_Init stores internal arrays sized by ImageCount; when the swapchain

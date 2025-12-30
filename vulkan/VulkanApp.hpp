@@ -21,9 +21,13 @@ class VulkanApp {
     std::vector<VkFramebuffer> swapchainFramebuffers;
     VkCommandPool commandPool = VK_NULL_HANDLE;
 
-    VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
+    std::vector<VkSemaphore> imageAvailableSemaphores;
     std::vector<VkSemaphore> renderFinishedSemaphores;
     std::vector<VkFence> inFlightFences;
+    // track which fence is using each swapchain image (to avoid writing to an image in use)
+    std::vector<VkFence> imagesInFlight;
+    // frame index for round-robin CPU frames-in-flight
+    uint32_t currentFrame = 0;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     // Application main graphics pipeline (owner: app / main.cpp)
     VkPipeline appGraphicsPipeline = VK_NULL_HANDLE;
