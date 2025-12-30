@@ -12,7 +12,6 @@ layout(location = 4) in vec3 tc_fragPosWorld[]; // world pos passed through by T
 layout(location = 5) flat in ivec3 tc_fragTexIndex[];
 layout(location = 7) in vec3 tc_fragLocalPos[]; // local-space position
 layout(location = 8) in vec3 tc_fragLocalNormal[];
-layout(location = 9) in vec4 tc_fragTangent[]; // optional per-vertex tangent (xyz=tan, w=handedness)
 layout(location = 11) in vec3 tc_fragTexWeights[];
 
 // Outputs to fragment shader (match main.frag inputs)
@@ -24,7 +23,7 @@ layout(location = 11) out vec3 fragTexWeights;
 layout(location = 4) out vec3 fragPosWorld;
 layout(location = 7) out vec3 fragPosWorldNotDisplaced;
 layout(location = 6) out vec4 fragPosLightSpace;
-layout(location = 9) out vec4 fragTangent;
+// fragTangent removed: fragment shader computes tangent per-pixel for triplanar mapping
 layout(location = 10) out vec3 fragSharpNormal; // face normal computed from triangle corners (sharp)
 
 #include "includes/textures.glsl"
@@ -95,15 +94,5 @@ void main() {
     vec3 faceLocal = normalize(cross(p1_sh - p0_sh, p2_sh - p0_sh));
     fragSharpNormal = normalize(mat3(model) * faceLocal);
 
-    // Use interpolated per-vertex (CPU) tangent only. If absent, emit zero so the fragment shader can fall back to derivative-based tangent.
-    vec4 tangentLocal = tc_fragTangent[0] * bc.x + tc_fragTangent[1] * bc.y + tc_fragTangent[2] * bc.z;
-    if (length(tangentLocal.xyz) > 1e-6) {
-        // Transform and orthonormalize the interpolated tangent
-        vec3 t_world = normalize(mat3(model) * tangentLocal.xyz);
-        t_world = normalize(t_world - fragNormal * dot(fragNormal, t_world));
-        fragTangent = vec4(t_world, tangentLocal.w);
-    } else {
-        // No CPU tangent available for this patch: emit zero and let the fragment shader use derivatives as a fallback
-        fragTangent = vec4(0.0);
-    }
+    // Per-vertex tangents are no longer propagated; fragment will compute T/B/N as needed.
 }

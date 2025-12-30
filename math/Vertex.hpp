@@ -32,12 +32,12 @@ public:
     glm::vec3 color;
     glm::vec2 texCoord;
     glm::vec3 normal;
-    glm::vec4 tangent; // xyz = tangent, w = handedness
+    // per-vertex tangent removed: compute in fragment shader for triplanar mapping
     int texIndex;
     int _pad0;
 
     Vertex(glm::vec3 pos, glm::vec3 normal, glm::vec2 texCoord, int texIndex)
-        : position(pos), color(glm::vec3(1.0f)), texCoord(texCoord), normal(normal), tangent(0.0f,0.0f,0.0f,1.0f), texIndex(texIndex), _pad0(0) {
+        : position(pos), color(glm::vec3(1.0f)), texCoord(texCoord), normal(normal), texIndex(texIndex), _pad0(0) {
     }
 
     // Compatibility constructor to allow aggregate-style initialization used across the codebase
@@ -46,16 +46,15 @@ public:
           color(colorArr[0], colorArr[1], colorArr[2]),
           texCoord(texArr[0], texArr[1]),
           normal(normalArr[0], normalArr[1], normalArr[2]),
-          tangent(0.0f,0.0f,0.0f,1.0f),
           texIndex(static_cast<int>(texIndexF)), _pad0(0) {}
 
-    Vertex() : position(glm::vec3(0.0f)), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), tangent(0.0f,0.0f,0.0f,1.0f), texIndex(0), _pad0(0) {}
+    Vertex() : position(glm::vec3(0.0f)), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), texIndex(0), _pad0(0) {}
 
-    Vertex(glm::vec3 pos) : position(pos), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), tangent(0.0f,0.0f,0.0f,1.0f), texIndex(0), _pad0(0) {}
+    Vertex(glm::vec3 pos) : position(pos), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), texIndex(0), _pad0(0) {}
 
     bool operator<(const Vertex& other) const {
-        return std::tie(position.x, position.y, position.z, normal.x, normal.y, normal.z, texCoord.x, texCoord.y, texIndex, tangent.x, tangent.y)
-             < std::tie(other.position.x, other.position.y, other.position.z, other.normal.x, other.normal.y, other.normal.z, other.texCoord.x, other.texCoord.y, other.texIndex, other.tangent.x, other.tangent.y);
+           return std::tie(position.x, position.y, position.z, normal.x, normal.y, normal.z, texCoord.x, texCoord.y, texIndex)
+               < std::tie(other.position.x, other.position.y, other.position.z, other.normal.x, other.normal.y, other.normal.z, other.texCoord.x, other.texCoord.y, other.texIndex);
     }
 
     bool operator==(const Vertex& o) const {
@@ -67,9 +66,7 @@ public:
 
                std::bit_cast<uint64_t>(pack2(texCoord.x, texCoord.y)) == std::bit_cast<uint64_t>(pack2(o.texCoord.x, o.texCoord.y)) &&
 
-               std::bit_cast<uint64_t>(pack2(tangent.x, tangent.y)) == std::bit_cast<uint64_t>(pack2(o.tangent.x, o.tangent.y)) &&
-               std::bit_cast<uint32_t>(tangent.z) == std::bit_cast<uint32_t>(o.tangent.z) &&
-               std::bit_cast<uint32_t>(tangent.w) == std::bit_cast<uint32_t>(o.tangent.w) &&
+               /* tangent removed */
 
                texIndex == o.texIndex;
     }

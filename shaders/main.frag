@@ -8,7 +8,6 @@ layout(location = 5) flat in ivec3 fragTexIndices;
 layout(location = 11) in vec3 fragTexWeights;
 layout(location = 4) in vec3 fragPosWorld;
 layout(location = 6) in vec4 fragPosLightSpace;
-layout(location = 9) in vec4 fragTangent;
 layout(location = 10) in vec3 fragSharpNormal; // face normal computed in TES (sharp)
 layout(location = 7) in vec3 fragPosWorldNotDisplaced;
 
@@ -58,7 +57,29 @@ void main() {
     float triWSum = wt.x + wt.y + wt.z + 1e-6;
     triW = wt / triWSum;
     
-    // TBN from TES tangent and normal
+    // Compute fragment tangent aligned with the dominant triplanar axis.
+    // This mirrors the CPU-side triplanar conventions so T/B are stable.
+    vec3 tAxis;
+    float ax = abs(geomN.x), ay = abs(geomN.y), az = abs(geomN.z);
+    if (ax >= ay && ax >= az) {
+        float s = (geomN.x >= 0.0) ? 1.0 : -1.0;
+        vec3 axisX = vec3(-s, 0.0, 0.0);
+        vec3 uDirX = vec3(0.0, 0.0, -s);
+        tAxis = normalize(uDirX - axisX * dot(axisX, uDirX));
+    } else if (ay >= ax && ay >= az) {
+        float s = (geomN.y >= 0.0) ? 1.0 : -1.0;
+        vec3 axisY = vec3(0.0, -s, 0.0);
+        vec3 uDirY = vec3(1.0, 0.0, 0.0);
+        tAxis = normalize(uDirY - axisY * dot(axisY, uDirY));
+    } else {
+        float s = (geomN.z >= 0.0) ? 1.0 : -1.0;
+        vec3 axisZ = vec3(0.0, 0.0, -s);
+        vec3 uDirZ = vec3(s, 0.0, 0.0);
+        tAxis = normalize(uDirZ - axisZ * dot(axisZ, uDirZ));
+    }
+    vec3 tang = normalize(tAxis - N * dot(N, tAxis));
+    float handed = 1.0;
+    vec4 fragTangent = vec4(tang, handed);
     vec3 T = normalize(fragTangent.xyz);
     vec3 B = cross(N, T) * fragTangent.w;
     bool haveTB = true;
@@ -168,63 +189,27 @@ void main() {
         return;
     }
     if (debugMode == 2) {
-        // Visualize fragment tangent (legacy debug slot). Use derivative fallback when fragTangent is zero to avoid black/degenerate pixels.
-        vec3 tmpT, tmpB;
-        vec3 showT;
-        if (length(fragTangent.xyz) > 1e-6) {
-            showT = normalize(fragTangent.xyz);
-        } else if (computeTBFromDerivatives(fragPosWorld, fragUV, N, tmpT, tmpB)) {
-            showT = normalize(tmpT);
-        } else {
-            showT = vec3(1.0, 0.0, 0.0);
-        }
-        outColor = vec4(showT * 0.5 + 0.5, 1.0);
-        return;
-    }
-    if (debugMode == 3) {
         vec3 nm = normalize(worldNormal);
         outColor = vec4(nm * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 4) {
+    if (debugMode == 3) {
         outColor = vec4(uv.x, uv.y, 0.0, 1.0);
         return;
     }
+    if (debugMode == 4) {
+        outColor = vec4(T * 0.5 + 0.5, 1.0);
+        return;
+    }
     if (debugMode == 5) {
-        // Visualize fragment tangent (T). If TES didn't supply tangent (fragTangent==0), fall back to derivative-based T
-        vec3 tmpT, tmpB;
-        vec3 showT;
-        if (length(fragTangent.xyz) > 1e-6) {
-            showT = normalize(fragTangent.xyz);
-        } else if (computeTBFromDerivatives(fragPosWorld, fragUV, N, tmpT, tmpB)) {
-            showT = normalize(tmpT);
-        } else {
-            showT = vec3(1.0, 0.0, 0.0);
-        }
-        outColor = vec4(showT * 0.5 + 0.5, 1.0);
+        outColor = vec4(B * 0.5 + 0.5, 1.0);
         return;
     }
     if (debugMode == 6) {
-        // Visualize fragment bitangent (B). Fall back to derivative-based B if needed
-        vec3 tmpT, tmpB;
-        vec3 showB;
-        if (length(fragTangent.xyz) > 1e-6) {
-            vec3 t = normalize(fragTangent.xyz);
-            showB = normalize(cross(N, t) * fragTangent.w);
-        } else if (computeTBFromDerivatives(fragPosWorld, fragUV, N, tmpT, tmpB)) {
-            showB = normalize(tmpB);
-        } else {
-            showB = vec3(0.0, 1.0, 0.0);
-        }
-        outColor = vec4(showB * 0.5 + 0.5, 1.0);
+        outColor = vec4(N * 0.5 + 0.5, 1.0);
         return;
     }
     if (debugMode == 7) {
-        vec3 ncol = normalize(N) * 0.5 + 0.5;
-        outColor = vec4(ncol, 1.0);
-        return;
-    }
-    if (debugMode == 8) {
         vec3 ra0 = texture(albedoArray, vec3(uv, float(fragTexIndices.x))).rgb;
         vec3 ra1 = texture(albedoArray, vec3(uv, float(fragTexIndices.y))).rgb;
         vec3 ra2 = texture(albedoArray, vec3(uv, float(fragTexIndices.z))).rgb;
@@ -232,7 +217,7 @@ void main() {
         outColor = vec4(rawAlbedo, 1.0);
         return;
     }
-    if (debugMode == 9) {
+    if (debugMode == 8) {
         vec3 rn0 = texture(normalArray, vec3(uv, float(fragTexIndices.x))).rgb;
         vec3 rn1 = texture(normalArray, vec3(uv, float(fragTexIndices.y))).rgb;
         vec3 rn2 = texture(normalArray, vec3(uv, float(fragTexIndices.z))).rgb;
@@ -240,7 +225,7 @@ void main() {
         outColor = vec4(rawNormalTex, 1.0);
         return;
     }
-    if (debugMode == 10) {
+    if (debugMode == 9) {
         float h0 = texture(heightArray, vec3(uv, float(fragTexIndices.x))).r;
         float h1 = texture(heightArray, vec3(uv, float(fragTexIndices.y))).r;
         float h2 = texture(heightArray, vec3(uv, float(fragTexIndices.z))).r;
@@ -248,36 +233,36 @@ void main() {
         outColor = vec4(vec3(h), 1.0);
         return;
     }
-    if (debugMode == 11) {
+    if (debugMode == 10) {
         outColor = vec4(NdotL, totalShadow, 0.0, 1.0);
         return;
     }
-    if (debugMode == 12) {
+    if (debugMode == 11) {
         vec3 normalToShow = normalize(cross(dFdy(fragPosWorld), dFdx(fragPosWorld)));
         outColor = vec4(normalToShow * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 13) {
+    if (debugMode == 12) {
         vec3 tl = normalize(toLight);
         outColor = vec4(tl * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 14) {
+    if (debugMode == 13) {
         outColor = vec4(vec3(NdotL), 1.0);
         return;
     }
-    if (debugMode == 15) {
+    if (debugMode == 14) {
         outColor = vec4(shadow, 0.0, totalShadow, 1.0);
         return;
     }
-    if (debugMode == 16) {
+    if (debugMode == 15) {
         // Visualize triplanar blend weights RGB (X/Y/Z projections)
         vec3 w = triW;
         outColor = vec4(w, 1.0);
         return;
     }
 
-    if (debugMode == 17) {
+    if (debugMode == 16) {
         // Map each corner texIndex to a distinct color from a small palette, then blend by barycentric weights
         const int PALETTE_SIZE = 16;
         const vec3 palette[PALETTE_SIZE] = vec3[](
@@ -307,13 +292,13 @@ void main() {
         return;
     }
 
-    if (debugMode == 18) {
+    if (debugMode == 17) {
         // Visualize barycentric weights directly as RGB
         outColor = vec4(clamp(w, 0.0, 1.0), 1.0);
         return;
     }
 
-    if (debugMode == 19) {
+    if (debugMode == 18) {
         // Show the raw albedo samples for each corner packed into RGB (a0.r, a1.r, a2.r)
         vec3 a0 = texture(albedoArray, vec3(uv, float(fragTexIndices.x))).rgb;
         vec3 a1 = texture(albedoArray, vec3(uv, float(fragTexIndices.y))).rgb;
@@ -322,7 +307,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 20) {
+    if (debugMode == 19) {
         // Visualize triplanar-sampled albedo blended across the three material indices
         vec3 ta0 = computeTriplanarAlbedo(fragPosWorld, triW, fragTexIndices.x, N);
         vec3 ta1 = computeTriplanarAlbedo(fragPosWorld, triW, fragTexIndices.y, N);
@@ -332,7 +317,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 21) {
+    if (debugMode == 20) {
         // Show per-projection triplanar heights for each corner packed into RGB
         float th0x = texture(heightArray, vec3(fragPosWorld.yz * vec2(materials[fragTexIndices.x].triplanarParams.x, materials[fragTexIndices.x].triplanarParams.y), float(fragTexIndices.x))).r;
         float th0y = texture(heightArray, vec3(fragPosWorld.xz * vec2(materials[fragTexIndices.x].triplanarParams.x, materials[fragTexIndices.x].triplanarParams.y), float(fragTexIndices.x))).r;
@@ -342,7 +327,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 22) {
+    if (debugMode == 21) {
         // Show difference between UV-blended height and triplanar-blended height (abs difference)
         float h_uv0 = texture(heightArray, vec3(uv, float(fragTexIndices.x))).r;
         float h_uv1 = texture(heightArray, vec3(uv, float(fragTexIndices.y))).r;
@@ -357,7 +342,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 23) {
+    if (debugMode == 22) {
         // Visualize triplanar-sampled normal blended across the three material indices
         vec3 tn0 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.x, geomN, fragTangent);
         vec3 tn1 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.y, geomN, fragTangent);
@@ -367,7 +352,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 24) {
+    if (debugMode == 23) {
         // Show per-projection triplanar normals for the first material packed into RGB
         vec3 nX = computeTriplanarNormal(fragPosWorld, vec3(1.0, 0.0, 0.0), fragTexIndices.x, geomN, fragTangent);
         vec3 nY = computeTriplanarNormal(fragPosWorld, vec3(0.0, 1.0, 0.0), fragTexIndices.x, geomN, fragTangent);
@@ -377,7 +362,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 25) {
+    if (debugMode == 24) {
         // Show difference between UV-sampled normal (converted to world-space) and triplanar-blended normal
         vec3 nu0 = texture(normalArray, vec3(uv, float(fragTexIndices.x))).rgb * 2.0 - 1.0;
         vec3 nu1 = texture(normalArray, vec3(uv, float(fragTexIndices.y))).rgb * 2.0 - 1.0;
@@ -400,7 +385,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 26) {
+    if (debugMode == 25) {
         // Visualize triplanar-sampled bump (height) blended across the three material indices
         float b0 = sampleHeightTriplanar(fragPosWorld, worldNormal, fragTexIndices.x);
         float b1 = sampleHeightTriplanar(fragPosWorld, worldNormal, fragTexIndices.y);
@@ -410,7 +395,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 27) {
+    if (debugMode == 26) {
         // Show per-projection triplanar heights using sampleHeightTriplanar for the first material packed into RGB
         float ph0x = sampleHeightTriplanar(fragPosWorld, vec3(1.0, 0.0, 0.0), fragTexIndices.x);
         float ph0y = sampleHeightTriplanar(fragPosWorld, vec3(0.0, 1.0, 0.0), fragTexIndices.x);
@@ -419,7 +404,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 28) {
+    if (debugMode == 27) {
         // Show difference between UV-blended height and triplanar-blended height using worldNormal (abs difference)
         float h_uv0 = texture(heightArray, vec3(uv, float(fragTexIndices.x))).r;
         float h_uv1 = texture(heightArray, vec3(uv, float(fragTexIndices.y))).r;
@@ -434,7 +419,7 @@ void main() {
         return;
     }
 
-    if (debugMode == 29) {
+    if (debugMode == 28) {
         // Visualize triplanar UV for X projection (first material)
         vec2 uvX, uvY, uvZ;
         computeTriplanarUVs(fragPosWorld, fragTexIndices.x, N, uvX, uvY, uvZ);
@@ -442,7 +427,7 @@ void main() {
         outColor = vec4(show.x, show.y, 0.0, 1.0);
         return;
     }
-    if (debugMode == 30) {
+    if (debugMode == 29) {
         // Visualize triplanar UV for Y projection (first material)
         vec2 uvX, uvY, uvZ;
         computeTriplanarUVs(fragPosWorld, fragTexIndices.x, N, uvX, uvY, uvZ);
@@ -450,7 +435,7 @@ void main() {
         outColor = vec4(show.x, show.y, 0.0, 1.0);
         return;
     }
-    if (debugMode == 31) {
+    if (debugMode == 30) {
         // Visualize triplanar UV for Z projection (first material)
         vec2 uvX, uvY, uvZ;
         computeTriplanarUVs(fragPosWorld, fragTexIndices.x, N, uvX, uvY, uvZ);
@@ -459,26 +444,26 @@ void main() {
         return;
     }
 
-    if (debugMode == 32) {
+    if (debugMode == 31) {
         // Visualize per-projection X triplanar normal (first material)
         vec3 nX = computeTriplanarNormal(fragPosWorld, vec3(1.0, 0.0, 0.0), fragTexIndices.x, N, fragTangent);
         outColor = vec4(normalize(nX) * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 33) {
+    if (debugMode == 32) {
         // Visualize per-projection Y triplanar normal (first material)
         vec3 nY = computeTriplanarNormal(fragPosWorld, vec3(0.0, 1.0, 0.0), fragTexIndices.x, N, fragTangent);
         outColor = vec4(normalize(nY) * 0.5 + 0.5, 1.0);
         return;
     }
-    if (debugMode == 34) {
+    if (debugMode == 33) {
         // Visualize per-projection Z triplanar normal (first material)
         vec3 nZ = computeTriplanarNormal(fragPosWorld, vec3(0.0, 0.0, 1.0), fragTexIndices.x, N, fragTangent);
         outColor = vec4(normalize(nZ) * 0.5 + 0.5, 1.0);
         return;
     }
 
-    if (debugMode == 35) {
+    if (debugMode == 34) {
         // Visualize TES-provided face normal (sharp per-triangle normal computed in tessellation evaluation shader)
         vec3 s = normalize(fragSharpNormal);
         outColor = vec4(s * 0.5 + 0.5, 1.0);

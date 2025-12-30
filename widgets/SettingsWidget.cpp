@@ -114,7 +114,6 @@ void SettingsWidget::render() {
         const char* debugItems[] = { 
             "Default Render", 
             "Fragment Normal", 
-            "Fragment Tangent", 
             "World Normal", 
             "UV Coordinates", 
             "Tangent (TBN)", 

@@ -12,7 +12,6 @@ layout(location = 4) in vec3 pc_inPosWorld[];
 layout(location = 5) in int pc_inTexIndex[];
 layout(location = 7) in vec3 pc_inLocalPos[];
 layout(location = 8) in vec3 pc_inLocalNormal[];
-layout(location = 9) in vec4 pc_inTangent[];
 
 
 layout(location = 0) out vec3 tc_fragColor[];
@@ -23,7 +22,6 @@ layout(location = 5) flat out ivec3 tc_fragTexIndex[];
 layout(location = 11) out vec3 tc_fragTexWeights[];
 layout(location = 7) out vec3 tc_fragLocalPos[];
 layout(location = 8) out vec3 tc_fragLocalNormal[];
-layout(location = 9) out vec4 tc_fragTangent[];
 
 
 void main() {
@@ -58,7 +56,7 @@ void main() {
     tc_fragTexWeights[gl_InvocationID] = texWeights;
     tc_fragLocalPos[gl_InvocationID] = pc_inLocalPos[gl_InvocationID];
     tc_fragLocalNormal[gl_InvocationID] = pc_inLocalNormal[gl_InvocationID];
-    tc_fragTangent[gl_InvocationID] = pc_inTangent[gl_InvocationID];
+    // tangents are computed in the fragment shader for triplanar mapping
 
     // Compute tessellation level on GPU based on camera distance (adaptive)
     int patchTexIndex = pc_inTexIndex[0];

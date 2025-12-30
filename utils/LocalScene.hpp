@@ -41,7 +41,6 @@ public:
         processor.iterateFlatIn(*tree, data);
         
         if(!tesselator.geometry.indices.empty()) {
-            tesselator.geometry.calculateTangents();
             callback(tesselator.geometry);
         }
     }
