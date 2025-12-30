@@ -3,26 +3,25 @@
 #include "Vertex.hpp"
 #include <glm/glm.hpp>
 #include <cstddef>
+#include <vector>
 
 void Geometry::calculateTangents() {
-    // Zero out all tangents
-    for (auto& v : vertices) {
-        v.tangent = glm::vec4(0.0f);
-    }
+    // Accumulate tangents and bitangents per vertex
+    std::vector<glm::vec3> tan1(vertices.size(), glm::vec3(0.0f));
+    std::vector<glm::vec3> tan2(vertices.size(), glm::vec3(0.0f));
 
-    // Accumulate tangents per triangle
     for (size_t i = 0; i + 2 < indices.size(); i += 3) {
-        Vertex& v0 = vertices[indices[i]];
-        Vertex& v1 = vertices[indices[i+1]];
-        Vertex& v2 = vertices[indices[i+2]];
+        size_t i0 = indices[i];
+        size_t i1 = indices[i+1];
+        size_t i2 = indices[i+2];
 
-        const glm::vec3& p0 = v0.position;
-        const glm::vec3& p1 = v1.position;
-        const glm::vec3& p2 = v2.position;
+        const glm::vec3& p0 = vertices[i0].position;
+        const glm::vec3& p1 = vertices[i1].position;
+        const glm::vec3& p2 = vertices[i2].position;
 
-        const glm::vec2& uv0 = v0.texCoord;
-        const glm::vec2& uv1 = v1.texCoord;
-        const glm::vec2& uv2 = v2.texCoord;
+        const glm::vec2& uv0 = vertices[i0].texCoord;
+        const glm::vec2& uv1 = vertices[i1].texCoord;
+        const glm::vec2& uv2 = vertices[i2].texCoord;
 
         glm::vec3 edge1 = p1 - p0;
         glm::vec3 edge2 = p2 - p0;
@@ -33,19 +32,25 @@ void Geometry::calculateTangents() {
         float r = (f == 0.0f) ? 0.0f : 1.0f / f;
 
         glm::vec3 tangent = r * (edge1 * deltaUV2.y - edge2 * deltaUV1.y);
+        glm::vec3 bitangent = r * (-edge1 * deltaUV2.x + edge2 * deltaUV1.x);
 
-        v0.tangent += glm::vec4(tangent, 0.0f);
-        v1.tangent += glm::vec4(tangent, 0.0f);
-        v2.tangent += glm::vec4(tangent, 0.0f);
+        tan1[i0] += tangent; tan1[i1] += tangent; tan1[i2] += tangent;
+        tan2[i0] += bitangent; tan2[i1] += bitangent; tan2[i2] += bitangent;
     }
 
-    // Normalize tangents
-    for (auto& v : vertices) {
-        glm::vec3 t = glm::vec3(v.tangent);
-        if (glm::length(t) > 0.0f)
-            v.tangent = glm::vec4(glm::normalize(t), 0.0f);
-        else
-            v.tangent = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); // fallback
+    // Orthonormalize and store per-vertex tangent + handedness
+    for (size_t i = 0; i < vertices.size(); ++i) {
+        glm::vec3 n = vertices[i].normal;
+        glm::vec3 t = tan1[i];
+        if (glm::length(t) > 0.0f) {
+            // Gram-Schmidt orthogonalize
+            t = glm::normalize(t - n * glm::dot(n, t));
+            glm::vec3 b = tan2[i];
+            float w = (glm::dot(glm::cross(n, t), b) < 0.0f) ? -1.0f : 1.0f;
+            vertices[i].tangent = glm::vec4(t, w);
+        } else {
+            vertices[i].tangent = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+        }
     }
 }
 

@@ -36,13 +36,15 @@ void main() {
     vec2 uv = fragUV;
     bool usedTriplanar = false;
 
-    // Geometry normal (world-space)
+    // Geometry normal (world-space) and geometric face normal from derivatives
     vec3 N = normalize(fragNormal);
+    vec3 geomN = normalize(cross(dFdx(fragPosWorld), dFdy(fragPosWorld)));
+    if (length(geomN) < 1e-5) geomN = N;
     vec3 worldNormal = N;
 
     // Precompute triplanar blend weights from geometric normal (abs^2 normalized)
     // Compute triplanar weights with a configurable dead-zone threshold and adjustable steepness
-    vec3 triW = abs(N);
+    vec3 triW = abs(geomN);
 
     // Subtract threshold and clamp so small components remain zero until threshold is exceeded
     float t = ubo.triplanarSettings.x; // threshold (0..1)
@@ -67,18 +69,18 @@ void main() {
     if (triFlag > 0.5) {
         usedTriplanar = true;
         // compute triplanar albedo per-layer then blend
-        vec3 a0 = w.x > 0.0 ? computeTriplanarAlbedo(fragPosWorldNotDisplaced, triW, fragTexIndices.x, N) : vec3(0.0);
-        vec3 a1 = w.y > 0.0 ? computeTriplanarAlbedo(fragPosWorldNotDisplaced, triW, fragTexIndices.y, N) : vec3(0.0);
-        vec3 a2 = w.z > 0.0 ? computeTriplanarAlbedo(fragPosWorldNotDisplaced, triW, fragTexIndices.z, N) : vec3(0.0);
+        vec3 a0 = w.x > 0.0 ? computeTriplanarAlbedo(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN) : vec3(0.0);
+        vec3 a1 = w.y > 0.0 ? computeTriplanarAlbedo(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN) : vec3(0.0);
+        vec3 a2 = w.z > 0.0 ? computeTriplanarAlbedo(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN) : vec3(0.0);
         albedoColor = a0 * w.x + a1 * w.y + a2 * w.z;
         // If normal mapping/triplanar normal enabled per-material or global, compute blended triplanar normal
         float mapFlag0 = materials[fragTexIndices.x].mappingParams.x;
         float mapFlag1 = materials[fragTexIndices.y].mappingParams.x;
         float mapFlag2 = materials[fragTexIndices.z].mappingParams.x;
         if ((mapFlag0 * w.x + mapFlag1 * w.y + mapFlag2 * w.z) > 0.5 || ubo.materialFlags.w > 0.5) {
-            vec3 n0 = w.x > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.x, N, fragTangent) : vec3(0.0);
-            vec3 n1 = w.y > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.y, N, fragTangent) : vec3(0.0);
-            vec3 n2 = w.z > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.z, N, fragTangent) : vec3(0.0);
+            vec3 n0 = w.x > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN, fragTangent) : vec3(0.0);
+            vec3 n1 = w.y > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN, fragTangent) : vec3(0.0);
+            vec3 n2 = w.z > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN, fragTangent) : vec3(0.0);
             worldNormal = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
         }
     } else {
@@ -296,9 +298,9 @@ void main() {
         float h_uv1 = texture(heightArray, vec3(uv, float(fragTexIndices.y))).r;
         float h_uv2 = texture(heightArray, vec3(uv, float(fragTexIndices.z))).r;
         float h_uv = h_uv0 * w.x + h_uv1 * w.y + h_uv2 * w.z;
-        float h_tri0 = sampleHeightTriplanar(fragPosWorld, N, fragTexIndices.x);
-        float h_tri1 = sampleHeightTriplanar(fragPosWorld, N, fragTexIndices.y);
-        float h_tri2 = sampleHeightTriplanar(fragPosWorld, N, fragTexIndices.z);
+        float h_tri0 = sampleHeightTriplanar(fragPosWorld, geomN, fragTexIndices.x);
+        float h_tri1 = sampleHeightTriplanar(fragPosWorld, geomN, fragTexIndices.y);
+        float h_tri2 = sampleHeightTriplanar(fragPosWorld, geomN, fragTexIndices.z);
         float h_tri = h_tri0 * w.x + h_tri1 * w.y + h_tri2 * w.z;
         float d = abs(h_uv - h_tri);
         outColor = vec4(vec3(d * 5.0), 1.0); // amplify differences for visibility
@@ -307,9 +309,9 @@ void main() {
 
     if (debugMode == 23) {
         // Visualize triplanar-sampled normal blended across the three material indices
-        vec3 tn0 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.x, N, fragTangent);
-        vec3 tn1 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.y, N, fragTangent);
-        vec3 tn2 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.z, N, fragTangent);
+        vec3 tn0 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.x, geomN, fragTangent);
+        vec3 tn1 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.y, geomN, fragTangent);
+        vec3 tn2 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.z, geomN, fragTangent);
         vec3 tNormal = normalize(tn0 * w.x + tn1 * w.y + tn2 * w.z);
         outColor = vec4(tNormal * 0.5 + 0.5, 1.0);
         return;
@@ -317,9 +319,9 @@ void main() {
 
     if (debugMode == 24) {
         // Show per-projection triplanar normals for the first material packed into RGB
-        vec3 nX = computeTriplanarNormal(fragPosWorld, vec3(1.0, 0.0, 0.0), fragTexIndices.x, N, fragTangent);
-        vec3 nY = computeTriplanarNormal(fragPosWorld, vec3(0.0, 1.0, 0.0), fragTexIndices.x, N, fragTangent);
-        vec3 nZ = computeTriplanarNormal(fragPosWorld, vec3(0.0, 0.0, 1.0), fragTexIndices.x, N, fragTangent);
+        vec3 nX = computeTriplanarNormal(fragPosWorld, vec3(1.0, 0.0, 0.0), fragTexIndices.x, geomN, fragTangent);
+        vec3 nY = computeTriplanarNormal(fragPosWorld, vec3(0.0, 1.0, 0.0), fragTexIndices.x, geomN, fragTangent);
+        vec3 nZ = computeTriplanarNormal(fragPosWorld, vec3(0.0, 0.0, 1.0), fragTexIndices.x, geomN, fragTangent);
         // Pack single components of each projection to RGB so we can visually inspect contributions
         outColor = vec4(nX.x * 0.5 + 0.5, nY.y * 0.5 + 0.5, nZ.z * 0.5 + 0.5, 1.0);
         return;
@@ -336,9 +338,9 @@ void main() {
         if (!computeWorldNormalFromNormalMap(fragTangent, fragPosWorld, uv, N, nmap, uvWorld, tmpT, tmpB)) {
             uvWorld = N; // fallback
         }
-        vec3 tn0 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.x, N, fragTangent);
-        vec3 tn1 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.y, N, fragTangent);
-        vec3 tn2 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.z, N, fragTangent);
+        vec3 tn0 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.x, geomN, fragTangent);
+        vec3 tn1 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.y, geomN, fragTangent);
+        vec3 tn2 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.z, geomN, fragTangent);
         vec3 triWorld = normalize(tn0 * w.x + tn1 * w.y + tn2 * w.z);
         float angle = acos(clamp(dot(normalize(uvWorld), triWorld), -1.0, 1.0));
         float d = angle / 3.14159265; // normalize to 0..1
@@ -402,6 +404,25 @@ void main() {
         computeTriplanarUVs(fragPosWorld, fragTexIndices.x, N, uvX, uvY, uvZ);
         vec2 show = fract(uvZ);
         outColor = vec4(show.x, show.y, 0.0, 1.0);
+        return;
+    }
+
+    if (debugMode == 32) {
+        // Visualize per-projection X triplanar normal (first material)
+        vec3 nX = computeTriplanarNormal(fragPosWorld, vec3(1.0, 0.0, 0.0), fragTexIndices.x, N, fragTangent);
+        outColor = vec4(normalize(nX) * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (debugMode == 33) {
+        // Visualize per-projection Y triplanar normal (first material)
+        vec3 nY = computeTriplanarNormal(fragPosWorld, vec3(0.0, 1.0, 0.0), fragTexIndices.x, N, fragTangent);
+        outColor = vec4(normalize(nY) * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (debugMode == 34) {
+        // Visualize per-projection Z triplanar normal (first material)
+        vec3 nZ = computeTriplanarNormal(fragPosWorld, vec3(0.0, 0.0, 1.0), fragTexIndices.x, N, fragTangent);
+        outColor = vec4(normalize(nZ) * 0.5 + 0.5, 1.0);
         return;
     }
 

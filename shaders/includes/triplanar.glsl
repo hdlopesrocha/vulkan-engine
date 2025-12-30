@@ -59,35 +59,42 @@ vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex,
     if(triW.x > 0.0) {
         vec3 nX = texture(normalArray, vec3(uvX, float(texIndex))).rgb * 2.0 - 1.0;
         nX = normalize(nX);
-        if (nX.z < 0.0) nX = -nX;
-        vec3 axisX = vec3(geomN.x >= 0.0 ? 1.0 : -1.0, 0.0, 0.0);
-        {
-            vec3 tX, bX;
-            buildTBFromAxis(axisX, tX, bX);
-            nmX = normalFromNormalMap(nX, tX, bX, axisX);
-        }
+        // Axis uses same convention as CPU code (pointing opposite to geomN sign as before)
+        vec3 axisX = vec3(geomN.x >= 0.0 ? -1.0 : 1.0, 0.0, 0.0);
+        // CPU mapping: X projection samples (u,v) = (-z, -y) for +X, (z, -y) for -X
+        vec3 uDirX = vec3(0.0, 0.0, -(geomN.x >= 0.0 ? 1.0 : -1.0));
+        vec3 vDirX = vec3(0.0, -1.0, 0.0);
+        vec3 tX = normalize(uDirX - axisX * dot(axisX, uDirX));
+        vec3 bX = normalize(cross(axisX, tX));
+        if (dot(bX, vDirX) < 0.0) bX = -bX;
+        // Convert sampled normal from projection tangent-space into world-space using the projection basis
+        nmX = normalFromNormalMap(nX, tX, bX, axisX);
     }
     if(triW.y > 0.0) {
         vec3 nY = texture(normalArray, vec3(uvY, float(texIndex))).rgb * 2.0 - 1.0;
         nY = normalize(nY);
-        if (nY.z < 0.0) nY = -nY;
-        vec3 axisY = vec3(0.0, geomN.y >= 0.0 ? 1.0 : -1.0, 0.0);
-        {
-            vec3 tY, bY;
-            buildTBFromAxis(axisY, tY, bY);
-            nmY = normalFromNormalMap(nY, tY, bY, axisY);
-        }
+        vec3 axisY = vec3(0.0, geomN.y >= 0.0 ? -1.0 : 1.0, 0.0);
+        // CPU mapping: Y projection samples (u,v) = (x, z) for +Y, (x, -z) for -Y
+        vec3 uDirY = vec3(1.0, 0.0, 0.0);
+        vec3 vDirY = vec3(0.0, 0.0, (geomN.y >= 0.0 ? 1.0 : -1.0));
+        vec3 tY = normalize(uDirY - axisY * dot(axisY, uDirY));
+        vec3 bY = normalize(cross(axisY, tY));
+        if (dot(bY, vDirY) < 0.0) bY = -bY;
+        // Convert sampled normal from projection tangent-space into world-space using the projection basis
+        nmY = normalFromNormalMap(nY, tY, bY, axisY);
     }
     if(triW.z > 0.0) {
         vec3 nZ = texture(normalArray, vec3(uvZ, float(texIndex))).rgb * 2.0 - 1.0;
         nZ = normalize(nZ);
-        if (nZ.z < 0.0) nZ = -nZ;
-        vec3 axisZ = vec3(0.0, 0.0, geomN.z >= 0.0 ? 1.0 : -1.0);
-        {
-            vec3 tZ, bZ;
-            buildTBFromAxis(axisZ, tZ, bZ);
-            nmZ = normalFromNormalMap(nZ, tZ, bZ, axisZ);
-        }
+        vec3 axisZ = vec3(0.0, 0.0, geomN.z >= 0.0 ? -1.0 : 1.0);
+        // CPU mapping: Z projection samples (u,v) = (x, -y) for +Z, (-x, -y) for -Z
+        vec3 uDirZ = vec3((geomN.z >= 0.0 ? 1.0 : -1.0), 0.0, 0.0);
+        vec3 vDirZ = vec3(0.0, -1.0, 0.0);
+        vec3 tZ = normalize(uDirZ - axisZ * dot(axisZ, uDirZ));
+        vec3 bZ = normalize(cross(axisZ, tZ));
+        if (dot(bZ, vDirZ) < 0.0) bZ = -bZ;
+        // Convert sampled normal from projection tangent-space into world-space using the projection basis
+        nmZ = normalFromNormalMap(nZ, tZ, bZ, axisZ);
     }
 
 

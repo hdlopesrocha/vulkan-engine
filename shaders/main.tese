@@ -88,5 +88,5 @@ void main() {
     fragNormal = normalize(mat3(model) * localNormal);
     // Compute world-space tangent handedness-aware
     vec4 tangentLocal = tc_fragTangent[0] * bc.x + tc_fragTangent[1] * bc.y + tc_fragTangent[2] * bc.z;
-    fragTangent = vec4(normalize(mat3(model) * tangentLocal.xyz), tangentLocal.w);
+    fragTangent = vec4(normalize(tangentLocal.xyz), tangentLocal.w);
 }

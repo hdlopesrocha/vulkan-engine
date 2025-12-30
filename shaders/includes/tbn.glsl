@@ -36,8 +36,11 @@ bool computeTBFromDerivatives(in vec3 fragPosWorld, in vec2 fragUV, in vec3 N, o
 }
 
 // Convert sampled tangent-space normal (nmap) into world-space using T/B/N
+// NOTE: swap X and Z of the final world normal to match asset convention (fixes X/Z swap observed in rendering)
 vec3 normalFromNormalMap(in vec3 nmap, in vec3 T, in vec3 B, in vec3 N) {
-    return normalize(nmap.x * T + nmap.y * B + nmap.z * N);
+    vec3 worldN = normalize(nmap.x * T + nmap.y * B + nmap.z * N);
+    // swap X and Z to correct axis mismatch
+    return vec3(worldN.z, worldN.y, worldN.x);
 }
 
 // Try to compute world-space normal from a normal map using either vertex tangent or derivative-based TBN

@@ -21,7 +21,7 @@ public:
     glm::vec3 getRight() const { return glm::normalize(glm::cross(getForward(), getUp())); }
 
     // Tunables
-    float speed = 2.5f;
+    float speed = 512.0f;
     float angularSpeedRad = glm::radians(45.0f);
 
     // expose orientation for UI/debug
