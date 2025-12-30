@@ -136,7 +136,6 @@ void SettingsWidget::render() {
             "UV vs Triplanar Height Diff", 
             "Triplanar Normal", 
             "Per-Projection Triplanar Normals (RGB)", 
-            "UV vs Triplanar Normal Diff", 
             "Triplanar Bump (Height)", 
             "Per-Projection Triplanar Bump (RGB)", 
             "UV vs Triplanar Bump Diff",
@@ -152,6 +151,7 @@ void SettingsWidget::render() {
         if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {
             debugMode = current;
         }
+        ImGui::SameLine(); ImGui::TextDisabled("(%d)", debugMode);
     }
     ImGui::End();
 }
