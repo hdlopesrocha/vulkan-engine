@@ -44,8 +44,8 @@
                 glm::vec3 v2 = glm::vec3( x0 * zr1, y0 * zr1, z1 );
                 glm::vec3 v3 = glm::vec3( x1 * zr0, y1 * zr0, z0 );
             
-                addTriangle(v0,v1,v2);
-                addTriangle(v0,v3,v1);
+                addTriangle(v0,v2,v1);
+                addTriangle(v0,v1,v3);
             }
         }
 

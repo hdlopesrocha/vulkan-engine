@@ -9,6 +9,7 @@ layout(location = 11) in vec3 fragTexWeights;
 layout(location = 4) in vec3 fragPosWorld;
 layout(location = 6) in vec4 fragPosLightSpace;
 layout(location = 9) in vec4 fragTangent;
+layout(location = 10) in vec3 fragSharpNormal; // face normal computed in TES (sharp)
 layout(location = 7) in vec3 fragPosWorldNotDisplaced;
 
 #include "includes/ubo.glsl"
@@ -25,9 +26,10 @@ layout(location = 0) out vec4 outColor;
 #include "includes/shadows.glsl"
 
 void main() {
+    bool isShadowPass = ubo.passParams.x > 0.5;
+
     // Fast-path for shadow pass: skip expensive lighting/texture work.
-    // `ubo.passParams.x` is set to 1.0 for shadow-rendering passes.
-    if (ubo.passParams.x > 0.5) {
+    if (isShadowPass) {
         outColor = vec4(0.0);
         return;
     }
@@ -82,6 +84,11 @@ void main() {
             vec3 n1 = w.y > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN, fragTangent) : vec3(0.0);
             vec3 n2 = w.z > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN, fragTangent) : vec3(0.0);
             worldNormal = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
+            // Diagnostic: detect invalid/degenerate normals and show red so we can find broken pixels
+            if (isnan(worldNormal.x) || isnan(worldNormal.y) || isnan(worldNormal.z) || length(worldNormal) < 1e-6) {
+                outColor = vec4(1.0, 0.0, 0.0, 1.0);
+                return;
+            }
         }
     } else {
         // Sample albedo from each layer and blend by barycentric weights
@@ -98,9 +105,24 @@ void main() {
         vec3 n1 = texture(normalArray, vec3(uv, float(fragTexIndices.y))).rgb * 2.0 - 1.0;
         vec3 n2 = texture(normalArray, vec3(uv, float(fragTexIndices.z))).rgb * 2.0 - 1.0;
         vec3 nmap = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
-        // Transform normal from tangent space to world space using TBN
-        mat3 tbn = mat3(T, B, N);
-        worldNormal = normalize(tbn * nmap);
+        // Blend per-material normal convention flags by barycentric weights
+        vec4 blendedNormalParams = materials[fragTexIndices.x].normalParams * w.x + materials[fragTexIndices.y].normalParams * w.y + materials[fragTexIndices.z].normalParams * w.z;
+        vec3 tmpT, tmpB;
+        vec3 computedWorld;
+        if (computeWorldNormalFromNormalMap(fragTangent, fragPosWorld, uv, N, nmap, blendedNormalParams, computedWorld, tmpT, tmpB)) {
+            worldNormal = normalize(computedWorld);
+            // update T/B so subsequent code that reads T/B remains consistent
+            T = normalize(tmpT);
+            B = normalize(tmpB);
+        } else {
+            // Fallback: use projection TBN
+            mat3 tbn = mat3(T, B, N);
+            worldNormal = normalize(tbn * nmap);
+        }
+        if (isnan(worldNormal.x) || isnan(worldNormal.y) || isnan(worldNormal.z) || length(worldNormal) < 1e-6) {
+            outColor = vec4(1.0, 0.0, 0.0, 1.0);
+            return;
+        }
     }
 
     // Lighting calculation
@@ -146,8 +168,17 @@ void main() {
         return;
     }
     if (debugMode == 2) {
-        vec3 gt = normalize(fragTangent.xyz);
-        outColor = vec4(gt * 0.5 + 0.5, 1.0);
+        // Visualize fragment tangent (legacy debug slot). Use derivative fallback when fragTangent is zero to avoid black/degenerate pixels.
+        vec3 tmpT, tmpB;
+        vec3 showT;
+        if (length(fragTangent.xyz) > 1e-6) {
+            showT = normalize(fragTangent.xyz);
+        } else if (computeTBFromDerivatives(fragPosWorld, fragUV, N, tmpT, tmpB)) {
+            showT = normalize(tmpT);
+        } else {
+            showT = vec3(1.0, 0.0, 0.0);
+        }
+        outColor = vec4(showT * 0.5 + 0.5, 1.0);
         return;
     }
     if (debugMode == 3) {
@@ -160,13 +191,32 @@ void main() {
         return;
     }
     if (debugMode == 5) {
-        vec3 tcol = normalize(T) * 0.5 + 0.5;
-        outColor = vec4(tcol, 1.0);
+        // Visualize fragment tangent (T). If TES didn't supply tangent (fragTangent==0), fall back to derivative-based T
+        vec3 tmpT, tmpB;
+        vec3 showT;
+        if (length(fragTangent.xyz) > 1e-6) {
+            showT = normalize(fragTangent.xyz);
+        } else if (computeTBFromDerivatives(fragPosWorld, fragUV, N, tmpT, tmpB)) {
+            showT = normalize(tmpT);
+        } else {
+            showT = vec3(1.0, 0.0, 0.0);
+        }
+        outColor = vec4(showT * 0.5 + 0.5, 1.0);
         return;
     }
     if (debugMode == 6) {
-        vec3 bcol = normalize(B) * 0.5 + 0.5;
-        outColor = vec4(bcol, 1.0);
+        // Visualize fragment bitangent (B). Fall back to derivative-based B if needed
+        vec3 tmpT, tmpB;
+        vec3 showB;
+        if (length(fragTangent.xyz) > 1e-6) {
+            vec3 t = normalize(fragTangent.xyz);
+            showB = normalize(cross(N, t) * fragTangent.w);
+        } else if (computeTBFromDerivatives(fragPosWorld, fragUV, N, tmpT, tmpB)) {
+            showB = normalize(tmpB);
+        } else {
+            showB = vec3(0.0, 1.0, 0.0);
+        }
+        outColor = vec4(showB * 0.5 + 0.5, 1.0);
         return;
     }
     if (debugMode == 7) {
@@ -425,6 +475,13 @@ void main() {
         // Visualize per-projection Z triplanar normal (first material)
         vec3 nZ = computeTriplanarNormal(fragPosWorld, vec3(0.0, 0.0, 1.0), fragTexIndices.x, N, fragTangent);
         outColor = vec4(normalize(nZ) * 0.5 + 0.5, 1.0);
+        return;
+    }
+
+    if (debugMode == 35) {
+        // Visualize TES-provided face normal (sharp per-triangle normal computed in tessellation evaluation shader)
+        vec3 s = normalize(fragSharpNormal);
+        outColor = vec4(s * 0.5 + 0.5, 1.0);
         return;
     }
 

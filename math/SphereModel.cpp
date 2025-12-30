@@ -26,7 +26,6 @@ SphereModel::SphereModel(float radius, int longitudes, int latitudes, float texI
             vert.texCoord = glm::vec2(u, v);
             vert.normal = glm::vec3(px / radius, py / radius, pz / radius);
             vert.texIndex = static_cast<int>(texIndex);
-            vert.tangent = glm::vec4(-sinTheta, 0.0f, cosTheta, 1.0f);
             vertices.push_back(vert);
         }
     }

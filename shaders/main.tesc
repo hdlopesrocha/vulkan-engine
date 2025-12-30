@@ -10,9 +10,10 @@ layout(location = 1) in vec2 pc_inUV[];
 layout(location = 2) in vec3 pc_inNormal[];
 layout(location = 4) in vec3 pc_inPosWorld[];
 layout(location = 5) in int pc_inTexIndex[];
-layout(location = 9) in vec4 pc_inTangent[];
 layout(location = 7) in vec3 pc_inLocalPos[];
 layout(location = 8) in vec3 pc_inLocalNormal[];
+layout(location = 9) in vec4 pc_inTangent[];
+
 
 layout(location = 0) out vec3 tc_fragColor[];
 layout(location = 1) out vec2 tc_fragUV[];
@@ -31,7 +32,7 @@ void main() {
     tc_fragUV[gl_InvocationID] = pc_inUV[gl_InvocationID];
     tc_fragNormal[gl_InvocationID] = pc_inNormal[gl_InvocationID];
     tc_fragPosWorld[gl_InvocationID] = pc_inPosWorld[gl_InvocationID];
-    tc_fragTangent[gl_InvocationID] = pc_inTangent[gl_InvocationID];
+
 
     // Compress the patch's texture indices into up to three unique slots
     int i0 = pc_inTexIndex[0];
@@ -57,6 +58,7 @@ void main() {
     tc_fragTexWeights[gl_InvocationID] = texWeights;
     tc_fragLocalPos[gl_InvocationID] = pc_inLocalPos[gl_InvocationID];
     tc_fragLocalNormal[gl_InvocationID] = pc_inLocalNormal[gl_InvocationID];
+    tc_fragTangent[gl_InvocationID] = pc_inTangent[gl_InvocationID];
 
     // Compute tessellation level on GPU based on camera distance (adaptive)
     int patchTexIndex = pc_inTexIndex[0];

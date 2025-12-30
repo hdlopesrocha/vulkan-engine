@@ -143,7 +143,11 @@ void SettingsWidget::render() {
             "UV vs Triplanar Bump Diff",
             "Triplanar UV X (first)",
             "Triplanar UV Y (first)",
-            "Triplanar UV Z (first)" 
+            "Triplanar UV Z (first)",
+            "Per-Projection Triplanar Normal X (first)",
+            "Per-Projection Triplanar Normal Y (first)",
+            "Per-Projection Triplanar Normal Z (first)",
+            "TES Face Normal (sharp - purple for up)" 
         };
         int current = debugMode;
         if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {

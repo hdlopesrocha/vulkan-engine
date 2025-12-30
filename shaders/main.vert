@@ -37,8 +37,7 @@ void main() {
     fragLocalPos = inPos;
     // also pass local-space normal for tessellation/displacement
     fragLocalNormal = inNormal;
-    // pass tangent as a vec4: xyz = tangent, w = handedness sign
-    fragTangent = vec4(normalize(mat3(pushConstants.model) * inTangent.xyz), inTangent.w);
-    // apply MVP transform to the vertex position (MVP already includes model transform)
+    // Transform per-vertex tangent to world-space and pass through (preferred when available)
+    fragTangent = vec4(normalize(mat3(pushConstants.model) * inTangent.xyz), inTangent.w);    // apply MVP transform to the vertex position (MVP already includes model transform)
     gl_Position = ubo.viewProjection * worldPos;
 }
