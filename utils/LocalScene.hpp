@@ -3,12 +3,14 @@
 #include "../space/OctreeVisibilityChecker.hpp"
 #include "../space/Tesselator.hpp"
 #include "../space/Processor.hpp"
+#include <unordered_map>
 
 class LocalScene : public Scene {
 
     Octree opaqueOctree;
     Octree transparentOctree;
-	ThreadPool threadPool;
+    ThreadPool threadPool;
+    std::unordered_map<NodeID, OctreeNodeData> nodeDataMap;
 
 public:
     LocalScene() : 
@@ -21,15 +23,20 @@ public:
     void requestVisibleNodes(Layer layer, glm::mat4 viewMatrix, const VisibleNodeCallback& callback) override {
         Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
 
+        // nodeDataMap.clear();  // Don't clear, keep data for async requests
+
         OctreeVisibilityChecker checker;
         checker.update(viewMatrix);
         tree->iterate(checker);
         for(const auto& nodeData : checker.visibleNodes) {
-            callback(nodeData);
+            NodeID id = (NodeID)nodeData.node;
+            nodeDataMap[id] = nodeData;  // Update or add
+            callback(id, nodeData.node->version);
         }
     }
 
-    void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback) override {
+    void requestModel3D(Layer layer, NodeID id, const GeometryCallback& callback) override {
+        auto& data = nodeDataMap[id];
         long tessCount = 0;
         Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
         long trianglesCount = 0;
@@ -45,7 +52,8 @@ public:
         }
     }
 
-    bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) override {
+    bool isNodeUpToDate(Layer layer, NodeID id, uint version) override {
+        auto& data = nodeDataMap[id];
         return data.node->version >= version;
     }
 

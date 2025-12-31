@@ -166,6 +166,8 @@ protected:
         VkDescriptorPool getDescriptorPool() const { return descriptorPool; }
         VkDescriptorPool getImGuiDescriptorPool() const { return imguiDescriptorPool; }
 
+        VkImage getDepthImage() const { return depthImage; }
+
         int getWidth();
         int getHeight();
         

@@ -12,7 +12,7 @@ class OctreeNode {
 
 public:
     Vertex vertex;
-    uint id;
+    uint blockId;
     uint8_t bits;
     float sdf[8];
     uint version;

@@ -15,8 +15,10 @@ enum Layer {
     LAYER_COUNT = 3
 };
 
-// Visible nodes are reported via a callback lambda taking an OctreeNodeData reference
-using VisibleNodeCallback = std::function<void(const OctreeNodeData&)>;
+typedef uintptr_t NodeID;
+
+// Visible nodes are reported via a callback lambda taking a NodeID and its version
+using VisibleNodeCallback = std::function<void(NodeID, uint)>;
 using GeometryCallback = std::function<void(const Geometry&)>;
 
 class SceneLoaderCallback {
@@ -34,6 +36,6 @@ public:
     ~Scene() = default;
     virtual void loadScene(SceneLoaderCallback& callback) = 0;
     virtual void requestVisibleNodes(Layer layer, glm::mat4 viewMatrix, const VisibleNodeCallback& callback) = 0;
-    virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback) = 0;
-    virtual bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) = 0;
+    virtual void requestModel3D(Layer layer, NodeID id, const GeometryCallback& callback) = 0;
+    virtual bool isNodeUpToDate(Layer layer, NodeID id, uint version) = 0;
 };

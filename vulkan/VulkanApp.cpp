@@ -1100,6 +1100,15 @@ void VulkanApp::createDescriptorSetLayout() {
     // Create a separate descriptor set layout for Materials (binding 5: Materials SSBO)
     // and binding 6: Models SSBO so the IndirectRenderer can bind model matrices
     // into the global material set (set 0, binding 6).
+    VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlags{};
+    bindingFlags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+    std::array<VkDescriptorBindingFlags, 2> flags = {
+        0, // binding 5: no special flags
+        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT // binding 6: allow update after bind
+    };
+    bindingFlags.bindingCount = flags.size();
+    bindingFlags.pBindingFlags = flags.data();
+
     VkDescriptorSetLayoutBinding materialBinding{};
     materialBinding.binding = 5;
     materialBinding.descriptorCount = 1;
@@ -1117,6 +1126,8 @@ void VulkanApp::createDescriptorSetLayout() {
     std::array<VkDescriptorSetLayoutBinding, 2> materialBindings = { materialBinding, modelsBinding };
     VkDescriptorSetLayoutCreateInfo materialLayoutInfo{};
     materialLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    materialLayoutInfo.pNext = &bindingFlags;
+    materialLayoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     materialLayoutInfo.bindingCount = static_cast<uint32_t>(materialBindings.size());
     materialLayoutInfo.pBindings = materialBindings.data();
 
@@ -1223,6 +1234,7 @@ void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
     poolInfo.maxSets = uboCount; // keep existing behavior (uboCount equals number of sets expected)
@@ -1853,6 +1865,22 @@ QueueFamilyIndices VulkanApp::findQueueFamilies(VkPhysicalDevice device) {
     vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
 
     int i = 0;
+    for (const auto& queueFamily : queueFamilies) {
+        if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            VkBool32 presentSupport = false;
+            vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+
+            if (presentSupport) {
+                indices.graphicsFamily = i;
+                indices.presentFamily = i;
+                return indices;
+            }
+        }
+        ++i;
+    }
+
+    // If no family has both, find separate
+    i = 0;
     for (const auto& queueFamily : queueFamilies) {
         if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
             indices.graphicsFamily = i;

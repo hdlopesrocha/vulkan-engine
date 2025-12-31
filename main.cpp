@@ -51,7 +51,7 @@
 
 class MyApp : public VulkanApp, public IEventHandler {
     LocalScene * mainScene;
-    std::unordered_map<OctreeNode*, Model3DVersion> nodeModelVersions;
+    std::unordered_map<NodeID, Model3DVersion> nodeModelVersions;
     std::vector<uint32_t> visibleModels; // store mesh ids for indirect renderer
 
     public:
@@ -691,15 +691,9 @@ class MyApp : public VulkanApp, public IEventHandler {
     void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
         visibleModels.clear();
         // Request visible octree nodes from the main scene for the current camera view            
-        mainScene->requestVisibleNodes(Layer::LAYER_OPAQUE, camera.getViewProjectionMatrix(), [this](const OctreeNodeData& data){ 
-            // Capture node/version locally to ensure lifetime for the async request callback
-            OctreeNode* node = data.node;
-            // skip null nodes
-            if (!node) return;
-            unsigned int version = node->version;
-
+        mainScene->requestVisibleNodes(Layer::LAYER_OPAQUE, camera.getViewProjectionMatrix(), [this](NodeID id, uint version){ 
             // Find existing entry and remove it if version changed
-            auto it = nodeModelVersions.find(node);
+            auto it = nodeModelVersions.find(id);
             if (it != nodeModelVersions.end()) {
                 if (it->second.version != version) {
                     if (it->second.meshId != UINT32_MAX) indirectRenderer.removeMesh(it->second.meshId);
@@ -710,21 +704,20 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             if (it == nodeModelVersions.end()) {
                 // Insert placeholder and request async model load
-                auto em = nodeModelVersions.emplace(node, Model3DVersion{});
+                auto em = nodeModelVersions.emplace(id, Model3DVersion{});
                 it = em.first;
-                // requestModel3D expects a non-const reference; cast away const here
-                mainScene->requestModel3D(Layer::LAYER_OPAQUE, const_cast<OctreeNodeData&>(data), [this, node, version](const Geometry& mesh) {
+                mainScene->requestModel3D(Layer::LAYER_OPAQUE, id, [this, id, version](const Geometry& mesh) {
                     // Add the loaded mesh into the IndirectRenderer and record its meshId
-                    uint32_t id = indirectRenderer.addMesh(this, mesh, glm::mat4(1.0f));
-                    nodeModelVersions[node] = { id, version };
+                    uint32_t meshId = indirectRenderer.addMesh(this, mesh, glm::mat4(1.0f));
+                    nodeModelVersions[id] = { meshId, version };
                     // Ensure models SSBO is bound; let the renderer allocate a compatible set
                     indirectRenderer.updateModelsDescriptorSet(this, VK_NULL_HANDLE);
-                    std::cout << "[IndirectRenderer] Added mesh id " << id << " for node " << node << " (version " << version << ")\n";
+                    std::cout << "[IndirectRenderer] Added mesh id " << meshId << " for node id " << id << " (version " << version << ")\n";
                 });
             }
 
             // Only add fully-loaded meshes (indirect renderer ids) to visible list
-            uint32_t meshId = nodeModelVersions[node].meshId;
+            uint32_t meshId = nodeModelVersions[id].meshId;
             if (meshId != UINT32_MAX) visibleModels.push_back(meshId);
             
         });
@@ -867,6 +860,29 @@ class MyApp : public VulkanApp, public IEventHandler {
         if (draw_data) ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
 
         vkCmdEndRenderPass(commandBuffer);
+
+        // Transition depth image to READ_ONLY_OPTIMAL for sampling in shaders
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.image = getDepthImage();
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(commandBuffer,
+            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            1, &barrier);
 
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
             throw std::runtime_error("failed to record command buffer!");

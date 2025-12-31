@@ -27,22 +27,22 @@ OctreeNode * OctreeNode::init(Vertex vertex) {
 	this->setChunk(false);
 	this->setType(SpaceType::Empty);
 	this->vertex = vertex;
-	this->id = UINT_MAX;
+	this->blockId = UINT_MAX;
 	this->version = 0u;	
 	return this;
 }
 
 ChildBlock * OctreeNode::getBlock(OctreeAllocator &allocator) const {
-	return allocator.childAllocator.getFromIndex(this->id);
+	return allocator.childAllocator.getFromIndex(this->blockId);
 }
 
 
 void OctreeNode::setChildren(OctreeAllocator &allocator, uint children[8]) {
-	uint blockId = this->id;
+	uint blockId = this->blockId;
 	ChildBlock * block = NULL;
 	if(blockId == UINT_MAX) {
 		block = allocator.childAllocator.allocate()->init();
-		this->id = allocator.childAllocator.getIndex(block);
+		this->blockId = allocator.childAllocator.getIndex(block);
 	} else {
 		block = allocator.childAllocator.getFromIndex(blockId);
 	}
@@ -58,12 +58,12 @@ void OctreeNode::getChildren(OctreeAllocator &allocator, OctreeNode * childNodes
 
 ChildBlock * OctreeNode::allocate(OctreeAllocator &allocator) {
 	ChildBlock * block = NULL;
-	if(this->id == UINT_MAX) {
+	if(this->blockId == UINT_MAX) {
 		block = allocator.childAllocator.allocate();
-		this->id = allocator.childAllocator.getIndex(block);
+		this->blockId = allocator.childAllocator.getIndex(block);
 	}
 	if(block == NULL) {
-		block = allocator.childAllocator.getFromIndex(this->id);
+		block = allocator.childAllocator.getFromIndex(this->blockId);
 	}
 	return block;
 }
@@ -76,14 +76,14 @@ OctreeNode::~OctreeNode() {
 
 ChildBlock * OctreeNode::clear(OctreeAllocator &allocator, OctreeChangeHandler * handler, ChildBlock * block) {
 	handler->erase(this);
-	if(this->id != UINT_MAX) {
+	if(this->blockId != UINT_MAX) {
 		if(block == NULL) {
 			block = getBlock(allocator);
 		}
 		if(block!=NULL) {	
 			block->clear(allocator, handler);
 			allocator.childAllocator.deallocate(block);
-			this->id = UINT_MAX;
+			this->blockId = UINT_MAX;
 			block = NULL;
 		}
 	}
