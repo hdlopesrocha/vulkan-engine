@@ -19,7 +19,7 @@ void SettingsWidget::resetToDefaults() {
     tessMinDistance = 10.0f;
     // Triplanar defaults
     triplanarThreshold = 0.12f;
-    triplanarExponent = 3.0f;
+    triplanarExponent = 1.0f;
 }
 
 void SettingsWidget::render() {

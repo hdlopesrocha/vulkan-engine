@@ -37,6 +37,14 @@ void buildTBFromAxis(in vec3 axis, out vec3 T, out vec3 B) {
     B = cross(axis, T);
 }
 
+// Reoriented Normal Mapping (RNM) helper: reorient a blended world-space normal
+// toward the geometric normal while preserving surface detail.
+vec3 reorientNormal(in vec3 blendedWorld, in vec3 geomN) {
+    vec3 b = normalize(blendedWorld);
+    float d = dot(b, geomN);
+    return normalize(b + geomN * (1.0 - d));
+}
+
 // Compute triplanar normal by sampling the normal map for each projection and transforming each to world-space.
 // `geomN` is the geometric world-space normal of the fragment (used to preserve axis sign/orientation).
 // This variant constructs per-projection T/B from derivatives (or axis fallback) and converts sampled normals

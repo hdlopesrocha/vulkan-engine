@@ -38,7 +38,7 @@ private:
     std::function<void()> onDumpShadowDepth;
     // Triplanar settings
     float triplanarThreshold = 0.5f; // small dead zone before blending starts
-    float triplanarExponent = 5.0f;   // >1 makes transitions steeper
+    float triplanarExponent = 1.0f;   // >1 makes transitions steeper
     // Tessellation settings
     bool tessellationEnabled = true; // global toggle to disable all tessellation + displacement
     bool shadowTessellationEnabled = true; // global toggle to disable all tessellation + displacement

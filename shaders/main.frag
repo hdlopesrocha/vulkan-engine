@@ -115,7 +115,10 @@ void main() {
             tripNormal0 = w.x > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN) : vec3(0.0);
             tripNormal1 = w.y > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN) : vec3(0.0);
             tripNormal2 = w.z > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN) : vec3(0.0);
-            worldNormal = normalize(tripNormal0 * w.x + tripNormal1 * w.y + tripNormal2 * w.z);
+            vec3 blended = tripNormal0 * w.x + tripNormal1 * w.y + tripNormal2 * w.z;
+            worldNormal = reorientNormal(blended, N);
+            
+            
             // Diagnostic: detect invalid/degenerate normals and show red so we can find broken pixels
             if (isnan(worldNormal.x) || isnan(worldNormal.y) || isnan(worldNormal.z) || length(worldNormal) < 1e-6) {
                 outColor = vec4(1.0, 0.0, 0.0, 1.0);
@@ -146,7 +149,8 @@ void main() {
         vec3 tn0 = w.x > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN) : vec3(0.0);
         vec3 tn1 = w.y > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN) : vec3(0.0);
         vec3 tn2 = w.z > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN) : vec3(0.0);
-        worldNormal = normalize(tn0 * w.x + tn1 * w.y + tn2 * w.z);
+        vec3 blended = tn0 * w.x + tn1 * w.y + tn2 * w.z;
+        worldNormal = reorientNormal(blended, geomN);
         if (isnan(worldNormal.x) || isnan(worldNormal.y) || isnan(worldNormal.z) || length(worldNormal) < 1e-6) {
             outColor = vec4(1.0, 0.0, 0.0, 1.0);
             return;
@@ -354,7 +358,8 @@ void main() {
         vec3 tn0 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.x, geomN);
         vec3 tn1 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.y, geomN);
         vec3 tn2 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.z, geomN);
-        vec3 tNormal = normalize(tn0 * w.x + tn1 * w.y + tn2 * w.z);
+        vec3 blended = tn0 * w.x + tn1 * w.y + tn2 * w.z;
+        vec3 tNormal = reorientNormal(blended, geomN);
         outColor = vec4(tNormal * 0.5 + 0.5, 1.0);
         return;
     }
