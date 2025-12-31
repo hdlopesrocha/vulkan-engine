@@ -740,8 +740,8 @@ class MyApp : public VulkanApp, public IEventHandler {
     
         // First pass: Render shadow map (skip if shadows globally disabled)
         if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
-            // Prepare GPU cull before starting the shadow render pass
-            indirectRenderer.prepareCull(commandBuffer, uboStatic.lightSpaceMatrix);
+            // Prepare GPU cull before starting the shadow render pass (shared with main pass)
+            indirectRenderer.prepareCull(commandBuffer, projMat * viewMat);
             shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
             
             // Update uniform buffer for shadow pass: set viewProjection = lightSpaceMatrix
@@ -769,9 +769,6 @@ class MyApp : public VulkanApp, public IEventHandler {
             shadowMapper.endShadowPass(commandBuffer);
         }
         
-        // Prepare GPU cull for main passes (must be outside render pass)
-        indirectRenderer.prepareCull(commandBuffer, projMat * viewMat);
-
         // Second pass: Render scene with shadows
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         
