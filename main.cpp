@@ -522,7 +522,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         createCommandBuffers();
         mainScene = new LocalScene();
 
-        MainSceneLoader mainSceneLoader = MainSceneLoader();
+        MainSceneLoader mainSceneLoader = MainSceneLoader(&mainScene->transparentLayerChangeHandler, &mainScene->opaqueLayerChangeHandler);
         mainScene->loadScene(mainSceneLoader);
 
         

@@ -4,6 +4,8 @@
 #include "../space/Tesselator.hpp"
 #include "../space/Processor.hpp"
 #include <unordered_map>
+#include "LiquidSpaceChangeHandler.hpp"
+#include "SolidSpaceChangeHandler.hpp"
 
 class LocalScene : public Scene {
 
@@ -12,10 +14,20 @@ class LocalScene : public Scene {
     ThreadPool threadPool;
 
 public:
+    // Instance/visibility layers and change handlers (owned by LocalScene)
+    OctreeLayer<InstanceData> opaqueLayerInfo;
+    OctreeLayer<InstanceData> transparentLayerInfo;
+    SolidSpaceChangeHandler opaqueLayerChangeHandler;
+    LiquidSpaceChangeHandler transparentLayerChangeHandler;
     LocalScene() : 
         opaqueOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)), 
         transparentOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)),
-        threadPool(std::thread::hardware_concurrency()) {
+        threadPool(std::thread::hardware_concurrency()),
+        opaqueLayerInfo(),
+        transparentLayerInfo(),
+        opaqueLayerChangeHandler(&opaqueLayerInfo),
+        transparentLayerChangeHandler(&transparentLayerInfo)
+        {
     };
     ~LocalScene() = default;
 
