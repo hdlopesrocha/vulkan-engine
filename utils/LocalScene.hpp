@@ -10,7 +10,6 @@ class LocalScene : public Scene {
     Octree opaqueOctree;
     Octree transparentOctree;
     ThreadPool threadPool;
-    std::unordered_map<NodeID, OctreeNodeData> nodeDataMap;
 
 public:
     LocalScene() : 
@@ -28,15 +27,10 @@ public:
         OctreeVisibilityChecker checker;
         checker.update(viewMatrix);
         tree->iterate(checker);
-        for(const auto& nodeData : checker.visibleNodes) {
-            NodeID id = (NodeID)nodeData.node;
-            nodeDataMap[id] = nodeData;  // Update or add
-            callback(id, nodeData.node->version);
-        }
+        callback(checker.visibleNodes);
     }
 
-    void requestModel3D(Layer layer, NodeID id, const GeometryCallback& callback) override {
-        auto& data = nodeDataMap[id];
+    void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback) override {
         long tessCount = 0;
         Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
         long trianglesCount = 0;
@@ -52,8 +46,7 @@ public:
         }
     }
 
-    bool isNodeUpToDate(Layer layer, NodeID id, uint version) override {
-        auto& data = nodeDataMap[id];
+    bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) override {
         return data.node->version >= version;
     }
 

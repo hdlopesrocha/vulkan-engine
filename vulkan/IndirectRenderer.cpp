@@ -511,13 +511,14 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, VulkanApp* app, uint32_
     glm::mat4 identity = glm::mat4(1.0f);
     vkCmdPushConstants(cmd, app->getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &identity);
 
-    // Issue a single indirect-draw call; compute shader compacts only visible commands
+    // Issue indirect-draw call; compute shader compacts only visible commands
+    uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
     if (cmdDrawIndexedIndirectCount) {
-        // Use indirect-count variant to let the GPU supply the visible count, but limit to 1 draw call
-        cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffer.buffer, 0, visibleCountBuffer.buffer, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
+        // Use indirect-count variant to let the GPU supply the visible count from compute shader
+        cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffer.buffer, 0, visibleCountBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
     } else {
-        // Fallback: issue one draw from compact buffer (the compute shader is expected to place visible data at offset 0)
-        vkCmdDrawIndexedIndirect(cmd, compactIndirectBuffer.buffer, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
+        // Fallback: draw all commands (no GPU count available)
+        vkCmdDrawIndexedIndirect(cmd, compactIndirectBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
     }
 }
 

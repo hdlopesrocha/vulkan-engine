@@ -52,7 +52,7 @@
 class MyApp : public VulkanApp, public IEventHandler {
     LocalScene * mainScene;
     std::unordered_map<NodeID, Model3DVersion> nodeModelVersions;
-    std::vector<uint32_t> visibleModels; // store mesh ids for indirect renderer
+
 
     public:
         MyApp() : shadowMapper(this, 8192) {}
@@ -134,7 +134,6 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Subscribe camera and app to event manager
         eventManager.subscribe(&camera);
         eventManager.subscribe(this);
-        visibleModels.reserve(1000);
 
         // Use ImGui dark theme for a darker UI appearance
         ImGui::StyleColorsDark();
@@ -594,7 +593,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 ImGui::SetNextWindowPos(ImVec2(padding, y), ImGuiCond_Always);
                 if (ImGui::Begin("##stats_overlay", nullptr, flags)) {
                     ImGui::Text("FPS: %.1f", imguiFps);
-                    ImGui::Text("Visible: %zu", visibleModels.size());
+                    ImGui::Text("Loaded: %zu", nodeModelVersions.size());
                 }
                 ImGui::End();
             }
@@ -689,37 +688,35 @@ class MyApp : public VulkanApp, public IEventHandler {
     };
 
     void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
-        visibleModels.clear();
-        // Request visible octree nodes from the main scene for the current camera view            
-        mainScene->requestVisibleNodes(Layer::LAYER_OPAQUE, camera.getViewProjectionMatrix(), [this](NodeID id, uint version){ 
-            // Find existing entry and remove it if version changed
-            auto it = nodeModelVersions.find(id);
-            if (it != nodeModelVersions.end()) {
-                if (it->second.version != version) {
-                    if (it->second.meshId != UINT32_MAX) indirectRenderer.removeMesh(it->second.meshId);
-                    nodeModelVersions.erase(it);
-                    it = nodeModelVersions.end();
+        // Request visible octree nodes from the main scene to check for updates           
+        mainScene->requestVisibleNodes(Layer::LAYER_OPAQUE, camera.getViewProjectionMatrix(), [this](std::vector<OctreeNodeData>& nodes){ 
+            for (auto& node : nodes) {
+                NodeID id = reinterpret_cast<NodeID>(node.node);
+                uint ver = node.node->version;
+                // Find existing entry and remove it if version changed
+                auto it = nodeModelVersions.find(id);
+                if (it != nodeModelVersions.end()) {
+                    if (it->second.version != ver) {
+                        if (it->second.meshId != UINT32_MAX) indirectRenderer.removeMesh(it->second.meshId);
+                        nodeModelVersions.erase(it);
+                        it = nodeModelVersions.end();
+                    }
+                }
+
+                if (it == nodeModelVersions.end()) {
+                    // Insert placeholder and request async model load
+                    auto em = nodeModelVersions.emplace(id, Model3DVersion{});
+                    it = em.first;
+                    mainScene->requestModel3D(Layer::LAYER_OPAQUE, node, [this, id, ver](const Geometry& mesh) {
+                        // Add the loaded mesh into the IndirectRenderer and record its meshId
+                        uint32_t meshId = indirectRenderer.addMesh(this, mesh, glm::mat4(1.0f));
+                        nodeModelVersions[id] = { meshId, ver };
+                        // Ensure models SSBO is bound; let the renderer allocate a compatible set
+                        indirectRenderer.updateModelsDescriptorSet(this, VK_NULL_HANDLE);
+                        std::cout << "[IndirectRenderer] Added mesh id " << meshId << " for node id " << id << " (version " << ver << ")\n";
+                    });
                 }
             }
-
-            if (it == nodeModelVersions.end()) {
-                // Insert placeholder and request async model load
-                auto em = nodeModelVersions.emplace(id, Model3DVersion{});
-                it = em.first;
-                mainScene->requestModel3D(Layer::LAYER_OPAQUE, id, [this, id, version](const Geometry& mesh) {
-                    // Add the loaded mesh into the IndirectRenderer and record its meshId
-                    uint32_t meshId = indirectRenderer.addMesh(this, mesh, glm::mat4(1.0f));
-                    nodeModelVersions[id] = { meshId, version };
-                    // Ensure models SSBO is bound; let the renderer allocate a compatible set
-                    indirectRenderer.updateModelsDescriptorSet(this, VK_NULL_HANDLE);
-                    std::cout << "[IndirectRenderer] Added mesh id " << meshId << " for node id " << id << " (version " << version << ")\n";
-                });
-            }
-
-            // Only add fully-loaded meshes (indirect renderer ids) to visible list
-            uint32_t meshId = nodeModelVersions[id].meshId;
-            if (meshId != UINT32_MAX) visibleModels.push_back(meshId);
-            
         });
         
         
@@ -745,7 +742,6 @@ class MyApp : public VulkanApp, public IEventHandler {
             updateUniformBuffer(shadowUniform, &shadowUbo, sizeof(UniformObject));
             
 
-            // Draw all visible meshes into the shadow map using the IndirectRenderer (GPU cull + multi-draw)
             // Bind material/per-texture descriptor sets so shaders can access Models SSBO and textures
             {
                 VkDescriptorSet setsToBind[2];
@@ -756,8 +752,8 @@ class MyApp : public VulkanApp, public IEventHandler {
                 if (bindCount > 0) vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, bindCount, setsToBind, 0, nullptr);
             }
 
-            // Issue CPU-driven draws for visible meshes into the shadow pass
-            indirectRenderer.drawVisibleMerged(commandBuffer, visibleModels, this);
+            // Issue compacted draws after GPU frustum culling
+            indirectRenderer.drawPrepared(commandBuffer, this);
 
             shadowMapper.endShadowPass(commandBuffer);
         }
@@ -819,9 +815,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             if (matDs != VK_NULL_HANDLE) {
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &matDs, 0, nullptr);
             }
-            // Prepare GPU cull before depth pre-pass (must be outside render pass)
-            // Issue CPU-driven draws for visible meshes into the depth pre-pass
-            indirectRenderer.drawVisibleMerged(commandBuffer, visibleModels, this);
+            // Reuse culled draw commands from shadow pass
+            indirectRenderer.drawPrepared(commandBuffer, this);
         }
 
 
@@ -852,8 +847,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             }
         }
         
-        // Render all visible meshes using IndirectRenderer (CPU-driven push-constant draws)
-        indirectRenderer.drawVisibleMerged(commandBuffer, visibleModels, this);
+        // Render compacted draw commands (GPU compute shader already culled invisible meshes)
+        indirectRenderer.drawPrepared(commandBuffer, this);
 
         // render ImGui draw data inside the same command buffer (must be inside render pass)
         ImDrawData* draw_data = ImGui::GetDrawData();
