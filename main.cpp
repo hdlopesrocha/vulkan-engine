@@ -774,7 +774,8 @@ class MyApp : public VulkanApp, public IEventHandler {
         // --- Render sky sphere first: large sphere centered at camera ---
         if (skyRenderer && descriptorSet != VK_NULL_HANDLE) {
             if (skySphere) skySphere->update();
-            skyRenderer->render(commandBuffer, skyVBO, descriptorSet, mainUniform, uboStatic, projMat, viewMat);
+            SkyMode skyMode = skyWidget ? skyWidget->getSkyMode() : SkyMode::Gradient;
+            skyRenderer->render(commandBuffer, skyVBO, descriptorSet, mainUniform, uboStatic, projMat, viewMat, skyMode);
         }
 
 

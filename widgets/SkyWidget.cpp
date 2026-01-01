@@ -5,6 +5,14 @@ SkyWidget::SkyWidget() : Widget("Sky") {}
 void SkyWidget::render() {
 	if (!isOpen) return;
 	if (ImGui::Begin(title.c_str(), &isOpen)) {
+		// Sky mode selection
+		const char* skyModeItems[] = { "Gradient", "Grid" };
+		int currentMode = static_cast<int>(skyMode);
+		if (ImGui::Combo("Sky Mode", &currentMode, skyModeItems, IM_ARRAYSIZE(skyModeItems))) {
+			skyMode = static_cast<SkyMode>(currentMode);
+		}
+		ImGui::Separator();
+		
 		float hc[3] = { horizonColor.r, horizonColor.g, horizonColor.b };
 		if (ImGui::ColorEdit3("Horizon Color", hc)) {
 			horizonColor = glm::vec3(hc[0], hc[1], hc[2]);
@@ -39,3 +47,4 @@ glm::vec3 SkyWidget::getNightHorizon() const { return nightHorizon; }
 glm::vec3 SkyWidget::getNightZenith() const { return nightZenith; }
 float SkyWidget::getNightIntensity() const { return nightIntensity; }
 float SkyWidget::getStarIntensity() const { return starIntensity; }
+SkyMode SkyWidget::getSkyMode() const { return skyMode; }

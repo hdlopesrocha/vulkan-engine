@@ -28,7 +28,7 @@ void SkySphere::init(SkyWidget* widget,
     if (skyWidget) {
         data.skyHorizon = glm::vec4(skyWidget->getHorizonColor(), 1.0f);
         data.skyZenith = glm::vec4(skyWidget->getZenithColor(), 1.0f);
-        data.skyParams = glm::vec4(skyWidget->getWarmth(), skyWidget->getExponent(), skyWidget->getSunFlare(), 0.0f);
+        data.skyParams = glm::vec4(skyWidget->getWarmth(), skyWidget->getExponent(), skyWidget->getSunFlare(), static_cast<float>(skyWidget->getSkyMode()));
         data.nightHorizon = glm::vec4(skyWidget->getNightHorizon(), 1.0f);
         data.nightZenith = glm::vec4(skyWidget->getNightZenith(), 1.0f);
         data.nightParams = glm::vec4(skyWidget->getNightIntensity(), skyWidget->getStarIntensity(), 0.0f, 0.0f);
@@ -62,7 +62,7 @@ void SkySphere::update() {
     if (skyWidget) {
         skyData.skyHorizon = glm::vec4(skyWidget->getHorizonColor(), 1.0f);
         skyData.skyZenith = glm::vec4(skyWidget->getZenithColor(), 1.0f);
-        skyData.skyParams = glm::vec4(skyWidget->getWarmth(), skyWidget->getExponent(), skyWidget->getSunFlare(), 0.0f);
+        skyData.skyParams = glm::vec4(skyWidget->getWarmth(), skyWidget->getExponent(), skyWidget->getSunFlare(), static_cast<float>(skyWidget->getSkyMode()));
         skyData.nightHorizon = glm::vec4(skyWidget->getNightHorizon(), 1.0f);
         skyData.nightZenith = glm::vec4(skyWidget->getNightZenith(), 1.0f);
         skyData.nightParams = glm::vec4(skyWidget->getNightIntensity(), skyWidget->getStarIntensity(), 0.0f, 0.0f);

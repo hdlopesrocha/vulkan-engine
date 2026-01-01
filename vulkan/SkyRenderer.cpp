@@ -7,7 +7,7 @@ SkyRenderer::SkyRenderer(VulkanApp* app_) : app(app_) {}
 SkyRenderer::~SkyRenderer() { cleanup(); }
 
 void SkyRenderer::init() {
-    // create sky pipeline (vertex + fragment)
+    // create sky gradient pipeline (vertex + fragment)
     ShaderStage skyVert = ShaderStage(
         app->createShaderModule(FileReader::readFile("shaders/sky.vert.spv")),
         VK_SHADER_STAGE_VERTEX_BIT
@@ -30,11 +30,32 @@ void SkyRenderer::init() {
         VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true
     );
 
+    // create sky grid pipeline (vertex + grid fragment)
+    ShaderStage skyGridFrag = ShaderStage(
+        app->createShaderModule(FileReader::readFile("shaders/sky_grid.frag.spv")),
+        VK_SHADER_STAGE_FRAGMENT_BIT
+    );
+
+    skyGridPipeline = app->createGraphicsPipeline(
+        { skyVert.info, skyGridFrag.info },
+        VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX },
+        {
+            VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+            VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
+            VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
+            VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+            VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
+        },
+        VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true
+    );
+
     // Shader modules are owned/managed by the app helper; no need to destroy here
 }
 
-void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &uboStatic, const glm::mat4 &projMat, const glm::mat4 &viewMat) {
-    if (skyPipeline == VK_NULL_HANDLE) return;
+void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &uboStatic, const glm::mat4 &projMat, const glm::mat4 &viewMat, SkyMode skyMode) {
+    // Select pipeline based on sky mode
+    VkPipeline activePipeline = (skyMode == SkyMode::Grid) ? skyGridPipeline : skyPipeline;
+    if (activePipeline == VK_NULL_HANDLE) return;
 
     // update sky uniform centered at camera
     UniformObject skyUbo = uboStatic;
@@ -44,7 +65,7 @@ void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, Vk
     skyUbo.passParams = glm::vec4(0.0f);
     app->updateUniformBuffer(uniformBuffer, &skyUbo, sizeof(UniformObject));
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
     // Bind material set (set 0) and sky descriptor set (set 1) if material set exists
     VkDescriptorSet matDs = app->getMaterialDescriptorSet();
     if (matDs != VK_NULL_HANDLE) {
@@ -67,5 +88,9 @@ void SkyRenderer::cleanup() {
     if (skyPipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(app->getDevice(), skyPipeline, nullptr);
         skyPipeline = VK_NULL_HANDLE;
+    }
+    if (skyGridPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(app->getDevice(), skyGridPipeline, nullptr);
+        skyGridPipeline = VK_NULL_HANDLE;
     }
 }

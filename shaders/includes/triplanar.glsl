@@ -29,14 +29,6 @@ vec3 computeTriplanarAlbedo(in vec3 fragPosWorld, in vec3 triW, in int texIndex,
     return cX * triW.x + cY * triW.y + cZ * triW.z;
 }
 
-// Compute triplanar normal by sampling the normal map for each projection and transforming each to world-space
-// Build a stable tangent/bitangent basis for a given projection axis (axis must be unit-length)
-void buildTBFromAxis(in vec3 axis, out vec3 T, out vec3 B) {
-    vec3 up = abs(axis.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    T = normalize(cross(up, axis));
-    B = cross(axis, T);
-}
-
 // Reoriented Normal Mapping (RNM) helper: reorient a blended world-space normal
 // toward the geometric normal while preserving surface detail.
 vec3 reorientNormal(in vec3 blendedWorld, in vec3 geomN) {
@@ -46,20 +38,13 @@ vec3 reorientNormal(in vec3 blendedWorld, in vec3 geomN) {
 }
 
 // Helper: compute normal from a single projection with given tangent basis
-vec3 computeProjectionNormal(vec2 uv, int texIndex, vec3 initialT, vec3 initialB, vec3 surfaceN) {
+vec3 computeProjectionNormal(vec2 uv, int texIndex, vec3 surfaceN) {
     vec3 nSample = texture(normalArray, vec3(uv, float(texIndex))).rgb * 2.0 - 1.0;
     nSample = normalize(applyNormalConvention(nSample, materials[texIndex].normalParams));
-    
-    // Project T onto surface tangent plane
-    vec3 T = initialT - surfaceN * dot(surfaceN, initialT);
-    if (length(T) < 1e-3) {
-        // Fallback: surface aligned with projection, build orthogonal basis from surfaceN
-        vec3 B;
-        buildTBFromAxis(surfaceN, T, B);
-    } else {
-        T = normalize(T);
-    }
-    vec3 B = normalize(cross(surfaceN, T));
+    vec3 axis = surfaceN;
+    vec3 up = abs(axis.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(up, axis));
+    vec3 B = cross(axis, T);
     return normalize(nSample.x * T + nSample.y * B + nSample.z * surfaceN);
 }
 
@@ -78,20 +63,17 @@ vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex,
 
     // X projection
     if (triW.x > 0.0) {
-        float sign = geomN.x >= 0.0 ? 1.0 : -1.0;
-        nmX = computeProjectionNormal(uvX, texIndex, vec3(0.0, 0.0, sign), vec3(0.0, 1.0, 0.0), surfaceN);
+        nmX = computeProjectionNormal(uvX, texIndex, surfaceN);
     }
 
     // Y projection
     if (triW.y > 0.0) {
-        float sign = geomN.y >= 0.0 ? 1.0 : -1.0;
-        nmY = computeProjectionNormal(uvY, texIndex, vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, sign), surfaceN);
+        nmY = computeProjectionNormal(uvY, texIndex, surfaceN);
     }
 
     // Z projection
     if (triW.z > 0.0) {
-        float sign = geomN.z >= 0.0 ? 1.0 : -1.0;
-        nmZ = computeProjectionNormal(uvZ, texIndex, vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), surfaceN);
+        nmZ = computeProjectionNormal(uvZ, texIndex, surfaceN);
     }
 
     // Blend the per-projection world-space normals using the normalized triW weights

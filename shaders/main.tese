@@ -88,7 +88,7 @@ void main() {
         vec3 p0_sh = tc_fragLocalPos[0];
         vec3 p1_sh = tc_fragLocalPos[1];
         vec3 p2_sh = tc_fragLocalPos[2];
-        vec3 faceLocal = normalize(cross(p1_sh - p0_sh, p2_sh - p0_sh));
+        vec3 faceLocal = normalize(cross(p2_sh - p0_sh, p1_sh - p0_sh));
         fragSharpNormal = normalize(mat3(model) * faceLocal);
     }
 

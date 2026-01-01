@@ -44,7 +44,7 @@ layout(std430, set = 0, binding = 5) readonly buffer Materials {
 layout(set = 1, binding = 6) uniform SkyUBO {
     vec4 skyHorizon; // rgb = horizon color, a = unused
     vec4 skyZenith;  // rgb = zenith color, a = unused
-    vec4 skyParams;  // x = warmth, y = exponent, z = sunFlare, w = unused
+    vec4 skyParams;  // x = warmth, y = exponent, z = sunFlare, w = skyMode (0=gradient, 1=grid)
     vec4 nightHorizon; // rgb = night horizon color
     vec4 nightZenith;  // rgb = night zenith color
     vec4 nightParams;  // x = night intensity (0..1), y = starIntensity, z/w unused

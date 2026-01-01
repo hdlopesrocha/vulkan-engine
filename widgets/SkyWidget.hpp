@@ -4,8 +4,14 @@
 #include <glm/glm.hpp>
 #include <imgui.h>
 
+enum class SkyMode {
+    Gradient = 0,
+    Grid = 1
+};
+
 class SkyWidget : public Widget {
 private:
+    SkyMode skyMode = SkyMode::Gradient;
     glm::vec3 horizonColor = glm::vec3(0.6f, 0.7f, 0.9f);
     glm::vec3 zenithColor = glm::vec3(0.05f, 0.15f, 0.4f);
     float warmth = 0.0f; // how warm the horizon becomes when sun is low
@@ -31,4 +37,5 @@ public:
     glm::vec3 getNightZenith() const;
     float getNightIntensity() const;
     float getStarIntensity() const;
+    SkyMode getSkyMode() const;
 };

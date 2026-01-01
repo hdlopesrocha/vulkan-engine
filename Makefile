@@ -37,7 +37,7 @@ SERVER_INCLUDES := -I/usr/include/imgui -I/usr/include/stb
 
 # shader sources and generated SPIR-V
 
-SHADERS = shaders/main.vert shaders/main.tesc shaders/main.tese shaders/main.frag shaders/perlin_noise.comp shaders/indirect.comp shaders/sky.vert shaders/sky.frag
+SHADERS = shaders/main.vert shaders/main.tesc shaders/main.tese shaders/main.frag shaders/perlin_noise.comp shaders/indirect.comp shaders/sky.vert shaders/sky.frag shaders/sky_grid.frag
 # SPIR-V targets will be written into the OUT_DIR/shaders directory
 SPVS = $(SHADERS:.vert=.vert.spv)
 SPVS := $(SPVS:.frag=.frag.spv)

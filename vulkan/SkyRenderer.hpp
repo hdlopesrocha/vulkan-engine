@@ -4,6 +4,7 @@
 #include "VertexBufferObject.hpp"
 #include "ShaderStage.hpp"
 #include "../Uniforms.hpp"
+#include "../widgets/SkyWidget.hpp"
 
 class SkyRenderer {
 public:
@@ -14,11 +15,12 @@ public:
     void init();
 
     // Render sky sphere using provided VBO/descriptor/uniform
-    void render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &uboStatic, const glm::mat4 &projMat, const glm::mat4 &viewMat);
+    void render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &uboStatic, const glm::mat4 &projMat, const glm::mat4 &viewMat, SkyMode skyMode);
 
     void cleanup();
 
 private:
     VulkanApp* app = nullptr;
-    VkPipeline skyPipeline = VK_NULL_HANDLE;
+    VkPipeline skyPipeline = VK_NULL_HANDLE;        // Gradient sky pipeline
+    VkPipeline skyGridPipeline = VK_NULL_HANDLE;   // Grid sky pipeline
 };
