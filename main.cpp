@@ -124,10 +124,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     MaterialManager materialManager;
     size_t materialCount = 0;
     
-    // store projection and view for per-cube MVP computation in draw()
-    glm::mat4 projMat = glm::mat4(1.0f);
-    glm::mat4 viewMat = glm::mat4(1.0f);
-    // static parts of the UBO that don't vary per-cube (we'll set model/mvp per draw)
+    // static parts of the UBO that don't vary per-cube (we'll set model per draw)
     UniformObject uboStatic{};
     // textureImage is now owned by TextureManager
     //VertexBufferObject vertexBufferObject; // now owned by CubeMesh
@@ -591,9 +588,6 @@ class MyApp : public VulkanApp, public IEventHandler {
     void update(float deltaTime) override {
         // Process queued events (dispatch to handlers)
         eventManager.processQueued();
-        // compute viewProjection = proj * view (model set per-object)
-        glm::mat4 model = glm::mat4(1.0f);
-        glm::mat4 mvp = glm::mat4(1.0f);
 
         float aspect = (float)getWidth() / (float) getHeight();
         glm::mat4 proj = glm::perspective(45.0f * 3.1415926f / 180.0f, aspect, 0.1f, 8192.0f);
@@ -612,17 +606,6 @@ class MyApp : public VulkanApp, public IEventHandler {
         gamepad.setMoveSpeed(settingsWidget->getMoveSpeed());
         gamepad.setAngularSpeed(settingsWidget->getAngularSpeedDeg());
         gamepad.update(&eventManager, camera, deltaTime, settingsWidget->getFlipGamepadRotation());
-
-        // build view matrix from camera state (no cube rotation)
-        glm::mat4 view = camera.getViewMatrix();
-
-        // keep model identity (stop cube rotation)
-        model = glm::mat4(1.0f);
-        mvp = proj * view * model;
-
-        // store projection and view for per-cube viewProjection computation in draw()
-        projMat = proj;
-        viewMat = view;
 
         // prepare static parts of the UBO (viewPos, light, material flags) - model and viewProjection will be set per-cube in draw()
         uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
@@ -643,9 +626,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         } else {
             uboStatic.tessParams = glm::vec4(10.0f, 200.0f, 1.0f, 32.0f);
         }
-        // Note: material flags and specularParams are set per-instance from material properties
-        // Sky UBO updates are handled by SkySphere (reads SkyWidget directly)
-        
+
         // Compute light space matrix for shadow mapping using ShadowParams
         shadowParams.update(camera.getPosition(), lightDirection);
         uboStatic.lightSpaceMatrix = shadowParams.lightSpaceMatrix;
@@ -683,7 +664,6 @@ class MyApp : public VulkanApp, public IEventHandler {
             }
         });
         
-        
         // Ensure renderer rebuilt on main thread after any async adds/removes
         indirectRenderer.rebuild(this);
 
@@ -695,7 +675,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         // First pass: Render shadow map (skip if shadows globally disabled)
         if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
             // Prepare GPU cull before starting the shadow render pass (shared with main pass)
-            indirectRenderer.prepareCull(commandBuffer, projMat * viewMat);
+            indirectRenderer.prepareCull(commandBuffer, camera.getViewProjectionMatrix());
             shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
             
             // Update uniform buffer for shadow pass: set viewProjection = lightSpaceMatrix
@@ -739,7 +719,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         if (skyRenderer && descriptorSet != VK_NULL_HANDLE) {
             if (skySphere) skySphere->update();
             SkyMode skyMode = skyWidget ? skyWidget->getSkyMode() : SkyMode::Gradient;
-            skyRenderer->render(commandBuffer, skyVBO, descriptorSet, mainUniform, uboStatic, projMat, viewMat, skyMode);
+            skyRenderer->render(commandBuffer, skyVBO, descriptorSet, mainUniform, uboStatic, camera.getViewProjectionMatrix(), skyMode);
         }
 
 
@@ -750,7 +730,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Update uniform buffer for this instance: set viewProjection and model separately
         UniformObject ubo = uboStatic;
-        ubo.viewProjection = projMat * viewMat;
+        ubo.viewProjection = camera.getViewProjectionMatrix();
         ubo.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
         ubo.shadowEffects = glm::vec4(0.0f, 0.0f, 0.0f,  settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f);
         ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);        ubo.triplanarSettings = glm::vec4(settingsWidget->getTriplanarThreshold(), settingsWidget->getTriplanarExponent(), 0.0f, 0.0f);

@@ -52,7 +52,7 @@ void SkyRenderer::init() {
     // Shader modules are owned/managed by the app helper; no need to destroy here
 }
 
-void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &uboStatic, const glm::mat4 &projMat, const glm::mat4 &viewMat, SkyMode skyMode) {
+void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProjection, SkyMode skyMode) {
     // Select pipeline based on sky mode
     VkPipeline activePipeline = (skyMode == SkyMode::Grid) ? skyGridPipeline : skyPipeline;
     if (activePipeline == VK_NULL_HANDLE) return;
@@ -61,7 +61,7 @@ void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, Vk
     UniformObject skyUbo = uboStatic;
     glm::vec3 camPos = glm::vec3(uboStatic.viewPos);
     glm::mat4 model = glm::translate(glm::mat4(1.0f), camPos) * glm::scale(glm::mat4(1.0f), glm::vec3(50.0f));
-    skyUbo.viewProjection = projMat * viewMat;
+    skyUbo.viewProjection = viewProjection;
     skyUbo.passParams = glm::vec4(0.0f);
     app->updateUniformBuffer(uniformBuffer, &skyUbo, sizeof(UniformObject));
 
