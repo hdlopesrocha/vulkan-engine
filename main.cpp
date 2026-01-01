@@ -20,6 +20,7 @@
 #include "vulkan/TextureMixer.hpp"
 #include "widgets/AnimatedTextureWidget.hpp"
 #include "vulkan/ShadowMapper.hpp"
+#include "vulkan/ShadowParams.hpp"
 #include "vulkan/IndirectRenderer.hpp"
 #include "widgets/WidgetManager.hpp"
 #include "widgets/CameraWidget.hpp"
@@ -106,6 +107,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
     // Shadow mapping
     ShadowMapper shadowMapper;
+    ShadowParams shadowParams;
     IndirectRenderer indirectRenderer;
     
     // Light direction (controlled by LightWidget)
@@ -437,26 +439,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Material SSBO is bound into a single global descriptor set; updateMaterials() will
         // refresh that set if it exists.
         updateMaterials();
-        
-        // Initialize light space matrix BEFORE creating command buffers
-        // UI `lightDirection` is the direction FROM the camera/world TO the light (TO the light).
-        // For constructing the light view (positioning the light), we need a vector FROM the light TOWARD the scene center,
-        // so negate the UI direction when computing light position for shadow mapping.
-        glm::vec3 lightDirToLight = -glm::normalize(lightDirection);
-        // Center shadow ortho on camera XZ so it follows camera movement
-        glm::vec3 camPosInit = camera.getPosition();
-        glm::vec3 sceneCenter = glm::vec3(camPosInit.x, -0.75f, camPosInit.z);
-        glm::vec3 lightPos = sceneCenter + lightDirToLight * 20.0f;
-        glm::vec3 worldUp = glm::vec3(0.0f, 1.0f, 0.0f);
-        if (glm::abs(glm::dot(lightDirToLight, worldUp)) > 0.9f) {
-            worldUp = glm::vec3(1.0f, 0.0f, 0.0f);
-        }
-        glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, worldUp);
-        // Increase ortho size significantly to ensure all cubes and plane are captured
-        float orthoSize = 1024.0f; // Much larger to be safe
-        glm::mat4 lightProjection = glm::ortho(-orthoSize, orthoSize, -orthoSize, orthoSize, 1.0f, orthoSize);
-        uboStatic.lightSpaceMatrix = lightProjection * lightView;
-        
+                
         // Initialize widgets
         textureViewer = std::make_shared<TextureViewer>();
         textureViewer->init(&textureArrayManager, &materials);
@@ -481,7 +464,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         auto debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &currentTextureIndex);
         widgetManager.addWidget(debugWidget);
         
-        auto shadowWidget = std::make_shared<ShadowMapWidget>(&shadowMapper);
+        auto shadowWidget = std::make_shared<ShadowMapWidget>(&shadowMapper, &shadowParams);
         widgetManager.addWidget(shadowWidget);
         
         // Create settings widget
@@ -663,28 +646,9 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Note: material flags and specularParams are set per-instance from material properties
         // Sky UBO updates are handled by SkySphere (reads SkyWidget directly)
         
-        // Compute light space matrix for shadow mapping
-        // Center shadow ortho on camera XZ so the shadow projection follows camera movement
-        glm::vec3 camPos = camera.getPosition();
-        glm::vec3 sceneCenter = glm::vec3(camPos.x, -0.75f, camPos.z);
-
-        // Diagonal light direction matching setup(): use negated UI direction so the light position and view
-        // are consistent with the negated `uboStatic.lightDir` sent to shaders.
-        glm::vec3 shadowLightDir = glm::normalize(lightDirection);
-        glm::vec3 lightPos = sceneCenter - shadowLightDir * 20.0f;
-        
-        glm::vec3 worldUp = glm::vec3(0.0f, 1.0f, 0.0f);
-        if (glm::abs(glm::dot(shadowLightDir, worldUp)) > 0.9f) {
-            worldUp = glm::vec3(1.0f, 0.0f, 0.0f);
-        }
-        
-        glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, worldUp);
-        
-        float orthoSize = 15.0f;
-        // Use 0.1 to 50.0 for near/far to ensure good depth range
-        glm::mat4 lightProjection = glm::ortho(-orthoSize, orthoSize, -orthoSize, orthoSize, 0.1f, 50.0f);
-        
-        uboStatic.lightSpaceMatrix = lightProjection * lightView;
+        // Compute light space matrix for shadow mapping using ShadowParams
+        shadowParams.update(camera.getPosition(), lightDirection);
+        uboStatic.lightSpaceMatrix = shadowParams.lightSpaceMatrix;
     };
 
     void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {

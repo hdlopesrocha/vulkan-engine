@@ -1,7 +1,7 @@
 #include "ShadowMapWidget.hpp"
 
-ShadowMapWidget::ShadowMapWidget(ShadowMapper* shadowMapper)
-    : Widget("Shadow Map"), shadowMapper(shadowMapper) {
+ShadowMapWidget::ShadowMapWidget(ShadowMapper* shadowMapper, ShadowParams* shadowParams)
+    : Widget("Shadow Map"), shadowMapper(shadowMapper), shadowParams(shadowParams) {
 }
 
 void ShadowMapWidget::render() {
@@ -12,13 +12,18 @@ void ShadowMapWidget::render() {
 
     ImGui::Text("Shadow Map Size: %dx%d", shadowMapper->getShadowMapSize(), shadowMapper->getShadowMapSize());
 
-    // Debug: show light direction and position
-    glm::vec3 lightDirVec = glm::normalize(glm::vec3(1.0f, 1.0f, 1.0f));
-    glm::vec3 sceneCenter = glm::vec3(0.0f, 0.0f, 0.0f);
-    glm::vec3 lightPosVec = sceneCenter + lightDirVec * 20.0f;
-    ImGui::Text("Light Dir: %.2f, %.2f, %.2f", lightDirVec.x, lightDirVec.y, lightDirVec.z);
-    ImGui::Text("Light Pos: %.2f, %.2f, %.2f", lightPosVec.x, lightPosVec.y, lightPosVec.z);
-    ImGui::Text("Scene Center: %.2f, %.2f, %.2f", sceneCenter.x, sceneCenter.y, sceneCenter.z);
+    // Display shadow parameters from ShadowParams
+    if (shadowParams) {
+        ImGui::Separator();
+        ImGui::Text("Shadow Parameters:");
+        ImGui::Text("Ortho Size: %.1f", shadowParams->orthoSize);
+        ImGui::Text("Light Pos: %.2f, %.2f, %.2f", shadowParams->lightPos.x, shadowParams->lightPos.y, shadowParams->lightPos.z);
+        ImGui::Text("World Up: %.2f, %.2f, %.2f", shadowParams->worldUp.x, shadowParams->worldUp.y, shadowParams->worldUp.z);
+        
+        // Allow editing ortho size
+        ImGui::Separator();
+        ImGui::SliderFloat("Ortho Size", &shadowParams->orthoSize, 10.0f, 2048.0f, "%.0f");
+    }
 
     // Size slider for shadow map display
     ImGui::SliderFloat("Display Size", &displaySize, 256.0f, 2048.0f, "%.0f");

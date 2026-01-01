@@ -8,7 +8,12 @@ float ShadowCalculation(vec4 fragPosLightSpace, float bias) {
     projCoords.xy = projCoords.xy * 0.5 + 0.5;
     
     // Outside shadow map bounds = no shadow
-    if(projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || projCoords.y < 0.0 || projCoords.y > 1.0)
+    // Only check XY bounds; Z > 1.0 means beyond far plane but still valid for shadow test
+    if(projCoords.x < 0.0 || projCoords.x > 1.0 || projCoords.y < 0.0 || projCoords.y > 1.0)
+        return 0.0;
+    
+    // Objects beyond the far plane don't receive shadows
+    if(projCoords.z > 1.0)
         return 0.0;
     
     // Get closest depth value from light's perspective
