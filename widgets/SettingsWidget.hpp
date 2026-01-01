@@ -33,7 +33,7 @@ private:
     float moveSpeed = 2.5f;                    // movement units/sec
     float angularSpeedDeg = 45.0f;             // degrees/sec for rotation
     bool wireframeMode = false;                // render wireframe when true
-        int debugMode = 0;                         // 0=Default,1=Fragment Normal,2=World Normal,3=UV,4=Tangent,5=Bitangent,6=Normal (TBN),7=Albedo,8=Normal Tex,9=Bump,10=Pre-Projection,11=Normal from Derivatives,12=Light Vector,13=N·L,14=Shadow Diagnostics,15=Triplanar Weights
+        int debugMode = 0;                         // 0=Default,1=Fragment Normal,2=World Normal,3=UV,4=Normal(TBN),5=Albedo,6=Normal Tex,7=Bump,8=Pre-Projection,9=Normal from Derivatives,10=Light Vector,11=N·L,12=Shadow Diagnostics,13=Triplanar Weights
     bool normalMappingEnabled = true;          // Global toggle for normal mapping
     std::function<void()> onDumpShadowDepth;
     // Triplanar settings

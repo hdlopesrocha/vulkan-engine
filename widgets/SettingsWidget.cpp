@@ -116,8 +116,6 @@ void SettingsWidget::render() {
             "Fragment Normal", 
             "World Normal", 
             "UV Coordinates", 
-            "Tangent (TBN)", 
-            "Bitangent (TBN)", 
             "Normal (TBN)", 
             "Albedo Texture", 
             "Normal Texture", 
