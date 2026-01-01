@@ -17,7 +17,7 @@ struct UniformObject {
     // Triplanar settings: x = threshold (dead-zone), y = exponent/steepness
     glm::vec4 triplanarSettings;
     glm::vec4 tessParams; // x = tessNearDist, y = tessFarDist, z = tessMinLevel, w = tessMaxLevel
-    glm::vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
+    glm::vec4 passParams;   // x = isDepthPass (1.0 for shadow pass, 0.0 for main pass)
 
     // Note: sky-related data moved to SkyUniform
 

@@ -35,64 +35,62 @@ layout(location = 10) out vec3 fragSharpNormal; // face normal computed from tri
 
 
 void main() {
-    bool isShadowPass = ubo.passParams.x > 0.5;
+    bool isDepthPass = ubo.passParams.x > 0.5;
 
     // barycentric coordinates
     vec3 bc = gl_TessCoord;
 
-    // Interpolate local-space position, normal, uv, and texIndex
+    // Interpolate local-space position and normal
     vec3 localPos = tc_fragLocalPos[0] * bc.x + tc_fragLocalPos[1] * bc.y + tc_fragLocalPos[2] * bc.z;
     vec3 localNormal = normalize(tc_fragLocalNormal[0] * bc.x + tc_fragLocalNormal[1] * bc.y + tc_fragLocalNormal[2] * bc.z);
     vec2 uv = tc_fragUV[0] * bc.x + tc_fragUV[1] * bc.y + tc_fragUV[2] * bc.z;
-    // preserve per-corner tex indices and barycentric weights for blending in the fragment shader
     ivec3 texIndices = tc_fragTexIndex[0];
-
-    // Interpolate per-invocation weight basis vectors provided by the TCS so non-tess and tess paths match
     vec3 weights = tc_fragTexWeights[0] * bc.x + tc_fragTexWeights[1] * bc.y + tc_fragTexWeights[2] * bc.z;
-    if (!isShadowPass) {
-        fragColor = tc_fragColor[0] * bc.x + tc_fragColor[1] * bc.y + tc_fragColor[2] * bc.z;
-    } else {
-        fragColor = vec3(0.0);
-    }
 
     mat4 model = pushConstants.model;
 
-    // Compute world position and normal for triplanar sampling
+    // Calculate position with displacement (needed for both passes)
     vec3 worldNormal = normalize(mat3(model) * localNormal);
     vec4 worldPos = model * vec4(localPos, 1.0);
-
-    // Apply displacement (only when global tessellation enabled)
+    
     float mappingFlag = materials[texIndices.x].mappingParams.x * weights.x + materials[texIndices.y].mappingParams.x * weights.y + materials[texIndices.z].mappingParams.x * weights.z;
-    // Respect global tessellation enabled flag (passParams.y). If tessellation is disabled, mappingFlag becomes 0 and no displacement occurs
     mappingFlag *= ubo.passParams.y;
     vec3 displacedLocalPos = mappingFlag > 0.5 ? applyDisplacement(localPos, localNormal, worldPos.xyz, worldNormal, uv, texIndices, weights) : localPos;
     
-    // Compute world-space position and normals
-    fragPosWorldNotDisplaced = worldPos.xyz;
-    worldPos = model * vec4(displacedLocalPos, 1.0);
-
-    fragPosWorld = worldPos.xyz;
-    if (!isShadowPass) {
-        fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
-    } else {
-        fragPosLightSpace = vec4(0.0);
-    }
-
-    fragUV = uv;
-    fragTexIndices = texIndices;
-    fragTexWeights = weights;
-    // Output clip-space position using MVP (MVP includes model matrix)
     gl_Position = ubo.viewProjection * model * vec4(displacedLocalPos, 1.0);
 
-    // Compute fragNormal: do not apply normal mapping here — use transformed geometry normal
-    fragNormal = normalize(mat3(model) * localNormal);
+    if (isDepthPass) {
+        // Depth pass: set dummy outputs (fragment shader early-returns anyway)
+        fragColor = vec3(0.0);
+        fragUV = vec2(0.0);
+        fragNormal = vec3(0.0);
+        fragTexIndices = ivec3(0);
+        fragTexWeights = vec3(0.0);
+        fragPosWorld = vec3(0.0);
+        fragPosWorldNotDisplaced = vec3(0.0);
+        fragPosLightSpace = vec4(0.0);
+        fragSharpNormal = vec3(0.0);
+    } else {
+        // Full pass: calculate all outputs for shading
+        fragColor = tc_fragColor[0] * bc.x + tc_fragColor[1] * bc.y + tc_fragColor[2] * bc.z;
+        
+        fragPosWorldNotDisplaced = worldPos.xyz;
+        worldPos = model * vec4(displacedLocalPos, 1.0);
+        fragPosWorld = worldPos.xyz;
+        fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
+        
+        fragUV = uv;
+        fragTexIndices = texIndices;
+        fragTexWeights = weights;
+        fragNormal = normalize(mat3(model) * localNormal);
 
-    // Compute explicit face (sharp) normal from triangle corners and expose it for debugging (transform to world space)
-    vec3 p0_sh = tc_fragLocalPos[0];
-    vec3 p1_sh = tc_fragLocalPos[1];
-    vec3 p2_sh = tc_fragLocalPos[2];
-    vec3 faceLocal = normalize(cross(p1_sh - p0_sh, p2_sh - p0_sh));
-    fragSharpNormal = normalize(mat3(model) * faceLocal);
+        // Compute explicit face (sharp) normal from triangle corners
+        vec3 p0_sh = tc_fragLocalPos[0];
+        vec3 p1_sh = tc_fragLocalPos[1];
+        vec3 p2_sh = tc_fragLocalPos[2];
+        vec3 faceLocal = normalize(cross(p1_sh - p0_sh, p2_sh - p0_sh));
+        fragSharpNormal = normalize(mat3(model) * faceLocal);
+    }
 
     // Per-vertex tangents are no longer propagated; fragment will compute T/B/N as needed.
 }
