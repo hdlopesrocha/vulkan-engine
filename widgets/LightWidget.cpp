@@ -1,63 +1,69 @@
 #include "LightWidget.hpp"
 
-LightWidget::LightWidget(glm::vec3* lightDir)
-	: Widget("Light Control"), lightDirection(lightDir) {
-	if (lightDirection) {
+LightWidget::LightWidget(Light* l)
+	: Widget("Light Control"), light(l) {
+	if (light) {
 		calculateAnglesFromDirection();
+		glm::vec3 col = light->getColor();
+		color[0] = col.r;
+		color[1] = col.g;
+		color[2] = col.b;
+		intensity = light->getIntensity();
 	}
 }
 
-void LightWidget::updateLightDirection() {
-	if (!lightDirection) return;
+void LightWidget::updateLight() {
+	if (!light) return;
 
-	float azimuthRad = glm::radians(azimuth);
-	float elevationRad = glm::radians(elevation);
-
-	glm::vec3 direction;
-	float cosE = cos(elevationRad);
-	direction.x = cosE * sin(azimuthRad);
-	direction.y = sin(elevationRad);
-	direction.z = cosE * cos(azimuthRad);
-
-	*lightDirection = glm::normalize(direction);
+	light->setFromSpherical(azimuth, elevation);
 	std::cout << "[LightWidget] Az=" << azimuth << " El=" << elevation
-			  << " Dir=(" << (*lightDirection).x << ", " << (*lightDirection).y << ", " << (*lightDirection).z << ")\n";
+			  << " Dir=(" << light->getDirection().x << ", " << light->getDirection().y << ", " << light->getDirection().z << ")\n";
 }
 
 void LightWidget::calculateAnglesFromDirection() {
-	if (!lightDirection) return;
-	glm::vec3 dir = glm::normalize(*lightDirection);
-	elevation = glm::degrees(asin(glm::clamp(dir.y, -1.0f, 1.0f)));
-	azimuth = glm::degrees(atan2(dir.x, dir.z));
+	if (!light) return;
+	light->getSpherical(azimuth, elevation);
 }
 
 void LightWidget::render() {
 	if (!isOpen) return;
 
 	if (ImGui::Begin(title.c_str(), &isOpen)) {
-		float dir[3] = { lightDirection->x, lightDirection->y, lightDirection->z };
-		if (ImGui::InputFloat3("Direction", dir, "%.3f")) {
-			glm::vec3 newDir = glm::normalize(glm::vec3(dir[0], dir[1], dir[2]));
-			*lightDirection = newDir;
+		glm::vec3 dir = light->getDirection();
+		float dirArray[3] = { dir.x, dir.y, dir.z };
+		if (ImGui::InputFloat3("Direction", dirArray, "%.3f")) {
+			glm::vec3 newDir = glm::normalize(glm::vec3(dirArray[0], dirArray[1], dirArray[2]));
+			light->setDirection(newDir);
 			calculateAnglesFromDirection();
 		}
-		ImGui::Text("Normalized: (%.3f, %.3f, %.3f)", lightDirection->x, lightDirection->y, lightDirection->z);
+		ImGui::Text("Normalized: (%.3f, %.3f, %.3f)", dir.x, dir.y, dir.z);
 		ImGui::Text("Azimuth: %.1f°, Elevation: %.1f°", azimuth, elevation);
 
 		ImGui::Separator();
 
 		if (ImGui::SliderFloat("Azimuth", &azimuth, -180.0f, 180.0f, "%.1f°")) {
-			updateLightDirection();
+			updateLight();
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("Horizontal angle\n0° = North (+Z), 90° = East (+X), ±180° = South (-Z), -90° = West (-X)");
 		}
 
 		if (ImGui::SliderFloat("Elevation", &elevation, -89.0f, 89.0f, "%.1f°")) {
-			updateLightDirection();
+			updateLight();
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("Vertical angle\n0° = Horizon, +90° = Zenith (straight up), -90° = Nadir (straight down)");
+		}
+
+		ImGui::Separator();
+		ImGui::Text("Light Properties:");
+
+		if (ImGui::ColorEdit3("Color", color)) {
+			light->setColor(glm::vec3(color[0], color[1], color[2]));
+		}
+
+		if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 5.0f, "%.2f")) {
+			light->setIntensity(intensity);
 		}
 
 		ImGui::Separator();
@@ -66,7 +72,7 @@ void LightWidget::render() {
 		if (ImGui::Button("Top-Down")) {
 			azimuth = 0.0f;
 			elevation = 89.0f;
-			updateLightDirection();
+			updateLight();
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("Light from directly above (zenith)");
@@ -76,7 +82,7 @@ void LightWidget::render() {
 		if (ImGui::Button("Diagonal")) {
 			azimuth = 45.0f;
 			elevation = 45.0f;
-			updateLightDirection();
+			updateLight();
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("45° elevation from northeast");
@@ -86,7 +92,7 @@ void LightWidget::render() {
 		if (ImGui::Button("Side")) {
 			azimuth = 90.0f;
 			elevation = 0.0f;
-			updateLightDirection();
+			updateLight();
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("Light from the east (side, horizon)");
@@ -95,7 +101,7 @@ void LightWidget::render() {
 		if (ImGui::Button("Front")) {
 			azimuth = 0.0f;
 			elevation = 0.0f;
-			updateLightDirection();
+			updateLight();
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("Light from the north (front, horizon)");
@@ -105,7 +111,7 @@ void LightWidget::render() {
 		if (ImGui::Button("Back")) {
 			azimuth = 180.0f;
 			elevation = 0.0f;
-			updateLightDirection();
+			updateLight();
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("Light from the south (back, horizon)");
@@ -115,7 +121,7 @@ void LightWidget::render() {
 		if (ImGui::Button("Low Angle")) {
 			azimuth = 45.0f;
 			elevation = 15.0f;
-			updateLightDirection();
+			updateLight();
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("Low angle light for long shadows");
@@ -127,5 +133,5 @@ void LightWidget::render() {
 float LightWidget::getAzimuth() const { return azimuth; }
 float LightWidget::getElevation() const { return elevation; }
 
-void LightWidget::setAzimuth(float a) { azimuth = a; updateLightDirection(); }
-void LightWidget::setElevation(float e) { elevation = e; updateLightDirection(); }
+void LightWidget::setAzimuth(float a) { azimuth = a; updateLight(); }
+void LightWidget::setElevation(float e) { elevation = e; updateLight(); }

@@ -5,6 +5,7 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
 #include "math/Camera.hpp"
+#include "math/Light.hpp"
 #include "events/EventManager.hpp"
 #include "events/KeyboardPublisher.hpp"
 #include "events/GamepadPublisher.hpp"
@@ -110,8 +111,8 @@ class MyApp : public VulkanApp, public IEventHandler {
     ShadowParams shadowParams;
     IndirectRenderer indirectRenderer;
     
-    // Light direction (controlled by LightWidget)
-    glm::vec3 lightDirection = glm::normalize(glm::vec3(-1.0f, -1.0f, -1.0f));
+    // Light (controlled by LightWidget)
+    Light light = Light(glm::vec3(-1.0f, -1.0f, -1.0f), glm::vec3(1.0f, 1.0f, 1.0f), 1.0f);
     // Camera
     Camera camera = Camera(glm::vec3(3456, 915, -750), Math::eulerToQuat(0, 0, 0));
     // Event manager for app-wide pub/sub
@@ -474,7 +475,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         widgetManager.addWidget(settingsWidget);
         
         // Create light control widget
-        auto lightWidget = std::make_shared<LightWidget>(&lightDirection);
+        auto lightWidget = std::make_shared<LightWidget>(&light);
         widgetManager.addWidget(lightWidget);
         // Create sky widget (controls colors and parameters)
         skyWidget = std::make_shared<SkyWidget>();
@@ -609,12 +610,11 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // prepare static parts of the UBO (viewPos, light, material flags) - model and viewProjection will be set per-cube in draw()
         uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
-        // The UI `lightDirection` represents a vector TO the light. Shaders expect a light vector that points FROM the
-        // light TOWARD the surface when performing lighting/shadow calculations. Send the negated direction to the GPU
+        // The UI light direction represents a vector TO the light. Shaders expect a light vector that points FROM the
+        // light TOWARD the surface when performing lighting/shadow calculations. Send the direction to the GPU
         // so both lighting and shadow projection use the same convention.
-        glm::vec3 lightDir = glm::normalize(lightDirection);
-        uboStatic.lightDir = glm::vec4(lightDir, 0.0f);
-        uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+        uboStatic.lightDir = glm::vec4(light.getDirection(), 0.0f);
+        uboStatic.lightColor = glm::vec4(light.getColor() * light.getIntensity(), 1.0f);
         // Tessellation parameters from UI: near/far distances and min/max tess levels
         if (settingsWidget) {
             uboStatic.tessParams = glm::vec4(
@@ -628,7 +628,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
 
         // Compute light space matrix for shadow mapping using ShadowParams
-        shadowParams.update(camera.getPosition(), lightDirection);
+        shadowParams.update(camera.getPosition(), light);
         uboStatic.lightSpaceMatrix = shadowParams.lightSpaceMatrix;
     };
 

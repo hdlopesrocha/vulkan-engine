@@ -17,8 +17,6 @@ void ShadowMapWidget::render() {
         ImGui::Separator();
         ImGui::Text("Shadow Parameters:");
         ImGui::Text("Ortho Size: %.1f", shadowParams->orthoSize);
-        ImGui::Text("Light Pos: %.2f, %.2f, %.2f", shadowParams->lightPos.x, shadowParams->lightPos.y, shadowParams->lightPos.z);
-        ImGui::Text("World Up: %.2f, %.2f, %.2f", shadowParams->worldUp.x, shadowParams->worldUp.y, shadowParams->worldUp.z);
         
         // Allow editing ortho size
         ImGui::Separator();
