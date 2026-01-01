@@ -95,9 +95,9 @@ glm::vec3 SDF::getNormal(float sdf[8], const BoundingCube& cube) {
     const float inv2dx = 1.0f / (2.0f * dx);
 
     // Gradient approximation via central differences:
-    float gx = (sdf[1] + sdf[5] + sdf[3] + sdf[7] - sdf[0] - sdf[4] - sdf[2] - sdf[6]) * 0.25f;
+    float gx = (sdf[4] + sdf[5] + sdf[6] + sdf[7] - sdf[0] - sdf[1] - sdf[2] - sdf[3]) * 0.25f;
     float gy = (sdf[2] + sdf[3] + sdf[6] + sdf[7] - sdf[0] - sdf[1] - sdf[4] - sdf[5]) * 0.25f;
-    float gz = (sdf[4] + sdf[5] + sdf[6] + sdf[7] - sdf[0] - sdf[1] - sdf[2] - sdf[3]) * 0.25f;
+    float gz = (sdf[1] + sdf[3] + sdf[5] + sdf[7] - sdf[0] - sdf[2] - sdf[4] - sdf[6]) * 0.25f;
 
     glm::vec3 normal(gx, gy, gz);
     return glm::normalize(normal * inv2dx);
@@ -108,10 +108,10 @@ glm::vec3 SDF::getNormalFromPosition(float sdf[8], const BoundingCube& cube, con
 
     // Trilinear interpolation gradient
     float dx = (
-        (1 - local.y) * (1 - local.z) * (sdf[1] - sdf[0]) +
-        local.y * (1 - local.z) * (sdf[3] - sdf[2]) +
-        (1 - local.y) * local.z * (sdf[5] - sdf[4]) +
-        local.y * local.z * (sdf[7] - sdf[6])
+        (1 - local.x) * (1 - local.y) * (sdf[4] - sdf[0]) +
+        local.x * (1 - local.y) * (sdf[5] - sdf[1]) +
+        (1 - local.x) * local.y * (sdf[6] - sdf[2]) +
+        local.x * local.y * (sdf[7] - sdf[3])
     );
 
     float dy = (
@@ -122,10 +122,10 @@ glm::vec3 SDF::getNormalFromPosition(float sdf[8], const BoundingCube& cube, con
     );
 
     float dz = (
-        (1 - local.x) * (1 - local.y) * (sdf[4] - sdf[0]) +
-        local.x * (1 - local.y) * (sdf[5] - sdf[1]) +
-        (1 - local.x) * local.y * (sdf[6] - sdf[2]) +
-        local.x * local.y * (sdf[7] - sdf[3])
+        (1 - local.y) * (1 - local.z) * (sdf[1] - sdf[0]) +
+        local.y * (1 - local.z) * (sdf[3] - sdf[2]) +
+        (1 - local.y) * local.z * (sdf[5] - sdf[4]) +
+        local.y * local.z * (sdf[7] - sdf[6])
     );
 
     return glm::normalize(glm::vec3(dx, dy, dz) / cube.getLength());
