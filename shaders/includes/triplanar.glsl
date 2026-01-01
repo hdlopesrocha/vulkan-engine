@@ -46,10 +46,8 @@ vec3 reorientNormal(in vec3 blendedWorld, in vec3 geomN) {
 }
 
 // Compute triplanar normal by sampling the normal map for each projection and transforming each to world-space.
-// `geomN` is the geometric world-space normal of the fragment (used to preserve axis sign/orientation).
-// This variant constructs per-projection T/B from derivatives (or axis fallback) and converts sampled normals
-// into world-space before blending. The fragment tangent parameter was unused and removed.
-vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex, in vec3 geomN) {
+// `geomN` is the geometric world-space normal (for UV computation), `surfaceN` is the smooth interpolated normal (TBN base).
+vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex, in vec3 geomN, in vec3 surfaceN) {
     vec2 uvX, uvY, uvZ;
     computeTriplanarUVs(fragPosWorld, texIndex, geomN, uvX, uvY, uvZ);
     vec3 nmX = vec3(0.0);
@@ -68,64 +66,60 @@ vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex,
     if (triW.x > 0.0) {
         vec3 nSample = texture(normalArray, vec3(uvX, float(texIndex))).rgb * 2.0 - 1.0;
         nSample = normalize(applyNormalConvention(nSample, materials[texIndex].normalParams));
-        vec3 axisX = vec3(geomN.x >= 0.0 ? -1.0 : 1.0, 0.0, 0.0);
-        // derivatives of projected UV
-        vec2 duvdx = dFdx(uvX);
-        vec2 duvdy = dFdy(uvX);
-        float det = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
-        vec3 T, B;
-        if (abs(det) > 1e-6) {
-            float r = 1.0 / det;
-            T = normalize((dpdx * duvdy.y - dpdy * duvdx.y) * r);
-            B = normalize((dpdy * duvdx.x - dpdx * duvdy.x) * r);
-            T = normalize(T - axisX * dot(axisX, T));
-            B = normalize(cross(axisX, T));
+        // Build TBN aligned to projection plane but using actual surface normal
+        float sign = geomN.x >= 0.0 ? 1.0 : -1.0;
+        vec3 T = vec3(0.0, 0.0, sign);
+        vec3 B = vec3(0.0, -1.0, 0.0);
+        // Project T and B onto surface tangent plane
+        T = T - surfaceN * dot(surfaceN, T);
+        if (length(T) < 1e-3) {
+            // Fallback: surface aligned with projection, just use surface normal
+            nmX = surfaceN;
         } else {
-            buildTBFromAxis(axisX, T, B);
+            T = normalize(T);
+            B = normalize(cross(surfaceN, T));
+            nmX = normalize(nSample.x * T + nSample.y * B + nSample.z * surfaceN);
         }
-        nmX = normalFromNormalMap(nSample, T, B, axisX);
     }
 
     // Y projection
     if (triW.y > 0.0) {
         vec3 nSample = texture(normalArray, vec3(uvY, float(texIndex))).rgb * 2.0 - 1.0;
         nSample = normalize(applyNormalConvention(nSample, materials[texIndex].normalParams));
-        vec3 axisY = vec3(0.0, geomN.y >= 0.0 ? -1.0 : 1.0, 0.0);
-        vec2 duvdx = dFdx(uvY);
-        vec2 duvdy = dFdy(uvY);
-        float det = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
-        vec3 T, B;
-        if (abs(det) > 1e-6) {
-            float r = 1.0 / det;
-            T = normalize((dpdx * duvdy.y - dpdy * duvdx.y) * r);
-            B = normalize((dpdy * duvdx.x - dpdx * duvdy.x) * r);
-            T = normalize(T - axisY * dot(axisY, T));
-            B = normalize(cross(axisY, T));
+        // Build TBN aligned to projection plane but using actual surface normal
+        float sign = geomN.y >= 0.0 ? 1.0 : -1.0;
+        vec3 T = vec3(1.0, 0.0, 0.0);
+        vec3 B = vec3(0.0, 0.0, sign);
+        // Project T and B onto surface tangent plane
+        T = T - surfaceN * dot(surfaceN, T);
+        if (length(T) < 1e-3) {
+            // Fallback: surface aligned with projection, just use surface normal
+            nmY = surfaceN;
         } else {
-            buildTBFromAxis(axisY, T, B);
+            T = normalize(T);
+            B = normalize(cross(surfaceN, T));
+            nmY = normalize(nSample.x * T + nSample.y * B + nSample.z * surfaceN);
         }
-        nmY = normalFromNormalMap(nSample, T, B, axisY);
     }
 
     // Z projection
     if (triW.z > 0.0) {
         vec3 nSample = texture(normalArray, vec3(uvZ, float(texIndex))).rgb * 2.0 - 1.0;
         nSample = normalize(applyNormalConvention(nSample, materials[texIndex].normalParams));
-        vec3 axisZ = vec3(0.0, 0.0, geomN.z >= 0.0 ? -1.0 : 1.0);
-        vec2 duvdx = dFdx(uvZ);
-        vec2 duvdy = dFdy(uvZ);
-        float det = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
-        vec3 T, B;
-        if (abs(det) > 1e-6) {
-            float r = 1.0 / det;
-            T = normalize((dpdx * duvdy.y - dpdy * duvdx.y) * r);
-            B = normalize((dpdy * duvdx.x - dpdx * duvdy.x) * r);
-            T = normalize(T - axisZ * dot(axisZ, T));
-            B = normalize(cross(axisZ, T));
+        // Build TBN aligned to projection plane but using actual surface normal
+        float sign = geomN.z >= 0.0 ? 1.0 : -1.0;
+        vec3 T = vec3(1.0, 0.0, 0.0);
+        vec3 B = vec3(0.0, -1.0, 0.0);
+        // Project T and B onto surface tangent plane
+        T = T - surfaceN * dot(surfaceN, T);
+        if (length(T) < 1e-3) {
+            // Fallback: surface aligned with projection, just use surface normal
+            nmZ = surfaceN;
         } else {
-            buildTBFromAxis(axisZ, T, B);
+            T = normalize(T);
+            B = normalize(cross(surfaceN, T));
+            nmZ = normalize(nSample.x * T + nSample.y * B + nSample.z * surfaceN);
         }
-        nmZ = normalFromNormalMap(nSample, T, B, axisZ);
     }
 
     // Blend the per-projection world-space normals using the normalized triW weights

@@ -77,11 +77,11 @@ void main() {
         float mapFlag1 = materials[fragTexIndices.y].mappingParams.x;
         float mapFlag2 = materials[fragTexIndices.z].mappingParams.x;
         if ((mapFlag0 * w.x + mapFlag1 * w.y + mapFlag2 * w.z) > 0.5 || ubo.materialFlags.w > 0.5) {
-            tripNormal0 = w.x > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN) : vec3(0.0);
-            tripNormal1 = w.y > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN) : vec3(0.0);
-            tripNormal2 = w.z > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN) : vec3(0.0);
+            tripNormal0 = w.x > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN, N) : vec3(0.0);
+            tripNormal1 = w.y > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN, N) : vec3(0.0);
+            tripNormal2 = w.z > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN, N) : vec3(0.0);
             vec3 blended = tripNormal0 * w.x + tripNormal1 * w.y + tripNormal2 * w.z;
-            worldNormal = reorientNormal(blended, N);
+            worldNormal = normalize(blended);
             
             
             // Diagnostic: detect invalid/degenerate normals and show red so we can find broken pixels
@@ -306,9 +306,9 @@ void main() {
 
     if (debugMode == 20) {
         // Visualize triplanar-sampled normal blended across the three material indices
-        vec3 tn0 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.x, geomN);
-        vec3 tn1 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.y, geomN);
-        vec3 tn2 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.z, geomN);
+        vec3 tn0 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.x, geomN, N);
+        vec3 tn1 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.y, geomN, N);
+        vec3 tn2 = computeTriplanarNormal(fragPosWorld, triW, fragTexIndices.z, geomN, N);
         vec3 blended = tn0 * w.x + tn1 * w.y + tn2 * w.z;
         vec3 tNormal = reorientNormal(blended, geomN);
         outColor = vec4(tNormal * 0.5 + 0.5, 1.0);
@@ -317,9 +317,9 @@ void main() {
 
     if (debugMode == 21) {
         // Show per-projection triplanar normals for the first material packed into RGB
-        vec3 nX = computeTriplanarNormal(fragPosWorld, vec3(1.0, 0.0, 0.0), fragTexIndices.x, geomN);
-        vec3 nY = computeTriplanarNormal(fragPosWorld, vec3(0.0, 1.0, 0.0), fragTexIndices.x, geomN);
-        vec3 nZ = computeTriplanarNormal(fragPosWorld, vec3(0.0, 0.0, 1.0), fragTexIndices.x, geomN);
+        vec3 nX = computeTriplanarNormal(fragPosWorld, vec3(1.0, 0.0, 0.0), fragTexIndices.x, geomN, N);
+        vec3 nY = computeTriplanarNormal(fragPosWorld, vec3(0.0, 1.0, 0.0), fragTexIndices.x, geomN, N);
+        vec3 nZ = computeTriplanarNormal(fragPosWorld, vec3(0.0, 0.0, 1.0), fragTexIndices.x, geomN, N);
         // Pack single components of each projection to RGB so we can visually inspect contributions
         outColor = vec4(nX.x * 0.5 + 0.5, nY.y * 0.5 + 0.5, nZ.z * 0.5 + 0.5, 1.0);
         return;
@@ -385,17 +385,17 @@ void main() {
     }
 
     if (debugMode == 28) {
-        tripNormal0 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN);
+        tripNormal0 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN, N);
         outColor = vec4(normalize(tripNormal0) * 0.5 + 0.5, 1.0);
         return;
     }
     if (debugMode == 29) {
-        tripNormal1 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN);
+        tripNormal1 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN, N);
         outColor = vec4(normalize(tripNormal1) * 0.5 + 0.5, 1.0);
         return;
     }
     if (debugMode == 30) {
-        tripNormal2 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN);
+        tripNormal2 = computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN, N);
         outColor = vec4(normalize(tripNormal2) * 0.5 + 0.5, 1.0);
         return;
     }
