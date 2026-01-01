@@ -45,6 +45,24 @@ vec3 reorientNormal(in vec3 blendedWorld, in vec3 geomN) {
     return normalize(b + geomN * (1.0 - d));
 }
 
+// Helper: compute normal from a single projection with given tangent basis
+vec3 computeProjectionNormal(vec2 uv, int texIndex, vec3 initialT, vec3 initialB, vec3 surfaceN) {
+    vec3 nSample = texture(normalArray, vec3(uv, float(texIndex))).rgb * 2.0 - 1.0;
+    nSample = normalize(applyNormalConvention(nSample, materials[texIndex].normalParams));
+    
+    // Project T onto surface tangent plane
+    vec3 T = initialT - surfaceN * dot(surfaceN, initialT);
+    if (length(T) < 1e-3) {
+        // Fallback: surface aligned with projection, build orthogonal basis from surfaceN
+        vec3 B;
+        buildTBFromAxis(surfaceN, T, B);
+    } else {
+        T = normalize(T);
+    }
+    vec3 B = normalize(cross(surfaceN, T));
+    return normalize(nSample.x * T + nSample.y * B + nSample.z * surfaceN);
+}
+
 // Compute triplanar normal by sampling the normal map for each projection and transforming each to world-space.
 // `geomN` is the geometric world-space normal (for UV computation), `surfaceN` is the smooth interpolated normal (TBN base).
 vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex, in vec3 geomN, in vec3 surfaceN) {
@@ -58,68 +76,22 @@ vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex,
     float wsum = triW.x + triW.y + triW.z + 1e-6;
     vec3 w = triW / wsum;
 
-    // World-space position derivatives (shared)
-    vec3 dpdx = dFdx(fragPosWorld);
-    vec3 dpdy = dFdy(fragPosWorld);
-
     // X projection
     if (triW.x > 0.0) {
-        vec3 nSample = texture(normalArray, vec3(uvX, float(texIndex))).rgb * 2.0 - 1.0;
-        nSample = normalize(applyNormalConvention(nSample, materials[texIndex].normalParams));
-        // Build TBN aligned to projection plane but using actual surface normal
         float sign = geomN.x >= 0.0 ? 1.0 : -1.0;
-        vec3 T = vec3(0.0, 0.0, sign);
-        vec3 B = vec3(0.0, -1.0, 0.0);
-        // Project T and B onto surface tangent plane
-        T = T - surfaceN * dot(surfaceN, T);
-        if (length(T) < 1e-3) {
-            // Fallback: surface aligned with projection, just use surface normal
-            nmX = surfaceN;
-        } else {
-            T = normalize(T);
-            B = normalize(cross(surfaceN, T));
-            nmX = normalize(nSample.x * T + nSample.y * B + nSample.z * surfaceN);
-        }
+        nmX = computeProjectionNormal(uvX, texIndex, vec3(0.0, 0.0, sign), vec3(0.0, 1.0, 0.0), surfaceN);
     }
 
     // Y projection
     if (triW.y > 0.0) {
-        vec3 nSample = texture(normalArray, vec3(uvY, float(texIndex))).rgb * 2.0 - 1.0;
-        nSample = normalize(applyNormalConvention(nSample, materials[texIndex].normalParams));
-        // Build TBN aligned to projection plane but using actual surface normal
         float sign = geomN.y >= 0.0 ? 1.0 : -1.0;
-        vec3 T = vec3(1.0, 0.0, 0.0);
-        vec3 B = vec3(0.0, 0.0, sign);
-        // Project T and B onto surface tangent plane
-        T = T - surfaceN * dot(surfaceN, T);
-        if (length(T) < 1e-3) {
-            // Fallback: surface aligned with projection, just use surface normal
-            nmY = surfaceN;
-        } else {
-            T = normalize(T);
-            B = normalize(cross(surfaceN, T));
-            nmY = normalize(nSample.x * T + nSample.y * B + nSample.z * surfaceN);
-        }
+        nmY = computeProjectionNormal(uvY, texIndex, vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, sign), surfaceN);
     }
 
     // Z projection
     if (triW.z > 0.0) {
-        vec3 nSample = texture(normalArray, vec3(uvZ, float(texIndex))).rgb * 2.0 - 1.0;
-        nSample = normalize(applyNormalConvention(nSample, materials[texIndex].normalParams));
-        // Build TBN aligned to projection plane but using actual surface normal
         float sign = geomN.z >= 0.0 ? 1.0 : -1.0;
-        vec3 T = vec3(1.0, 0.0, 0.0);
-        vec3 B = vec3(0.0, -1.0, 0.0);
-        // Project T and B onto surface tangent plane
-        T = T - surfaceN * dot(surfaceN, T);
-        if (length(T) < 1e-3) {
-            // Fallback: surface aligned with projection, just use surface normal
-            nmZ = surfaceN;
-        } else {
-            T = normalize(T);
-            B = normalize(cross(surfaceN, T));
-            nmZ = normalize(nSample.x * T + nSample.y * B + nSample.z * surfaceN);
-        }
+        nmZ = computeProjectionNormal(uvZ, texIndex, vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), surfaceN);
     }
 
     // Blend the per-projection world-space normals using the normalized triW weights

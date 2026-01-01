@@ -1720,6 +1720,12 @@ void VulkanApp::recreateSwapchain() {
     if (waitResult == VK_ERROR_DEVICE_LOST) {
         return;
     }
+    
+    // Wait for all in-flight fences before clearing tracking
+    for (size_t i = 0; i < inFlightFences.size(); i++) {
+        vkWaitForFences(device, 1, &inFlightFences[i], VK_TRUE, UINT64_MAX);
+    }
+    
     cleanupSwapchain();
 
     createSwapchain();
