@@ -131,10 +131,12 @@ release:
 
 .PHONY: run run-debug
 run: all
+	@reset
 	@echo "Running app from $(OUT_DIR)/"
 	@cd $(OUT_DIR) && ./app
 
 run-debug: debug
+	@reset
 	@echo "Running debug build from $(OUT_DIR)/"
 	@cd $(OUT_DIR) && ./app
 

@@ -7,7 +7,7 @@ layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inColor;
 layout(location = 2) in vec2 inUV;
 layout(location = 3) in vec3 inNormal;
-layout(location = 4) in vec4 inTangent;
+// tangent removed: computed in fragment shader for triplanar mapping
 layout(location = 5) in int inTexIndex;
 
 layout(location = 0) out vec3 fragColor;
@@ -18,7 +18,7 @@ layout(location = 4) out vec3 fragPosWorld;
 layout(location = 6) out vec4 fragPosLightSpace;
 layout(location = 7) out vec3 fragLocalPos;
 layout(location = 8) out vec3 fragLocalNormal;
-layout(location = 9) out vec4 fragTangent;
+// fragTangent removed: computed in fragment shader for triplanar mapping
 
 void main() {
     fragColor = inColor;
@@ -37,7 +37,6 @@ void main() {
     fragLocalPos = inPos;
     // also pass local-space normal for tessellation/displacement
     fragLocalNormal = inNormal;
-    // Transform per-vertex tangent to world-space and pass through (preferred when available)
-    fragTangent = vec4(normalize(mat3(pushConstants.model) * inTangent.xyz), inTangent.w);    // apply MVP transform to the vertex position (MVP already includes model transform)
+    // apply MVP transform to the vertex position
     gl_Position = ubo.viewProjection * worldPos;
 }

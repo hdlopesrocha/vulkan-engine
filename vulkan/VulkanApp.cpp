@@ -688,7 +688,7 @@ void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t tex
     endSingleTimeCommands(commandBuffer);
 }
 
-void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
+void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t arrayLayers) {
     VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
     VkImageMemoryBarrier barrier{};
@@ -700,9 +700,9 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
     barrier.image = image;
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.levelCount = mipLevels;
     barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
+    barrier.subresourceRange.layerCount = arrayLayers;
 
     VkPipelineStageFlags sourceStage;
     VkPipelineStageFlags destinationStage;
@@ -773,10 +773,10 @@ std::vector<VkCommandBuffer> VulkanApp::createCommandBuffers() {
 }
 
 void VulkanApp::createSyncObjects() {
-    // Use a small number of CPU frames-in-flight (3) and create per-frame semaphores/fences.
-    // Using 3 frames provides better parallelism: while GPU renders frame N, CPU prepares frame N+1
-    // and frame N+2 can be waiting for present.
-    const uint32_t MAX_FRAMES_IN_FLIGHT = 3;
+    // Create semaphores per swapchain image to avoid reuse before presentation completes.
+    // Fences are per frame-in-flight for CPU-GPU synchronization.
+    const uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+    const uint32_t numImages = static_cast<uint32_t>(swapchainImages.size());
 
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -785,21 +785,28 @@ void VulkanApp::createSyncObjects() {
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-    renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-    inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
-
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+    // Semaphores per swapchain image (not per frame-in-flight)
+    imageAvailableSemaphores.resize(numImages);
+    renderFinishedSemaphores.resize(numImages);
+    
+    for (uint32_t i = 0; i < numImages; i++) {
         if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
-            vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create synchronization objects for frame " + std::to_string(i));
+            vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create semaphores for image " + std::to_string(i));
+        }
+    }
+    
+    // Fences per frame-in-flight
+    inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if (vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create fence for frame " + std::to_string(i));
         }
     }
 
     // imagesInFlight tracks which fence is using each swapchain image (initialized null)
     imagesInFlight.clear();
-    imagesInFlight.resize(swapchainImages.size(), VK_NULL_HANDLE);
+    imagesInFlight.resize(numImages, VK_NULL_HANDLE);
 }
 
 TextureImage VulkanApp::createTextureImage(const char * filename) {
@@ -1119,15 +1126,6 @@ void VulkanApp::createDescriptorSetLayout() {
     // Create a separate descriptor set layout for Materials (binding 5: Materials SSBO)
     // and binding 6: Models SSBO so the IndirectRenderer can bind model matrices
     // into the global material set (set 0, binding 6).
-    VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlags{};
-    bindingFlags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-    std::array<VkDescriptorBindingFlags, 2> flags = {
-        0, // binding 5: no special flags
-        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT // binding 6: allow update after bind
-    };
-    bindingFlags.bindingCount = flags.size();
-    bindingFlags.pBindingFlags = flags.data();
-
     VkDescriptorSetLayoutBinding materialBinding{};
     materialBinding.binding = 5;
     materialBinding.descriptorCount = 1;
@@ -1145,8 +1143,6 @@ void VulkanApp::createDescriptorSetLayout() {
     std::array<VkDescriptorSetLayoutBinding, 2> materialBindings = { materialBinding, modelsBinding };
     VkDescriptorSetLayoutCreateInfo materialLayoutInfo{};
     materialLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    materialLayoutInfo.pNext = &bindingFlags;
-    materialLayoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     materialLayoutInfo.bindingCount = static_cast<uint32_t>(materialBindings.size());
     materialLayoutInfo.pBindings = materialBindings.data();
 
@@ -1253,7 +1249,6 @@ void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
     poolInfo.maxSets = uboCount; // keep existing behavior (uboCount equals number of sets expected)
@@ -1610,12 +1605,18 @@ Buffer VulkanApp::createDeviceLocalBuffer(const void* data, VkDeviceSize size, V
 }
 
 void VulkanApp::drawFrame() {
-    const uint32_t MAX_FRAMES_IN_FLIGHT = static_cast<uint32_t>(imageAvailableSemaphores.size());
+    const uint32_t MAX_FRAMES_IN_FLIGHT = static_cast<uint32_t>(inFlightFences.size());
+    const uint32_t numImages = static_cast<uint32_t>(swapchainImages.size());
     uint32_t imageIndex;
 
-    // Acquire next image BEFORE waiting for fence - this allows the presentation engine to
-    // work in parallel with our fence wait, reducing latency.
-    VkResult r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+    // Use a rotating semaphore index based on an acquire counter to avoid reusing
+    // a semaphore that may still be pending from a previous acquire
+    static uint32_t acquireIndex = 0;
+    uint32_t semaphoreIndex = acquireIndex % numImages;
+    acquireIndex++;
+
+    // Acquire next image using per-image semaphore
+    VkResult r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphores[semaphoreIndex], VK_NULL_HANDLE, &imageIndex);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreateSwapchain();
         return;
@@ -1684,7 +1685,8 @@ void VulkanApp::drawFrame() {
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-    VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
+    // Wait on the semaphore used for this acquire (indexed by semaphoreIndex)
+    VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[semaphoreIndex] };
     VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
     submitInfo.waitSemaphoreCount = 1;
     submitInfo.pWaitSemaphores = waitSemaphores;
@@ -1704,7 +1706,8 @@ void VulkanApp::drawFrame() {
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
+    // Signal semaphore indexed by acquired imageIndex (presentation will wait on this)
+    VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[imageIndex] };
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
@@ -2060,6 +2063,10 @@ void VulkanApp::createLogicalDevice() {
     }
     deviceFeatures.tessellationShader = VK_TRUE;
     deviceFeatures.samplerAnisotropy = VK_TRUE;
+    // Enable multi-draw indirect for GPU-driven rendering
+    if (supportedFeatures.multiDrawIndirect) {
+        deviceFeatures.multiDrawIndirect = VK_TRUE;
+    }
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

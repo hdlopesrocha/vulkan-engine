@@ -101,5 +101,7 @@ private:
     Buffer modelsBuffer;
 
     bool dirty = false;
+    bool descriptorDirty = false;  // flag for deferred descriptor update
+    VkDescriptorSet pendingDescriptorSet = VK_NULL_HANDLE; // ds to update (VK_NULL_HANDLE means use/create material set)
     VkDescriptorSet modelsDescriptorSet = VK_NULL_HANDLE;
 };

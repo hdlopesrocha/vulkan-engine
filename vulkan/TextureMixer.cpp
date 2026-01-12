@@ -228,6 +228,7 @@ void TextureMixer::createTripleComputeDescriptorSet() {
 	VkDescriptorImageInfo bumpSamplerInfo{};
 
 	if (textureArrayManager) {
+		// Use GENERAL layout because during compute we transition all layers to GENERAL
 		albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view;
 		albedoSamplerInfo.sampler = textureArrayManager->albedoSampler;
 		albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -354,6 +355,7 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet)
 
 	VkDescriptorImageInfo samplerInfo{};
 	// If a TextureArrayManager was provided, bind its array view and sampler so compute samples from arrays
+	// Use GENERAL layout since some layers may be in GENERAL during compute (target layer is transitioned)
 	if (textureArrayManager) {
 		if (map == 0) {
 			samplerInfo.imageView = textureArrayManager->albedoArray.view;
@@ -365,7 +367,7 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet)
 			samplerInfo.imageView = textureArrayManager->bumpArray.view;
 			samplerInfo.sampler = textureArrayManager->bumpSampler;
 		}
-		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 	} else {
 		samplerInfo.imageView = VK_NULL_HANDLE;
 		samplerInfo.sampler = VK_NULL_HANDLE;
@@ -445,21 +447,27 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 			textureArrayManager->getImTexture(targetLayer, 1);
 			textureArrayManager->getImTexture(targetLayer, 2);
 
-			// Transition array image layers to GENERAL for compute write
+			// Transition ALL layers and ALL mip levels to GENERAL for compute
+			// (sampler reads from any layer/mip, storage writes to target layer mip 0)
 			barriers[0].image = textureArrayManager->albedoArray.image;
-			barriers[0].subresourceRange.baseArrayLayer = targetLayer;
+			barriers[0].subresourceRange.baseArrayLayer = 0;
+			barriers[0].subresourceRange.layerCount = textureArrayManager->layerAmount;
+			barriers[0].subresourceRange.levelCount = textureArrayManager->albedoArray.mipLevels;
 			barriers[1].image = textureArrayManager->normalArray.image;
-			barriers[1].subresourceRange.baseArrayLayer = targetLayer;
+			barriers[1].subresourceRange.baseArrayLayer = 0;
+			barriers[1].subresourceRange.layerCount = textureArrayManager->layerAmount;
+			barriers[1].subresourceRange.levelCount = textureArrayManager->normalArray.mipLevels;
 			barriers[2].image = textureArrayManager->bumpArray.image;
-			barriers[2].subresourceRange.baseArrayLayer = targetLayer;
+			barriers[2].subresourceRange.baseArrayLayer = 0;
+			barriers[2].subresourceRange.layerCount = textureArrayManager->layerAmount;
+			barriers[2].subresourceRange.levelCount = textureArrayManager->bumpArray.mipLevels;
 
-			// If the target array layer hasn't been initialized yet it may be in UNDEFINED
+			// Transition from SHADER_READ_ONLY (or UNDEFINED for uninitialized) to GENERAL
 			for (int i = 0; i < 3; ++i) {
-				if (textureArrayManager->isLayerInitialized(targetLayer)) barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-				else barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+				barriers[i].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 				barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
 				barriers[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-				barriers[i].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+				barriers[i].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
 			}
 		}
 	}
@@ -488,25 +496,28 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 
 	vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
 	if (useArrayLayer && textureArrayManager) {
-		// After compute wrote directly into the array layer, transition it back to SHADER_READ_ONLY_OPTIMAL
+		// After compute, transition ALL layers and ALL mip levels back to SHADER_READ_ONLY_OPTIMAL
+		// (except target layer which goes through mipmap generation)
 		VkImageMemoryBarrier postBarriers[3]{};
 		for (int i = 0; i < 3; ++i) {
 			postBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 			postBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-			postBarriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			postBarriers[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			postBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			postBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			postBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			postBarriers[i].subresourceRange.baseMipLevel = 0;
-			postBarriers[i].subresourceRange.levelCount = 1;
-			postBarriers[i].subresourceRange.baseArrayLayer = targetLayer;
-			postBarriers[i].subresourceRange.layerCount = 1;
-			postBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			postBarriers[i].subresourceRange.baseArrayLayer = 0;
+			postBarriers[i].subresourceRange.layerCount = textureArrayManager->layerAmount;
+			postBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
 			postBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		}
 		postBarriers[0].image = textureArrayManager->albedoArray.image;
+		postBarriers[0].subresourceRange.levelCount = textureArrayManager->albedoArray.mipLevels;
 		postBarriers[1].image = textureArrayManager->normalArray.image;
+		postBarriers[1].subresourceRange.levelCount = textureArrayManager->normalArray.mipLevels;
 		postBarriers[2].image = textureArrayManager->bumpArray.image;
+		postBarriers[2].subresourceRange.levelCount = textureArrayManager->bumpArray.mipLevels;
 
 		vkCmdPipelineBarrier(
 			commandBuffer,
@@ -521,11 +532,12 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 
 
 
-		// Prepare base level for mipmap generation and flush commands
+		// Prepare target layer's base level for mipmap generation
+		// (all layers were just transitioned to SHADER_READ_ONLY, now target goes to TRANSFER_DST)
 		VkImageMemoryBarrier prepBarriers[3]{};
 		for (int i = 0; i < 3; ++i) {
 			prepBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			prepBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			prepBarriers[i].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			prepBarriers[i].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 			prepBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			prepBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -534,7 +546,7 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 			prepBarriers[i].subresourceRange.levelCount = 1;
 			prepBarriers[i].subresourceRange.baseArrayLayer = targetLayer;
 			prepBarriers[i].subresourceRange.layerCount = 1;
-			prepBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			prepBarriers[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
 			prepBarriers[i].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 		}
 		prepBarriers[0].image = textureArrayManager->albedoArray.image;

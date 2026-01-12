@@ -15,60 +15,59 @@ void IndirectRenderer::cleanup(VulkanApp* app) {
     idToIndex.clear();
     if (vertexBuffer.buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(app->getDevice(), vertexBuffer.buffer, nullptr);
-        vertexBuffer = {};
     }
     if (vertexBuffer.memory != VK_NULL_HANDLE) {
         vkFreeMemory(app->getDevice(), vertexBuffer.memory, nullptr);
-        vertexBuffer.memory = VK_NULL_HANDLE;
     }
+    vertexBuffer = {};
+    
     if (indexBuffer.buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(app->getDevice(), indexBuffer.buffer, nullptr);
-        indexBuffer = {};
     }
     if (indexBuffer.memory != VK_NULL_HANDLE) {
         vkFreeMemory(app->getDevice(), indexBuffer.memory, nullptr);
-        indexBuffer.memory = VK_NULL_HANDLE;
     }
+    indexBuffer = {};
+    
     if (indirectBuffer.buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(app->getDevice(), indirectBuffer.buffer, nullptr);
-        indirectBuffer = {};
     }
     if (indirectBuffer.memory != VK_NULL_HANDLE) {
         vkFreeMemory(app->getDevice(), indirectBuffer.memory, nullptr);
-        indirectBuffer.memory = VK_NULL_HANDLE;
     }
+    indirectBuffer = {};
+    
     if (compactIndirectBuffer.buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(app->getDevice(), compactIndirectBuffer.buffer, nullptr);
-        compactIndirectBuffer = {};
     }
     if (compactIndirectBuffer.memory != VK_NULL_HANDLE) {
         vkFreeMemory(app->getDevice(), compactIndirectBuffer.memory, nullptr);
-        compactIndirectBuffer.memory = VK_NULL_HANDLE;
     }
+    compactIndirectBuffer = {};
+    
     if (modelsBuffer.buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(app->getDevice(), modelsBuffer.buffer, nullptr);
-        modelsBuffer = {};
     }
     if (modelsBuffer.memory != VK_NULL_HANDLE) {
         vkFreeMemory(app->getDevice(), modelsBuffer.memory, nullptr);
-        modelsBuffer.memory = VK_NULL_HANDLE;
     }
+    modelsBuffer = {};
+    
     if (boundsBuffer.buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(app->getDevice(), boundsBuffer.buffer, nullptr);
-        boundsBuffer = {};
     }
     if (boundsBuffer.memory != VK_NULL_HANDLE) {
         vkFreeMemory(app->getDevice(), boundsBuffer.memory, nullptr);
-        boundsBuffer.memory = VK_NULL_HANDLE;
     }
+    boundsBuffer = {};
+    
     if (visibleCountBuffer.buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(app->getDevice(), visibleCountBuffer.buffer, nullptr);
-        visibleCountBuffer = {};
     }
     if (visibleCountBuffer.memory != VK_NULL_HANDLE) {
         vkFreeMemory(app->getDevice(), visibleCountBuffer.memory, nullptr);
-        visibleCountBuffer.memory = VK_NULL_HANDLE;
     }
+    visibleCountBuffer = {};
 
     if (computePipeline != VK_NULL_HANDLE) vkDestroyPipeline(app->getDevice(), computePipeline, nullptr);
     if (computePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(app->getDevice(), computePipelineLayout, nullptr);
@@ -138,6 +137,9 @@ void IndirectRenderer::removeMesh(uint32_t meshId) {
 void IndirectRenderer::rebuild(VulkanApp* app) {
     std::lock_guard<std::mutex> guard(mutex);
     if (!dirty) return;
+
+    // Wait for GPU to finish using current buffers before destroying/recreating them
+    vkDeviceWaitIdle(app->getDevice());
 
     // Build merged GPU-side vertex and index buffers from the CPU arrays.
     // If there are no meshes, free existing buffers.
@@ -408,10 +410,53 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // Try to load optional device function for indirect-count draws
     cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCountKHR");
 
-    // Descriptor set updates are deferred to the application to ensure the
-    // target descriptor pool/layout is compatible with the Models SSBO.
-    // If the application wants the renderer to update a specific set it can
-    // call `updateModelsDescriptorSet()` explicitly after confirming compatibility.
+    // Perform deferred descriptor update (now safe since we called vkDeviceWaitIdle above)
+    if (descriptorDirty && modelsBuffer.buffer != VK_NULL_HANDLE) {
+        VkDescriptorSet target = pendingDescriptorSet;
+        bool allocatedNew = false;
+        if (target == VK_NULL_HANDLE) {
+            // Prefer updating the application's existing global material descriptor
+            // set (which already contains binding 5 -> Materials SSBO). If the app
+            // hasn't created one, allocate a new set compatible with the material
+            // layout as a fallback.
+            VkDescriptorSet existingMat = app->getMaterialDescriptorSet();
+            if (existingMat != VK_NULL_HANDLE) {
+                target = existingMat;
+            } else {
+                VkDescriptorSetLayout layout = app->getMaterialDescriptorSetLayout();
+                if (layout != VK_NULL_HANDLE) {
+                    target = app->createDescriptorSet(layout);
+                    allocatedNew = true;
+                }
+            }
+        }
+
+        if (target != VK_NULL_HANDLE) {
+            VkDescriptorBufferInfo bufInfo{};
+            bufInfo.buffer = modelsBuffer.buffer;
+            bufInfo.offset = 0;
+            bufInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet write{};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = target;
+            write.dstBinding = 6; // binding chosen for Models SSBO in material set layout
+            write.dstArrayElement = 0;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write.descriptorCount = 1;
+            write.pBufferInfo = &bufInfo;
+            vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
+
+            // Store the target so drawing code can reference it if needed.
+            modelsDescriptorSet = target;
+
+            // Register only if we allocated the set here (caller will track provided sets)
+            if (allocatedNew) {
+                app->registerDescriptorSet(target);
+            }
+        }
+        descriptorDirty = false;
+        pendingDescriptorSet = VK_NULL_HANDLE;
+    }
 
     dirty = false;
 }
@@ -522,47 +567,12 @@ void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VulkanApp* app, uin
 
 void IndirectRenderer::updateModelsDescriptorSet(VulkanApp* app, VkDescriptorSet ds) {
     std::lock_guard<std::mutex> guard(mutex);
-    // Update or create a material-style descriptor set for the Models SSBO.
-    // If the caller provides a descriptor set (`ds`), write into it; otherwise
-    // allocate a new one compatible with the app's material descriptor layout.
-    if (modelsBuffer.buffer == VK_NULL_HANDLE) return; // nothing to bind yet
-
-    VkDescriptorSet target = ds;
-    if (target == VK_NULL_HANDLE) {
-        // Prefer updating the application's existing global material descriptor
-        // set (which already contains binding 5 -> Materials SSBO). If the app
-        // hasn't created one, allocate a new set compatible with the material
-        // layout as a fallback.
-        VkDescriptorSet existingMat = app->getMaterialDescriptorSet();
-        if (existingMat != VK_NULL_HANDLE) {
-            target = existingMat;
-        } else {
-            VkDescriptorSetLayout layout = app->getMaterialDescriptorSetLayout();
-            if (layout == VK_NULL_HANDLE) return;
-            target = app->createDescriptorSet(layout);
-            if (target == VK_NULL_HANDLE) return;
-        }
-    }
-
-    VkDescriptorBufferInfo bufInfo{};
-    bufInfo.buffer = modelsBuffer.buffer;
-    bufInfo.offset = 0;
-    bufInfo.range = VK_WHOLE_SIZE;
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = target;
-    write.dstBinding = 6; // binding chosen for Models SSBO in material set layout
-    write.dstArrayElement = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    write.descriptorCount = 1;
-    write.pBufferInfo = &bufInfo;
-    vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
-
-    // Store the target so drawing code can reference it if needed.
-    modelsDescriptorSet = target;
-
-    // Register only if we allocated the set here (caller will track provided sets)
-    if (ds == VK_NULL_HANDLE) app->registerDescriptorSet(target);
+    // Mark descriptor as needing update; actual vkUpdateDescriptorSets deferred
+    // to rebuild() which waits for GPU idle first.
+    descriptorDirty = true;
+    pendingDescriptorSet = ds;
+    // Also mark buffers dirty to trigger rebuild() on next frame
+    dirty = true;
 }
 
 IndirectRenderer::MeshInfo IndirectRenderer::getMeshInfo(uint32_t meshId) const {

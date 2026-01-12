@@ -164,6 +164,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     Buffer mainUniform;
     Buffer shadowUniform;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSet shadowPassDescriptorSet = VK_NULL_HANDLE; // Shadow pass uses this (no shadow map binding)
     MaterialManager materialManager;
     size_t materialCount = 0;
     
@@ -452,7 +453,12 @@ class MyApp : public VulkanApp, public IEventHandler {
                 registerDescriptorSet(descriptorSet);
             }
 
-            // Shadow descriptor set reuses `descriptorSet` (no separate allocation).
+            // Create shadow pass descriptor set (uses shadowUniform and no shadow map binding)
+            if (shadowPassDescriptorSet == VK_NULL_HANDLE) {
+                VkDescriptorSet ds = dsBuilder.createShadowDescriptorSet(tr, shadowUniform, false, nullptr, 0);
+                shadowPassDescriptorSet = ds;
+                registerDescriptorSet(shadowPassDescriptorSet);
+            }
         }
 
         // If texture arrays are allocated, overwrite bindings 1..3 in descriptor sets
@@ -468,7 +474,13 @@ class MyApp : public VulkanApp, public IEventHandler {
                 VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = descriptorSet; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
                 updateDescriptorSet(descriptorSet, { w1, w2, w3 });
             }
-            // No separate shadow descriptor update required (reusing `descriptorSet`).
+            // Also update shadow pass descriptor set with texture arrays
+            if (shadowPassDescriptorSet != VK_NULL_HANDLE) {
+                VkWriteDescriptorSet w1{}; w1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w1.dstSet = shadowPassDescriptorSet; w1.dstBinding = 1; w1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w1.descriptorCount = 1; w1.pImageInfo = &albedoArrayInfo;
+                VkWriteDescriptorSet w2{}; w2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w2.dstSet = shadowPassDescriptorSet; w2.dstBinding = 2; w2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w2.descriptorCount = 1; w2.pImageInfo = &normalArrayInfo;
+                VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = shadowPassDescriptorSet; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
+                updateDescriptorSet(shadowPassDescriptorSet, { w1, w2, w3 });
+            }
         }
 
         // Build sphere mesh for this material
@@ -787,13 +799,14 @@ class MyApp : public VulkanApp, public IEventHandler {
             updateUniformBuffer(shadowUniform, &shadowUbo, sizeof(UniformObject));
             
 
-            // Bind material/per-texture descriptor sets so shaders can access Models SSBO and textures
+            // Bind material/per-texture descriptor sets for shadow pass
+            // Use shadowPassDescriptorSet which has ATTACHMENT_OPTIMAL layout for shadow map
             {
                 VkDescriptorSet setsToBind[2];
                 uint32_t bindCount = 0;
                 VkDescriptorSet matDs = getMaterialDescriptorSet();
                 if (matDs != VK_NULL_HANDLE) setsToBind[bindCount++] = matDs;
-                if (descriptorSet != VK_NULL_HANDLE) setsToBind[bindCount++] = descriptorSet;
+                if (shadowPassDescriptorSet != VK_NULL_HANDLE) setsToBind[bindCount++] = shadowPassDescriptorSet;
                 if (bindCount > 0) vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, bindCount, setsToBind, 0, nullptr);
             }
 
@@ -813,6 +826,23 @@ class MyApp : public VulkanApp, public IEventHandler {
             }
         }
         
+        // Update uniform buffer for main pass BEFORE starting the render pass
+        UniformObject ubo = uboStatic;
+        ubo.viewProjection = camera.getViewProjectionMatrix();
+        ubo.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
+        ubo.shadowEffects = glm::vec4(0.0f, 0.0f, 0.0f,  settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f);
+        ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
+        ubo.triplanarSettings = glm::vec4(settingsWidget->getTriplanarThreshold(), settingsWidget->getTriplanarExponent(), 0.0f, 0.0f);
+        ubo.passParams = glm::vec4(0.0f, settingsWidget ? (settingsWidget->getTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
+        updateUniformBuffer(mainUniform, &ubo, sizeof(UniformObject));
+
+        // Prepare GPU cull for main pass BEFORE the render pass (vkCmdFillBuffer/barriers not allowed inside render pass)
+        indirectRenderer.prepareCull(commandBuffer, camera.getViewProjectionMatrix());
+        
+        if (queryPool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, queryPool, 4); // After main cull
+        }
+
         // Second pass: Render scene with shadows
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         
@@ -838,27 +868,10 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
 
 
-        VkRect2D scissor{};;
+        VkRect2D scissor{};
         scissor.offset = {0, 0};
         scissor.extent = { (uint32_t)getWidth(), (uint32_t)getHeight() };
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-
-        // Update uniform buffer for this instance: set viewProjection and model separately
-        UniformObject ubo = uboStatic;
-        ubo.viewProjection = camera.getViewProjectionMatrix();
-        ubo.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
-        ubo.shadowEffects = glm::vec4(0.0f, 0.0f, 0.0f,  settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f);
-        ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);        ubo.triplanarSettings = glm::vec4(settingsWidget->getTriplanarThreshold(), settingsWidget->getTriplanarExponent(), 0.0f, 0.0f);
-        ubo.passParams = glm::vec4(0.0f, settingsWidget ? (settingsWidget->getTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
-
-        updateUniformBuffer(mainUniform, &ubo, sizeof(UniformObject));
-
-        // Prepare GPU cull for main pass (use camera's view-projection for scene frustum)
-        indirectRenderer.prepareCull(commandBuffer, camera.getViewProjectionMatrix());
-        
-        if (queryPool != VK_NULL_HANDLE) {
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, queryPool, 4); // After main cull
-        }
         
         // Bind vertex/index buffers once for all subsequent draw calls in this render pass
         indirectRenderer.bindBuffers(commandBuffer);

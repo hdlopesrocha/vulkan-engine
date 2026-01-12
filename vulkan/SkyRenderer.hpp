@@ -23,4 +23,7 @@ private:
     VulkanApp* app = nullptr;
     VkPipeline skyPipeline = VK_NULL_HANDLE;        // Gradient sky pipeline
     VkPipeline skyGridPipeline = VK_NULL_HANDLE;   // Grid sky pipeline
+    VkShaderModule skyVertModule = VK_NULL_HANDLE;
+    VkShaderModule skyFragModule = VK_NULL_HANDLE;
+    VkShaderModule skyGridFragModule = VK_NULL_HANDLE;
 };

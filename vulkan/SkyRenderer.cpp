@@ -8,14 +8,11 @@ SkyRenderer::~SkyRenderer() { cleanup(); }
 
 void SkyRenderer::init() {
     // create sky gradient pipeline (vertex + fragment)
-    ShaderStage skyVert = ShaderStage(
-        app->createShaderModule(FileReader::readFile("shaders/sky.vert.spv")),
-        VK_SHADER_STAGE_VERTEX_BIT
-    );
-    ShaderStage skyFrag = ShaderStage(
-        app->createShaderModule(FileReader::readFile("shaders/sky.frag.spv")),
-        VK_SHADER_STAGE_FRAGMENT_BIT
-    );
+    skyVertModule = app->createShaderModule(FileReader::readFile("shaders/sky.vert.spv"));
+    skyFragModule = app->createShaderModule(FileReader::readFile("shaders/sky.frag.spv"));
+    
+    ShaderStage skyVert = ShaderStage(skyVertModule, VK_SHADER_STAGE_VERTEX_BIT);
+    ShaderStage skyFrag = ShaderStage(skyFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
 
     skyPipeline = app->createGraphicsPipeline(
         { skyVert.info, skyFrag.info },
@@ -31,10 +28,8 @@ void SkyRenderer::init() {
     );
 
     // create sky grid pipeline (vertex + grid fragment)
-    ShaderStage skyGridFrag = ShaderStage(
-        app->createShaderModule(FileReader::readFile("shaders/sky_grid.frag.spv")),
-        VK_SHADER_STAGE_FRAGMENT_BIT
-    );
+    skyGridFragModule = app->createShaderModule(FileReader::readFile("shaders/sky_grid.frag.spv"));
+    ShaderStage skyGridFrag = ShaderStage(skyGridFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
 
     skyGridPipeline = app->createGraphicsPipeline(
         { skyVert.info, skyGridFrag.info },
@@ -48,8 +43,6 @@ void SkyRenderer::init() {
         },
         VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true
     );
-
-    // Shader modules are owned/managed by the app helper; no need to destroy here
 }
 
 void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProjection, SkyMode skyMode) {
@@ -92,5 +85,17 @@ void SkyRenderer::cleanup() {
     if (skyGridPipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(app->getDevice(), skyGridPipeline, nullptr);
         skyGridPipeline = VK_NULL_HANDLE;
+    }
+    if (skyVertModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(app->getDevice(), skyVertModule, nullptr);
+        skyVertModule = VK_NULL_HANDLE;
+    }
+    if (skyFragModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(app->getDevice(), skyFragModule, nullptr);
+        skyFragModule = VK_NULL_HANDLE;
+    }
+    if (skyGridFragModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(app->getDevice(), skyGridFragModule, nullptr);
+        skyGridFragModule = VK_NULL_HANDLE;
     }
 }

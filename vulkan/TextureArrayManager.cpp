@@ -155,10 +155,9 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 
 		out.mipLevels = mipLevels;
 
-		// Transition to TRANSFER_DST_OPTIMAL then to SHADER_READ_ONLY_OPTIMAL
-		// VulkanApp::transitionImageLayout supports these two-step transitions.
-		app->transitionImageLayout(out.image, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-		app->transitionImageLayout(out.image, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		// Transition ALL mip levels and array layers to TRANSFER_DST then to SHADER_READ_ONLY
+		app->transitionImageLayout(out.image, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels, layerAmount);
+		app->transitionImageLayout(out.image, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels, layerAmount);
 	};
 
 	// Albedo: use UNORM format (no automatic sRGB->linear conversion)
@@ -371,26 +370,30 @@ uint TextureArrayManager::create() {
 
 		vkCmdCopyBufferToImage(cmd, staging.buffer, dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-		VkImageMemoryBarrier barrier2{};
-		barrier2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		barrier2.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		barrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier2.image = dst->image;
-		barrier2.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier2.subresourceRange.baseMipLevel = 0;
-		barrier2.subresourceRange.levelCount = dst->mipLevels;
-		barrier2.subresourceRange.baseArrayLayer = currentLayer;
-		barrier2.subresourceRange.layerCount = 1;
-		barrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		barrier2.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		// Only transition to SHADER_READ_ONLY if we're NOT generating mipmaps
+		// (generateMipmaps handles the transition itself)
+		if (dst->mipLevels <= 1) {
+			VkImageMemoryBarrier barrier2{};
+			barrier2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			barrier2.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier2.image = dst->image;
+			barrier2.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			barrier2.subresourceRange.baseMipLevel = 0;
+			barrier2.subresourceRange.levelCount = dst->mipLevels;
+			barrier2.subresourceRange.baseArrayLayer = currentLayer;
+			barrier2.subresourceRange.layerCount = 1;
+			barrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier2.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-							 0, nullptr, 0, nullptr, 1, &barrier2);
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+								 0, nullptr, 0, nullptr, 1, &barrier2);
+		}
 
 		a->endSingleTimeCommands(cmd);
-		// Generate mipmaps for this layer if necessary
+		// Generate mipmaps for this layer if necessary (this also transitions to SHADER_READ_ONLY)
 		if (dst->mipLevels > 1) {
 			a->generateMipmaps(dst->image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), dst->mipLevels, 1, currentLayer);
 		}	}
