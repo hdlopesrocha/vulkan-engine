@@ -589,6 +589,11 @@ class MyApp : public VulkanApp, public IEventHandler {
     void update(float deltaTime) override {
         // Process queued events (dispatch to handlers)
         eventManager.processQueued();
+        
+        // Check and apply V-Sync setting changes from UI
+        if (settingsWidget) {
+            setVSyncEnabled(settingsWidget->getVSyncEnabled());
+        }
 
         float aspect = (float)getWidth() / (float) getHeight();
         glm::mat4 proj = glm::perspective(45.0f * 3.1415926f / 180.0f, aspect, 0.1f, 8192.0f);
@@ -740,6 +745,9 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Prepare GPU cull for main pass (use camera's view-projection for scene frustum)
         indirectRenderer.prepareCull(commandBuffer, camera.getViewProjectionMatrix());
+        
+        // Bind vertex/index buffers once for all subsequent draw calls in this render pass
+        indirectRenderer.bindBuffers(commandBuffer);
 
         // Bind descriptor sets if available (material/global + per-texture)
         { 
@@ -763,8 +771,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             if (matDs != VK_NULL_HANDLE) {
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &matDs, 0, nullptr);
             }
-            // Reuse culled draw commands from shadow pass
-            indirectRenderer.drawPrepared(commandBuffer, this);
+            // Reuse culled draw commands - buffers already bound above
+            indirectRenderer.drawIndirectOnly(commandBuffer, this);
         }
 
 
@@ -795,8 +803,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             }
         }
         
-        // Render compacted draw commands (GPU compute shader already culled invisible meshes)
-        indirectRenderer.drawPrepared(commandBuffer, this);
+        // Render compacted draw commands - buffers already bound, just issue draw
+        indirectRenderer.drawIndirectOnly(commandBuffer, this);
 
         // render ImGui draw data inside the same command buffer (must be inside render pass)
         ImDrawData* draw_data = ImGui::GetDrawData();

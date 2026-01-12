@@ -66,6 +66,9 @@ protected:
     float imguiFps = 0.0f;
     // frame timing for update delta calculation
     double lastFrameTime = 0.0;
+    // V-Sync preference (affects present mode selection)
+    bool vsyncEnabled = true;
+    bool vsyncChanged = false; // track if user toggled vsync to trigger swapchain recreation
 
     // Allow derived classes to build ImGui UI per-frame
     virtual void renderImGui();
@@ -77,6 +80,8 @@ protected:
         static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
     protected:
         void toggleFullscreen();
+        // V-Sync control (call to change present mode at runtime)
+        void setVSyncEnabled(bool enabled);
 
         VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
         VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
@@ -146,6 +151,8 @@ protected:
 
         Buffer createVertexBuffer(const std::vector<Vertex> &vertices);
         Buffer createIndexBuffer(const std::vector<uint> &indices);
+        // Create a device-local storage buffer and upload data via staging transfer
+        Buffer createDeviceLocalBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
         VkShaderModule createShaderModule(const std::vector<char>& code);
     VkPipeline createGraphicsPipeline(std::initializer_list<VkPipelineShaderStageCreateInfo> stages, VkVertexInputBindingDescription bindingDescription, std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions, VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL, VkCullModeFlagBits cullMode = VK_CULL_MODE_BACK_BIT, bool depthWrite = true, bool colorWrite = true, VkCompareOp depthCompare = VK_COMPARE_OP_LESS);
         std::vector<VkCommandBuffer> createCommandBuffers();

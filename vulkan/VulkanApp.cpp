@@ -282,10 +282,27 @@ VkSurfaceFormatKHR VulkanApp::chooseSwapSurfaceFormat(const std::vector<VkSurfac
 }
 
 VkPresentModeKHR VulkanApp::chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) {
+    // If V-Sync is disabled, prefer IMMEDIATE mode for uncapped FPS (lowest latency, may tear)
+    if (!vsyncEnabled) {
+        for (const auto& availablePresentMode : availablePresentModes) {
+            if (availablePresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+                return availablePresentMode;
+            }
+        }
+    }
+    // With V-Sync enabled, prefer MAILBOX (triple-buffering, low latency, no tearing)
     for (const auto& availablePresentMode : availablePresentModes) {
         if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) return availablePresentMode;
     }
+    // Fallback to FIFO (guaranteed available, V-Sync, highest latency)
     return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+void VulkanApp::setVSyncEnabled(bool enabled) {
+    if (vsyncEnabled != enabled) {
+        vsyncEnabled = enabled;
+        vsyncChanged = true; // will trigger swapchain recreation on next frame
+    }
 }
 
 VkExtent2D VulkanApp::chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities) {
@@ -756,8 +773,10 @@ std::vector<VkCommandBuffer> VulkanApp::createCommandBuffers() {
 }
 
 void VulkanApp::createSyncObjects() {
-    // Use a small number of CPU frames-in-flight (2) and create per-frame semaphores/fences.
-    const uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+    // Use a small number of CPU frames-in-flight (3) and create per-frame semaphores/fences.
+    // Using 3 frames provides better parallelism: while GPU renders frame N, CPU prepares frame N+1
+    // and frame N+2 can be waiting for present.
+    const uint32_t MAX_FRAMES_IN_FLIGHT = 3;
 
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -1498,36 +1517,104 @@ void VulkanApp::updateUniformBuffer(Buffer &uniform, void * data, size_t dataSiz
 
 Buffer VulkanApp::createVertexBuffer(const std::vector<Vertex> &vertices) {
     VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
-    Buffer vertexBuffer = createBuffer(bufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    
+    // Create staging buffer (host-visible) to transfer data to GPU
+    Buffer stagingBuffer = createBuffer(bufferSize, 
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    
     void* data;
-    vkMapMemory(device, vertexBuffer.memory, 0, bufferSize, 0, &data);
+    vkMapMemory(device, stagingBuffer.memory, 0, bufferSize, 0, &data);
     memcpy(data, vertices.data(), (size_t)bufferSize);
-    vkUnmapMemory(device, vertexBuffer.memory);
+    vkUnmapMemory(device, stagingBuffer.memory);
+    
+    // Create device-local vertex buffer for fast GPU access
+    Buffer vertexBuffer = createBuffer(bufferSize, 
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    
+    // Copy from staging to device-local buffer
+    VkCommandBuffer cmd = beginSingleTimeCommands();
+    VkBufferCopy copyRegion{};
+    copyRegion.size = bufferSize;
+    vkCmdCopyBuffer(cmd, stagingBuffer.buffer, vertexBuffer.buffer, 1, &copyRegion);
+    endSingleTimeCommands(cmd);
+    
+    // Clean up staging buffer
+    vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
+    vkFreeMemory(device, stagingBuffer.memory, nullptr);
+    
     return vertexBuffer;
 }
 
 Buffer VulkanApp::createIndexBuffer(const std::vector<uint> &indices) {
     VkDeviceSize bufferSize = sizeof(indices[0]) * indices.size();
-    Buffer indexBuffer = createBuffer(bufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    
+    // Create staging buffer (host-visible) to transfer data to GPU
+    Buffer stagingBuffer = createBuffer(bufferSize, 
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    
     void* data;
-    vkMapMemory(device, indexBuffer.memory, 0, bufferSize, 0, &data);
+    vkMapMemory(device, stagingBuffer.memory, 0, bufferSize, 0, &data);
     memcpy(data, indices.data(), (size_t)bufferSize);
-    vkUnmapMemory(device, indexBuffer.memory);
+    vkUnmapMemory(device, stagingBuffer.memory);
+    
+    // Create device-local index buffer for fast GPU access
+    Buffer indexBuffer = createBuffer(bufferSize, 
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, 
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    
+    // Copy from staging to device-local buffer
+    VkCommandBuffer cmd = beginSingleTimeCommands();
+    VkBufferCopy copyRegion{};
+    copyRegion.size = bufferSize;
+    vkCmdCopyBuffer(cmd, stagingBuffer.buffer, indexBuffer.buffer, 1, &copyRegion);
+    endSingleTimeCommands(cmd);
+    
+    // Clean up staging buffer
+    vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
+    vkFreeMemory(device, stagingBuffer.memory, nullptr);
+    
     return indexBuffer;
+}
+
+Buffer VulkanApp::createDeviceLocalBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage) {
+    // Create staging buffer (host-visible) to transfer data to GPU
+    Buffer stagingBuffer = createBuffer(size, 
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    
+    void* mapped;
+    vkMapMemory(device, stagingBuffer.memory, 0, size, 0, &mapped);
+    memcpy(mapped, data, (size_t)size);
+    vkUnmapMemory(device, stagingBuffer.memory);
+    
+    // Create device-local buffer for fast GPU access
+    Buffer gpuBuffer = createBuffer(size, 
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, 
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    
+    // Copy from staging to device-local buffer
+    VkCommandBuffer cmd = beginSingleTimeCommands();
+    VkBufferCopy copyRegion{};
+    copyRegion.size = size;
+    vkCmdCopyBuffer(cmd, stagingBuffer.buffer, gpuBuffer.buffer, 1, &copyRegion);
+    endSingleTimeCommands(cmd);
+    
+    // Clean up staging buffer
+    vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
+    vkFreeMemory(device, stagingBuffer.memory, nullptr);
+    
+    return gpuBuffer;
 }
 
 void VulkanApp::drawFrame() {
     const uint32_t MAX_FRAMES_IN_FLIGHT = static_cast<uint32_t>(imageAvailableSemaphores.size());
     uint32_t imageIndex;
 
-    // Wait for the CPU frame fence for the current frame
-    VkResult waitForFrameFence = vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-    if (waitForFrameFence == VK_ERROR_DEVICE_LOST) return;
-    if (waitForFrameFence != VK_SUCCESS) {
-        std::cerr << "vkWaitForFences failed: " << waitForFrameFence << std::endl;
-        return;
-    }
-
+    // Acquire next image BEFORE waiting for fence - this allows the presentation engine to
+    // work in parallel with our fence wait, reducing latency.
     VkResult r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreateSwapchain();
@@ -1539,8 +1626,20 @@ void VulkanApp::drawFrame() {
         return;
     }
 
-    // If a previous frame is using this image, wait on its fence before overwriting
-    if (imagesInFlight.size() > imageIndex && imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+    // Wait for the CPU frame fence for the current frame (ensures GPU finished with this frame's resources)
+    VkResult waitForFrameFence = vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+    if (waitForFrameFence == VK_ERROR_DEVICE_LOST) return;
+    if (waitForFrameFence != VK_SUCCESS) {
+        std::cerr << "vkWaitForFences failed: " << waitForFrameFence << std::endl;
+        return;
+    }
+
+    // If a previous frame is using this image and it's a DIFFERENT frame than current,
+    // we need to wait for it. With MAX_FRAMES_IN_FLIGHT >= swapchain images, this is rare.
+    // Optimization: only wait if the image's fence differs from the one we just waited on.
+    if (imagesInFlight.size() > imageIndex && 
+        imagesInFlight[imageIndex] != VK_NULL_HANDLE &&
+        imagesInFlight[imageIndex] != inFlightFences[currentFrame]) {
         VkResult res = vkWaitForFences(device, 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
         if (res == VK_ERROR_DEVICE_LOST) return;
         if (res != VK_SUCCESS) {
@@ -1645,8 +1744,9 @@ void VulkanApp::drawFrame() {
     presentInfo.pImageIndices = &imageIndex;
 
     r = vkQueuePresentKHR(presentQueue, &presentInfo);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || framebufferResized) {
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || framebufferResized || vsyncChanged) {
         framebufferResized = false;
+        vsyncChanged = false;
         recreateSwapchain();
         return;
     } else if (r == VK_ERROR_DEVICE_LOST) {

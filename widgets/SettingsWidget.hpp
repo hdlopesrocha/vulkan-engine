@@ -48,6 +48,9 @@ private:
     float tessMaxDistance = 30.0f;
     float tessMinDistance = 10.0f;
     
+    // V-Sync / Present mode
+    bool vsyncEnabled = true; // when false, use IMMEDIATE mode for uncapped FPS
+    
     void resetToDefaults();
 public:
     // Tessellation getters
@@ -58,4 +61,7 @@ public:
     float getTessMaxLevel() const { return tessMaxLevel; }
     float getTessMaxDistance() const { return tessMaxDistance; }
     float getTessMinDistance() const { return tessMinDistance; }
+    
+    // V-Sync getter
+    bool getVSyncEnabled() const { return vsyncEnabled; }
 };

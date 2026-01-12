@@ -185,6 +185,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     indirectCommands = cmds;
 
     // Create or update the global indirect buffer containing commands for all meshes
+    // Use host-visible memory for AMD RADV driver compatibility
     VkDeviceSize indirectSize = sizeof(VkDrawIndexedIndirectCommand) * indirectCommands.size();
     if (indirectBuffer.buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(app->getDevice(), indirectBuffer.buffer, nullptr);
@@ -192,7 +193,9 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         indirectBuffer = {};
     }
     if (indirectSize > 0) {
-        indirectBuffer = app->createBuffer(indirectSize, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        indirectBuffer = app->createBuffer(indirectSize, 
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         void* data;
         vkMapMemory(app->getDevice(), indirectBuffer.memory, 0, indirectSize, 0, &data);
         memcpy(data, indirectCommands.data(), (size_t)indirectSize);
@@ -224,7 +227,9 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         modelsBuffer = {};
     }
     if (modelsSize > 0) {
-        modelsBuffer = app->createBuffer(modelsSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        // Use host-visible memory for models - updated when meshes change
+        modelsBuffer = app->createBuffer(modelsSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         void* mdata;
         vkMapMemory(app->getDevice(), modelsBuffer.memory, 0, modelsSize, 0, &mdata);
         memcpy(mdata, models.data(), (size_t)modelsSize);
@@ -246,7 +251,9 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         boundsBuffer = {};
     }
     if (boundsSize > 0) {
-        boundsBuffer = app->createBuffer(boundsSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        // Use host-visible memory for bounds - updated when meshes change
+        boundsBuffer = app->createBuffer(boundsSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         void* bdata;
         vkMapMemory(app->getDevice(), boundsBuffer.memory, 0, boundsSize, 0, &bdata);
         memcpy(bdata, boundsData.data(), (size_t)boundsSize);
@@ -254,6 +261,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     }
 
     // Create/resize compact indirect buffer (storage + indirect usage)
+    // This buffer is written by compute shader and read by indirect draw - must be device-local
     VkDeviceSize compactSize = indirectSize; // same maximum capacity as full indirect buffer
     if (compactIndirectBuffer.buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(app->getDevice(), compactIndirectBuffer.buffer, nullptr);
@@ -261,23 +269,23 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         compactIndirectBuffer = {};
     }
     if (compactSize > 0) {
-        compactIndirectBuffer = app->createBuffer(compactSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        // Compact buffer is written by compute shader every frame - use host-coherent for compatibility
+        // (device-local can cause issues on some AMD drivers when written by compute)
+        compactIndirectBuffer = app->createBuffer(compactSize, 
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, 
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     }
 
-    // Create or zero the visible count buffer (single uint)
+    // Create or zero the visible count buffer (single uint) - host-visible for compute shader writes
     VkDeviceSize countSize = sizeof(uint32_t);
     if (visibleCountBuffer.buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(app->getDevice(), visibleCountBuffer.buffer, nullptr);
         vkFreeMemory(app->getDevice(), visibleCountBuffer.memory, nullptr);
         visibleCountBuffer = {};
     }
-    visibleCountBuffer = app->createBuffer(countSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    // initialize to zero
-    uint32_t zero = 0;
-    void* zdata;
-    vkMapMemory(app->getDevice(), visibleCountBuffer.memory, 0, countSize, 0, &zdata);
-    memcpy(zdata, &zero, sizeof(uint32_t));
-    vkUnmapMemory(app->getDevice(), visibleCountBuffer.memory);
+    visibleCountBuffer = app->createBuffer(countSize, 
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, 
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     // Create compute pipeline + descriptor set for GPU culling if not present
     if (computePipeline == VK_NULL_HANDLE) {
@@ -409,7 +417,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 }
 
 void IndirectRenderer::drawMergedWithCull(VkCommandBuffer cmd, const glm::mat4& viewProj, VulkanApp* app, uint32_t maxDraws) {
-    std::lock_guard<std::mutex> guard(mutex);
+    // NOTE: No mutex lock here - this is only called from the main render thread
     if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) return;
     // Default implementation splits: prepareCull() runs compute cull (outside render pass)
     // and drawPrepared() issues the indirect draw (inside render pass). For backward
@@ -432,7 +440,8 @@ void IndirectRenderer::drawMergedWithCull(VkCommandBuffer cmd, const glm::mat4& 
 }
 
 void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws) {
-    std::lock_guard<std::mutex> guard(mutex);
+    // NOTE: No mutex lock here - this is only called from the main render thread
+    // and all buffer modifications happen in rebuild() which does lock.
     if (computePipeline == VK_NULL_HANDLE || compactIndirectBuffer.buffer == VK_NULL_HANDLE) return;
     // Reset visible count to zero using a command (clear GPU-side counter)
     vkCmdFillBuffer(cmd, visibleCountBuffer.buffer, 0, sizeof(uint32_t), 0);
@@ -466,7 +475,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 }
 
 void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws) {
-    std::lock_guard<std::mutex> guard(mutex);
+    // NOTE: No mutex lock here - this is only called from the main render thread
     if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) return;
 
     // Bind merged geometry
@@ -485,6 +494,28 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, VulkanApp* app, uint32_
         cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffer.buffer, 0, visibleCountBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
     } else {
         // Fallback: draw all commands (no GPU count available)
+        vkCmdDrawIndexedIndirect(cmd, compactIndirectBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+    }
+}
+
+void IndirectRenderer::bindBuffers(VkCommandBuffer cmd) {
+    if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) return;
+    VkBuffer vbs[] = { vertexBuffer.buffer };
+    VkDeviceSize offsets[] = { 0 };
+    vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
+    vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+}
+
+void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws) {
+    if (compactIndirectBuffer.buffer == VK_NULL_HANDLE) return;
+    // Push identity matrix for model transform
+    glm::mat4 identity = glm::mat4(1.0f);
+    vkCmdPushConstants(cmd, app->getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &identity);
+
+    uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
+    if (cmdDrawIndexedIndirectCount) {
+        cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffer.buffer, 0, visibleCountBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+    } else {
         vkCmdDrawIndexedIndirect(cmd, compactIndirectBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
     }
 }

@@ -49,6 +49,10 @@ public:
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws = 0);
     // Issue indirect draw using the compacted indirect buffer (call inside render pass).
     void drawPrepared(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws = 0);
+    // Bind vertex/index buffers (call once before multiple drawIndirectOnly calls)
+    void bindBuffers(VkCommandBuffer cmd);
+    // Issue indirect draw only (buffers must already be bound via bindBuffers)
+    void drawIndirectOnly(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws = 0);
 
     // Update a descriptor set to point to the GPU-side models SSBO.
     void updateModelsDescriptorSet(VulkanApp* app, VkDescriptorSet ds);

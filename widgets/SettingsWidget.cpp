@@ -41,7 +41,10 @@ void SettingsWidget::render() {
         ImGui::Separator();
         ImGui::Text("Performance");
         ImGui::Separator();
-
+        if (ImGui::Checkbox("V-Sync (MAILBOX/FIFO)", &vsyncEnabled)) {
+            // Will be read by VulkanApp to recreate swapchain with different present mode
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("When disabled, uses IMMEDIATE mode for uncapped FPS (may cause tearing)");
 
         ImGui::Separator();
 
