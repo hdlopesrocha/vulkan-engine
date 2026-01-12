@@ -24,6 +24,7 @@
 #include "vulkan/ShadowMapper.hpp"
 #include "vulkan/ShadowParams.hpp"
 #include "vulkan/IndirectRenderer.hpp"
+#include "vulkan/WaterRenderer.hpp"
 #include "widgets/WidgetManager.hpp"
 #include "widgets/CameraWidget.hpp"
 #include "widgets/DebugWidget.hpp"
@@ -32,6 +33,7 @@
 #include "widgets/SettingsWidget.hpp"
 #include "widgets/LightWidget.hpp"
 #include "widgets/SkyWidget.hpp"
+#include "widgets/WaterWidget.hpp"
 #include "vulkan/SkySphere.hpp"
 #include "vulkan/DescriptorSetBuilder.hpp"
 #include "vulkan/SkyRenderer.hpp"
@@ -56,11 +58,16 @@
 class MyApp : public VulkanApp, public IEventHandler {
     LocalScene * mainScene;
     std::unordered_map<NodeID, Model3DVersion> nodeModelVersions;
+    std::unordered_map<NodeID, Model3DVersion> waterNodeModelVersions; // For transparent layer
     
     // Queue for nodes that need mesh reload (populated by change handler callbacks)
     std::mutex pendingNodesMutex;
     std::vector<OctreeNode*> pendingNodeUpdates;
     std::vector<OctreeNode*> pendingNodeErasures;
+    
+    // Queue for water/transparent layer nodes
+    std::vector<OctreeNode*> pendingWaterNodeUpdates;
+    std::vector<OctreeNode*> pendingWaterNodeErasures;
 
     // Profiling infrastructure
     VkQueryPool queryPool = VK_NULL_HANDLE;
@@ -74,12 +81,13 @@ class MyApp : public VulkanApp, public IEventHandler {
     float profileMainDraw = 0.0f;
     float profileSky = 0.0f;
     float profileImGui = 0.0f;
+    float profileWater = 0.0f;
     float profileCpuUpdate = 0.0f;
     float profileCpuRecord = 0.0f;
     bool profilingEnabled = true;
 
     public:
-        MyApp() : shadowMapper(this, 8192) {}
+        MyApp() : shadowMapper(this, 8192), waterRenderer(this) {}
 
 
             void postSubmit() override {
@@ -115,6 +123,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         // postSubmit() override removed to disable slow per-frame shadow readback
         
     VkPipeline graphicsPipeline = VK_NULL_HANDLE;
+    VkPipeline waterPipeline = VK_NULL_HANDLE;  // Water pipeline with depth test but no depth write
     
     // GPU buffers for the built meshes (parallel to `meshes`)
     VertexBufferObject skyVBO;
@@ -158,6 +167,13 @@ class MyApp : public VulkanApp, public IEventHandler {
     ShadowMapper shadowMapper;
     ShadowParams shadowParams;
     IndirectRenderer indirectRenderer;
+    
+    // Water rendering
+    WaterRenderer waterRenderer;
+    WaterParams waterParams;
+    std::shared_ptr<WaterWidget> waterWidget;
+    float waterTime = 0.0f;
+    float lastDeltaTime = 0.016f;  // Last frame's delta time for use in draw()
     
     // Light (controlled by LightWidget)
     Light light = Light(glm::vec3(-1.0f, -1.0f, -1.0f), glm::vec3(1.0f, 1.0f, 1.0f), 1.0f);
@@ -305,6 +321,32 @@ class MyApp : public VulkanApp, public IEventHandler {
                 false // colorWrite disabled for depth pre-pass
             );
 
+            // Create water pipeline - depth test enabled but no depth write, use LESS_OR_EQUAL
+            // so water renders at same depth or behind terrain
+            waterPipeline = createGraphicsPipeline(
+                {
+                    vertexShader.info,
+                    tescShader.info,
+                    teseShader.info,
+                    fragmentShader.info
+                },
+                VkVertexInputBindingDescription { 
+                    0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
+                },
+                {
+                    VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+                    VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
+                    VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
+                    VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+                    VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
+                },
+                VK_POLYGON_MODE_FILL,
+                VK_CULL_MODE_NONE,  // No culling for water (visible from both sides)
+                false,             // depthWrite disabled - water doesn't occlude things
+                true,              // colorWrite enabled
+                VK_COMPARE_OP_LESS_OR_EQUAL  // Render water at same depth or behind
+            );
+
             // Destroy tessellation shader modules and vertex/fragment modules after pipeline creation
             vkDestroyShaderModule(getDevice(), teseShader.info.module, nullptr);
             vkDestroyShaderModule(getDevice(), tescShader.info.module, nullptr);
@@ -317,6 +359,10 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Initialize indirect renderer (creates compute pipeline for GPU cull and manages merged buffers)
         indirectRenderer.init(this);
+        
+        // Initialize water renderer
+        waterRenderer.init();
+        // Note: createRenderTargets is not called since we render water directly to swapchain
 
         // initialize texture array manager with room for 24 layers of 1024x1024
         // (we no longer use the legacy TextureManager for storage; `materials` tracks per-layer properties)
@@ -558,6 +604,9 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Create sky widget (controls colors and parameters)
         skyWidget = std::make_shared<SkyWidget>();
         widgetManager.addWidget(skyWidget);
+        // Create water widget (controls water rendering parameters)
+        waterWidget = std::make_shared<WaterWidget>(&waterParams);
+        widgetManager.addWidget(waterWidget);
         // Vulkan objects widget
         auto vulkanObjectsWidget = std::make_shared<VulkanObjectsWidget>(this);
         widgetManager.addWidget(vulkanObjectsWidget);
@@ -591,6 +640,16 @@ class MyApp : public VulkanApp, public IEventHandler {
             std::lock_guard<std::mutex> lock(pendingNodesMutex);
             pendingNodeErasures.push_back(node);
         });
+        
+        // Set up transparent layer (water) change handler callbacks
+        mainScene->transparentLayerChangeHandler.setOnNodeUpdated([this](OctreeNode* node) {
+            std::lock_guard<std::mutex> lock(pendingNodesMutex);
+            pendingWaterNodeUpdates.push_back(node);
+        });
+        mainScene->transparentLayerChangeHandler.setOnNodeErased([this](OctreeNode* node) {
+            std::lock_guard<std::mutex> lock(pendingNodesMutex);
+            pendingWaterNodeErasures.push_back(node);
+        });
 
         MainSceneLoader mainSceneLoader = MainSceneLoader(&mainScene->transparentLayerChangeHandler, &mainScene->opaqueLayerChangeHandler);
         mainScene->loadScene(mainSceneLoader);
@@ -600,6 +659,8 @@ class MyApp : public VulkanApp, public IEventHandler {
             std::lock_guard<std::mutex> lock(pendingNodesMutex);
             pendingNodeUpdates.clear();
             pendingNodeErasures.clear();
+            pendingWaterNodeUpdates.clear();
+            pendingWaterNodeErasures.clear();
         }
 
         // Load all chunk meshes into IndirectRenderer after scene loading
@@ -627,7 +688,34 @@ class MyApp : public VulkanApp, public IEventHandler {
         
         auto meshLoadEnd = std::chrono::steady_clock::now();
         double meshLoadTime = std::chrono::duration<double>(meshLoadEnd - meshLoadStart).count();
-        std::cout << "[Setup] Loaded " << meshCount << " meshes in " << meshLoadTime << "s" << std::endl;
+        std::cout << "[Setup] Loaded " << meshCount << " opaque meshes in " << meshLoadTime << "s" << std::endl;
+
+        // Load all water (transparent) chunk meshes into WaterRenderer
+        std::cout << "[Setup] Loading all water meshes into WaterRenderer..." << std::endl;
+        auto waterMeshLoadStart = std::chrono::steady_clock::now();
+        size_t waterMeshCount = 0;
+        
+        mainScene->forEachChunkNode(Layer::LAYER_TRANSPARENT, [this, &waterMeshCount](std::vector<OctreeNodeData>& nodes) {
+            for (auto& node : nodes) {
+                NodeID id = reinterpret_cast<NodeID>(node.node);
+                uint ver = node.node->version;
+                
+                // Generate mesh synchronously during setup
+                mainScene->requestModel3D(Layer::LAYER_TRANSPARENT, node, [this, id, ver, &waterMeshCount](const Geometry& mesh) {
+                    uint32_t meshId = waterRenderer.getIndirectRenderer().addMesh(this, mesh, glm::mat4(1.0f));
+                    waterNodeModelVersions[id] = { meshId, ver };
+                    waterMeshCount++;
+                });
+            }
+        });
+        
+        // Rebuild water buffers and update descriptor once after all meshes are added
+        waterRenderer.getIndirectRenderer().rebuild(this);
+        waterRenderer.getIndirectRenderer().updateModelsDescriptorSet(this, VK_NULL_HANDLE);
+        
+        auto waterMeshLoadEnd = std::chrono::steady_clock::now();
+        double waterMeshLoadTime = std::chrono::duration<double>(waterMeshLoadEnd - waterMeshLoadStart).count();
+        std::cout << "[Setup] Loaded " << waterMeshCount << " water meshes in " << waterMeshLoadTime << "s" << std::endl;
 
         // Create GPU timestamp query pool for profiling
         {
@@ -747,6 +835,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
     void update(float deltaTime) override {
         auto cpuUpdateStart = std::chrono::high_resolution_clock::now();
+        lastDeltaTime = deltaTime;  // Store for use in draw()
         
         // Process queued events (dispatch to handlers)
         eventManager.processQueued();
@@ -858,6 +947,60 @@ class MyApp : public VulkanApp, public IEventHandler {
         
         // Rebuild renderer if any meshes were added/removed
         indirectRenderer.rebuild(this);
+        
+        // Process any pending water node updates/erasures from change handler callbacks
+        {
+            std::vector<OctreeNode*> waterNodesToUpdate;
+            std::vector<OctreeNode*> waterNodesToErase;
+            {
+                std::lock_guard<std::mutex> lock(pendingNodesMutex);
+                waterNodesToUpdate.swap(pendingWaterNodeUpdates);
+                waterNodesToErase.swap(pendingWaterNodeErasures);
+            }
+            
+            // Handle erased water nodes - remove their meshes
+            for (OctreeNode* node : waterNodesToErase) {
+                NodeID id = reinterpret_cast<NodeID>(node);
+                auto it = waterNodeModelVersions.find(id);
+                if (it != waterNodeModelVersions.end()) {
+                    if (it->second.meshId != UINT32_MAX) {
+                        waterRenderer.getIndirectRenderer().removeMesh(it->second.meshId);
+                    }
+                    waterNodeModelVersions.erase(it);
+                    std::cout << "[WaterRenderer] Removed mesh for erased water node id " << id << "\n";
+                }
+            }
+            
+            // Handle updated water nodes - reload their meshes
+            for (OctreeNode* node : waterNodesToUpdate) {
+                NodeID id = reinterpret_cast<NodeID>(node);
+                uint ver = node->version;
+                
+                // Remove old mesh if exists
+                auto it = waterNodeModelVersions.find(id);
+                if (it != waterNodeModelVersions.end() && it->second.meshId != UINT32_MAX) {
+                    waterRenderer.getIndirectRenderer().removeMesh(it->second.meshId);
+                }
+                
+                // Find this node's bounding cube to generate its mesh
+                mainScene->forEachChunkNode(Layer::LAYER_TRANSPARENT, [this, node, id, ver](std::vector<OctreeNodeData>& nodes) {
+                    for (auto& nodeData : nodes) {
+                        if (nodeData.node == node) {
+                            mainScene->requestModel3D(Layer::LAYER_TRANSPARENT, nodeData, [this, id, ver](const Geometry& mesh) {
+                                uint32_t meshId = waterRenderer.getIndirectRenderer().addMesh(this, mesh, glm::mat4(1.0f));
+                                waterNodeModelVersions[id] = { meshId, ver };
+                                waterRenderer.getIndirectRenderer().updateModelsDescriptorSet(this, VK_NULL_HANDLE);
+                                std::cout << "[WaterRenderer] Reloaded mesh id " << meshId << " for water node id " << id << " (version " << ver << ")\n";
+                            });
+                            break;
+                        }
+                    }
+                });
+            }
+        }
+        
+        // Rebuild water renderer if any meshes were added/removed
+        waterRenderer.getIndirectRenderer().rebuild(this);
 
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -917,23 +1060,48 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
         
         // Update uniform buffer for main pass BEFORE starting the render pass
+        // Include water time in passParams for water geometry shader
+        waterTime += lastDeltaTime * waterParams.waveSpeed;
+        waterParams.time = waterTime;
+        
         UniformObject ubo = uboStatic;
         ubo.viewProjection = camera.getViewProjectionMatrix();
         ubo.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
         ubo.shadowEffects = glm::vec4(0.0f, 0.0f, 0.0f,  settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f);
         ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
         ubo.triplanarSettings = glm::vec4(settingsWidget->getTriplanarThreshold(), settingsWidget->getTriplanarExponent(), 0.0f, 0.0f);
-        ubo.passParams = glm::vec4(0.0f, settingsWidget ? (settingsWidget->getTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
+        // passParams: x=waterTime, y=tessEnabled, z=waveScale, w=noiseScale
+        ubo.passParams = glm::vec4(
+            waterTime,
+            settingsWidget ? (settingsWidget->getTessellationEnabled() ? 1.0f : 0.0f) : 0.0f,
+            waterParams.waveScale,
+            waterParams.noiseScale
+        );
+        // Store additional water params in tessParams: x=waveSpeed, y=refractionStrength, z=fresnelPower, w=transparency
+        ubo.tessParams = glm::vec4(
+            waterParams.waveSpeed,
+            waterParams.refractionStrength,
+            waterParams.fresnelPower,
+            waterParams.transparency
+        );
         updateUniformBuffer(mainUniform, &ubo, sizeof(UniformObject));
 
         // Prepare GPU cull for main pass BEFORE the render pass (vkCmdFillBuffer/barriers not allowed inside render pass)
         indirectRenderer.prepareCull(commandBuffer, camera.getViewProjectionMatrix());
         
+        // Also prepare water cull before render pass
+        if (waterRenderer.getIndirectRenderer().getMeshCount() > 0) {
+            waterRenderer.getIndirectRenderer().prepareCull(commandBuffer, camera.getViewProjectionMatrix());
+        }
+        
         if (queryPool != VK_NULL_HANDLE) {
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, queryPool, 4); // After main cull
         }
 
-        // Second pass: Render scene with shadows
+        // Check if we need offscreen rendering for water
+        bool hasWater = waterRenderer.getIndirectRenderer().getMeshCount() > 0;
+
+        // Render directly to swapchain (simplified - no offscreen pass needed)
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         
         // set dynamic viewport/scissor to match current swapchain extent
@@ -1032,6 +1200,76 @@ class MyApp : public VulkanApp, public IEventHandler {
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 6);
         }
 
+        // --- Handle water rendering (transparent, rendered in separate pass with depth access) ---
+        VkPipeline waterGeomPipeline = waterRenderer.getWaterGeometryPipeline();
+        if (hasWater && waterGeomPipeline != VK_NULL_HANDLE) {
+            auto waterStart = std::chrono::high_resolution_clock::now();
+            
+            // End main render pass to copy depth buffer
+            vkCmdEndRenderPass(commandBuffer);
+            
+            // Initialize depth copy resources if needed
+            waterRenderer.initDepthCopyResources(getWidth(), getHeight());
+            
+            // Copy scene depth to a sampleable texture
+            waterRenderer.copySceneDepth(commandBuffer, getDepthImage(), getWidth(), getHeight());
+            
+            // Begin continuation render pass (preserves color and depth)
+            VkRenderPassBeginInfo continuationRenderPassInfo{};
+            continuationRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            continuationRenderPassInfo.renderPass = getContinuationRenderPass();
+            continuationRenderPassInfo.framebuffer = renderPassInfo.framebuffer;
+            continuationRenderPassInfo.renderArea.offset = {0, 0};
+            continuationRenderPassInfo.renderArea.extent = {getWidth(), getHeight()};
+            continuationRenderPassInfo.clearValueCount = 0;  // No clear - we're continuing
+            continuationRenderPassInfo.pClearValues = nullptr;
+            
+            vkCmdBeginRenderPass(commandBuffer, &continuationRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+            
+            // Reset viewport and scissor for continuation pass
+            VkViewport waterViewport{};
+            waterViewport.x = 0.0f;
+            waterViewport.y = 0.0f;
+            waterViewport.width = (float)getWidth();
+            waterViewport.height = (float)getHeight();
+            waterViewport.minDepth = 0.0f;
+            waterViewport.maxDepth = 1.0f;
+            vkCmdSetViewport(commandBuffer, 0, 1, &waterViewport);
+            
+            VkRect2D waterScissor{};
+            waterScissor.offset = {0, 0};
+            waterScissor.extent = {getWidth(), getHeight()};
+            vkCmdSetScissor(commandBuffer, 0, 1, &waterScissor);
+            
+            // Bind water pipeline (uses custom layout with 3 descriptor sets)
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeomPipeline);
+            waterRenderer.getIndirectRenderer().bindBuffers(commandBuffer);
+            
+            // Bind all 3 descriptor sets for water rendering:
+            // Set 0: Materials SSBO
+            // Set 1: UBO
+            // Set 2: Scene depth texture
+            {
+                VkDescriptorSet setsToBind[3];
+                uint32_t bindCount = 0;
+                VkDescriptorSet matDs = getMaterialDescriptorSet();
+                if (matDs != VK_NULL_HANDLE) setsToBind[bindCount++] = matDs;
+                if (descriptorSet != VK_NULL_HANDLE) setsToBind[bindCount++] = descriptorSet;
+                VkDescriptorSet depthDs = waterRenderer.getWaterDepthDescriptorSet();
+                if (depthDs != VK_NULL_HANDLE) setsToBind[bindCount++] = depthDs;
+                if (bindCount > 0) {
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                        waterRenderer.getWaterGeometryPipelineLayout(), 0, bindCount, setsToBind, 0, nullptr);
+                }
+            }
+            
+            // Draw water geometry
+            waterRenderer.getIndirectRenderer().drawIndirectOnly(commandBuffer, this);
+            
+            auto waterEnd = std::chrono::high_resolution_clock::now();
+            profileWater = std::chrono::duration<float, std::milli>(waterEnd - waterStart).count();
+        }
+
         // render ImGui draw data inside the same command buffer (must be inside render pass)
         ImDrawData* draw_data = ImGui::GetDrawData();
         if (draw_data) ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
@@ -1091,6 +1329,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipeline, nullptr);
         if (graphicsPipelineWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineWire, nullptr);
         if (depthPrePassPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), depthPrePassPipeline, nullptr);
+        if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), waterPipeline, nullptr);
         // Tessellation pipelines removed earlier; nothing to destroy here.
         if (skyRenderer) skyRenderer->cleanup();
         skyVBO.destroy(getDevice());
@@ -1115,6 +1354,15 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Cleanup indirect renderer resources
         indirectRenderer.cleanup(this);
+        
+        // Remove any water meshes registered in WaterRenderer and clear tracking
+        for (auto &entry : waterNodeModelVersions) {
+            if (entry.second.meshId != UINT32_MAX) waterRenderer.getIndirectRenderer().removeMesh(entry.second.meshId);
+        }
+        waterNodeModelVersions.clear();
+        
+        // Cleanup water renderer resources
+        waterRenderer.cleanup();
 
         // global uniform buffers cleanup (main, shadow, sky)
         if (mainUniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), mainUniform.buffer, nullptr);

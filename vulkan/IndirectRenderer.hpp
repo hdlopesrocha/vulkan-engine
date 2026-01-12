@@ -53,6 +53,8 @@ public:
     void bindBuffers(VkCommandBuffer cmd);
     // Issue indirect draw only (buffers must already be bound via bindBuffers)
     void drawIndirectOnly(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws = 0);
+    // Issue indirect draw with custom pipeline layout for push constants
+    void drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pipelineLayout, uint32_t maxDraws = 0);
 
     // Update a descriptor set to point to the GPU-side models SSBO.
     void updateModelsDescriptorSet(VulkanApp* app, VkDescriptorSet ds);
@@ -63,6 +65,16 @@ public:
     const Buffer& getIndexBuffer() const { return indexBuffer; }
     const Buffer& getIndirectBuffer() const { return indirectBuffer; }
     const Buffer& getModelsBuffer() const { return modelsBuffer; }
+    
+    // Get count of active meshes
+    size_t getMeshCount() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        size_t count = 0;
+        for (const auto& m : meshes) {
+            if (m.active) ++count;
+        }
+        return count;
+    }
 
     // Query mesh info (copy) for use in the app (model matrix etc.)
     MeshInfo getMeshInfo(uint32_t meshId) const;

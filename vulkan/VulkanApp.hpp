@@ -18,6 +18,7 @@ class VulkanApp {
     VkExtent2D swapchainExtent;
     std::vector<VkImageView> swapchainImageViews;
     VkRenderPass renderPass = VK_NULL_HANDLE;
+    VkRenderPass continuationRenderPass = VK_NULL_HANDLE;  // Render pass that loads existing color/depth
     std::vector<VkFramebuffer> swapchainFramebuffers;
     VkCommandPool commandPool = VK_NULL_HANDLE;
 
@@ -172,8 +173,11 @@ protected:
         const std::vector<VkImageView>& getSwapchainImageViews() const { return swapchainImageViews; }
         VkDescriptorPool getDescriptorPool() const { return descriptorPool; }
         VkDescriptorPool getImGuiDescriptorPool() const { return imguiDescriptorPool; }
+        VkRenderPass getSwapchainRenderPass() const { return renderPass; }
+        VkRenderPass getContinuationRenderPass() const { return continuationRenderPass; }
 
         VkImage getDepthImage() const { return depthImage; }
+        VkImageView getDepthImageView() const { return depthImageView; }
 
         int getWidth();
         int getHeight();

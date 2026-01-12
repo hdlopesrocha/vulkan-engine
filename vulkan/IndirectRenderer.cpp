@@ -552,10 +552,14 @@ void IndirectRenderer::bindBuffers(VkCommandBuffer cmd) {
 }
 
 void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws) {
+    drawIndirectOnly(cmd, app->getPipelineLayout(), maxDraws);
+}
+
+void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pipelineLayout, uint32_t maxDraws) {
     if (compactIndirectBuffer.buffer == VK_NULL_HANDLE) return;
     // Push identity matrix for model transform
     glm::mat4 identity = glm::mat4(1.0f);
-    vkCmdPushConstants(cmd, app->getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &identity);
+    vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &identity);
 
     uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
     if (cmdDrawIndexedIndirectCount) {

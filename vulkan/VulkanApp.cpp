@@ -155,6 +155,7 @@ void VulkanApp::cleanup() {
 
     // render pass
     if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
+    if (continuationRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, continuationRenderPass, nullptr);
 
     // image views
     for (auto iv : swapchainImageViews) {
@@ -466,6 +467,50 @@ void VulkanApp::createRenderPass() {
 
     if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create render pass!");
+    }
+    
+    // Create continuation render pass (loads existing color and depth instead of clearing)
+    VkAttachmentDescription contColorAttachment{};
+    contColorAttachment.format = swapchainImageFormat;
+    contColorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    contColorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;  // Load existing color
+    contColorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    contColorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    contColorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    contColorAttachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    contColorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    
+    VkAttachmentDescription contDepthAttachment{};
+    contDepthAttachment.format = VK_FORMAT_D32_SFLOAT;
+    contDepthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    contDepthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;  // Load existing depth
+    contDepthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    contDepthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    contDepthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    contDepthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    contDepthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    
+    std::array<VkAttachmentDescription, 2> contAttachments = { contColorAttachment, contDepthAttachment };
+    
+    VkSubpassDependency contDependency{};
+    contDependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    contDependency.dstSubpass = 0;
+    contDependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    contDependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    contDependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    contDependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    
+    VkRenderPassCreateInfo contRenderPassInfo{};
+    contRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    contRenderPassInfo.attachmentCount = static_cast<uint32_t>(contAttachments.size());
+    contRenderPassInfo.pAttachments = contAttachments.data();
+    contRenderPassInfo.subpassCount = 1;
+    contRenderPassInfo.pSubpasses = &subpass;  // Reuse the same subpass description
+    contRenderPassInfo.dependencyCount = 1;
+    contRenderPassInfo.pDependencies = &contDependency;
+    
+    if (vkCreateRenderPass(device, &contRenderPassInfo, nullptr, &continuationRenderPass) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create continuation render pass!");
     }
 }
 
