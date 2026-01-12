@@ -73,4 +73,36 @@ public:
         double elapsed = std::chrono::duration<double>(endTime - startTime).count();
         std::cout << "LocalScene::loadScene Ok! " << std::to_string(elapsed) << "s"  << std::endl;
     }
+
+    // Iterate all chunk nodes in the scene and call the callback for each
+    // This is used to load all meshes after scene loading is complete
+    void forEachChunkNode(Layer layer, const VisibleNodeCallback& callback) {
+        Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
+        
+        // Create a simple iterator that collects all chunk nodes
+        class ChunkCollector : public IteratorHandler {
+        public:
+            std::vector<OctreeNodeData> chunkNodes;
+            
+            void before(const Octree &tree, OctreeNodeData &params) override {}
+            void after(const Octree &tree, OctreeNodeData &params) override {
+                if (params.node->isChunk() && params.node->getType() == SpaceType::Surface) {
+                    chunkNodes.push_back(params);
+                }
+            }
+            bool test(const Octree &tree, OctreeNodeData &params) override {
+                return true; // Visit all nodes
+            }
+            void getOrder(const Octree &tree, OctreeNodeData &params, uint8_t order[8]) override {
+                for (uint8_t i = 0; i < 8; ++i) order[i] = i;
+            }
+        };
+        
+        ChunkCollector collector;
+        tree->iterate(collector);
+        
+        if (!collector.chunkNodes.empty()) {
+            callback(collector.chunkNodes);
+        }
+    }
 };

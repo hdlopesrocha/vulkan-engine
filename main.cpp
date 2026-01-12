@@ -42,6 +42,7 @@
 #include <memory>
 #include <iostream>
 #include <cmath>
+#include <mutex>
 #include "utils/LocalScene.hpp"
 #include "utils/MainSceneLoader.hpp"
 
@@ -55,6 +56,11 @@
 class MyApp : public VulkanApp, public IEventHandler {
     LocalScene * mainScene;
     std::unordered_map<NodeID, Model3DVersion> nodeModelVersions;
+    
+    // Queue for nodes that need mesh reload (populated by change handler callbacks)
+    std::mutex pendingNodesMutex;
+    std::vector<OctreeNode*> pendingNodeUpdates;
+    std::vector<OctreeNode*> pendingNodeErasures;
 
     // Profiling infrastructure
     VkQueryPool queryPool = VK_NULL_HANDLE;
@@ -575,8 +581,53 @@ class MyApp : public VulkanApp, public IEventHandler {
         createCommandBuffers();
         mainScene = new LocalScene();
 
+        // Set up change handler callbacks BEFORE loading the scene
+        // These callbacks will be triggered when nodes are updated/erased at runtime
+        mainScene->opaqueLayerChangeHandler.setOnNodeUpdated([this](OctreeNode* node) {
+            std::lock_guard<std::mutex> lock(pendingNodesMutex);
+            pendingNodeUpdates.push_back(node);
+        });
+        mainScene->opaqueLayerChangeHandler.setOnNodeErased([this](OctreeNode* node) {
+            std::lock_guard<std::mutex> lock(pendingNodesMutex);
+            pendingNodeErasures.push_back(node);
+        });
+
         MainSceneLoader mainSceneLoader = MainSceneLoader(&mainScene->transparentLayerChangeHandler, &mainScene->opaqueLayerChangeHandler);
         mainScene->loadScene(mainSceneLoader);
+        
+        // Clear any pending updates that came from initial load (we handle those separately below)
+        {
+            std::lock_guard<std::mutex> lock(pendingNodesMutex);
+            pendingNodeUpdates.clear();
+            pendingNodeErasures.clear();
+        }
+
+        // Load all chunk meshes into IndirectRenderer after scene loading
+        std::cout << "[Setup] Loading all chunk meshes into IndirectRenderer..." << std::endl;
+        auto meshLoadStart = std::chrono::steady_clock::now();
+        size_t meshCount = 0;
+        
+        mainScene->forEachChunkNode(Layer::LAYER_OPAQUE, [this, &meshCount](std::vector<OctreeNodeData>& nodes) {
+            for (auto& node : nodes) {
+                NodeID id = reinterpret_cast<NodeID>(node.node);
+                uint ver = node.node->version;
+                
+                // Generate mesh synchronously during setup
+                mainScene->requestModel3D(Layer::LAYER_OPAQUE, node, [this, id, ver, &meshCount](const Geometry& mesh) {
+                    uint32_t meshId = indirectRenderer.addMesh(this, mesh, glm::mat4(1.0f));
+                    nodeModelVersions[id] = { meshId, ver };
+                    meshCount++;
+                });
+            }
+        });
+        
+        // Rebuild buffers and update descriptor once after all meshes are added
+        indirectRenderer.rebuild(this);
+        indirectRenderer.updateModelsDescriptorSet(this, VK_NULL_HANDLE);
+        
+        auto meshLoadEnd = std::chrono::steady_clock::now();
+        double meshLoadTime = std::chrono::duration<double>(meshLoadEnd - meshLoadStart).count();
+        std::cout << "[Setup] Loaded " << meshCount << " meshes in " << meshLoadTime << "s" << std::endl;
 
         // Create GPU timestamp query pool for profiling
         {
@@ -753,38 +804,59 @@ class MyApp : public VulkanApp, public IEventHandler {
     void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
         auto cpuRecordStart = std::chrono::high_resolution_clock::now();
         
-        // Request visible octree nodes from the main scene to check for updates           
-        mainScene->requestVisibleNodes(Layer::LAYER_OPAQUE, camera.getViewProjectionMatrix(), [this](std::vector<OctreeNodeData>& nodes){ 
-            for (auto& node : nodes) {
-                NodeID id = reinterpret_cast<NodeID>(node.node);
-                uint ver = node.node->version;
-                // Find existing entry and remove it if version changed
+        // Process any pending node updates/erasures from change handler callbacks
+        {
+            std::vector<OctreeNode*> nodesToUpdate;
+            std::vector<OctreeNode*> nodesToErase;
+            {
+                std::lock_guard<std::mutex> lock(pendingNodesMutex);
+                nodesToUpdate.swap(pendingNodeUpdates);
+                nodesToErase.swap(pendingNodeErasures);
+            }
+            
+            // Handle erased nodes - remove their meshes
+            for (OctreeNode* node : nodesToErase) {
+                NodeID id = reinterpret_cast<NodeID>(node);
                 auto it = nodeModelVersions.find(id);
                 if (it != nodeModelVersions.end()) {
-                    if (it->second.version != ver) {
-                        if (it->second.meshId != UINT32_MAX) indirectRenderer.removeMesh(it->second.meshId);
-                        nodeModelVersions.erase(it);
-                        it = nodeModelVersions.end();
+                    if (it->second.meshId != UINT32_MAX) {
+                        indirectRenderer.removeMesh(it->second.meshId);
                     }
-                }
-
-                if (it == nodeModelVersions.end()) {
-                    // Insert placeholder and request async model load
-                    auto em = nodeModelVersions.emplace(id, Model3DVersion{});
-                    it = em.first;
-                    mainScene->requestModel3D(Layer::LAYER_OPAQUE, node, [this, id, ver](const Geometry& mesh) {
-                        // Add the loaded mesh into the IndirectRenderer and record its meshId
-                        uint32_t meshId = indirectRenderer.addMesh(this, mesh, glm::mat4(1.0f));
-                        nodeModelVersions[id] = { meshId, ver };
-                        // Ensure models SSBO is bound; let the renderer allocate a compatible set
-                        indirectRenderer.updateModelsDescriptorSet(this, VK_NULL_HANDLE);
-                        std::cout << "[IndirectRenderer] Added mesh id " << meshId << " for node id " << id << " (version " << ver << ")\n";
-                    });
+                    nodeModelVersions.erase(it);
+                    std::cout << "[IndirectRenderer] Removed mesh for erased node id " << id << "\n";
                 }
             }
-        });
+            
+            // Handle updated nodes - reload their meshes
+            for (OctreeNode* node : nodesToUpdate) {
+                NodeID id = reinterpret_cast<NodeID>(node);
+                uint ver = node->version;
+                
+                // Remove old mesh if exists
+                auto it = nodeModelVersions.find(id);
+                if (it != nodeModelVersions.end() && it->second.meshId != UINT32_MAX) {
+                    indirectRenderer.removeMesh(it->second.meshId);
+                }
+                
+                // We need to find this node's bounding cube to generate its mesh
+                // Use forEachChunkNode to find it (or store cube info in the callback)
+                mainScene->forEachChunkNode(Layer::LAYER_OPAQUE, [this, node, id, ver](std::vector<OctreeNodeData>& nodes) {
+                    for (auto& nodeData : nodes) {
+                        if (nodeData.node == node) {
+                            mainScene->requestModel3D(Layer::LAYER_OPAQUE, nodeData, [this, id, ver](const Geometry& mesh) {
+                                uint32_t meshId = indirectRenderer.addMesh(this, mesh, glm::mat4(1.0f));
+                                nodeModelVersions[id] = { meshId, ver };
+                                indirectRenderer.updateModelsDescriptorSet(this, VK_NULL_HANDLE);
+                                std::cout << "[IndirectRenderer] Reloaded mesh id " << meshId << " for node id " << id << " (version " << ver << ")\n";
+                            });
+                            break;
+                        }
+                    }
+                });
+            }
+        }
         
-        // Ensure renderer rebuilt on main thread after any async adds/removes
+        // Rebuild renderer if any meshes were added/removed
         indirectRenderer.rebuild(this);
 
         VkCommandBufferBeginInfo beginInfo{};
