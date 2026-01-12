@@ -41,14 +41,9 @@ public:
     // if add/remove operations occurred.
     void rebuild(VulkanApp* app);
 
-    // Bind buffers and issue an indirect draw for the given mesh id.
-    // This keeps per-draw push constants outside and only performs the indirect call.
-    void drawIndirect(VkCommandBuffer cmd, uint32_t meshId);
-
     // Bind merged vertex/index buffers once and draw all provided mesh ids.
     // This avoids binding per-mesh buffers; push constants must be set per-draw
     // by this function (it will push each mesh's model before issuing its draw).
-    void drawVisibleMerged(VkCommandBuffer cmd, const std::vector<uint32_t>& visibleMeshIds, VulkanApp* app);
     void drawMergedWithCull(VkCommandBuffer cmd, const glm::mat4& viewProj, VulkanApp* app, uint32_t maxDraws = 0);
     // Run GPU culling/compaction (must be called outside any render pass).
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws = 0);

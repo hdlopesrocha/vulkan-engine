@@ -86,3 +86,8 @@ glm::mat4 Light::computeLightSpaceMatrix(const glm::vec3& camPos, float orthoSiz
     glm::mat4 lightProjection = glm::ortho(-orthoSize, orthoSize, -orthoSize, orthoSize, 1.0f, orthoSize * 2.0f);
     return lightProjection * lightView;
 }
+
+void Light::setTarget(const glm::vec3& target) {
+    targetPosition = target;
+    viewMatrix = computeLightViewMatrix(targetPosition);
+}

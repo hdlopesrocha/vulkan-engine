@@ -408,39 +408,6 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     dirty = false;
 }
 
-void IndirectRenderer::drawIndirect(VkCommandBuffer cmd, uint32_t meshId) {
-    std::lock_guard<std::mutex> guard(mutex);
-    auto it = idToIndex.find(meshId);
-    if (it == idToIndex.end()) return;
-    const MeshInfo &m = meshes[it->second];
-    if (!m.active) return;
-    if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
-
-    // issue single indirect draw using the global indirect buffer
-    vkCmdDrawIndexedIndirect(cmd, indirectBuffer.buffer, m.indirectOffset, 1, sizeof(VkDrawIndexedIndirectCommand));
-}
-
-void IndirectRenderer::drawVisibleMerged(VkCommandBuffer cmd, const std::vector<uint32_t>& visibleMeshIds, VulkanApp* app) {
-    std::lock_guard<std::mutex> guard(mutex);
-    // Bind merged vertex/index buffers once (if present)
-    if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) return;
-    VkBuffer vbs[] = { vertexBuffer.buffer };
-    VkDeviceSize offsets[] = { 0 };
-    vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
-    vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-    // For each visible mesh, push model matrix and issue an indirect draw (drawCount=1).
-    for (uint32_t meshId : visibleMeshIds) {
-        auto it = idToIndex.find(meshId);
-        if (it == idToIndex.end()) continue;
-        const MeshInfo &m = meshes[it->second];
-        if (!m.active) continue;
-
-        vkCmdPushConstants(cmd, app->getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &m.model);
-        vkCmdDrawIndexedIndirect(cmd, indirectBuffer.buffer, m.indirectOffset, 1, sizeof(VkDrawIndexedIndirectCommand));
-    }
-}
-
 void IndirectRenderer::drawMergedWithCull(VkCommandBuffer cmd, const glm::mat4& viewProj, VulkanApp* app, uint32_t maxDraws) {
     std::lock_guard<std::mutex> guard(mutex);
     if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) return;

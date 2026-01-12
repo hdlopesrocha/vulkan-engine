@@ -674,8 +674,8 @@ class MyApp : public VulkanApp, public IEventHandler {
     
         // First pass: Render shadow map (skip if shadows globally disabled)
         if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
-            // Prepare GPU cull before starting the shadow render pass (shared with main pass)
-            indirectRenderer.prepareCull(commandBuffer, camera.getViewProjectionMatrix());
+            // Prepare GPU cull before starting the shadow render pass (use light's view-projection for shadow frustum)
+            indirectRenderer.prepareCull(commandBuffer, light.getViewProjectionMatrix());
             shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
             
             // Update uniform buffer for shadow pass: set viewProjection = lightSpaceMatrix
@@ -737,6 +737,9 @@ class MyApp : public VulkanApp, public IEventHandler {
         ubo.passParams = glm::vec4(0.0f, settingsWidget ? (settingsWidget->getTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
 
         updateUniformBuffer(mainUniform, &ubo, sizeof(UniformObject));
+
+        // Prepare GPU cull for main pass (use camera's view-projection for scene frustum)
+        indirectRenderer.prepareCull(commandBuffer, camera.getViewProjectionMatrix());
 
         // Bind descriptor sets if available (material/global + per-texture)
         { 
