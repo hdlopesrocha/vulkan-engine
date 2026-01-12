@@ -181,6 +181,24 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Use ImGui dark theme for a darker UI appearance
         ImGui::StyleColorsDark();
 
+        // Convert ImGui style colors from sRGB to linear because swapchain uses VK_FORMAT_B8G8R8A8_SRGB
+        // which applies gamma correction on output. ImGui colors are defined in sRGB, so we need to
+        // linearize them first to avoid double gamma correction (which makes UI look washed out).
+        {
+            ImGuiStyle& style = ImGui::GetStyle();
+            for (int i = 0; i < ImGuiCol_COUNT; i++) {
+                ImVec4& col = style.Colors[i];
+                // sRGB -> linear conversion for RGB channels (alpha stays linear)
+                auto srgbToLinear = [](float c) {
+                    return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+                };
+                col.x = srgbToLinear(col.x);
+                col.y = srgbToLinear(col.y);
+                col.z = srgbToLinear(col.z);
+                // col.w (alpha) remains unchanged
+            }
+        }
+
         // Initialize shadow mapper (moved after pipeline creation below)
         
         // Graphics Pipeline
