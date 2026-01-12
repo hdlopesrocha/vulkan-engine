@@ -4,6 +4,7 @@
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
+#include <chrono>
 #include "math/Camera.hpp"
 #include "math/Light.hpp"
 #include "events/EventManager.hpp"
@@ -55,13 +56,54 @@ class MyApp : public VulkanApp, public IEventHandler {
     LocalScene * mainScene;
     std::unordered_map<NodeID, Model3DVersion> nodeModelVersions;
 
+    // Profiling infrastructure
+    VkQueryPool queryPool = VK_NULL_HANDLE;
+    static constexpr uint32_t QUERY_COUNT = 12; // timestamps for different stages
+    float timestampPeriod = 0.0f; // nanoseconds per tick
+    // Profiling results (in milliseconds)
+    float profileShadowCull = 0.0f;
+    float profileShadowDraw = 0.0f;
+    float profileMainCull = 0.0f;
+    float profileDepthPrepass = 0.0f;
+    float profileMainDraw = 0.0f;
+    float profileSky = 0.0f;
+    float profileImGui = 0.0f;
+    float profileCpuUpdate = 0.0f;
+    float profileCpuRecord = 0.0f;
+    bool profilingEnabled = true;
 
     public:
         MyApp() : shadowMapper(this, 8192) {}
 
 
             void postSubmit() override {
-                
+                // Read GPU timestamp results from previous frame
+                if (profilingEnabled && queryPool != VK_NULL_HANDLE) {
+                    uint64_t timestamps[QUERY_COUNT];
+                    VkResult result = vkGetQueryPoolResults(
+                        getDevice(),
+                        queryPool,
+                        0, 8,  // Read queries 0-7
+                        sizeof(timestamps),
+                        timestamps,
+                        sizeof(uint64_t),
+                        VK_QUERY_RESULT_64_BIT
+                    );
+                    
+                    if (result == VK_SUCCESS) {
+                        // Convert timestamp deltas to milliseconds
+                        // timestampPeriod is in nanoseconds per tick
+                        float nsToMs = timestampPeriod / 1000000.0f;
+                        
+                        profileShadowCull = (timestamps[1] - timestamps[0]) * nsToMs;
+                        profileShadowDraw = (timestamps[2] - timestamps[1]) * nsToMs;
+                        profileSky = (timestamps[3] - timestamps[2]) * nsToMs;
+                        profileMainCull = (timestamps[4] - timestamps[3]) * nsToMs;
+                        profileDepthPrepass = (timestamps[5] - timestamps[4]) * nsToMs;
+                        profileMainDraw = (timestamps[6] - timestamps[5]) * nsToMs;
+                        profileImGui = (timestamps[7] - timestamps[6]) * nsToMs;
+                    }
+                }
             }
 
         // postSubmit() override removed to disable slow per-frame shadow readback
@@ -506,6 +548,22 @@ class MyApp : public VulkanApp, public IEventHandler {
         MainSceneLoader mainSceneLoader = MainSceneLoader(&mainScene->transparentLayerChangeHandler, &mainScene->opaqueLayerChangeHandler);
         mainScene->loadScene(mainSceneLoader);
 
+        // Create GPU timestamp query pool for profiling
+        {
+            VkPhysicalDeviceProperties props;
+            vkGetPhysicalDeviceProperties(getPhysicalDevice(), &props);
+            timestampPeriod = props.limits.timestampPeriod; // nanoseconds per tick
+            
+            VkQueryPoolCreateInfo queryInfo{};
+            queryInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+            queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            queryInfo.queryCount = QUERY_COUNT;
+            
+            if (vkCreateQueryPool(getDevice(), &queryInfo, nullptr, &queryPool) != VK_SUCCESS) {
+                std::cerr << "Warning: Failed to create timestamp query pool\n";
+                queryPool = VK_NULL_HANDLE;
+            }
+        }
         
     };
 
@@ -556,6 +614,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             }
             if (ImGui::BeginMenu("View")) {
                 ImGui::MenuItem("Show Demo", NULL, &imguiShowDemo);
+                ImGui::MenuItem("Show Profiling", NULL, &profilingEnabled);
                 if (ImGui::MenuItem("Fullscreen", "F11", isFullscreen)) {
                     toggleFullscreen();
                 }
@@ -573,8 +632,27 @@ class MyApp : public VulkanApp, public IEventHandler {
                 float y = ImGui::GetFrameHeight() + 6.0f; // position just under the main menu bar
                 ImGui::SetNextWindowPos(ImVec2(padding, y), ImGuiCond_Always);
                 if (ImGui::Begin("##stats_overlay", nullptr, flags)) {
-                    ImGui::Text("FPS: %.1f", imguiFps);
-                    ImGui::Text("Loaded: %zu", nodeModelVersions.size());
+                    ImGui::Text("FPS: %.1f (%.2f ms)", imguiFps, imguiFps > 0 ? 1000.0f / imguiFps : 0.0f);
+                    ImGui::Text("Loaded: %zu meshes", nodeModelVersions.size());
+                    
+                    if (profilingEnabled) {
+                        ImGui::Separator();
+                        ImGui::Text("--- GPU Timing (ms) ---");
+                        float gpuTotal = profileShadowCull + profileShadowDraw + profileMainCull + 
+                                        profileDepthPrepass + profileMainDraw + profileSky + profileImGui;
+                        ImGui::Text("Shadow Cull:   %.2f", profileShadowCull);
+                        ImGui::Text("Shadow Draw:   %.2f", profileShadowDraw);
+                        ImGui::Text("Main Cull:     %.2f", profileMainCull);
+                        ImGui::Text("Depth Prepass: %.2f", profileDepthPrepass);
+                        ImGui::Text("Main Draw:     %.2f", profileMainDraw);
+                        ImGui::Text("Sky:           %.2f", profileSky);
+                        ImGui::Text("ImGui:         %.2f", profileImGui);
+                        ImGui::Text("GPU Total:     %.2f", gpuTotal);
+                        ImGui::Separator();
+                        ImGui::Text("--- CPU Timing (ms) ---");
+                        ImGui::Text("Update:        %.2f", profileCpuUpdate);
+                        ImGui::Text("Record:        %.2f", profileCpuRecord);
+                    }
                 }
                 ImGui::End();
             }
@@ -587,6 +665,8 @@ class MyApp : public VulkanApp, public IEventHandler {
     }
 
     void update(float deltaTime) override {
+        auto cpuUpdateStart = std::chrono::high_resolution_clock::now();
+        
         // Process queued events (dispatch to handlers)
         eventManager.processQueued();
         
@@ -635,9 +715,14 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Compute light space matrix for shadow mapping using ShadowParams
         shadowParams.update(camera.getPosition(), light);
         uboStatic.lightSpaceMatrix = shadowParams.lightSpaceMatrix;
+        
+        auto cpuUpdateEnd = std::chrono::high_resolution_clock::now();
+        profileCpuUpdate = std::chrono::duration<float, std::milli>(cpuUpdateEnd - cpuUpdateStart).count();
     };
 
     void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
+        auto cpuRecordStart = std::chrono::high_resolution_clock::now();
+        
         // Request visible octree nodes from the main scene to check for updates           
         mainScene->requestVisibleNodes(Layer::LAYER_OPAQUE, camera.getViewProjectionMatrix(), [this](std::vector<OctreeNodeData>& nodes){ 
             for (auto& node : nodes) {
@@ -676,11 +761,22 @@ class MyApp : public VulkanApp, public IEventHandler {
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
         vkBeginCommandBuffer(commandBuffer, &beginInfo);
+        
+        // Reset and write timestamp queries for profiling
+        if (queryPool != VK_NULL_HANDLE) {
+            vkCmdResetQueryPool(commandBuffer, queryPool, 0, QUERY_COUNT);
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, 0); // Start
+        }
     
         // First pass: Render shadow map (skip if shadows globally disabled)
         if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
             // Prepare GPU cull before starting the shadow render pass (use light's view-projection for shadow frustum)
             indirectRenderer.prepareCull(commandBuffer, light.getViewProjectionMatrix());
+            
+            if (queryPool != VK_NULL_HANDLE) {
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, queryPool, 1); // After shadow cull
+            }
+            
             shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
             
             // Update uniform buffer for shadow pass: set viewProjection = lightSpaceMatrix
@@ -705,6 +801,16 @@ class MyApp : public VulkanApp, public IEventHandler {
             indirectRenderer.drawPrepared(commandBuffer, this);
 
             shadowMapper.endShadowPass(commandBuffer);
+            
+            if (queryPool != VK_NULL_HANDLE) {
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 2); // After shadow draw
+            }
+        } else {
+            // Write placeholder timestamps if shadows disabled
+            if (queryPool != VK_NULL_HANDLE) {
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, 1);
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, 2);
+            }
         }
         
         // Second pass: Render scene with shadows
@@ -726,9 +832,13 @@ class MyApp : public VulkanApp, public IEventHandler {
             SkyMode skyMode = skyWidget ? skyWidget->getSkyMode() : SkyMode::Gradient;
             skyRenderer->render(commandBuffer, skyVBO, descriptorSet, mainUniform, uboStatic, camera.getViewProjectionMatrix(), skyMode);
         }
+        
+        if (queryPool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, queryPool, 3); // After sky
+        }
 
 
-        VkRect2D scissor{};
+        VkRect2D scissor{};;
         scissor.offset = {0, 0};
         scissor.extent = { (uint32_t)getWidth(), (uint32_t)getHeight() };
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
@@ -745,6 +855,10 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Prepare GPU cull for main pass (use camera's view-projection for scene frustum)
         indirectRenderer.prepareCull(commandBuffer, camera.getViewProjectionMatrix());
+        
+        if (queryPool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, queryPool, 4); // After main cull
+        }
         
         // Bind vertex/index buffers once for all subsequent draw calls in this render pass
         indirectRenderer.bindBuffers(commandBuffer);
@@ -773,6 +887,10 @@ class MyApp : public VulkanApp, public IEventHandler {
             }
             // Reuse culled draw commands - buffers already bound above
             indirectRenderer.drawIndirectOnly(commandBuffer, this);
+        }
+        
+        if (queryPool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, queryPool, 5); // After depth prepass
         }
 
 
@@ -806,9 +924,19 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Render compacted draw commands - buffers already bound, just issue draw
         indirectRenderer.drawIndirectOnly(commandBuffer, this);
 
+        // Timestamp 6: After main draw
+        if (profilingEnabled) {
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 6);
+        }
+
         // render ImGui draw data inside the same command buffer (must be inside render pass)
         ImDrawData* draw_data = ImGui::GetDrawData();
         if (draw_data) ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
+
+        // Timestamp 7: After ImGui
+        if (profilingEnabled) {
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 7);
+        }
 
         vkCmdEndRenderPass(commandBuffer);
 
@@ -838,6 +966,9 @@ class MyApp : public VulkanApp, public IEventHandler {
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
             throw std::runtime_error("failed to record command buffer!");
         }
+        
+        auto cpuRecordEnd = std::chrono::high_resolution_clock::now();
+        profileCpuRecord = std::chrono::duration<float, std::milli>(cpuRecordEnd - cpuRecordStart).count();
             
     };
 
@@ -847,6 +978,12 @@ class MyApp : public VulkanApp, public IEventHandler {
         eventManager.unsubscribe(this);
         // Clear any queued events
         eventManager.processQueued();
+
+        // Cleanup profiling query pool
+        if (queryPool != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(getDevice(), queryPool, nullptr);
+            queryPool = VK_NULL_HANDLE;
+        }
 
         if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipeline, nullptr);
         if (graphicsPipelineWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineWire, nullptr);
