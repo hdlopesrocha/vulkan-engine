@@ -1088,7 +1088,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         if (skyRenderer && descriptorSet != VK_NULL_HANDLE) {
             if (skySphere) skySphere->update();
             SkyMode skyMode = skyWidget ? skyWidget->getSkyMode() : SkyMode::Gradient;
-            skyRenderer->render(commandBuffer, skyVBO, descriptorSet, mainUniform, uboStatic, camera.getViewProjectionMatrix(), skyMode);
+            skyRenderer->render(commandBuffer, skyVBO, descriptorSet, mainUniform, ubo, camera.getViewProjectionMatrix(), skyMode);
         }
         
         if (queryPool != VK_NULL_HANDLE) {
@@ -1172,7 +1172,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // --- Handle water rendering (transparent, rendered in separate pass with scene sampling) ---
         VkPipeline waterGeomPipeline = waterRenderer.getWaterGeometryPipeline();
-        if (hasWater && waterGeomPipeline != VK_NULL_HANDLE) {
+        if (hasWater) {
             auto waterStart = std::chrono::high_resolution_clock::now();
             
             // End offscreen render pass (scene is now in per-frame sceneColorImages[frameIdx]/sceneDepthImages[frameIdx])
@@ -1379,45 +1379,52 @@ class MyApp : public VulkanApp, public IEventHandler {
             waterScissor.extent = {getWidth(), getHeight()};
             vkCmdSetScissor(commandBuffer, 0, 1, &waterScissor);
             
-            // Bind water pipeline
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeomPipeline);
-            waterRenderer.getIndirectRenderer().bindBuffers(commandBuffer);
-            
-            // Bind all 3 descriptor sets at their correct indices:
-            // Set 0: Materials SSBO
-            // Set 1: UBO
-            // Set 2: Scene color and depth textures (per-frame)
-            {
-                VkDescriptorSet matDs = getMaterialDescriptorSet();
-                VkDescriptorSet sceneDs = waterRenderer.getWaterDepthDescriptorSet(frameIdx);
+            // Optionally draw water geometry depending on pipeline and debug mode
+            int debugMode = int(ubo.debugParams.x + 0.5f);
+            if (waterGeomPipeline != VK_NULL_HANDLE && (debugMode == 0 || debugMode == 32)) {
+                // Bind water pipeline
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeomPipeline);
+                waterRenderer.getIndirectRenderer().bindBuffers(commandBuffer);
                 
-                // DEBUG: Print descriptor set handles
-                static int printCount = 0;
-                if (printCount++ % 120 == 0) {
-                    std::cout << "[DEBUG] Water descriptor bindings: matDs=" << matDs 
-                              << " descriptorSet=" << descriptorSet 
-                              << " sceneDs=" << sceneDs << std::endl;
+                // Bind all 3 descriptor sets at their correct indices:
+                // Set 0: Materials SSBO
+                // Set 1: UBO
+                // Set 2: Scene color and depth textures (per-frame)
+                {
+                    VkDescriptorSet matDs = getMaterialDescriptorSet();
+                    VkDescriptorSet sceneDs = waterRenderer.getWaterDepthDescriptorSet(frameIdx);
+                    
+                    // DEBUG: Print descriptor set handles
+                    static int printCount = 0;
+                    if (printCount++ % 120 == 0) {
+                        std::cout << "[DEBUG] Water descriptor bindings: matDs=" << matDs 
+                                  << " descriptorSet=" << descriptorSet 
+                                  << " sceneDs=" << sceneDs << std::endl;
+                    }
+                    
+                    // Bind sets 0 and 1 together (material + UBO)
+                    if (matDs != VK_NULL_HANDLE && descriptorSet != VK_NULL_HANDLE) {
+                        VkDescriptorSet sets01[2] = { matDs, descriptorSet };
+                        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                            waterRenderer.getWaterGeometryPipelineLayout(), 0, 2, sets01, 0, nullptr);
+                    }
+                    
+                    // Bind set 2 (scene textures) at the correct index
+                    if (sceneDs != VK_NULL_HANDLE) {
+                        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                            waterRenderer.getWaterGeometryPipelineLayout(), 2, 1, &sceneDs, 0, nullptr);
+                    }
                 }
                 
-                // Bind sets 0 and 1 together (material + UBO)
-                if (matDs != VK_NULL_HANDLE && descriptorSet != VK_NULL_HANDLE) {
-                    VkDescriptorSet sets01[2] = { matDs, descriptorSet };
-                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                        waterRenderer.getWaterGeometryPipelineLayout(), 0, 2, sets01, 0, nullptr);
-                }
+                // Draw water geometry
+                waterRenderer.getIndirectRenderer().drawIndirectOnly(commandBuffer, this);
                 
-                // Bind set 2 (scene textures) at the correct index
-                if (sceneDs != VK_NULL_HANDLE) {
-                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                        waterRenderer.getWaterGeometryPipelineLayout(), 2, 1, &sceneDs, 0, nullptr);
-                }
+                auto waterEnd = std::chrono::high_resolution_clock::now();
+                profileWater = std::chrono::duration<float, std::milli>(waterEnd - waterStart).count();
+            } else {
+                // Not drawing water geometry in this configuration; zero out profile for consistency
+                profileWater = 0.0f;
             }
-            
-            // Draw water geometry
-            waterRenderer.getIndirectRenderer().drawIndirectOnly(commandBuffer, this);
-            
-            auto waterEnd = std::chrono::high_resolution_clock::now();
-            profileWater = std::chrono::duration<float, std::milli>(waterEnd - waterStart).count();
         }
 
         // Update debug widget descriptors before ImGui renders

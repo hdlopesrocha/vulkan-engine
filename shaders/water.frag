@@ -7,6 +7,7 @@ layout(location = 0) in vec3 fragPos;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec2 fragTexCoord;
 layout(location = 3) in vec4 fragPosClip;  // clip-space position for scene sampling
+layout(location = 4) in vec3 fragDebug;   // debug visual (displacement)
 
 layout(location = 0) out vec4 outColor;
 
@@ -70,6 +71,35 @@ void main() {
     // Base screen UV from clip position
     vec2 screenUV = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
     
+    // Debug: visual displacement color when debug mode set to 32 ("Water Displacement")
+    if (int(ubo.debugParams.x) == 32) {
+        // Prefer tessellation-provided debug value when available (fragDebug).
+        // But also compute a per-fragment approximation of the bump displacement so the debug
+        // mode works even when tessellation is disabled.
+        float timeDebug = waterParams.params3.y;
+        if (timeDebug == 0.0) timeDebug = ubo.passParams.x;
+        float waveScaleDbg = ubo.passParams.z;
+
+        float foamNoiseScaleDbg = 1.0 / max(waterParams.foamParams.x, 0.0001);
+        int foamNoiseOctavesDbg = int(max(waterParams.foamParams.y, 1.0));
+        float foamNoisePersistenceDbg = waterParams.foamParams.z;
+        float bumpAmpDbg = waterParams.foamParams2.z;
+
+        float animTimeDbg = timeDebug * waterParams.params3.x;
+        float baseNoiseDbg = fbm(vec4(fragPos.xz * foamNoiseScaleDbg * 0.15, 0.0, animTimeDbg * 0.15), foamNoiseOctavesDbg, foamNoisePersistenceDbg);
+        float baseNoise2Dbg = fbm(vec4((fragPos.xz + vec2(50.0)) * foamNoiseScaleDbg * 0.07, 0.0, animTimeDbg * 0.12), max(foamNoiseOctavesDbg - 1, 1), foamNoisePersistenceDbg);
+        float waveDisplacementDbg = (baseNoiseDbg + baseNoise2Dbg * 0.5) * bumpAmpDbg * waveScaleDbg;
+
+        float maxExpected = bumpAmpDbg * waveScaleDbg * 1.5;
+        float normDisp = clamp((waveDisplacementDbg / maxExpected) * 0.5 + 0.5, 0.0, 1.0);
+
+        vec3 debugCol = fragDebug;
+        // If tessellation wasn't producing a debug value (likely zero), prefer computed color
+        if (length(debugCol) < 0.001) debugCol = vec3(normDisp);
+        outColor = vec4(debugCol, 1.0);
+        return;
+    }
+
     // === PERLIN NOISE-BASED REFRACTION ===
     // Generate multi-octave noise for natural-looking distortion (4D with time)
     vec2 noisePos1 = fragPos.xz * noiseScale * 0.15;

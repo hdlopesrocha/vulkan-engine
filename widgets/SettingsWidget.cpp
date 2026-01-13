@@ -146,7 +146,8 @@ void SettingsWidget::render() {
             "Per-Projection Triplanar Normal X (first)",
             "Per-Projection Triplanar Normal Y (first)",
             "Per-Projection Triplanar Normal Z (first)",
-            "TES Face Normal (sharp - purple for up)" 
+            "TES Face Normal (sharp - purple for up)",
+            "Water Displacement (tess debug)"
         };
         int current = debugMode;
         if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {

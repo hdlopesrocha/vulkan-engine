@@ -975,7 +975,8 @@ void WaterRenderer::renderWaterPostProcess(VkCommandBuffer cmd, VkFramebuffer sw
                                             VkImageView sceneColorView, VkImageView sceneDepthView,
                                             const WaterParams& params,
                                             const glm::mat4& viewProj, const glm::mat4& invViewProj,
-                                            const glm::vec3& viewPos, float time) {
+                                            const glm::vec3& viewPos, float time,
+                                            bool beginRenderPass) {
     if (waterPostProcessPipeline == VK_NULL_HANDLE) return;
     
     VkDevice device = app->getDevice();
@@ -1025,23 +1026,25 @@ void WaterRenderer::renderWaterPostProcess(VkCommandBuffer cmd, VkFramebuffer sw
     
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     
-    // Begin render pass (output to swapchain)
-    std::array<VkClearValue, 2> clearValues{};
-    clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-    clearValues[1].depthStencil = {1.0f, 0};
+    if (beginRenderPass) {
+        // Begin render pass (output to swapchain)
+        std::array<VkClearValue, 2> clearValues{};
+        clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        clearValues[1].depthStencil = {1.0f, 0};
+        
+        VkRenderPassBeginInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassInfo.renderPass = swapchainRenderPass;
+        renderPassInfo.framebuffer = swapchainFramebuffer;
+        renderPassInfo.renderArea.offset = {0, 0};
+        renderPassInfo.renderArea.extent = {renderWidth, renderHeight};
+        renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+        renderPassInfo.pClearValues = clearValues.data();
+        
+        vkCmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    }
     
-    VkRenderPassBeginInfo renderPassInfo{};
-    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderPassInfo.renderPass = swapchainRenderPass;
-    renderPassInfo.framebuffer = swapchainFramebuffer;
-    renderPassInfo.renderArea.offset = {0, 0};
-    renderPassInfo.renderArea.extent = {renderWidth, renderHeight};
-    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-    renderPassInfo.pClearValues = clearValues.data();
-    
-    vkCmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    
-    // Set viewport and scissor
+    // Set viewport and scissor (safe to call inside already-open render pass)
     VkViewport viewport{};
     viewport.x = 0.0f;
     viewport.y = 0.0f;

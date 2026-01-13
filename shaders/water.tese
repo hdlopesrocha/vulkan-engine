@@ -13,6 +13,7 @@ layout(location = 0) out vec3 fragPos;
 layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec2 fragTexCoord;
 layout(location = 3) out vec4 fragPosClip;  // clip-space position for depth lookup
+layout(location = 4) out vec3 fragDebug;   // debug visual (displacement)
 
 layout(set = 1, binding = 0) uniform UniformBufferObject {
     mat4 viewProjection;
@@ -28,53 +29,19 @@ layout(set = 1, binding = 0) uniform UniformBufferObject {
     vec4 passParams;   // x=time, y=tessEnabled, z=waveScale, w=noiseScale
 } ubo;
 
-// Perlin noise functions
-vec3 hash33(vec3 p) {
-    p = vec3(dot(p, vec3(127.1, 311.7, 74.7)),
-             dot(p, vec3(269.5, 183.3, 246.1)),
-             dot(p, vec3(113.5, 271.9, 124.6)));
-    return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
-}
+// Water-specific parameters (set 1, binding = 7) - same layout as the post-process shader
+layout(set = 1, binding = 7) uniform WaterParamsUBO {
+    vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=foamDepthThreshold
+    vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
+    vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=shoreStrength, w=shoreFalloff
+    vec4 shallowColor;
+    vec4 deepColor; // w = foamIntensity
+    vec4 foamParams; // x=foamNoiseScale, y=foamNoiseOctaves, z=foamNoisePersistence, w=foamTintIntensity
+    vec4 foamParams2; // x=foamBrightness, y=foamContrast, z=bumpAmplitude
+    vec4 foamTint;   // rgb foam tint
+} waterParams;
 
-float perlinNoise3D(vec3 p) {
-    vec3 i = floor(p);
-    vec3 f = fract(p);
-    vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-    
-    float n000 = dot(hash33(i + vec3(0,0,0)), f - vec3(0,0,0));
-    float n001 = dot(hash33(i + vec3(0,0,1)), f - vec3(0,0,1));
-    float n010 = dot(hash33(i + vec3(0,1,0)), f - vec3(0,1,0));
-    float n011 = dot(hash33(i + vec3(0,1,1)), f - vec3(0,1,1));
-    float n100 = dot(hash33(i + vec3(1,0,0)), f - vec3(1,0,0));
-    float n101 = dot(hash33(i + vec3(1,0,1)), f - vec3(1,0,1));
-    float n110 = dot(hash33(i + vec3(1,1,0)), f - vec3(1,1,0));
-    float n111 = dot(hash33(i + vec3(1,1,1)), f - vec3(1,1,1));
-    
-    float nx00 = mix(n000, n100, u.x);
-    float nx01 = mix(n001, n101, u.x);
-    float nx10 = mix(n010, n110, u.x);
-    float nx11 = mix(n011, n111, u.x);
-    float nxy0 = mix(nx00, nx10, u.y);
-    float nxy1 = mix(nx01, nx11, u.y);
-    
-    return mix(nxy0, nxy1, u.z);
-}
-
-float fbm(vec3 p, int octaves) {
-    float total = 0.0;
-    float frequency = 1.0;
-    float amplitude = 1.0;
-    float maxValue = 0.0;
-    
-    for (int i = 0; i < octaves; i++) {
-        total += perlinNoise3D(p * frequency) * amplitude;
-        maxValue += amplitude;
-        amplitude *= 0.5;
-        frequency *= 2.0;
-    }
-    
-    return total / maxValue;
-}
+#include "includes/perlin.glsl"
 
 void main() {
     // Interpolate position
@@ -92,39 +59,45 @@ void main() {
                    gl_TessCoord.y * inTexCoord[1] + 
                    gl_TessCoord.z * inTexCoord[2];
     
-    // Get water parameters
-    float time = ubo.passParams.x;
+    // Get water and noise parameters
+    float time = waterParams.params3.y;
+    if (time == 0.0) time = ubo.passParams.x;
     float waveScale = ubo.passParams.z;
     float noiseScale = ubo.passParams.w;
-    
-    // Wave parameters - using reasonable defaults
-    float waveSpeed = 0.5;
-    float waveHeight = 0.5;
-    
-    // Calculate wave displacement using world-space Perlin noise
-    vec3 noisePos1 = vec3(pos.x * noiseScale * 0.1, time * waveSpeed, pos.z * noiseScale * 0.1);
-    vec3 noisePos2 = vec3(pos.x * noiseScale * 0.07 + 50.0, time * waveSpeed * 0.8, pos.z * noiseScale * 0.07 + 50.0);
-    
-    float wave1 = fbm(noisePos1, 4);
-    float wave2 = fbm(noisePos2, 3);
-    float waveDisplacement = (wave1 + wave2 * 0.5) * waveHeight;
-    
+    float noiseTimeSpeed = waterParams.params3.x;
+
+    // foam/Noise params (shared with foam logic)
+    float foamNoiseScale = 1.0 / max(waterParams.foamParams.x, 0.0001);
+    int foamNoiseOctaves = int(max(waterParams.foamParams.y, 1.0));
+    float foamNoisePersistence = waterParams.foamParams.z;
+
+    float bumpAmp = waterParams.foamParams2.z; // bump amplitude provided via Water widget
+
+    // Calculate wave displacement using 4D Perlin FBM (pos.xz, time)
+    float animTime = time * noiseTimeSpeed;
+    float baseNoise = fbm(vec4(pos.xz * foamNoiseScale * 0.15, 0.0, animTime * 0.15), foamNoiseOctaves, foamNoisePersistence);
+    float baseNoise2 = fbm(vec4((pos.xz + vec2(50.0)) * foamNoiseScale * 0.07, 0.0, animTime * 0.12), max(foamNoiseOctaves - 1, 1), foamNoisePersistence);
+
+    float waveDisplacement = (baseNoise + baseNoise2 * 0.5) * bumpAmp * waveScale;
+
     // Displace position along normal (Y-up for water surface)
     pos.y += waveDisplacement;
-    
-    // Calculate perturbed normal from wave gradient
+
+    // Calculate perturbed normal from wave gradient using small offsets in X/Z
     float eps = 0.1;
-    vec3 noisePos1X = vec3((pos.x + eps) * noiseScale * 0.1, time * waveSpeed, pos.z * noiseScale * 0.1);
-    vec3 noisePos1Z = vec3(pos.x * noiseScale * 0.1, time * waveSpeed, (pos.z + eps) * noiseScale * 0.1);
-    
-    float waveX = fbm(noisePos1X, 4);
-    float waveZ = fbm(noisePos1Z, 4);
-    
-    float dX = (waveX - wave1) / eps * waveHeight;
-    float dZ = (waveZ - wave1) / eps * waveHeight;
-    
+    float nX = fbm(vec4(vec2(pos.x + eps, pos.z) * foamNoiseScale * 0.15, 0.0, animTime * 0.15), foamNoiseOctaves, foamNoisePersistence);
+    float nZ = fbm(vec4(vec2(pos.x, pos.z + eps) * foamNoiseScale * 0.15, 0.0, animTime * 0.15), foamNoiseOctaves, foamNoisePersistence);
+
+    float dX = (nX - baseNoise) / eps * bumpAmp * waveScale;
+    float dZ = (nZ - baseNoise) / eps * bumpAmp * waveScale;
+
     // Perturbed normal
     fragNormal = normalize(vec3(-dX, 1.0, -dZ));
+
+    // Debug: encode displacement as color (normalized)
+    float maxExpected = bumpAmp * waveScale * 1.5; // heuristic normalization factor
+    float normDisp = clamp((waveDisplacement / maxExpected) * 0.5 + 0.5, 0.0, 1.0);
+    fragDebug = vec3(normDisp);
     
     fragPos = pos;
     vec4 clipPos = ubo.viewProjection * vec4(pos, 1.0);

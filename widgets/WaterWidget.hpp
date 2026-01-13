@@ -21,6 +21,7 @@ public:
             if (ImGui::CollapsingHeader("Wave Animation", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::SliderFloat("Wave Speed", &params->waveSpeed, 0.0f, 2.0f);
                 ImGui::SliderFloat("Wave Scale", &params->waveScale, 0.001f, 0.1f);
+                ImGui::SliderFloat("Wave Height", &params->bumpAmplitude, 0.0f, 256.0f);
                 ImGui::SliderFloat("Noise Scale", &params->noiseScale, 1.0f, 256.0f);
                 ImGui::SliderInt("Noise Octaves", &params->noiseOctaves, 1, 8);
                 ImGui::SliderFloat("Noise Persistence", &params->noisePersistence, 0.1f, 0.9f);

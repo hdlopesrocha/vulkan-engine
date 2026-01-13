@@ -37,6 +37,9 @@ struct WaterParams {
     // Foam brightness/contrast controls
     float foamBrightness = 1.0f;
     float foamContrast = 3.0f;
+
+    // Vertical bump amplitude for water geometry
+    float bumpAmplitude = 64.0f;
 };
 
 // GPU-side water params UBO (matches shader WaterParamsUBO layout)
@@ -90,12 +93,8 @@ public:
                                  VkImageView sceneColorView, VkImageView sceneDepthView,
                                  const WaterParams& params,
                                  const glm::mat4& viewProj, const glm::mat4& invViewProj,
-                                 const glm::vec3& viewPos, float time);
-
-    // Get water framebuffer for geometry pass
-    VkFramebuffer getWaterFramebuffer(uint32_t frameIndex) const { return waterFramebuffers[frameIndex]; }
-    VkRenderPass getWaterRenderPass() const { return waterRenderPass; }
-
+                                            const glm::vec3& viewPos, float time,
+                                            bool beginRenderPass = true);
     // Get water depth/normal/mask images for post-process sampling
     VkImageView getWaterDepthView() const { return waterDepthImageView; }
     VkImageView getWaterNormalView() const { return waterNormalImageView; }
