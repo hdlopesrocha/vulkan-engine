@@ -24,15 +24,19 @@ struct WaterParams {
 
     // Shore/foam tuning
     float shoreStrength = 1.0f;   // multiplies shore foam contribution
-    float shoreFalloff = 4.0f;    // meters over which shore foam fades
+    float shoreFalloff = 20.0f;    // meters over which shore foam fades
     float foamIntensity = 0.25f;  // intensity for procedural foam
 
     // Foam Perlin controls
     float foamNoiseScale = 4.0f;         // larger = coarser foam patterns
     int foamNoiseOctaves = 3;
     float foamNoisePersistence = 0.5f;
-    glm::vec3 foamTint = glm::vec3(0.9f, 0.95f, 1.0f);
+    glm::vec4 foamTint = glm::vec4(0.9f, 0.95f, 1.0f, 0.5f); // rgb + opacity
     float foamTintIntensity = 1.0f; // full control from widget by default
+
+    // Foam brightness/contrast controls
+    float foamBrightness = 1.0f;
+    float foamContrast = 3.0f;
 };
 
 // GPU-side water params UBO (matches shader WaterParamsUBO layout)
@@ -43,6 +47,7 @@ struct WaterParamsGPU {
     glm::vec4 shallowColor;
     glm::vec4 deepColor; // w = foamIntensity
     glm::vec4 foamParams; // x=foamNoiseScale, y=foamNoiseOctaves, z=foamNoisePersistence, w=foamTintIntensity
+    glm::vec4 foamParams2; // x=foamBrightness, y=foamContrast
     glm::vec4 foamTint;   // rgb foam tint, w unused
 };
 

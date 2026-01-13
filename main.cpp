@@ -1019,7 +1019,8 @@ class MyApp : public VulkanApp, public IEventHandler {
         waterParamsGPU.shallowColor = glm::vec4(waterParams.shallowColor, 0.0f);
         waterParamsGPU.deepColor = glm::vec4(waterParams.deepColor, waterParams.foamIntensity);
         waterParamsGPU.foamParams = glm::vec4(1.0f/waterParams.foamNoiseScale, static_cast<float>(waterParams.foamNoiseOctaves), waterParams.foamNoisePersistence, waterParams.foamTintIntensity);
-        waterParamsGPU.foamTint = glm::vec4(waterParams.foamTint, 0.0f);
+        waterParamsGPU.foamParams2 = glm::vec4(waterParams.foamBrightness, waterParams.foamContrast, 0.0f, 0.0f);
+        waterParamsGPU.foamTint = waterParams.foamTint;
         updateUniformBuffer(waterRenderer.getWaterParamsBuffer(), &waterParamsGPU, sizeof(WaterParamsGPU));
         
         // DEBUG: Print UBO passParams after write

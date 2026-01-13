@@ -21,7 +21,8 @@ layout(set = 1, binding = 7) uniform WaterParamsUBO {
     vec4 shallowColor;
     vec4 deepColor; // w = foamIntensity
     vec4 foamParams; // x=foamNoiseScale, y=foamNoiseOctaves, z=foamNoisePersistence, w=foamTintIntensity
-    vec4 foamTint;   // rgb foam tint
+    vec4 foamParams2; // x=foamBrightness, y=foamContrast
+    vec4 foamTint;   // rgba foam tint
 } waterParams;
 
 // Scene color and depth textures for refraction and edge foam (set 2)
@@ -169,9 +170,18 @@ void main() {
     float fade = shoreProximity;
     float foamNoise = mix(0.0, foamBase, fade);
 
+    // Apply contrast/brightness to the noise (controls how punchy / bright foam appears)
+    float foamBrightness = waterParams.foamParams2.x;
+    float foamContrast = waterParams.foamParams2.y;
+    float foamOpacity = waterParams.foamTint.a; // widget-controlled opacity
+    // effective brightness = brightness scaled by opacity so lowering alpha dims foam brightness as well
+    float effBrightness = foamBrightness * foamOpacity;
+    // contrast on [0,inf) around 0.5 center
+    foamNoise = clamp((foamNoise - 0.5) * max(foamContrast, 0.0001) + 0.5, 0.0, 1.0);
+
     float proceduralFoam = smoothstep(0.65, 0.85, foamNoise) * foamIntensity;
 
-    // Use the same faded noise for shore mask and color
+    // Use the same faded+contrasted noise for shore mask and color
     float shoreMask = foamNoise;
 
     // shoreStrength can be set in waterParams.params3.z (defaults to 1.0)
@@ -179,7 +189,7 @@ void main() {
     if (shoreStrength <= 0.0) shoreStrength = 1.0;
     float shoreFoam = shoreProximity * shoreMask * shoreStrength * foamIntensity * 0.6;
 
-    // Modulate edge foam with faded noise so it reduces away from shore
+    // Modulate edge foam with faded+contrasted noise so it reduces away from shore
     float edgeFoam = foamNoise;
 
     // Combine edge foam, procedural foam, and shore foam
@@ -187,16 +197,17 @@ void main() {
     // Slight boost for visibility near shore, but only where shore mask indicates
     totalFoam = clamp(totalFoam + shoreProximity * shoreMask * 0.15, 0.0, 1.0);
 
-    // Ensure foam is modulated by the same faded noise to avoid a flat blanket in shallow areas
-    totalFoam *= foamNoise;
+    // Ensure foam is modulated by the effective brightness to avoid a flat blanket in shallow areas
+    totalFoam *= effBrightness;
+    totalFoam = clamp((totalFoam - 0.5) * max(foamContrast, 0.0001) + 0.5, 0.0, 1.0);
 
-    // Foam color: base white blended with foam tint driven by the faded noise
+    // Foam color: base from widget (rgba), modulated by noise and effective brightness
     float foamColorNoise = foamNoise;
-    // Use widget color as base; tint intensity controls strength, and noise modulates brightness
     vec3 baseColor = waterParams.foamTint.rgb;
-    vec3 foamColor = baseColor * foamColorNoise;
+    vec3 foamColor = baseColor * foamColorNoise * effBrightness;
 
-    waterColor = mix(waterColor, foamColor, totalFoam);
+    // Apply opacity from widget (alpha channel) to the final foam blend
+    waterColor = mix(waterColor, foamColor, totalFoam * foamOpacity);
     
     // === FINAL OUTPUT ===
     // Alpha: more opaque with foam or at grazing angles
