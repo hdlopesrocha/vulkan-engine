@@ -63,8 +63,17 @@ void main() {
     // Apply noise time speed
     float animTime = time * noiseTimeSpeed;
     
+    // Compute normal from Perlin noise
+    float eps = 0.01;
+    vec4 noisePos = vec4(fragPos.xyz * noiseScale * 0.5, animTime);
+    float h = fbm(noisePos, int(noiseOctaves), noisePersistence);
+    vec4 noisePosX = vec4((fragPos.xyz + vec3(eps, 0.0, 0.0)) * noiseScale * 0.5, animTime);
+    float hx = fbm(noisePosX, int(noiseOctaves), noisePersistence);
+    vec4 noisePosZ = vec4((fragPos.xyz + vec3(0.0, 0.0, eps)) * noiseScale * 0.5, animTime);
+    float hz = fbm(noisePosZ, int(noiseOctaves), noisePersistence);
+    vec3 normal = normalize(vec3(h - hx, eps, h - hz));
+    
     // Normalize vectors
-    vec3 normal = normalize(fragNormal);
     vec3 viewDir = normalize(ubo.viewPos.xyz - fragPos);
     vec3 lightDir = normalize(-ubo.lightDir.xyz);
     
@@ -143,18 +152,13 @@ void main() {
     // Depth-based color fade (deeper = more tinted)
     float depthFade = 1.0 - exp(-depthDiff * 0.1);
     
-    // === PERLIN NOISE-BASED NORMAL PERTURBATION ===
-    vec4 detailNoisePos = vec4(fragPos.xyz * noiseScale * 0.5, animTime);
-    float detailNoise = fbm(detailNoisePos, int(noiseOctaves), noisePersistence);
-    vec3 perturbedNormal = normalize(normal + vec3(detailNoise * 0.2, 0.0, detailNoise * 0.2));
-    
     // === FRESNEL EFFECT ===
     float fresnel = pow(1.0 - max(dot(viewDir, normal), 0.0), fresnelPower);
     fresnel = clamp(fresnel, 0.0, 1.0);
     
     // === SPECULAR LIGHTING (Perlin noise-based) ===
     vec3 halfDir = normalize(lightDir + viewDir);
-    float specAngle = max(dot(perturbedNormal, halfDir), 0.0);
+    float specAngle = max(dot(normal, halfDir), 0.0);
     
     // Main specular highlight with noise perturbation
     float specNoise = 0.8 + 0.4 * perlinNoise4D(vec4(fragPos.xz * noiseScale, 0.0, animTime));
@@ -168,7 +172,7 @@ void main() {
     specularColor += ubo.lightColor.xyz * glitter * 1.5;
     
     // === REFLECTION ===
-    vec3 reflectDir = reflect(-viewDir, perturbedNormal);
+    vec3 reflectDir = reflect(-viewDir, normal);
     vec3 skyColor = mix(vec3(0.5, 0.6, 0.8), vec3(0.8, 0.85, 0.95), max(reflectDir.y, 0.0));
     
     // === WATER COLOR COMPOSITION ===
