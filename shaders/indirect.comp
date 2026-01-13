@@ -32,6 +32,7 @@ layout(std430, binding = 4) buffer VisibleCount {
 
 layout(push_constant) uniform PC {
     mat4 viewProj;
+    uint targetLayer; // 0 = LAYER_OPAQUE, 1 = LAYER_TRANSPARENT (unused for now - all meshes in renderer are same layer)
 } pc;
 
 bool aabbVisible(mat4 mvp, vec3 minp, vec3 maxp) {
@@ -60,6 +61,9 @@ void main() {
     uint idx = gl_GlobalInvocationID.x;
     // Guard: avoid out-of-range if dispatched exactly to number of commands it'll be fine
     if (idx >= inCmds.cmds.length()) return;
+
+    // Note: All meshes in this renderer are from the same layer (targetLayer in push constants)
+    // so no per-mesh layer filtering needed - separate IndirectRenderers handle opaque vs transparent
 
     // bounds stored as min,max pairs in `boundsBuf.data`
     uint bIndex = idx * 2u;

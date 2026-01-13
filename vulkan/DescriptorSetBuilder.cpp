@@ -1,13 +1,22 @@
 #include "DescriptorSetBuilder.hpp"
+#include "../Uniforms.hpp"
 #include <cstring>
+#include <iostream>
 DescriptorSetBuilder::DescriptorSetBuilder(VulkanApp* app_, ShadowMapper* shadowMapper_)
     : app(app_), shadow(shadowMapper_) {}
 
 VkDescriptorSet DescriptorSetBuilder::createMainDescriptorSet(const Triple& tr, Buffer& uniformBuffer, bool bindMaterial, Buffer* materialBuffer, VkDeviceSize materialOffset, Buffer* instanceBuffer) {
     VkDescriptorSet ds = app->createDescriptorSet(app->getDescriptorSetLayout());
 
-    VkDescriptorBufferInfo bufferInfo{ uniformBuffer.buffer, 0, VK_WHOLE_SIZE };
+    std::cout << "[DEBUG] DescriptorSetBuilder: Creating descriptor set with UBO buffer=" 
+              << uniformBuffer.buffer << " memory=" << uniformBuffer.memory << std::endl;
+
+    VkDescriptorBufferInfo bufferInfo{ uniformBuffer.buffer, 0, sizeof(UniformObject) };
     VkWriteDescriptorSet uboWrite{}; uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; uboWrite.dstSet = ds; uboWrite.dstBinding = 0; uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; uboWrite.descriptorCount = 1; uboWrite.pBufferInfo = &bufferInfo;
+
+    std::cout << "[DEBUG] UBO Write: dstSet=" << uboWrite.dstSet << " dstBinding=" << uboWrite.dstBinding 
+              << " buffer=" << bufferInfo.buffer << " offset=" << bufferInfo.offset 
+              << " range=" << bufferInfo.range << std::endl;
 
     VkDescriptorImageInfo imageInfo{ tr.albedoSampler, tr.albedo.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkWriteDescriptorSet samplerWrite{}; samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; samplerWrite.dstSet = ds; samplerWrite.dstBinding = 1; samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; samplerWrite.descriptorCount = 1; samplerWrite.pImageInfo = &imageInfo;

@@ -2,28 +2,36 @@
 
 #include <glm/glm.hpp>
 #include "utils/MaterialProperties.hpp"
+#include <cstddef>
+#include <iostream>
 
 struct UniformObject {
-    glm::mat4 viewProjection;
-    glm::vec4 viewPos; // world-space camera position
-    glm::vec4 lightDir; // xyz = direction, w = unused (padding)
-    glm::vec4 lightColor; // rgb = color, w = intensity
-    // Material flags
-    glm::vec4 materialFlags; // x=unused, y=unused, z=ambient, w=unused
-    // Per-material properties are read from the GPU-side Materials SSBO; keep only per-pass flags here.
-    glm::mat4 lightSpaceMatrix; // for shadow mapping
-    glm::vec4 shadowEffects; // x=enableSelfShadow, y=enableShadowDisplacement, z=selfShadowQuality, w=unused
-    glm::vec4 debugParams; // x=debugMode (0=normal,1=normalVec,2=normalMap,3=uv,4=tangent,5=bitangent)
-    // Triplanar settings: x = threshold (dead-zone), y = exponent/steepness
-    glm::vec4 triplanarSettings;
-    glm::vec4 tessParams; // x = tessNearDist, y = tessFarDist, z = tessMinLevel, w = tessMaxLevel
-    glm::vec4 passParams;   // x = isDepthPass (1.0 for shadow pass, 0.0 for main pass)
+    glm::mat4 viewProjection;        // offset 0, size 64
+    glm::vec4 viewPos;               // offset 64, size 16
+    glm::vec4 lightDir;              // offset 80, size 16
+    glm::vec4 lightColor;            // offset 96, size 16
+    glm::vec4 materialFlags;         // offset 112, size 16
+    glm::mat4 lightSpaceMatrix;      // offset 128, size 64
+    glm::vec4 shadowEffects;         // offset 192, size 16
+    glm::vec4 debugParams;           // offset 208, size 16
+    glm::vec4 triplanarSettings;     // offset 224, size 16
+    glm::vec4 tessParams;            // offset 240, size 16
+    glm::vec4 passParams;            // offset 256, size 16  <-- THIS IS WHERE noiseScale IS
+    
+    // Total size: 272 bytes
 
     // Note: sky-related data moved to SkyUniform
 
     void setMaterial(const MaterialProperties& mat) {
         materialFlags = glm::vec4(0.0f, 0.0f, mat.ambientFactor, 0.0f);
         // Per-material values are provided by the Materials SSBO; do not duplicate here.
+    }
+    
+    // Debug: print passParams
+    void printPassParams() const {
+        std::cout << "[UBO Debug] passParams at offset 256: "
+                  << "x=" << passParams.x << " y=" << passParams.y 
+                  << " z=" << passParams.z << " w=" << passParams.w << std::endl;
     }
 };
 

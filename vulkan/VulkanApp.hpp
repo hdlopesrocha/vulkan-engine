@@ -29,6 +29,11 @@ class VulkanApp {
     std::vector<VkFence> imagesInFlight;
     // frame index for round-robin CPU frames-in-flight
     uint32_t currentFrame = 0;
+
+public:
+    uint32_t getCurrentFrame() const { return currentFrame; }
+
+private:
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     // Application main graphics pipeline (owner: app / main.cpp)
     VkPipeline appGraphicsPipeline = VK_NULL_HANDLE;
@@ -171,6 +176,7 @@ protected:
         VkExtent2D getSwapchainExtent() const { return swapchainExtent; }
         const std::vector<VkImage>& getSwapchainImages() const { return swapchainImages; }
         const std::vector<VkImageView>& getSwapchainImageViews() const { return swapchainImageViews; }
+        const std::vector<VkFramebuffer>& getSwapchainFramebuffers() const { return swapchainFramebuffers; }
         VkDescriptorPool getDescriptorPool() const { return descriptorPool; }
         VkDescriptorPool getImGuiDescriptorPool() const { return imguiDescriptorPool; }
         VkRenderPass getSwapchainRenderPass() const { return renderPass; }

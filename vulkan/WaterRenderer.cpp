@@ -253,7 +253,7 @@ void WaterRenderer::createWaterRenderPass() {
 }
 
 void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
-    if (renderWidth == width && renderHeight == height && waterFramebuffer != VK_NULL_HANDLE) {
+    if (renderWidth == width && renderHeight == height && waterFramebuffers[0] != VK_NULL_HANDLE) {
         return; // Already created at this size
     }
     
@@ -314,35 +314,40 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         }
     };
     
-    // Create scene offscreen color target - use swapchain format for pipeline compatibility
-    createImage(app->getSwapchainImageFormat(),
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                sceneColorImage, sceneColorMemory, sceneColorImageView);
-    
-    // Create scene offscreen depth target
-    createImage(VK_FORMAT_D32_SFLOAT,
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_IMAGE_ASPECT_DEPTH_BIT,
-                sceneDepthImage, sceneDepthMemory, sceneDepthImageView);
-    
-    // Create scene framebuffer
-    std::array<VkImageView, 2> sceneAttachments = {
-        sceneColorImageView,
-        sceneDepthImageView
-    };
-    
-    VkFramebufferCreateInfo sceneFbInfo{};
-    sceneFbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    sceneFbInfo.renderPass = sceneRenderPass;
-    sceneFbInfo.attachmentCount = static_cast<uint32_t>(sceneAttachments.size());
-    sceneFbInfo.pAttachments = sceneAttachments.data();
-    sceneFbInfo.width = width;
-    sceneFbInfo.height = height;
-    sceneFbInfo.layers = 1;
-    
-    if (vkCreateFramebuffer(device, &sceneFbInfo, nullptr, &sceneFramebuffer) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create scene offscreen framebuffer!");
+    // Create per-frame scene offscreen render targets (2 sets for 2 frames in flight)
+    for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
+        // Create scene offscreen color target - use swapchain format for pipeline compatibility
+        // Add TRANSFER_SRC for blitting to swapchain
+        createImage(app->getSwapchainImageFormat(),
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    sceneColorImages[frameIdx], sceneColorMemories[frameIdx], sceneColorImageViews[frameIdx]);
+        
+        // Create scene offscreen depth target
+        // Add TRANSFER_SRC for copying to main depth buffer
+        createImage(VK_FORMAT_D32_SFLOAT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT,
+                    sceneDepthImages[frameIdx], sceneDepthMemories[frameIdx], sceneDepthImageViews[frameIdx]);
+        
+        // Create scene framebuffer
+        std::array<VkImageView, 2> sceneAttachments = {
+            sceneColorImageViews[frameIdx],
+            sceneDepthImageViews[frameIdx]
+        };
+        
+        VkFramebufferCreateInfo sceneFbInfo{};
+        sceneFbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        sceneFbInfo.renderPass = sceneRenderPass;
+        sceneFbInfo.attachmentCount = static_cast<uint32_t>(sceneAttachments.size());
+        sceneFbInfo.pAttachments = sceneAttachments.data();
+        sceneFbInfo.width = width;
+        sceneFbInfo.height = height;
+        sceneFbInfo.layers = 1;
+        
+        if (vkCreateFramebuffer(device, &sceneFbInfo, nullptr, &sceneFramebuffers[frameIdx]) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create scene offscreen framebuffer!");
+        }
     }
     
     // Create water world position image (xyz=worldPos, w=linearDepth)
@@ -364,51 +369,70 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
                 waterMaskImage, waterMaskMemory, waterMaskImageView);
     
     // NOTE: We do NOT create a separate depth buffer for water geometry pass
-    // Instead, we reuse the scene depth buffer (sceneDepthImageView) so water
-    // is properly depth-tested against the terrain
+    // Instead, we reuse each frame's scene depth buffer so water is properly depth-tested against the terrain
     
-    // Create water framebuffer using scene depth buffer for depth testing
-    std::array<VkImageView, 4> waterAttachments = {
-        waterDepthImageView,
-        waterNormalImageView,
-        waterMaskImageView,
-        sceneDepthImageView  // Use scene depth buffer!
-    };
-    
-    VkFramebufferCreateInfo fbInfo{};
-    fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fbInfo.renderPass = waterRenderPass;
-    fbInfo.attachmentCount = static_cast<uint32_t>(waterAttachments.size());
-    fbInfo.pAttachments = waterAttachments.data();
-    fbInfo.width = width;
-    fbInfo.height = height;
-    fbInfo.layers = 1;
-    
-    if (vkCreateFramebuffer(device, &fbInfo, nullptr, &waterFramebuffer) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create water framebuffer!");
+    // Create per-frame water framebuffers using each frame's scene depth buffer for depth testing
+    for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
+        std::array<VkImageView, 4> waterAttachments = {
+            waterDepthImageView,
+            waterNormalImageView,
+            waterMaskImageView,
+            sceneDepthImageViews[frameIdx]  // Use this frame's scene depth buffer!
+        };
+        
+        VkFramebufferCreateInfo fbInfo{};
+        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbInfo.renderPass = waterRenderPass;
+        fbInfo.attachmentCount = static_cast<uint32_t>(waterAttachments.size());
+        fbInfo.pAttachments = waterAttachments.data();
+        fbInfo.width = width;
+        fbInfo.height = height;
+        fbInfo.layers = 1;
+        
+        if (vkCreateFramebuffer(device, &fbInfo, nullptr, &waterFramebuffers[frameIdx]) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create water framebuffer!");
+        }
     }
     
-    // Create a copy of the depth buffer for sampling during water rendering
-    // This avoids the issue of sampling from a depth attachment during the same pass
-    createImage(VK_FORMAT_D32_SFLOAT,
-                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                VK_IMAGE_ASPECT_DEPTH_BIT,
-                sceneDepthCopyImage, sceneDepthCopyMemory, sceneDepthCopyImageView);
+    // Allocate and update per-frame descriptor sets for scene textures
+    if (waterDepthDescriptorSetLayout != VK_NULL_HANDLE && linearSampler != VK_NULL_HANDLE) {
+        std::vector<VkDescriptorSetLayout> layouts(2, waterDepthDescriptorSetLayout);
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = waterDepthDescriptorPool;  // Use dedicated pool, not app pool
+        allocInfo.descriptorSetCount = 2;
+        allocInfo.pSetLayouts = layouts.data();
+        
+        if (vkAllocateDescriptorSets(device, &allocInfo, waterDepthDescriptorSets.data()) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to allocate water depth descriptor sets!");
+        }
+        
+        // Update both descriptor sets to bind their frame's scene images
+        for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
+            updateSceneTexturesBinding(sceneColorImageViews[frameIdx], sceneDepthImageViews[frameIdx], frameIdx);
+        }
+    }
     
-    std::cout << "[WaterRenderer] Created render targets " << width << "x" << height << std::endl;
+    std::cout << "[WaterRenderer] Created render targets (2 sets) " << width << "x" << height << std::endl;
 }
 
 void WaterRenderer::destroyRenderTargets() {
     VkDevice device = app->getDevice();
     
-    if (waterFramebuffer != VK_NULL_HANDLE) {
-        vkDestroyFramebuffer(device, waterFramebuffer, nullptr);
-        waterFramebuffer = VK_NULL_HANDLE;
+    // Destroy per-frame water framebuffers
+    for (int i = 0; i < 2; ++i) {
+        if (waterFramebuffers[i] != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(device, waterFramebuffers[i], nullptr);
+            waterFramebuffers[i] = VK_NULL_HANDLE;
+        }
     }
     
-    if (sceneFramebuffer != VK_NULL_HANDLE) {
-        vkDestroyFramebuffer(device, sceneFramebuffer, nullptr);
-        sceneFramebuffer = VK_NULL_HANDLE;
+    // Destroy per-frame scene framebuffers
+    for (int i = 0; i < 2; ++i) {
+        if (sceneFramebuffers[i] != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(device, sceneFramebuffers[i], nullptr);
+            sceneFramebuffers[i] = VK_NULL_HANDLE;
+        }
     }
     
     auto destroyImage = [&](VkImage& image, VkDeviceMemory& memory, VkImageView& view) {
@@ -426,65 +450,94 @@ void WaterRenderer::destroyRenderTargets() {
         }
     };
     
-    destroyImage(sceneColorImage, sceneColorMemory, sceneColorImageView);
-    destroyImage(sceneDepthImage, sceneDepthMemory, sceneDepthImageView);
-    destroyImage(sceneDepthCopyImage, sceneDepthCopyMemory, sceneDepthCopyImageView);
+    // Destroy per-frame scene images
+    for (int i = 0; i < 2; ++i) {
+        destroyImage(sceneColorImages[i], sceneColorMemories[i], sceneColorImageViews[i]);
+        destroyImage(sceneDepthImages[i], sceneDepthMemories[i], sceneDepthImageViews[i]);
+    }
     destroyImage(waterDepthImage, waterDepthMemory, waterDepthImageView);
     destroyImage(waterNormalImage, waterNormalMemory, waterNormalImageView);
     destroyImage(waterMaskImage, waterMaskMemory, waterMaskImageView);
     destroyImage(waterGeomDepthImage, waterGeomDepthMemory, waterGeomDepthImageView);
+    
+    // Reset descriptor pool to free descriptor sets
+    if (waterDepthDescriptorPool != VK_NULL_HANDLE) {
+        vkResetDescriptorPool(device, waterDepthDescriptorPool, 0);
+    }
 }
 
 void WaterRenderer::createWaterPipelines() {
     VkDevice device = app->getDevice();
     
-    // Create uniform buffer for water params
+    // Create uniform buffer for water params (for post-process pass)
     waterUniformBuffer = app->createBuffer(sizeof(WaterUBO), 
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     
-    // Create descriptor set layout for scene depth texture (set 2, binding 0)
-    VkDescriptorSetLayoutBinding depthBinding{};
-    depthBinding.binding = 0;
-    depthBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    depthBinding.descriptorCount = 1;
-    depthBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    depthBinding.pImmutableSamplers = nullptr;
+    // Create uniform buffer for water geometry shader params
+    waterParamsBuffer = app->createBuffer(sizeof(WaterParamsGPU),
+        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    
+    // Initialize water params buffer with default values
+    WaterParamsGPU defaultWaterParams{};
+    defaultWaterParams.params1 = glm::vec4(0.03f, 5.0f, 0.7f, 2.0f); // refractionStrength, fresnelPower, transparency, foamDepthThreshold
+    defaultWaterParams.params2 = glm::vec4(0.3f, 0.0f, 0.0f, 0.0f);  // waterTint, unused, unused, unused
+    defaultWaterParams.shallowColor = glm::vec4(0.1f, 0.4f, 0.5f, 0.0f);
+    defaultWaterParams.deepColor = glm::vec4(0.0f, 0.15f, 0.25f, 0.0f);
+    
+    void* data;
+    vkMapMemory(device, waterParamsBuffer.memory, 0, sizeof(WaterParamsGPU), 0, &data);
+    memcpy(data, &defaultWaterParams, sizeof(WaterParamsGPU));
+    vkUnmapMemory(device, waterParamsBuffer.memory);
+    
+    std::cout << "[WaterRenderer] Initialized water params buffer with default values" << std::endl;
+    
+    // Create descriptor set layout for scene textures (set 2)
+    // Binding 0: Scene color texture
+    // Binding 1: Scene depth texture
+    std::array<VkDescriptorSetLayoutBinding, 2> sceneBindings{};
+    
+    // Scene color (binding 0)
+    sceneBindings[0].binding = 0;
+    sceneBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sceneBindings[0].descriptorCount = 1;
+    sceneBindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[0].pImmutableSamplers = nullptr;
+    
+    // Scene depth (binding 1)
+    sceneBindings[1].binding = 1;
+    sceneBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sceneBindings[1].descriptorCount = 1;
+    sceneBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[1].pImmutableSamplers = nullptr;
     
     VkDescriptorSetLayoutCreateInfo depthLayoutInfo{};
     depthLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    depthLayoutInfo.bindingCount = 1;
-    depthLayoutInfo.pBindings = &depthBinding;
+    depthLayoutInfo.bindingCount = static_cast<uint32_t>(sceneBindings.size());
+    depthLayoutInfo.pBindings = sceneBindings.data();
     
     if (vkCreateDescriptorSetLayout(device, &depthLayoutInfo, nullptr, &waterDepthDescriptorSetLayout) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water depth descriptor set layout!");
     }
     
-    // Create descriptor pool for depth texture
+    // Create descriptor pool for scene textures (color + depth), 2 sets for 2 frames
     VkDescriptorPoolSize depthPoolSize{};
     depthPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    depthPoolSize.descriptorCount = 1;
+    depthPoolSize.descriptorCount = 4;  // (color + depth) * 2 frames
     
     VkDescriptorPoolCreateInfo depthPoolInfo{};
     depthPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     depthPoolInfo.poolSizeCount = 1;
     depthPoolInfo.pPoolSizes = &depthPoolSize;
-    depthPoolInfo.maxSets = 1;
+    depthPoolInfo.maxSets = 2;  // 2 frames in flight
     
     if (vkCreateDescriptorPool(device, &depthPoolInfo, nullptr, &waterDepthDescriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water depth descriptor pool!");
     }
     
-    // Allocate descriptor set
-    VkDescriptorSetAllocateInfo depthAllocInfo{};
-    depthAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    depthAllocInfo.descriptorPool = waterDepthDescriptorPool;
-    depthAllocInfo.descriptorSetCount = 1;
-    depthAllocInfo.pSetLayouts = &waterDepthDescriptorSetLayout;
-    
-    if (vkAllocateDescriptorSets(device, &depthAllocInfo, &waterDepthDescriptorSet) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate water depth descriptor set!");
-    }
+    // Descriptor sets are allocated and updated per-frame in createRenderTargets()
+    // after scene images are created
     
     // Create a custom pipeline layout for water that includes:
     // Set 0: Material SSBO (from app->getMaterialDescriptorSetLayout())
@@ -622,8 +675,8 @@ void WaterRenderer::createWaterPipelines() {
     
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = VK_TRUE;   // Test against scene depth
-    depthStencil.depthWriteEnable = VK_FALSE; // Don't write depth (water is transparent)
+    depthStencil.depthTestEnable = VK_TRUE;     // Enable hardware depth test
+    depthStencil.depthWriteEnable = VK_FALSE;   // Don't write depth (water is transparent)
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
@@ -877,86 +930,8 @@ void WaterRenderer::createDescriptorSets() {
     }
 }
 
-void WaterRenderer::initDepthCopyResources(uint32_t width, uint32_t height) {
-    if (sceneDepthCopyImage != VK_NULL_HANDLE && renderWidth == width && renderHeight == height) {
-        return; // Already initialized at this size
-    }
-    
-    VkDevice device = app->getDevice();
-    
-    // Destroy existing resources
-    if (sceneDepthCopyImageView != VK_NULL_HANDLE) {
-        vkDestroyImageView(device, sceneDepthCopyImageView, nullptr);
-        sceneDepthCopyImageView = VK_NULL_HANDLE;
-    }
-    if (sceneDepthCopyImage != VK_NULL_HANDLE) {
-        vkDestroyImage(device, sceneDepthCopyImage, nullptr);
-        sceneDepthCopyImage = VK_NULL_HANDLE;
-    }
-    if (sceneDepthCopyMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(device, sceneDepthCopyMemory, nullptr);
-        sceneDepthCopyMemory = VK_NULL_HANDLE;
-    }
-    
-    renderWidth = width;
-    renderHeight = height;
-    
-    // Create depth copy image
-    VkImageCreateInfo imageInfo{};
-    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent = {width, height, 1};
-    imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = 1;
-    imageInfo.format = VK_FORMAT_D32_SFLOAT;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    
-    if (vkCreateImage(device, &imageInfo, nullptr, &sceneDepthCopyImage) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create depth copy image!");
-    }
-    
-    VkMemoryRequirements memReq;
-    vkGetImageMemoryRequirements(device, sceneDepthCopyImage, &memReq);
-    
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memReq.size;
-    allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &sceneDepthCopyMemory) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate depth copy memory!");
-    }
-    
-    vkBindImageMemory(device, sceneDepthCopyImage, sceneDepthCopyMemory, 0);
-    
-    // Create image view
-    VkImageViewCreateInfo viewInfo{};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = sceneDepthCopyImage;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = VK_FORMAT_D32_SFLOAT;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = 1;
-    
-    if (vkCreateImageView(device, &viewInfo, nullptr, &sceneDepthCopyImageView) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create depth copy image view!");
-    }
-    
-    // Update descriptor set with the depth copy image
-    updateSceneDepthBinding(sceneDepthCopyImageView);
-    
-    std::cout << "[WaterRenderer] Created depth copy resources " << width << "x" << height << std::endl;
-}
-
-void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd) {
-    if (waterFramebuffer == VK_NULL_HANDLE) return;
+void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex) {
+    if (waterFramebuffers[frameIndex] == VK_NULL_HANDLE) return;
     
     std::array<VkClearValue, 4> clearValues{};
     clearValues[0].color = {{1000.0f, 0.0f, 0.0f, 0.0f}}; // Far depth
@@ -967,7 +942,7 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd) {
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassInfo.renderPass = waterRenderPass;
-    renderPassInfo.framebuffer = waterFramebuffer;
+    renderPassInfo.framebuffer = waterFramebuffers[frameIndex];
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = {renderWidth, renderHeight};
     renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
@@ -1093,114 +1068,45 @@ void WaterRenderer::renderWaterPostProcess(VkCommandBuffer cmd, VkFramebuffer sw
     // This allows ImGui or other overlays to be rendered in the same pass
 }
 
-void WaterRenderer::updateSceneDepthBinding(VkImageView depthImageView) {
-    if (waterDepthDescriptorSet == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
+void WaterRenderer::updateSceneTexturesBinding(VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex) {
+    if (waterDepthDescriptorSets[frameIndex] == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
         return;
     }
     
-    // Use the depth copy image view for sampling (avoid reading from depth attachment during render)
-    VkImageView viewToUse = sceneDepthCopyImageView != VK_NULL_HANDLE ? sceneDepthCopyImageView : depthImageView;
+    // Use the provided image views directly
+    VkImageView colorView = colorImageView;
+    VkImageView depthView = depthImageView;
     
-    VkDescriptorImageInfo imageInfo{};
-    imageInfo.sampler = linearSampler;
-    imageInfo.imageView = viewToUse;
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    std::array<VkDescriptorImageInfo, 2> imageInfos{};
     
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = waterDepthDescriptorSet;
-    write.dstBinding = 0;
-    write.dstArrayElement = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.descriptorCount = 1;
-    write.pImageInfo = &imageInfo;
+    // Scene color (binding 0)
+    imageInfos[0].sampler = linearSampler;
+    imageInfos[0].imageView = colorView;
+    imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     
-    vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
+    // Scene depth (binding 1)
+    imageInfos[1].sampler = linearSampler;
+    imageInfos[1].imageView = depthView;
+    imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    
+    std::array<VkWriteDescriptorSet, 2> writes{};
+    
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = waterDepthDescriptorSets[frameIndex];
+    writes[0].dstBinding = 0;
+    writes[0].dstArrayElement = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].descriptorCount = 1;
+    writes[0].pImageInfo = &imageInfos[0];
+    
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = waterDepthDescriptorSets[frameIndex];
+    writes[1].dstBinding = 1;
+    writes[1].dstArrayElement = 0;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].descriptorCount = 1;
+    writes[1].pImageInfo = &imageInfos[1];
+    
+    vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
-void WaterRenderer::copySceneDepth(VkCommandBuffer cmd, VkImage srcDepthImage, uint32_t width, uint32_t height) {
-    if (sceneDepthCopyImage == VK_NULL_HANDLE) {
-        return;
-    }
-    
-    // Transition source depth from DEPTH_STENCIL_ATTACHMENT to TRANSFER_SRC
-    VkImageMemoryBarrier srcBarrier{};
-    srcBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    srcBarrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    srcBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    srcBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    srcBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    srcBarrier.image = srcDepthImage;
-    srcBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    srcBarrier.subresourceRange.baseMipLevel = 0;
-    srcBarrier.subresourceRange.levelCount = 1;
-    srcBarrier.subresourceRange.baseArrayLayer = 0;
-    srcBarrier.subresourceRange.layerCount = 1;
-    srcBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    srcBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    
-    // Transition dest depth from UNDEFINED to TRANSFER_DST
-    VkImageMemoryBarrier dstBarrier{};
-    dstBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    dstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    dstBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    dstBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    dstBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    dstBarrier.image = sceneDepthCopyImage;
-    dstBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    dstBarrier.subresourceRange.baseMipLevel = 0;
-    dstBarrier.subresourceRange.levelCount = 1;
-    dstBarrier.subresourceRange.baseArrayLayer = 0;
-    dstBarrier.subresourceRange.layerCount = 1;
-    dstBarrier.srcAccessMask = 0;
-    dstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    
-    std::array<VkImageMemoryBarrier, 2> barriers = {srcBarrier, dstBarrier};
-    vkCmdPipelineBarrier(cmd,
-        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0,
-        0, nullptr,
-        0, nullptr,
-        static_cast<uint32_t>(barriers.size()), barriers.data());
-    
-    // Copy depth image
-    VkImageCopy copyRegion{};
-    copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    copyRegion.srcSubresource.mipLevel = 0;
-    copyRegion.srcSubresource.baseArrayLayer = 0;
-    copyRegion.srcSubresource.layerCount = 1;
-    copyRegion.srcOffset = {0, 0, 0};
-    copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    copyRegion.dstSubresource.mipLevel = 0;
-    copyRegion.dstSubresource.baseArrayLayer = 0;
-    copyRegion.dstSubresource.layerCount = 1;
-    copyRegion.dstOffset = {0, 0, 0};
-    copyRegion.extent = {width, height, 1};
-    
-    vkCmdCopyImage(cmd,
-        srcDepthImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        sceneDepthCopyImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        1, &copyRegion);
-    
-    // Transition source back to DEPTH_STENCIL_ATTACHMENT
-    srcBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    srcBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    srcBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    srcBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    
-    // Transition dest to SHADER_READ_ONLY
-    dstBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    dstBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    dstBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    dstBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    
-    barriers = {srcBarrier, dstBarrier};
-    vkCmdPipelineBarrier(cmd,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0,
-        0, nullptr,
-        0, nullptr,
-        static_cast<uint32_t>(barriers.size()), barriers.data());
-}

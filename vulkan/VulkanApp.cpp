@@ -349,7 +349,7 @@ void VulkanApp::createSwapchain() {
     createInfo.imageColorSpace = surfaceFormat.colorSpace;
     createInfo.imageExtent = extent;
     createInfo.imageArrayLayers = 1;
-    createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
     QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
     uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(), indices.presentFamily.value()};
@@ -492,13 +492,15 @@ void VulkanApp::createRenderPass() {
     
     std::array<VkAttachmentDescription, 2> contAttachments = { contColorAttachment, contDepthAttachment };
     
+    // Use the same dependency as the main render pass for compatibility
+    // (The framebuffers were created with the main renderPass)
     VkSubpassDependency contDependency{};
     contDependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     contDependency.dstSubpass = 0;
-    contDependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    contDependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    contDependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    contDependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    contDependency.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    contDependency.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    contDependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    contDependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     
     VkRenderPassCreateInfo contRenderPassInfo{};
     contRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -1146,18 +1148,24 @@ void VulkanApp::createDescriptorSetLayout() {
     shadowSamplerBinding.pImmutableSamplers = nullptr;
     shadowSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // binding 5: storage buffer containing array of MaterialProperties (uploaded once)
-    // NOTE: move material binding into a dedicated set layout so we can bind the whole
-    // Materials SSBO once as a global descriptor set (set 0).
+    // binding 6: Sky UBO
     VkDescriptorSetLayoutBinding skyBinding{};
     skyBinding.binding = 6;
     skyBinding.descriptorCount = 1;
     skyBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     skyBinding.pImmutableSamplers = nullptr;
     skyBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    
+    // binding 7: Water params UBO (for water shader)
+    VkDescriptorSetLayoutBinding waterParamsBinding{};
+    waterParamsBinding.binding = 7;
+    waterParamsBinding.descriptorCount = 1;
+    waterParamsBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    waterParamsBinding.pImmutableSamplers = nullptr;
+    waterParamsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // Per-instance / per-draw descriptor set uses bindings: 0 (UBO), 1..3 (samplers), 4 (shadow), 6 (sky UBO)
-    std::array<VkDescriptorSetLayoutBinding, 6> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding, shadowSamplerBinding, skyBinding};
+    // Per-instance / per-draw descriptor set uses bindings: 0 (UBO), 1..3 (samplers), 4 (shadow), 6 (sky UBO), 7 (water params)
+    std::array<VkDescriptorSetLayoutBinding, 7> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding, shadowSamplerBinding, skyBinding, waterParamsBinding};
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1213,7 +1221,7 @@ void VulkanApp::createDepthResources() {
     imageInfo.format = depthFormat;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
@@ -1765,7 +1773,7 @@ void VulkanApp::drawFrame() {
     renderPassInfo.renderArea.extent = swapchainExtent;
 
     VkClearValue clearValues[2] = {};
-    clearValues[0].color = {{0.0f, 0.4f, 0.6f, 1.0f}};
+    clearValues[0].color = {{0.0f, 0.4f, 0.6f, 0.0f}};  // Alpha = 0.0 for transparent background
     clearValues[1].depthStencil = {1.0f, 0};
     renderPassInfo.clearValueCount = 2;
     renderPassInfo.pClearValues = clearValues;
