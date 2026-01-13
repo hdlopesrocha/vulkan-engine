@@ -49,6 +49,17 @@ public:
             // Foam settings
             if (ImGui::CollapsingHeader("Foam")) {
                 ImGui::SliderFloat("Foam Depth Threshold", &params->foamDepthThreshold, 0.1f, 10.0f);
+                ImGui::SliderFloat("Foam Intensity", &params->foamIntensity, 0.0f, 2.0f);
+                ImGui::SliderFloat("Shore Strength", &params->shoreStrength, 0.0f, 4.0f);
+                ImGui::SliderFloat("Shore Falloff", &params->shoreFalloff, 0.1f, 20.0f);
+
+                ImGui::Separator();
+                ImGui::Text("Foam Perlin");
+                ImGui::SliderFloat("Foam Noise Scale", &params->foamNoiseScale, 0.1f, 64.0f);
+                ImGui::SliderInt("Foam Noise Octaves", &params->foamNoiseOctaves, 1, 8);
+                ImGui::SliderFloat("Foam Noise Persistence", &params->foamNoisePersistence, 0.1f, 0.9f);
+                ImGui::ColorEdit3("Foam Color", &params->foamTint.x);
+                ImGui::SliderFloat("Foam Color Intensity", &params->foamTintIntensity, 0.0f, 1.0f);
             }
 
             ImGui::Separator();
