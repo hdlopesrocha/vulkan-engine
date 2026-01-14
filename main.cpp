@@ -637,139 +637,6 @@ class MyApp : public VulkanApp, public IEventHandler {
         profileCpuUpdate = std::chrono::duration<float, std::milli>(cpuUpdateEnd - cpuUpdateStart).count();
     };
 
-    // Extracted render passes
-    void shadowPass(VkCommandBuffer &commandBuffer) {
-        if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
-            sceneRenderer.indirectRenderer.prepareCull(commandBuffer, light.getViewProjectionMatrix());
-            if (queryPool != VK_NULL_HANDLE) {
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, queryPool, 1); // After shadow cull
-            }
-
-            sceneRenderer.shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
-
-            sceneRenderer.shadowPassUBO.data = uboStatic;
-            sceneRenderer.shadowPassUBO.data.viewProjection = uboStatic.lightSpaceMatrix;
-            sceneRenderer.shadowPassUBO.data.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
-            sceneRenderer.shadowPassUBO.data.passParams = glm::vec4(1.0f, settingsWidget ? (settingsWidget->getShadowTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
-            updateUniformBuffer(sceneRenderer.shadowPassUBO.buffer, &sceneRenderer.shadowPassUBO.data, sizeof(UniformObject));
-
-            {
-                VkDescriptorSet setsToBind[2];
-                uint32_t bindCount = 0;
-                VkDescriptorSet matDs = getMaterialDescriptorSet();
-                if (matDs != VK_NULL_HANDLE) setsToBind[bindCount++] = matDs;
-                if (shadowPassDescriptorSet != VK_NULL_HANDLE) setsToBind[bindCount++] = shadowPassDescriptorSet;
-                if (bindCount > 0) vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, bindCount, setsToBind, 0, nullptr);
-            }
-
-            sceneRenderer.indirectRenderer.drawPrepared(commandBuffer, this);
-
-            sceneRenderer.shadowMapper.endShadowPass(commandBuffer);
-
-            if (queryPool != VK_NULL_HANDLE) {
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 2); // After shadow draw
-            }
-        } else {
-            if (queryPool != VK_NULL_HANDLE) {
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, 1);
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, 2);
-            }
-        }
-    }
-
-    void depthPrePass(VkCommandBuffer &commandBuffer) {
-        if (sceneRenderer.depthPrePassPipeline != VK_NULL_HANDLE) {
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sceneRenderer.depthPrePassPipeline);
-            VkDescriptorSet matDs = getMaterialDescriptorSet();
-            if (matDs != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &matDs, 0, nullptr);
-            }
-            sceneRenderer.indirectRenderer.drawIndirectOnly(commandBuffer, this);
-        }
-        if (queryPool != VK_NULL_HANDLE) {
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, queryPool, 5); // After depth prepass
-        }
-    }
-
-    void mainPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater) {
-        // Begin main render pass (either offscreen or swapchain)
-        vkCmdBeginRenderPass(commandBuffer, &mainPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-        // set dynamic viewport/scissor to match current swapchain extent
-        VkViewport viewport{};
-        viewport.x = 0.0f;
-        viewport.y = 0.0f;
-        viewport.width = (float)getWidth();
-        viewport.height = (float)getHeight();
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-
-        // --- Render sky sphere first: large sphere centered at camera ---
-        if (sceneRenderer.skyRenderer && descriptorSet != VK_NULL_HANDLE) {
-            if (sceneRenderer.skySphere) sceneRenderer.skySphere->update();
-            SkyMode skyMode = skyWidget ? skyWidget->getSkyMode() : SkyMode::Gradient;
-            sceneRenderer.skyRenderer->render(commandBuffer, sceneRenderer.skyVBO, descriptorSet, sceneRenderer.mainPassUBO.buffer, sceneRenderer.mainPassUBO.data, camera.getViewProjectionMatrix(), skyMode);
-        }
-
-        if (queryPool != VK_NULL_HANDLE) {
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, queryPool, 3); // After sky
-        }
-
-        VkRect2D scissor{};
-        scissor.offset = {0, 0};
-        scissor.extent = { (uint32_t)getWidth(), (uint32_t)getHeight() };
-        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-
-        // Bind vertex/index buffers once for all subsequent draw calls in this render pass
-        sceneRenderer.indirectRenderer.bindBuffers(commandBuffer);
-
-        // Bind descriptor sets if available (material/global + per-texture)
-        { 
-            VkDescriptorSet setsToBind[2];
-            uint32_t bindCount = 0;
-            VkDescriptorSet matDs = getMaterialDescriptorSet();
-            if (matDs != VK_NULL_HANDLE) setsToBind[bindCount++] = matDs;
-            VkDescriptorSet perTexDs = VK_NULL_HANDLE;
-            if (descriptorSet != VK_NULL_HANDLE) perTexDs = descriptorSet;
-            if (perTexDs != VK_NULL_HANDLE) setsToBind[bindCount++] = perTexDs;
-            if (bindCount > 0) vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, bindCount, setsToBind, 0, nullptr);
-        }
-
-        // Depth pre-pass
-        depthPrePass(commandBuffer);
-
-        // Bind pipeline and draw
-        if (settingsWidget->getWireframeEnabled() && sceneRenderer.graphicsPipelineWire != VK_NULL_HANDLE)
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sceneRenderer.graphicsPipelineWire);
-        else
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sceneRenderer.graphicsPipeline);
-
-        // Bind global material descriptor set (set 0) and per-material descriptor set (set 1)
-        {
-            VkDescriptorSet setsToBind[2];
-            uint32_t bindCount = 0;
-            VkDescriptorSet matDs = getMaterialDescriptorSet();
-            if (matDs != VK_NULL_HANDLE) setsToBind[bindCount++] = matDs;
-            VkDescriptorSet perTexDs = VK_NULL_HANDLE;
-            if (descriptorSet != VK_NULL_HANDLE) perTexDs = descriptorSet;
-            if (perTexDs != VK_NULL_HANDLE) setsToBind[bindCount++] = perTexDs;
-            if (bindCount == 2) {
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 2, setsToBind, 0, nullptr);
-            } else if (bindCount == 1) {
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, setsToBind, 0, nullptr);
-            }
-        }
-
-        // Render compacted draw commands - buffers already bound, just issue draw
-        sceneRenderer.indirectRenderer.drawIndirectOnly(commandBuffer, this);
-
-        // Timestamp 6: After main draw
-        if (profilingEnabled && queryPool != VK_NULL_HANDLE) {
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 6);
-        }
-    }
-
     void imguiPass(VkCommandBuffer &commandBuffer) {
         ImDrawData* draw_data = ImGui::GetDrawData();
         if (draw_data) ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
@@ -778,231 +645,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
     }
 
-    void waterPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx) {
-        VkPipeline waterGeomPipeline = sceneRenderer.waterRenderer.getWaterGeometryPipeline();
-        // End offscreen render pass (scene is now in per-frame sceneColorImages[frameIdx]/sceneDepthImages[frameIdx])
-        vkCmdEndRenderPass(commandBuffer);
-
-        // Blit per-frame scene to swapchain for display
-        uint32_t imageIndex = 0;
-        const auto& framebuffers = getSwapchainFramebuffers();
-        for (uint32_t i = 0; i < framebuffers.size(); ++i) {
-            if (framebuffers[i] == renderPassInfo.framebuffer) {
-                imageIndex = i;
-                break;
-            }
-        }
-        VkImage currentSwapchainImage = getSwapchainImages()[imageIndex];
-
-        VkImageMemoryBarrier sceneColorBarrier{};
-        sceneColorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        sceneColorBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        sceneColorBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        sceneColorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        sceneColorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        sceneColorBarrier.image = sceneRenderer.waterRenderer.getSceneColorImage(frameIdx);
-        sceneColorBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        sceneColorBarrier.subresourceRange.baseMipLevel = 0;
-        sceneColorBarrier.subresourceRange.levelCount = 1;
-        sceneColorBarrier.subresourceRange.baseArrayLayer = 0;
-        sceneColorBarrier.subresourceRange.layerCount = 1;
-        sceneColorBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        sceneColorBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-
-        VkImageMemoryBarrier sceneDepthBarrier{};
-        sceneDepthBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        sceneDepthBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        sceneDepthBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        sceneDepthBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        sceneDepthBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        sceneDepthBarrier.image = sceneRenderer.waterRenderer.getSceneDepthImage(frameIdx);
-        sceneDepthBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        sceneDepthBarrier.subresourceRange.baseMipLevel = 0;
-        sceneDepthBarrier.subresourceRange.levelCount = 1;
-        sceneDepthBarrier.subresourceRange.baseArrayLayer = 0;
-        sceneDepthBarrier.subresourceRange.layerCount = 1;
-        sceneDepthBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        sceneDepthBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-
-        VkImageMemoryBarrier swapBarrier{};
-        swapBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        swapBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        swapBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        swapBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        swapBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        swapBarrier.image = currentSwapchainImage;
-        swapBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        swapBarrier.subresourceRange.baseMipLevel = 0;
-        swapBarrier.subresourceRange.levelCount = 1;
-        swapBarrier.subresourceRange.baseArrayLayer = 0;
-        swapBarrier.subresourceRange.layerCount = 1;
-        swapBarrier.srcAccessMask = 0;
-        swapBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-        VkImageMemoryBarrier mainDepthBarrier{};
-        mainDepthBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        mainDepthBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        mainDepthBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        mainDepthBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        mainDepthBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        mainDepthBarrier.image = getDepthImage();
-        mainDepthBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        mainDepthBarrier.subresourceRange.baseMipLevel = 0;
-        mainDepthBarrier.subresourceRange.levelCount = 1;
-        mainDepthBarrier.subresourceRange.baseArrayLayer = 0;
-        mainDepthBarrier.subresourceRange.layerCount = 1;
-        mainDepthBarrier.srcAccessMask = 0;
-        mainDepthBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-        std::array<VkImageMemoryBarrier, 4> preBlitBarriers = {sceneColorBarrier, sceneDepthBarrier, swapBarrier, mainDepthBarrier};
-        vkCmdPipelineBarrier(commandBuffer,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 0, nullptr, 0, nullptr,
-            static_cast<uint32_t>(preBlitBarriers.size()), preBlitBarriers.data());
-
-        VkImageBlit blitRegion{};
-        blitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        blitRegion.srcSubresource.mipLevel = 0;
-        blitRegion.srcSubresource.baseArrayLayer = 0;
-        blitRegion.srcSubresource.layerCount = 1;
-        blitRegion.srcOffsets[0] = {0, 0, 0};
-        blitRegion.srcOffsets[1] = {(int32_t)getWidth(), (int32_t)getHeight(), 1};
-        blitRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        blitRegion.dstSubresource.mipLevel = 0;
-        blitRegion.dstSubresource.baseArrayLayer = 0;
-        blitRegion.dstSubresource.layerCount = 1;
-        blitRegion.dstOffsets[0] = {0, 0, 0};
-        blitRegion.dstOffsets[1] = {(int32_t)getWidth(), (int32_t)getHeight(), 1};
-
-        vkCmdBlitImage(commandBuffer,
-            sceneRenderer.waterRenderer.getSceneColorImage(frameIdx), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            currentSwapchainImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1, &blitRegion, VK_FILTER_NEAREST);
-
-        VkImageBlit depthBlitRegion{};
-        depthBlitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        depthBlitRegion.srcSubresource.mipLevel = 0;
-        depthBlitRegion.srcSubresource.baseArrayLayer = 0;
-        depthBlitRegion.srcSubresource.layerCount = 1;
-        depthBlitRegion.srcOffsets[0] = {0, 0, 0};
-        depthBlitRegion.srcOffsets[1] = {(int32_t)getWidth(), (int32_t)getHeight(), 1};
-        depthBlitRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        depthBlitRegion.dstSubresource.mipLevel = 0;
-        depthBlitRegion.dstSubresource.baseArrayLayer = 0;
-        depthBlitRegion.dstSubresource.layerCount = 1;
-        depthBlitRegion.dstOffsets[0] = {0, 0, 0};
-        depthBlitRegion.dstOffsets[1] = {(int32_t)getWidth(), (int32_t)getHeight(), 1};
-
-        vkCmdBlitImage(commandBuffer,
-            sceneRenderer.waterRenderer.getSceneDepthImage(frameIdx), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            getDepthImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1, &depthBlitRegion, VK_FILTER_NEAREST);
-
-        swapBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        swapBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        swapBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        swapBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-        mainDepthBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        mainDepthBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        mainDepthBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        mainDepthBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-
-        VkImageMemoryBarrier sceneColorReadBarrier{};
-        sceneColorReadBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        sceneColorReadBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        sceneColorReadBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        sceneColorReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        sceneColorReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        sceneColorReadBarrier.image = sceneRenderer.waterRenderer.getSceneColorImage(frameIdx);
-        sceneColorReadBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        sceneColorReadBarrier.subresourceRange.baseMipLevel = 0;
-        sceneColorReadBarrier.subresourceRange.levelCount = 1;
-        sceneColorReadBarrier.subresourceRange.baseArrayLayer = 0;
-        sceneColorReadBarrier.subresourceRange.layerCount = 1;
-        sceneColorReadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        sceneColorReadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-        VkImageMemoryBarrier sceneDepthReadBarrier{};
-        sceneDepthReadBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        sceneDepthReadBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        sceneDepthReadBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        sceneDepthReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        sceneDepthReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        sceneDepthReadBarrier.image = sceneRenderer.waterRenderer.getSceneDepthImage(frameIdx);
-        sceneDepthReadBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        sceneDepthReadBarrier.subresourceRange.baseMipLevel = 0;
-        sceneDepthReadBarrier.subresourceRange.levelCount = 1;
-        sceneDepthReadBarrier.subresourceRange.baseArrayLayer = 0;
-        sceneDepthReadBarrier.subresourceRange.layerCount = 1;
-        sceneDepthReadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        sceneDepthReadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-        std::array<VkImageMemoryBarrier, 4> postBlitBarriers = {swapBarrier, mainDepthBarrier, sceneColorReadBarrier, sceneDepthReadBarrier};
-        vkCmdPipelineBarrier(commandBuffer,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 0, nullptr, 0, nullptr,
-            static_cast<uint32_t>(postBlitBarriers.size()), postBlitBarriers.data());
-
-        // Begin swapchain render pass for water (load existing color, load depth)
-        VkRenderPassBeginInfo waterRenderPassInfo{};
-        waterRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        waterRenderPassInfo.renderPass = getContinuationRenderPass();
-        waterRenderPassInfo.framebuffer = renderPassInfo.framebuffer;
-        waterRenderPassInfo.renderArea.offset = {0, 0};
-        waterRenderPassInfo.renderArea.extent = {getWidth(), getHeight()};
-        waterRenderPassInfo.clearValueCount = 0;
-        waterRenderPassInfo.pClearValues = nullptr;
-
-        vkCmdBeginRenderPass(commandBuffer, &waterRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-        VkViewport waterViewport{};
-        waterViewport.x = 0.0f;
-        waterViewport.y = 0.0f;
-        waterViewport.width = (float)getWidth();
-        waterViewport.height = (float)getHeight();
-        waterViewport.minDepth = 0.0f;
-        waterViewport.maxDepth = 1.0f;
-        vkCmdSetViewport(commandBuffer, 0, 1, &waterViewport);
-
-        VkRect2D waterScissor{};
-        waterScissor.offset = {0, 0};
-        waterScissor.extent = {getWidth(), getHeight()};
-        vkCmdSetScissor(commandBuffer, 0, 1, &waterScissor);
-
-        int debugMode = int(sceneRenderer.mainPassUBO.data.debugParams.x + 0.5f);
-        if (waterGeomPipeline != VK_NULL_HANDLE && (debugMode == 0 || debugMode == 32)) {
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeomPipeline);
-            sceneRenderer.waterRenderer.getIndirectRenderer().bindBuffers(commandBuffer);
-
-            VkDescriptorSet matDs = getMaterialDescriptorSet();
-            VkDescriptorSet sceneDs = sceneRenderer.waterRenderer.getWaterDepthDescriptorSet(frameIdx);
-
-            if (matDs != VK_NULL_HANDLE && descriptorSet != VK_NULL_HANDLE) {
-                VkDescriptorSet sets01[2] = { matDs, descriptorSet };
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    sceneRenderer.waterRenderer.getWaterGeometryPipelineLayout(), 0, 2, sets01, 0, nullptr);
-            }
-
-            if (sceneDs != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    sceneRenderer.waterRenderer.getWaterGeometryPipelineLayout(), 2, 1, &sceneDs, 0, nullptr);
-            }
-
-            sceneRenderer.waterRenderer.getIndirectRenderer().drawIndirectOnly(commandBuffer, this);
-        }
-
-        if (renderPassDebugWidget && sceneRenderer.waterRenderer.getIndirectRenderer().getMeshCount() > 0) {
-            renderPassDebugWidget->updateDescriptors(frameIdx);
-        }
-
-        // Render ImGui inside swapchain pass
-        imguiPass(commandBuffer);
-
-        vkCmdEndRenderPass(commandBuffer);
-    }
+    // Pass implementations moved to SceneRenderer
 
     void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
         uint32_t frameIdx = getCurrentFrame();
@@ -1027,83 +670,11 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
     
         // Shadow pass
-        shadowPass(commandBuffer);
+        sceneRenderer.shadowPass(commandBuffer, queryPool, shadowPassDescriptorSet, uboStatic, settingsWidget ? settingsWidget->getShadowsEnabled() : true, settingsWidget ? settingsWidget->getShadowTessellationEnabled() : false);
         
-        // Update uniform buffer for main pass BEFORE starting the render pass
         // Include water time in passParams for water geometry shader
         waterTime += lastDeltaTime * waterParams.waveSpeed;
         waterParams.time = waterTime;
-        
-        sceneRenderer.mainPassUBO.data = uboStatic;
-        sceneRenderer.mainPassUBO.data.viewProjection = camera.getViewProjectionMatrix();
-        sceneRenderer.mainPassUBO.data.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
-        sceneRenderer.mainPassUBO.data.shadowEffects = glm::vec4(0.0f, 0.0f, 0.0f,  settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f);
-        sceneRenderer.mainPassUBO.data.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
-        sceneRenderer.mainPassUBO.data.triplanarSettings = glm::vec4(settingsWidget->getTriplanarThreshold(), settingsWidget->getTriplanarExponent(), 0.0f, 0.0f);
-        // passParams: x=waterTime, y=tessEnabled, z=waveScale, w=noiseScale
-        sceneRenderer.mainPassUBO.data.passParams = glm::vec4(
-            waterTime,
-            settingsWidget ? (settingsWidget->getTessellationEnabled() ? 1.0f : 0.0f) : 0.0f,
-            waterParams.waveScale,
-            waterParams.noiseScale
-        );
-        // DEBUG: Print passParams and timing every 30 frames
-        static int frameCount = 0;
-        if (frameCount++ % 30 == 0) {
-            std::cout << "[DEBUG] waterTime=" << waterTime
-                      << " lastDeltaTime=" << lastDeltaTime
-                      << " ubo.passParams.time=" << sceneRenderer.mainPassUBO.data.passParams.x 
-                      << " waveScale=" << sceneRenderer.mainPassUBO.data.passParams.z 
-                      << " noiseScale=" << sceneRenderer.mainPassUBO.data.passParams.w 
-                      << " | mainPassUBO.buffer.buffer=" << sceneRenderer.mainPassUBO.buffer.buffer << std::endl;
-        }
-        // Store additional water params in tessParams: x=waveSpeed, y=refractionStrength, z=fresnelPower, w=transparency
-        sceneRenderer.mainPassUBO.data.tessParams = glm::vec4(
-            waterParams.waveSpeed,
-            waterParams.refractionStrength,
-            waterParams.fresnelPower,
-            waterParams.transparency
-        );
-        updateUniformBuffer(sceneRenderer.mainPassUBO.buffer, &sceneRenderer.mainPassUBO.data, sizeof(UniformObject));
-        
-        // Update water params UBO
-        sceneRenderer.waterPassUBO.data.params1 = glm::vec4(
-            waterParams.refractionStrength,
-            waterParams.fresnelPower,
-            waterParams.transparency,
-            waterParams.foamDepthThreshold
-        );
-        sceneRenderer.waterPassUBO.data.params2 = glm::vec4(
-            waterParams.waterTint,
-            1.0f / waterParams.noiseScale,
-            static_cast<float>(waterParams.noiseOctaves),
-            waterParams.noisePersistence
-        );
-        sceneRenderer.waterPassUBO.data.params3 = glm::vec4(waterParams.noiseTimeSpeed, waterTime, waterParams.shoreStrength, waterParams.shoreFalloff);
-        sceneRenderer.waterPassUBO.data.shallowColor = glm::vec4(waterParams.shallowColor, 0.0f);
-        sceneRenderer.waterPassUBO.data.deepColor = glm::vec4(waterParams.deepColor, waterParams.foamIntensity);
-        sceneRenderer.waterPassUBO.data.foamParams = glm::vec4(1.0f/waterParams.foamNoiseScale, static_cast<float>(waterParams.foamNoiseOctaves), waterParams.foamNoisePersistence, waterParams.foamTintIntensity);
-        sceneRenderer.waterPassUBO.data.foamParams2 = glm::vec4(waterParams.foamBrightness, waterParams.foamContrast, 0.0f, 0.0f);
-        sceneRenderer.waterPassUBO.data.foamTint = waterParams.foamTint;
-        updateUniformBuffer(sceneRenderer.waterPassUBO.buffer, &sceneRenderer.waterPassUBO.data, sizeof(WaterParamsGPU));
-        
-        // DEBUG: Print UBO passParams after write
-        //ubo.printPassParams();
-        
-        // Add a memory barrier to ensure uniform buffer write is visible to GPU
-        VkMemoryBarrier memBarrier{};
-        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-        memBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-        vkCmdPipelineBarrier(
-            commandBuffer,
-            VK_PIPELINE_STAGE_HOST_BIT,
-            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0,
-            1, &memBarrier,
-            0, nullptr,
-            0, nullptr
-        );
 
         // Prepare GPU cull for main pass BEFORE the render pass (vkCmdFillBuffer/barriers not allowed inside render pass)
         sceneRenderer.indirectRenderer.prepareCull(commandBuffer, camera.getViewProjectionMatrix());
@@ -1136,10 +707,19 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
 
         // Main pass (begin render pass, sky, culling/draw)
-        mainPass(commandBuffer, mainPassInfo, frameIdx, hasWater);
+        sceneRenderer.mainPass(commandBuffer, mainPassInfo, frameIdx, hasWater, descriptorSet, settingsWidget ? settingsWidget->getWireframeEnabled() : false, profilingEnabled, queryPool, camera.getViewProjectionMatrix(),
+            uboStatic, waterParams, waterTime,
+            settingsWidget ? settingsWidget->getNormalMappingEnabled() : false,
+            settingsWidget ? settingsWidget->getTessellationEnabled() : false,
+            settingsWidget ? settingsWidget->getShadowsEnabled() : true,
+            settingsWidget ? settingsWidget->getDebugMode() : 0,
+            settingsWidget ? settingsWidget->getTriplanarThreshold() : 0.0f,
+            settingsWidget ? settingsWidget->getTriplanarExponent() : 0.0f);
 
         if (hasWater) {
-            waterPass(commandBuffer, renderPassInfo, frameIdx);
+            sceneRenderer.waterPass(commandBuffer, renderPassInfo, frameIdx, descriptorSet, profilingEnabled, queryPool, waterParams, waterTime);
+            if (renderPassDebugWidget) renderPassDebugWidget->updateDescriptors(frameIdx);
+            imguiPass(commandBuffer);
         } else {
             // Update debug widget descriptors and render ImGui inside the same render pass
             if (renderPassDebugWidget) renderPassDebugWidget->updateDescriptors(frameIdx);
@@ -1192,11 +772,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             queryPool = VK_NULL_HANDLE;
         }
 
-        if (sceneRenderer.graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), sceneRenderer.graphicsPipeline, nullptr);
-        if (sceneRenderer.graphicsPipelineWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), sceneRenderer.graphicsPipelineWire, nullptr);
-        if (sceneRenderer.depthPrePassPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), sceneRenderer.depthPrePassPipeline, nullptr);
-        if (sceneRenderer.waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), sceneRenderer.waterPipeline, nullptr);
-        // Tessellation pipelines removed earlier; nothing to destroy here.
+        // SceneRenderer now owns pipelines and will clean them up.
         sceneRenderer.cleanup();
         // texture cleanup via managers
         // legacy texture managers removed; arrays handle GPU textures now
