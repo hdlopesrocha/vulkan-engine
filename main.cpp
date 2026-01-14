@@ -36,6 +36,7 @@
 #include "widgets/WaterWidget.hpp"
 #include "widgets/RenderPassDebugWidget.hpp"
 #include "vulkan/SkySphere.hpp"
+#include "vulkan/SceneRenderer.hpp"
 #include "vulkan/DescriptorSetBuilder.hpp"
 #include "vulkan/SkyRenderer.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
@@ -58,8 +59,7 @@
 
 class MyApp : public VulkanApp, public IEventHandler {
     LocalScene * mainScene;
-    std::unordered_map<NodeID, Model3DVersion> nodeModelVersions;
-    std::unordered_map<NodeID, Model3DVersion> waterNodeModelVersions; // For transparent layer
+    SceneRenderer sceneRenderer;
 
     // Profiling infrastructure
     VkQueryPool queryPool = VK_NULL_HANDLE;
@@ -79,7 +79,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     bool profilingEnabled = true;
 
     public:
-        MyApp() : shadowMapper(this, 8192), waterRenderer(this) {}
+        MyApp() : sceneRenderer(this) {}
 
 
             void postSubmit() override {
@@ -114,15 +114,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // postSubmit() override removed to disable slow per-frame shadow readback
         
-    VkPipeline graphicsPipeline = VK_NULL_HANDLE;
-    VkPipeline waterPipeline = VK_NULL_HANDLE;  // Water pipeline with depth test but no depth write
-    
-    // GPU buffers for the built meshes (parallel to `meshes`)
-    VertexBufferObject skyVBO;
-    VkPipeline graphicsPipelineWire = VK_NULL_HANDLE;
-    VkPipeline depthPrePassPipeline = VK_NULL_HANDLE;
-    std::unique_ptr<SkyRenderer> skyRenderer;
-    std::unique_ptr<SkySphere> skySphere;
+    // Pipelines moved into SceneRenderer
     // materials list (replaces legacy TextureManager storage) - each entry corresponds
     // to a layer/index in `textureArrayManager` when arrays are used.
     std::vector<MaterialProperties> materials;
@@ -155,13 +147,10 @@ class MyApp : public VulkanApp, public IEventHandler {
     size_t currentTextureIndex = 0;
     size_t editableLayerIndex = SIZE_MAX; // Texture array layer index reserved for editable textures
 
-    // Shadow mapping
-    ShadowMapper shadowMapper;
+    // Shadow mapping moved into SceneRenderer
     ShadowParams shadowParams;
-    IndirectRenderer indirectRenderer;
     
-    // Water rendering
-    WaterRenderer waterRenderer;
+    // Water rendering moved into SceneRenderer
     WaterParams waterParams;
     std::shared_ptr<WaterWidget> waterWidget;
     std::shared_ptr<RenderPassDebugWidget> renderPassDebugWidget;
@@ -177,20 +166,7 @@ class MyApp : public VulkanApp, public IEventHandler {
     KeyboardPublisher keyboard;
     GamepadPublisher gamepad;
     
-    template<typename T>
-    struct PassUBO {
-        Buffer buffer;
-        T data;
-        
-        PassUBO() = default;
-        PassUBO(VulkanApp* app, size_t size) {
-            buffer = app->createBuffer(size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        }
-    };
-    
-    PassUBO<UniformObject> mainPassUBO{};
-    PassUBO<UniformObject> shadowPassUBO{};
-    PassUBO<WaterParamsGPU> waterPassUBO{};
+    // PassUBO moved into SceneRenderer
     
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkDescriptorSet shadowPassDescriptorSet = VK_NULL_HANDLE; // Shadow pass uses this (no shadow map binding)
@@ -230,151 +206,11 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Initialize shadow mapper (moved after pipeline creation below)
         
-        // Graphics Pipeline
-        {
-            ShaderStage vertexShader = ShaderStage(
-                createShaderModule(FileReader::readFile("shaders/main.vert.spv")), 
-                VK_SHADER_STAGE_VERTEX_BIT
-            );
+        // Initialize pipelines and scene renderer internals
+        sceneRenderer.createPipelines();
+        sceneRenderer.init(this);
 
-            ShaderStage fragmentShader = ShaderStage(
-                createShaderModule(FileReader::readFile("shaders/main.frag.spv")), 
-                VK_SHADER_STAGE_FRAGMENT_BIT
-            );
-            // Load tessellation shaders so pipeline always contains TCS/TES stages.
-            ShaderStage tescShader = ShaderStage(
-                createShaderModule(FileReader::readFile("shaders/main.tesc.spv")),
-                VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
-            );
-            ShaderStage teseShader = ShaderStage(
-                createShaderModule(FileReader::readFile("shaders/main.tese.spv")),
-                VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
-            );
-
-            graphicsPipeline = createGraphicsPipeline(
-                {
-                    vertexShader.info,
-                    tescShader.info,
-                    teseShader.info,
-                    fragmentShader.info
-                },
-                VkVertexInputBindingDescription { 
-                    0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
-                },
-                {
-                    VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-                    VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-                    VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
-                    VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                    VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
-                }
-                , VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, false, true, VK_COMPARE_OP_EQUAL
-            );
-            // Expose the main graphics pipeline to helpers so they can reuse it
-            setAppGraphicsPipeline(graphicsPipeline);
-
-            // Create wireframe variant (if device supports it), also includes tessellation stages
-            graphicsPipelineWire = createGraphicsPipeline(
-                {
-                    vertexShader.info,
-                    tescShader.info,
-                    teseShader.info,
-                    fragmentShader.info
-                },
-                VkVertexInputBindingDescription { 
-                    0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
-                },
-                {
-                    VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-                    VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-                    VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
-                    VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                    VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
-                },
-                VK_POLYGON_MODE_LINE,
-                VK_CULL_MODE_BACK_BIT,
-                false, // depthWrite disabled for main pass (pre-pass handles depth)
-                true,  // colorWrite enabled
-                VK_COMPARE_OP_EQUAL
-            );
-
-            // Tessellation pipeline removed; tessellation is controlled inside the shader (main.tesc)
-
-            // Create sky pipeline via SkyRenderer
-            skyRenderer = std::make_unique<SkyRenderer>(this);
-            skyRenderer->init();
-
-            // Create a depth-only pre-pass pipeline (disable color writes)
-            depthPrePassPipeline = createGraphicsPipeline(
-                {
-                    vertexShader.info,
-                    tescShader.info,
-                    teseShader.info,
-                    fragmentShader.info
-                },
-                VkVertexInputBindingDescription { 
-                    0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
-                },
-                {
-                    VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-                    VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-                    VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
-                    VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                    VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
-                },
-                VK_POLYGON_MODE_FILL,
-                VK_CULL_MODE_BACK_BIT,
-                true, // depthWrite
-                false // colorWrite disabled for depth pre-pass
-            );
-
-            // Create water pipeline - depth test enabled but no depth write, use LESS_OR_EQUAL
-            // so water renders at same depth or behind terrain
-            waterPipeline = createGraphicsPipeline(
-                {
-                    vertexShader.info,
-                    tescShader.info,
-                    teseShader.info,
-                    fragmentShader.info
-                },
-                VkVertexInputBindingDescription { 
-                    0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX 
-                },
-                {
-                    VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-                    VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-                    VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
-                    VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                    VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
-                },
-                VK_POLYGON_MODE_FILL,
-                VK_CULL_MODE_NONE,  // No culling for water (visible from both sides)
-                false,             // depthWrite disabled - water doesn't occlude things
-                true,              // colorWrite enabled
-                VK_COMPARE_OP_LESS_OR_EQUAL  // Render water at same depth or behind
-            );
-
-            // Destroy tessellation shader modules and vertex/fragment modules after pipeline creation
-            vkDestroyShaderModule(getDevice(), teseShader.info.module, nullptr);
-            vkDestroyShaderModule(getDevice(), tescShader.info.module, nullptr);
-            vkDestroyShaderModule(getDevice(), fragmentShader.info.module, nullptr);
-            vkDestroyShaderModule(getDevice(), vertexShader.info.module, nullptr);
-        }
-
-        // Now that pipelines (and the app pipeline layout) have been created, initialize shadow mapper
-        shadowMapper.init();
-
-        // Initialize indirect renderer (creates compute pipeline for GPU cull and manages merged buffers)
-        indirectRenderer.init(this);
-        
-        // create three global uniform buffers: main, shadow and sky
-        mainPassUBO = PassUBO<UniformObject>{this, sizeof(UniformObject)};
-        shadowPassUBO = PassUBO<UniformObject>{this, sizeof(UniformObject)};
-        waterPassUBO = PassUBO<WaterParamsGPU>{this, sizeof(WaterParamsGPU)};
-        
-        // Initialize water renderer
-        waterRenderer.init(waterPassUBO.buffer);
-        // Note: createRenderTargets is not called since we render water directly to swapchain
+        // Now that pipelines (and the app pipeline layout) have been created, SceneRenderer was initialized above
 
         // initialize texture array manager with room for 24 layers of 1024x1024
         // (we no longer use the legacy TextureManager for storage; `materials` tracks per-layer properties)
@@ -479,13 +315,13 @@ class MyApp : public VulkanApp, public IEventHandler {
         // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
         if (!loadedIndices.empty()) currentTextureIndex = loadedIndices[0];
         
-        std::cout << "[DEBUG] Created mainPassUBO.buffer: handle=" << mainPassUBO.buffer.buffer 
-                  << " memory=" << mainPassUBO.buffer.memory 
-                  << " size=" << sizeof(UniformObject) << std::endl;
-        
+        std::cout << "[DEBUG] Created mainPassUBO.buffer: handle=" << sceneRenderer.mainPassUBO.buffer.buffer 
+              << " memory=" << sceneRenderer.mainPassUBO.buffer.memory 
+              << " size=" << sizeof(UniformObject) << std::endl;
+
         // Initialize mainPassUBO with uboStatic so descriptor sets see valid data
-        mainPassUBO.data = uboStatic;
-        updateUniformBuffer(mainPassUBO.buffer, &mainPassUBO.data, sizeof(UniformObject));
+        sceneRenderer.mainPassUBO.data = uboStatic;
+        updateUniformBuffer(sceneRenderer.mainPassUBO.buffer, &sceneRenderer.mainPassUBO.data, sizeof(UniformObject));
         std::cout << "[DEBUG] Initialized mainPassUBO with uboStatic" << std::endl;
         
         // create descriptor sets - one per texture triple
@@ -493,114 +329,8 @@ class MyApp : public VulkanApp, public IEventHandler {
         if (tripleCount == 0) tripleCount = 1; // ensure at least one
         // Create/upload GPU-side material buffer (packed vec4-friendly struct)
         updateMaterials();
-        // Allocate descriptor pool sized for descriptor sets. We need room for per-texture sets and
-        // per-model-instance sets (we'll create one descriptor set per Model3D instance later).
-        // Estimate: per-texture sets = tripleCount * 4, per-instance sets = (1 + 2*tripleCount) * 2 (main+shadow), add a small slack.
-        uint32_t estimatedPerTextureSets = static_cast<uint32_t>(tripleCount * 4);
-        uint32_t estimatedModelObjects = static_cast<uint32_t>(1 + 2 * tripleCount);
-        uint32_t estimatedPerInstanceSets = estimatedModelObjects * 2;
-        // Reserve one extra set for the global material descriptor
-        uint32_t totalSets = estimatedPerTextureSets + estimatedPerInstanceSets + 4 + 1;
-        // each descriptor set writes up to 4 combined image samplers (albedo/normal/height/shadow)
-        createDescriptorPool(totalSets, totalSets * 4);
-
-        // Create a global material descriptor set (binding 5) so we can bind the whole
-        // Materials SSBO once (set 0) and avoid per-instance/per-texture material bindings.
-        VkDescriptorSet globalMatDS = VK_NULL_HANDLE;
-        if (materialManager.count() > 0) {
-            globalMatDS = createDescriptorSet(getMaterialDescriptorSetLayout());
-            VkDescriptorBufferInfo materialBufInfo{ materialManager.getBuffer().buffer, 0, VK_WHOLE_SIZE };
-            VkWriteDescriptorSet matWrite{}; matWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; matWrite.dstSet = globalMatDS; matWrite.dstBinding = 5; matWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; matWrite.descriptorCount = 1; matWrite.pBufferInfo = &materialBufInfo;
-            updateDescriptorSet(globalMatDS, { matWrite });
-            setMaterialDescriptorSet(globalMatDS);
-            registerDescriptorSet(globalMatDS);
-        }
-
-        descriptorSet = VK_NULL_HANDLE;
-
-        // Use DescriptorSetBuilder to reduce repeated code
-        DescriptorSetBuilder dsBuilder(this, &shadowMapper);
-        for (size_t i = 0; i < tripleCount; ++i) {
-            // Construct a transient Triple that points into the global texture arrays so
-            // DescriptorSetBuilder can create descriptor sets. Bindings will be overwritten
-            // with array descriptors below when arrays are present.
-            Triple tr;
-            tr.albedo.view = textureArrayManager.albedoArray.view;
-            tr.albedoSampler = textureArrayManager.albedoSampler;
-            tr.normal.view = textureArrayManager.normalArray.view;
-            tr.normalSampler = textureArrayManager.normalSampler;
-            tr.height.view = textureArrayManager.bumpArray.view;
-            tr.heightSampler = textureArrayManager.bumpSampler;
-            // main descriptor set
-            VkDeviceSize matElemSize = sizeof(glm::vec4) * 5; // size of MaterialGPU (now includes normalParams)
-            // create main descriptor set (create once, reuse)
-            if (descriptorSet == VK_NULL_HANDLE) {
-                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, mainPassUBO.buffer, false, nullptr, 0);
-                
-                // CRITICAL FIX: Write binding 6 (Sky UBO) to avoid invalid descriptor set
-                // Some drivers require ALL bindings in a layout to be written
-                VkDescriptorBufferInfo skyBufInfo{ mainPassUBO.buffer.buffer, 0, sizeof(UniformObject) };
-                VkWriteDescriptorSet skyWrite{};
-                skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                skyWrite.dstSet = ds;
-                skyWrite.dstBinding = 6;
-                skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                skyWrite.descriptorCount = 1;
-                skyWrite.pBufferInfo = &skyBufInfo;
-                
-                // Write binding 7 (Water params UBO)
-                VkDescriptorBufferInfo waterParamsBufInfo{ waterPassUBO.buffer.buffer, 0, sizeof(WaterParamsGPU) };
-                VkWriteDescriptorSet waterParamsWrite{};
-                waterParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                waterParamsWrite.dstSet = ds;
-                waterParamsWrite.dstBinding = 7;
-                waterParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                waterParamsWrite.descriptorCount = 1;
-                waterParamsWrite.pBufferInfo = &waterParamsBufInfo;
-                
-                updateDescriptorSet(ds, { skyWrite, waterParamsWrite });
-                
-                std::cout << "[DEBUG] Added binding 6 (Sky UBO) and binding 7 (Water params UBO) to main descriptor set" << std::endl;
-                std::cout << "[DEBUG] WaterParams write: dstSet=" << ds << " dstBinding=7 buffer=" << waterPassUBO.buffer.buffer 
-                          << " offset=0 range=" << sizeof(WaterParamsGPU) << std::endl;
-                
-                descriptorSet = ds;
-                registerDescriptorSet(descriptorSet);
-            }
-
-            // Create shadow pass descriptor set (uses shadowUniform and no shadow map binding)
-            if (shadowPassDescriptorSet == VK_NULL_HANDLE) {
-                VkDescriptorSet ds = dsBuilder.createShadowDescriptorSet(tr, shadowPassUBO.buffer, false, nullptr, 0);
-                shadowPassDescriptorSet = ds;
-                registerDescriptorSet(shadowPassDescriptorSet);
-            }
-        }
-
-        // If texture arrays are allocated, overwrite bindings 1..3 in descriptor sets
-        // to point to the global texture arrays (sampler2DArray) so shaders can index by layer.
-        if (textureArrayManager.layerAmount > 0) {
-            VkDescriptorImageInfo albedoArrayInfo{ textureArrayManager.albedoSampler, textureArrayManager.albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            VkDescriptorImageInfo normalArrayInfo{ textureArrayManager.normalSampler, textureArrayManager.normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            VkDescriptorImageInfo bumpArrayInfo{ textureArrayManager.bumpSampler, textureArrayManager.bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-
-            if (descriptorSet != VK_NULL_HANDLE) {
-                VkWriteDescriptorSet w1{}; w1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w1.dstSet = descriptorSet; w1.dstBinding = 1; w1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w1.descriptorCount = 1; w1.pImageInfo = &albedoArrayInfo;
-                VkWriteDescriptorSet w2{}; w2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w2.dstSet = descriptorSet; w2.dstBinding = 2; w2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w2.descriptorCount = 1; w2.pImageInfo = &normalArrayInfo;
-                VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = descriptorSet; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
-                updateDescriptorSet(descriptorSet, { w1, w2, w3 });
-            }
-            // Also update shadow pass descriptor set with texture arrays
-            if (shadowPassDescriptorSet != VK_NULL_HANDLE) {
-                VkWriteDescriptorSet w1{}; w1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w1.dstSet = shadowPassDescriptorSet; w1.dstBinding = 1; w1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w1.descriptorCount = 1; w1.pImageInfo = &albedoArrayInfo;
-                VkWriteDescriptorSet w2{}; w2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w2.dstSet = shadowPassDescriptorSet; w2.dstBinding = 2; w2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w2.descriptorCount = 1; w2.pImageInfo = &normalArrayInfo;
-                VkWriteDescriptorSet w3{}; w3.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w3.dstSet = shadowPassDescriptorSet; w3.dstBinding = 3; w3.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w3.descriptorCount = 1; w3.pImageInfo = &bumpArrayInfo;
-                updateDescriptorSet(shadowPassDescriptorSet, { w1, w2, w3 });
-            }
-        }
-
-        // Build sphere mesh for this material
-        auto sphere = SphereModel(0.5f, 32, 16, 0);
-        skyVBO = VertexBufferObjectBuilder::create(this, sphere);
+        // Delegate descriptor pool/allocation and writes to SceneRenderer
+        sceneRenderer.createDescriptorSets(materialManager, textureArrayManager, descriptorSet, shadowPassDescriptorSet, tripleCount);
         
         // Per-instance descriptor sets removed — use per-material/global descriptor sets instead.
         // Material SSBO is bound into a single global descriptor set; updateMaterials() will
@@ -631,14 +361,14 @@ class MyApp : public VulkanApp, public IEventHandler {
         auto debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &currentTextureIndex);
         widgetManager.addWidget(debugWidget);
         
-        auto shadowWidget = std::make_shared<ShadowMapWidget>(&shadowMapper, &shadowParams);
+        auto shadowWidget = std::make_shared<ShadowMapWidget>(&sceneRenderer.shadowMapper, &shadowParams);
         widgetManager.addWidget(shadowWidget);
         
         // Create settings widget
         settingsWidget = std::make_shared<SettingsWidget>();
         // Hook debug UI button to trigger a shadow depth readback
         settingsWidget->setDumpShadowDepthCallback([this]() {
-            shadowMapper.readbackShadowDepth();
+            sceneRenderer.shadowMapper.readbackShadowDepth();
             std::cerr << "[Debug] Wrote bin/shadow_depth.pgm (manual trigger).\n";
         });
         widgetManager.addWidget(settingsWidget);
@@ -653,7 +383,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         waterWidget = std::make_shared<WaterWidget>(&waterParams);
         widgetManager.addWidget(waterWidget);
         
-        renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(this, &waterRenderer);
+        renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(this, &sceneRenderer.waterRenderer);
         widgetManager.addWidget(renderPassDebugWidget);
         // Vulkan objects widget
         auto vulkanObjectsWidget = std::make_shared<VulkanObjectsWidget>(this);
@@ -663,8 +393,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
 
         // Initialize sky manager which creates and binds the sky UBO into descriptor sets
-        skySphere = std::make_unique<SkySphere>(this);
-        skySphere->init(skyWidget.get(), descriptorSet);
+        sceneRenderer.init(nullptr, skyWidget.get(), descriptorSet);
         
         // Create vegetation atlas editor widget
         auto vegAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
@@ -693,16 +422,16 @@ class MyApp : public VulkanApp, public IEventHandler {
                 
                 // Generate mesh synchronously during setup
                 mainScene->requestModel3D(Layer::LAYER_OPAQUE, node, [this, id, ver, &meshCount](const Geometry& mesh) {
-                    uint32_t meshId = indirectRenderer.addMesh(this, mesh, glm::mat4(1.0f));
-                    nodeModelVersions[id] = { meshId, ver };
+                    uint32_t meshId = sceneRenderer.indirectRenderer.addMesh(this, mesh, glm::mat4(1.0f));
+                    sceneRenderer.nodeModelVersions[id] = { meshId, ver };
                     meshCount++;
                 });
             }
         });
         
         // Rebuild buffers and update descriptor once after all meshes are added
-        indirectRenderer.rebuild(this);
-        indirectRenderer.updateModelsDescriptorSet(this, VK_NULL_HANDLE);
+        sceneRenderer.indirectRenderer.rebuild(this);
+        sceneRenderer.indirectRenderer.updateModelsDescriptorSet(this, VK_NULL_HANDLE);
         
         auto meshLoadEnd = std::chrono::steady_clock::now();
         double meshLoadTime = std::chrono::duration<double>(meshLoadEnd - meshLoadStart).count();
@@ -720,16 +449,16 @@ class MyApp : public VulkanApp, public IEventHandler {
                 
                 // Generate mesh synchronously during setup
                 mainScene->requestModel3D(Layer::LAYER_TRANSPARENT, node, [this, id, ver, &waterMeshCount](const Geometry& mesh) {
-                    uint32_t meshId = waterRenderer.getIndirectRenderer().addMesh(this, mesh, glm::mat4(1.0f));
-                    waterNodeModelVersions[id] = { meshId, ver };
+                    uint32_t meshId = sceneRenderer.waterRenderer.getIndirectRenderer().addMesh(this, mesh, glm::mat4(1.0f));
+                    sceneRenderer.waterNodeModelVersions[id] = { meshId, ver };
                     waterMeshCount++;
                 });
             }
         });
         
         // Rebuild water buffers and update descriptor once after all meshes are added
-        waterRenderer.getIndirectRenderer().rebuild(this);
-        waterRenderer.getIndirectRenderer().updateModelsDescriptorSet(this, VK_NULL_HANDLE);
+        sceneRenderer.waterRenderer.getIndirectRenderer().rebuild(this);
+        sceneRenderer.waterRenderer.getIndirectRenderer().updateModelsDescriptorSet(this, VK_NULL_HANDLE);
         
         auto waterMeshLoadEnd = std::chrono::steady_clock::now();
         double waterMeshLoadTime = std::chrono::duration<double>(waterMeshLoadEnd - waterMeshLoadStart).count();
@@ -820,7 +549,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 ImGui::SetNextWindowPos(ImVec2(padding, y), ImGuiCond_Always);
                 if (ImGui::Begin("##stats_overlay", nullptr, flags)) {
                     ImGui::Text("FPS: %.1f (%.2f ms)", imguiFps, imguiFps > 0 ? 1000.0f / imguiFps : 0.0f);
-                    ImGui::Text("Loaded: %zu meshes", nodeModelVersions.size());
+                    ImGui::Text("Loaded: %zu meshes", sceneRenderer.nodeModelVersions.size());
                     
                     if (profilingEnabled) {
                         ImGui::Separator();
@@ -913,11 +642,11 @@ class MyApp : public VulkanApp, public IEventHandler {
         auto cpuRecordStart = std::chrono::high_resolution_clock::now();
                 
         // Rebuild renderer if any meshes were added/removed
-        indirectRenderer.rebuild(this);
+        sceneRenderer.indirectRenderer.rebuild(this);
 
         
         // Rebuild water renderer if any meshes were added/removed
-        waterRenderer.getIndirectRenderer().rebuild(this);
+        sceneRenderer.waterRenderer.getIndirectRenderer().rebuild(this);
 
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -933,20 +662,20 @@ class MyApp : public VulkanApp, public IEventHandler {
         // First pass: Render shadow map (skip if shadows globally disabled)
         if (!settingsWidget || settingsWidget->getShadowsEnabled()) {
             // Prepare GPU cull before starting the shadow render pass (use light's view-projection for shadow frustum)
-            indirectRenderer.prepareCull(commandBuffer, light.getViewProjectionMatrix());
+            sceneRenderer.indirectRenderer.prepareCull(commandBuffer, light.getViewProjectionMatrix());
             
             if (queryPool != VK_NULL_HANDLE) {
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, queryPool, 1); // After shadow cull
             }
             
-            shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
+            sceneRenderer.shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
             
             // Update uniform buffer for shadow pass: set viewProjection = lightSpaceMatrix
-            shadowPassUBO.data = uboStatic;
-            shadowPassUBO.data.viewProjection = uboStatic.lightSpaceMatrix;
-            shadowPassUBO.data.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
-            shadowPassUBO.data.passParams = glm::vec4(1.0f, settingsWidget ? (settingsWidget->getShadowTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
-            updateUniformBuffer(shadowPassUBO.buffer, &shadowPassUBO.data, sizeof(UniformObject));
+            sceneRenderer.shadowPassUBO.data = uboStatic;
+            sceneRenderer.shadowPassUBO.data.viewProjection = uboStatic.lightSpaceMatrix;
+            sceneRenderer.shadowPassUBO.data.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+            sceneRenderer.shadowPassUBO.data.passParams = glm::vec4(1.0f, settingsWidget ? (settingsWidget->getShadowTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
+            updateUniformBuffer(sceneRenderer.shadowPassUBO.buffer, &sceneRenderer.shadowPassUBO.data, sizeof(UniformObject));
             
 
             // Bind material/per-texture descriptor sets for shadow pass
@@ -961,9 +690,9 @@ class MyApp : public VulkanApp, public IEventHandler {
             }
 
             // Issue compacted draws after GPU frustum culling
-            indirectRenderer.drawPrepared(commandBuffer, this);
+            sceneRenderer.indirectRenderer.drawPrepared(commandBuffer, this);
 
-            shadowMapper.endShadowPass(commandBuffer);
+            sceneRenderer.shadowMapper.endShadowPass(commandBuffer);
             
             if (queryPool != VK_NULL_HANDLE) {
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 2); // After shadow draw
@@ -981,14 +710,14 @@ class MyApp : public VulkanApp, public IEventHandler {
         waterTime += lastDeltaTime * waterParams.waveSpeed;
         waterParams.time = waterTime;
         
-        mainPassUBO.data = uboStatic;
-        mainPassUBO.data.viewProjection = camera.getViewProjectionMatrix();
-        mainPassUBO.data.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
-        mainPassUBO.data.shadowEffects = glm::vec4(0.0f, 0.0f, 0.0f,  settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f);
-        mainPassUBO.data.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
-        mainPassUBO.data.triplanarSettings = glm::vec4(settingsWidget->getTriplanarThreshold(), settingsWidget->getTriplanarExponent(), 0.0f, 0.0f);
+        sceneRenderer.mainPassUBO.data = uboStatic;
+        sceneRenderer.mainPassUBO.data.viewProjection = camera.getViewProjectionMatrix();
+        sceneRenderer.mainPassUBO.data.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
+        sceneRenderer.mainPassUBO.data.shadowEffects = glm::vec4(0.0f, 0.0f, 0.0f,  settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f);
+        sceneRenderer.mainPassUBO.data.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
+        sceneRenderer.mainPassUBO.data.triplanarSettings = glm::vec4(settingsWidget->getTriplanarThreshold(), settingsWidget->getTriplanarExponent(), 0.0f, 0.0f);
         // passParams: x=waterTime, y=tessEnabled, z=waveScale, w=noiseScale
-        mainPassUBO.data.passParams = glm::vec4(
+        sceneRenderer.mainPassUBO.data.passParams = glm::vec4(
             waterTime,
             settingsWidget ? (settingsWidget->getTessellationEnabled() ? 1.0f : 0.0f) : 0.0f,
             waterParams.waveScale,
@@ -999,40 +728,40 @@ class MyApp : public VulkanApp, public IEventHandler {
         if (frameCount++ % 30 == 0) {
             std::cout << "[DEBUG] waterTime=" << waterTime
                       << " lastDeltaTime=" << lastDeltaTime
-                      << " ubo.passParams.time=" << mainPassUBO.data.passParams.x 
-                      << " waveScale=" << mainPassUBO.data.passParams.z 
-                      << " noiseScale=" << mainPassUBO.data.passParams.w 
-                      << " | mainPassUBO.buffer.buffer=" << mainPassUBO.buffer.buffer << std::endl;
+                      << " ubo.passParams.time=" << sceneRenderer.mainPassUBO.data.passParams.x 
+                      << " waveScale=" << sceneRenderer.mainPassUBO.data.passParams.z 
+                      << " noiseScale=" << sceneRenderer.mainPassUBO.data.passParams.w 
+                      << " | mainPassUBO.buffer.buffer=" << sceneRenderer.mainPassUBO.buffer.buffer << std::endl;
         }
         // Store additional water params in tessParams: x=waveSpeed, y=refractionStrength, z=fresnelPower, w=transparency
-        mainPassUBO.data.tessParams = glm::vec4(
+        sceneRenderer.mainPassUBO.data.tessParams = glm::vec4(
             waterParams.waveSpeed,
             waterParams.refractionStrength,
             waterParams.fresnelPower,
             waterParams.transparency
         );
-        updateUniformBuffer(mainPassUBO.buffer, &mainPassUBO.data, sizeof(UniformObject));
+        updateUniformBuffer(sceneRenderer.mainPassUBO.buffer, &sceneRenderer.mainPassUBO.data, sizeof(UniformObject));
         
         // Update water params UBO
-        waterPassUBO.data.params1 = glm::vec4(
+        sceneRenderer.waterPassUBO.data.params1 = glm::vec4(
             waterParams.refractionStrength,
             waterParams.fresnelPower,
             waterParams.transparency,
             waterParams.foamDepthThreshold
         );
-        waterPassUBO.data.params2 = glm::vec4(
+        sceneRenderer.waterPassUBO.data.params2 = glm::vec4(
             waterParams.waterTint,
             1.0f / waterParams.noiseScale,
             static_cast<float>(waterParams.noiseOctaves),
             waterParams.noisePersistence
         );
-        waterPassUBO.data.params3 = glm::vec4(waterParams.noiseTimeSpeed, waterTime, waterParams.shoreStrength, waterParams.shoreFalloff);
-        waterPassUBO.data.shallowColor = glm::vec4(waterParams.shallowColor, 0.0f);
-        waterPassUBO.data.deepColor = glm::vec4(waterParams.deepColor, waterParams.foamIntensity);
-        waterPassUBO.data.foamParams = glm::vec4(1.0f/waterParams.foamNoiseScale, static_cast<float>(waterParams.foamNoiseOctaves), waterParams.foamNoisePersistence, waterParams.foamTintIntensity);
-        waterPassUBO.data.foamParams2 = glm::vec4(waterParams.foamBrightness, waterParams.foamContrast, 0.0f, 0.0f);
-        waterPassUBO.data.foamTint = waterParams.foamTint;
-        updateUniformBuffer(waterPassUBO.buffer, &waterPassUBO.data, sizeof(WaterParamsGPU));
+        sceneRenderer.waterPassUBO.data.params3 = glm::vec4(waterParams.noiseTimeSpeed, waterTime, waterParams.shoreStrength, waterParams.shoreFalloff);
+        sceneRenderer.waterPassUBO.data.shallowColor = glm::vec4(waterParams.shallowColor, 0.0f);
+        sceneRenderer.waterPassUBO.data.deepColor = glm::vec4(waterParams.deepColor, waterParams.foamIntensity);
+        sceneRenderer.waterPassUBO.data.foamParams = glm::vec4(1.0f/waterParams.foamNoiseScale, static_cast<float>(waterParams.foamNoiseOctaves), waterParams.foamNoisePersistence, waterParams.foamTintIntensity);
+        sceneRenderer.waterPassUBO.data.foamParams2 = glm::vec4(waterParams.foamBrightness, waterParams.foamContrast, 0.0f, 0.0f);
+        sceneRenderer.waterPassUBO.data.foamTint = waterParams.foamTint;
+        updateUniformBuffer(sceneRenderer.waterPassUBO.buffer, &sceneRenderer.waterPassUBO.data, sizeof(WaterParamsGPU));
         
         // DEBUG: Print UBO passParams after write
         //ubo.printPassParams();
@@ -1053,11 +782,11 @@ class MyApp : public VulkanApp, public IEventHandler {
         );
 
         // Prepare GPU cull for main pass BEFORE the render pass (vkCmdFillBuffer/barriers not allowed inside render pass)
-        indirectRenderer.prepareCull(commandBuffer, camera.getViewProjectionMatrix());
+        sceneRenderer.indirectRenderer.prepareCull(commandBuffer, camera.getViewProjectionMatrix());
         
         // Also prepare water cull before render pass
-        if (waterRenderer.getIndirectRenderer().getMeshCount() > 0) {
-            waterRenderer.getIndirectRenderer().prepareCull(commandBuffer, camera.getViewProjectionMatrix());
+        if (sceneRenderer.waterRenderer.getIndirectRenderer().getMeshCount() > 0) {
+            sceneRenderer.waterRenderer.getIndirectRenderer().prepareCull(commandBuffer, camera.getViewProjectionMatrix());
         }
         
         if (queryPool != VK_NULL_HANDLE) {
@@ -1065,7 +794,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
 
         // Check if we need offscreen rendering for water
-        bool hasWater = waterRenderer.getIndirectRenderer().getMeshCount() > 0;
+        bool hasWater = sceneRenderer.waterRenderer.getIndirectRenderer().getMeshCount() > 0;
         
         // If we have water, render main scene to offscreen targets for sampling
         // Otherwise render directly to swapchain
@@ -1074,11 +803,11 @@ class MyApp : public VulkanApp, public IEventHandler {
         
         if (hasWater) {
             // Initialize per-frame offscreen render targets if needed
-            waterRenderer.createRenderTargets(getWidth(), getHeight());
+            sceneRenderer.waterRenderer.createRenderTargets(getWidth(), getHeight());
             
             // Use offscreen framebuffer for main scene (per-frame)
-            mainPassInfo.renderPass = waterRenderer.getSceneRenderPass();
-            mainPassInfo.framebuffer = waterRenderer.getSceneFramebuffer(frameIdx);
+            mainPassInfo.renderPass = sceneRenderer.waterRenderer.getSceneRenderPass();
+            mainPassInfo.framebuffer = sceneRenderer.waterRenderer.getSceneFramebuffer(frameIdx);
             mainPassInfo.renderArea.extent = {getWidth(), getHeight()};
         }
 
@@ -1096,10 +825,10 @@ class MyApp : public VulkanApp, public IEventHandler {
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
         // --- Render sky sphere first: large sphere centered at camera ---
-        if (skyRenderer && descriptorSet != VK_NULL_HANDLE) {
-            if (skySphere) skySphere->update();
+        if (sceneRenderer.skyRenderer && descriptorSet != VK_NULL_HANDLE) {
+            if (sceneRenderer.skySphere) sceneRenderer.skySphere->update();
             SkyMode skyMode = skyWidget ? skyWidget->getSkyMode() : SkyMode::Gradient;
-            skyRenderer->render(commandBuffer, skyVBO, descriptorSet, mainPassUBO.buffer, mainPassUBO.data, camera.getViewProjectionMatrix(), skyMode);
+            sceneRenderer.skyRenderer->render(commandBuffer, sceneRenderer.skyVBO, descriptorSet, sceneRenderer.mainPassUBO.buffer, sceneRenderer.mainPassUBO.data, camera.getViewProjectionMatrix(), skyMode);
         }
         
         if (queryPool != VK_NULL_HANDLE) {
@@ -1113,7 +842,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
         
         // Bind vertex/index buffers once for all subsequent draw calls in this render pass
-        indirectRenderer.bindBuffers(commandBuffer);
+        sceneRenderer.indirectRenderer.bindBuffers(commandBuffer);
 
         // Bind descriptor sets if available (material/global + per-texture)
         { 
@@ -1130,15 +859,15 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
 
         // --- Depth pre-pass: fill depth buffer with geometry depths (color writes disabled) ---
-        if (depthPrePassPipeline != VK_NULL_HANDLE) {
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
+        if (sceneRenderer.depthPrePassPipeline != VK_NULL_HANDLE) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sceneRenderer.depthPrePassPipeline);
             // Ensure material/models descriptor is bound (models SSBO expected in material set)
             VkDescriptorSet matDs = getMaterialDescriptorSet();
             if (matDs != VK_NULL_HANDLE) {
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, getPipelineLayout(), 0, 1, &matDs, 0, nullptr);
             }
             // Reuse culled draw commands - buffers already bound above
-            indirectRenderer.drawIndirectOnly(commandBuffer, this);
+            sceneRenderer.indirectRenderer.drawIndirectOnly(commandBuffer, this);
         }
         
         if (queryPool != VK_NULL_HANDLE) {
@@ -1148,10 +877,10 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Bind descriptor set and draw
         // Use a single pipeline (tessellation is enabled/disabled in the shader using mappingMode)
-        if (settingsWidget->getWireframeEnabled() && graphicsPipelineWire != VK_NULL_HANDLE) 
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineWire);
+        if (settingsWidget->getWireframeEnabled() && sceneRenderer.graphicsPipelineWire != VK_NULL_HANDLE) 
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sceneRenderer.graphicsPipelineWire);
         else 
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sceneRenderer.graphicsPipeline);
      
         // Bind global material descriptor set (set 0) and per-material descriptor set (set 1)  
         {
@@ -1174,7 +903,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
         
         // Render compacted draw commands - buffers already bound, just issue draw
-        indirectRenderer.drawIndirectOnly(commandBuffer, this);
+        sceneRenderer.indirectRenderer.drawIndirectOnly(commandBuffer, this);
 
         // Timestamp 6: After main draw
         if (profilingEnabled) {
@@ -1182,7 +911,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
 
         // --- Handle water rendering (transparent, rendered in separate pass with scene sampling) ---
-        VkPipeline waterGeomPipeline = waterRenderer.getWaterGeometryPipeline();
+        VkPipeline waterGeomPipeline = sceneRenderer.waterRenderer.getWaterGeometryPipeline();
         if (hasWater) {
             auto waterStart = std::chrono::high_resolution_clock::now();
             
@@ -1211,7 +940,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             sceneColorBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
             sceneColorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             sceneColorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            sceneColorBarrier.image = waterRenderer.getSceneColorImage(frameIdx);
+            sceneColorBarrier.image = sceneRenderer.waterRenderer.getSceneColorImage(frameIdx);
             sceneColorBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             sceneColorBarrier.subresourceRange.baseMipLevel = 0;
             sceneColorBarrier.subresourceRange.levelCount = 1;
@@ -1226,7 +955,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             sceneDepthBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
             sceneDepthBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             sceneDepthBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            sceneDepthBarrier.image = waterRenderer.getSceneDepthImage(frameIdx);
+            sceneDepthBarrier.image = sceneRenderer.waterRenderer.getSceneDepthImage(frameIdx);
             sceneDepthBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
             sceneDepthBarrier.subresourceRange.baseMipLevel = 0;
             sceneDepthBarrier.subresourceRange.levelCount = 1;
@@ -1290,7 +1019,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             blitRegion.dstOffsets[1] = {(int32_t)getWidth(), (int32_t)getHeight(), 1};
             
             vkCmdBlitImage(commandBuffer,
-                waterRenderer.getSceneColorImage(frameIdx), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                sceneRenderer.waterRenderer.getSceneColorImage(frameIdx), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 currentSwapchainImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 1, &blitRegion, VK_FILTER_NEAREST);
             
@@ -1310,7 +1039,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             depthBlitRegion.dstOffsets[1] = {(int32_t)getWidth(), (int32_t)getHeight(), 1};
             
             vkCmdBlitImage(commandBuffer,
-                waterRenderer.getSceneDepthImage(frameIdx), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                sceneRenderer.waterRenderer.getSceneDepthImage(frameIdx), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 getDepthImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 1, &depthBlitRegion, VK_FILTER_NEAREST);
             
@@ -1332,7 +1061,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             sceneColorReadBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             sceneColorReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             sceneColorReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            sceneColorReadBarrier.image = waterRenderer.getSceneColorImage(frameIdx);
+            sceneColorReadBarrier.image = sceneRenderer.waterRenderer.getSceneColorImage(frameIdx);
             sceneColorReadBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             sceneColorReadBarrier.subresourceRange.baseMipLevel = 0;
             sceneColorReadBarrier.subresourceRange.levelCount = 1;
@@ -1347,7 +1076,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             sceneDepthReadBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             sceneDepthReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             sceneDepthReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            sceneDepthReadBarrier.image = waterRenderer.getSceneDepthImage(frameIdx);
+            sceneDepthReadBarrier.image = sceneRenderer.waterRenderer.getSceneDepthImage(frameIdx);
             sceneDepthReadBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
             sceneDepthReadBarrier.subresourceRange.baseMipLevel = 0;
             sceneDepthReadBarrier.subresourceRange.levelCount = 1;
@@ -1391,11 +1120,11 @@ class MyApp : public VulkanApp, public IEventHandler {
             vkCmdSetScissor(commandBuffer, 0, 1, &waterScissor);
             
             // Optionally draw water geometry depending on pipeline and debug mode
-            int debugMode = int(mainPassUBO.data.debugParams.x + 0.5f);
+            int debugMode = int(sceneRenderer.mainPassUBO.data.debugParams.x + 0.5f);
             if (waterGeomPipeline != VK_NULL_HANDLE && (debugMode == 0 || debugMode == 32)) {
                 // Bind water pipeline
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeomPipeline);
-                waterRenderer.getIndirectRenderer().bindBuffers(commandBuffer);
+                sceneRenderer.waterRenderer.getIndirectRenderer().bindBuffers(commandBuffer);
                 
                 // Bind all 3 descriptor sets at their correct indices:
                 // Set 0: Materials SSBO
@@ -1403,7 +1132,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // Set 2: Scene color and depth textures (per-frame)
                 {
                     VkDescriptorSet matDs = getMaterialDescriptorSet();
-                    VkDescriptorSet sceneDs = waterRenderer.getWaterDepthDescriptorSet(frameIdx);
+                    VkDescriptorSet sceneDs = sceneRenderer.waterRenderer.getWaterDepthDescriptorSet(frameIdx);
                     
                     // DEBUG: Print descriptor set handles
                     static int printCount = 0;
@@ -1417,18 +1146,18 @@ class MyApp : public VulkanApp, public IEventHandler {
                     if (matDs != VK_NULL_HANDLE && descriptorSet != VK_NULL_HANDLE) {
                         VkDescriptorSet sets01[2] = { matDs, descriptorSet };
                         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                            waterRenderer.getWaterGeometryPipelineLayout(), 0, 2, sets01, 0, nullptr);
+                            sceneRenderer.waterRenderer.getWaterGeometryPipelineLayout(), 0, 2, sets01, 0, nullptr);
                     }
                     
                     // Bind set 2 (scene textures) at the correct index
                     if (sceneDs != VK_NULL_HANDLE) {
                         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                            waterRenderer.getWaterGeometryPipelineLayout(), 2, 1, &sceneDs, 0, nullptr);
+                            sceneRenderer.waterRenderer.getWaterGeometryPipelineLayout(), 2, 1, &sceneDs, 0, nullptr);
                     }
                 }
                 
                 // Draw water geometry
-                waterRenderer.getIndirectRenderer().drawIndirectOnly(commandBuffer, this);
+                sceneRenderer.waterRenderer.getIndirectRenderer().drawIndirectOnly(commandBuffer, this);
                 
                 auto waterEnd = std::chrono::high_resolution_clock::now();
                 profileWater = std::chrono::duration<float, std::milli>(waterEnd - waterStart).count();
@@ -1499,52 +1228,17 @@ class MyApp : public VulkanApp, public IEventHandler {
             queryPool = VK_NULL_HANDLE;
         }
 
-        if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipeline, nullptr);
-        if (graphicsPipelineWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), graphicsPipelineWire, nullptr);
-        if (depthPrePassPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), depthPrePassPipeline, nullptr);
-        if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), waterPipeline, nullptr);
+        if (sceneRenderer.graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), sceneRenderer.graphicsPipeline, nullptr);
+        if (sceneRenderer.graphicsPipelineWire != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), sceneRenderer.graphicsPipelineWire, nullptr);
+        if (sceneRenderer.depthPrePassPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), sceneRenderer.depthPrePassPipeline, nullptr);
+        if (sceneRenderer.waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(getDevice(), sceneRenderer.waterPipeline, nullptr);
         // Tessellation pipelines removed earlier; nothing to destroy here.
-        if (skyRenderer) skyRenderer->cleanup();
-        skyVBO.destroy(getDevice());
+        sceneRenderer.cleanup();
         // texture cleanup via managers
         // legacy texture managers removed; arrays handle GPU textures now
         textureArrayManager.destroy(this);
         vegetationTextureArrayManager.destroy(this);
- 
-        // uniform buffers will be destroyed later with null checks
- 
-        // destroy any dynamically created VBOs from async-loaded models
-       // for (auto &pv : dynamicMeshVBOs) {
-       //     if (pv) pv->destroy(getDevice());
-       // }
-       // dynamicMeshVBOs.clear();
 
-        // Remove any meshes registered in the IndirectRenderer and clear tracking
-        for (auto &entry : nodeModelVersions) {
-            if (entry.second.meshId != UINT32_MAX) indirectRenderer.removeMesh(entry.second.meshId);
-        }
-        nodeModelVersions.clear();
-
-        // Cleanup indirect renderer resources
-        indirectRenderer.cleanup(this);
-        
-        // Remove any water meshes registered in WaterRenderer and clear tracking
-        for (auto &entry : waterNodeModelVersions) {
-            if (entry.second.meshId != UINT32_MAX) waterRenderer.getIndirectRenderer().removeMesh(entry.second.meshId);
-        }
-        waterNodeModelVersions.clear();
-        
-        // Cleanup water renderer resources
-        waterRenderer.cleanup();
-
-        // global uniform buffers cleanup (main, shadow, sky)
-        if (mainPassUBO.buffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), mainPassUBO.buffer.buffer, nullptr);
-        if (mainPassUBO.buffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), mainPassUBO.buffer.memory, nullptr);
-        if (shadowPassUBO.buffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), shadowPassUBO.buffer.buffer, nullptr);
-        if (shadowPassUBO.buffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), shadowPassUBO.buffer.memory, nullptr);
-        if (waterPassUBO.buffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), waterPassUBO.buffer.buffer, nullptr);
-        if (waterPassUBO.buffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), waterPassUBO.buffer.memory, nullptr);
-        // Sky UBO is managed by SkySphere and cleaned up there.
         
         // editable textures cleanup
         if (textureMixer) textureMixer->cleanup();
@@ -1552,12 +1246,8 @@ class MyApp : public VulkanApp, public IEventHandler {
         // billboard creator cleanup
         if (billboardCreator) billboardCreator->cleanup();
         
-        // shadow map cleanup
-        shadowMapper.cleanup();
         // material manager cleanup
         materialManager.destroy(this);
-        // sky resources cleanup via SkySphere
-        if (skySphere) skySphere->cleanup();
     }
 
 };
