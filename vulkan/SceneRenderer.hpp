@@ -658,7 +658,8 @@ public:
         }
 
         // Render ImGui is handled by the app after this call
-        vkCmdEndRenderPass(commandBuffer);
+        // NOTE: do not end the swapchain render pass here so the caller can render ImGui
+        // (ImGui_ImplVulkan_RenderDrawData expects to be called inside an active render pass).
     }
 
     template<typename T>

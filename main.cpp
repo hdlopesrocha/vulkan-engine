@@ -101,11 +101,14 @@ class MyApp : public VulkanApp, public IEventHandler {
                         // timestampPeriod is in nanoseconds per tick
                         float nsToMs = timestampPeriod / 1000000.0f;
                         
+                        // The recorded timestamp ordering is: 0=start, 1=shadowCull, 2=shadowDraw,
+                        // 4=mainCull, 3=sky, 5=depthPrepass, 6=mainDraw, 7=imgui.
+                        // Compute durations using the actual chronological order recorded in the command buffer.
                         profileShadowCull = (timestamps[1] - timestamps[0]) * nsToMs;
                         profileShadowDraw = (timestamps[2] - timestamps[1]) * nsToMs;
-                        profileSky = (timestamps[3] - timestamps[2]) * nsToMs;
-                        profileMainCull = (timestamps[4] - timestamps[3]) * nsToMs;
-                        profileDepthPrepass = (timestamps[5] - timestamps[4]) * nsToMs;
+                        profileMainCull = (timestamps[4] - timestamps[2]) * nsToMs; // main cull follows shadow draw
+                        profileSky = (timestamps[3] - timestamps[4]) * nsToMs; // sky is recorded after main cull
+                        profileDepthPrepass = (timestamps[5] - timestamps[3]) * nsToMs;
                         profileMainDraw = (timestamps[6] - timestamps[5]) * nsToMs;
                         profileImGui = (timestamps[7] - timestamps[6]) * nsToMs;
                     }
@@ -718,15 +721,12 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         if (hasWater) {
             sceneRenderer.waterPass(commandBuffer, renderPassInfo, frameIdx, descriptorSet, profilingEnabled, queryPool, waterParams, waterTime);
-            if (renderPassDebugWidget) renderPassDebugWidget->updateDescriptors(frameIdx);
-            imguiPass(commandBuffer);
-        } else {
-            // Update debug widget descriptors and render ImGui inside the same render pass
-            if (renderPassDebugWidget) renderPassDebugWidget->updateDescriptors(frameIdx);
-            imguiPass(commandBuffer);
-            vkCmdEndRenderPass(commandBuffer);
-        }
-
+        } 
+        
+        // Update debug widget descriptors and render ImGui inside the same render pass
+        if (renderPassDebugWidget) renderPassDebugWidget->updateDescriptors(frameIdx);
+        imguiPass(commandBuffer);
+        vkCmdEndRenderPass(commandBuffer);
         // Transition depth image to READ_ONLY_OPTIMAL for sampling in shaders
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
