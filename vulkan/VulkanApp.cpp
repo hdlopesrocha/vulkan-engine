@@ -1438,12 +1438,6 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &colorBlendAttachment;
 
-    VkPushConstantRange pushRange{};
-    // Push constants used by vertex and tessellation evaluation shaders
-    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-    pushRange.offset = 0;
-    pushRange.size = static_cast<uint32_t>(sizeof(float) * 16);
-
     // Build set layout array: material set (set 0) followed by per-instance set (set 1)
     std::vector<VkDescriptorSetLayout> setLayouts;
     if (materialDescriptorSetLayout != VK_NULL_HANDLE) setLayouts.push_back(materialDescriptorSetLayout);
@@ -1454,8 +1448,8 @@ VkPipeline VulkanApp::createGraphicsPipeline(
     pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
     pipelineLayoutInfo.pSetLayouts = setLayouts.empty() ? nullptr : setLayouts.data();
 
-    pipelineLayoutInfo.pushConstantRangeCount = 1;
-    pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+    pipelineLayoutInfo.pushConstantRangeCount = 0;
+    pipelineLayoutInfo.pPushConstantRanges = nullptr;
 
     // Create pipeline layout only once and reuse for multiple pipelines
     if (pipelineLayout == VK_NULL_HANDLE) {

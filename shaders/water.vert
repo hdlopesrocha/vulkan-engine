@@ -28,7 +28,6 @@ layout(set = 1, binding = 0) uniform UniformBufferObject {
 } ubo;
 
 void main() {
-    // Pass world position directly (no model matrix needed for terrain-style water)
     fragPos = inPosition;
     fragNormal = inNormal;
     fragTexCoord = inTexCoord;

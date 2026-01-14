@@ -8,7 +8,8 @@ WaterRenderer::WaterRenderer(VulkanApp* app) : app(app) {}
 
 WaterRenderer::~WaterRenderer() {}
 
-void WaterRenderer::init() {
+void WaterRenderer::init(Buffer& waterParamsBuffer) {
+    this->waterParamsBuffer = waterParamsBuffer;
     waterIndirectRenderer.init(app);
     createSamplers();
     createWaterRenderPass();
@@ -474,10 +475,7 @@ void WaterRenderer::createWaterPipelines() {
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     
-    // Create uniform buffer for water geometry shader params
-    waterParamsBuffer = app->createBuffer(sizeof(WaterParamsGPU),
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    // Water params buffer is already assigned in init
     
     // Initialize water params buffer with default values
     WaterParamsGPU defaultWaterParams{};

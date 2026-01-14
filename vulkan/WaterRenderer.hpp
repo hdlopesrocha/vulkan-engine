@@ -72,7 +72,7 @@ public:
     WaterRenderer(VulkanApp* app);
     ~WaterRenderer();
 
-    void init();
+    void init(Buffer& waterParamsBuffer);
     void cleanup();
 
     // Create offscreen render targets for water rendering

@@ -69,7 +69,7 @@ void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, Vk
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, app->getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
     }
     // Push sky model matrix via push constants (visible to vertex + tessellation stages)
-    vkCmdPushConstants(cmd, app->getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &model);
+    // vkCmdPushConstants(cmd, app->getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &model);
 
     const VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
     const VkDeviceSize offsets[] = { 0 };

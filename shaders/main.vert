@@ -25,11 +25,11 @@ void main() {
     fragUV = inUV;
     // Transform normal to world space using the model matrix from push constants
     // For uniform scaling, mat3(model) works. For non-uniform scaling, use transpose(inverse(model))
-    fragNormal = normalize(mat3(pushConstants.model) * inNormal);
+    fragNormal = normalize(inNormal);
     // Provide per-vertex tex index for TCS to assemble per-patch indices
     fragTexIndex = inTexIndex;
     // compute world-space position and pass to fragment
-    vec4 worldPos = pushConstants.model * vec4(inPos, 1.0);
+    vec4 worldPos = vec4(inPos, 1.0);
     fragPosWorld = worldPos.xyz;
     // compute light-space position for shadow mapping
     fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;

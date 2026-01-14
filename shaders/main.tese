@@ -47,17 +47,16 @@ void main() {
     ivec3 texIndices = tc_fragTexIndex[0];
     vec3 weights = tc_fragTexWeights[0] * bc.x + tc_fragTexWeights[1] * bc.y + tc_fragTexWeights[2] * bc.z;
 
-    mat4 model = pushConstants.model;
 
     // Calculate position with displacement (needed for both passes)
-    vec3 worldNormal = normalize(mat3(model) * localNormal);
-    vec4 worldPos = model * vec4(localPos, 1.0);
+    vec3 worldNormal = normalize(localNormal);
+    vec4 worldPos = vec4(localPos, 1.0);
     
     float mappingFlag = materials[texIndices.x].mappingParams.x * weights.x + materials[texIndices.y].mappingParams.x * weights.y + materials[texIndices.z].mappingParams.x * weights.z;
     mappingFlag *= ubo.passParams.y;
     vec3 displacedLocalPos = mappingFlag > 0.5 ? applyDisplacement(localPos, localNormal, worldPos.xyz, worldNormal, uv, texIndices, weights) : localPos;
     
-    gl_Position = ubo.viewProjection * model * vec4(displacedLocalPos, 1.0);
+    gl_Position = ubo.viewProjection * vec4(displacedLocalPos, 1.0);
 
     if (isDepthPass) {
         // Depth pass: set dummy outputs (fragment shader early-returns anyway)
@@ -75,21 +74,21 @@ void main() {
         fragColor = tc_fragColor[0] * bc.x + tc_fragColor[1] * bc.y + tc_fragColor[2] * bc.z;
         
         fragPosWorldNotDisplaced = worldPos.xyz;
-        worldPos = model * vec4(displacedLocalPos, 1.0);
+        worldPos = vec4(displacedLocalPos, 1.0);
         fragPosWorld = worldPos.xyz;
         fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
         
         fragUV = uv;
         fragTexIndices = texIndices;
         fragTexWeights = weights;
-        fragNormal = normalize(mat3(model) * localNormal);
+        fragNormal = normalize(localNormal);
 
         // Compute explicit face (sharp) normal from triangle corners
         vec3 p0_sh = tc_fragLocalPos[0];
         vec3 p1_sh = tc_fragLocalPos[1];
         vec3 p2_sh = tc_fragLocalPos[2];
         vec3 faceLocal = normalize(cross(p2_sh - p0_sh, p1_sh - p0_sh));
-        fragSharpNormal = normalize(mat3(model) * faceLocal);
+        fragSharpNormal = normalize(faceLocal);
     }
 
     // Per-vertex tangents are no longer propagated; fragment will compute T/B/N as needed.

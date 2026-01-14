@@ -176,14 +176,28 @@ class MyApp : public VulkanApp, public IEventHandler {
     EventManager eventManager;
     KeyboardPublisher keyboard;
     GamepadPublisher gamepad;
-    Buffer mainUniform;
-    Buffer shadowUniform;
+    
+    template<typename T>
+    struct PassUBO {
+        Buffer buffer;
+        T data;
+        
+        PassUBO() = default;
+        PassUBO(VulkanApp* app, size_t size) {
+            buffer = app->createBuffer(size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }
+    };
+    
+    PassUBO<UniformObject> mainPassUBO{};
+    PassUBO<UniformObject> shadowPassUBO{};
+    PassUBO<WaterParamsGPU> waterPassUBO{};
+    
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkDescriptorSet shadowPassDescriptorSet = VK_NULL_HANDLE; // Shadow pass uses this (no shadow map binding)
     MaterialManager materialManager;
     size_t materialCount = 0;
     
-    // static parts of the UBO that don't vary per-cube (we'll set model per draw)
+    // static parts of the UBO that don't vary per-cube
     UniformObject uboStatic{};
     // textureImage is now owned by TextureManager
     //VertexBufferObject vertexBufferObject; // now owned by CubeMesh
@@ -353,8 +367,13 @@ class MyApp : public VulkanApp, public IEventHandler {
         // Initialize indirect renderer (creates compute pipeline for GPU cull and manages merged buffers)
         indirectRenderer.init(this);
         
+        // create three global uniform buffers: main, shadow and sky
+        mainPassUBO = PassUBO<UniformObject>{this, sizeof(UniformObject)};
+        shadowPassUBO = PassUBO<UniformObject>{this, sizeof(UniformObject)};
+        waterPassUBO = PassUBO<WaterParamsGPU>{this, sizeof(WaterParamsGPU)};
+        
         // Initialize water renderer
-        waterRenderer.init();
+        waterRenderer.init(waterPassUBO.buffer);
         // Note: createRenderTargets is not called since we render water directly to swapchain
 
         // initialize texture array manager with room for 24 layers of 1024x1024
@@ -460,17 +479,14 @@ class MyApp : public VulkanApp, public IEventHandler {
         // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
         if (!loadedIndices.empty()) currentTextureIndex = loadedIndices[0];
         
-        // create three global uniform buffers: main, shadow and sky
-        mainUniform = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        shadowUniform = createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        
-        std::cout << "[DEBUG] Created mainUniform buffer: handle=" << mainUniform.buffer 
-                  << " memory=" << mainUniform.memory 
+        std::cout << "[DEBUG] Created mainPassUBO.buffer: handle=" << mainPassUBO.buffer.buffer 
+                  << " memory=" << mainPassUBO.buffer.memory 
                   << " size=" << sizeof(UniformObject) << std::endl;
         
-        // Initialize mainUniform with uboStatic so descriptor sets see valid data
-        updateUniformBuffer(mainUniform, &uboStatic, sizeof(UniformObject));
-        std::cout << "[DEBUG] Initialized mainUniform with uboStatic" << std::endl;
+        // Initialize mainPassUBO with uboStatic so descriptor sets see valid data
+        mainPassUBO.data = uboStatic;
+        updateUniformBuffer(mainPassUBO.buffer, &mainPassUBO.data, sizeof(UniformObject));
+        std::cout << "[DEBUG] Initialized mainPassUBO with uboStatic" << std::endl;
         
         // create descriptor sets - one per texture triple
         size_t tripleCount = materials.size();
@@ -519,11 +535,11 @@ class MyApp : public VulkanApp, public IEventHandler {
             VkDeviceSize matElemSize = sizeof(glm::vec4) * 5; // size of MaterialGPU (now includes normalParams)
             // create main descriptor set (create once, reuse)
             if (descriptorSet == VK_NULL_HANDLE) {
-                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, mainUniform, false, nullptr, 0);
+                VkDescriptorSet ds = dsBuilder.createMainDescriptorSet(tr, mainPassUBO.buffer, false, nullptr, 0);
                 
                 // CRITICAL FIX: Write binding 6 (Sky UBO) to avoid invalid descriptor set
                 // Some drivers require ALL bindings in a layout to be written
-                VkDescriptorBufferInfo skyBufInfo{ mainUniform.buffer, 0, sizeof(UniformObject) };
+                VkDescriptorBufferInfo skyBufInfo{ mainPassUBO.buffer.buffer, 0, sizeof(UniformObject) };
                 VkWriteDescriptorSet skyWrite{};
                 skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 skyWrite.dstSet = ds;
@@ -533,11 +549,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 skyWrite.pBufferInfo = &skyBufInfo;
                 
                 // Write binding 7 (Water params UBO)
-                Buffer& waterParamsBuf = waterRenderer.getWaterParamsBuffer();
-                std::cout << "[DEBUG] Water params buffer: handle=" << waterParamsBuf.buffer 
-                          << " memory=" << waterParamsBuf.memory << std::endl;
-                
-                VkDescriptorBufferInfo waterParamsBufInfo{ waterParamsBuf.buffer, 0, sizeof(WaterParamsGPU) };
+                VkDescriptorBufferInfo waterParamsBufInfo{ waterPassUBO.buffer.buffer, 0, sizeof(WaterParamsGPU) };
                 VkWriteDescriptorSet waterParamsWrite{};
                 waterParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 waterParamsWrite.dstSet = ds;
@@ -549,7 +561,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 updateDescriptorSet(ds, { skyWrite, waterParamsWrite });
                 
                 std::cout << "[DEBUG] Added binding 6 (Sky UBO) and binding 7 (Water params UBO) to main descriptor set" << std::endl;
-                std::cout << "[DEBUG] WaterParams write: dstSet=" << ds << " dstBinding=7 buffer=" << waterParamsBuf.buffer 
+                std::cout << "[DEBUG] WaterParams write: dstSet=" << ds << " dstBinding=7 buffer=" << waterPassUBO.buffer.buffer 
                           << " offset=0 range=" << sizeof(WaterParamsGPU) << std::endl;
                 
                 descriptorSet = ds;
@@ -558,7 +570,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 
             // Create shadow pass descriptor set (uses shadowUniform and no shadow map binding)
             if (shadowPassDescriptorSet == VK_NULL_HANDLE) {
-                VkDescriptorSet ds = dsBuilder.createShadowDescriptorSet(tr, shadowUniform, false, nullptr, 0);
+                VkDescriptorSet ds = dsBuilder.createShadowDescriptorSet(tr, shadowPassUBO.buffer, false, nullptr, 0);
                 shadowPassDescriptorSet = ds;
                 registerDescriptorSet(shadowPassDescriptorSet);
             }
@@ -930,11 +942,11 @@ class MyApp : public VulkanApp, public IEventHandler {
             shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
             
             // Update uniform buffer for shadow pass: set viewProjection = lightSpaceMatrix
-            UniformObject shadowUbo = uboStatic;
-            shadowUbo.viewProjection = uboStatic.lightSpaceMatrix;
-            shadowUbo.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
-            shadowUbo.passParams = glm::vec4(1.0f, settingsWidget ? (settingsWidget->getShadowTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
-            updateUniformBuffer(shadowUniform, &shadowUbo, sizeof(UniformObject));
+            shadowPassUBO.data = uboStatic;
+            shadowPassUBO.data.viewProjection = uboStatic.lightSpaceMatrix;
+            shadowPassUBO.data.materialFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+            shadowPassUBO.data.passParams = glm::vec4(1.0f, settingsWidget ? (settingsWidget->getShadowTessellationEnabled() ? 1.0f : 0.0f) : 0.0f, 0.0f, 0.0f);
+            updateUniformBuffer(shadowPassUBO.buffer, &shadowPassUBO.data, sizeof(UniformObject));
             
 
             // Bind material/per-texture descriptor sets for shadow pass
@@ -969,14 +981,14 @@ class MyApp : public VulkanApp, public IEventHandler {
         waterTime += lastDeltaTime * waterParams.waveSpeed;
         waterParams.time = waterTime;
         
-        UniformObject ubo = uboStatic;
-        ubo.viewProjection = camera.getViewProjectionMatrix();
-        ubo.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
-        ubo.shadowEffects = glm::vec4(0.0f, 0.0f, 0.0f,  settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f);
-        ubo.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
-        ubo.triplanarSettings = glm::vec4(settingsWidget->getTriplanarThreshold(), settingsWidget->getTriplanarExponent(), 0.0f, 0.0f);
+        mainPassUBO.data = uboStatic;
+        mainPassUBO.data.viewProjection = camera.getViewProjectionMatrix();
+        mainPassUBO.data.materialFlags.w = settingsWidget->getNormalMappingEnabled() ? 1.0f : 0.0f;
+        mainPassUBO.data.shadowEffects = glm::vec4(0.0f, 0.0f, 0.0f,  settingsWidget->getShadowsEnabled() ? 1.0f : 0.0f);
+        mainPassUBO.data.debugParams = glm::vec4((float)settingsWidget->getDebugMode(), 0.0f, 0.0f, 0.0f);
+        mainPassUBO.data.triplanarSettings = glm::vec4(settingsWidget->getTriplanarThreshold(), settingsWidget->getTriplanarExponent(), 0.0f, 0.0f);
         // passParams: x=waterTime, y=tessEnabled, z=waveScale, w=noiseScale
-        ubo.passParams = glm::vec4(
+        mainPassUBO.data.passParams = glm::vec4(
             waterTime,
             settingsWidget ? (settingsWidget->getTessellationEnabled() ? 1.0f : 0.0f) : 0.0f,
             waterParams.waveScale,
@@ -987,41 +999,40 @@ class MyApp : public VulkanApp, public IEventHandler {
         if (frameCount++ % 30 == 0) {
             std::cout << "[DEBUG] waterTime=" << waterTime
                       << " lastDeltaTime=" << lastDeltaTime
-                      << " ubo.passParams.time=" << ubo.passParams.x 
-                      << " waveScale=" << ubo.passParams.z 
-                      << " noiseScale=" << ubo.passParams.w 
-                      << " | mainUniform.buffer=" << mainUniform.buffer << std::endl;
+                      << " ubo.passParams.time=" << mainPassUBO.data.passParams.x 
+                      << " waveScale=" << mainPassUBO.data.passParams.z 
+                      << " noiseScale=" << mainPassUBO.data.passParams.w 
+                      << " | mainPassUBO.buffer.buffer=" << mainPassUBO.buffer.buffer << std::endl;
         }
         // Store additional water params in tessParams: x=waveSpeed, y=refractionStrength, z=fresnelPower, w=transparency
-        ubo.tessParams = glm::vec4(
+        mainPassUBO.data.tessParams = glm::vec4(
             waterParams.waveSpeed,
             waterParams.refractionStrength,
             waterParams.fresnelPower,
             waterParams.transparency
         );
-        updateUniformBuffer(mainUniform, &ubo, sizeof(UniformObject));
+        updateUniformBuffer(mainPassUBO.buffer, &mainPassUBO.data, sizeof(UniformObject));
         
         // Update water params UBO
-        WaterParamsGPU waterParamsGPU{};
-        waterParamsGPU.params1 = glm::vec4(
+        waterPassUBO.data.params1 = glm::vec4(
             waterParams.refractionStrength,
             waterParams.fresnelPower,
             waterParams.transparency,
             waterParams.foamDepthThreshold
         );
-        waterParamsGPU.params2 = glm::vec4(
+        waterPassUBO.data.params2 = glm::vec4(
             waterParams.waterTint,
             1.0f / waterParams.noiseScale,
             static_cast<float>(waterParams.noiseOctaves),
             waterParams.noisePersistence
         );
-        waterParamsGPU.params3 = glm::vec4(waterParams.noiseTimeSpeed, waterTime, waterParams.shoreStrength, waterParams.shoreFalloff);
-        waterParamsGPU.shallowColor = glm::vec4(waterParams.shallowColor, 0.0f);
-        waterParamsGPU.deepColor = glm::vec4(waterParams.deepColor, waterParams.foamIntensity);
-        waterParamsGPU.foamParams = glm::vec4(1.0f/waterParams.foamNoiseScale, static_cast<float>(waterParams.foamNoiseOctaves), waterParams.foamNoisePersistence, waterParams.foamTintIntensity);
-        waterParamsGPU.foamParams2 = glm::vec4(waterParams.foamBrightness, waterParams.foamContrast, 0.0f, 0.0f);
-        waterParamsGPU.foamTint = waterParams.foamTint;
-        updateUniformBuffer(waterRenderer.getWaterParamsBuffer(), &waterParamsGPU, sizeof(WaterParamsGPU));
+        waterPassUBO.data.params3 = glm::vec4(waterParams.noiseTimeSpeed, waterTime, waterParams.shoreStrength, waterParams.shoreFalloff);
+        waterPassUBO.data.shallowColor = glm::vec4(waterParams.shallowColor, 0.0f);
+        waterPassUBO.data.deepColor = glm::vec4(waterParams.deepColor, waterParams.foamIntensity);
+        waterPassUBO.data.foamParams = glm::vec4(1.0f/waterParams.foamNoiseScale, static_cast<float>(waterParams.foamNoiseOctaves), waterParams.foamNoisePersistence, waterParams.foamTintIntensity);
+        waterPassUBO.data.foamParams2 = glm::vec4(waterParams.foamBrightness, waterParams.foamContrast, 0.0f, 0.0f);
+        waterPassUBO.data.foamTint = waterParams.foamTint;
+        updateUniformBuffer(waterPassUBO.buffer, &waterPassUBO.data, sizeof(WaterParamsGPU));
         
         // DEBUG: Print UBO passParams after write
         //ubo.printPassParams();
@@ -1088,7 +1099,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         if (skyRenderer && descriptorSet != VK_NULL_HANDLE) {
             if (skySphere) skySphere->update();
             SkyMode skyMode = skyWidget ? skyWidget->getSkyMode() : SkyMode::Gradient;
-            skyRenderer->render(commandBuffer, skyVBO, descriptorSet, mainUniform, ubo, camera.getViewProjectionMatrix(), skyMode);
+            skyRenderer->render(commandBuffer, skyVBO, descriptorSet, mainPassUBO.buffer, mainPassUBO.data, camera.getViewProjectionMatrix(), skyMode);
         }
         
         if (queryPool != VK_NULL_HANDLE) {
@@ -1380,7 +1391,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             vkCmdSetScissor(commandBuffer, 0, 1, &waterScissor);
             
             // Optionally draw water geometry depending on pipeline and debug mode
-            int debugMode = int(ubo.debugParams.x + 0.5f);
+            int debugMode = int(mainPassUBO.data.debugParams.x + 0.5f);
             if (waterGeomPipeline != VK_NULL_HANDLE && (debugMode == 0 || debugMode == 32)) {
                 // Bind water pipeline
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeomPipeline);
@@ -1527,10 +1538,12 @@ class MyApp : public VulkanApp, public IEventHandler {
         waterRenderer.cleanup();
 
         // global uniform buffers cleanup (main, shadow, sky)
-        if (mainUniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), mainUniform.buffer, nullptr);
-        if (mainUniform.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), mainUniform.memory, nullptr);
-        if (shadowUniform.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), shadowUniform.buffer, nullptr);
-        if (shadowUniform.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), shadowUniform.memory, nullptr);
+        if (mainPassUBO.buffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), mainPassUBO.buffer.buffer, nullptr);
+        if (mainPassUBO.buffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), mainPassUBO.buffer.memory, nullptr);
+        if (shadowPassUBO.buffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), shadowPassUBO.buffer.buffer, nullptr);
+        if (shadowPassUBO.buffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), shadowPassUBO.buffer.memory, nullptr);
+        if (waterPassUBO.buffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(getDevice(), waterPassUBO.buffer.buffer, nullptr);
+        if (waterPassUBO.buffer.memory != VK_NULL_HANDLE) vkFreeMemory(getDevice(), waterPassUBO.buffer.memory, nullptr);
         // Sky UBO is managed by SkySphere and cleaned up there.
         
         // editable textures cleanup

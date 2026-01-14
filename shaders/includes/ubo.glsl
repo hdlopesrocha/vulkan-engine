@@ -14,11 +14,6 @@ layout(set = 1, binding = 0) uniform UBO {
     vec4 passParams;   // x = isShadowPass (1.0 for shadow pass, 0.0 for main pass)
 } ubo;
 
-// Per-draw push constants: small, frequently-updated per-object data such as model matrix.
-layout(push_constant) uniform PushConstants {
-    mat4 model;
-} pushConstants;
-
 // Packed material data uploaded once to GPU. Matches the CPU-side MaterialGPU (4 vec4s).
 // Access this as `materials[texIndex]` from shaders. Uses std430 for tightly-packed vec4 alignment.
 struct MaterialGPU {
