@@ -703,7 +703,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             // Use offscreen framebuffer for main scene (per-frame)
             mainPassInfo.renderPass = sceneRenderer.waterRenderer.getSceneRenderPass();
             mainPassInfo.framebuffer = sceneRenderer.waterRenderer.getSceneFramebuffer(frameIdx);
-            mainPassInfo.renderArea.extent = {getWidth(), getHeight()};
+            mainPassInfo.renderArea.extent = {static_cast<uint32_t>(getWidth()), static_cast<uint32_t>(getHeight())};
         }
 
         // Main pass (begin render pass, sky, culling/draw)

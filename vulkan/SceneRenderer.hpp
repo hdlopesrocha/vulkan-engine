@@ -615,7 +615,7 @@ public:
         waterRenderPassInfo.renderPass = app->getContinuationRenderPass();
         waterRenderPassInfo.framebuffer = renderPassInfo.framebuffer;
         waterRenderPassInfo.renderArea.offset = {0, 0};
-        waterRenderPassInfo.renderArea.extent = {app->getWidth(), app->getHeight()};
+        waterRenderPassInfo.renderArea.extent = {static_cast<uint32_t>(app->getWidth()), static_cast<uint32_t>(app->getHeight())};
         waterRenderPassInfo.clearValueCount = 0;
         waterRenderPassInfo.pClearValues = nullptr;
 
@@ -632,7 +632,7 @@ public:
 
         VkRect2D waterScissor{};
         waterScissor.offset = {0, 0};
-        waterScissor.extent = {app->getWidth(), app->getHeight()};
+        waterScissor.extent = {static_cast<uint32_t>(app->getWidth()), static_cast<uint32_t>(app->getHeight())};
         vkCmdSetScissor(commandBuffer, 0, 1, &waterScissor);
 
         int debugMode = int(mainPassUBO.data.debugParams.x + 0.5f);
