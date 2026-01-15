@@ -2,6 +2,10 @@
 #include "../utils/FileReader.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 
+// For VBO creation
+#include "VertexBufferObjectBuilder.hpp"
+#include "../math/SphereModel.hpp"
+
 SkyRenderer::SkyRenderer(VulkanApp* app_) : app(app_) {}
 
 SkyRenderer::~SkyRenderer() { cleanup(); }
@@ -44,8 +48,7 @@ void SkyRenderer::init() {
         VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true
     );
 }
-
-void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkyMode skyMode) {
+void SkyRenderer::render(VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkyMode skyMode) {
     // Select pipeline based on sky mode
     VkPipeline activePipeline = (skyMode == SkyMode::Grid) ? skyGridPipeline : skyPipeline;
     if (activePipeline == VK_NULL_HANDLE) return;
@@ -71,11 +74,14 @@ void SkyRenderer::render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, Vk
     // Push sky model matrix via push constants (visible to vertex + tessellation stages)
     // vkCmdPushConstants(cmd, app->getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &model);
 
-    const VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
-    const VkDeviceSize offsets[] = { 0 };
-    vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
-    vkCmdBindIndexBuffer(cmd, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmd, vbo.indexCount, 1, 0, 0, 0);
+    // Use internal VBO if available
+    if (skyVBO.vertexBuffer.buffer != VK_NULL_HANDLE && skyVBO.indexCount > 0) {
+        const VkBuffer vertexBuffers[] = { skyVBO.vertexBuffer.buffer };
+        const VkDeviceSize offsets[] = { 0 };
+        vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
+        vkCmdBindIndexBuffer(cmd, skyVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, skyVBO.indexCount, 1, 0, 0, 0);
+    }
 }
 
 void SkyRenderer::cleanup() {
@@ -99,4 +105,31 @@ void SkyRenderer::cleanup() {
         vkDestroyShaderModule(app->getDevice(), skyGridFragModule, nullptr);
         skyGridFragModule = VK_NULL_HANDLE;
     }
+
+    // Cleanup sky sphere and VBO
+    if (skySphere) {
+        skySphere->cleanup();
+        skySphere.reset();
+    }
+    if (skyVBO.vertexBuffer.buffer != VK_NULL_HANDLE || skyVBO.indexCount > 0) {
+        skyVBO.destroy(app->getDevice());
+    }
+}
+
+void SkyRenderer::initSky(SkyWidget* skyWidget, VkDescriptorSet descriptorSet) {
+    if (!app) return;
+    // Create sphere VBO if not present
+    if (skyVBO.vertexBuffer.buffer == VK_NULL_HANDLE && skyVBO.indexCount == 0) {
+        SphereModel sphere(0.5f, 32, 16, 0);
+        skyVBO = VertexBufferObjectBuilder::create(app, sphere);
+    }
+
+    if (skyWidget && descriptorSet != VK_NULL_HANDLE && !skySphere) {
+        skySphere = std::make_unique<SkySphere>(app);
+        skySphere->init(skyWidget, descriptorSet);
+    }
+}
+
+void SkyRenderer::update() {
+    if (skySphere) skySphere->update();
 }

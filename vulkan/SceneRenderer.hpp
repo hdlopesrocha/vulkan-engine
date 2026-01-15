@@ -12,9 +12,6 @@
 #include <memory>
 #include "Model3DVersion.hpp"
 #include "SkyRenderer.hpp"
-#include "SkySphere.hpp"
-#include "VertexBufferObject.hpp"
-#include "VertexBufferObjectBuilder.hpp"
 #include "IndirectRenderer.hpp"
 #include "ShadowMapper.hpp"
 #include "WaterRenderer.hpp"
@@ -32,9 +29,7 @@ public:
     std::unordered_map<NodeID, Model3DVersion> waterNodeModelVersions;
 
     std::unique_ptr<SkyRenderer> skyRenderer;
-    std::unique_ptr<SkySphere> skySphere;
-
-    VertexBufferObject skyVBO;
+    // skySphere and skyVBO moved into SkyRenderer
 
     IndirectRenderer indirectRenderer;
     ShadowMapper shadowMapper;
@@ -352,9 +347,9 @@ public:
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
         if (skyRenderer && perTextureDescriptorSet != VK_NULL_HANDLE) {
-            if (skySphere) skySphere->update();
+            skyRenderer->update();
             SkyMode skyMode = SkyMode::Gradient; // caller-controlled elsewhere
-            skyRenderer->render(commandBuffer, skyVBO, perTextureDescriptorSet, mainPassUBO.buffer, mainPassUBO.data, viewProj, skyMode);
+            skyRenderer->render(commandBuffer, perTextureDescriptorSet, mainPassUBO.buffer, mainPassUBO.data, viewProj, skyMode);
         }
 
         if (queryPool != VK_NULL_HANDLE) {
@@ -689,11 +684,8 @@ public:
             skyRenderer->init();
         }
 
-        // Build a sphere VBO for sky rendering if not created
-        if (skyVBO.vertexBuffer.buffer == VK_NULL_HANDLE && skyVBO.indexCount == 0) {
-            SphereModel sphere(0.5f, 32, 16, 0);
-            skyVBO = VertexBufferObjectBuilder::create(app, sphere);
-        }
+        // Initialize sky renderer internals if needed
+        // Sky VBO and SkySphere are managed by SkyRenderer
 
         // Shadow mapper
         // Note: init() on shadowMapper is safe to call if already initialized
@@ -710,10 +702,9 @@ public:
         // Initialize water renderer with its UBO buffer
         waterRenderer.init(waterPassUBO.buffer);
 
-        // If skyWidget and descriptorSet are provided, initialize SkySphere now
-        if (skyWidget && descriptorSet != VK_NULL_HANDLE && !skySphere) {
-            skySphere = std::make_unique<SkySphere>(app);
-            skySphere->init(skyWidget, descriptorSet);
+        // If skyWidget and descriptorSet are provided, initialize SkyRenderer's sky
+        if (skyWidget && descriptorSet != VK_NULL_HANDLE) {
+            skyRenderer->initSky(skyWidget, descriptorSet);
         }
     }
 
@@ -738,7 +729,6 @@ public:
         }
 
         if (skyRenderer) skyRenderer->cleanup();
-        skyVBO.destroy(app->getDevice());
 
         // Remove meshes registered in indirect renderer
         for (auto &entry : nodeModelVersions) {
@@ -766,9 +756,8 @@ public:
         if (waterPassUBO.buffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(app->getDevice(), waterPassUBO.buffer.buffer, nullptr);
         if (waterPassUBO.buffer.memory != VK_NULL_HANDLE) vkFreeMemory(app->getDevice(), waterPassUBO.buffer.memory, nullptr);
 
-        // Shadow mapper and sky sphere cleanup
+        // Shadow mapper cleanup (SkyRenderer handles its own sky resources)
         shadowMapper.cleanup();
-        if (skySphere) skySphere->cleanup();
     }
 
     // initSky removed; use init(app, skyWidget, descriptorSet) instead

@@ -2,6 +2,9 @@
 
 #include "VulkanApp.hpp"
 #include "VertexBufferObject.hpp"
+#include "SkySphere.hpp"
+#include "VertexBufferObjectBuilder.hpp"
+#include "../math/SphereModel.hpp"
 #include "ShaderStage.hpp"
 #include "../Uniforms.hpp"
 #include "../widgets/SkyWidget.hpp"
@@ -14,8 +17,14 @@ public:
     // Create sky pipeline (uses app helper to build pipeline)
     void init();
 
-    // Render sky sphere using provided VBO/descriptor/uniform
-    void render(VkCommandBuffer &cmd, const VertexBufferObject &vbo, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkyMode skyMode);
+    // Render sky sphere using internal VBO/descriptor/uniform
+    void render(VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkyMode skyMode);
+
+    // Initialize the sky sphere and internal VBO (optional)
+    void initSky(SkyWidget* skyWidget, VkDescriptorSet descriptorSet);
+
+    // Update sky internals (e.g. SkySphere animation)
+    void update();
 
     void cleanup();
 
@@ -26,4 +35,7 @@ private:
     VkShaderModule skyVertModule = VK_NULL_HANDLE;
     VkShaderModule skyFragModule = VK_NULL_HANDLE;
     VkShaderModule skyGridFragModule = VK_NULL_HANDLE;
+    // Owned sky sphere and VBO
+    std::unique_ptr<SkySphere> skySphere;
+    VertexBufferObject skyVBO;
 };
