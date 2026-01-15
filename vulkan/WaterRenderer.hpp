@@ -3,6 +3,9 @@
 #include "VulkanApp.hpp"
 #include "IndirectRenderer.hpp"
 #include <glm/glm.hpp>
+#include "../utils/Scene.hpp"
+#include <unordered_map>
+#include "Model3DVersion.hpp"
 
 // Water rendering parameters (CPU-side)
 struct WaterParams {
@@ -137,6 +140,17 @@ public:
     // Update the scene textures binding (color + depth) for refraction and edge foam
     void updateSceneTexturesBinding(VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex);
 
+    // Register model version for water meshes (stored here)
+    void registerModelVersion(NodeID id, const Model3DVersion& ver) { waterNodeModelVersions[id] = ver; }
+
+    // Remove all registered water meshes from the indirect renderer and clear the map
+    void removeAllRegisteredMeshes() {
+        for (auto &entry : waterNodeModelVersions) {
+            if (entry.second.meshId != UINT32_MAX) waterIndirectRenderer.removeMesh(entry.second.meshId);
+        }
+        waterNodeModelVersions.clear();
+    }
+
 private:
     void createWaterRenderPass();
     void createSceneRenderPass();
@@ -214,4 +228,7 @@ private:
 
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
+
+    // Map of node -> model version for water geometry managed here
+    std::unordered_map<NodeID, Model3DVersion> waterNodeModelVersions;
 };

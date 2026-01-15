@@ -453,7 +453,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 // Generate mesh synchronously during setup
                 mainScene->requestModel3D(Layer::LAYER_TRANSPARENT, node, [this, id, ver, &waterMeshCount](const Geometry& mesh) {
                     uint32_t meshId = sceneRenderer.waterRenderer.getIndirectRenderer().addMesh(this, mesh, glm::mat4(1.0f));
-                    sceneRenderer.waterNodeModelVersions[id] = { meshId, ver };
+                    sceneRenderer.waterRenderer.registerModelVersion(id, { meshId, ver });
                     waterMeshCount++;
                 });
             }

@@ -26,18 +26,18 @@ public:
     VulkanApp* app = nullptr;
 
     std::unordered_map<NodeID, Model3DVersion> nodeModelVersions;
-    std::unordered_map<NodeID, Model3DVersion> waterNodeModelVersions;
+    
 
     std::unique_ptr<SkyRenderer> skyRenderer;
     // skySphere and skyVBO moved into SkyRenderer
 
-    IndirectRenderer indirectRenderer;
+
+
     ShadowMapper shadowMapper;
     WaterRenderer waterRenderer;
 
-    // Graphics pipelines owned by SceneRenderer
+    IndirectRenderer indirectRenderer;
     VkPipeline graphicsPipeline = VK_NULL_HANDLE;
-    VkPipeline waterPipeline = VK_NULL_HANDLE;  // Water pipeline with depth test but no depth write
     VkPipeline graphicsPipelineWire = VK_NULL_HANDLE;
     VkPipeline depthPrePassPipeline = VK_NULL_HANDLE;
 
@@ -130,27 +130,7 @@ public:
             false // colorWrite disabled
         );
 
-        waterPipeline = app->createGraphicsPipeline(
-            {
-                vertexShader.info,
-                tescShader.info,
-                teseShader.info,
-                fragmentShader.info
-            },
-            VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX },
-            {
-                VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-                VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-                VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
-                VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-                VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
-            },
-            VK_POLYGON_MODE_FILL,
-            VK_CULL_MODE_NONE,
-            false, // depthWrite disabled
-            true,
-            VK_COMPARE_OP_LESS_OR_EQUAL
-        );
+
 
         // Destroy shader modules
         vkDestroyShaderModule(app->getDevice(), teseShader.info.module, nullptr);
@@ -723,10 +703,7 @@ public:
             vkDestroyPipeline(app->getDevice(), depthPrePassPipeline, nullptr);
             depthPrePassPipeline = VK_NULL_HANDLE;
         }
-        if (waterPipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(app->getDevice(), waterPipeline, nullptr);
-            waterPipeline = VK_NULL_HANDLE;
-        }
+        
 
         if (skyRenderer) skyRenderer->cleanup();
 
@@ -740,10 +717,7 @@ public:
         indirectRenderer.cleanup(app);
 
         // Remove water meshes registered in WaterRenderer
-        for (auto &entry : waterNodeModelVersions) {
-            if (entry.second.meshId != UINT32_MAX) waterRenderer.getIndirectRenderer().removeMesh(entry.second.meshId);
-        }
-        waterNodeModelVersions.clear();
+        waterRenderer.removeAllRegisteredMeshes();
 
         // Cleanup water renderer
         waterRenderer.cleanup();
