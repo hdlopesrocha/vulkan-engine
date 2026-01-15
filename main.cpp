@@ -425,16 +425,16 @@ class MyApp : public VulkanApp, public IEventHandler {
                 
                 // Generate mesh synchronously during setup
                 mainScene->requestModel3D(Layer::LAYER_OPAQUE, node, [this, id, ver, &meshCount](const Geometry& mesh) {
-                    uint32_t meshId = sceneRenderer.indirectRenderer.addMesh(this, mesh, glm::mat4(1.0f));
-                    sceneRenderer.nodeModelVersions[id] = { meshId, ver };
+                    uint32_t meshId = sceneRenderer.solidRenderer->getIndirectRenderer().addMesh(this, mesh, glm::mat4(1.0f));
+                    sceneRenderer.solidRenderer->registerModelVersion(id, { meshId, ver });
                     meshCount++;
                 });
             }
         });
         
         // Rebuild buffers and update descriptor once after all meshes are added
-        sceneRenderer.indirectRenderer.rebuild(this);
-        sceneRenderer.indirectRenderer.updateModelsDescriptorSet(this, VK_NULL_HANDLE);
+        sceneRenderer.solidRenderer->getIndirectRenderer().rebuild(this);
+        sceneRenderer.solidRenderer->getIndirectRenderer().updateModelsDescriptorSet(this, VK_NULL_HANDLE);
         
         auto meshLoadEnd = std::chrono::steady_clock::now();
         double meshLoadTime = std::chrono::duration<double>(meshLoadEnd - meshLoadStart).count();
@@ -552,7 +552,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                 ImGui::SetNextWindowPos(ImVec2(padding, y), ImGuiCond_Always);
                 if (ImGui::Begin("##stats_overlay", nullptr, flags)) {
                     ImGui::Text("FPS: %.1f (%.2f ms)", imguiFps, imguiFps > 0 ? 1000.0f / imguiFps : 0.0f);
-                    ImGui::Text("Loaded: %zu meshes", sceneRenderer.nodeModelVersions.size());
+                    ImGui::Text("Loaded: %zu meshes", sceneRenderer.solidRenderer ? sceneRenderer.solidRenderer->getRegisteredModelCount() : 0);
                     
                     if (profilingEnabled) {
                         ImGui::Separator();
@@ -655,7 +655,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         auto cpuRecordStart = std::chrono::high_resolution_clock::now();
                 
         // Rebuild renderer if any meshes were added/removed
-        sceneRenderer.indirectRenderer.rebuild(this);
+        sceneRenderer.solidRenderer->getIndirectRenderer().rebuild(this);
 
         
         // Rebuild water renderer if any meshes were added/removed
@@ -680,7 +680,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         waterParams.time = waterTime;
 
         // Prepare GPU cull for main pass BEFORE the render pass (vkCmdFillBuffer/barriers not allowed inside render pass)
-        sceneRenderer.indirectRenderer.prepareCull(commandBuffer, camera.getViewProjectionMatrix());
+        sceneRenderer.solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, camera.getViewProjectionMatrix());
         
         // Also prepare water cull before render pass
         if (sceneRenderer.waterRenderer.getIndirectRenderer().getMeshCount() > 0) {
