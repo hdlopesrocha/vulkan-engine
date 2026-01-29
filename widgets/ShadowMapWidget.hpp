@@ -1,19 +1,19 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../vulkan/ShadowMapper.hpp"
+#include "../vulkan/ShadowRenderer.hpp"
 #include "../vulkan/ShadowParams.hpp"
 #include <imgui.h>
 #include <glm/glm.hpp>
 
 class ShadowMapWidget : public Widget {
 public:
-    ShadowMapWidget(ShadowMapper* shadowMapper, ShadowParams* shadowParams);
+    ShadowMapWidget(ShadowRenderer* shadowMapper, ShadowParams* shadowParams);
     
     void render() override;
     
 private:
-    ShadowMapper* shadowMapper;
+    ShadowRenderer* shadowMapper;
     ShadowParams* shadowParams;
     float displaySize = 512.0f;
 };

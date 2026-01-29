@@ -2,7 +2,7 @@
 #include "../Uniforms.hpp"
 #include <cstring>
 #include <iostream>
-DescriptorSetBuilder::DescriptorSetBuilder(VulkanApp* app_, ShadowMapper* shadowMapper_)
+DescriptorSetBuilder::DescriptorSetBuilder(VulkanApp* app_, ShadowRenderer* shadowMapper_)
     : app(app_), shadow(shadowMapper_) {}
 
 VkDescriptorSet DescriptorSetBuilder::createMainDescriptorSet(const Triple& tr, Buffer& uniformBuffer, bool bindMaterial, Buffer* materialBuffer, VkDeviceSize materialOffset, Buffer* instanceBuffer) {
@@ -53,9 +53,9 @@ VkDescriptorSet DescriptorSetBuilder::createShadowDescriptorSet(const Triple& tr
     VkDescriptorImageInfo heightInfo{ tr.heightSampler, tr.height.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkWriteDescriptorSet heightWrite{}; heightWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; heightWrite.dstSet = ds; heightWrite.dstBinding = 3; heightWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; heightWrite.descriptorCount = 1; heightWrite.pImageInfo = &heightInfo;
 
-    // Shadow pass: use GENERAL layout - it's valid for both depth attachment and sampler descriptor.
+    // Shadow pass: use read-only depth layout for descriptors so sampling operations expect DEPTH_STENCIL_READ_ONLY_OPTIMAL.
     // The shader doesn't actually sample binding 4 during shadow pass (early-out path).
-    VkDescriptorImageInfo shadowInfo{ shadow->getShadowMapSampler(), shadow->getShadowMapView(), VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo shadowInfo{ shadow->getShadowMapSampler(), shadow->getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
     VkWriteDescriptorSet shadowWrite{}; shadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; shadowWrite.dstSet = ds; shadowWrite.dstBinding = 4; shadowWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; shadowWrite.descriptorCount = 1; shadowWrite.pImageInfo = &shadowInfo;
 
     if (bindMaterial && materialBuffer) {

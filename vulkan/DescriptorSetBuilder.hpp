@@ -2,11 +2,11 @@
 
 #include "VulkanApp.hpp"
 #include "TextureTriple.hpp"
-#include "ShadowMapper.hpp"
+#include "ShadowRenderer.hpp"
 
 class DescriptorSetBuilder {
 public:
-    DescriptorSetBuilder(VulkanApp* app, ShadowMapper* shadowMapper);
+    DescriptorSetBuilder(VulkanApp* app, ShadowRenderer* shadowMapper);
 
     VkDescriptorSet createMainDescriptorSet(const Triple& tr, Buffer& uniformBuffer, bool bindMaterial, Buffer* materialBuffer = nullptr, VkDeviceSize materialOffset = 0, Buffer* instanceBuffer = nullptr);
     VkDescriptorSet createShadowDescriptorSet(const Triple& tr, Buffer& shadowUniformBuffer, bool bindMaterial, Buffer* materialBuffer = nullptr, VkDeviceSize materialOffset = 0, Buffer* instanceBuffer = nullptr);
@@ -17,5 +17,5 @@ public:
 private:
     VulkanApp* app;
     // no longer depends on TextureManager; callers supply a Triple when creating sets
-    ShadowMapper* shadow;
+    ShadowRenderer* shadow;
 };

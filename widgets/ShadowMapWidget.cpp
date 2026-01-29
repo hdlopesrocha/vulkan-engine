@@ -1,6 +1,6 @@
 #include "ShadowMapWidget.hpp"
 
-ShadowMapWidget::ShadowMapWidget(ShadowMapper* shadowMapper, ShadowParams* shadowParams)
+ShadowMapWidget::ShadowMapWidget(ShadowRenderer* shadowMapper, ShadowParams* shadowParams)
     : Widget("Shadow Map"), shadowMapper(shadowMapper), shadowParams(shadowParams) {
 }
 
