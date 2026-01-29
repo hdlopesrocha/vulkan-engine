@@ -470,19 +470,106 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Create GPU timestamp query pool for profiling
         {
+            std::cerr << "[DEBUG] Entering timestamp query pool creation block" << std::endl;
             VkPhysicalDeviceProperties props;
+            if (!getPhysicalDevice()) {
+                std::cerr << "[ERROR] getPhysicalDevice() returned nullptr!" << std::endl;
+                throw std::runtime_error("getPhysicalDevice() is null");
+            }
             vkGetPhysicalDeviceProperties(getPhysicalDevice(), &props);
             timestampPeriod = props.limits.timestampPeriod; // nanoseconds per tick
-            
+            std::cerr << "[DEBUG] timestampPeriod=" << timestampPeriod << std::endl;
+
+            // Print device extensions to help diagnose missing entrypoints
+            uint32_t extCount = 0;
+            vkEnumerateDeviceExtensionProperties(getPhysicalDevice(), nullptr, &extCount, nullptr);
+            std::vector<VkExtensionProperties> exts(extCount);
+            if (extCount > 0) vkEnumerateDeviceExtensionProperties(getPhysicalDevice(), nullptr, &extCount, exts.data());
+            bool hasHostQueryReset = false;
+            for (const auto &e : exts) {
+                std::cerr << "[DEBUG] device ext: " << e.extensionName << std::endl;
+                if (std::string(e.extensionName) == "VK_EXT_host_query_reset") hasHostQueryReset = true;
+            }
+            std::cerr << "[DEBUG] VK_EXT_host_query_reset present=" << (hasHostQueryReset ? "yes" : "no") << std::endl;
+
+            // Validate QUERY_COUNT
+            if (QUERY_COUNT == 0) {
+                std::cerr << "[FATAL] QUERY_COUNT is zero!" << std::endl;
+                throw std::runtime_error("QUERY_COUNT must be > 0");
+            }
+
             VkQueryPoolCreateInfo queryInfo{};
             queryInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
             queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
             queryInfo.queryCount = QUERY_COUNT;
-            
-            if (vkCreateQueryPool(getDevice(), &queryInfo, nullptr, &queryPool) != VK_SUCCESS) {
+
+            VkDevice device = getDevice();
+            if (!device) {
+                std::cerr << "[ERROR] getDevice() returned nullptr!" << std::endl;
+                throw std::runtime_error("getDevice() is null");
+            }
+            std::cerr << "[DEBUG] Calling vkCreateQueryPool..." << std::endl;
+            VkResult qpResult = vkCreateQueryPool(device, &queryInfo, nullptr, &queryPool);
+            std::cerr << "[DEBUG] vkCreateQueryPool result: " << qpResult << ", queryPool=" << queryPool << std::endl;
+            if (qpResult != VK_SUCCESS) {
                 std::cerr << "Warning: Failed to create timestamp query pool\n";
                 queryPool = VK_NULL_HANDLE;
+            } else {
+                // Ensure device is idle and then reset queries after creation so they are unavailable before use
+                std::cerr << "[DEBUG] Calling vkDeviceWaitIdle..." << std::endl;
+                vkDeviceWaitIdle(device);
+                std::cerr << "[DEBUG] About to call vkResetQueryPool with params:" << std::endl;
+                std::cerr << "  device=" << device << std::endl;
+                std::cerr << "  queryPool=" << queryPool << std::endl;
+                std::cerr << "  firstQuery=0" << std::endl;
+                std::cerr << "  queryCount=" << QUERY_COUNT << std::endl;
+                // Print the function pointer for vkResetQueryPool
+                std::cerr << "[DEBUG] &vkResetQueryPool=" << (void*)(&vkResetQueryPool) << std::endl;
+                // Try to resolve vkResetQueryPool manually
+                PFN_vkResetQueryPool fpResetQueryPool = (PFN_vkResetQueryPool)vkGetDeviceProcAddr(device, "vkResetQueryPool");
+                std::cerr << "[DEBUG] vkGetDeviceProcAddr(device, 'vkResetQueryPool')=" << (void*)fpResetQueryPool << std::endl;
+                if (!fpResetQueryPool) {
+                    std::cerr << "[WARN] vkResetQueryPool not available via vkGetDeviceProcAddr; trying VK_EXT_host_query_reset..." << std::endl;
+                    // Try to resolve the EXT variant
+                    PFN_vkResetQueryPool fpResetQueryPoolEXT = (PFN_vkResetQueryPool)vkGetDeviceProcAddr(device, "vkResetQueryPoolEXT");
+                    std::cerr << "[DEBUG] vkGetDeviceProcAddr(device, 'vkResetQueryPoolEXT')=" << (void*)fpResetQueryPoolEXT << std::endl;
+                    if (fpResetQueryPoolEXT) {
+                        std::cerr << "[INFO] Using vkResetQueryPoolEXT from VK_EXT_host_query_reset" << std::endl;
+                        fpResetQueryPool = fpResetQueryPoolEXT;
+                    } else {
+                        std::cerr << "[WARN] vkResetQueryPoolEXT not available either. Attempting command-buffer reset fallback." << std::endl;
+                        // Fallback: record a one-time command buffer that calls vkCmdResetQueryPool and submit it.
+                        VkCommandBuffer tmpCmd = beginSingleTimeCommands();
+                        vkCmdResetQueryPool(tmpCmd, queryPool, 0, QUERY_COUNT);
+                        endSingleTimeCommands(tmpCmd);
+                        std::cerr << "[INFO] Performed vkCmdResetQueryPool via single-time command buffer." << std::endl;
+                        fpResetQueryPool = nullptr;
+                    }
+                }
+
+                // If we don't have a proper reset function available, the validation layer reports
+                // "query not reset" for vkCmdWriteTimestamp calls even if we attempted a command-buffer
+                // fallback. To avoid repeated validation errors and undefined behavior on older drivers,
+                // disable profiling and destroy the created query pool.
+                if (!fpResetQueryPool) {
+                    std::cerr << "[WARN] No query reset entrypoint available; disabling GPU profiling and destroying query pool." << std::endl;
+                    if (queryPool != VK_NULL_HANDLE) {
+                        vkDestroyQueryPool(device, queryPool, nullptr);
+                        queryPool = VK_NULL_HANDLE;
+                    }
+                    profilingEnabled = false;
+                    // Clear any profiling values so UI doesn't show stale data
+                    timestampPeriod = 0.0f;
+                    profileShadowCull = profileShadowDraw = profileMainCull = profileDepthPrepass = 0.0f;
+                    profileMainDraw = profileSky = profileImGui = profileWater = 0.0f;
+                    profileCpuUpdate = profileCpuRecord = 0.0f;
+                } else {
+                    // Call via function pointer for extra safety
+                    fpResetQueryPool(device, queryPool, 0, QUERY_COUNT);
+                    std::cerr << "[DEBUG] vkResetQueryPool done." << std::endl;
+                }
             }
+            std::cerr << "[DEBUG] Exiting timestamp query pool creation block" << std::endl;
         }
         
     };
@@ -635,6 +722,18 @@ class MyApp : public VulkanApp, public IEventHandler {
 
         // Compute light space matrix for shadow mapping using ShadowParams
         shadowParams.update(camera.getPosition(), light);
+        // Debug: validate computed light space matrix to catch NaNs/INFs early
+        {
+            const float* _m = glm::value_ptr(shadowParams.lightSpaceMatrix);
+            for (int _i = 0; _i < 16; ++_i) {
+                if (std::isnan(_m[_i]) || std::isinf(_m[_i])) {
+                    std::cerr << "[FATAL] Invalid lightSpaceMatrix element " << _i << ": " << _m[_i] << std::endl;
+                    std::cerr << "Camera pos: " << camera.getPosition().x << "," << camera.getPosition().y << "," << camera.getPosition().z << std::endl;
+                    std::cerr << "Light dir: " << light.getDirection().x << "," << light.getDirection().y << "," << light.getDirection().z << std::endl;
+                    std::abort();
+                }
+            }
+        }
         uboStatic.lightSpaceMatrix = shadowParams.lightSpaceMatrix;
         
         auto cpuUpdateEnd = std::chrono::high_resolution_clock::now();
@@ -645,6 +744,9 @@ class MyApp : public VulkanApp, public IEventHandler {
         ImDrawData* draw_data = ImGui::GetDrawData();
         if (draw_data) ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
         if (profilingEnabled && queryPool != VK_NULL_HANDLE) {
+            // std::cerr << "[TIMESTAMP] resetting query idx=7 before imgui write" << std::endl;
+            vkCmdResetQueryPool(commandBuffer, queryPool, 7, 1);
+            // std::cerr << "[TIMESTAMP] writing timestamp idx=7 (imgui bottom_of_pipe)" << std::endl;
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 7);
         }
     }
@@ -669,7 +771,11 @@ class MyApp : public VulkanApp, public IEventHandler {
         
         // Reset and write timestamp queries for profiling
         if (queryPool != VK_NULL_HANDLE) {
+            // std::cerr << "[TIMESTAMP] resetting queryPool in draw() (frameIdx=" << frameIdx << ")" << std::endl;
             vkCmdResetQueryPool(commandBuffer, queryPool, 0, QUERY_COUNT);
+            // std::cerr << "[TIMESTAMP] resetting query idx=0 before write" << std::endl;
+            vkCmdResetQueryPool(commandBuffer, queryPool, 0, 1);
+            // std::cerr << "[TIMESTAMP] writing timestamp idx=0 (TOP_OF_PIPE) in draw()" << std::endl;
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, 0); // Start
         }
     
@@ -689,6 +795,7 @@ class MyApp : public VulkanApp, public IEventHandler {
         }
         
         if (queryPool != VK_NULL_HANDLE) {
+            // std::cerr << "[TIMESTAMP] writing timestamp idx=4 (after main cull) in draw()" << std::endl;
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, queryPool, 4); // After main cull
         }
 

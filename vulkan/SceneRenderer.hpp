@@ -2,6 +2,8 @@
 
 #include "VulkanApp.hpp"
 #include "DescriptorSetBuilder.hpp"
+#include <glm/gtc/type_ptr.hpp>
+#include <cmath>
 #include "TextureArrayManager.hpp"
 #include "TextureTriple.hpp"
 #include "MaterialManager.hpp"
@@ -14,7 +16,7 @@
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
 #include "IndirectRenderer.hpp"
-#include "ShadowMapper.hpp"
+#include "ShadowRenderer.hpp"
 #include "WaterRenderer.hpp"
 #include "../math/SphereModel.hpp"
 #include "../Uniforms.hpp"
@@ -27,7 +29,7 @@ public:
     VulkanApp* app = nullptr;
 
     std::unique_ptr<SkyRenderer> skyRenderer;
-    ShadowMapper shadowMapper;
+    ShadowRenderer shadowMapper;
     WaterRenderer waterRenderer;
     std::unique_ptr<SolidRenderer> solidRenderer;
 
@@ -144,10 +146,24 @@ public:
         if (shadowsEnabled) {
             if (solidRenderer) solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, glm::mat4(1.0f)); // caller should set up cull matrix externally if needed
             if (queryPool != VK_NULL_HANDLE) {
+                // std::cerr << "[TIMESTAMP] resetting query idx=1 before shadowCull write" << std::endl;
+                vkCmdResetQueryPool(commandBuffer, queryPool, 1, 1);
+                // std::cerr << "[TIMESTAMP] writing timestamp idx=1 (compute/shadowCull) in shadowPass" << std::endl;
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, queryPool, 1);
             }
 
             shadowMapper.beginShadowPass(commandBuffer, uboStatic.lightSpaceMatrix);
+
+            // Sanity-check the incoming light-space matrix to avoid uploading NaNs to the GPU
+            {
+                const float* _m = glm::value_ptr(uboStatic.lightSpaceMatrix);
+                for (int _i = 0; _i < 16; ++_i) {
+                    if (std::isnan(_m[_i]) || std::isinf(_m[_i])) {
+                        std::cerr << "[FATAL] shadowPass detected invalid lightSpaceMatrix element " << _i << ": " << _m[_i] << std::endl;
+                        std::abort();
+                    }
+                }
+            }
 
             shadowPassUBO.data = uboStatic;
             shadowPassUBO.data.viewProjection = uboStatic.lightSpaceMatrix;
@@ -169,6 +185,9 @@ public:
             shadowMapper.endShadowPass(commandBuffer);
 
             if (queryPool != VK_NULL_HANDLE) {
+                // std::cerr << "[TIMESTAMP] resetting query idx=2 before shadow end write" << std::endl;
+                vkCmdResetQueryPool(commandBuffer, queryPool, 2, 1);
+                // std::cerr << "[TIMESTAMP] writing timestamp idx=2 (bottom_of_pipe after shadow) in shadowPass" << std::endl;
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 2);
             }
         } else {
@@ -183,6 +202,9 @@ public:
         if (!app) return;
             if (solidRenderer) solidRenderer->depthPrePass(commandBuffer, queryPool);
         if (queryPool != VK_NULL_HANDLE) {
+            // std::cerr << "[TIMESTAMP] resetting query idx=5 before depth prepass write" << std::endl;
+            vkCmdResetQueryPool(commandBuffer, queryPool, 5, 1);
+            // std::cerr << "[TIMESTAMP] writing timestamp idx=5 (depth_prepass late_fragment_tests)" << std::endl;
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, queryPool, 5);
         }
     }
@@ -244,6 +266,9 @@ public:
         }
 
         if (queryPool != VK_NULL_HANDLE) {
+            // std::cerr << "[TIMESTAMP] resetting query idx=3 before color attachment write" << std::endl;
+            vkCmdResetQueryPool(commandBuffer, queryPool, 3, 1);
+            // std::cerr << "[TIMESTAMP] writing timestamp idx=3 (color_attachment_output)" << std::endl;
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, queryPool, 3);
         }
 
@@ -272,6 +297,9 @@ public:
         if (solidRenderer) solidRenderer->getIndirectRenderer().drawIndirectOnly(commandBuffer, app);
 
         if (profilingEnabled && queryPool != VK_NULL_HANDLE) {
+            // std::cerr << "[TIMESTAMP] resetting query idx=6 before bottom_of_pipe write" << std::endl;
+            vkCmdResetQueryPool(commandBuffer, queryPool, 6, 1);
+            // std::cerr << "[TIMESTAMP] writing timestamp idx=6 (bottom_of_pipe after main draw)" << std::endl;
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 6);
         }
     }
@@ -301,19 +329,6 @@ public:
         waterPassUBO.data.foamTint = waterParams.foamTint;
         app->updateUniformBuffer(waterPassUBO.buffer, &waterPassUBO.data, sizeof(WaterParamsGPU));
 
-        // Ensure host writes to water UBO are visible to fragment shaders
-        VkMemoryBarrier waterMemBarrier{};
-        waterMemBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        waterMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-        waterMemBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-        vkCmdPipelineBarrier(commandBuffer,
-            VK_PIPELINE_STAGE_HOST_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0,
-            1, &waterMemBarrier,
-            0, nullptr,
-            0, nullptr
-        );
         // End offscreen render pass
         vkCmdEndRenderPass(commandBuffer);
 
@@ -431,6 +446,20 @@ public:
             waterRenderer.getSceneDepthImage(frameIdx), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             app->getDepthImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             1, &depthBlitRegion, VK_FILTER_NEAREST);
+
+        // Ensure host writes to water UBO are visible to fragment shaders
+        VkMemoryBarrier waterMemBarrier{};
+        waterMemBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        waterMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+        waterMemBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer,
+            VK_PIPELINE_STAGE_HOST_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0,
+            1, &waterMemBarrier,
+            0, nullptr,
+            0, nullptr
+        );
 
         swapBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         swapBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
