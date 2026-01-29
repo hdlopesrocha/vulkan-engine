@@ -37,7 +37,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 }
 
 // --- New helper methods for basic rendering ---
-const std::vector<const char*> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+const std::vector<const char*> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_EXT_host_query_reset"};
 
 void VulkanApp::initWindow() {
     if (!glfwInit()) {
