@@ -7,6 +7,7 @@
 #include <chrono>
 #include "math/Camera.hpp"
 #include "math/Light.hpp"
+#include <glm/gtc/type_ptr.hpp>
 #include "events/EventManager.hpp"
 #include "events/KeyboardPublisher.hpp"
 #include "events/GamepadPublisher.hpp"
@@ -21,7 +22,7 @@
 #include "math/SphereModel.hpp"
 #include "vulkan/TextureMixer.hpp"
 #include "widgets/AnimatedTextureWidget.hpp"
-#include "vulkan/ShadowMapper.hpp"
+#include "vulkan/ShadowRenderer.hpp"
 #include "vulkan/ShadowParams.hpp"
 #include "vulkan/IndirectRenderer.hpp"
 #include "vulkan/WaterRenderer.hpp"
@@ -90,7 +91,7 @@ class MyApp : public VulkanApp, public IEventHandler {
                         getDevice(),
                         queryPool,
                         0, 8,  // Read queries 0-7
-                        sizeof(timestamps),
+                        8 * sizeof(uint64_t),
                         timestamps,
                         sizeof(uint64_t),
                         VK_QUERY_RESULT_64_BIT
