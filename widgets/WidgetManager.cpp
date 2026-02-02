@@ -6,6 +6,7 @@ void WidgetManager::addWidget(std::shared_ptr<Widget> widget) {
 
 void WidgetManager::renderAll() {
 	for (auto& widget : widgets) {
+		if (!widget) continue;
 		if (widget->isVisible()) {
 			widget->render();
 		}
@@ -15,6 +16,7 @@ void WidgetManager::renderAll() {
 void WidgetManager::renderMenu() {
 	if (ImGui::BeginMenu("Windows")) {
 		for (auto& widget : widgets) {
+			if (!widget) continue;
 			bool isOpen = widget->isVisible();
 			if (ImGui::MenuItem(widget->getTitle().c_str(), nullptr, &isOpen)) {
 				if (isOpen) widget->show();
@@ -27,6 +29,7 @@ void WidgetManager::renderMenu() {
 
 std::shared_ptr<Widget> WidgetManager::getWidget(const std::string& title) {
 	for (auto& widget : widgets) {
+		if (!widget) continue;
 		if (widget->getTitle() == title) {
 			return widget;
 		}

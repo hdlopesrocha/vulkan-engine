@@ -2,6 +2,7 @@
 #include <iostream>
 #include <memory>
 #include <vector>
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <stdexcept>
@@ -22,10 +23,22 @@
 #include "utils/LocalScene.hpp"
 #include "widgets/SettingsWidget.hpp"
 #include "widgets/SkyWidget.hpp"
+#include "widgets/SkySettings.hpp"
 #include "widgets/WaterWidget.hpp"
 #include "widgets/RenderPassDebugWidget.hpp"
 #include "widgets/BillboardWidget.hpp"
+#include "widgets/BillboardCreator.hpp"
+#include "widgets/AnimatedTextureWidget.hpp"
+#include "widgets/TextureViewerWidget.hpp"
+#include "widgets/CameraWidget.hpp"
+#include "widgets/DebugWidget.hpp"
+#include "widgets/ShadowMapWidget.hpp"
+#include "widgets/LightWidget.hpp"
+#include "widgets/VulkanObjectsWidget.hpp"
+#include "widgets/VegetationAtlasEditor.hpp"
+#include "widgets/OctreeExplorerWidget.hpp"
 #include "utils/MainSceneLoader.hpp"
+#include "widgets/Settings.hpp"
 // ...existing includes...
 #include "widgets/BillboardWidgetManager.hpp"
 #include "widgets/WidgetManager.hpp"
@@ -37,9 +50,14 @@
 #include "events/ToggleFullscreenEvent.hpp"
 #include "vulkan/TextureArrayManager.hpp"
 #include "vulkan/MaterialManager.hpp"
+#include "vulkan/BillboardManager.hpp"
+#include "vulkan/AtlasManager.hpp"
+#include "vulkan/TextureMixer.hpp"
+#include "vulkan/ShadowParams.hpp"
 
 class MyApp : public VulkanApp, public IEventHandler {
 public:
+    Settings settings;
     std::unique_ptr<SceneRenderer> sceneRenderer;
     std::unique_ptr<LocalScene> mainScene;
     VkQueryPool queryPool = VK_NULL_HANDLE;
@@ -64,95 +82,48 @@ public:
     std::shared_ptr<WaterWidget> waterWidget;
     std::shared_ptr<RenderPassDebugWidget> renderPassDebugWidget;
     std::shared_ptr<BillboardWidget> billboardWidget;
+    std::shared_ptr<BillboardCreator> billboardCreator;
     std::unique_ptr<BillboardWidgetManager> billboardWidgetManager;
+    std::shared_ptr<AnimatedTextureWidget> animatedTextureWidget;
+    std::shared_ptr<TextureViewer> textureViewer;
+    std::shared_ptr<CameraWidget> cameraWidget;
+    std::shared_ptr<DebugWidget> debugWidget;
+    std::shared_ptr<ShadowMapWidget> shadowWidget;
+    std::shared_ptr<LightWidget> lightWidget;
+    std::shared_ptr<VulkanObjectsWidget> vulkanObjectsWidget;
+    std::shared_ptr<VegetationAtlasEditor> vegetationAtlasEditor;
+    std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
     WidgetManager widgetManager;
-    // Camera at original working position
-    // FIXED: Camera was at Z=-750 looking at -Z, but terrain is at +Z (behind camera!)
-    // Now positioned at Z=2000 looking at -Z to see terrain at Z=795
+    uint32_t loadedTextureLayers = 0;
+
+    // Billboard editing / vegetation resources
+    BillboardManager billboardManager;
+    AtlasManager vegetationAtlasManager;
+    TextureArrayManager vegetationTextureArrayManager;
+
+    // Texture editing / UI helpers
+    std::shared_ptr<TextureMixer> textureMixer;
+    std::vector<MixerParameters> mixerParams;
+    std::vector<MaterialProperties> materials;
+    ShadowParams shadowParams;
+    size_t cubeCount = 0;
+
+    // Camera and input
     Camera camera = Camera(glm::vec3(3456, 915, 2000), Math::eulerToQuat(0, 0, 0));
     Light light = Light(glm::vec3(0.0f, -1.0f, 0.0f));
     EventManager eventManager;
     KeyboardPublisher keyboardPublisher;
-    bool sceneLoading = false;  // True during initial loadScene, false after (enables incremental uploads)
-
-    MyApp()
-        : sceneRenderer(std::make_unique<SceneRenderer>(this)),
-          mainScene(std::make_unique<LocalScene>())
-    {}
+    bool sceneLoading = false;
 
     void setup() override {
-        // Restore previous scene loading logic
-        settingsWidget = std::make_shared<SettingsWidget>();
-        skyWidget = std::make_shared<SkyWidget>();
-        // Bind water widget to the SceneRenderer's WaterRenderer so it edits the canonical params
-        waterWidget = std::make_shared<WaterWidget>(sceneRenderer->waterRenderer.get());
-        renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(this, nullptr);
-        billboardWidget = std::make_shared<BillboardWidget>();
-        billboardWidgetManager = std::make_unique<BillboardWidgetManager>(billboardWidget, nullptr, nullptr);
-        widgetManager.addWidget(settingsWidget);
-        widgetManager.addWidget(skyWidget);
-        widgetManager.addWidget(waterWidget);
-        widgetManager.addWidget(renderPassDebugWidget);
-        widgetManager.addWidget(billboardWidget);
-        // Scene loading
-        MainSceneLoader mainSceneLoader(&mainScene->transparentLayerChangeHandler, &mainScene->opaqueLayerChangeHandler);
-        
-        // Initialize scene renderer (creates pipelines, descriptor sets, water targets, etc.)
-        if (sceneRenderer) {
-            sceneRenderer->init(this, skyWidget.get());
 
-            // Helper to wire up change handler callbacks for a layer
-            // During initial load (sceneLoading=true), just accumulate to CPU arrays
-            // After initial load, use uploadMesh() for incremental GPU updates
-            auto wireUpChangeHandler = [this](auto& changeHandler, Layer layer, IndirectRenderer& indirectRenderer, const char* name, bool& loadingFlag) {
-                changeHandler.setOnNodeUpdated([this, layer, &indirectRenderer, name, &loadingFlag](const OctreeNodeData& nodeData) {
-                    uint32_t nodeId = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(nodeData.node) & 0xFFFFFFFF);
-                    
-                    mainScene->requestModel3D(layer, const_cast<OctreeNodeData&>(nodeData), [this, &indirectRenderer, nodeId, name, &loadingFlag](const Geometry& geom) {
-                        if (!geom.vertices.empty() && !geom.indices.empty()) {
-                            indirectRenderer.addMesh(this, geom, glm::mat4(1.0f), nodeId);
-                            if (!loadingFlag) {
-                                // Runtime change: try incremental upload, fall back to rebuild if needed
-                                if (!indirectRenderer.uploadMesh(this, nodeId)) {
-                                    printf("[%s] uploadMesh failed for node %u, triggering rebuild\n", name, nodeId);
-                                    indirectRenderer.rebuild(this);
-                                }
-                            }
-                        }
-                    });
-                });
-                
-                changeHandler.setOnNodeErased([this, &indirectRenderer, name, &loadingFlag](const OctreeNodeData& nodeData) {
-                    uint32_t nodeId = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(nodeData.node) & 0xFFFFFFFF);
-                    if (!loadingFlag) {
-                        // Runtime removal: zero out GPU command before removing from CPU
-                        indirectRenderer.eraseMeshFromGPU(this, nodeId);
-                    }
-                    indirectRenderer.removeMesh(nodeId);
-                });
-            };
-
-            // Wire up opaque layer -> SolidRenderer's IndirectRenderer
-            if (sceneRenderer->solidRenderer) {
-                wireUpChangeHandler(mainScene->opaqueLayerChangeHandler, Layer::LAYER_OPAQUE,
-                                    sceneRenderer->solidRenderer->getIndirectRenderer(), "OpaqueChangeHandler", sceneLoading);
-            }
-            
-            // Wire up transparent layer -> WaterRenderer's IndirectRenderer
-            if (sceneRenderer->waterRenderer) {
-                wireUpChangeHandler(mainScene->transparentLayerChangeHandler, Layer::LAYER_TRANSPARENT,
-                                    sceneRenderer->waterRenderer->getIndirectRenderer(), "TransparentChangeHandler", sceneLoading);
-            }
-        }
-        
-        // Load scene data into octrees (this populates the octree structure)
-        // Change handlers are called automatically by octree add/del and will build meshes
-        sceneLoading = true;
-        mainScene->loadScene(mainSceneLoader);
-        sceneLoading = false;
-        
-        // Batch rebuild: upload all accumulated meshes to GPU in one call per renderer
-        if (sceneRenderer) {
+        // Ensure SceneRenderer exists and initialize it (SceneRenderer now owns SkySettings)
+        if (!sceneRenderer) {
+            sceneRenderer = std::make_unique<SceneRenderer>(this);
+            sceneRenderer->init(this, getMainDescriptorSet());
+            sceneRenderer->createPipelines();
+            printf("[MyApp::setup] Created and initialized SceneRenderer\n");
+        } else {
             if (sceneRenderer->solidRenderer) {
                 sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
                 printf("[MyApp::setup] Rebuilt opaque IndirectRenderer\n");
@@ -161,7 +132,130 @@ public:
                 sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
                 printf("[MyApp::setup] Rebuilt water IndirectRenderer\n");
             }
+            // If SceneRenderer already existed ensure the sky UBO is bound into the main descriptor set
+            if (sceneRenderer && sceneRenderer->skyRenderer) {
+                sceneRenderer->skyRenderer->initSky(sceneRenderer->getSkySettings(), getMainDescriptorSet());
+                printf("[MyApp::setup] Initialized SkyRenderer with SceneRenderer-owned SkySettings and main descriptor set\n");
+            }
         }
+
+        // Load legacy texture triples (albedo, normal, height) into the texture array manager
+        if (sceneRenderer) {
+            uint32_t loadedTextureLayers_local = 0;
+            struct TextureTriple { const char* albedo; const char* normal; const char* bump; };
+            const std::vector<TextureTriple> textureTriples = {
+                { "textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg" },
+                { "textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg" },
+                { "textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg" },
+                { "textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg" },
+                { "textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg" },
+                { "textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg" },
+                { "textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg" },
+                { "textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg" },
+                { "textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg" },
+                { "textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg" },
+                { "textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg" }
+            };
+
+            sceneRenderer->textureArrayManager.currentLayer = 0;
+            for (const auto& triple : textureTriples) {
+                if (sceneRenderer->textureArrayManager.currentLayer >= sceneRenderer->textureArrayManager.layerAmount) {
+                    fprintf(stderr, "[TextureLoad] Reached texture array capacity (%u layers)\n", sceneRenderer->textureArrayManager.layerAmount);
+                    break;
+                }
+                try {
+                    sceneRenderer->textureArrayManager.load(triple.albedo, triple.normal, triple.bump);
+                    ++loadedTextureLayers_local;
+                } catch (const std::exception& e) {
+                    fprintf(stderr, "[TextureLoad] Failed to load %s: %s\n", triple.albedo ? triple.albedo : "(null)", e.what());
+                }
+            }
+            // Record into member so UI can display counts
+            loadedTextureLayers = loadedTextureLayers_local;
+
+            for (uint32_t i = 0; i < loadedTextureLayers; ++i) {
+                sceneRenderer->textureArrayManager.getImTexture(i, 0);
+                sceneRenderer->textureArrayManager.getImTexture(i, 1);
+                sceneRenderer->textureArrayManager.getImTexture(i, 2);
+            }
+        }
+
+        // Restore additional widgets and editors
+        uint32_t mixWidth = sceneRenderer ? (sceneRenderer->textureArrayManager.width ? sceneRenderer->textureArrayManager.width : 512u) : 512u;
+        uint32_t mixHeight = sceneRenderer ? (sceneRenderer->textureArrayManager.height ? sceneRenderer->textureArrayManager.height : 512u) : 512u;
+        textureMixer = std::make_shared<TextureMixer>();
+        textureMixer->init(this, mixWidth, mixHeight, sceneRenderer ? &sceneRenderer->textureArrayManager : nullptr);
+        mixerParams.clear();
+        uint32_t layerCount = sceneRenderer ? sceneRenderer->textureArrayManager.layerAmount : 1u;
+        uint32_t editableLayer = (loadedTextureLayers < layerCount) ? loadedTextureLayers : 0u;
+        uint32_t availableLayers = std::max(layerCount, std::max(loadedTextureLayers, 1u));
+        MixerParameters defaultMixer{};
+        defaultMixer.targetLayer = editableLayer;
+        defaultMixer.primaryTextureIdx = (availableLayers > 1) ? 1u : 0u;
+        defaultMixer.secondaryTextureIdx = (availableLayers > 2) ? 2u : defaultMixer.primaryTextureIdx;
+        mixerParams.push_back(defaultMixer);
+        textureMixer->generateInitialTextures(mixerParams);
+        textureMixer->setEditableLayer(defaultMixer.targetLayer);
+        // Prime ImGui descriptors so the texture viewer shows immediately
+        if (sceneRenderer) {
+            sceneRenderer->textureArrayManager.setLayerInitialized(defaultMixer.targetLayer, true);
+            sceneRenderer->textureArrayManager.getImTexture(defaultMixer.targetLayer, 0);
+            sceneRenderer->textureArrayManager.getImTexture(defaultMixer.targetLayer, 1);
+            sceneRenderer->textureArrayManager.getImTexture(defaultMixer.targetLayer, 2);
+        }
+
+        animatedTextureWidget = std::make_shared<AnimatedTextureWidget>(textureMixer, mixerParams, "Editable Textures");
+
+        size_t materialCount = std::max<size_t>(static_cast<size_t>(loadedTextureLayers), static_cast<size_t>(defaultMixer.targetLayer + 1));
+        if (materialCount == 0) {
+            materialCount = layerCount ? layerCount : 1u;
+        }
+        materials.assign(materialCount, MaterialProperties{});
+        textureViewer = std::make_shared<TextureViewer>();
+        textureViewer->init(sceneRenderer ? &sceneRenderer->textureArrayManager : nullptr, &materials);
+        textureViewer->setOnMaterialChanged([](size_t) {});
+        if (!skyWidget && sceneRenderer) skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
+        waterWidget = std::make_shared<WaterWidget>(sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr);
+        renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(this, sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr, sceneRenderer ? sceneRenderer->solidRenderer.get() : nullptr);
+        billboardWidget = std::make_shared<BillboardWidget>();
+        billboardWidgetManager = std::make_unique<BillboardWidgetManager>(billboardWidget, sceneRenderer ? sceneRenderer->vegetationRenderer.get() : nullptr, nullptr);
+        billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureArrayManager);
+
+        cameraWidget = std::make_shared<CameraWidget>(&camera);
+        debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &cubeCount);
+        shadowWidget = std::make_shared<ShadowMapWidget>(sceneRenderer ? sceneRenderer->shadowMapper.get() : nullptr, &shadowParams);
+        lightWidget = std::make_shared<LightWidget>(&light);
+        vulkanObjectsWidget = std::make_shared<VulkanObjectsWidget>(this);
+
+        vegetationTextureArrayManager.allocate(3, 512, 512);
+        vegetationTextureArrayManager.initialize(this);
+        vegetationAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
+
+        // Initialize and load the main scene so rendering has valid scene data
+        mainScene = std::make_unique<LocalScene>();
+        {
+            MainSceneLoader loader = MainSceneLoader();
+            mainScene->loadScene(loader);
+        }
+        // Create octree explorer widget bound to loaded scene
+        octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene.get());
+
+        widgetManager.addWidget(animatedTextureWidget);
+        widgetManager.addWidget(textureViewer);
+        widgetManager.addWidget(cameraWidget);
+        widgetManager.addWidget(debugWidget);
+        widgetManager.addWidget(shadowWidget);
+        widgetManager.addWidget(settingsWidget);
+        widgetManager.addWidget(lightWidget);
+        widgetManager.addWidget(skyWidget);
+        widgetManager.addWidget(waterWidget);
+        widgetManager.addWidget(renderPassDebugWidget);
+        widgetManager.addWidget(vulkanObjectsWidget);
+        widgetManager.addWidget(vegetationAtlasEditor);
+        widgetManager.addWidget(billboardWidget);
+        widgetManager.addWidget(billboardCreator);
+        widgetManager.addWidget(octreeExplorerWidget);
+
         
         // Subscribe event handlers
         eventManager.subscribe(&camera);  // Camera handles translate/rotate events
@@ -172,6 +266,7 @@ public:
         glm::mat4 proj = glm::perspective(glm::radians(60.0f), aspectRatio, 0.1f, 10000.0f);
         proj[1][1] *= -1; // Vulkan Y-flip
         camera.setProjection(proj);
+        shadowParams.update(camera.getPosition(), light);
         
         // Position camera to view the terrain
         printf("[Camera Setup] Final Position: (%.1f, %.1f, %.1f)\n", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
@@ -182,21 +277,96 @@ public:
         // Poll keyboard input and publish events
         keyboardPublisher.update(getWindow(), &eventManager, camera, deltaTime, false);
         eventManager.processQueued();
+
+        shadowParams.update(camera.getPosition(), light);
         
-        // Advance water animation time (owned by WaterRenderer)
-        if (sceneRenderer && sceneRenderer->waterRenderer) {
+        // Advance water animation time (owned by WaterRenderer) when enabled
+        const bool waterEnabled = settings.waterEnabled;
+        if (waterEnabled && sceneRenderer && sceneRenderer->waterRenderer) {
             sceneRenderer->waterRenderer->advanceTime(deltaTime);
         }
     }
 
     void preRenderPass(VkCommandBuffer &commandBuffer) override {
         // Shadow pass (uses separate command buffer internally)
-        sceneRenderer->shadowPass(commandBuffer, queryPool, shadowPassDescriptorSet, uboStatic, true, false);
-        
-        // Run GPU frustum culling for opaque geometry
+        if (sceneRenderer) {
+            sceneRenderer->shadowPass(commandBuffer, queryPool, shadowPassDescriptorSet, uboStatic, true, false);
+        } else {
+            fprintf(stderr, "[MyApp::preRenderPass] sceneRenderer is null, skipping shadow pass\n");
+        }
+
+        // Build per-frame UBO
         glm::mat4 viewProj = camera.getViewProjectionMatrix();
+        uboStatic.viewProjection = viewProj;
+        uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
+        uboStatic.lightDir = glm::vec4(light.getDirection(), 0.0f);
+        uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 0.9f, 1.0f);
+        uboStatic.lightSpaceMatrix = shadowParams.lightSpaceMatrix;
+        // Encode debug/triplanar/tess parameters into the shared UBO
+        uboStatic.debugParams = glm::vec4(static_cast<float>(settings.debugMode), 0.0f, 0.0f, 0.0f);
+        uboStatic.triplanarSettings = glm::vec4(settings.triplanarThreshold, settings.triplanarExponent, 0.0f, 0.0f);
+        uboStatic.tessParams = glm::vec4(
+            settings.tessMinDistance,
+            settings.tessMaxDistance,
+            settings.tessMinLevel,
+            settings.tessMaxLevel
+        );
+        // passParams: x = isShadowPass, y = tessEnabled (also gates displacement in TCS/TE)
+        uboStatic.passParams = glm::vec4(0.0f, settings.tessellationEnabled ? 1.0f : 0.0f, 0.0f, 0.0f);
+
+        // Upload UBO to GPU
+        if (sceneRenderer) {
+            void* data;
+            vkMapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory, 0, sizeof(UniformObject), 0, &data);
+            memcpy(data, &uboStatic, sizeof(UniformObject));
+            vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory);
+        } else {
+            fprintf(stderr, "[MyApp::preRenderPass] sceneRenderer is null, skipping UBO upload\n");
+        }
+
+        // Run GPU frustum culling for opaque geometry
         if (sceneRenderer && sceneRenderer->solidRenderer) {
             sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
+        }
+
+            const bool waterEnabled = settings.waterEnabled;
+            const bool vegetationEnabled = settings.vegetationEnabled;
+
+            // Render sky + solids/vegetation into the solid offscreen framebuffer (one per frame)
+            if (sceneRenderer && sceneRenderer->waterRenderer && sceneRenderer->solidRenderer) {
+            uint32_t frameIdx = getCurrentFrame();
+            VkClearValue colorClear{};
+            // Clear solid offscreen color to transparent so composite starts from empty scene
+            colorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+            VkClearValue depthClear{};
+            depthClear.depthStencil = {1.0f, 0};
+                sceneRenderer->solidRenderer->beginPass(commandBuffer, frameIdx, colorClear, depthClear);
+
+            VkRenderPassBeginInfo unusedRpInfo{};
+            sceneRenderer->skyPass(commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, viewProj);
+            sceneRenderer->mainPass(commandBuffer, unusedRpInfo, frameIdx, waterEnabled, vegetationEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode, profilingEnabled, queryPool,
+                viewProj, uboStatic, sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), true, false, true, 0, 0.0f, 0.0f);
+
+            // Render debug cubes for expanded octree nodes
+            if (octreeExplorerWidget && octreeExplorerWidget->isVisible() && sceneRenderer->debugCubeRenderer) {
+                // Convert from OctreeExplorerWidget::CubeWithColor to DebugCubeRenderer::CubeWithColor
+                const auto& widgetCubes = octreeExplorerWidget->getExpandedCubes();
+                std::vector<DebugCubeRenderer::CubeWithColor> debugCubes;
+                debugCubes.reserve(widgetCubes.size());
+                for (const auto& wc : widgetCubes) {
+                    debugCubes.push_back({wc.cube, wc.color});
+                }
+                sceneRenderer->debugCubeRenderer->setCubes(debugCubes);
+                sceneRenderer->debugCubeRenderer->render(commandBuffer, getMainDescriptorSet());
+            }
+
+                sceneRenderer->solidRenderer->endPass(commandBuffer);
+
+            // Run water geometry pass offscreen and bind scene textures for post-process
+            if (waterEnabled) {
+                sceneRenderer->waterPass(commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), profilingEnabled, queryPool,
+                    sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime());
+            }
         }
     }
 
@@ -225,34 +395,58 @@ public:
                 float padding = 10.0f;
                 float y = ImGui::GetFrameHeight() + 6.0f; // position just under the main menu bar
                 ImGui::SetNextWindowPos(ImVec2(padding, y), ImGuiCond_Always);
-                if (ImGui::Begin("##stats_overlay", nullptr, flags)) {
-                    ImGui::Text("FPS: %.1f (%.2f ms)", imguiFps, imguiFps > 0 ? 1000.0f / imguiFps : 0.0f);
-                    ImGui::Text("Loaded: %zu meshes", sceneRenderer && sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getRegisteredModelCount() : 0);
-                    
-                    if (profilingEnabled) {
-                        ImGui::Separator();
-                        ImGui::Text("--- GPU Timing (ms) ---");
-                        float gpuTotal = profileShadowCull + profileShadowDraw + profileMainCull +
-                                         profileDepthPrepass + profileMainDraw + profileSky + profileImGui;
-                        ImGui::Text("Shadow Cull:   %.2f", profileShadowCull);
-                        ImGui::Text("Shadow Draw:   %.2f", profileShadowDraw);
-                        ImGui::Text("Main Cull:     %.2f", profileMainCull);
-                        ImGui::Text("Depth Prepass: %.2f", profileDepthPrepass);
-                        ImGui::Text("Main Draw:     %.2f", profileMainDraw);
-                        ImGui::Text("Sky:           %.2f", profileSky);
-                        ImGui::Text("ImGui:         %.2f", profileImGui);
-                        ImGui::Text("GPU Total:     %.2f", gpuTotal);
-                        ImGui::Separator();
-                        ImGui::Text("--- CPU Timing (ms) ---");
-                        ImGui::Text("Update:        %.2f", profileCpuUpdate);
-                        ImGui::Text("Record:        %.2f", profileCpuRecord);
-                    }
+
+                ImGui::Begin("StatsOverlay", nullptr, flags);
+
+                // Statistics: loaded/visible counts
+                ImGui::Text("Textures Loaded (CPU): %u", loadedTextureLayers);
+                size_t gpuLoaded = sceneRenderer && sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getIndirectRenderer().getMeshCount() : 0;
+                uint32_t gpuVisible = 0;
+                if (sceneRenderer && sceneRenderer->solidRenderer) {
+                    gpuVisible = sceneRenderer->solidRenderer->getIndirectRenderer().readVisibleCount(this);
                 }
+                ImGui::Text("Loaded (GPU): %zu", gpuLoaded);
+                ImGui::Text("Visible (GPU cull): %u", gpuVisible);
+
+                size_t waterLoaded = sceneRenderer && sceneRenderer->waterRenderer ? sceneRenderer->waterRenderer->getIndirectRenderer().getMeshCount() : 0;
+                uint32_t waterVisible = 0;
+                if (sceneRenderer && sceneRenderer->waterRenderer) {
+                    waterVisible = sceneRenderer->waterRenderer->getIndirectRenderer().readVisibleCount(this);
+                }
+                ImGui::Text("Water Loaded: %zu", waterLoaded);
+                ImGui::Text("Water Visible: %u", waterVisible);
+
+                size_t vegChunks = sceneRenderer && sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getChunkCount() : 0;
+                size_t vegInstances = sceneRenderer && sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getInstanceTotal() : 0;
+                ImGui::Text("Vegetation Chunks: %zu", vegChunks);
+                ImGui::Text("Vegetation Instances: %zu", vegInstances);
+                    
+                if (profilingEnabled) {
+                    ImGui::Separator();
+                    ImGui::Text("--- GPU Timing (ms) ---");
+                    float gpuTotal = profileShadowCull + profileShadowDraw + profileMainCull +
+                                     profileDepthPrepass + profileMainDraw + profileSky + profileImGui;
+                    ImGui::Text("Shadow Cull:   %.2f", profileShadowCull);
+                    ImGui::Text("Shadow Draw:   %.2f", profileShadowDraw);
+                    ImGui::Text("Main Cull:     %.2f", profileMainCull);
+                    ImGui::Text("Depth Prepass: %.2f", profileDepthPrepass);
+                    ImGui::Text("Main Draw:     %.2f", profileMainDraw);
+                    ImGui::Text("Sky:           %.2f", profileSky);
+                    ImGui::Text("ImGui:         %.2f", profileImGui);
+                    ImGui::Text("GPU Total:     %.2f", gpuTotal);
+                    ImGui::Separator();
+                    ImGui::Text("--- CPU Timing (ms) ---");
+                    ImGui::Text("Update:        %.2f", profileCpuUpdate);
+                    ImGui::Text("Record:        %.2f", profileCpuRecord);
+                }
+
                 ImGui::End();
             }
         }
 
         if (imguiShowDemo) ImGui::ShowDemoWindow(&imguiShowDemo);
+
+        cubeCount = (sceneRenderer && sceneRenderer->solidRenderer) ? sceneRenderer->solidRenderer->getRegisteredModelCount() : 0;
 
         // Render all widgets
         widgetManager.renderAll();
@@ -261,54 +455,44 @@ public:
     void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
         // Only record draw commands; command buffer and render pass are already active
         if (commandBuffer == VK_NULL_HANDLE) {
-            fprintf(stderr, "[MyApp::draw] Error: commandBuffer is VK_NULL_HANDLE, skipping draw.\n");
+            fprintf(stdout, "[MyApp::draw] Error: commandBuffer is VK_NULL_HANDLE, skipping draw.\n");
             return;
         }
         if (!sceneRenderer) {
-            fprintf(stderr, "[MyApp::draw] Error: sceneRenderer is nullptr, skipping draw.\n");
+            fprintf(stdout  , "[MyApp::draw] Error: sceneRenderer is nullptr, skipping draw.\n");
             return;
         }
         if (!mainScene) {
-            fprintf(stderr, "[MyApp::draw] Error: mainScene is nullptr, skipping draw.\n");
+            fprintf(stdout  , "[MyApp::draw] Error: mainScene is nullptr, skipping draw.\n");
             return;
         }
         
-        // Update UBO with current camera and light data
+        uint32_t frameIdx = getCurrentFrame();
         glm::mat4 viewProj = camera.getViewProjectionMatrix();
-        uboStatic.viewProjection = viewProj;
-        uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
-        uboStatic.lightDir = glm::vec4(light.getDirection(), 0.0f);
-        uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 0.9f, 1.0f);
-        uboStatic.lightSpaceMatrix = light.getViewProjectionMatrix();
-        
-        static int frameCount = 0;
-        if (frameCount++ < 3) {
-            printf("[Frame %d] Camera pos=(%.1f, %.1f, %.1f) forward=(%.3f, %.3f, %.3f)\n", 
-                   frameCount, camera.getPosition().x, camera.getPosition().y, camera.getPosition().z,
-                   camera.getForward().x, camera.getForward().y, camera.getForward().z);
-            printf("[Frame %d] Uploading UBO: buffer=%p, size=%zu, mainDescriptorSet=%p\n", 
-                   frameCount, (void*)sceneRenderer->mainUniformBuffer.buffer, sizeof(UniformObject),
-                   (void*)getMainDescriptorSet());
+        glm::mat4 invViewProj = glm::inverse(viewProj);
+
+        // Composite offscreen scene + water into the swapchain
+        if (sceneRenderer && sceneRenderer->waterRenderer) {
+            sceneRenderer->waterRenderer->renderWaterPostProcess(
+                commandBuffer,
+                renderPassInfo.framebuffer,
+                renderPassInfo.renderPass,
+                sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getColorView(frameIdx) : VK_NULL_HANDLE,
+                sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getDepthView(frameIdx) : VK_NULL_HANDLE,
+                sceneRenderer->waterRenderer->getParams(),
+                viewProj,
+                invViewProj,
+                glm::vec3(uboStatic.viewPos),
+                sceneRenderer->waterRenderer->getTime(),
+                false);
         }
-        
-        // Upload UBO to GPU
-        void* data;
-        vkMapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory, 0, sizeof(UniformObject), 0, &data);
-        memcpy(data, &uboStatic, sizeof(UniformObject));
-        vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory);
-        
-        // Main pass (inside render pass - sky, solid, vegetation)
-        sceneRenderer->mainPass(commandBuffer, renderPassInfo, 0, true, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, false, profilingEnabled, queryPool,
-            viewProj, uboStatic, sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), true, false, true, 0, 0.0f, 0.0f);
-        // Water pass
-        sceneRenderer->waterPass(commandBuffer, renderPassInfo, 0, getMainDescriptorSet(), profilingEnabled, queryPool, sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime());
         //fprintf(stderr, "[MyApp::draw] waterPass returned. Rendering ImGui...\n");
         // ImGui rendering
         ImDrawData* draw_data = ImGui::GetDrawData();
         if (!draw_data) {
-            fprintf(stderr, "[MyApp::draw] Warning: ImGui::GetDrawData() returned nullptr, skipping ImGui rendering.\n");
+            fprintf(stdout, "[MyApp::draw] Warning: ImGui::GetDrawData() returned nullptr, skipping ImGui rendering.\n");
         } else if (commandBuffer == VK_NULL_HANDLE) {
-            fprintf(stderr, "[MyApp::draw] Error: commandBuffer is VK_NULL_HANDLE before ImGui rendering, skipping ImGui.\n");
+            fprintf(stdout, "[MyApp::draw] Error: commandBuffer is VK_NULL_HANDLE before ImGui rendering, skipping ImGui.\n");
         } else {
             //fprintf(stderr, "[MyApp::draw] ImGui::GetDrawData() valid, calling ImGui_ImplVulkan_RenderDrawData...\n");
             ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
@@ -319,6 +503,15 @@ public:
         // Cleanup scene renderer and all sub-renderers
         if (sceneRenderer) {
             sceneRenderer->cleanup();
+        }
+        if (textureMixer) {
+            textureMixer->cleanup();
+        }
+    }
+
+    void onSwapchainResized(uint32_t width, uint32_t height) override {
+        if (sceneRenderer) {
+            sceneRenderer->onSwapchainResized(width, height);
         }
     }
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../utils/BillboardManager.hpp"
+#include "../vulkan/BillboardManager.hpp"
 #include "../vulkan/AtlasManager.hpp"
 #include "../vulkan/TextureArrayManager.hpp"
 #include "../vulkan/EditableTexture.hpp"
@@ -11,7 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <utility>
-#include <stb_image.h>
+// stb_image is included in the implementation file (BillboardCreator.cpp)
 
 class BillboardCreator : public Widget {
 public:

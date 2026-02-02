@@ -1,67 +1,48 @@
 #pragma once
 
 #include "Widget.hpp"
+#include "Settings.hpp"
 #include <imgui.h>
 #include <functional>
 
 class SettingsWidget : public Widget {
 public:
-    SettingsWidget();
+    explicit SettingsWidget(Settings& settings);
     
     void render() override;
     
     // Getters for the settings
-    bool getShadowsEnabled() const { return enableShadows; }
-    bool getFlipKeyboardRotation() const { return flipKeyboardRotation; }
-    bool getFlipGamepadRotation() const { return flipGamepadRotation; }
-    float getMoveSpeed() const { return moveSpeed; }
-    float getAngularSpeedDeg() const { return angularSpeedDeg; }
-    bool getWireframeEnabled() const { return wireframeMode; }
-        int getDebugMode() const { return debugMode; }
-    bool getNormalMappingEnabled() const { return normalMappingEnabled; }
-    float getTriplanarThreshold() const { return triplanarThreshold; }
-    float getTriplanarExponent() const { return triplanarExponent; }
+    bool getShadowsEnabled() const { return settings.enableShadows; }
+    bool getFlipKeyboardRotation() const { return settings.flipKeyboardRotation; }
+    bool getFlipGamepadRotation() const { return settings.flipGamepadRotation; }
+    float getMoveSpeed() const { return settings.moveSpeed; }
+    float getAngularSpeedDeg() const { return settings.angularSpeedDeg; }
+    bool getWireframeEnabled() const { return settings.wireframeMode; }
+        int getDebugMode() const { return settings.debugMode; }
+    bool getNormalMappingEnabled() const { return settings.normalMappingEnabled; }
+    bool getWaterEnabled() const { return settings.waterEnabled; }
+    bool getVegetationEnabled() const { return settings.vegetationEnabled; }
+    float getTriplanarThreshold() const { return settings.triplanarThreshold; }
+    float getTriplanarExponent() const { return settings.triplanarExponent; }
 
     // Callback setter for debug actions
     void setDumpShadowDepthCallback(std::function<void()> cb) { onDumpShadowDepth = cb; }
     
 private:
-    bool enableShadows = true;                 // Global toggle for shadow mapping
-    
-    bool flipKeyboardRotation = false;         // Flip keyboard rotation axes
-    bool flipGamepadRotation = false;          // Flip gamepad rotation axes
-    float moveSpeed = 2.5f;                    // movement units/sec
-    float angularSpeedDeg = 45.0f;             // degrees/sec for rotation
-    bool wireframeMode = false;                // render wireframe when true
-        int debugMode = 0;                         // 0=Default,1=Fragment Normal,2=World Normal,3=UV,4=Normal(TBN),5=Albedo,6=Normal Tex,7=Bump,8=Pre-Projection,9=Normal from Derivatives,10=Light Vector,11=N·L,12=Shadow Diagnostics,13=Triplanar Weights
-    bool normalMappingEnabled = true;          // Global toggle for normal mapping
+    Settings& settings;
     std::function<void()> onDumpShadowDepth;
-    // Triplanar settings
-    float triplanarThreshold = 0.5f; // small dead zone before blending starts
-    float triplanarExponent = 1.0f;   // >1 makes transitions steeper
-    // Tessellation settings
-    bool tessellationEnabled = true; // global toggle to disable all tessellation + displacement
-    bool shadowTessellationEnabled = true; // global toggle to disable all tessellation + displacement
-    bool adaptiveTessellation = true;
-    float tessMinLevel = 1.0f;
-    float tessMaxLevel = 32.0f;
-    float tessMaxDistance = 30.0f;
-    float tessMinDistance = 10.0f;
-    
-    // V-Sync / Present mode
-    bool vsyncEnabled = true; // when false, use IMMEDIATE mode for uncapped FPS
-    
+
     void resetToDefaults();
 public:
     // Tessellation getters
-    bool getTessellationEnabled() const { return tessellationEnabled; }
-    bool getShadowTessellationEnabled() const { return shadowTessellationEnabled; }
-    bool getAdaptiveTessellation() const { return adaptiveTessellation; }
-    float getTessMinLevel() const { return tessMinLevel; }
-    float getTessMaxLevel() const { return tessMaxLevel; }
-    float getTessMaxDistance() const { return tessMaxDistance; }
-    float getTessMinDistance() const { return tessMinDistance; }
+    bool getTessellationEnabled() const { return settings.tessellationEnabled; }
+    bool getShadowTessellationEnabled() const { return settings.shadowTessellationEnabled; }
+    bool getAdaptiveTessellation() const { return settings.adaptiveTessellation; }
+    float getTessMinLevel() const { return settings.tessMinLevel; }
+    float getTessMaxLevel() const { return settings.tessMaxLevel; }
+    float getTessMaxDistance() const { return settings.tessMaxDistance; }
+    float getTessMinDistance() const { return settings.tessMinDistance; }
     
     // V-Sync getter
-    bool getVSyncEnabled() const { return vsyncEnabled; }
+    bool getVSyncEnabled() const { return settings.vsyncEnabled; }
 };
