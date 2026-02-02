@@ -17,6 +17,19 @@ void SceneRenderer::cleanup() {
     if (vegetationRenderer) {
         vegetationRenderer->cleanup();
     }
+    if (debugCubeRenderer) {
+        debugCubeRenderer->cleanup();
+    }
+}
+
+void SceneRenderer::onSwapchainResized(uint32_t width, uint32_t height) {
+    // Recreate offscreen targets that depend on swapchain size
+    if (solidRenderer) {
+        solidRenderer->createRenderTargets(width, height);
+    }
+    if (waterRenderer) {
+        waterRenderer->createRenderTargets(width, height);
+    }
 }
 
 SceneRenderer::SceneRenderer(VulkanApp* app_)
@@ -25,9 +38,11 @@ SceneRenderer::SceneRenderer(VulkanApp* app_)
       waterRenderer(std::make_unique<WaterRenderer>(app_)),
       skyRenderer(std::make_unique<SkyRenderer>(app_)),
       solidRenderer(std::make_unique<SolidRenderer>(app_)),
-      vegetationRenderer(std::make_unique<VegetationRenderer>(app_))
+      vegetationRenderer(std::make_unique<VegetationRenderer>(app_)),
+      debugCubeRenderer(std::make_unique<DebugCubeRenderer>(app_)),
+      skySettings()
 {
-    // All renderer members are now properly instantiated
+    // All renderer members are now properly instantiated and internal SkySettings constructed
 }
 
 SceneRenderer::~SceneRenderer() {
@@ -53,12 +68,13 @@ void SceneRenderer::shadowPass(VkCommandBuffer &commandBuffer, VkQueryPool query
 
 }
 
-void SceneRenderer::mainPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
+void SceneRenderer::mainPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
                   const UniformObject &uboStatic, const WaterParams &waterParams, float waterTime, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent) {
     if (commandBuffer == VK_NULL_HANDLE) {
         fprintf(stderr, "[SceneRenderer::mainPass] commandBuffer is VK_NULL_HANDLE, skipping.\n");
         return;
     }
+    (void)hasWater;
     static bool printedOnce = false;
     if (!printedOnce) {
         fprintf(stderr, "[SceneRenderer::mainPass] Entered. solidRenderer=%p skyRenderer=%p\n", (void*)solidRenderer.get(), (void*)skyRenderer.get());
@@ -71,29 +87,30 @@ void SceneRenderer::mainPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginIn
     solidRenderer->draw(commandBuffer, app, perTextureDescriptorSet, wireframeEnabled);
     //fprintf(stderr, "[SceneRenderer::mainPass] After solidRenderer->draw.\n");
 
-    // Sky pass - render with depth test GREATER_OR_EQUAL so sky only shows through gaps
-    if (!skyRenderer) {
-        fprintf(stderr, "[SceneRenderer::mainPass] skyRenderer is nullptr, skipping.\n");
-    } else {
-        try {
-            // Forward the valid main uniform buffer provided by the caller
-            skyRenderer->render(commandBuffer, perTextureDescriptorSet, mainUniformBuffer, uboStatic, viewProj, SkyMode::Gradient);
-            //fprintf(stderr, "[SceneRenderer::mainPass] After skyRenderer->render.\n");
-        } catch (...) {
-            fprintf(stderr, "[SceneRenderer::mainPass] Exception in skyRenderer->render.\n");
-        }
-    }
-
     // Vegetation pass
     if (!vegetationRenderer) {
         fprintf(stderr, "[SceneRenderer::mainPass] vegetationRenderer is nullptr, skipping.\n");
-    } else {
+    } else if (vegetationEnabled) {
         try {
             vegetationRenderer->draw(commandBuffer, perTextureDescriptorSet, viewProj);
             //fprintf(stderr, "[SceneRenderer::mainPass] After vegetationRenderer->draw.\n");
         } catch (...) {
             fprintf(stderr, "[SceneRenderer::mainPass] Exception in vegetationRenderer->draw.\n");
         }
+    }
+}
+
+void SceneRenderer::skyPass(VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj) {
+    if (!skyRenderer) {
+        fprintf(stderr, "[SceneRenderer::skyPass] skyRenderer is nullptr, skipping.\n");
+        return;
+    }
+    try {
+        // skySettings owned by this renderer
+        SkySettings::Mode mode = skySettings.mode;
+        skyRenderer->render(commandBuffer, perTextureDescriptorSet, mainUniformBuffer, uboStatic, viewProj, mode);
+    } catch (...) {
+        fprintf(stderr, "[SceneRenderer::skyPass] Exception in skyRenderer->render.\n");
     }
 }
 
@@ -110,7 +127,10 @@ void SceneRenderer::waterPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginI
 
     // Ensure per-frame scene textures are bound to the water descriptor sets
     // Update the descriptor sets after the main scene pass so images are in SHADER_READ_ONLY layout
-    waterRenderer->updateSceneTexturesBinding(waterRenderer->getSceneColorView(frameIdx), waterRenderer->getSceneDepthView(frameIdx), frameIdx);
+    // Bind the solid offscreen outputs so water uses the solid pass for refraction/foam
+    VkImageView sceneColorView = solidRenderer ? solidRenderer->getColorView(frameIdx) : VK_NULL_HANDLE;
+    VkImageView sceneDepthView = solidRenderer ? solidRenderer->getDepthView(frameIdx) : VK_NULL_HANDLE;
+    waterRenderer->updateSceneTexturesBinding(sceneColorView, sceneDepthView, frameIdx);
 
     // Run water geometry pass offscreen on a temporary command buffer to avoid nested render passes
     VkCommandBuffer cmd = app->beginSingleTimeCommands();
@@ -131,8 +151,8 @@ void SceneRenderer::createPipelines() {
 
     // WaterRenderer initialization (requires a Buffer for params and render targets) is performed elsewhere via WaterRenderer::init(Buffer&)
 
-    // SkyRenderer exposes public init() which creates its pipelines
-    if (skyRenderer) skyRenderer->init();
+    // SkyRenderer pipelines must match the solid render pass
+    if (skyRenderer) skyRenderer->init(solidRenderer ? solidRenderer->getRenderPass() : VK_NULL_HANDLE);
 
 
 
@@ -140,15 +160,16 @@ void SceneRenderer::createPipelines() {
     // Shadow pipeline creation is performed during ShadowRenderer::init()
     shadowMapper->init();
 
-    if (vegetationRenderer) vegetationRenderer->createPipelines();
+    if (vegetationRenderer) vegetationRenderer->createPipelines(solidRenderer ? solidRenderer->getRenderPass() : VK_NULL_HANDLE);
 }
 
-void SceneRenderer::init(VulkanApp* app_, SkyWidget* skyWidget, VkDescriptorSet descriptorSet) {
+void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
     if (!app_) {
         fprintf(stderr, "[SceneRenderer::init] app_ is nullptr!\n");
         return;
     }
     app = app_;
+    // skySettingsRef was initialized at construction and must be valid
     
     // Allocate and initialize texture arrays
     if (vegetationRenderer) {
@@ -158,11 +179,17 @@ void SceneRenderer::init(VulkanApp* app_, SkyWidget* skyWidget, VkDescriptorSet 
         textureArrayManager.initialize(app);
     }
     
-    // Create pipelines for all renderers
-    createPipelines();
-    
     if (solidRenderer) {
         solidRenderer->init(app);
+        solidRenderer->createRenderTargets(app->getWidth(), app->getHeight());
+    }
+
+    // Create pipelines for all renderers (solid renderer now has its render pass ready)
+    createPipelines();
+    
+    // Initialize debug cube renderer
+    if (debugCubeRenderer) {
+        debugCubeRenderer->init(solidRenderer ? solidRenderer->getRenderPass() : VK_NULL_HANDLE);
     }
     
     // Create main uniform buffer
@@ -171,6 +198,11 @@ void SceneRenderer::init(VulkanApp* app_, SkyWidget* skyWidget, VkDescriptorSet 
     
     VkDescriptorSet mainDs = app->getMainDescriptorSet();
     printf("[SceneRenderer::init] mainDescriptorSet = 0x%llx\n", (unsigned long long)mainDs);
+
+    // Initialize sky renderer with our owned settings now that descriptor sets are ready
+    if (skyRenderer) {
+        skyRenderer->initSky(skySettings, mainDs);
+    }
     
     // Bind main uniform buffer into the app's main descriptor set (binding 0)
     VkDescriptorBufferInfo mainBufInfo{ mainUniformBuffer.buffer, 0, sizeof(UniformObject) };
@@ -186,54 +218,36 @@ void SceneRenderer::init(VulkanApp* app_, SkyWidget* skyWidget, VkDescriptorSet 
            (void*)mainUniformBuffer.buffer, (void*)mainDs);
     
     // Bind texture arrays (bindings 1, 2, 3)
-    VkDescriptorImageInfo albedoInfo{};
-    albedoInfo.sampler = textureArrayManager.albedoSampler;
-    albedoInfo.imageView = textureArrayManager.albedoArray.view;
-    albedoInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet albedoWrite{};
-    albedoWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    albedoWrite.dstSet = mainDs;
-    albedoWrite.dstBinding = 1;
-    albedoWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    albedoWrite.descriptorCount = 1;
-    albedoWrite.pImageInfo = &albedoInfo;
+    // Prepare descriptor writes dynamically: only include image samplers that have valid image views
+    std::vector<VkWriteDescriptorSet> writes;
 
-    VkDescriptorImageInfo normalInfo{};
-    normalInfo.sampler = textureArrayManager.normalSampler;
-    normalInfo.imageView = textureArrayManager.normalArray.view;
-    normalInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet normalWrite{};
-    normalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    normalWrite.dstSet = mainDs;
-    normalWrite.dstBinding = 2;
-    normalWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    normalWrite.descriptorCount = 1;
-    normalWrite.pImageInfo = &normalInfo;
+    // UBO write (always present)
+    writes.push_back(uboWrite);
 
-    VkDescriptorImageInfo bumpInfo{};
-    bumpInfo.sampler = textureArrayManager.bumpSampler;
-    bumpInfo.imageView = textureArrayManager.bumpArray.view;
-    bumpInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet bumpWrite{};
-    bumpWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    bumpWrite.dstSet = mainDs;
-    bumpWrite.dstBinding = 3;
-    bumpWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bumpWrite.descriptorCount = 1;
-    bumpWrite.pImageInfo = &bumpInfo;
+    // Helper to add image write if valid
+    auto addImageWrite = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
+        if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
+            fprintf(stderr, "[SceneRenderer::init] Skipping descriptor binding %u: imageView=%p sampler=%p\n", binding, (void*)view, (void*)sampler);
+            return;
+        }
+        VkDescriptorImageInfo* info = new VkDescriptorImageInfo();
+        info->sampler = sampler;
+        info->imageView = view;
+        info->imageLayout = layout;
+        VkWriteDescriptorSet w{};
+        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet = mainDs;
+        w.dstBinding = binding;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.descriptorCount = 1;
+        w.pImageInfo = info;
+        writes.push_back(w);
+    };
 
-    // Bind shadow map at binding 4
-    VkDescriptorImageInfo shadowInfo{};
-    shadowInfo.sampler = shadowMapper->getShadowMapSampler();
-    shadowInfo.imageView = shadowMapper->getShadowMapView();
-    shadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet shadowWrite{};
-    shadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    shadowWrite.dstSet = mainDs;
-    shadowWrite.dstBinding = 4;
-    shadowWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    shadowWrite.descriptorCount = 1;
-    shadowWrite.pImageInfo = &shadowInfo;
+    addImageWrite(1, textureArrayManager.albedoSampler, textureArrayManager.albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    addImageWrite(2, textureArrayManager.normalSampler, textureArrayManager.normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    addImageWrite(3, textureArrayManager.bumpSampler, textureArrayManager.bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
     // Create and bind Materials SSBO at binding 5
     materialsBuffer = app->createBuffer(sizeof(MaterialGPU), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -249,8 +263,13 @@ void SceneRenderer::init(VulkanApp* app_, SkyWidget* skyWidget, VkDescriptorSet 
     materialsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     materialsWrite.descriptorCount = 1;
     materialsWrite.pBufferInfo = &materialsInfo;
-    
-    app->updateDescriptorSet(mainDs, { uboWrite, albedoWrite, normalWrite, bumpWrite, shadowWrite, materialsWrite });
+    writes.push_back(materialsWrite);
+
+    // Perform descriptor update (clean up temporary image infos afterwards)
+    app->updateDescriptorSet(mainDs, writes);
+    for (auto &w : writes) {
+        if (w.pImageInfo) delete w.pImageInfo;
+    }
 
     // Initialize WaterRenderer
     Buffer waterParamsBuffer = app->createBuffer(sizeof(WaterUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
@@ -260,7 +279,7 @@ void SceneRenderer::init(VulkanApp* app_, SkyWidget* skyWidget, VkDescriptorSet 
     
     // Initialize sky renderer with sphere VBO now that descriptor sets are ready
     if (skyRenderer) {
-        skyRenderer->initSky(skyWidget, mainDs);
+        skyRenderer->initSky(skySettings, mainDs);
     }
     
     printf("[SceneRenderer::init] Initialization complete\n");

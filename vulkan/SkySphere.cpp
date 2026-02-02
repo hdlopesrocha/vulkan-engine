@@ -1,5 +1,5 @@
 #include "SkySphere.hpp"
-#include "../widgets/SkyWidget.hpp"
+#include "../widgets/SkySettings.hpp"
 #include "../Uniforms.hpp"
 #include <glm/glm.hpp>
 
@@ -7,9 +7,9 @@ SkySphere::SkySphere(VulkanApp* app_) : app(app_) {}
 
 SkySphere::~SkySphere() { cleanup(); }
 
-void SkySphere::init(SkyWidget* widget,
+void SkySphere::init(SkySettings& settings,
                      VkDescriptorSet descriptorSet) {
-    skyWidget = widget;
+    skySettings = &settings;
     VkDeviceSize sbSize = sizeof(SkyUniform);
 
     if (skyBuffer.buffer != VK_NULL_HANDLE) {
@@ -25,13 +25,13 @@ void SkySphere::init(SkyWidget* widget,
 
     // upload initial data
     SkyUniform data{};
-    if (skyWidget) {
-        data.skyHorizon = glm::vec4(skyWidget->getHorizonColor(), 1.0f);
-        data.skyZenith = glm::vec4(skyWidget->getZenithColor(), 1.0f);
-        data.skyParams = glm::vec4(skyWidget->getWarmth(), skyWidget->getExponent(), skyWidget->getSunFlare(), static_cast<float>(skyWidget->getSkyMode()));
-        data.nightHorizon = glm::vec4(skyWidget->getNightHorizon(), 1.0f);
-        data.nightZenith = glm::vec4(skyWidget->getNightZenith(), 1.0f);
-        data.nightParams = glm::vec4(skyWidget->getNightIntensity(), skyWidget->getStarIntensity(), 0.0f, 0.0f);
+    if (skySettings) {
+        data.skyHorizon = glm::vec4(skySettings->horizonColor, 1.0f);
+        data.skyZenith = glm::vec4(skySettings->zenithColor, 1.0f);
+        data.skyParams = glm::vec4(skySettings->warmth, skySettings->exponent, skySettings->sunFlare, static_cast<float>(skySettings->mode));
+        data.nightHorizon = glm::vec4(skySettings->nightHorizon, 1.0f);
+        data.nightZenith = glm::vec4(skySettings->nightZenith, 1.0f);
+        data.nightParams = glm::vec4(skySettings->nightIntensity, skySettings->starIntensity, 0.0f, 0.0f);
     }
     void* mapped = nullptr;
     if (vkMapMemory(app->getDevice(), skyBuffer.memory, 0, sbSize, 0, &mapped) == VK_SUCCESS) {
@@ -52,20 +52,19 @@ void SkySphere::init(SkyWidget* widget,
         skyWrite.dstSet = descriptorSet;
         app->updateDescriptorSet(descriptorSet, { skyWrite });
     }
-    (void)widget; // widget used earlier
 
 }
 
 void SkySphere::update() {
     if (skyBuffer.buffer == VK_NULL_HANDLE) return;
     SkyUniform skyData;
-    if (skyWidget) {
-        skyData.skyHorizon = glm::vec4(skyWidget->getHorizonColor(), 1.0f);
-        skyData.skyZenith = glm::vec4(skyWidget->getZenithColor(), 1.0f);
-        skyData.skyParams = glm::vec4(skyWidget->getWarmth(), skyWidget->getExponent(), skyWidget->getSunFlare(), static_cast<float>(skyWidget->getSkyMode()));
-        skyData.nightHorizon = glm::vec4(skyWidget->getNightHorizon(), 1.0f);
-        skyData.nightZenith = glm::vec4(skyWidget->getNightZenith(), 1.0f);
-        skyData.nightParams = glm::vec4(skyWidget->getNightIntensity(), skyWidget->getStarIntensity(), 0.0f, 0.0f);
+    if (skySettings) {
+        skyData.skyHorizon = glm::vec4(skySettings->horizonColor, 1.0f);
+        skyData.skyZenith = glm::vec4(skySettings->zenithColor, 1.0f);
+        skyData.skyParams = glm::vec4(skySettings->warmth, skySettings->exponent, skySettings->sunFlare, static_cast<float>(skySettings->mode));
+        skyData.nightHorizon = glm::vec4(skySettings->nightHorizon, 1.0f);
+        skyData.nightZenith = glm::vec4(skySettings->nightZenith, 1.0f);
+        skyData.nightParams = glm::vec4(skySettings->nightIntensity, skySettings->starIntensity, 0.0f, 0.0f);
     } else {
         memset(&skyData, 0, sizeof(skyData));
     }

@@ -4,7 +4,7 @@
 #include <vector>
 #include <memory>
 
-class SkyWidget;
+struct SkySettings;
 
 class SkySphere {
 public:
@@ -12,10 +12,10 @@ public:
     ~SkySphere();
 
     // Initialize sky buffer and bind into provided descriptor sets (binding 6)
-    void init(SkyWidget* widget,
+    void init(SkySettings& settings,
               VkDescriptorSet descriptorSet);
 
-    // Update sky UBO contents from widget (call per-frame if UI may change)
+    // Update sky UBO contents from SkySettings (call per-frame if UI may change)
     void update();
 
     // Destroy GPU resources
@@ -25,5 +25,5 @@ private:
     VulkanApp* app = nullptr;
     Buffer skyBuffer{};
     VkDeviceSize skyBufferSize = 0;
-    SkyWidget* skyWidget = nullptr;
+    SkySettings* skySettings = nullptr;
 };

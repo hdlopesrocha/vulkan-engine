@@ -3,6 +3,7 @@
 #include "WaterRenderer.hpp"
 #include "SkyRenderer.hpp"
 #include "ShadowRenderer.hpp"
+#include "DebugCubeRenderer.hpp"
 #pragma once
 
 #include <vulkan/vulkan.h>
@@ -49,6 +50,10 @@ public:
     std::unique_ptr<WaterRenderer> waterRenderer;
     std::unique_ptr<SolidRenderer> solidRenderer;
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
+    std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;
+    // Sky settings owned by this renderer
+    SkySettings skySettings;
+    SkySettings& getSkySettings() { return skySettings; }
 
     SceneRenderer(VulkanApp* app_);
     ~SceneRenderer();
@@ -57,10 +62,14 @@ public:
     void createDescriptorSets(MaterialManager &materialManager, TextureArrayManager &textureArrayManager, VkDescriptorSet &outDescriptorSet, VkDescriptorSet &outShadowPassDescriptorSet, size_t tripleCount);
     void shadowPass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VkDescriptorSet shadowPassDescriptorSet, const UniformObject &uboStatic, bool shadowsEnabled, bool shadowTessellationEnabled);
     void depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool);
-    void mainPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
+    void skyPass(VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj);
+    void mainPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
                   const UniformObject &uboStatic, const WaterParams &waterParams, float waterTime, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent);
     void waterPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime);
-    void init(VulkanApp* app_, SkyWidget* skyWidget = nullptr, VkDescriptorSet descriptorSet = VK_NULL_HANDLE);
+    void init(VulkanApp* app_, VkDescriptorSet descriptorSet = VK_NULL_HANDLE);
     void cleanup();
+
+    // Resize offscreen resources when the swapchain changes
+    void onSwapchainResized(uint32_t width, uint32_t height);
 };
 
