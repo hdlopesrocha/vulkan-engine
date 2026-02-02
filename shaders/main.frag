@@ -408,5 +408,14 @@ void main() {
     }
 
     // Fallback to normal rendering
-    outColor = vec4(ambient + diffuse + specular, 1.0);
+    vec3 finalColor = ambient + diffuse + specular;
+    
+    // DEBUG: Visualize lighting components
+    // Uncomment to debug:
+    // if (length(albedoColor) < 0.01) { outColor = vec4(1.0, 0.0, 0.0, 1.0); return; } // Red if no albedo
+    // if (length(finalColor) < 0.01) { outColor = vec4(0.0, 1.0, 0.0, 1.0); return; } // Green if no lighting
+    // outColor = vec4(albedoColor, 1.0); return; // Show raw albedo
+    // outColor = vec4(vec3(NdotL), 1.0); return; // Show N·L term
+    
+    outColor = vec4(finalColor, 1.0);
 }

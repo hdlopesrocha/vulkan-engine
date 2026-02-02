@@ -1,4 +1,5 @@
 #version 450
+#extension GL_ARB_shader_draw_parameters : require
 
 #include "includes/ubo.glsl"
 
@@ -13,30 +14,40 @@ layout(location = 5) in int inTexIndex;
 layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec2 fragUV;
 layout(location = 2) out vec3 fragNormal;
-layout(location = 5) flat out int fragTexIndex;
+layout(location = 5) flat out ivec3 fragTexIndices;  // Changed from int to ivec3
+layout(location = 11) out vec3 fragTexWeights;       // Added
 layout(location = 4) out vec3 fragPosWorld;
 layout(location = 6) out vec4 fragPosLightSpace;
-layout(location = 7) out vec3 fragLocalPos;
-layout(location = 8) out vec3 fragLocalNormal;
-// fragTangent removed: computed in fragment shader for triplanar mapping
+layout(location = 10) out vec3 fragSharpNormal;      // Added
+layout(location = 7) out vec3 fragPosWorldNotDisplaced;  // Renamed from fragLocalPos
+// layout(location = 8) out vec3 fragLocalNormal;    // Removed - not used by fragment shader
 
 void main() {
     fragColor = inColor;
     fragUV = inUV;
-    // Transform normal to world space using the model matrix from push constants
+    // Get model matrix from models SSBO
+    // For indirect draws: use gl_BaseInstanceARB which gets firstInstance from the command
+    mat4 model = models[gl_BaseInstanceARB];
+    // Transform normal to world space using the model matrix
     // For uniform scaling, mat3(model) works. For non-uniform scaling, use transpose(inverse(model))
-    fragNormal = normalize(inNormal);
-    // Provide per-vertex tex index for TCS to assemble per-patch indices
-    fragTexIndex = inTexIndex;
+    fragNormal = normalize(mat3(model) * inNormal);
+    
+    // Provide per-vertex tex index as ivec3 (fragment shader expects this)
+    fragTexIndices = ivec3(inTexIndex, inTexIndex, inTexIndex);
+    // Set default texture weights (no blending in vertex shader)
+    fragTexWeights = vec3(1.0, 0.0, 0.0);
+    
     // compute world-space position and pass to fragment
-    vec4 worldPos = vec4(inPos, 1.0);
+    vec4 worldPos = model * vec4(inPos, 1.0);
     fragPosWorld = worldPos.xyz;
+    fragPosWorldNotDisplaced = worldPos.xyz;  // No displacement in vertex shader
+    
     // compute light-space position for shadow mapping
     fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
-    // pass local-space position (used by tessellation/displacement)
-    fragLocalPos = inPos;
-    // also pass local-space normal for tessellation/displacement
-    fragLocalNormal = inNormal;
+    
+    // Compute face normal (sharp normal) from model normal
+    fragSharpNormal = normalize(mat3(model) * inNormal);
+    
     // apply MVP transform to the vertex position
     gl_Position = ubo.viewProjection * worldPos;
 }
