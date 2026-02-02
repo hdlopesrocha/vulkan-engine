@@ -237,6 +237,11 @@ public:
             MainSceneLoader loader = MainSceneLoader();
             mainScene->loadScene(loader);
         }
+        // Populate GPU meshes from the loaded scene (opaque + transparent)
+        if (sceneRenderer) {
+            sceneRenderer->populateFromScene(mainScene.get(), LAYER_OPAQUE);
+            sceneRenderer->populateFromScene(mainScene.get(), LAYER_TRANSPARENT);
+        }
         // Create octree explorer widget bound to loaded scene
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene.get());
 

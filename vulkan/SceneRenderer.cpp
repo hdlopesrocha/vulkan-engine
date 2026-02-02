@@ -284,3 +284,43 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
     
     printf("[SceneRenderer::init] Initialization complete\n");
 }
+
+#include "../utils/LocalScene.hpp"
+
+void SceneRenderer::populateFromScene(Scene* scene, Layer layer) {
+    if (!scene) return;
+    if (!solidRenderer) return;
+
+    printf("[SceneRenderer::populateFromScene] Populating meshes for layer=%d\n", layer);
+    LocalScene* ls = dynamic_cast<LocalScene*>(scene);
+    if (!ls) {
+        fprintf(stderr, "[SceneRenderer::populateFromScene] Scene is not a LocalScene; skipping population\n");
+        return;
+    }
+
+    ls->forEachChunkNode(layer, [&](std::vector<OctreeNodeData>& nodes) {
+        size_t added = 0;
+        for (auto &nd : nodes) {
+            if (!nd.node) continue;
+            NodeID nid = reinterpret_cast<NodeID>(nd.node);
+            const auto &current = solidRenderer->getNodeModelVersions();
+            auto it = current.find(nid);
+            if (it != current.end() && it->second.version >= nd.node->version) {
+                continue; // up-to-date
+            }
+            // Request geometry for this node (synchronous callback)
+            scene->requestModel3D(layer, nd, [&](const Geometry &geom) {
+                // Simple model: translate to node center (geometry is generated in object space)
+                glm::mat4 model = glm::translate(glm::mat4(1.0f), nd.cube.getCenter());
+                uint32_t meshId = solidRenderer->getIndirectRenderer().addMesh(app, geom, model);
+                Model3DVersion mv; mv.meshId = meshId; mv.version = nd.node->version;
+                solidRenderer->registerModelVersion(nid, mv);
+                ++added;
+            });
+        }
+        if (added > 0) {
+            printf("[SceneRenderer::populateFromScene] Added %zu meshes for layer=%d\n", added, layer);
+            solidRenderer->getIndirectRenderer().rebuild(app);
+        }
+    });
+}

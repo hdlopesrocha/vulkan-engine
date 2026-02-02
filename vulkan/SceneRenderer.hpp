@@ -69,6 +69,9 @@ public:
     void init(VulkanApp* app_, VkDescriptorSet descriptorSet = VK_NULL_HANDLE);
     void cleanup();
 
+    // Populate GPU meshes from a Scene (uploads chunk geometry into IndirectRenderer)
+    void populateFromScene(Scene* scene, Layer layer = LAYER_OPAQUE);
+
     // Resize offscreen resources when the swapchain changes
     void onSwapchainResized(uint32_t width, uint32_t height);
 };
