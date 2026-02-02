@@ -287,6 +287,8 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
 
 #include "../utils/LocalScene.hpp"
 
+#include <mutex>
+
 void SceneRenderer::populateFromScene(Scene* scene, Layer layer) {
     if (!scene) return;
     if (!solidRenderer) return;
@@ -297,6 +299,9 @@ void SceneRenderer::populateFromScene(Scene* scene, Layer layer) {
         fprintf(stderr, "[SceneRenderer::populateFromScene] Scene is not a LocalScene; skipping population\n");
         return;
     }
+
+    // remember scene for incremental updates
+    sceneRef = scene;
 
     ls->forEachChunkNode(layer, [&](std::vector<OctreeNodeData>& nodes) {
         size_t added = 0;
@@ -323,4 +328,77 @@ void SceneRenderer::populateFromScene(Scene* scene, Layer layer) {
             solidRenderer->getIndirectRenderer().rebuild(app);
         }
     });
+}
+
+void SceneRenderer::onNodeCreated(const OctreeNodeData &node) {
+    std::lock_guard<std::mutex> lock(pendingMutex);
+    pendingCreated.push_back(node);
+}
+
+void SceneRenderer::onNodeUpdated(const OctreeNodeData &node) {
+    std::lock_guard<std::mutex> lock(pendingMutex);
+    pendingUpdated.push_back(node);
+}
+
+void SceneRenderer::onNodeErased(const OctreeNodeData &node) {
+    std::lock_guard<std::mutex> lock(pendingMutex);
+    pendingErased.push_back(node);
+}
+
+void SceneRenderer::processPendingNodeChanges() {
+    std::vector<OctreeNodeData> created;
+    std::vector<OctreeNodeData> updated;
+    std::vector<OctreeNodeData> erased;
+    {
+        std::lock_guard<std::mutex> lock(pendingMutex);
+        created.swap(pendingCreated);
+        updated.swap(pendingUpdated);
+        erased.swap(pendingErased);
+    }
+    size_t addedCount = 0;
+    size_t removedCount = 0;
+
+    // Handle created nodes by doing a targeted request for each
+    for (const auto &nd : created) {
+        if (!sceneRef) continue;
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        sceneRef->requestModel3D(LAYER_OPAQUE, const_cast<OctreeNodeData&>(nd), [&](const Geometry &geom) {
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), nd.cube.getCenter());
+            uint32_t meshId = solidRenderer->getIndirectRenderer().addMesh(app, geom, model);
+            Model3DVersion mv; mv.meshId = meshId; mv.version = nd.node->version;
+            solidRenderer->registerModelVersion(nid, mv);
+            ++addedCount;
+        });
+    }
+
+    // For updated nodes, replace existing mesh
+    for (const auto &nd : updated) {
+        if (!sceneRef) continue;
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        sceneRef->requestModel3D(LAYER_OPAQUE, const_cast<OctreeNodeData&>(nd), [&](const Geometry &geom) {
+            const auto &cur = solidRenderer->getNodeModelVersions();
+            auto it = cur.find(nid);
+            if (it != cur.end() && it->second.meshId != UINT32_MAX) {
+                solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+            }
+            uint32_t meshId = solidRenderer->getIndirectRenderer().addMesh(app, geom, glm::translate(glm::mat4(1.0f), nd.cube.getCenter()));
+            Model3DVersion mv; mv.meshId = meshId; mv.version = nd.node->version;
+            solidRenderer->registerModelVersion(nid, mv);
+            ++addedCount;
+        });
+    }
+
+    for (const auto &nd : erased) {
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        const auto &cur = solidRenderer->getNodeModelVersions();
+        auto it = cur.find(nid);
+        if (it != cur.end() && it->second.meshId != UINT32_MAX) {
+            solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+            ++removedCount;
+        }
+    }
+    if (addedCount > 0 || removedCount > 0) {
+        printf("[SceneRenderer::processPendingNodeChanges] added=%zu removed=%zu -> rebuilding\n", addedCount, removedCount);
+        solidRenderer->getIndirectRenderer().rebuild(app);
+    }
 }

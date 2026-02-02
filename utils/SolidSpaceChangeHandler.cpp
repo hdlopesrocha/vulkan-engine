@@ -6,22 +6,20 @@ SolidSpaceChangeHandler::SolidSpaceChangeHandler(
     this->solidInfo = solidInfo;
 };
 
-void SolidSpaceChangeHandler::create(OctreeNode* node) {
-    
-};
-
-void SolidSpaceChangeHandler::update(OctreeNode* node) {
-    //std::cout << "SolidSpaceChangeHandler::update " << node->id << std::endl;
-    if (onNodeUpdated) {
-        onNodeUpdated(node);
+void SolidSpaceChangeHandler::create(OctreeNodeData& nodeData) {
+    if (onNodeCreated) {
+        onNodeCreated(nodeData);
     }
 };
 
-void SolidSpaceChangeHandler::erase(OctreeNode* node) {
-    if(node != NULL) {
-        //solidInfo->erase(node);
-        if (onNodeErased) {
-            onNodeErased(node);
-        }
+void SolidSpaceChangeHandler::update(OctreeNodeData& nodeData) {
+    if (onNodeUpdated) {
+        onNodeUpdated(nodeData);
+    }
+};
+
+void SolidSpaceChangeHandler::erase(OctreeNodeData& nodeData) {
+    if (onNodeErased) {
+        onNodeErased(nodeData);
     }
 };

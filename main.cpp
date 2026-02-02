@@ -241,6 +241,15 @@ public:
         if (sceneRenderer) {
             sceneRenderer->populateFromScene(mainScene.get(), LAYER_OPAQUE);
             sceneRenderer->populateFromScene(mainScene.get(), LAYER_TRANSPARENT);
+
+            // Register change callbacks so dynamic updates can be picked up
+            mainScene->opaqueLayerChangeHandler.setOnNodeCreated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeCreated(nd); });
+            mainScene->opaqueLayerChangeHandler.setOnNodeUpdated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeUpdated(nd); });
+            mainScene->opaqueLayerChangeHandler.setOnNodeErased([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeErased(nd); });
+
+            mainScene->transparentLayerChangeHandler.setOnNodeCreated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeCreated(nd); });
+            mainScene->transparentLayerChangeHandler.setOnNodeUpdated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeUpdated(nd); });
+            mainScene->transparentLayerChangeHandler.setOnNodeErased([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeErased(nd); });
         }
         // Create octree explorer widget bound to loaded scene
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene.get());
@@ -290,6 +299,8 @@ public:
         if (waterEnabled && sceneRenderer && sceneRenderer->waterRenderer) {
             sceneRenderer->waterRenderer->advanceTime(deltaTime);
         }
+        // Process any pending mesh updates from scene change handlers
+        if (sceneRenderer) sceneRenderer->processPendingNodeChanges();
     }
 
     void preRenderPass(VkCommandBuffer &commandBuffer) override {
