@@ -1,72 +1,51 @@
-#include "vulkan/VulkanApp.hpp"
-#include "utils/FileReader.hpp"
-
+// Standard library includes first
+#include <iostream>
+#include <memory>
+#include <vector>
+#include <chrono>
+#include <string>
+#include <stdexcept>
+#include <mutex>
+#include <cmath>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <vulkan/vulkan.h>
+#include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
-#include <chrono>
-#include "math/Camera.hpp"
-#include "math/Light.hpp"
-#include <glm/gtc/type_ptr.hpp>
-#include "events/EventManager.hpp"
-#include "events/KeyboardPublisher.hpp"
-#include "events/GamepadPublisher.hpp"
-#include "events/TranslateCameraEvent.hpp"
-#include "events/RotateCameraEvent.hpp"
-#include "events/CloseWindowEvent.hpp"
-#include "events/ToggleFullscreenEvent.hpp"
-#include "vulkan/TextureArrayManager.hpp"
-#include "vulkan/TextureTriple.hpp"
-#include "vulkan/AtlasManager.hpp"
-#include "utils/BillboardManager.hpp"
-#include "math/SphereModel.hpp"
-#include "vulkan/TextureMixer.hpp"
-#include "widgets/AnimatedTextureWidget.hpp"
-#include "vulkan/ShadowRenderer.hpp"
-#include "vulkan/ShadowParams.hpp"
-#include "vulkan/IndirectRenderer.hpp"
-#include "vulkan/WaterRenderer.hpp"
-#include "widgets/WidgetManager.hpp"
-#include "widgets/CameraWidget.hpp"
-#include "widgets/DebugWidget.hpp"
-#include "widgets/ShadowMapWidget.hpp"
-#include "widgets/TextureViewerWidget.hpp"
+
+#include "Uniforms.hpp"
+#include "vulkan/VulkanApp.hpp"
+#include "vulkan/SceneRenderer.hpp"
+#include "utils/LocalScene.hpp"
 #include "widgets/SettingsWidget.hpp"
-#include "widgets/LightWidget.hpp"
 #include "widgets/SkyWidget.hpp"
 #include "widgets/WaterWidget.hpp"
 #include "widgets/RenderPassDebugWidget.hpp"
-#include "vulkan/SkySphere.hpp"
-#include "vulkan/SceneRenderer.hpp"
-#include "vulkan/DescriptorSetBuilder.hpp"
-#include "vulkan/SkyRenderer.hpp"
-#include "widgets/VegetationAtlasEditor.hpp"
-#include "widgets/BillboardCreator.hpp"
-#include "widgets/VulkanObjectsWidget.hpp"
-#include <string>
-#include <memory>
-#include <iostream>
-#include <cmath>
-#include <mutex>
-#include "utils/LocalScene.hpp"
+#include "widgets/BillboardWidget.hpp"
 #include "utils/MainSceneLoader.hpp"
-
-#include "Uniforms.hpp"
+// ...existing includes...
+#include "widgets/BillboardWidgetManager.hpp"
+#include "widgets/WidgetManager.hpp"
+#include "math/Camera.hpp"
+#include "math/Light.hpp"
+#include "events/EventManager.hpp"
+#include "events/KeyboardPublisher.hpp"
+#include "events/CloseWindowEvent.hpp"
+#include "events/ToggleFullscreenEvent.hpp"
+#include "vulkan/TextureArrayManager.hpp"
 #include "vulkan/MaterialManager.hpp"
 
-#include "vulkan/VertexBufferObjectBuilder.hpp"
-#include "vulkan/Model3DVersion.hpp"
-#include "vulkan/Model3D.hpp"
-
 class MyApp : public VulkanApp, public IEventHandler {
-    LocalScene * mainScene;
-    SceneRenderer sceneRenderer;
-
-    // Profiling infrastructure
+public:
+    std::unique_ptr<SceneRenderer> sceneRenderer;
+    std::unique_ptr<LocalScene> mainScene;
     VkQueryPool queryPool = VK_NULL_HANDLE;
-    static constexpr uint32_t QUERY_COUNT = 12; // timestamps for different stages
-    float timestampPeriod = 0.0f; // nanoseconds per tick
-    // Profiling results (in milliseconds)
+    static constexpr uint32_t QUERY_COUNT = 12;
+    float timestampPeriod = 0.0f;
+    bool profilingEnabled = true;
     float profileShadowCull = 0.0f;
     float profileShadowDraw = 0.0f;
     float profileMainCull = 0.0f;
@@ -77,542 +56,150 @@ class MyApp : public VulkanApp, public IEventHandler {
     float profileWater = 0.0f;
     float profileCpuUpdate = 0.0f;
     float profileCpuRecord = 0.0f;
-    bool profilingEnabled = true;
-
-    public:
-        MyApp() : sceneRenderer(this) {}
-
-
-            void postSubmit() override {
-                // Read GPU timestamp results from previous frame
-                if (profilingEnabled && queryPool != VK_NULL_HANDLE) {
-                    uint64_t timestamps[QUERY_COUNT];
-                    VkResult result = vkGetQueryPoolResults(
-                        getDevice(),
-                        queryPool,
-                        0, 8,  // Read queries 0-7
-                        8 * sizeof(uint64_t),
-                        timestamps,
-                        sizeof(uint64_t),
-                        VK_QUERY_RESULT_64_BIT
-                    );
-                    
-                    if (result == VK_SUCCESS) {
-                        // Convert timestamp deltas to milliseconds
-                        // timestampPeriod is in nanoseconds per tick
-                        float nsToMs = timestampPeriod / 1000000.0f;
-                        
-                        // The recorded timestamp ordering is: 0=start, 1=shadowCull, 2=shadowDraw,
-                        // 4=mainCull, 3=sky, 5=depthPrepass, 6=mainDraw, 7=imgui.
-                        // Compute durations using the actual chronological order recorded in the command buffer.
-                        profileShadowCull = (timestamps[1] - timestamps[0]) * nsToMs;
-                        profileShadowDraw = (timestamps[2] - timestamps[1]) * nsToMs;
-                        profileMainCull = (timestamps[4] - timestamps[2]) * nsToMs; // main cull follows shadow draw
-                        profileSky = (timestamps[3] - timestamps[4]) * nsToMs; // sky is recorded after main cull
-                        profileDepthPrepass = (timestamps[5] - timestamps[3]) * nsToMs;
-                        profileMainDraw = (timestamps[6] - timestamps[5]) * nsToMs;
-                        profileImGui = (timestamps[7] - timestamps[6]) * nsToMs;
-                    }
-                }
-            }
-
-        // postSubmit() override removed to disable slow per-frame shadow readback
-        
-    // Pipelines moved into SceneRenderer
-    // materials list (replaces legacy TextureManager storage) - each entry corresponds
-    // to a layer/index in `textureArrayManager` when arrays are used.
-    std::vector<MaterialProperties> materials;
-    // Mixer parameters for editable textures (persistent storage — avoid dangling refs)
-    std::vector<MixerParameters> mixerParams;
-    // GPU-side texture arrays (albedo/normal/bump) for sampler2DArray usage
-    TextureArrayManager textureArrayManager;
-    
-    // GPU-side texture array for vegetation (albedo/normal/opacity)
-    TextureArrayManager vegetationTextureArrayManager;
-    
-    // Atlas manager for vegetation tile definitions
-    AtlasManager vegetationAtlasManager;
-    
-    // Billboard manager for creating billboards from atlas tiles
-    BillboardManager billboardManager;
-    
-    // Widget manager (handles all UI windows)
-    WidgetManager widgetManager;
-    
-    // Widgets (shared pointers for widget manager)
-    std::shared_ptr<TextureViewer> textureViewer;
-    std::shared_ptr<TextureMixer> textureMixer; // Vulkan compute + textures
-    std::shared_ptr<AnimatedTextureWidget> editableTexturesWidget; // ImGui wrapper
+    VkDescriptorSet shadowPassDescriptorSet = VK_NULL_HANDLE;
+    UniformObject uboStatic = {};
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     std::shared_ptr<SettingsWidget> settingsWidget;
-    std::shared_ptr<BillboardCreator> billboardCreator;
     std::shared_ptr<SkyWidget> skyWidget;
-
-    // UI: currently selected texture triple for preview
-    size_t currentTextureIndex = 0;
-    size_t editableLayerIndex = SIZE_MAX; // Texture array layer index reserved for editable textures
-
-    // Shadow mapping moved into SceneRenderer
-    ShadowParams shadowParams;
-    
-    // Water rendering moved into SceneRenderer
-    WaterParams waterParams;
     std::shared_ptr<WaterWidget> waterWidget;
     std::shared_ptr<RenderPassDebugWidget> renderPassDebugWidget;
-    float waterTime = 0.0f;
-    float lastDeltaTime = 0.016f;  // Last frame's delta time for use in draw()
-    
-    // Light (controlled by LightWidget)
-    Light light = Light(glm::vec3(-1.0f, -1.0f, -1.0f), glm::vec3(1.0f, 1.0f, 1.0f), 1.0f);
-    // Camera
-    Camera camera = Camera(glm::vec3(3456, 915, -750), Math::eulerToQuat(0, 0, 0));
-    // Event manager for app-wide pub/sub
+    std::shared_ptr<BillboardWidget> billboardWidget;
+    std::unique_ptr<BillboardWidgetManager> billboardWidgetManager;
+    WidgetManager widgetManager;
+    // Camera at original working position
+    // FIXED: Camera was at Z=-750 looking at -Z, but terrain is at +Z (behind camera!)
+    // Now positioned at Z=2000 looking at -Z to see terrain at Z=795
+    Camera camera = Camera(glm::vec3(3456, 915, 2000), Math::eulerToQuat(0, 0, 0));
+    Light light = Light(glm::vec3(0.0f, -1.0f, 0.0f));
     EventManager eventManager;
-    KeyboardPublisher keyboard;
-    GamepadPublisher gamepad;
-    
-    // PassUBO moved into SceneRenderer
-    
-    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-    VkDescriptorSet shadowPassDescriptorSet = VK_NULL_HANDLE; // Shadow pass uses this (no shadow map binding)
-    MaterialManager materialManager;
-    size_t materialCount = 0;
-    
-    // static parts of the UBO that don't vary per-cube
-    UniformObject uboStatic{};
-    // textureImage is now owned by TextureManager
-    //VertexBufferObject vertexBufferObject; // now owned by CubeMesh
+    KeyboardPublisher keyboardPublisher;
+    bool sceneLoading = false;  // True during initial loadScene, false after (enables incremental uploads)
+
+    MyApp()
+        : sceneRenderer(std::make_unique<SceneRenderer>(this)),
+          mainScene(std::make_unique<LocalScene>())
+    {}
 
     void setup() override {
-        // Subscribe camera and app to event manager
-        eventManager.subscribe(&camera);
-        eventManager.subscribe(this);
-
-        // Use ImGui dark theme for a darker UI appearance
-        ImGui::StyleColorsDark();
-
-        // Convert ImGui style colors from sRGB to linear because swapchain uses VK_FORMAT_B8G8R8A8_SRGB
-        // which applies gamma correction on output. ImGui colors are defined in sRGB, so we need to
-        // linearize them first to avoid double gamma correction (which makes UI look washed out).
-        {
-            ImGuiStyle& style = ImGui::GetStyle();
-            for (int i = 0; i < ImGuiCol_COUNT; i++) {
-                ImVec4& col = style.Colors[i];
-                // sRGB -> linear conversion for RGB channels (alpha stays linear)
-                auto srgbToLinear = [](float c) {
-                    return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
-                };
-                col.x = srgbToLinear(col.x);
-                col.y = srgbToLinear(col.y);
-                col.z = srgbToLinear(col.z);
-                // col.w (alpha) remains unchanged
-            }
-        }
-
-        // Initialize shadow mapper (moved after pipeline creation below)
-        
-        // Initialize pipelines and scene renderer internals
-        sceneRenderer.createPipelines();
-        sceneRenderer.init(this);
-
-        // Now that pipelines (and the app pipeline layout) have been created, SceneRenderer was initialized above
-
-        // initialize texture array manager with room for 24 layers of 1024x1024
-        // (we no longer use the legacy TextureManager for storage; `materials` tracks per-layer properties)
-        textureArrayManager.allocate(24, 1024, 1024, this);
-        std::vector<size_t> loadedIndices;
-
-        // Explicit per-name loads (one-by-one) with realistic material properties
-        const std::vector<std::pair<std::array<const char*,3>, MaterialProperties>> specs = {
-            {{"textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg"}, MaterialProperties{false, false, 0.01f, 1.0f, 0.15f, 0.3f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
-            {{"textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg"}, MaterialProperties{false, false, 0.08f, 4.0f, 0.12f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
-            {{"textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg"}, MaterialProperties{false, false, 0.05f, 1.0f, 0.15f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
-            {{"textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg"}, MaterialProperties{false, false, 0.06f, 1.0f, 0.18f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
-            {{"textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg"}, MaterialProperties{false, false, 0.04f, 1.0f, 0.5f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
-            {{"textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg"}, MaterialProperties{false, false, 0.03f, 1.0f, 0.4f, 0.5f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
-            {{"textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg"}, MaterialProperties{true, false, 0.5f, 1.0f, 0.1f, 0.8f, 64.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
-            {{"textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg"}, MaterialProperties{false, false, 0.1f, 1.0f, 0.1f, 0.4f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
-            {{"textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg"}, MaterialProperties{false, false, 0.03f, 1.0f, 0.5f, 0.2f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
-            {{"textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg"}, MaterialProperties{false, false, 0.04f, 1.0f, 0.1f, 0.1f, 8.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}},
-            {{"textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg"}, MaterialProperties{false, false, 0.025f, 1.0f, 0.22f, 0.3f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f}}
-        };
-
-        for (const auto &entry : specs) {
-            const auto &files = entry.first;
-            const auto &matSpec = entry.second;
-            // record material properties and load into GPU texture arrays
-            size_t idx = materials.size();
-            materials.push_back(matSpec);
-            loadedIndices.push_back(idx);
-            // also load into the new TextureArrayManager (GPU-backed 2D texture arrays)
-            textureArrayManager.load(const_cast<char*>(files[0]), const_cast<char*>(files[1]), const_cast<char*>(files[2]));
-        }
-
-        // Add editable textures as an entry in `materials` and keep their images managed by the EditableTextureSet
-        // Allocate array layers FIRST so MixerParameters.targetLayer contains a valid array layer index
-        uint32_t editableLayerA = textureArrayManager.create();
-        
-
-        // Apply editable material properties in a single-line initializer
-        mixerParams = {
-            MixerParameters({ editableLayerA, 4, 8, 8.0f, 8, 0.5f, 2.0f, 0.0f, 5.0f, 42, 0.0f }),
-            MixerParameters({ textureArrayManager.create(), 4, 9, 8.0f, 8, 0.5f, 2.0f, 0.0f, 5.0f, 42, 0.0f }),
-            MixerParameters({ textureArrayManager.create(), 4, 7, 8.0f, 8, 0.5f, 2.0f, 0.0f, 5.0f, 42, 0.0f }),
-            MixerParameters({ textureArrayManager.create(), 7, 9, 8.0f, 8, 0.5f, 2.0f, 0.0f, 5.0f, 42, 0.0f }),
-            MixerParameters({ textureArrayManager.create(), 7, 8, 8.0f, 8, 0.5f, 2.0f, 0.0f, 5.0f, 42, 0.0f })        
-        };
-        materials.push_back(MaterialProperties{ false, false, 0.2f, 16.0f, 0.5f, 0.05f, 32.0f, 0.0f, 0.0f, true, 0.01f, 0.01f});
-        materials.push_back(MaterialProperties{ false, false, 0.3f, 17.0f, 0.3f, 0.03f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f});
-        materials.push_back(MaterialProperties{ false, false, 0.3f, 17.0f, 0.3f, 0.03f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f});
-        materials.push_back(MaterialProperties{ false, false, 0.3f, 17.0f, 0.3f, 0.03f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f});
-        materials.push_back(MaterialProperties{ false, false, 0.3f, 17.0f, 0.3f, 0.03f, 16.0f, 0.0f, 0.0f, true, 0.01f, 0.01f});
-
-        // Initialize Vulkan-side editable textures BEFORE creating descriptor sets
-        textureMixer = std::make_shared<TextureMixer>();
-        textureMixer->init(this, 1024, 1024, &textureArrayManager);
-        // Generate initial textures directly into the allocated array layers
-        textureMixer->generateInitialTextures(mixerParams);
-
-
-        // Load vegetation textures (albedo/normal/opacity triples) and initialize MaterialProperties
-        // Note: We use the height slot for opacity masks
-        const std::vector<std::pair<std::array<const char*,3>, MaterialProperties>> vegSpecs = {
-            {{"textures/vegetation/foliage_color.jpg", "textures/vegetation/foliage_normal.jpg", "textures/vegetation/foliage_opacity.jpg"}, MaterialProperties{false, false, 0.0f, 1.0f, 0.3f, 0.3f, 8.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
-            {{"textures/vegetation/grass_color.jpg",   "textures/vegetation/grass_normal.jpg",   "textures/vegetation/grass_opacity.jpg"},   MaterialProperties{false, false, 0.0f, 1.0f, 0.35f, 0.3f, 8.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}},
-            {{"textures/vegetation/wild_color.jpg",    "textures/vegetation/wild_normal.jpg",    "textures/vegetation/wild_opacity.jpg"},    MaterialProperties{false, false, 0.0f, 1.0f, 0.32f, 0.3f, 8.0f, 0.0f, 0.0f, false, 1.0f, 1.0f}}
-        };
-
-        // allocate vegetation GPU texture arrays sized to the number of veg layers
-        vegetationTextureArrayManager.allocate(static_cast<uint32_t>(vegSpecs.size()), 1024, 1024, this);
-        // append vegetation materials to `materials` and load texture data into vegetation arrays
-        for (const auto &entry : vegSpecs) {
-            const auto &files = entry.first;
-            const auto &mp = entry.second;
-            materials.push_back(mp);
-            vegetationTextureArrayManager.load(const_cast<char*>(files[0]), const_cast<char*>(files[1]), const_cast<char*>(files[2]));
-        }
-
-        // Auto-detect tiles from vegetation opacity maps
-        std::cout << "Auto-detecting vegetation tiles from opacity maps..." << std::endl;
-        int foliageTiles = vegetationAtlasManager.autoDetectTiles(0, "textures/vegetation/foliage_opacity.jpg", 10);
-        std::cout << "  Foliage: detected " << foliageTiles << " tiles" << std::endl;
-        
-        int grassTiles = vegetationAtlasManager.autoDetectTiles(1, "textures/vegetation/grass_opacity.jpg", 10);
-        std::cout << "  Grass: detected " << grassTiles << " tiles" << std::endl;
-        
-        int wildTiles = vegetationAtlasManager.autoDetectTiles(2, "textures/vegetation/wild_opacity.jpg", 10);
-        std::cout << "  Wild: detected " << wildTiles << " tiles" << std::endl;
-
-        // Create ImGui widget that wraps the Vulkan editable textures and add it to widget manager
-        editableTexturesWidget = std::make_shared<AnimatedTextureWidget>(textureMixer, mixerParams, "Editable Textures");
-        widgetManager.addWidget(editableTexturesWidget);
-        // Show the editable textures widget by default so users see the previews on startup
-        //editableTexturesWidget->show();
-
-        
-
-        // We already allocated array layers (`editableLayerA`/`editableLayerB`) before
-        // generating initial textures. Use the first allocated layer as the default
-        // editable layer for the widget previews.
-        editableLayerIndex = editableLayerA;
-        // Inform TextureMixer which layer to use for ImGui previews
-        textureMixer->setEditableLayer(editableLayerIndex);
-        // remove any zeros that might come from failed loads (TextureManager may throw or return an index; assume valid indices)
-        if (!loadedIndices.empty()) currentTextureIndex = loadedIndices[0];
-        
-        std::cout << "[DEBUG] Created mainPassUBO.buffer: handle=" << sceneRenderer.mainPassUBO.buffer.buffer 
-              << " memory=" << sceneRenderer.mainPassUBO.buffer.memory 
-              << " size=" << sizeof(UniformObject) << std::endl;
-
-        // Initialize mainPassUBO with uboStatic so descriptor sets see valid data
-        sceneRenderer.mainPassUBO.data = uboStatic;
-        updateUniformBuffer(sceneRenderer.mainPassUBO.buffer, &sceneRenderer.mainPassUBO.data, sizeof(UniformObject));
-        std::cout << "[DEBUG] Initialized mainPassUBO with uboStatic" << std::endl;
-        
-        // create descriptor sets - one per texture triple
-        size_t tripleCount = materials.size();
-        if (tripleCount == 0) tripleCount = 1; // ensure at least one
-        // Create/upload GPU-side material buffer (packed vec4-friendly struct)
-        updateMaterials();
-        // Delegate descriptor pool/allocation and writes to SceneRenderer
-        sceneRenderer.createDescriptorSets(materialManager, textureArrayManager, descriptorSet, shadowPassDescriptorSet, tripleCount);
-        
-        // Per-instance descriptor sets removed — use per-material/global descriptor sets instead.
-        // Material SSBO is bound into a single global descriptor set; updateMaterials() will
-        // refresh that set if it exists.
-        updateMaterials();
-                
-        // Initialize widgets
-        textureViewer = std::make_shared<TextureViewer>();
-        textureViewer->init(&textureArrayManager, &materials);
-        // Rebuild GPU material buffer when materials are modified via the texture viewer
-        textureViewer->setOnMaterialChanged([this](size_t idx) {
-            (void)idx; // currently we rebuild entire buffer
-            updateMaterials();
-        });
-        widgetManager.addWidget(textureViewer);
-        
-        // Hook Vulkan editable texture regeneration callback so materials are refreshed
-        textureMixer->setOnTextureGenerated([this]() {
-            printf("Editable textures regenerated (layer %u)\n", static_cast<unsigned int>(editableLayerIndex));
-            // Textures are written directly into the texture arrays by the compute shader
-            updateMaterials();
-        });
-        
-        // Create other widgets
-        auto cameraWidget = std::make_shared<CameraWidget>(&camera);
-        widgetManager.addWidget(cameraWidget);
-        
-        auto debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &currentTextureIndex);
-        widgetManager.addWidget(debugWidget);
-        
-        auto shadowWidget = std::make_shared<ShadowMapWidget>(&sceneRenderer.shadowMapper, &shadowParams);
-        widgetManager.addWidget(shadowWidget);
-        
-        // Create settings widget
+        // Restore previous scene loading logic
         settingsWidget = std::make_shared<SettingsWidget>();
-        // Hook debug UI button to trigger a shadow depth readback
-        settingsWidget->setDumpShadowDepthCallback([this]() {
-            sceneRenderer.shadowMapper.readbackShadowDepth();
-            std::cerr << "[Debug] Wrote bin/shadow_depth.pgm (manual trigger).\n";
-        });
-        widgetManager.addWidget(settingsWidget);
-        
-        // Create light control widget
-        auto lightWidget = std::make_shared<LightWidget>(&light);
-        widgetManager.addWidget(lightWidget);
-        // Create sky widget (controls colors and parameters)
         skyWidget = std::make_shared<SkyWidget>();
+        // Bind water widget to the SceneRenderer's WaterRenderer so it edits the canonical params
+        waterWidget = std::make_shared<WaterWidget>(sceneRenderer->waterRenderer.get());
+        renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(this, nullptr);
+        billboardWidget = std::make_shared<BillboardWidget>();
+        billboardWidgetManager = std::make_unique<BillboardWidgetManager>(billboardWidget, nullptr, nullptr);
+        widgetManager.addWidget(settingsWidget);
         widgetManager.addWidget(skyWidget);
-        // Create water widget (controls water rendering parameters)
-        waterWidget = std::make_shared<WaterWidget>(&waterParams);
         widgetManager.addWidget(waterWidget);
-        
-        renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(this, &sceneRenderer.waterRenderer);
         widgetManager.addWidget(renderPassDebugWidget);
-        // Vulkan objects widget
-        auto vulkanObjectsWidget = std::make_shared<VulkanObjectsWidget>(this);
-        widgetManager.addWidget(vulkanObjectsWidget);
-        if (skyWidget) {
-            // Sky UBO is managed by SkySphere; SkyWidget values will be read and uploaded there.
+        widgetManager.addWidget(billboardWidget);
+        // Scene loading
+        MainSceneLoader mainSceneLoader(&mainScene->transparentLayerChangeHandler, &mainScene->opaqueLayerChangeHandler);
+        
+        // Initialize scene renderer (creates pipelines, descriptor sets, water targets, etc.)
+        if (sceneRenderer) {
+            sceneRenderer->init(this, skyWidget.get());
+
+            // Helper to wire up change handler callbacks for a layer
+            // During initial load (sceneLoading=true), just accumulate to CPU arrays
+            // After initial load, use uploadMesh() for incremental GPU updates
+            auto wireUpChangeHandler = [this](auto& changeHandler, Layer layer, IndirectRenderer& indirectRenderer, const char* name, bool& loadingFlag) {
+                changeHandler.setOnNodeUpdated([this, layer, &indirectRenderer, name, &loadingFlag](const OctreeNodeData& nodeData) {
+                    uint32_t nodeId = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(nodeData.node) & 0xFFFFFFFF);
+                    
+                    mainScene->requestModel3D(layer, const_cast<OctreeNodeData&>(nodeData), [this, &indirectRenderer, nodeId, name, &loadingFlag](const Geometry& geom) {
+                        if (!geom.vertices.empty() && !geom.indices.empty()) {
+                            indirectRenderer.addMesh(this, geom, glm::mat4(1.0f), nodeId);
+                            if (!loadingFlag) {
+                                // Runtime change: try incremental upload, fall back to rebuild if needed
+                                if (!indirectRenderer.uploadMesh(this, nodeId)) {
+                                    printf("[%s] uploadMesh failed for node %u, triggering rebuild\n", name, nodeId);
+                                    indirectRenderer.rebuild(this);
+                                }
+                            }
+                        }
+                    });
+                });
+                
+                changeHandler.setOnNodeErased([this, &indirectRenderer, name, &loadingFlag](const OctreeNodeData& nodeData) {
+                    uint32_t nodeId = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(nodeData.node) & 0xFFFFFFFF);
+                    if (!loadingFlag) {
+                        // Runtime removal: zero out GPU command before removing from CPU
+                        indirectRenderer.eraseMeshFromGPU(this, nodeId);
+                    }
+                    indirectRenderer.removeMesh(nodeId);
+                });
+            };
+
+            // Wire up opaque layer -> SolidRenderer's IndirectRenderer
+            if (sceneRenderer->solidRenderer) {
+                wireUpChangeHandler(mainScene->opaqueLayerChangeHandler, Layer::LAYER_OPAQUE,
+                                    sceneRenderer->solidRenderer->getIndirectRenderer(), "OpaqueChangeHandler", sceneLoading);
+            }
+            
+            // Wire up transparent layer -> WaterRenderer's IndirectRenderer
+            if (sceneRenderer->waterRenderer) {
+                wireUpChangeHandler(mainScene->transparentLayerChangeHandler, Layer::LAYER_TRANSPARENT,
+                                    sceneRenderer->waterRenderer->getIndirectRenderer(), "TransparentChangeHandler", sceneLoading);
+            }
         }
-
-        // Initialize sky manager which creates and binds the sky UBO into descriptor sets
-        sceneRenderer.init(nullptr, skyWidget.get(), descriptorSet);
         
-        // Create vegetation atlas editor widget
-        auto vegAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
-        widgetManager.addWidget(vegAtlasEditor);
-        
-        // Create billboard creator widget
-        billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureArrayManager);
-        billboardCreator->setVulkanApp(this);
-        widgetManager.addWidget(billboardCreator);
-        
-        createCommandBuffers();
-        mainScene = new LocalScene();
-
-        MainSceneLoader mainSceneLoader = MainSceneLoader(&mainScene->transparentLayerChangeHandler, &mainScene->opaqueLayerChangeHandler);
+        // Load scene data into octrees (this populates the octree structure)
+        // Change handlers are called automatically by octree add/del and will build meshes
+        sceneLoading = true;
         mainScene->loadScene(mainSceneLoader);
-
-        // Load all chunk meshes into IndirectRenderer after scene loading
-        std::cout << "[Setup] Loading all chunk meshes into IndirectRenderer..." << std::endl;
-        auto meshLoadStart = std::chrono::steady_clock::now();
-        size_t meshCount = 0;
+        sceneLoading = false;
         
-        mainScene->forEachChunkNode(Layer::LAYER_OPAQUE, [this, &meshCount](std::vector<OctreeNodeData>& nodes) {
-            for (auto& node : nodes) {
-                NodeID id = reinterpret_cast<NodeID>(node.node);
-                uint ver = node.node->version;
-                
-                // Generate mesh synchronously during setup
-                mainScene->requestModel3D(Layer::LAYER_OPAQUE, node, [this, id, ver, &meshCount](const Geometry& mesh) {
-                    uint32_t meshId = sceneRenderer.solidRenderer->getIndirectRenderer().addMesh(this, mesh, glm::mat4(1.0f));
-                    sceneRenderer.solidRenderer->registerModelVersion(id, { meshId, ver });
-                    meshCount++;
-                });
+        // Batch rebuild: upload all accumulated meshes to GPU in one call per renderer
+        if (sceneRenderer) {
+            if (sceneRenderer->solidRenderer) {
+                sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
+                printf("[MyApp::setup] Rebuilt opaque IndirectRenderer\n");
             }
-        });
-        
-        // Rebuild buffers and update descriptor once after all meshes are added
-        sceneRenderer.solidRenderer->getIndirectRenderer().rebuild(this);
-        sceneRenderer.solidRenderer->getIndirectRenderer().updateModelsDescriptorSet(this, VK_NULL_HANDLE);
-        
-        auto meshLoadEnd = std::chrono::steady_clock::now();
-        double meshLoadTime = std::chrono::duration<double>(meshLoadEnd - meshLoadStart).count();
-        std::cout << "[Setup] Loaded " << meshCount << " opaque meshes in " << meshLoadTime << "s" << std::endl;
-
-        // Load all water (transparent) chunk meshes into WaterRenderer
-        std::cout << "[Setup] Loading all water meshes into WaterRenderer..." << std::endl;
-        auto waterMeshLoadStart = std::chrono::steady_clock::now();
-        size_t waterMeshCount = 0;
-        
-        mainScene->forEachChunkNode(Layer::LAYER_TRANSPARENT, [this, &waterMeshCount](std::vector<OctreeNodeData>& nodes) {
-            for (auto& node : nodes) {
-                NodeID id = reinterpret_cast<NodeID>(node.node);
-                uint ver = node.node->version;
-                
-                // Generate mesh synchronously during setup
-                mainScene->requestModel3D(Layer::LAYER_TRANSPARENT, node, [this, id, ver, &waterMeshCount](const Geometry& mesh) {
-                    uint32_t meshId = sceneRenderer.waterRenderer.getIndirectRenderer().addMesh(this, mesh, glm::mat4(1.0f));
-                    sceneRenderer.waterRenderer.registerModelVersion(id, { meshId, ver });
-                    waterMeshCount++;
-                });
+            if (sceneRenderer->waterRenderer) {
+                sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
+                printf("[MyApp::setup] Rebuilt water IndirectRenderer\n");
             }
-        });
-        
-        // Rebuild water buffers and update descriptor once after all meshes are added
-        sceneRenderer.waterRenderer.getIndirectRenderer().rebuild(this);
-        sceneRenderer.waterRenderer.getIndirectRenderer().updateModelsDescriptorSet(this, VK_NULL_HANDLE);
-        
-        auto waterMeshLoadEnd = std::chrono::steady_clock::now();
-        double waterMeshLoadTime = std::chrono::duration<double>(waterMeshLoadEnd - waterMeshLoadStart).count();
-        std::cout << "[Setup] Loaded " << waterMeshCount << " water meshes in " << waterMeshLoadTime << "s" << std::endl;
-
-        // Create GPU timestamp query pool for profiling
-        {
-            std::cerr << "[DEBUG] Entering timestamp query pool creation block" << std::endl;
-            VkPhysicalDeviceProperties props;
-            if (!getPhysicalDevice()) {
-                std::cerr << "[ERROR] getPhysicalDevice() returned nullptr!" << std::endl;
-                throw std::runtime_error("getPhysicalDevice() is null");
-            }
-            vkGetPhysicalDeviceProperties(getPhysicalDevice(), &props);
-            timestampPeriod = props.limits.timestampPeriod; // nanoseconds per tick
-            std::cerr << "[DEBUG] timestampPeriod=" << timestampPeriod << std::endl;
-
-            // Print device extensions to help diagnose missing entrypoints
-            uint32_t extCount = 0;
-            vkEnumerateDeviceExtensionProperties(getPhysicalDevice(), nullptr, &extCount, nullptr);
-            std::vector<VkExtensionProperties> exts(extCount);
-            if (extCount > 0) vkEnumerateDeviceExtensionProperties(getPhysicalDevice(), nullptr, &extCount, exts.data());
-            bool hasHostQueryReset = false;
-            for (const auto &e : exts) {
-                std::cerr << "[DEBUG] device ext: " << e.extensionName << std::endl;
-                if (std::string(e.extensionName) == "VK_EXT_host_query_reset") hasHostQueryReset = true;
-            }
-            std::cerr << "[DEBUG] VK_EXT_host_query_reset present=" << (hasHostQueryReset ? "yes" : "no") << std::endl;
-
-            // Validate QUERY_COUNT
-            if (QUERY_COUNT == 0) {
-                std::cerr << "[FATAL] QUERY_COUNT is zero!" << std::endl;
-                throw std::runtime_error("QUERY_COUNT must be > 0");
-            }
-
-            VkQueryPoolCreateInfo queryInfo{};
-            queryInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
-            queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
-            queryInfo.queryCount = QUERY_COUNT;
-
-            VkDevice device = getDevice();
-            if (!device) {
-                std::cerr << "[ERROR] getDevice() returned nullptr!" << std::endl;
-                throw std::runtime_error("getDevice() is null");
-            }
-            std::cerr << "[DEBUG] Calling vkCreateQueryPool..." << std::endl;
-            VkResult qpResult = vkCreateQueryPool(device, &queryInfo, nullptr, &queryPool);
-            std::cerr << "[DEBUG] vkCreateQueryPool result: " << qpResult << ", queryPool=" << queryPool << std::endl;
-            if (qpResult != VK_SUCCESS) {
-                std::cerr << "Warning: Failed to create timestamp query pool\n";
-                queryPool = VK_NULL_HANDLE;
-            } else {
-                // Ensure device is idle and then reset queries after creation so they are unavailable before use
-                std::cerr << "[DEBUG] Calling vkDeviceWaitIdle..." << std::endl;
-                vkDeviceWaitIdle(device);
-                std::cerr << "[DEBUG] About to call vkResetQueryPool with params:" << std::endl;
-                std::cerr << "  device=" << device << std::endl;
-                std::cerr << "  queryPool=" << queryPool << std::endl;
-                std::cerr << "  firstQuery=0" << std::endl;
-                std::cerr << "  queryCount=" << QUERY_COUNT << std::endl;
-                // Print the function pointer for vkResetQueryPool
-                std::cerr << "[DEBUG] &vkResetQueryPool=" << (void*)(&vkResetQueryPool) << std::endl;
-                // Try to resolve vkResetQueryPool manually
-                PFN_vkResetQueryPool fpResetQueryPool = (PFN_vkResetQueryPool)vkGetDeviceProcAddr(device, "vkResetQueryPool");
-                std::cerr << "[DEBUG] vkGetDeviceProcAddr(device, 'vkResetQueryPool')=" << (void*)fpResetQueryPool << std::endl;
-                if (!fpResetQueryPool) {
-                    std::cerr << "[WARN] vkResetQueryPool not available via vkGetDeviceProcAddr; trying VK_EXT_host_query_reset..." << std::endl;
-                    // Try to resolve the EXT variant
-                    PFN_vkResetQueryPool fpResetQueryPoolEXT = (PFN_vkResetQueryPool)vkGetDeviceProcAddr(device, "vkResetQueryPoolEXT");
-                    std::cerr << "[DEBUG] vkGetDeviceProcAddr(device, 'vkResetQueryPoolEXT')=" << (void*)fpResetQueryPoolEXT << std::endl;
-                    if (fpResetQueryPoolEXT) {
-                        std::cerr << "[INFO] Using vkResetQueryPoolEXT from VK_EXT_host_query_reset" << std::endl;
-                        fpResetQueryPool = fpResetQueryPoolEXT;
-                    } else {
-                        std::cerr << "[WARN] vkResetQueryPoolEXT not available either. Attempting command-buffer reset fallback." << std::endl;
-                        // Fallback: record a one-time command buffer that calls vkCmdResetQueryPool and submit it.
-                        VkCommandBuffer tmpCmd = beginSingleTimeCommands();
-                        vkCmdResetQueryPool(tmpCmd, queryPool, 0, QUERY_COUNT);
-                        endSingleTimeCommands(tmpCmd);
-                        std::cerr << "[INFO] Performed vkCmdResetQueryPool via single-time command buffer." << std::endl;
-                        fpResetQueryPool = nullptr;
-                    }
-                }
-
-                // If we don't have a proper reset function available, the validation layer reports
-                // "query not reset" for vkCmdWriteTimestamp calls even if we attempted a command-buffer
-                // fallback. To avoid repeated validation errors and undefined behavior on older drivers,
-                // disable profiling and destroy the created query pool.
-                if (!fpResetQueryPool) {
-                    std::cerr << "[WARN] No query reset entrypoint available; disabling GPU profiling and destroying query pool." << std::endl;
-                    if (queryPool != VK_NULL_HANDLE) {
-                        vkDestroyQueryPool(device, queryPool, nullptr);
-                        queryPool = VK_NULL_HANDLE;
-                    }
-                    profilingEnabled = false;
-                    // Clear any profiling values so UI doesn't show stale data
-                    timestampPeriod = 0.0f;
-                    profileShadowCull = profileShadowDraw = profileMainCull = profileDepthPrepass = 0.0f;
-                    profileMainDraw = profileSky = profileImGui = profileWater = 0.0f;
-                    profileCpuUpdate = profileCpuRecord = 0.0f;
-                } else {
-                    // Call via function pointer for extra safety
-                    fpResetQueryPool(device, queryPool, 0, QUERY_COUNT);
-                    std::cerr << "[DEBUG] vkResetQueryPool done." << std::endl;
-                }
-            }
-            std::cerr << "[DEBUG] Exiting timestamp query pool creation block" << std::endl;
         }
         
-    };
-
-    // Upload all materials into a GPU storage buffer (called once during setup)
-    void updateMaterials() {
-        materialCount = materials.size();
-        if (materialCount == 0) return;
-
-        // Allocate GPU buffer via MaterialManager and upload per-index materials
-        materialManager.allocate(materialCount, this);
-        for (size_t mi = 0; mi < materialCount; ++mi) {
-            const MaterialProperties &mat = materials[mi];
-            materialManager.update(mi, mat, this);
-        }
-
-        // Rebind material buffer into the SINGLE global material descriptor set (binding 5)
-        // so shaders can index `materials[...]` and we avoid per-instance descriptor updates.
-        VkDescriptorSet matDS = getMaterialDescriptorSet();
-        if (matDS != VK_NULL_HANDLE) {
-            VkDescriptorBufferInfo materialBufInfo{ materialManager.getBuffer().buffer, 0, VK_WHOLE_SIZE };
-            VkWriteDescriptorSet matWrite{}; matWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; matWrite.dstSet = matDS; matWrite.dstBinding = 5; matWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; matWrite.descriptorCount = 1; matWrite.pBufferInfo = &materialBufInfo;
-            updateDescriptorSet(matDS, { matWrite });
-        }
-
+        // Subscribe event handlers
+        eventManager.subscribe(&camera);  // Camera handles translate/rotate events
+        eventManager.subscribe(this);     // MyApp handles close/fullscreen events
+        
+        // Set up camera projection matrix
+        float aspectRatio = static_cast<float>(getWidth()) / static_cast<float>(getHeight());
+        glm::mat4 proj = glm::perspective(glm::radians(60.0f), aspectRatio, 0.1f, 10000.0f);
+        proj[1][1] *= -1; // Vulkan Y-flip
+        camera.setProjection(proj);
+        
+        // Position camera to view the terrain
+        printf("[Camera Setup] Final Position: (%.1f, %.1f, %.1f)\n", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
+        printf("[Camera Setup] Forward: (%.3f, %.3f, %.3f)\n", camera.getForward().x, camera.getForward().y, camera.getForward().z);
     }
 
-    // Sky updates are handled by SkySphere
-
-    // IEventHandler: handle top-level window events like close/fullscreen
-    void onEvent(const EventPtr &event) override {
-        if (!event) return;
-        if (std::dynamic_pointer_cast<CloseWindowEvent>(event)) {
-            requestClose();
-            return;
-        }
-        if (std::dynamic_pointer_cast<ToggleFullscreenEvent>(event)) {
-            toggleFullscreen();
-            return;
+    void update(float deltaTime) override {
+        // Poll keyboard input and publish events
+        keyboardPublisher.update(getWindow(), &eventManager, camera, deltaTime, false);
+        eventManager.processQueued();
+        
+        // Advance water animation time (owned by WaterRenderer)
+        if (sceneRenderer && sceneRenderer->waterRenderer) {
+            sceneRenderer->waterRenderer->advanceTime(deltaTime);
         }
     }
 
-    // build ImGui UI (moved from VulkanApp)
+    void preRenderPass(VkCommandBuffer &commandBuffer) override {
+        // Shadow pass (uses separate command buffer internally)
+        sceneRenderer->shadowPass(commandBuffer, queryPool, shadowPassDescriptorSet, uboStatic, true, false);
+        
+        // Run GPU frustum culling for opaque geometry
+        glm::mat4 viewProj = camera.getViewProjectionMatrix();
+        if (sceneRenderer && sceneRenderer->solidRenderer) {
+            sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
+        }
+    }
+
     void renderImGui() override {
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
@@ -631,7 +218,7 @@ class MyApp : public VulkanApp, public IEventHandler {
             widgetManager.renderMenu();
             ImGui::EndMainMenuBar();
 
-            // Small top-left overlay under the main menu bar showing FPS and visible count (one per line)
+            // Small top-left overlay under the main menu bar showing FPS and visible count
             {
                 ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
                 ImGui::SetNextWindowBgAlpha(0.35f);
@@ -640,13 +227,13 @@ class MyApp : public VulkanApp, public IEventHandler {
                 ImGui::SetNextWindowPos(ImVec2(padding, y), ImGuiCond_Always);
                 if (ImGui::Begin("##stats_overlay", nullptr, flags)) {
                     ImGui::Text("FPS: %.1f (%.2f ms)", imguiFps, imguiFps > 0 ? 1000.0f / imguiFps : 0.0f);
-                    ImGui::Text("Loaded: %zu meshes", sceneRenderer.solidRenderer ? sceneRenderer.solidRenderer->getRegisteredModelCount() : 0);
+                    ImGui::Text("Loaded: %zu meshes", sceneRenderer && sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getRegisteredModelCount() : 0);
                     
                     if (profilingEnabled) {
                         ImGui::Separator();
                         ImGui::Text("--- GPU Timing (ms) ---");
-                        float gpuTotal = profileShadowCull + profileShadowDraw + profileMainCull + 
-                                        profileDepthPrepass + profileMainDraw + profileSky + profileImGui;
+                        float gpuTotal = profileShadowCull + profileShadowDraw + profileMainCull +
+                                         profileDepthPrepass + profileMainDraw + profileSky + profileImGui;
                         ImGui::Text("Shadow Cull:   %.2f", profileShadowCull);
                         ImGui::Text("Shadow Draw:   %.2f", profileShadowDraw);
                         ImGui::Text("Main Cull:     %.2f", profileMainCull);
@@ -671,245 +258,88 @@ class MyApp : public VulkanApp, public IEventHandler {
         widgetManager.renderAll();
     }
 
-    void update(float deltaTime) override {
-        auto cpuUpdateStart = std::chrono::high_resolution_clock::now();
-        lastDeltaTime = deltaTime;  // Store for use in draw()
-        
-        // Process queued events (dispatch to handlers)
-        eventManager.processQueued();
-        
-        // Check and apply V-Sync setting changes from UI
-        if (settingsWidget) {
-            setVSyncEnabled(settingsWidget->getVSyncEnabled());
+    void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
+        // Only record draw commands; command buffer and render pass are already active
+        if (commandBuffer == VK_NULL_HANDLE) {
+            fprintf(stderr, "[MyApp::draw] Error: commandBuffer is VK_NULL_HANDLE, skipping draw.\n");
+            return;
         }
-
-        float aspect = (float)getWidth() / (float) getHeight();
-        glm::mat4 proj = glm::perspective(45.0f * 3.1415926f / 180.0f, aspect, 0.1f, 8192.0f);
-        // flip Y for Vulkan clip space
-        proj[1][1] *= -1.0f;
-        camera.setProjection(proj);
-
-        GLFWwindow* win = getWindow();
-        if (win) {
-            // Apply sensitivity settings from UI
-            keyboard.setMoveSpeed(settingsWidget->getMoveSpeed());
-            keyboard.setAngularSpeed(settingsWidget->getAngularSpeedDeg());
-            keyboard.update(win, &eventManager, camera, deltaTime, settingsWidget->getFlipKeyboardRotation());
+        if (!sceneRenderer) {
+            fprintf(stderr, "[MyApp::draw] Error: sceneRenderer is nullptr, skipping draw.\n");
+            return;
         }
-        // Poll gamepad and publish camera movement events (apply sensitivity)
-        gamepad.setMoveSpeed(settingsWidget->getMoveSpeed());
-        gamepad.setAngularSpeed(settingsWidget->getAngularSpeedDeg());
-        gamepad.update(&eventManager, camera, deltaTime, settingsWidget->getFlipGamepadRotation());
-
-        // prepare static parts of the UBO (viewPos, light, material flags) - model and viewProjection will be set per-cube in draw()
+        if (!mainScene) {
+            fprintf(stderr, "[MyApp::draw] Error: mainScene is nullptr, skipping draw.\n");
+            return;
+        }
+        
+        // Update UBO with current camera and light data
+        glm::mat4 viewProj = camera.getViewProjectionMatrix();
+        uboStatic.viewProjection = viewProj;
         uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
-        // The UI light direction represents a vector TO the light. Shaders expect a light vector that points FROM the
-        // light TOWARD the surface when performing lighting/shadow calculations. Send the direction to the GPU
-        // so both lighting and shadow projection use the same convention.
         uboStatic.lightDir = glm::vec4(light.getDirection(), 0.0f);
-        uboStatic.lightColor = glm::vec4(light.getColor() * light.getIntensity(), 1.0f);
-        // Tessellation parameters from UI: near/far distances and min/max tess levels
-        if (settingsWidget) {
-            uboStatic.tessParams = glm::vec4(
-                settingsWidget->getTessMinDistance(),
-                settingsWidget->getTessMaxDistance(),
-                settingsWidget->getTessMinLevel(),
-                settingsWidget->getTessMaxLevel()
-            );
-        } else {
-            uboStatic.tessParams = glm::vec4(10.0f, 200.0f, 1.0f, 32.0f);
-        }
-
-        // Compute light space matrix for shadow mapping using ShadowParams
-        shadowParams.update(camera.getPosition(), light);
-        // Debug: validate computed light space matrix to catch NaNs/INFs early
-        {
-            const float* _m = glm::value_ptr(shadowParams.lightSpaceMatrix);
-            for (int _i = 0; _i < 16; ++_i) {
-                if (std::isnan(_m[_i]) || std::isinf(_m[_i])) {
-                    std::cerr << "[FATAL] Invalid lightSpaceMatrix element " << _i << ": " << _m[_i] << std::endl;
-                    std::cerr << "Camera pos: " << camera.getPosition().x << "," << camera.getPosition().y << "," << camera.getPosition().z << std::endl;
-                    std::cerr << "Light dir: " << light.getDirection().x << "," << light.getDirection().y << "," << light.getDirection().z << std::endl;
-                    std::abort();
-                }
-            }
-        }
-        uboStatic.lightSpaceMatrix = shadowParams.lightSpaceMatrix;
+        uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 0.9f, 1.0f);
+        uboStatic.lightSpaceMatrix = light.getViewProjectionMatrix();
         
-        auto cpuUpdateEnd = std::chrono::high_resolution_clock::now();
-        profileCpuUpdate = std::chrono::duration<float, std::milli>(cpuUpdateEnd - cpuUpdateStart).count();
-    };
-
-    void imguiPass(VkCommandBuffer &commandBuffer) {
+        static int frameCount = 0;
+        if (frameCount++ < 3) {
+            printf("[Frame %d] Camera pos=(%.1f, %.1f, %.1f) forward=(%.3f, %.3f, %.3f)\n", 
+                   frameCount, camera.getPosition().x, camera.getPosition().y, camera.getPosition().z,
+                   camera.getForward().x, camera.getForward().y, camera.getForward().z);
+            printf("[Frame %d] Uploading UBO: buffer=%p, size=%zu, mainDescriptorSet=%p\n", 
+                   frameCount, (void*)sceneRenderer->mainUniformBuffer.buffer, sizeof(UniformObject),
+                   (void*)getMainDescriptorSet());
+        }
+        
+        // Upload UBO to GPU
+        void* data;
+        vkMapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory, 0, sizeof(UniformObject), 0, &data);
+        memcpy(data, &uboStatic, sizeof(UniformObject));
+        vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory);
+        
+        // Main pass (inside render pass - sky, solid, vegetation)
+        sceneRenderer->mainPass(commandBuffer, renderPassInfo, 0, true, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, false, profilingEnabled, queryPool,
+            viewProj, uboStatic, sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), true, false, true, 0, 0.0f, 0.0f);
+        // Water pass
+        sceneRenderer->waterPass(commandBuffer, renderPassInfo, 0, getMainDescriptorSet(), profilingEnabled, queryPool, sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime());
+        //fprintf(stderr, "[MyApp::draw] waterPass returned. Rendering ImGui...\n");
+        // ImGui rendering
         ImDrawData* draw_data = ImGui::GetDrawData();
-        if (draw_data) ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
-        if (profilingEnabled && queryPool != VK_NULL_HANDLE) {
-            // std::cerr << "[TIMESTAMP] resetting query idx=7 before imgui write" << std::endl;
-            vkCmdResetQueryPool(commandBuffer, queryPool, 7, 1);
-            // std::cerr << "[TIMESTAMP] writing timestamp idx=7 (imgui bottom_of_pipe)" << std::endl;
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 7);
+        if (!draw_data) {
+            fprintf(stderr, "[MyApp::draw] Warning: ImGui::GetDrawData() returned nullptr, skipping ImGui rendering.\n");
+        } else if (commandBuffer == VK_NULL_HANDLE) {
+            fprintf(stderr, "[MyApp::draw] Error: commandBuffer is VK_NULL_HANDLE before ImGui rendering, skipping ImGui.\n");
+        } else {
+            //fprintf(stderr, "[MyApp::draw] ImGui::GetDrawData() valid, calling ImGui_ImplVulkan_RenderDrawData...\n");
+            ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
         }
     }
-
-    // Pass implementations moved to SceneRenderer
-
-    void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
-        uint32_t frameIdx = getCurrentFrame();
-        auto cpuRecordStart = std::chrono::high_resolution_clock::now();
-                
-        // Rebuild renderer if any meshes were added/removed
-        sceneRenderer.solidRenderer->getIndirectRenderer().rebuild(this);
-
-        
-        // Rebuild water renderer if any meshes were added/removed
-        sceneRenderer.waterRenderer.getIndirectRenderer().rebuild(this);
-
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-        vkBeginCommandBuffer(commandBuffer, &beginInfo);
-        
-        // Reset and write timestamp queries for profiling
-        if (queryPool != VK_NULL_HANDLE) {
-            // std::cerr << "[TIMESTAMP] resetting queryPool in draw() (frameIdx=" << frameIdx << ")" << std::endl;
-            vkCmdResetQueryPool(commandBuffer, queryPool, 0, QUERY_COUNT);
-            // std::cerr << "[TIMESTAMP] resetting query idx=0 before write" << std::endl;
-            vkCmdResetQueryPool(commandBuffer, queryPool, 0, 1);
-            // std::cerr << "[TIMESTAMP] writing timestamp idx=0 (TOP_OF_PIPE) in draw()" << std::endl;
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, 0); // Start
-        }
-    
-        // Shadow pass
-        sceneRenderer.shadowPass(commandBuffer, queryPool, shadowPassDescriptorSet, uboStatic, settingsWidget ? settingsWidget->getShadowsEnabled() : true, settingsWidget ? settingsWidget->getShadowTessellationEnabled() : false);
-        
-        // Include water time in passParams for water geometry shader
-        waterTime += lastDeltaTime * waterParams.waveSpeed;
-        waterParams.time = waterTime;
-
-        // Prepare GPU cull for main pass BEFORE the render pass (vkCmdFillBuffer/barriers not allowed inside render pass)
-        sceneRenderer.solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, camera.getViewProjectionMatrix());
-        
-        // Also prepare water cull before render pass
-        if (sceneRenderer.waterRenderer.getIndirectRenderer().getMeshCount() > 0) {
-            sceneRenderer.waterRenderer.getIndirectRenderer().prepareCull(commandBuffer, camera.getViewProjectionMatrix());
-        }
-        
-        if (queryPool != VK_NULL_HANDLE) {
-            // std::cerr << "[TIMESTAMP] writing timestamp idx=4 (after main cull) in draw()" << std::endl;
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, queryPool, 4); // After main cull
-        }
-
-        // Check if we need offscreen rendering for water
-        bool hasWater = sceneRenderer.waterRenderer.getIndirectRenderer().getMeshCount() > 0;
-        
-        // If we have water, render main scene to offscreen targets for sampling
-        // Otherwise render directly to swapchain
-        VkRenderPassBeginInfo mainPassInfo = renderPassInfo;
-        VkFramebuffer targetFramebuffer = renderPassInfo.framebuffer;
-        
-        if (hasWater) {
-            // Initialize per-frame offscreen render targets if needed
-            sceneRenderer.waterRenderer.createRenderTargets(getWidth(), getHeight());
-            
-            // Use offscreen framebuffer for main scene (per-frame)
-            mainPassInfo.renderPass = sceneRenderer.waterRenderer.getSceneRenderPass();
-            mainPassInfo.framebuffer = sceneRenderer.waterRenderer.getSceneFramebuffer(frameIdx);
-            mainPassInfo.renderArea.extent = {static_cast<uint32_t>(getWidth()), static_cast<uint32_t>(getHeight())};
-        }
-
-        // Main pass (begin render pass, sky, culling/draw)
-        sceneRenderer.mainPass(commandBuffer, mainPassInfo, frameIdx, hasWater, descriptorSet, settingsWidget ? settingsWidget->getWireframeEnabled() : false, profilingEnabled, queryPool, camera.getViewProjectionMatrix(),
-            uboStatic, waterParams, waterTime,
-            settingsWidget ? settingsWidget->getNormalMappingEnabled() : false,
-            settingsWidget ? settingsWidget->getTessellationEnabled() : false,
-            settingsWidget ? settingsWidget->getShadowsEnabled() : true,
-            settingsWidget ? settingsWidget->getDebugMode() : 0,
-            settingsWidget ? settingsWidget->getTriplanarThreshold() : 0.0f,
-            settingsWidget ? settingsWidget->getTriplanarExponent() : 0.0f);
-
-        if (hasWater) {
-            sceneRenderer.waterPass(commandBuffer, renderPassInfo, frameIdx, descriptorSet, profilingEnabled, queryPool, waterParams, waterTime);
-        } 
-        
-        // Update debug widget descriptors and render ImGui inside the same render pass
-        if (renderPassDebugWidget) renderPassDebugWidget->updateDescriptors(frameIdx);
-        imguiPass(commandBuffer);
-        vkCmdEndRenderPass(commandBuffer);
-        // Transition depth image to READ_ONLY_OPTIMAL for sampling in shaders
-        VkImageMemoryBarrier barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.image = getDepthImage();
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-        vkCmdPipelineBarrier(commandBuffer,
-            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0,
-            0, nullptr,
-            0, nullptr,
-            1, &barrier);
-
-        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-            throw std::runtime_error("failed to record command buffer!");
-        }
-        
-        auto cpuRecordEnd = std::chrono::high_resolution_clock::now();
-        profileCpuRecord = std::chrono::duration<float, std::milli>(cpuRecordEnd - cpuRecordStart).count();
-            
-    };
 
     void clean() override {
-        // Unsubscribe handlers from event manager to avoid callbacks during teardown
-        eventManager.unsubscribe(&camera);
-        eventManager.unsubscribe(this);
-        // Clear any queued events
-        eventManager.processQueued();
-
-        // Cleanup profiling query pool
-        if (queryPool != VK_NULL_HANDLE) {
-            vkDestroyQueryPool(getDevice(), queryPool, nullptr);
-            queryPool = VK_NULL_HANDLE;
+        // Cleanup scene renderer and all sub-renderers
+        if (sceneRenderer) {
+            sceneRenderer->cleanup();
         }
-
-        // SceneRenderer now owns pipelines and will clean them up.
-        sceneRenderer.cleanup();
-        // texture cleanup via managers
-        // legacy texture managers removed; arrays handle GPU textures now
-        textureArrayManager.destroy(this);
-        vegetationTextureArrayManager.destroy(this);
-
-        
-        // editable textures cleanup
-        if (textureMixer) textureMixer->cleanup();
-        
-        // billboard creator cleanup
-        if (billboardCreator) billboardCreator->cleanup();
-        
-        // material manager cleanup
-        materialManager.destroy(this);
     }
 
+    void onEvent(const EventPtr &event) override {
+        if (auto closeEvent = std::dynamic_pointer_cast<CloseWindowEvent>(event)) {
+            requestClose();
+        } else if (auto fullscreenEvent = std::dynamic_pointer_cast<ToggleFullscreenEvent>(event)) {
+            toggleFullscreen();
+        }
+    }
 };
 
-int main() {
-    MyApp app;
-
+int main(int argc, char** argv) {
     try {
+        MyApp app;
         app.run();
+        return 0;
     } catch (const std::exception& e) {
-        std::cerr << e.what() << std::endl;
-        return EXIT_FAILURE;
+        std::cerr << "Fatal error: " << e.what() << std::endl;
+        return 1;
     }
-
-    return EXIT_SUCCESS;
 }
+
 
