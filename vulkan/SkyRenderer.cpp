@@ -18,9 +18,16 @@ void SkyRenderer::init() {
     ShaderStage skyVert = ShaderStage(skyVertModule, VK_SHADER_STAGE_VERTEX_BIT);
     ShaderStage skyFrag = ShaderStage(skyFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
 
-    skyPipeline = app->createGraphicsPipeline(
+    // Use the application's main descriptor set layout (set 0 contains the shared UBO)
+    std::vector<VkDescriptorSetLayout> setLayouts;
+    setLayouts.push_back(app->getDescriptorSetLayout());
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(glm::mat4);
+    auto [pipeline, layout] = app->createGraphicsPipeline(
         { skyVert.info, skyFrag.info },
-        VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX },
+        std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
         {
             VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
             VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
@@ -28,16 +35,25 @@ void SkyRenderer::init() {
             VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
             VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
         },
-        VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true
+        setLayouts,
+        &pushConstantRange,
+        VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true, VK_COMPARE_OP_GREATER_OR_EQUAL
     );
+    skyPipeline = pipeline;
+    skyPipelineLayout = layout;
+    if (skyPipeline == VK_NULL_HANDLE || skyPipelineLayout == VK_NULL_HANDLE) {
+        fprintf(stderr, "[SKY PIPELINE ERROR] Failed to create sky pipeline or layout!\n");
+    } else {
+        fprintf(stderr, "[SKY PIPELINE] Created pipeline=%p layout=%p\n", (void*)skyPipeline, (void*)skyPipelineLayout);
+    }
 
     // create sky grid pipeline (vertex + grid fragment)
     skyGridFragModule = app->createShaderModule(FileReader::readFile("shaders/sky_grid.frag.spv"));
     ShaderStage skyGridFrag = ShaderStage(skyGridFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
 
-    skyGridPipeline = app->createGraphicsPipeline(
+    auto [gridPipeline, gridLayout] = app->createGraphicsPipeline(
         { skyVert.info, skyGridFrag.info },
-        VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX },
+        std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
         {
             VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
             VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
@@ -45,13 +61,27 @@ void SkyRenderer::init() {
             VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
             VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
         },
-        VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true
+        setLayouts,
+        &pushConstantRange,
+        VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true, VK_COMPARE_OP_GREATER_OR_EQUAL
     );
+    skyGridPipeline = gridPipeline;
+    skyGridPipelineLayout = gridLayout;
+    if (skyGridPipeline == VK_NULL_HANDLE || skyGridPipelineLayout == VK_NULL_HANDLE) {
+        fprintf(stderr, "[SKY GRID PIPELINE ERROR] Failed to create sky grid pipeline or layout!\n");
+    } else {
+        fprintf(stderr, "[SKY GRID PIPELINE] Created pipeline=%p layout=%p\n", (void*)skyGridPipeline, (void*)skyGridPipelineLayout);
+    }
 }
 void SkyRenderer::render(VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkyMode skyMode) {
     // Select pipeline based on sky mode
-    VkPipeline activePipeline = (skyMode == SkyMode::Grid) ? skyGridPipeline : skyPipeline;
-    if (activePipeline == VK_NULL_HANDLE) return;
+        VkPipeline activePipeline = (skyMode == SkyMode::Grid) ? skyGridPipeline : skyPipeline;
+        VkPipelineLayout activeLayout = (skyMode == SkyMode::Grid) ? skyGridPipelineLayout : skyPipelineLayout;
+        if (activePipeline == VK_NULL_HANDLE || activeLayout == VK_NULL_HANDLE) {
+            fprintf(stderr, "[SKY RENDER ERROR] Attempted to bind VK_NULL_HANDLE pipeline or layout!\n");
+            return;
+        }
+        //fprintf(stderr, "[SKY RENDER] Binding pipeline=%p layout=%p\n", (void*)activePipeline, (void*)activeLayout);
 
     // update sky uniform centered at camera
     // Use the live UBO passed in so we preserve fields like debugParams
@@ -62,15 +92,11 @@ void SkyRenderer::render(VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Bu
     skyUbo.passParams = glm::vec4(0.0f);
     app->updateUniformBuffer(uniformBuffer, &skyUbo, sizeof(UniformObject));
 
+    //printf("[SkyRenderer] vkCmdBindPipeline: activePipeline=%p\n", (void*)activePipeline);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
-    // Bind material set (set 0) and sky descriptor set (set 1) if material set exists
-    VkDescriptorSet matDs = app->getMaterialDescriptorSet();
-    if (matDs != VK_NULL_HANDLE) {
-        VkDescriptorSet sets[2] = { matDs, descriptorSet };
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, app->getPipelineLayout(), 0, 2, sets, 0, nullptr);
-    } else {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, app->getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
-    }
+    // Only bind the sky descriptor set (set 0)
+    //fprintf(stderr, "[SKY RENDER] Binding descriptor set: skyDs=%p\n", (void*)descriptorSet);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeLayout, 0, 1, &descriptorSet, 0, nullptr);
     // Push sky model matrix via push constants (visible to vertex + tessellation stages)
     // vkCmdPushConstants(cmd, app->getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &model);
 
@@ -81,6 +107,9 @@ void SkyRenderer::render(VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Bu
         vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
         vkCmdBindIndexBuffer(cmd, skyVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd, skyVBO.indexCount, 1, 0, 0, 0);
+    } else {
+        fprintf(stderr, "[SkyRenderer::render] Sky VBO not available! vertexBuffer=%p indexCount=%u\n",
+            (void*)skyVBO.vertexBuffer.buffer, skyVBO.indexCount);
     }
 }
 
@@ -120,8 +149,14 @@ void SkyRenderer::initSky(SkyWidget* skyWidget, VkDescriptorSet descriptorSet) {
     if (!app) return;
     // Create sphere VBO if not present
     if (skyVBO.vertexBuffer.buffer == VK_NULL_HANDLE && skyVBO.indexCount == 0) {
+        printf("[SkyRenderer::initSky] Creating sphere VBO...\n");
         SphereModel sphere(0.5f, 32, 16, 0);
         skyVBO = VertexBufferObjectBuilder::create(app, sphere);
+        printf("[SkyRenderer::initSky] Created skyVBO: vertexBuffer=%p indexCount=%u\n", 
+            (void*)skyVBO.vertexBuffer.buffer, skyVBO.indexCount);
+    } else {
+        printf("[SkyRenderer::initSky] Sky VBO already exists: vertexBuffer=%p indexCount=%u\n",
+            (void*)skyVBO.vertexBuffer.buffer, skyVBO.indexCount);
     }
 
     if (skyWidget && descriptorSet != VK_NULL_HANDLE && !skySphere) {
