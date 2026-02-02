@@ -247,56 +247,46 @@ void TextureMixer::createTripleComputeDescriptorSet() {
 		bumpSamplerInfo.imageView = VK_NULL_HANDLE; bumpSamplerInfo.sampler = VK_NULL_HANDLE; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	}
 
-	VkWriteDescriptorSet writes[6] = {};
-	// binding 0 - albedo storage image
-	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[0].dstSet = tripleComputeDescSet;
-	writes[0].dstBinding = 0;
-	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	writes[0].descriptorCount = 1;
-	writes[0].pImageInfo = &albedoImageInfo;
+	std::vector<VkWriteDescriptorSet> writes;
 
-	// binding 1 - albedo sampler array
-	writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[1].dstSet = tripleComputeDescSet;
-	writes[1].dstBinding = 1;
-	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	writes[1].descriptorCount = 1;
-	writes[1].pImageInfo = &albedoSamplerInfo;
+	auto addStorageImage = [&](uint32_t binding, VkDescriptorImageInfo &info){
+		if (info.imageView == VK_NULL_HANDLE) {
+			fprintf(stderr, "[TextureMixer] Skipping storage image binding %u: imageView=%p\n", binding, (void*)info.imageView);
+			return;
+		}
+		VkWriteDescriptorSet w{};
+		w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		w.dstSet = tripleComputeDescSet;
+		w.dstBinding = binding;
+		w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		w.descriptorCount = 1;
+		w.pImageInfo = &info;
+		writes.push_back(w);
+	};
 
-	// binding 2 - normal sampler array
-	writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[2].dstSet = tripleComputeDescSet;
-	writes[2].dstBinding = 2;
-	writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	writes[2].descriptorCount = 1;
-	writes[2].pImageInfo = &normalSamplerInfo;
+	auto addCombinedSampler = [&](uint32_t binding, VkDescriptorImageInfo &info){
+		if (info.imageView == VK_NULL_HANDLE || info.sampler == VK_NULL_HANDLE) {
+			fprintf(stderr, "[TextureMixer] Skipping sampler binding %u: imageView=%p sampler=%p\n", binding, (void*)info.imageView, (void*)info.sampler);
+			return;
+		}
+		VkWriteDescriptorSet w{};
+		w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		w.dstSet = tripleComputeDescSet;
+		w.dstBinding = binding;
+		w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		w.descriptorCount = 1;
+		w.pImageInfo = &info;
+		writes.push_back(w);
+	};
 
-	// binding 3 - bump sampler array
-	writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[3].dstSet = tripleComputeDescSet;
-	writes[3].dstBinding = 3;
-	writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	writes[3].descriptorCount = 1;
-	writes[3].pImageInfo = &bumpSamplerInfo;
+	addStorageImage(0, albedoImageInfo);
+	addCombinedSampler(1, albedoSamplerInfo);
+	addCombinedSampler(2, normalSamplerInfo);
+	addCombinedSampler(3, bumpSamplerInfo);
+	addStorageImage(4, normalImageInfo);
+	addStorageImage(5, bumpImageInfo);
 
-	// binding 4 - normal storage image
-	writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[4].dstSet = tripleComputeDescSet;
-	writes[4].dstBinding = 4;
-	writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	writes[4].descriptorCount = 1;
-	writes[4].pImageInfo = &normalImageInfo;
-
-	// binding 5 - bump storage image
-	writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[5].dstSet = tripleComputeDescSet;
-	writes[5].dstBinding = 5;
-	writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	writes[5].descriptorCount = 1;
-	writes[5].pImageInfo = &bumpImageInfo;
-
-	vkUpdateDescriptorSets(app->getDevice(), 6, writes, 0, nullptr);
+	if (!writes.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 VkDescriptorSet TextureMixer::getPreviewDescriptor(int map) {
@@ -374,11 +364,22 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet)
 		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	}
 
-	VkWriteDescriptorSet samplerWrite1{}; samplerWrite1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; samplerWrite1.dstSet = descSet; samplerWrite1.dstBinding = 1; samplerWrite1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; samplerWrite1.descriptorCount = 1; samplerWrite1.pImageInfo = &samplerInfo;
-	VkWriteDescriptorSet samplerWrite2{}; samplerWrite2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; samplerWrite2.dstSet = descSet; samplerWrite2.dstBinding = 2; samplerWrite2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; samplerWrite2.descriptorCount = 1; samplerWrite2.pImageInfo = &samplerInfo;
-
-	VkWriteDescriptorSet writes[3] = { descriptorWrite, samplerWrite1, samplerWrite2 };
-	vkUpdateDescriptorSets(app->getDevice(), 3, writes, 0, nullptr);
+	std::vector<VkWriteDescriptorSet> writes;
+	if (imageInfo.imageView != VK_NULL_HANDLE) {
+		VkWriteDescriptorSet w = descriptorWrite;
+		writes.push_back(w);
+	} else {
+		fprintf(stderr, "[TextureMixer] Skipping createComputeDescriptorSet storage image for map %d: imageView=%p\n", map, (void*)imageInfo.imageView);
+	}
+	if (samplerInfo.imageView != VK_NULL_HANDLE && samplerInfo.sampler != VK_NULL_HANDLE) {
+		VkWriteDescriptorSet s1{}; s1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; s1.dstSet = descSet; s1.dstBinding = 1; s1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; s1.descriptorCount = 1; s1.pImageInfo = &samplerInfo;
+		VkWriteDescriptorSet s2{}; s2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; s2.dstSet = descSet; s2.dstBinding = 2; s2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; s2.descriptorCount = 1; s2.pImageInfo = &samplerInfo;
+		writes.push_back(s1);
+		writes.push_back(s2);
+	} else {
+		fprintf(stderr, "[TextureMixer] Skipping sampler bindings for map %d: imageView=%p sampler=%p\n", map, (void*)samplerInfo.imageView, (void*)samplerInfo.sampler);
+	}
+	if (!writes.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void TextureMixer::generatePerlinNoise(MixerParameters &params) {
@@ -486,6 +487,7 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 		3, barriers
 	);
 
+	printf("[TextureMixer] vkCmdBindPipeline: computePipeline=%p\n", (void*)computePipeline);
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
 	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &descSet, 0, nullptr);
 
