@@ -60,6 +60,15 @@ public:
 
     void createPipelines();
     void createDescriptorSets(MaterialManager &materialManager, TextureArrayManager &textureArrayManager, VkDescriptorSet &outDescriptorSet, VkDescriptorSet &outShadowPassDescriptorSet, size_t tripleCount);
+
+    // Scene reference (set when populating meshes)
+    Scene* sceneRef = nullptr;
+
+    // Pending change queues (thread-safe)
+    std::mutex pendingMutex;
+    std::vector<OctreeNodeData> pendingCreated;
+    std::vector<OctreeNodeData> pendingUpdated;
+    std::vector<OctreeNodeData> pendingErased;
     void shadowPass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VkDescriptorSet shadowPassDescriptorSet, const UniformObject &uboStatic, bool shadowsEnabled, bool shadowTessellationEnabled);
     void depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool);
     void skyPass(VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj);
@@ -71,6 +80,14 @@ public:
 
     // Populate GPU meshes from a Scene (uploads chunk geometry into IndirectRenderer)
     void populateFromScene(Scene* scene, Layer layer = LAYER_OPAQUE);
+
+    // Incremental change handling (called from SolidSpaceChangeHandler callbacks)
+    void onNodeCreated(const OctreeNodeData &node);
+    void onNodeUpdated(const OctreeNodeData &node);
+    void onNodeErased(const OctreeNodeData &node);
+
+    // Process pending node change queues on the main thread
+    void processPendingNodeChanges();
 
     // Resize offscreen resources when the swapchain changes
     void onSwapchainResized(uint32_t width, uint32_t height);

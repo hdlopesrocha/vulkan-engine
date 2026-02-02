@@ -26,7 +26,7 @@ public:
     SceneLoaderCallback() = default;
     ~SceneLoaderCallback() = default;
 
-    virtual void loadScene(Octree &opaqueLayer, Octree &transparentLayer) = 0;
+    virtual void loadScene(Octree &opaqueLayer, OctreeChangeHandler& opaqueHandler, Octree &transparentLayer, OctreeChangeHandler& transparentHandler) = 0;
 };
 
 class Scene {

@@ -54,19 +54,13 @@ class MainSceneLoader : public SceneLoaderCallback {
 public:
 
 
-    // Change handlers are provided by the caller (e.g. LocalScene)
-    LiquidSpaceChangeHandler* transparentLayerChangeHandler;
-    SolidSpaceChangeHandler* opaqueLayerChangeHandler;
     Simplifier simplifier = Simplifier(0.99f, 0.1f, true);
-    MainSceneLoader(LiquidSpaceChangeHandler* transparentHandler, SolidSpaceChangeHandler* opaqueHandler): 
-        transparentLayerChangeHandler(transparentHandler), 
-        opaqueLayerChangeHandler(opaqueHandler)
-    {
+    MainSceneLoader() {
 
     };
     ~MainSceneLoader() = default;
 
-    void loadScene(Octree &opaqueLayer, Octree &transparentLayer) {
+    void loadScene(Octree &opaqueLayer, OctreeChangeHandler& opaqueHandler,Octree &transparentLayer,OctreeChangeHandler& transparentHandler) {
 
         //WrappedSignedDistanceFunction::resetCalls();
         int sizePerTile = 30;
@@ -96,7 +90,7 @@ public:
             //wrappedFunction.cacheEnabled = true;
             
             std::cout << "\topaqueLayer.add(heightmap)"<< std::endl;
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, LandBrush(), minSize, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, LandBrush(), minSize, simplifier, opaqueHandler);
         }
 
 
@@ -108,7 +102,7 @@ public:
             BoxDistanceFunction function = BoxDistanceFunction();
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             WrappedBox wrappedFunction = WrappedBox(&function);
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*2.0f, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*2.0f, simplifier, opaqueHandler);
         }
 
         {
@@ -119,7 +113,7 @@ public:
             SphereDistanceFunction function = SphereDistanceFunction();
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             WrappedSphere wrappedFunction = WrappedSphere(&function);
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(6), minSize*0.5f, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(6), minSize*0.5f, simplifier, opaqueHandler);
         }
 
         {
@@ -127,10 +121,10 @@ public:
             glm::vec3 min = glm::vec3(1500,0,500);
             glm::vec3 len = glm::vec3(512.0f);
             BoundingSphere sphere = BoundingSphere(min+len, 128);
-            SphereDistanceFunction function;
+            SphereDistanceFunction function = SphereDistanceFunction();
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             WrappedSphere wrappedFunction = WrappedSphere(&function);
-            opaqueLayer.del(&wrappedFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.del(&wrappedFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
         }
 
         {
@@ -141,7 +135,7 @@ public:
             SphereDistanceFunction function = SphereDistanceFunction();
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             WrappedSphere wrappedFunction = WrappedSphere(&function);
-            opaqueLayer.del(&wrappedFunction, model, translate, scale, SimpleBrush(5), minSize, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.del(&wrappedFunction, model, translate, scale, SimpleBrush(5), minSize, simplifier, opaqueHandler);
         }
         
         {
@@ -153,7 +147,7 @@ public:
             CapsuleDistanceFunction function(a, b, r);
             WrappedCapsule wrappedFunction = WrappedCapsule(&function);
             WrappedPerlinDistortDistanceEffect distortedFunction = WrappedPerlinDistortDistanceEffect(&wrappedFunction, 64.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f);
-            opaqueLayer.del(&distortedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.del(&distortedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
 
         {
@@ -164,7 +158,7 @@ public:
             SphereDistanceFunction function = SphereDistanceFunction();
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             WrappedSphere wrappedFunction = WrappedSphere(&function);
-            transparentLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*0.1f, simplifier, transparentLayerChangeHandler);
+            transparentLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*0.1f, simplifier, transparentHandler);
         }
 
         {
@@ -174,7 +168,7 @@ public:
             OctahedronDistanceFunction function = OctahedronDistanceFunction();
             Transformation model = Transformation(glm::vec3(radius), center, 0, 0, 0);
             WrappedOctahedron wrappedFunction = WrappedOctahedron(&function);
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
 
         {
@@ -184,7 +178,7 @@ public:
             PyramidDistanceFunction function = PyramidDistanceFunction();
             Transformation model(glm::vec3(radius), center, 0,0,0);
             WrappedPyramid wrappedFunction = WrappedPyramid(&function);
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
 
         {
@@ -194,7 +188,7 @@ public:
             TorusDistanceFunction function = TorusDistanceFunction(glm::vec2(0.5, 0.25));
             Transformation model(glm::vec3(radius), center, 0,0,0);
             WrappedTorus wrappedFunction = WrappedTorus(&function);
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
 
 
@@ -205,7 +199,7 @@ public:
             ConeDistanceFunction function = ConeDistanceFunction();
             Transformation model(glm::vec3(radius), center, 0,0,0);
             WrappedCone wrappedFunction = WrappedCone(&function);
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
 
         {
@@ -215,7 +209,7 @@ public:
             CylinderDistanceFunction function = CylinderDistanceFunction();
             Transformation model(glm::vec3(radius), center, 0,0,0);
             WrappedCylinder wrappedFunction = WrappedCylinder(&function);
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
 
 
@@ -228,7 +222,7 @@ public:
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             WrappedPerlinDistortDistanceEffect distortedFunction = WrappedPerlinDistortDistanceEffect(&wrappedFunction, 48.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f);
             //distortedFunction.cacheEnabled = true;
-            opaqueLayer.add(&distortedFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&distortedFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
         }
 
         {
@@ -240,7 +234,7 @@ public:
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             WrappedPerlinCarveDistanceEffect carvedFunction = WrappedPerlinCarveDistanceEffect(&wrappedFunction, 64.0f, 0.1f/32.0f, 0.1f, glm::vec3(0), 0.0f, 1.0f);
             //carvedFunction.cacheEnabled = true;
-            opaqueLayer.add(&carvedFunction, model, translate, scale, SimpleBrush(7), minSize*0.2f, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&carvedFunction, model, translate, scale, SimpleBrush(7), minSize*0.2f, simplifier, opaqueHandler);
         }
         {
             std::cout << "\topaqueLayer.add(sineDistort)"<< std::endl;
@@ -251,7 +245,7 @@ public:
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             WrappedSineDistortDistanceEffect carvedFunction = WrappedSineDistortDistanceEffect(&wrappedFunction, 32.0f, 0.1f/2.0f, glm::vec3(0));
             //carvedFunction.cacheEnabled = true;
-            opaqueLayer.add(&carvedFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&carvedFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
         }
         {
             std::cout << "\topaqueLayer.add(voronoiDistort)"<< std::endl;
@@ -261,7 +255,7 @@ public:
             Transformation model(glm::vec3(radius), center, 0,0,0);
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             WrappedVoronoiCarveDistanceEffect distortFunction = WrappedVoronoiCarveDistanceEffect(&wrappedFunction, 64.0f, 64.0f, glm::vec3(0), 0.0f, 1.0f);
-            opaqueLayer.add(&distortFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&distortFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
         }
         {
             std::cout << "\topaqueLayer.add(voronoiDistort)"<< std::endl;
@@ -271,7 +265,7 @@ public:
             Transformation model(glm::vec3(radius), center, 0,0,0);
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             WrappedVoronoiCarveDistanceEffect distortFunction = WrappedVoronoiCarveDistanceEffect(&wrappedFunction, 64.0f, 64.0f, glm::vec3(0), 0.0f, -1.0f);
-            opaqueLayer.add(&distortFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&distortFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
         }
         {
             Transformation model = Transformation();
@@ -284,7 +278,7 @@ public:
             OctreeDifferenceFunction function(&opaqueLayer, waterBox, minSize*2.0f);
             WrappedOctreeDifference wrappedFunction = WrappedOctreeDifference(&function);
             //wrappedFunction.cacheEnabled = true;
-            transparentLayer.add(&wrappedFunction, model, translate, scale, WaterBrush(1), minSize, simplifier, transparentLayerChangeHandler);
+            transparentLayer.add(&wrappedFunction, model, translate, scale, WaterBrush(1), minSize, simplifier, transparentHandler);
         }
 
         {
@@ -295,7 +289,7 @@ public:
             BoxDistanceFunction function = BoxDistanceFunction();
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             WrappedBox wrappedFunction = WrappedBox(&function);
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*4, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*4, simplifier, opaqueHandler);
         }
 
         {
@@ -306,7 +300,7 @@ public:
             BoxDistanceFunction function = BoxDistanceFunction();
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             WrappedBox wrappedFunction = WrappedBox(&function);
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*0.25, simplifier, opaqueLayerChangeHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*0.25, simplifier, opaqueHandler);
         }
 
    

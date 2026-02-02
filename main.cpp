@@ -247,7 +247,7 @@ public:
             mainScene->opaqueLayerChangeHandler.setOnNodeUpdated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeUpdated(nd); });
             mainScene->opaqueLayerChangeHandler.setOnNodeErased([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeErased(nd); });
 
-            mainScene->transparentLayerChangeHandler.setOnNodeCreated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeCreated(nd); });
+            // Liquid/transparent handler only supports update+erase
             mainScene->transparentLayerChangeHandler.setOnNodeUpdated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeUpdated(nd); });
             mainScene->transparentLayerChangeHandler.setOnNodeErased([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeErased(nd); });
         }
