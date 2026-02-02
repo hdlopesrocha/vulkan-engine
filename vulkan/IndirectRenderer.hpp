@@ -35,11 +35,29 @@ public:
     // Add mesh and return mesh id. Model matrix is stored per-mesh and uploaded
     // to a small CPU-side array used for push constants (we still push per-draw).
     uint32_t addMesh(VulkanApp* app, const Geometry& mesh, const glm::mat4& model);
+    // Add mesh with a custom ID (e.g., node ID from octree). If mesh with this ID exists, it is replaced.
+    uint32_t addMesh(VulkanApp* app, const Geometry& mesh, const glm::mat4& model, uint32_t customId);
     void removeMesh(uint32_t meshId);
 
     // Rebuild GPU backing buffers from current CPU mesh list. Call before drawing
     // if add/remove operations occurred.
     void rebuild(VulkanApp* app);
+
+    // Upload a single mesh to GPU (incremental update). Requires buffers to have capacity.
+    // Returns true if upload succeeded, false if rebuild() is needed (capacity exceeded or buffers not created).
+    bool uploadMesh(VulkanApp* app, uint32_t meshId);
+    
+    // Erase a mesh from GPU by zeroing its indirect command (prevents culling from reading trash).
+    // Call after removeMesh() for runtime removals.
+    void eraseMeshFromGPU(VulkanApp* app, uint32_t meshId);
+    
+    // Ensure GPU buffers have capacity for at least the given counts. 
+    // Call this before a batch of addMesh+uploadMesh if you know the expected size.
+    // Returns true if buffers are ready, false if they needed to be created/grown (triggers rebuild).
+    bool ensureCapacity(VulkanApp* app, size_t vertexCount, size_t indexCount, size_t meshCount);
+    
+    // Check if dirty flag is set (needs rebuild or incremental uploads)
+    bool isDirty() const { return dirty; }
 
     // Bind merged vertex/index buffers once and draw all provided mesh ids.
     // This avoids binding per-mesh buffers; push constants must be set per-draw
@@ -65,6 +83,8 @@ public:
     const Buffer& getIndexBuffer() const { return indexBuffer; }
     const Buffer& getIndirectBuffer() const { return indirectBuffer; }
     const Buffer& getModelsBuffer() const { return modelsBuffer; }
+    const Buffer& getCompactIndirectBuffer() const { return compactIndirectBuffer; }
+    VkPipeline getComputePipeline() const { return computePipeline; }
     
     // Get count of active meshes
     size_t getMeshCount() const {
@@ -75,6 +95,9 @@ public:
         }
         return count;
     }
+
+    // Host-read of the GPU-visible count (requires GPU idle; stats-only).
+    uint32_t readVisibleCount(VulkanApp* app) const;
 
     // Query mesh info (copy) for use in the app (model matrix etc.)
     MeshInfo getMeshInfo(uint32_t meshId) const;
@@ -111,6 +134,11 @@ private:
     Buffer indexBuffer;
     Buffer indirectBuffer;
     Buffer modelsBuffer;
+    
+    // Capacity tracking (in elements, not bytes)
+    size_t vertexCapacity = 0;
+    size_t indexCapacity = 0;
+    size_t meshCapacity = 0;
 
     bool dirty = false;
     bool descriptorDirty = false;  // flag for deferred descriptor update
