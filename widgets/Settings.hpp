@@ -25,6 +25,7 @@ public:
         tessMaxDistance = 30.0f;
         tessMinDistance = 10.0f;
         vsyncEnabled = true;
+        showBoundingBoxes = false;
     }
 
     // Global toggles
@@ -33,6 +34,9 @@ public:
     bool vegetationEnabled = true;
     bool wireframeMode = false;
     bool normalMappingEnabled = true;
+
+    // Debug visuals
+    bool showBoundingBoxes = false;
 
     // Input settings
     bool flipKeyboardRotation = false;

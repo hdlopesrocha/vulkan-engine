@@ -215,6 +215,7 @@ public:
         textureViewer->init(sceneRenderer ? &sceneRenderer->textureArrayManager : nullptr, &materials);
         textureViewer->setOnMaterialChanged([](size_t) {});
         skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
+        settingsWidget = std::make_shared<SettingsWidget>(settings);
         waterWidget = std::make_shared<WaterWidget>(sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr);
         renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(this, sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr, sceneRenderer ? sceneRenderer->solidRenderer.get() : nullptr);
         billboardWidget = std::make_shared<BillboardWidget>();

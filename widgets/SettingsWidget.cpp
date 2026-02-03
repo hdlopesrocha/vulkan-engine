@@ -148,6 +148,11 @@ void SettingsWidget::render() {
             settings.debugMode = current;
         }
         ImGui::SameLine(); ImGui::TextDisabled("(%d)", settings.debugMode);
+
+        if (ImGui::Checkbox("Show Mesh Bounding Boxes", &settings.showBoundingBoxes)) {
+            // toggled overlay of per-mesh bounding boxes
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Render bounding boxes for meshes currently uploaded to the GPU");
     }
     ImGui::End();
 }
