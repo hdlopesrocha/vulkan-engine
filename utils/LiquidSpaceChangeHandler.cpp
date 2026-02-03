@@ -7,8 +7,8 @@ LiquidSpaceChangeHandler::LiquidSpaceChangeHandler(
 };
 
 void LiquidSpaceChangeHandler::create(OctreeNodeData& nodeData) {
-    if (onNodeUpdated) {
-        onNodeUpdated(nodeData);
+    if (onNodeCreated) {
+        onNodeCreated(nodeData);
     }
 };
 
