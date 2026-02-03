@@ -21,7 +21,7 @@ public:
     OctreeNode(Vertex vertex);
     ~OctreeNode();
     OctreeNode * init(Vertex vertex);
-    ChildBlock * clear(OctreeAllocator &allocator, OctreeChangeHandler * handler, ChildBlock * block, const BoundingCube& cube);
+    ChildBlock * clear(OctreeAllocator &allocator, ChildBlock * block, const BoundingCube& cube);
     ChildBlock * getBlock(OctreeAllocator &allocator) const;
     ChildBlock * allocate(OctreeAllocator &allocator);
     void getChildren(OctreeAllocator &allocator, OctreeNode * childNodes[8]) const;

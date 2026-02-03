@@ -342,7 +342,7 @@ void Octree::expand(const ShapeArgs &args) {
 
             if (emptyNode && emptyBlock) {
                 if (oldBlock != NULL) {
-                    oldBlock = oldRoot->clear(*allocator, &args.changeHandler, oldBlock, oldRootCube);
+                    oldBlock = oldRoot->clear(*allocator, oldBlock, oldRootCube);
                 }
                 oldRoot = allocator->deallocate(oldRoot);
             }
@@ -366,7 +366,7 @@ void Octree::add(
         const TexturePainter &painter,
         float minSize, 
         Simplifier &simplifier, 
-        OctreeChangeHandler &changeHandler
+        const OctreeChangeHandler &changeHandler
     ) {
     threadsCreated = 0;
     *shapeCounter = 0;
@@ -384,7 +384,8 @@ void Octree::del(
         glm::vec4 translate,
         glm::vec4 scale,
         const TexturePainter &painter,
-        float minSize, Simplifier &simplifier, OctreeChangeHandler  &changeHandler
+        float minSize, Simplifier &simplifier, 
+        const OctreeChangeHandler  &changeHandler
     ) {
     threadsCreated = 0;
     *shapeCounter = 0;
@@ -616,9 +617,10 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         }
     } else if(resultType != SpaceType::Surface) {
         isSimplified = true;
-        if(node != NULL && isChunk) {
-            OctreeNodeData data(frame.level, node, frame.cube, ContainmentType::Intersects, nullptr);
-            args.changeHandler.erase(data);
+        if(node != NULL && isChunk && node->getType() != resultType) {
+            args.changeHandler.onNodeDeleted(
+                OctreeNodeData(frame.level, node, frame.cube, check, nullptr)
+            );
         }
 
         // ------------------------------
@@ -626,7 +628,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         // ------------------------------
         ChildBlock * block = node ? node->getBlock(*allocator) : NULL;
         if(block) {
-            node->clear(*allocator, &args.changeHandler, block, frame.cube);
+            node->clear(*allocator, block, frame.cube);
         } 
         /*if(resultType == SpaceType::Empty) {
             node = node ? allocator->deallocate(node) : NULL;
@@ -645,12 +647,9 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
 
         // Notify change handler only after the node and all subnodes are up to date
         if (isChunk) {
-            OctreeNodeData data(frame.level, node, frame.cube, check, nullptr);
-            if (wasCreated) {
-                args.changeHandler.create(data);
-            } else {
-                args.changeHandler.update(data);
-            }
+            args.changeHandler.onNodeAdded(
+                OctreeNodeData(frame.level, node, frame.cube, check, nullptr)
+            );
         }
     }
 

@@ -76,17 +76,14 @@ OctreeNode::~OctreeNode() {
 
 }
 
-ChildBlock * OctreeNode::clear(OctreeAllocator &allocator, OctreeChangeHandler * handler, ChildBlock * block, const BoundingCube& cube) {
-	if (handler) {
-	    OctreeNodeData data(0, this, cube, ContainmentType::Intersects, nullptr);
-	    handler->erase(data);
-	}
+ChildBlock * OctreeNode::clear(OctreeAllocator &allocator, ChildBlock * block, const BoundingCube& cube) {
+
 	if(this->blockId != UINT_MAX) {
 		if(block == NULL) {
 			block = getBlock(allocator);
 		}
 		if(block!=NULL) {	
-			block->clear(allocator, handler, cube);
+			block->clear(allocator, cube);
 			allocator.childAllocator.deallocate(block);
 			this->blockId = UINT_MAX;
 			block = NULL;

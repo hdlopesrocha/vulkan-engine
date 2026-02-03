@@ -9,7 +9,6 @@ class OctreeNode;
 
 class OctreeChangeHandler {
 public:
-    virtual void create(OctreeNodeData& data) = 0;
-    virtual void update(OctreeNodeData& data) = 0;
-    virtual void erase(OctreeNodeData& data) = 0;
+    virtual void onNodeAdded(const OctreeNodeData& data) const = 0;
+    virtual void onNodeDeleted(const OctreeNodeData& data) const = 0;
 };
