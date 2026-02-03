@@ -13,6 +13,7 @@ class LiquidSpaceChangeHandler : public OctreeChangeHandler {
 	// Callback for when a node is updated (for mesh loading)
 	NodeDataCallback onNodeUpdated;
 	NodeDataCallback onNodeErased;
+	NodeDataCallback onNodeCreated;
 
 	public:
 	LiquidSpaceChangeHandler(
@@ -24,6 +25,7 @@ class LiquidSpaceChangeHandler : public OctreeChangeHandler {
 	void erase(OctreeNodeData& data) override;
 
 	// Set callbacks for mesh loading integration
-	void setOnNodeUpdated(NodeDataCallback callback) { onNodeUpdated = callback; }
-	void setOnNodeErased(NodeDataCallback callback) { onNodeErased = callback; }
+	void setOnNodeUpdated(const NodeDataCallback &callback) { onNodeUpdated = callback; }
+	void setOnNodeErased(const NodeDataCallback &callback) { onNodeErased = callback; }
+	void setOnNodeCreated(const NodeDataCallback &callback) { onNodeCreated = callback; }
 };

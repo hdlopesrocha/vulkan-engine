@@ -25,7 +25,7 @@ class SolidSpaceChangeHandler : public OctreeChangeHandler {
 	void erase(OctreeNodeData& data) override;
 
 	// Set callbacks for mesh loading integration
-	void setOnNodeUpdated(NodeDataCallback callback) { onNodeUpdated = callback; }
-	void setOnNodeCreated(NodeDataCallback callback) { onNodeCreated = callback; }
-	void setOnNodeErased(NodeDataCallback callback) { onNodeErased = callback; }
+	void setOnNodeUpdated(const NodeDataCallback &callback) { onNodeUpdated = callback; }
+	void setOnNodeCreated(const NodeDataCallback &callback) { onNodeCreated = callback; }
+	void setOnNodeErased(const NodeDataCallback &callback) { onNodeErased = callback; }
 };
