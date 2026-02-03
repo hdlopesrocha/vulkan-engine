@@ -81,7 +81,7 @@ uint32_t IndirectRenderer::addMesh(VulkanApp* app, const Geometry& mesh, const g
 
 uint32_t IndirectRenderer::addMesh(VulkanApp* app, const Geometry& mesh, const glm::mat4& model, uint32_t customId) {
     std::lock_guard<std::mutex> guard(mutex);
-
+    std::cout << "[IndirectRenderer::addMesh] Adding/replacing mesh ID " << customId << " with " << mesh.vertices.size() << " vertices and " << mesh.indices.size() << " indices.\n";
     auto computeVertexCount = [](const MeshInfo& info, const std::vector<uint32_t>& indices) -> uint32_t {
         if (info.indexCount == 0 || indices.empty()) return 0;
         uint32_t maxIdx = 0;

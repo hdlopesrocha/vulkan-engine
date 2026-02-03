@@ -32,19 +32,6 @@ public:
     // Access for adding meshes
     IndirectRenderer& getIndirectRenderer() { return indirectRenderer; }
 
-    // Register model version map managed here
-    void registerModelVersion(NodeID id, const Model3DVersion& ver) { nodeModelVersions[id] = ver; }
-
-    // Remove all registered meshes and clear map
-    void removeAllRegisteredMeshes() {
-        for (auto &entry : nodeModelVersions) {
-            if (entry.second.meshId != UINT32_MAX) indirectRenderer.removeMesh(entry.second.meshId);
-        }
-        nodeModelVersions.clear();
-    }
-
-    // Get count of registered models
-    size_t getRegisteredModelCount() const { return nodeModelVersions.size(); }
 
     // Offscreen solid pass outputs
     VkImageView getColorView(uint32_t frameIndex) const { return solidColorImageViews[frameIndex]; }
@@ -53,7 +40,7 @@ public:
 
 public:
     // Public accessor for nodeModelVersions (read-only)
-    const std::unordered_map<NodeID, Model3DVersion>& getNodeModelVersions() const { return nodeModelVersions; }
+    const std::unordered_map<NodeID, Model3DVersion>& getNodeModelVersions() const { return solidChunks; }
 public:
     VkPipelineLayout getGraphicsPipelineLayout() const { return graphicsPipelineLayout; }
 private:
@@ -66,7 +53,7 @@ private:
     VkPipeline depthPrePassPipeline = VK_NULL_HANDLE;
     VkPipelineLayout depthPrePassPipelineLayout = VK_NULL_HANDLE;
 
-    std::unordered_map<NodeID, Model3DVersion> nodeModelVersions;
+    std::unordered_map<NodeID, Model3DVersion> solidChunks;
 
     // Offscreen framebuffer resources (2 frames in flight)
     std::array<VkImage, 2> solidColorImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};

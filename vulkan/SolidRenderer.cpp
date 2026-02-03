@@ -434,10 +434,10 @@ void SolidRenderer::cleanup() {
     }
 
     // Remove meshes
-    for (auto &entry : nodeModelVersions) {
+    for (auto &entry : solidChunks) {
         if (entry.second.meshId != UINT32_MAX) indirectRenderer.removeMesh(entry.second.meshId);
     }
-    nodeModelVersions.clear();
+    solidChunks.clear();
 
     indirectRenderer.cleanup(app);
 }

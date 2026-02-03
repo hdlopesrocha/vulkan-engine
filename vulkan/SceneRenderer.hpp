@@ -6,6 +6,10 @@
 #include "DebugCubeRenderer.hpp"
 #pragma once
 
+// Forward declarations for change handler types
+class SolidSpaceChangeHandler;
+class LiquidSpaceChangeHandler;
+
 #include <vulkan/vulkan.h>
 #include "VulkanApp.hpp"
 #include <glm/gtc/type_ptr.hpp>
@@ -61,9 +65,7 @@ public:
     void createPipelines();
     void createDescriptorSets(MaterialManager &materialManager, TextureArrayManager &textureArrayManager, VkDescriptorSet &outDescriptorSet, VkDescriptorSet &outShadowPassDescriptorSet, size_t tripleCount);
 
-    // Scene reference (set when populating meshes)
-    Scene* sceneRef = nullptr;
-
+   
     // Pending change queues (thread-safe)
     struct PendingNode {
         Layer layer;
@@ -75,7 +77,24 @@ public:
     std::vector<PendingNode> pendingErased;
 
     // Track model ids for transparent/water meshes so we can remove them if erased/updated
-    std::unordered_map<NodeID, Model3DVersion> transparentModelVersions;
+    std::unordered_map<NodeID, Model3DVersion> transparentChunks;
+
+    // Track model ids for opaque/solid meshes (moved from SolidRenderer)
+    std::unordered_map<NodeID, Model3DVersion> solidChunks;
+
+    // Register/inspect opaque model versions (moved from SolidRenderer)
+    void registerModelVersion(NodeID id, const Model3DVersion& ver) { solidChunks[id] = ver; }
+    size_t getRegisteredModelCount() const { return solidChunks.size(); }
+    const std::unordered_map<NodeID, Model3DVersion>& getNodeModelVersions() const { return solidChunks; }
+
+    // Remove all registered opaque meshes via IndirectRenderer and clear the map
+    void removeAllRegisteredMeshes() {
+        if (!solidRenderer) return;
+        for (auto &entry : solidChunks) {
+            if (entry.second.meshId != UINT32_MAX) solidRenderer->getIndirectRenderer().removeMesh(entry.second.meshId);
+        }
+        solidChunks.clear();
+    }
 
     void shadowPass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VkDescriptorSet shadowPassDescriptorSet, const UniformObject &uboStatic, bool shadowsEnabled, bool shadowTessellationEnabled);
     void depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool);
@@ -86,16 +105,26 @@ public:
     void init(VulkanApp* app_, VkDescriptorSet descriptorSet = VK_NULL_HANDLE);
     void cleanup();
 
-    // Populate GPU meshes from a Scene (uploads chunk geometry into IndirectRenderer)
-    void populateFromScene(Scene* scene, Layer layer = LAYER_OPAQUE);
-
     // Incremental change handling (called from SolidSpaceChangeHandler callbacks)
     void onNodeCreated(Layer layer, const OctreeNodeData &node);
     void onNodeUpdated(Layer layer, const OctreeNodeData &node);
     void onNodeErased(Layer layer, const OctreeNodeData &node);
 
     // Process pending node change queues on the main thread
-    void processPendingNodeChanges();
+    void processPendingNodeChanges(Scene* scene);
+
+    // Process nodes from a generic per-layer NodeID->OctreeNodeData map
+    // Process nodes for a single Layer (nodeMap maps NodeID->OctreeNodeData)
+    void processNodeLayer(Scene* scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry);
+
+    // Overload: accept raw pending node vector and coalesce inside (per-layer dispatch)
+    void processNodes(Scene* scene, const std::vector<PendingNode>& pendingNodes, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry);
+
+    // Process erased node id set for a single Layer
+    void processErasedNodeSet(Layer layer, const std::unordered_set<NodeID>& nodeSet, const std::function<void(Layer, NodeID)>& onErased);
+
+    // Overload: accept raw pending erased vector and coalesce inside (per-layer dispatch)
+    void processErasedNodeSet(const std::vector<PendingNode>& pendingNodes, const std::function<void(Layer, NodeID)>& onErased);
 
     // Runtime introspection helpers for UI/debug
     size_t getPendingCreatedCount();
@@ -103,7 +132,21 @@ public:
     size_t getPendingErasedCount();
     size_t getTransparentModelCount();
 
+    // Query whether a model for the given node is already registered
+    bool hasModelForNode(Layer layer, NodeID nid) const;
+
+    // Create change handlers pre-bound to this renderer
+    SolidSpaceChangeHandler makeSolidSpaceChangeHandler() const;
+    LiquidSpaceChangeHandler makeLiquidSpaceChangeHandler() const;
+
     // Resize offscreen resources when the swapchain changes
     void onSwapchainResized(uint32_t width, uint32_t height);
+
+private:
+    // Callbacks stored here so handler references remain valid
+    NodeDataCallback solidNodeEventCallback;
+    NodeDataCallback solidNodeEraseCallback;
+    NodeDataCallback liquidNodeEventCallback;
+    NodeDataCallback liquidNodeEraseCallback;
 };
 
