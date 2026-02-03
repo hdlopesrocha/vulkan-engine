@@ -5,6 +5,7 @@
 #include "NodeOperationResult.hpp"
 #include "OctreeNodeCubeSerialized.hpp"
 #include <cmath>
+#include <optional>
 
 const float INFINITY_ARRAY [8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
 #include "OctreeAllocator.hpp"
@@ -436,8 +437,9 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     }
 
     NodeOperationResult childResult[8];
-    std::vector<std::thread> threads;
-    threads.reserve(8);
+    // Use thread pool futures to schedule child tasks and wait for them in order
+    std::array<std::optional<std::future<NodeOperationResult>>, 8> childFutures;
+
     if (!isLeaf) {
         bool isChildThread = isThreadNode(length*0.5f, args.minSize, 16);
         bool isChildChunk = isChunkNode(length*0.5f);
@@ -446,16 +448,27 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         if(node != NULL) {
             node->getChildren(*allocator, children);
         }
+
+        // If this node needs parallel child processing, create a local ThreadPool so
+        // all child tasks for this node run within the same pool and we can wait
+        // for them deterministically before tessellation.
+        std::unique_ptr<ThreadPool> localPool;
+        if (isChildThread) {
+            // Use up to 8 threads for an 8-child split, capped by HW concurrency
+            int poolSize = std::min(8, std::max(1, (int)std::thread::hardware_concurrency()));
+            localPool = std::make_unique<ThreadPool>(poolSize);
+        }
+
         // --------------------------------
-        // Iterate nodes and create threads
+        // Iterate nodes and enqueue tasks into the appropriate pool
         // --------------------------------
 
         for (uint i = 0; i < 8; ++i) {
             OctreeNode * child = children[i];
             if(node!=NULL && child == node) {
-		        throw std::runtime_error("Infinite loop " + std::to_string((long)child) + " " + std::to_string((long)node));
+                throw std::runtime_error("Infinite loop " + std::to_string((long)child) + " " + std::to_string((long)node));
             }
-            
+
             float childSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
             int childBrushIndex = node != NULL ? node->vertex.texIndex : frame.brushIndex;
             bool isChildInterpolated = frame.interpolated;
@@ -480,28 +493,26 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
 
             if(isChildThread) {
                 ++threadsCreated;
-                NodeOperationResult * result = &childResult[i];
-                threads.emplace_back([this, childFrame, args, result, check]() {
-                   ThreadContext localThreadContext(childFrame.cube);
-                   *result = shape(childFrame, args, &localThreadContext, check);
+                // Enqueue task on the local pool if present, otherwise use global pool
+                auto &poolRef = localPool ? *localPool : threadPool;
+                childFutures[i] = poolRef.enqueue([this, childFrame, args, check]() {
+                    ThreadContext localThreadContext(childFrame.cube);
+                    return shape(childFrame, args, &localThreadContext, check);
                 });
             } else {
                 childResult[i] = shape(childFrame, args, threadContext, check);
             }
-            
+
             (*shapeCounter)++;
         }
-    }
 
-    // ------------------------------
-    // Synchronize threads if created
-    // ------------------------------
-
-    for(std::thread &t : threads) {
-        if(t.joinable()) {
-            t.join();
+        // Wait for child tasks in order to ensure neighbors are available for tessellation
+        for (uint i = 0; i < 8; ++i) {
+            if (childFutures[i].has_value()) {
+                childResult[i] = std::move(childFutures[i].value()).get();
+            }
         }
-    }
+    } // end if (!isLeaf)
  
     // ------------------------------
     // Inherit SDFs from children

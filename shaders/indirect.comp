@@ -105,8 +105,7 @@ void main() {
     if (idx < modelsBuf.models.length()) model = modelsBuf.models[idx];
     mat4 mvp = pc.viewProj * model;
 
-    // TEMP DEBUG: bypass culling to see if meshes render at all
-    // if (!aabbVisible(mvp, minp, maxp)) return;
+    if (!aabbVisible(mvp, minp, maxp)) return;
 
     uint dst = atomicAdd(count, 1);
     // Keep the original firstInstance (idx) so shader can look up correct model matrix
