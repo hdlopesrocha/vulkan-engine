@@ -435,18 +435,20 @@ void SceneRenderer::processPendingNodeChanges(Scene* scene) {
         }
         uint32_t meshId = renderer.addMesh(app, geom);
         Model3DVersion mv{meshId, nd.node->version};
-        registerModelVersion(nid, mv);        // Add debug cube instance for this node (post-tessellation)
-        if (debugCubeRenderer) {
-            DebugCubeRenderer::CubeWithColor c;
-            c.cube = BoundingBox(nd.cube.getMin(), nd.cube.getMax());
-            c.color = (layer == LAYER_OPAQUE) ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(0.0f, 0.5f, 1.0f);
-            addDebugCubeForNode(nid, c);
-        }    };
+        registerModelVersion(nid, mv);
+    };
 
     // Delegate processing/coalescing: created/updated
     auto onGeometry = [&](Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
         std::cout << "[SceneRenderer::processPendingNodeChanges::onGeometry] layer=" << static_cast<int>(layer) << " nid=" << nid << " with " << geom.vertices.size() << " vertices and " << geom.indices.size() << " indices.\n";
         ensureMeshForNode(layer, nid, nd, geom);
+        // Create debug cube instance for this node now that geometry is available
+        if (debugCubeRenderer) {
+            DebugCubeRenderer::CubeWithColor c;
+            c.cube = BoundingBox(nd.cube.getMin(), nd.cube.getMax());
+            c.color = (layer == LAYER_OPAQUE) ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(0.0f, 0.5f, 1.0f);
+            addDebugCubeForNode(nid, c);
+        }
         ++addedCount;
     };
 
