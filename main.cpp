@@ -59,7 +59,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 public:
     Settings settings;
     std::unique_ptr<SceneRenderer> sceneRenderer;
-    std::unique_ptr<LocalScene> mainScene;
+    LocalScene * mainScene;
     VkQueryPool queryPool = VK_NULL_HANDLE;
     static constexpr uint32_t QUERY_COUNT = 12;
     float timestampPeriod = 0.0f;
@@ -214,7 +214,7 @@ public:
         textureViewer = std::make_shared<TextureViewer>();
         textureViewer->init(sceneRenderer ? &sceneRenderer->textureArrayManager : nullptr, &materials);
         textureViewer->setOnMaterialChanged([](size_t) {});
-        if (!skyWidget && sceneRenderer) skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
+        skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
         waterWidget = std::make_shared<WaterWidget>(sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr);
         renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(this, sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr, sceneRenderer ? sceneRenderer->solidRenderer.get() : nullptr);
         billboardWidget = std::make_shared<BillboardWidget>();
@@ -231,29 +231,19 @@ public:
         vegetationTextureArrayManager.initialize(this);
         vegetationAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
 
+        auto sr = sceneRenderer.get();
+
         // Initialize and load the main scene so rendering has valid scene data
-        mainScene = std::make_unique<LocalScene>();
-        {
-            MainSceneLoader loader = MainSceneLoader();
-            mainScene->loadScene(loader);
-        }
-        // Populate GPU meshes from the loaded scene (opaque + transparent)
-        if (sceneRenderer) {
-            sceneRenderer->populateFromScene(mainScene.get(), LAYER_OPAQUE);
-            sceneRenderer->populateFromScene(mainScene.get(), LAYER_TRANSPARENT);
-
-            // Register change callbacks so dynamic updates can be picked up
-            mainScene->opaqueLayerChangeHandler.setOnNodeCreated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeCreated(LAYER_OPAQUE, nd); });
-            mainScene->opaqueLayerChangeHandler.setOnNodeUpdated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeUpdated(LAYER_OPAQUE, nd); });
-            mainScene->opaqueLayerChangeHandler.setOnNodeErased([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeErased(LAYER_OPAQUE, nd); });
-
-            // Liquid/transparent handler supports create/update/erase
-            mainScene->transparentLayerChangeHandler.setOnNodeCreated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeCreated(LAYER_TRANSPARENT, nd); });
-            mainScene->transparentLayerChangeHandler.setOnNodeUpdated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeUpdated(LAYER_TRANSPARENT, nd); });
-            mainScene->transparentLayerChangeHandler.setOnNodeErased([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeErased(LAYER_TRANSPARENT, nd); });
-        }
+        SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler();
+        LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler();
+        
+        mainScene = new LocalScene(solidHandler, liquidHandler);
+        MainSceneLoader loader = MainSceneLoader();
+        mainScene->loadScene(loader);
+    
+        sceneRenderer->processPendingNodeChanges(mainScene);
         // Create octree explorer widget bound to loaded scene
-        octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene.get());
+        octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
 
         widgetManager.addWidget(animatedTextureWidget);
         widgetManager.addWidget(textureViewer);
@@ -301,7 +291,7 @@ public:
             sceneRenderer->waterRenderer->advanceTime(deltaTime);
         }
         // Process any pending mesh updates from scene change handlers
-        if (sceneRenderer) sceneRenderer->processPendingNodeChanges();
+        if (sceneRenderer) sceneRenderer->processPendingNodeChanges(mainScene);
     }
 
     void preRenderPass(VkCommandBuffer &commandBuffer) override {
@@ -422,6 +412,8 @@ public:
                 size_t opaqueLoaded = sceneRenderer && sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getIndirectRenderer().getMeshCount() : 0;
                 uint32_t opaqueVisible = sceneRenderer && sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getIndirectRenderer().readVisibleCount(this) : 0;
                 ImGui::Text("Opaque - Loaded (GPU): %zu  Visible (GPU cull): %u", opaqueLoaded, opaqueVisible);
+                size_t opaqueTracked = sceneRenderer ? sceneRenderer->getRegisteredModelCount() : 0;
+                ImGui::Text("Opaque Models Tracked: %zu", opaqueTracked);
 
                 // Transparent / water
                 size_t transparentLoaded = sceneRenderer && sceneRenderer->waterRenderer ? sceneRenderer->waterRenderer->getIndirectRenderer().getMeshCount() : 0;
@@ -467,7 +459,7 @@ public:
 
         if (imguiShowDemo) ImGui::ShowDemoWindow(&imguiShowDemo);
 
-        cubeCount = (sceneRenderer && sceneRenderer->solidRenderer) ? sceneRenderer->solidRenderer->getRegisteredModelCount() : 0;
+        cubeCount = sceneRenderer ? sceneRenderer->getRegisteredModelCount() : 0;
 
         // Render all widgets
         widgetManager.renderAll();
