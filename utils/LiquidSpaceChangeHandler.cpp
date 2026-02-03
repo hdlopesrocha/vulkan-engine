@@ -4,23 +4,19 @@
 static NodeDataCallback emptyNodeDataCallback;
 
 LiquidSpaceChangeHandler::LiquidSpaceChangeHandler(
-    OctreeLayer<InstanceData> * liquidInfo
-) : liquidInfo(liquidInfo), onNodeUpdated(emptyNodeDataCallback), onNodeErased(emptyNodeDataCallback), onNodeCreated(emptyNodeDataCallback) {
+		const NodeDataCallback & onNodeUpdated,
+		const NodeDataCallback & onNodeErased
+	) : onNodeUpdated(onNodeUpdated), onNodeErased(onNodeErased) {
 };
 
-void LiquidSpaceChangeHandler::create(OctreeNodeData& nodeData) {
-    if (onNodeCreated) {
-        onNodeCreated(nodeData);
-    }
-};
 
-void LiquidSpaceChangeHandler::update(OctreeNodeData& nodeData) {
+void LiquidSpaceChangeHandler::onNodeAdded(const OctreeNodeData& nodeData) const {
     if (onNodeUpdated) {
         onNodeUpdated(nodeData);
     }
 };
 
-void LiquidSpaceChangeHandler::erase(OctreeNodeData& nodeData) {
+void LiquidSpaceChangeHandler::onNodeDeleted(const OctreeNodeData& nodeData) const {
     if (onNodeErased) {
         onNodeErased(nodeData);
     }

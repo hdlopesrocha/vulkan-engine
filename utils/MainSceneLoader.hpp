@@ -60,7 +60,7 @@ public:
     };
     ~MainSceneLoader() = default;
 
-    void loadScene(Octree &opaqueLayer, OctreeChangeHandler& opaqueHandler,Octree &transparentLayer,OctreeChangeHandler& transparentHandler) {
+    void loadScene(Octree &opaqueLayer, const OctreeChangeHandler& opaqueHandler,Octree &transparentLayer,const OctreeChangeHandler& transparentHandler) {
 
         //WrappedSignedDistanceFunction::resetCalls();
         int sizePerTile = 30;

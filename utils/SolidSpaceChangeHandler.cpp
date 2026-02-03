@@ -4,23 +4,18 @@
 static NodeDataCallback emptyNodeDataCallback;
 
 SolidSpaceChangeHandler::SolidSpaceChangeHandler(
-    OctreeLayer<InstanceData> * solidInfo
-) : solidInfo(solidInfo), onNodeUpdated(emptyNodeDataCallback), onNodeCreated(emptyNodeDataCallback), onNodeErased(emptyNodeDataCallback) {
+		const NodeDataCallback & onNodeUpdated,
+		const NodeDataCallback & onNodeErased
+	) : onNodeUpdated(onNodeUpdated), onNodeErased(onNodeErased) {
 };
 
-void SolidSpaceChangeHandler::create(OctreeNodeData& nodeData) {
-    if (onNodeCreated) {
-        onNodeCreated(nodeData);
-    }
-};
-
-void SolidSpaceChangeHandler::update(OctreeNodeData& nodeData) {
+void SolidSpaceChangeHandler::onNodeAdded(const OctreeNodeData& nodeData) const {
     if (onNodeUpdated) {
         onNodeUpdated(nodeData);
     }
 };
 
-void SolidSpaceChangeHandler::erase(OctreeNodeData& nodeData) {
+void SolidSpaceChangeHandler::onNodeDeleted(const OctreeNodeData& nodeData) const {
     if (onNodeErased) {
         onNodeErased(nodeData);
     }
