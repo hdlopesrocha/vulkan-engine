@@ -597,7 +597,6 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                             childNode->setSimplified(true);
                             // Determine chunk membership for this child
                             childNode->setChunk(childIsChunk);
-                            childNode->setDirty(true);
                         }
                     }
                     if(childIsChunk) {
@@ -640,7 +639,6 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         node->setSDF(resultSDF);
         node->setType(resultType);
         node->setChunk(isChunk);
-        node->setDirty(isChunk);
         ++node->version;
         node->setSimplified(isSimplified);
         node->setLeaf(isLeaf);

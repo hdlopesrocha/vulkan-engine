@@ -34,9 +34,9 @@ public:
 
     // Add mesh and return mesh id. Model matrix is stored per-mesh and uploaded
     // to a small CPU-side array used for push constants (we still push per-draw).
-    uint32_t addMesh(VulkanApp* app, const Geometry& mesh, const glm::mat4& model);
+    uint32_t addMesh(VulkanApp* app, const Geometry& mesh);
     // Add mesh with a custom ID (e.g., node ID from octree). If mesh with this ID exists, it is replaced.
-    uint32_t addMesh(VulkanApp* app, const Geometry& mesh, const glm::mat4& model, uint32_t customId);
+    uint32_t addMesh(VulkanApp* app, const Geometry& mesh, uint32_t customId);
     void removeMesh(uint32_t meshId);
 
     // Rebuild GPU backing buffers from current CPU mesh list. Call before drawing

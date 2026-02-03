@@ -25,7 +25,6 @@ OctreeNode * OctreeNode::init(Vertex vertex) {
 	this->bits = 0x0;
 	this->setLeaf(false);
 	this->setSimplified(false);
-	this->setDirty(false);
 	this->setChunk(false);
 	this->setType(SpaceType::Empty);
 	this->vertex = vertex;
@@ -108,15 +107,6 @@ bool OctreeNode::isSimplified() const {
 
 void OctreeNode::setSimplified(bool value){
 	uint8_t mask = (0x1 << 2);
-	this->bits = (this->bits & ~mask) | (value ? mask : 0x0);
-}
-
-bool OctreeNode::isDirty() const {
-	return this->bits & (0x1 << 3);
-}
-
-void OctreeNode::setDirty(bool value){
-	uint8_t mask = (0x1 << 3);
 	this->bits = (this->bits & ~mask) | (value ? mask : 0x0);
 }
 

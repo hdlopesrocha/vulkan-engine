@@ -25,9 +25,7 @@ OctreeNode * OctreeNodeFile::loadRecursive(OctreeNode * node, int i, BoundingCub
 		node->bits = serialized.bits;
 	}
 
-	if(node->isChunk()){
-		node->setDirty(true);
-	}
+	
 	bool isLeaf = true;
 	for(int j=0; j < 8; ++j) {
 		if(serialized.children[j] != 0) {

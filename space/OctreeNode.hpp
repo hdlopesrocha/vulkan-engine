@@ -32,9 +32,6 @@ public:
     bool isSimplified() const;
     void setSimplified(bool value);
 
-    bool isDirty() const ;
-    void setDirty(bool value);
-
     bool isChunk() const ;
     void setChunk(bool value);
 

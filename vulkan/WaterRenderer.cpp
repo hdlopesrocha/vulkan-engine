@@ -1036,7 +1036,7 @@ void WaterRenderer::renderWaterPostProcess(VkCommandBuffer cmd, VkFramebuffer sw
     scissor.extent = {renderWidth, renderHeight};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
     // Bind pipeline and descriptor set
-    printf("[WaterRenderer] vkCmdBindPipeline: waterPostProcessPipeline=%p\n", (void*)waterPostProcessPipeline);
+    //printf("[WaterRenderer] vkCmdBindPipeline: waterPostProcessPipeline=%p\n", (void*)waterPostProcessPipeline);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPostProcessPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPostProcessPipelineLayout, 
                             0, 1, &postProcessDescriptorSet, 0, nullptr);

@@ -401,9 +401,9 @@ void SolidRenderer::draw(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDe
     }
     
     // Draw all meshes using GPU-culled indirect commands
-    printf("[SolidRenderer::draw] About to call drawPrepared\n");
+    //printf("[SolidRenderer::draw] About to call drawPrepared\n");
     indirectRenderer.drawPrepared(commandBuffer, app);
-    printf("[SolidRenderer::draw] drawPrepared returned\n");
+    //printf("[SolidRenderer::draw] drawPrepared returned\n");
 }
 
 void SolidRenderer::cleanup() {

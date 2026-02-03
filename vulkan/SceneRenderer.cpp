@@ -421,7 +421,6 @@ void SceneRenderer::processPendingNodeChanges(Scene* scene) {
 
     // Ensure mesh exists and is up-to-date for a node: insert or replace when needed
     auto ensureMeshForNode = [&](Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
-        glm::mat4 model = glm::translate(glm::mat4(1.0f), nd.cube.getCenter());
         IndirectRenderer &renderer = layer == LAYER_OPAQUE ? solidRenderer->getIndirectRenderer() : waterRenderer->getIndirectRenderer();
 
         const auto &cur = layer == LAYER_OPAQUE ? solidChunks : transparentChunks;
@@ -434,7 +433,7 @@ void SceneRenderer::processPendingNodeChanges(Scene* scene) {
                 renderer.removeMesh(it->second.meshId);
             }
         }
-        uint32_t meshId = renderer.addMesh(app, geom, model);
+        uint32_t meshId = renderer.addMesh(app, geom);
         Model3DVersion mv{meshId, nd.node->version};
         registerModelVersion(nid, mv);
     };

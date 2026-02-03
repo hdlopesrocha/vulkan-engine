@@ -31,9 +31,8 @@ private:
     
     // Color priority (higher = more important): dirty > chunk > simplified > leaf
     glm::vec3 getNodeColor(OctreeNode* node) const {
-        if (node->isDirty()) return glm::vec3(1.0f, 0.0f, 0.0f);        // Red - highest priority
-        if (node->isChunk()) return glm::vec3(0.0f, 1.0f, 0.0f);        // Green
-        if (node->isSimplified()) return glm::vec3(1.0f, 1.0f, 0.0f);   // Yellow
+        if (node->isChunk()) return glm::vec3(1.0f, 0.0f, 0.0f);        // Red
+        if (node->isSimplified()) return glm::vec3(0.0f, 1.0f, 0.0f);   // Green
         if (node->isLeaf()) return glm::vec3(0.0f, 0.0f, 1.0f);         // Blue
         return glm::vec3(0.5f, 0.5f, 0.5f);                             // Gray - default
     }
