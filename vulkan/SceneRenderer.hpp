@@ -55,6 +55,7 @@ public:
     std::unique_ptr<SolidRenderer> solidRenderer;
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
     std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;
+    std::unique_ptr<DebugCubeRenderer> boundingBoxRenderer;
     // Sky settings owned by this renderer
     SkySettings skySettings;
     SkySettings& getSkySettings() { return skySettings; }

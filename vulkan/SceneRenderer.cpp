@@ -23,6 +23,9 @@ void SceneRenderer::cleanup() {
     if (debugCubeRenderer) {
         debugCubeRenderer->cleanup();
     }
+    if (boundingBoxRenderer) {
+        boundingBoxRenderer->cleanup();
+    }
 }
 
 void SceneRenderer::onSwapchainResized(uint32_t width, uint32_t height) {
@@ -43,6 +46,7 @@ SceneRenderer::SceneRenderer(VulkanApp* app_)
       solidRenderer(std::make_unique<SolidRenderer>(app_)),
       vegetationRenderer(std::make_unique<VegetationRenderer>(app_)),
       debugCubeRenderer(std::make_unique<DebugCubeRenderer>(app_)),
+      boundingBoxRenderer(std::make_unique<DebugCubeRenderer>(app_)),
       skySettings()
 {
     // All renderer members are now properly instantiated and internal SkySettings constructed
@@ -218,6 +222,10 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
     // Initialize debug cube renderer
     if (debugCubeRenderer) {
         debugCubeRenderer->init(solidRenderer ? solidRenderer->getRenderPass() : VK_NULL_HANDLE);
+    }
+    // Initialize bounding box renderer (reuses cube wireframe pipeline)
+    if (boundingBoxRenderer) {
+        boundingBoxRenderer->init(solidRenderer ? solidRenderer->getRenderPass() : VK_NULL_HANDLE);
     }
     
     // Create main uniform buffer

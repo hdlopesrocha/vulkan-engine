@@ -370,6 +370,43 @@ public:
                 sceneRenderer->debugCubeRenderer->render(commandBuffer, getMainDescriptorSet());
             }
 
+            // Render per-mesh bounding boxes (if enabled in settings)
+            if (settings.showBoundingBoxes && sceneRenderer && sceneRenderer->boundingBoxRenderer) {
+                std::vector<DebugCubeRenderer::CubeWithColor> boxes;
+                auto gatherBoxesFrom = [&](const IndirectRenderer &ir, const glm::vec3 &color){
+                    auto infos = ir.getActiveMeshInfos();
+                    boxes.reserve(boxes.size() + infos.size());
+                    for (const auto &mi : infos) {
+                        // Object-space AABB
+                        glm::vec3 omin = glm::vec3(mi.boundsMin);
+                        glm::vec3 omax = glm::vec3(mi.boundsMax);
+                        // Transform 8 corners by model matrix and recompute world AABB
+                        glm::vec3 worldMin(FLT_MAX);
+                        glm::vec3 worldMax(-FLT_MAX);
+                        for (int a = 0; a < 2; ++a) for (int b = 0; b < 2; ++b) for (int c = 0; c < 2; ++c) {
+                            glm::vec3 corner = glm::vec3(a ? omax.x : omin.x, b ? omax.y : omin.y, c ? omax.z : omin.z);
+                            glm::vec4 wc = mi.model * glm::vec4(corner, 1.0f);
+                            worldMin = glm::min(worldMin, glm::vec3(wc));
+                            worldMax = glm::max(worldMax, glm::vec3(wc));
+                        }
+                        boxes.push_back({BoundingBox(worldMin, worldMax), color});
+                    }
+                };
+
+                if (sceneRenderer->solidRenderer) {
+                    gatherBoxesFrom(sceneRenderer->solidRenderer->getIndirectRenderer(), glm::vec3(0.0f, 1.0f, 0.0f));
+                }
+                if (sceneRenderer->waterRenderer) {
+                    gatherBoxesFrom(sceneRenderer->waterRenderer->getIndirectRenderer(), glm::vec3(0.0f, 0.5f, 1.0f));
+                }
+
+                if (!boxes.empty()) {
+                    sceneRenderer->boundingBoxRenderer->setCubes(boxes);
+                    sceneRenderer->boundingBoxRenderer->render(commandBuffer, getMainDescriptorSet());
+                }
+            }
+
+                sceneRenderer->solidRenderer->endPass(commandBuffer);
 
             // Run water geometry pass offscreen and bind scene textures for post-process
             if (waterEnabled) {
