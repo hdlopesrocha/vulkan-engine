@@ -65,10 +65,14 @@ public:
     Scene* sceneRef = nullptr;
 
     // Pending change queues (thread-safe)
+    struct PendingNode {
+        Layer layer;
+        OctreeNodeData node;
+    };
     std::mutex pendingMutex;
-    std::vector<OctreeNodeData> pendingCreated;
-    std::vector<OctreeNodeData> pendingUpdated;
-    std::vector<OctreeNodeData> pendingErased;
+    std::vector<PendingNode> pendingCreated;
+    std::vector<PendingNode> pendingUpdated;
+    std::vector<PendingNode> pendingErased;
     void shadowPass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VkDescriptorSet shadowPassDescriptorSet, const UniformObject &uboStatic, bool shadowsEnabled, bool shadowTessellationEnabled);
     void depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool);
     void skyPass(VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj);
@@ -82,9 +86,9 @@ public:
     void populateFromScene(Scene* scene, Layer layer = LAYER_OPAQUE);
 
     // Incremental change handling (called from SolidSpaceChangeHandler callbacks)
-    void onNodeCreated(const OctreeNodeData &node);
-    void onNodeUpdated(const OctreeNodeData &node);
-    void onNodeErased(const OctreeNodeData &node);
+    void onNodeCreated(Layer layer, const OctreeNodeData &node);
+    void onNodeUpdated(Layer layer, const OctreeNodeData &node);
+    void onNodeErased(Layer layer, const OctreeNodeData &node);
 
     // Process pending node change queues on the main thread
     void processPendingNodeChanges();

@@ -330,25 +330,25 @@ void SceneRenderer::populateFromScene(Scene* scene, Layer layer) {
     });
 }
 
-void SceneRenderer::onNodeCreated(const OctreeNodeData &node) {
+void SceneRenderer::onNodeCreated(Layer layer, const OctreeNodeData &node) {
     std::lock_guard<std::mutex> lock(pendingMutex);
-    pendingCreated.push_back(node);
+    pendingCreated.push_back(PendingNode{layer, node});
 }
 
-void SceneRenderer::onNodeUpdated(const OctreeNodeData &node) {
+void SceneRenderer::onNodeUpdated(Layer layer, const OctreeNodeData &node) {
     std::lock_guard<std::mutex> lock(pendingMutex);
-    pendingUpdated.push_back(node);
+    pendingUpdated.push_back(PendingNode{layer, node});
 }
 
-void SceneRenderer::onNodeErased(const OctreeNodeData &node) {
+void SceneRenderer::onNodeErased(Layer layer, const OctreeNodeData &node) {
     std::lock_guard<std::mutex> lock(pendingMutex);
-    pendingErased.push_back(node);
+    pendingErased.push_back(PendingNode{layer, node});
 }
 
 void SceneRenderer::processPendingNodeChanges() {
-    std::vector<OctreeNodeData> created;
-    std::vector<OctreeNodeData> updated;
-    std::vector<OctreeNodeData> erased;
+    std::vector<PendingNode> created;
+    std::vector<PendingNode> updated;
+    std::vector<PendingNode> erased;
     {
         std::lock_guard<std::mutex> lock(pendingMutex);
         created.swap(pendingCreated);
@@ -359,42 +359,67 @@ void SceneRenderer::processPendingNodeChanges() {
     size_t removedCount = 0;
 
     // Handle created nodes by doing a targeted request for each
-    for (const auto &nd : created) {
+    for (const auto &p : created) {
+        const auto &nd = p.node;
+        Layer layer = p.layer;
         if (!sceneRef) continue;
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        sceneRef->requestModel3D(LAYER_OPAQUE, const_cast<OctreeNodeData&>(nd), [&](const Geometry &geom) {
+        sceneRef->requestModel3D(layer, const_cast<OctreeNodeData&>(nd), [&](const Geometry &geom) {
             glm::mat4 model = glm::translate(glm::mat4(1.0f), nd.cube.getCenter());
-            uint32_t meshId = solidRenderer->getIndirectRenderer().addMesh(app, geom, model);
-            Model3DVersion mv; mv.meshId = meshId; mv.version = nd.node->version;
-            solidRenderer->registerModelVersion(nid, mv);
+            if (layer == LAYER_OPAQUE) {
+                uint32_t meshId = solidRenderer->getIndirectRenderer().addMesh(app, geom, model);
+                Model3DVersion mv; mv.meshId = meshId; mv.version = nd.node->version;
+                solidRenderer->registerModelVersion(nid, mv);
+            } else {
+                // Transparent/water layer meshes go to water renderer
+                if (waterRenderer) {
+                    uint32_t meshId = waterRenderer->getIndirectRenderer().addMesh(app, geom, model);
+                    // Water doesn't track model versions currently
+                }
+            }
             ++addedCount;
         });
     }
 
     // For updated nodes, replace existing mesh
-    for (const auto &nd : updated) {
+    for (const auto &p : updated) {
+        const auto &nd = p.node;
+        Layer layer = p.layer;
         if (!sceneRef) continue;
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        sceneRef->requestModel3D(LAYER_OPAQUE, const_cast<OctreeNodeData&>(nd), [&](const Geometry &geom) {
-            const auto &cur = solidRenderer->getNodeModelVersions();
-            auto it = cur.find(nid);
-            if (it != cur.end() && it->second.meshId != UINT32_MAX) {
-                solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+        sceneRef->requestModel3D(layer, const_cast<OctreeNodeData&>(nd), [&](const Geometry &geom) {
+            if (layer == LAYER_OPAQUE) {
+                const auto &cur = solidRenderer->getNodeModelVersions();
+                auto it = cur.find(nid);
+                if (it != cur.end() && it->second.meshId != UINT32_MAX) {
+                    solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+                }
+                uint32_t meshId = solidRenderer->getIndirectRenderer().addMesh(app, geom, glm::translate(glm::mat4(1.0f), nd.cube.getCenter()));
+                Model3DVersion mv; mv.meshId = meshId; mv.version = nd.node->version;
+                solidRenderer->registerModelVersion(nid, mv);
+            } else {
+                if (waterRenderer) {
+                    // No version tracking for transparent/water meshes currently; just add
+                    uint32_t meshId = waterRenderer->getIndirectRenderer().addMesh(app, geom, glm::translate(glm::mat4(1.0f), nd.cube.getCenter()));
+                }
             }
-            uint32_t meshId = solidRenderer->getIndirectRenderer().addMesh(app, geom, glm::translate(glm::mat4(1.0f), nd.cube.getCenter()));
-            Model3DVersion mv; mv.meshId = meshId; mv.version = nd.node->version;
-            solidRenderer->registerModelVersion(nid, mv);
             ++addedCount;
         });
     }
 
-    for (const auto &nd : erased) {
+    for (const auto &p : erased) {
+        const auto &nd = p.node;
+        Layer layer = p.layer;
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        const auto &cur = solidRenderer->getNodeModelVersions();
-        auto it = cur.find(nid);
-        if (it != cur.end() && it->second.meshId != UINT32_MAX) {
-            solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
-            ++removedCount;
+        if (layer == LAYER_OPAQUE) {
+            const auto &cur = solidRenderer->getNodeModelVersions();
+            auto it = cur.find(nid);
+            if (it != cur.end() && it->second.meshId != UINT32_MAX) {
+                solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+                ++removedCount;
+            }
+        } else {
+            // For transparent/water erased nodes, we can't easily find mesh id without tracking; skip
         }
     }
     if (addedCount > 0 || removedCount > 0) {

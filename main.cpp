@@ -243,14 +243,14 @@ public:
             sceneRenderer->populateFromScene(mainScene.get(), LAYER_TRANSPARENT);
 
             // Register change callbacks so dynamic updates can be picked up
-            mainScene->opaqueLayerChangeHandler.setOnNodeCreated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeCreated(nd); });
-            mainScene->opaqueLayerChangeHandler.setOnNodeUpdated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeUpdated(nd); });
-            mainScene->opaqueLayerChangeHandler.setOnNodeErased([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeErased(nd); });
+            mainScene->opaqueLayerChangeHandler.setOnNodeCreated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeCreated(LAYER_OPAQUE, nd); });
+            mainScene->opaqueLayerChangeHandler.setOnNodeUpdated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeUpdated(LAYER_OPAQUE, nd); });
+            mainScene->opaqueLayerChangeHandler.setOnNodeErased([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeErased(LAYER_OPAQUE, nd); });
 
             // Liquid/transparent handler supports create/update/erase
-            mainScene->transparentLayerChangeHandler.setOnNodeCreated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeCreated(nd); });
-            mainScene->transparentLayerChangeHandler.setOnNodeUpdated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeUpdated(nd); });
-            mainScene->transparentLayerChangeHandler.setOnNodeErased([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeErased(nd); });
+            mainScene->transparentLayerChangeHandler.setOnNodeCreated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeCreated(LAYER_TRANSPARENT, nd); });
+            mainScene->transparentLayerChangeHandler.setOnNodeUpdated([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeUpdated(LAYER_TRANSPARENT, nd); });
+            mainScene->transparentLayerChangeHandler.setOnNodeErased([sr = sceneRenderer.get()](const OctreeNodeData& nd){ sr->onNodeErased(LAYER_TRANSPARENT, nd); });
         }
         // Create octree explorer widget bound to loaded scene
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene.get());
