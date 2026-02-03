@@ -337,13 +337,12 @@ void DebugCubeRenderer::updateInstanceBuffer() {
     instanceData.reserve(activeCubes.size());
     for (const auto& cube : activeCubes) {
         InstanceData inst;
-        // Build transformation matrix from cube center and size
-        // The unit cube goes from (0,0,0) to (1,1,1), so we need to:
-        // 2. Scale by size
-        // 3. Translate to cube center
-        float size = cube.cube.getLengthX();
-        inst.model = glm::translate(glm::mat4(1.0f), cube.cube.getMin())
-                   * glm::scale(glm::mat4(1.0f), glm::vec3(size));
+        // Build transformation matrix from cube min/max and per-axis size
+        // The unit cube goes from (0,0,0) to (1,1,1), so we need to scale by per-axis lengths
+        glm::vec3 min = cube.cube.getMin();
+        glm::vec3 sizes = cube.cube.getLength();
+        inst.model = glm::translate(glm::mat4(1.0f), min)
+                   * glm::scale(glm::mat4(1.0f), sizes);
         inst.color = glm::vec4(cube.color, 1.0f);
         instanceData.push_back(inst);
     }

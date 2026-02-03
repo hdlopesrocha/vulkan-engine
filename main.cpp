@@ -215,6 +215,7 @@ public:
         textureViewer->init(sceneRenderer ? &sceneRenderer->textureArrayManager : nullptr, &materials);
         textureViewer->setOnMaterialChanged([](size_t) {});
         skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
+        // Create settings widget (was missing previously)
         settingsWidget = std::make_shared<SettingsWidget>(settings);
         waterWidget = std::make_shared<WaterWidget>(sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr);
         renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(this, sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr, sceneRenderer ? sceneRenderer->solidRenderer.get() : nullptr);
@@ -362,13 +363,13 @@ public:
                 std::vector<DebugCubeRenderer::CubeWithColor> debugCubes;
                 debugCubes.reserve(widgetCubes.size());
                 for (const auto& wc : widgetCubes) {
-                    debugCubes.push_back({wc.cube, wc.color});
+                    // Convert BoundingCube -> BoundingBox for renderer
+                    debugCubes.push_back({BoundingBox(wc.cube.getMin(), wc.cube.getMax()), wc.color});
                 }
                 sceneRenderer->debugCubeRenderer->setCubes(debugCubes);
                 sceneRenderer->debugCubeRenderer->render(commandBuffer, getMainDescriptorSet());
             }
 
-                sceneRenderer->solidRenderer->endPass(commandBuffer);
 
             // Run water geometry pass offscreen and bind scene textures for post-process
             if (waterEnabled) {

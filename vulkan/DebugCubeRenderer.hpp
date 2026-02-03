@@ -2,7 +2,7 @@
 
 #include "VulkanApp.hpp"
 #include "VertexBufferObject.hpp"
-#include "../math/BoundingCube.hpp"
+#include "../math/BoundingBox.hpp"
 #include <vector>
 #include <glm/glm.hpp>
 
@@ -10,7 +10,7 @@
 class DebugCubeRenderer {
 public:
     struct CubeWithColor {
-        BoundingCube cube;
+        BoundingBox cube;
         glm::vec3 color;
     };
 
