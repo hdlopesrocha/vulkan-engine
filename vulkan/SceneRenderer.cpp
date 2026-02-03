@@ -359,7 +359,7 @@ void SceneRenderer::processPendingNodeChanges() {
     size_t removedCount = 0;
 
     // Debug: raw pending counts
-    fprintf(stderr, "[SceneRenderer::processPendingNodeChanges] raw pending: created=%zu updated=%zu erased=%zu\n", created.size(), updated.size(), erased.size());
+    //fprintf(stderr, "[SceneRenderer::processPendingNodeChanges] raw pending: created=%zu updated=%zu erased=%zu\n", created.size(), updated.size(), erased.size());
 
     // Coalesce created/updated nodes per Layer and NodeID to avoid duplicated GPU updates for the same chunk
     std::unordered_map<Layer, std::unordered_map<NodeID, OctreeNodeData>> uniqueCreated;
@@ -390,6 +390,48 @@ void SceneRenderer::processPendingNodeChanges() {
         fprintf(stderr, "[SceneRenderer::processPendingNodeChanges] unique erased layer=%d count=%zu\n", static_cast<int>(layerPair.first), layerPair.second.size());
     }
 
+    // Helper lambdas to add/update meshes for a (layer, node)
+    auto addMeshForNode = [&](Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), nd.cube.getCenter());
+        if (layer == LAYER_OPAQUE) {
+            uint32_t meshId = solidRenderer->getIndirectRenderer().addMesh(app, geom, model);
+            Model3DVersion mv{meshId, nd.node->version};
+            solidRenderer->registerModelVersion(nid, mv);
+        } else {
+            if (waterRenderer) {
+                uint32_t meshId = waterRenderer->getIndirectRenderer().addMesh(app, geom, model);
+                Model3DVersion mv{meshId, nd.node->version};
+                transparentModelVersions[nid] = mv;
+            }
+        }
+        ++addedCount;
+    };
+
+    auto updateMeshForNode = [&](Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), nd.cube.getCenter());
+        if (layer == LAYER_OPAQUE) {
+            const auto &cur = solidRenderer->getNodeModelVersions();
+            auto it = cur.find(nid);
+            if (it != cur.end() && it->second.meshId != UINT32_MAX) {
+                solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+            }
+            uint32_t meshId = solidRenderer->getIndirectRenderer().addMesh(app, geom, model);
+            Model3DVersion mv{meshId, nd.node->version};
+            solidRenderer->registerModelVersion(nid, mv);
+        } else {
+            if (waterRenderer) {
+                auto it = transparentModelVersions.find(nid);
+                if (it != transparentModelVersions.end() && it->second.meshId != UINT32_MAX) {
+                    waterRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+                }
+                uint32_t meshId = waterRenderer->getIndirectRenderer().addMesh(app, geom, model);
+                Model3DVersion mv{meshId, nd.node->version};
+                transparentModelVersions[nid] = mv;
+            }
+        }
+        ++addedCount;
+    };
+
     // Process created nodes, one requestModel3D per unique NodeID
     for (const auto &layerPair : uniqueCreated) {
         Layer layer = layerPair.first;
@@ -398,19 +440,7 @@ void SceneRenderer::processPendingNodeChanges() {
             if (!sceneRef) continue;
             NodeID nid = kv.first;
             sceneRef->requestModel3D(layer, const_cast<OctreeNodeData&>(nd), [&](const Geometry &geom) {
-                glm::mat4 model = glm::translate(glm::mat4(1.0f), nd.cube.getCenter());
-                if (layer == LAYER_OPAQUE) {
-                    uint32_t meshId = solidRenderer->getIndirectRenderer().addMesh(app, geom, model);
-                    Model3DVersion mv; mv.meshId = meshId; mv.version = nd.node->version;
-                    solidRenderer->registerModelVersion(nid, mv);
-                } else {
-                    if (waterRenderer) {
-                        uint32_t meshId = waterRenderer->getIndirectRenderer().addMesh(app, geom, model);
-                        Model3DVersion mv; mv.meshId = meshId; mv.version = nd.node->version;
-                        transparentModelVersions[nid] = mv;
-                    }
-                }
-                ++addedCount;
+                addMeshForNode(layer, nid, nd, geom);
             });
         }
     }
@@ -423,28 +453,7 @@ void SceneRenderer::processPendingNodeChanges() {
             if (!sceneRef) continue;
             NodeID nid = kv.first;
             sceneRef->requestModel3D(layer, const_cast<OctreeNodeData&>(nd), [&](const Geometry &geom) {
-                glm::mat4 model = glm::translate(glm::mat4(1.0f), nd.cube.getCenter());
-                if (layer == LAYER_OPAQUE) {
-                    const auto &cur = solidRenderer->getNodeModelVersions();
-                    auto it = cur.find(nid);
-                    if (it != cur.end() && it->second.meshId != UINT32_MAX) {
-                        solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
-                    }
-                    uint32_t meshId = solidRenderer->getIndirectRenderer().addMesh(app, geom, model);
-                    Model3DVersion mv; mv.meshId = meshId; mv.version = nd.node->version;
-                    solidRenderer->registerModelVersion(nid, mv);
-                } else {
-                    if (waterRenderer) {
-                        auto it = transparentModelVersions.find(nid);
-                        if (it != transparentModelVersions.end() && it->second.meshId != UINT32_MAX) {
-                            waterRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
-                        }
-                        uint32_t meshId = waterRenderer->getIndirectRenderer().addMesh(app, geom, model);
-                        Model3DVersion mv; mv.meshId = meshId; mv.version = nd.node->version;
-                        transparentModelVersions[nid] = mv;
-                    }
-                }
-                ++addedCount;
+                updateMeshForNode(layer, nid, nd, geom);
             });
         }
     }
