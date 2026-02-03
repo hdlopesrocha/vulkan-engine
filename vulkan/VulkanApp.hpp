@@ -1,8 +1,41 @@
+
+// Standard library includes first
+
 #pragma once
+
+// Standard library includes first
+#include <iostream>
+#include <vector>
+#include <string>
+#include <stdexcept>
+#include <memory>
+#include <chrono>
+#include <cstring>
+
+#include <vulkan/vulkan.h>
 
 #include "vulkan.hpp"
 
 class VulkanApp {
+    public:
+        // Main UBO/sampler descriptor set (allocated from descriptorSetLayout)
+        VkDescriptorSet mainDescriptorSet = VK_NULL_HANDLE;
+        VkDescriptorSet getMainDescriptorSet() const { return mainDescriptorSet; }
+        void createRenderPasses();
+        // Utility: Generate vegetation instances using a compute shader
+        // vertexBuffer: input triangle mesh (positions, 3 floats per vertex)
+        // vertexCount: number of vertices in the buffer
+        // indexBuffer: index buffer (uint32_t indices)
+        // indexCount: number of indices in the buffer
+        // instancesPerTriangle: how many instances to generate per triangle
+        // outputBuffer: will be filled with instance positions (vec3)
+        // Returns: number of generated instances
+        uint32_t generateVegetationInstancesCompute(
+            VkBuffer vertexBuffer, uint32_t vertexCount,
+            VkBuffer indexBuffer, uint32_t indexCount,
+            uint32_t instancesPerTriangle,
+            VkBuffer outputBuffer, uint32_t outputBufferSize, uint32_t seed = 1337);
+        void initWindow(); // Only one declaration, public
     GLFWwindow* window = nullptr;
 
     VkInstance instance = VK_NULL_HANDLE;
@@ -35,6 +68,9 @@ public:
 
 private:
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    public:
+        // Public accessor for command pool (needed for buffer transfers)
+        VkCommandPool getCommandPool() const { return commandPool; }
     // Application main graphics pipeline (owner: app / main.cpp)
     VkPipeline appGraphicsPipeline = VK_NULL_HANDLE;
     // texture and descriptor
@@ -122,8 +158,7 @@ protected:
         void createSyncObjects();
         void createTextureImageView(TextureImage &textureImage);
 
-    private:
-        void initWindow();
+    public:
         void initVulkan();
     void initImGui();
     void cleanupImGui();
@@ -143,6 +178,7 @@ protected:
         VkDescriptorSet createDescriptorSet(VkDescriptorSetLayout layout);
         VkDescriptorSet createMaterialDescriptorSet();
         void updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors);
+        void updateDescriptorSet(VkDescriptorSet &descriptorSet, const std::vector<VkWriteDescriptorSet> &descriptors);
         void registerDescriptorSet(VkDescriptorSet ds) { if (ds != VK_NULL_HANDLE) registeredDescriptorSets.push_back(ds); }
         const std::vector<VkDescriptorSet>& getRegisteredDescriptorSets() const { return registeredDescriptorSets; }
         VkDescriptorSetLayout getMaterialDescriptorSetLayout() const { return materialDescriptorSetLayout; }
@@ -151,8 +187,14 @@ protected:
         VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
 
         // App-owned graphics pipeline accessor
-        void setAppGraphicsPipeline(VkPipeline p) { appGraphicsPipeline = p; }
-        VkPipeline getAppGraphicsPipeline() const { return appGraphicsPipeline; }
+        void setAppGraphicsPipeline(VkPipeline p) { 
+            //printf("[VulkanApp] setAppGraphicsPipeline: pipeline=%p\n", (void*)p);
+            appGraphicsPipeline = p; 
+        }
+        VkPipeline getAppGraphicsPipeline() const { 
+            //printf("[VulkanApp] getAppGraphicsPipeline: pipeline=%p\n", (void*)appGraphicsPipeline);
+            return appGraphicsPipeline; 
+        }
         const std::vector<VkPipeline>& getRegisteredPipelines() const { return registeredPipelines; }
 
         Buffer createVertexBuffer(const std::vector<Vertex> &vertices);
@@ -160,7 +202,20 @@ protected:
         // Create a device-local storage buffer and upload data via staging transfer
         Buffer createDeviceLocalBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
         VkShaderModule createShaderModule(const std::vector<char>& code);
-    VkPipeline createGraphicsPipeline(std::initializer_list<VkPipelineShaderStageCreateInfo> stages, VkVertexInputBindingDescription bindingDescription, std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions, VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL, VkCullModeFlagBits cullMode = VK_CULL_MODE_BACK_BIT, bool depthWrite = true, bool colorWrite = true, VkCompareOp depthCompare = VK_COMPARE_OP_LESS);
+    // Refactored: Accepts set layouts and optional push constant range, returns pipeline and layout
+    std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
+        std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
+        const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
+        std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions,
+        const std::vector<VkDescriptorSetLayout>& setLayouts = {},
+        const VkPushConstantRange* pushConstantRange = nullptr,
+        VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL,
+        VkCullModeFlagBits cullMode = VK_CULL_MODE_BACK_BIT,
+        bool depthWrite = true,
+        bool colorWrite = true,
+        VkCompareOp depthCompare = VK_COMPARE_OP_LESS,
+        VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        VkRenderPass renderPassOverride = VK_NULL_HANDLE);
         std::vector<VkCommandBuffer> createCommandBuffers();
 
         VkDevice getDevice() const;
@@ -203,8 +258,11 @@ protected:
     void requestClose();
         virtual void setup() = 0;
         virtual void update(float deltaTime) = 0;
+        virtual void preRenderPass(VkCommandBuffer &commandBuffer) {} // Called after vkBeginCommandBuffer but before vkCmdBeginRenderPass
         virtual void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) = 0;
         virtual void clean() = 0;
+        // Called after swapchain recreation so derived apps can resize their offscreen resources
+        virtual void onSwapchainResized(uint32_t /*width*/, uint32_t /*height*/) {}
         // Called after a frame has been submitted/presented. Derived apps may override.
         virtual void postSubmit();
 

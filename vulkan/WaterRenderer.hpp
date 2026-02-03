@@ -110,10 +110,16 @@ public:
     VkImageView getSceneDepthView(uint32_t frameIndex) const { return sceneDepthImageViews[frameIndex]; }
     VkFramebuffer getSceneFramebuffer(uint32_t frameIndex) const { return sceneFramebuffers[frameIndex]; }
     VkRenderPass getSceneRenderPass() const { return sceneRenderPass; }
+        void beginScenePass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear);
+        void endScenePass(VkCommandBuffer cmd);
 
     // Update parameters
     void setParams(const WaterParams& params) { this->params = params; }
     WaterParams& getParams() { return params; }
+
+    // Time management for water animation
+    void advanceTime(float dt) { params.time += dt; }
+    float getTime() const { return params.time; }
     
     // Check if post-process pipeline is ready
     bool isPostProcessReady() const { return waterPostProcessPipeline != VK_NULL_HANDLE; }

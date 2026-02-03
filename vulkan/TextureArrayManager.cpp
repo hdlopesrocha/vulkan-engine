@@ -5,9 +5,10 @@
 #include <backends/imgui_impl_vulkan.h>
 #include "../vulkan/EditableTexture.hpp"
 #include <cmath>
+#include <stb/stb_image.h>
 
 // Convert in-place 8-bit RGBA sRGB values to linear (also 8-bit)
-static void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount) {
+void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount) {
     for (size_t i = 0; i < pixelCount; ++i) {
         unsigned char* p = data + i * 4;
         for (int c = 0; c < 3; ++c) {
@@ -25,6 +26,21 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h) {
 	layerAmount = layers;
 	width = w;
 	height = h;
+}
+
+void TextureArrayManager::notifyAllocationListeners() {
+	std::vector<std::function<void()>> listenersCopy;
+	listenersCopy.reserve(allocationListeners.size());
+	for (auto &l : allocationListeners) if (l) listenersCopy.push_back(l);
+	for (size_t i = 0; i < listenersCopy.size(); ++i) {
+		try {
+			listenersCopy[i]();
+		} catch (const std::exception &e) {
+			fprintf(stderr, "[TextureArrayManager] allocation listener %zu threw std::exception: %s\n", i, e.what());
+		} catch (...) {
+			fprintf(stderr, "[TextureArrayManager] allocation listener %zu threw unknown exception\n", i);
+		}
+	}
 }
 
 // Helper to cleanup a TextureImage if it already has resources
@@ -76,6 +92,10 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 	for (auto v : bumpLayerViews) if (v != VK_NULL_HANDLE) vkDestroyImageView(device, v, nullptr);
 	albedoLayerViews.clear(); normalLayerViews.clear(); bumpLayerViews.clear();
 	albedoImTextures.clear(); normalImTextures.clear(); bumpImTextures.clear();
+	// bump version to indicate array resources were destroyed
+	++this->version;
+	// notify listeners that arrays were destroyed
+	notifyAllocationListeners();
 }
 
 void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, VulkanApp* app) {
@@ -179,6 +199,10 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	// initialize layer initialized flags
 	layerInitialized.clear();
 	layerInitialized.resize(layerAmount, 0);
+	// bump version so users can detect reallocation of GPU resources
+	++this->version;
+	// notify listeners that arrays changed
+	notifyAllocationListeners();
 }
 
 // Nearest-neighbor resize (RGBA8)
@@ -196,7 +220,7 @@ static unsigned char* resizeNearest(const unsigned char* src, int srcW, int srcH
 	return dst;
 }
 
-uint TextureArrayManager::load(char* albedoFile, char* normalFile, char* bumpFile) {
+uint TextureArrayManager::load(const char* albedoFile, const char* normalFile, const char* bumpFile) {
 	if (!app) throw std::runtime_error("TextureArrayManager::load: manager has no VulkanApp (call allocate(..., app) first)");
 	if (layerAmount == 0) throw std::runtime_error("TextureArrayManager::load: layerAmount == 0");
 	if (currentLayer >= layerAmount) throw std::runtime_error("TextureArrayManager::load: currentLayer >= layerAmount");
@@ -204,7 +228,7 @@ uint TextureArrayManager::load(char* albedoFile, char* normalFile, char* bumpFil
 	VulkanApp* a = this->app;
 	VkDevice device = a->getDevice();
 
-	struct Img { char* path; TextureImage* dstImage; VkFormat format; bool srgb; } imgs[3] = {
+	struct Img { const char* path; TextureImage* dstImage; VkFormat format; bool srgb; } imgs[3] = {
 		{ albedoFile, &albedoArray, VK_FORMAT_R8G8B8A8_UNORM, true },
 		{ normalFile, &normalArray, VK_FORMAT_R8G8B8A8_UNORM, false },
 		{ bumpFile,   &bumpArray,   VK_FORMAT_R8G8B8A8_UNORM, false }
@@ -311,6 +335,23 @@ uint TextureArrayManager::load(char* albedoFile, char* normalFile, char* bumpFil
 	// increment current layer
 	setLayerInitialized(currentLayer, true);
 	return currentLayer++;
+}
+
+int TextureArrayManager::addAllocationListener(std::function<void()> cb) {	// find an empty slot or push
+	for (size_t i = 0; i < allocationListeners.size(); ++i) {
+		if (!allocationListeners[i]) {
+			allocationListeners[i] = cb;
+			return static_cast<int>(i);
+		}
+	}
+	allocationListeners.push_back(cb);
+	return static_cast<int>(allocationListeners.size() - 1);
+}
+
+void TextureArrayManager::removeAllocationListener(int listenerId) {
+	if (listenerId < 0) return;
+	auto idx = static_cast<size_t>(listenerId);
+	if (idx < allocationListeners.size()) allocationListeners[idx] = {};
 }
 
 uint TextureArrayManager::create() {

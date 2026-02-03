@@ -14,8 +14,7 @@
 #include <array>
 #include <algorithm>
 #include <cmath>
-// stb_image for texture loading
-#include <stb/stb_image.h>
+// stb_image: implementation is compiled in one translation unit (VulkanApp.cpp). Do not include the header here to avoid implementation duplication. // use <stb/stb_image.h> in .cpp files that need it.
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>

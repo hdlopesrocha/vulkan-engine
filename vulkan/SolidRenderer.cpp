@@ -12,6 +12,187 @@ void SolidRenderer::init(VulkanApp* app_) {
     indirectRenderer.init(app);
 }
 
+void SolidRenderer::createRenderTargets(uint32_t width, uint32_t height) {
+    if (!app) return;
+    renderWidth = width;
+    renderHeight = height;
+    VkDevice device = app->getDevice();
+
+    auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect, VkImage& image, VkDeviceMemory& memory, VkImageView& view) {
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent.width = width;
+        imageInfo.extent.height = height;
+        imageInfo.extent.depth = 1;
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.format = format;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.usage = usage;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create solid image!");
+        }
+
+        VkMemoryRequirements memReq;
+        vkGetImageMemoryRequirements(device, image, &memReq);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memReq.size;
+        allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to allocate solid image memory!");
+        }
+
+        vkBindImageMemory(device, image, memory, 0);
+
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = format;
+        viewInfo.subresourceRange.aspectMask = aspect;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+
+        if (vkCreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create solid image view!");
+        }
+    };
+
+    // Create simple render pass for solid offscreen (color+depth)
+    VkAttachmentDescription colorAttachment{};
+    colorAttachment.format = app->getSwapchainImageFormat();
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkAttachmentDescription depthAttachment{};
+    depthAttachment.format = VK_FORMAT_D32_SFLOAT;
+    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorRef;
+    subpass.pDepthStencilAttachment = &depthRef;
+
+    std::array<VkAttachmentDescription, 2> attachments{colorAttachment, depthAttachment};
+
+    VkRenderPassCreateInfo rpInfo{};
+    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    rpInfo.pAttachments = attachments.data();
+    rpInfo.subpassCount = 1;
+    rpInfo.pSubpasses = &subpass;
+
+    if (vkCreateRenderPass(device, &rpInfo, nullptr, &solidRenderPass) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create solid render pass!");
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        createImage(app->getSwapchainImageFormat(), VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                    solidColorImages[i], solidColorMemories[i], solidColorImageViews[i]);
+        createImage(VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
+                    solidDepthImages[i], solidDepthMemories[i], solidDepthImageViews[i]);
+
+        std::array<VkImageView, 2> attachmentsViews = {solidColorImageViews[i], solidDepthImageViews[i]};
+        VkFramebufferCreateInfo fbInfo{};
+        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbInfo.renderPass = solidRenderPass;
+        fbInfo.attachmentCount = static_cast<uint32_t>(attachmentsViews.size());
+        fbInfo.pAttachments = attachmentsViews.data();
+        fbInfo.width = width;
+        fbInfo.height = height;
+        fbInfo.layers = 1;
+        if (vkCreateFramebuffer(device, &fbInfo, nullptr, &solidFramebuffers[i]) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create solid framebuffer!");
+        }
+    }
+}
+
+void SolidRenderer::destroyRenderTargets() {
+    if (!app) return;
+    VkDevice device = app->getDevice();
+    for (int i = 0; i < 2; ++i) {
+        if (solidFramebuffers[i] != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(device, solidFramebuffers[i], nullptr);
+            solidFramebuffers[i] = VK_NULL_HANDLE;
+        }
+        if (solidColorImageViews[i] != VK_NULL_HANDLE) {
+            vkDestroyImageView(device, solidColorImageViews[i], nullptr);
+            solidColorImageViews[i] = VK_NULL_HANDLE;
+        }
+        if (solidColorImages[i] != VK_NULL_HANDLE) {
+            vkDestroyImage(device, solidColorImages[i], nullptr);
+            solidColorImages[i] = VK_NULL_HANDLE;
+        }
+        if (solidColorMemories[i] != VK_NULL_HANDLE) {
+            vkFreeMemory(device, solidColorMemories[i], nullptr);
+            solidColorMemories[i] = VK_NULL_HANDLE;
+        }
+        if (solidDepthImageViews[i] != VK_NULL_HANDLE) {
+            vkDestroyImageView(device, solidDepthImageViews[i], nullptr);
+            solidDepthImageViews[i] = VK_NULL_HANDLE;
+        }
+        if (solidDepthImages[i] != VK_NULL_HANDLE) {
+            vkDestroyImage(device, solidDepthImages[i], nullptr);
+            solidDepthImages[i] = VK_NULL_HANDLE;
+        }
+        if (solidDepthMemories[i] != VK_NULL_HANDLE) {
+            vkFreeMemory(device, solidDepthMemories[i], nullptr);
+            solidDepthMemories[i] = VK_NULL_HANDLE;
+        }
+    }
+    if (solidRenderPass != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(device, solidRenderPass, nullptr);
+        solidRenderPass = VK_NULL_HANDLE;
+    }
+}
+
+void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear) {
+    if (cmd == VK_NULL_HANDLE || solidRenderPass == VK_NULL_HANDLE || solidFramebuffers[frameIndex] == VK_NULL_HANDLE) {
+        fprintf(stderr, "[SolidRenderer::beginPass] Missing cmd/renderPass/framebuffer, skipping.\n");
+        return;
+    }
+    std::array<VkClearValue, 2> clears{colorClear, depthClear};
+    VkRenderPassBeginInfo rpInfo{};
+    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpInfo.renderPass = solidRenderPass;
+    rpInfo.framebuffer = solidFramebuffers[frameIndex];
+    rpInfo.renderArea.offset = {0, 0};
+    rpInfo.renderArea.extent = {renderWidth, renderHeight};
+    rpInfo.clearValueCount = static_cast<uint32_t>(clears.size());
+    rpInfo.pClearValues = clears.data();
+    vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
+}
+
+void SolidRenderer::endPass(VkCommandBuffer cmd) {
+    if (cmd == VK_NULL_HANDLE) return;
+    vkCmdEndRenderPass(cmd);
+}
+
 void SolidRenderer::createPipelines() {
     if (!app) return;
 
@@ -63,7 +244,7 @@ void SolidRenderer::createPipelines() {
         },
         setLayouts,
         &pushConstantRange,
-        VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, true, VK_COMPARE_OP_LESS_OR_EQUAL
+        VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, solidRenderPass
     );
     graphicsPipeline = pipeline;
     graphicsPipelineLayout = layout;
@@ -90,7 +271,7 @@ void SolidRenderer::createPipelines() {
         },
         setLayouts,
         &pushConstantRange,
-        VK_POLYGON_MODE_LINE, VK_CULL_MODE_BACK_BIT, true, true, VK_COMPARE_OP_LESS_OR_EQUAL
+        VK_POLYGON_MODE_LINE, VK_CULL_MODE_BACK_BIT, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, solidRenderPass
     );
     graphicsPipelineWire = wirePipeline;
     graphicsPipelineWireLayout = wireLayout;
@@ -112,7 +293,7 @@ void SolidRenderer::createPipelines() {
         },
         setLayouts,
         &pushConstantRange,
-        VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, false
+        VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, false, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, solidRenderPass
     );
     depthPrePassPipeline = depthPipeline;
     depthPrePassPipelineLayout = depthLayout;

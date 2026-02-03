@@ -1,3 +1,17 @@
+#include <cstddef>
+#include <functional>
+#include <vector>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Convert in-place 8-bit RGBA sRGB values to linear (also 8-bit)
+void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount);
+
+#ifdef __cplusplus
+}
+#endif
 // TextureArrayManager declaration
 #pragma once
 
@@ -37,21 +51,26 @@ public:
     TextureArrayManager() = default;
     TextureArrayManager(uint32_t layers, uint32_t w, uint32_t h)
         : layerAmount(layers), width(w), height(h) {}
+    // Simple version counter incremented whenever GPU resources are (re)allocated
+    uint32_t version = 0;
+    uint32_t getVersion() const { return version; }
+
+    // Register a callback invoked when GPU arrays are (re)allocated or destroyed.
+    // Returns a listener id (>=0) that can be used to remove the listener.
+    int addAllocationListener(std::function<void()> cb);
+    void removeAllocationListener(int listenerId);
+
     // Allocate host-only metadata (no GPU resources)
     void allocate(uint32_t layers, uint32_t w, uint32_t h);
 
-    // Allocate GPU image arrays via the provided VulkanApp
-    void allocate(uint32_t layers, uint32_t w, uint32_t h, class VulkanApp* app);
-
-    // Destroy GPU resources (images, views, memory, samplers)
-    void destroy(class VulkanApp* app);
-    // Load a triple of images into the current layer and increment the layer counter
-    uint load(char* albedoFile, char* normalFile, char* bumpFile);
-    // Create an empty (zeroed) triple at the current layer for later editing, then increment layer counter
-    uint create();
+    // Public initializer that completes GPU resource allocation using an app
+    void initialize(class VulkanApp* app) { allocate(layerAmount, width, height, app); }
 
     // Return an ImGui texture handle for a given array layer and map (0=albedo,1=normal,2=bump)
     ImTextureID getImTexture(size_t layer, int map);
+
+    // Load a triple of images into the current layer and increment the layer counter
+    uint load(const char* albedoFile, const char* normalFile, const char* bumpFile);
 
     // Update a specific array layer from an EditableTexture (copies image -> array layer)
     void updateLayerFromEditable(uint32_t layer, const class EditableTexture& tex);
@@ -61,4 +80,19 @@ public:
     // Query/set layer initialized state
     bool isLayerInitialized(uint32_t layer) const;
     void setLayerInitialized(uint32_t layer, bool v=true);
+
+private:
+    // Listeners called when allocate()/destroy() change GPU resources
+    std::vector<std::function<void()>> allocationListeners;
+
+    // Notify registered listeners safely (copies callbacks and catches exceptions)
+    void notifyAllocationListeners();
+
+    // Destroy GPU resources (images, views, memory, samplers)
+    void destroy(class VulkanApp* app);
+    // Create an empty (zeroed) triple at the current layer for later editing, then increment layer counter
+    uint create();
+
+    // Allocate GPU image arrays via the provided VulkanApp
+    void allocate(uint32_t layers, uint32_t w, uint32_t h, class VulkanApp* app);
 };

@@ -6,18 +6,14 @@ class ShadowRenderer {
 public:
     ShadowRenderer(VulkanApp* app, uint32_t shadowMapSize = 2048);
     ~ShadowRenderer();
-    
     void init();
     void cleanup();
-    
     // Render shadow pass for a collection of objects
     void beginShadowPass(VkCommandBuffer commandBuffer, const glm::mat4& lightSpaceMatrix);
     void endShadowPass(VkCommandBuffer commandBuffer);
-    
     // Render a single object to shadow map
     void renderObject(VkCommandBuffer commandBuffer, 
                       const VertexBufferObject& vbo, VkDescriptorSet descriptorSet);
-    
     // Getters for resources
     VkImageView getShadowMapView() const { return shadowMapView; }
     VkSampler getShadowMapSampler() const { return shadowMapSampler; }
@@ -26,11 +22,13 @@ public:
     VkDescriptorSetLayout getShadowDescriptorSetLayout() const;
     // debug: read back depth image to host and write PGM
     void readbackShadowDepth();
-    
+    // Public getters for internal Vulkan handles
+    VkRenderPass getShadowRenderPass() const { return shadowRenderPass; }
+    VkFramebuffer getShadowFramebuffer() const { return shadowFramebuffer; }
+    // Public getters for internal Vulkan handles
 private:
     VulkanApp* vulkanApp;
     uint32_t shadowMapSize;
-    
     // Shadow map resources
     VkImage shadowMapImage = VK_NULL_HANDLE;
     VkDeviceMemory shadowMapMemory = VK_NULL_HANDLE;

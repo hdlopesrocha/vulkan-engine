@@ -95,6 +95,8 @@ void ShadowRenderer::createShadowMap() {
         throw std::runtime_error("failed to create shadow map image!");
     }
     
+    fprintf(stderr, "[ShadowRenderer] shadowMapImage = %p\n", (void*)shadowMapImage);
+    
     VkMemoryRequirements memRequirements;
     vkGetImageMemoryRequirements(device, shadowMapImage, &memRequirements);
     
@@ -305,6 +307,7 @@ void ShadowRenderer::createShadowPipeline() {
     // ShadowRenderer should reuse the application's main graphics pipeline created by the app
     // (main.cpp creates the pipeline and registers it via setAppGraphicsPipeline()).
     shadowPipeline = vulkanApp->getAppGraphicsPipeline();
+    printf("[ShadowRenderer] createShadowPipeline: shadowPipeline=%p\n", (void*)shadowPipeline);
     // If the app hasn't set the pipeline yet, leave shadowPipeline as VK_NULL_HANDLE.
     // beginShadowPass will bind the app pipeline directly to avoid double ownership.
 }
@@ -313,47 +316,56 @@ void ShadowRenderer::beginShadowPass(VkCommandBuffer commandBuffer, const glm::m
     currentLightSpaceMatrix = lightSpaceMatrix;
     
     // Transition shadow map from READ_ONLY to DEPTH_STENCIL_ATTACHMENT_OPTIMAL before shadow pass
-    VkImageMemoryBarrier barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = shadowMapImage;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    // Use the SAME command buffer to record the barrier so it executes in sequence with the render pass
+    if (shadowMapImage != VK_NULL_HANDLE) {
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = shadowMapImage;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(
+            commandBuffer,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            1, &barrier
+        );
+    } else {
+        fprintf(stderr, "[ShadowRenderer] Warning: shadowMapImage is VK_NULL_HANDLE in beginShadowPass, skipping barrier.\n");
+    }
     
-    vkCmdPipelineBarrier(
-        commandBuffer,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-        0,
-        0, nullptr,
-        0, nullptr,
-        1, &barrier
-    );
-    
-    // Begin shadow render pass
+    // Begin shadow render pass only if both renderPass and framebuffer are valid
+    if (shadowRenderPass == VK_NULL_HANDLE || shadowFramebuffer == VK_NULL_HANDLE) {
+        fprintf(stderr, "[ShadowRenderer] Error: shadowRenderPass or shadowFramebuffer is VK_NULL_HANDLE in beginShadowPass, skipping render pass.\n");
+        return;
+    }
+
     VkRenderPassBeginInfo shadowRenderPassInfo{};
     shadowRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     shadowRenderPassInfo.renderPass = shadowRenderPass;
     shadowRenderPassInfo.framebuffer = shadowFramebuffer;
     shadowRenderPassInfo.renderArea.offset = {0, 0};
     shadowRenderPassInfo.renderArea.extent = {shadowMapSize, shadowMapSize};
-    
+
     VkClearValue clearValues[2] = {};
     clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
     clearValues[1].depthStencil = {1.0f, 0};
     shadowRenderPassInfo.clearValueCount = 2;
     shadowRenderPassInfo.pClearValues = clearValues;
-    
+
     vkCmdBeginRenderPass(commandBuffer, &shadowRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    
+
     // Set viewport and scissor for shadow map
     VkViewport shadowViewport{};
     shadowViewport.x = 0.0f;
@@ -363,20 +375,21 @@ void ShadowRenderer::beginShadowPass(VkCommandBuffer commandBuffer, const glm::m
     shadowViewport.minDepth = 0.0f;
     shadowViewport.maxDepth = 1.0f;
     vkCmdSetViewport(commandBuffer, 0, 1, &shadowViewport);
-    
+
     VkRect2D shadowScissor{};
     shadowScissor.offset = {0, 0};
     shadowScissor.extent = {shadowMapSize, shadowMapSize};
     vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
-    
+
     // Use negative depth bias to pull shadow map closer, filling gaps at edges
     vkCmdSetDepthBias(commandBuffer, -1.5f, 0.0f, -2.0f);
-    
+
     // Bind the shadow pipeline
     // Bind the app's main graphics pipeline (preferred) or fall back to any
     // locally stored pipeline handle.
     VkPipeline p = vulkanApp->getAppGraphicsPipeline();
     if (p == VK_NULL_HANDLE) p = shadowPipeline;
+    //printf("[ShadowRenderer] beginShadowPass: getAppGraphicsPipeline()=%p, shadowPipeline=%p, binding p=%p\n", (void*)vulkanApp->getAppGraphicsPipeline(), (void*)shadowPipeline, (void*)p);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
 }
 
@@ -385,12 +398,14 @@ void ShadowRenderer::renderObject(VkCommandBuffer commandBuffer,
 
     // Bind descriptor sets: material set (set 0) and per-instance set (set 1) if available.
     VkDescriptorSet matDs = vulkanApp->getMaterialDescriptorSet();
+    VkPipelineLayout layout = vulkanApp->getPipelineLayout();
+    if (shadowPipelineLayout != VK_NULL_HANDLE) layout = shadowPipelineLayout;
     if (matDs != VK_NULL_HANDLE) {
         VkDescriptorSet sets[2] = { matDs, descriptorSet };
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkanApp->getPipelineLayout(), 0, 2, sets, 0, nullptr);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 2, sets, 0, nullptr);
     } else {
         // Fallback: bind only the provided instance set at set 0 for compatibility
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkanApp->getPipelineLayout(), 0, 1, &descriptorSet, 0, nullptr);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptorSet, 0, nullptr);
     }
     
     // Bind vertex/index buffers
@@ -404,33 +419,11 @@ void ShadowRenderer::renderObject(VkCommandBuffer commandBuffer,
 }
 
 void ShadowRenderer::endShadowPass(VkCommandBuffer commandBuffer) {
+    // End the shadow render pass recorded on the provided command buffer
+    // The render pass finalLayout (DEPTH_STENCIL_READ_ONLY_OPTIMAL) automatically
+    // transitions the shadow map to the correct layout for shader sampling.
+    // No additional barrier is needed here.
     vkCmdEndRenderPass(commandBuffer);
-    
-    // Transition shadow map from DEPTH_STENCIL_ATTACHMENT_OPTIMAL to READ_ONLY for main pass sampling
-    VkImageMemoryBarrier barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = shadowMapImage;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    
-    vkCmdPipelineBarrier(
-        commandBuffer,
-        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0,
-        0, nullptr,
-        0, nullptr,
-        1, &barrier
-    );
 }
 
 void ShadowRenderer::readbackShadowDepth() {
