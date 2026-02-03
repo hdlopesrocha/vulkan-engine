@@ -18,7 +18,7 @@ struct ShapeArgs {
     glm::vec4 translate;
     glm::vec4 scale;
     Simplifier &simplifier;
-    OctreeChangeHandler &changeHandler; // reference (non-null)
+    const OctreeChangeHandler &changeHandler; // reference (non-null)
     float minSize;
 
     ShapeArgs(
@@ -29,7 +29,7 @@ struct ShapeArgs {
         glm::vec4 translate,
         glm::vec4 scale,
         Simplifier &simplifier,
-        OctreeChangeHandler &changeHandler,
+        const OctreeChangeHandler &changeHandler,
         float minSize
     );
 };
