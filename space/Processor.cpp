@@ -13,7 +13,8 @@ bool Processor::test(const Octree &tree, OctreeNodeData &params) {
         return false;
     }
     else {	
-        if(params.node->isLeaf()) {
+        // Set context for leaf nodes OR chunk nodes (chunks are tessellation boundaries)
+        if(params.node->isLeaf() || params.node->isChunk()) {
             params.context = params.node;
         }
         return params.node->getType() == SpaceType::Surface;

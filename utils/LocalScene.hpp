@@ -1,3 +1,5 @@
+#pragma once
+
 #include "Scene.hpp"
 #include "../space/Octree.hpp"
 #include "../space/OctreeVisibilityChecker.hpp"
@@ -10,6 +12,9 @@
 class LocalScene : public Scene {
 
     Octree opaqueOctree;
+public:
+    Octree& getOpaqueOctree() { return opaqueOctree; }
+    const Octree& getOpaqueOctree() const { return opaqueOctree; }
     Octree transparentOctree;
     ThreadPool threadPool;
 
@@ -67,7 +72,7 @@ public:
         std::cout << "LocalScene::loadScene() " << std::endl;
         auto startTime = std::chrono::steady_clock::now();
 
-        callback.loadScene(opaqueOctree, transparentOctree);
+        callback.loadScene(opaqueOctree,opaqueLayerChangeHandler, transparentOctree, transparentLayerChangeHandler);
 
         auto endTime = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(endTime - startTime).count();

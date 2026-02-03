@@ -13,13 +13,14 @@ ChildBlock * ChildBlock::init() {
     return this;
 }
 
-void ChildBlock::clear(OctreeAllocator &allocator, OctreeChangeHandler * handler) {
+void ChildBlock::clear(OctreeAllocator &allocator, OctreeChangeHandler * handler, const BoundingCube& cube) {
     OctreeNode * childNodes[8] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
     allocator.get(childNodes, children);
     for(int i=0; i < 8 ; ++i) {
         OctreeNode * child = childNodes[i];
         if(child != NULL) {
-            child->clear(allocator, handler, NULL);
+            BoundingCube childCube = cube.getChild(i);
+            child->clear(allocator, handler, NULL, childCube);
             allocator.deallocate(child); // libertar nó
         }
     }

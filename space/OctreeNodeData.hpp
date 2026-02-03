@@ -17,3 +17,5 @@ public:
     OctreeNodeData(const OctreeNodeData &data);
     OctreeNodeData();
 };
+
+using NodeDataCallback = std::function<void(const OctreeNodeData&)>;

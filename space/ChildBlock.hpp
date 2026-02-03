@@ -19,7 +19,7 @@ struct ChildBlock {
     uint children[8];
     ChildBlock();
     ChildBlock * init();
-    void clear(OctreeAllocator &allocator, OctreeChangeHandler * handler);
+    void clear(OctreeAllocator &allocator, OctreeChangeHandler * handler, const BoundingCube& cube);
     bool isEmpty();
     void set(uint i, OctreeNode * node, OctreeAllocator &allocator);
     OctreeNode * get(uint i, OctreeAllocator &allocator);

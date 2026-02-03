@@ -1,6 +1,8 @@
 #include "OctreeNode.hpp"
 #include "OctreeNodeCubeSerialized.hpp"
 #include "OctreeAllocator.hpp"
+#include "OctreeNodeData.hpp"
+#include "OctreeChangeHandler.hpp"
 #include <cmath>
 #include <cstring>
 
@@ -23,7 +25,7 @@ OctreeNode * OctreeNode::init(Vertex vertex) {
 	this->bits = 0x0;
 	this->setLeaf(false);
 	this->setSimplified(false);
-	this->setDirty(true);
+	this->setDirty(false);
 	this->setChunk(false);
 	this->setType(SpaceType::Empty);
 	this->vertex = vertex;
@@ -74,14 +76,17 @@ OctreeNode::~OctreeNode() {
 
 }
 
-ChildBlock * OctreeNode::clear(OctreeAllocator &allocator, OctreeChangeHandler * handler, ChildBlock * block) {
-	handler->erase(this);
+ChildBlock * OctreeNode::clear(OctreeAllocator &allocator, OctreeChangeHandler * handler, ChildBlock * block, const BoundingCube& cube) {
+	if (handler) {
+	    OctreeNodeData data(0, this, cube, ContainmentType::Intersects, nullptr);
+	    handler->erase(data);
+	}
 	if(this->blockId != UINT_MAX) {
 		if(block == NULL) {
 			block = getBlock(allocator);
 		}
 		if(block!=NULL) {	
-			block->clear(allocator, handler);
+			block->clear(allocator, handler, cube);
 			allocator.childAllocator.deallocate(block);
 			this->blockId = UINT_MAX;
 			block = NULL;

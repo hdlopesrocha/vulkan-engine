@@ -6,21 +6,20 @@ LiquidSpaceChangeHandler::LiquidSpaceChangeHandler(
     this->liquidInfo = liquidInfo;
 };
 
-void LiquidSpaceChangeHandler::create(OctreeNode* node) {
-
-};
-
-void LiquidSpaceChangeHandler::update(OctreeNode* node) {
+void LiquidSpaceChangeHandler::create(OctreeNodeData& nodeData) {
     if (onNodeUpdated) {
-        onNodeUpdated(node);
+        onNodeUpdated(nodeData);
     }
 };
 
-void LiquidSpaceChangeHandler::erase(OctreeNode* node) {
-    if (node != NULL) {
-        // liquidInfo->erase(node);
-        if (onNodeErased) {
-            onNodeErased(node);
-        }
+void LiquidSpaceChangeHandler::update(OctreeNodeData& nodeData) {
+    if (onNodeUpdated) {
+        onNodeUpdated(nodeData);
+    }
+};
+
+void LiquidSpaceChangeHandler::erase(OctreeNodeData& nodeData) {
+    if (onNodeErased) {
+        onNodeErased(nodeData);
     }
 };
