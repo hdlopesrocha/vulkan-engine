@@ -15,7 +15,7 @@ layout(location = 2) out vec2 fragTexCoord;
 layout(location = 3) out vec4 fragPosClip;  // clip-space position for depth lookup
 layout(location = 4) out vec3 fragDebug;   // debug visual (displacement)
 
-layout(set = 1, binding = 0) uniform UniformBufferObject {
+layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 viewProjection;
     vec4 viewPos;
     vec4 lightDir;
@@ -29,8 +29,8 @@ layout(set = 1, binding = 0) uniform UniformBufferObject {
     vec4 passParams;   // x=time, y=tessEnabled, z=waveScale, w=noiseScale
 } ubo;
 
-// Water-specific parameters (set 1, binding = 7) - same layout as the post-process shader
-layout(set = 1, binding = 7) uniform WaterParamsUBO {
+// Water-specific parameters (set 0, binding = 7) - same layout as the post-process shader
+layout(set = 0, binding = 7) uniform WaterParamsUBO {
     vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=foamDepthThreshold
     vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
     vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=shoreStrength, w=shoreFalloff

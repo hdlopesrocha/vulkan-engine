@@ -1,6 +1,6 @@
 // UBO layout must match the CPU-side UniformObject (std140-like):
 // mat4 viewProjection; vec4 viewPos; vec4 lightDir; vec4 lightColor;
-layout(set = 1, binding = 0) uniform UBO {
+layout(set = 0, binding = 0) uniform UBO {
     mat4 viewProjection;
     vec4 viewPos;
     vec4 lightDir;
@@ -28,9 +28,14 @@ layout(std430, set = 0, binding = 5) readonly buffer Materials {
     MaterialGPU materials[];
 };
 
+// Per-draw model matrices for indirect rendering
+layout(std430, set = 0, binding = 8) readonly buffer Models {
+    mat4 models[];
+};
+
 // Dedicated UBO for skysphere parameters. Bound separately so sky shaders
 // can read a small, focused uniform block instead of the large scene UBO.
-layout(set = 1, binding = 6) uniform SkyUBO {
+layout(set = 0, binding = 6) uniform SkyUBO {
     vec4 skyHorizon; // rgb = horizon color, a = unused
     vec4 skyZenith;  // rgb = zenith color, a = unused
     vec4 skyParams;  // x = warmth, y = exponent, z = sunFlare, w = skyMode (0=gradient, 1=grid)

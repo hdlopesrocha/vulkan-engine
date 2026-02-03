@@ -105,8 +105,12 @@ void main() {
     if (idx < modelsBuf.models.length()) model = modelsBuf.models[idx];
     mat4 mvp = pc.viewProj * model;
 
-    if (!aabbVisible(mvp, minp, maxp)) return;
+    // TEMP DEBUG: bypass culling to see if meshes render at all
+    // if (!aabbVisible(mvp, minp, maxp)) return;
 
     uint dst = atomicAdd(count, 1);
-    outCmds.cmds[dst] = inCmds.cmds[idx];
+    // Keep the original firstInstance (idx) so shader can look up correct model matrix
+    DrawCmd cmd = inCmds.cmds[idx];
+    cmd.firstInstance = idx;  // Use input index for model lookup
+    outCmds.cmds[dst] = cmd;
 }

@@ -1,0 +1,61 @@
+#version 450
+
+// vegetation_instance_gen.comp: Generate vegetation instance positions from indexed geometry
+// layout: binding 0 = vertex buffer (vec3 position[]), binding 1 = index buffer (uint[]), binding 2 = output instance buffer (vec4[] or vec3[])
+// push constants: instancesPerTriangle, vertexCount, indexCount, seed, pad
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer Vertices {
+    vec3 positions[];
+};
+layout(std430, binding = 1) readonly buffer Indices {
+    uint indices[];
+};
+layout(std430, binding = 2) writeonly buffer Instances {
+    vec4 outInstances[]; // Use vec4 for alignment, can store position.xyz, .w unused
+};
+
+layout(push_constant) uniform Push {
+    uint instancesPerTriangle;
+    uint vertexCount;
+    uint indexCount;
+    uint seed;
+    uint pad;
+} push;
+
+// Simple hash for random float
+float rand(inout uint state) {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return float(state & 0x00FFFFFFu) / float(0x01000000u);
+}
+
+void main() {
+    uint tri = gl_GlobalInvocationID.x;
+    uint triBase = tri * 3;
+    if (triBase + 2 >= push.indexCount) return;
+
+    // Get triangle vertex indices from index buffer
+    uint i0 = indices[triBase + 0];
+    uint i1 = indices[triBase + 1];
+    uint i2 = indices[triBase + 2];
+    if (i0 >= push.vertexCount || i1 >= push.vertexCount || i2 >= push.vertexCount) return;
+
+    vec3 v0 = positions[i0];
+    vec3 v1 = positions[i1];
+    vec3 v2 = positions[i2];
+
+    // For each instance to generate on this triangle
+    for (uint i = 0; i < push.instancesPerTriangle; ++i) {
+        // Barycentric random point
+        uint state = push.seed ^ (tri * 73856093u) ^ (i * 19349663u);
+        float u = rand(state);
+        float v = rand(state);
+        if (u + v > 1.0) { u = 1.0 - u; v = 1.0 - v; }
+        float w = 1.0 - u - v;
+        vec3 pos = u * v0 + v * v1 + w * v2;
+        uint outIdx = tri * push.instancesPerTriangle + i;
+        outInstances[outIdx] = vec4(pos, 1.0);
+    }
+}

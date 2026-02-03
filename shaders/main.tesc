@@ -9,7 +9,7 @@ layout(location = 0) in vec3 pc_inFragColor[];
 layout(location = 1) in vec2 pc_inUV[];
 layout(location = 2) in vec3 pc_inNormal[];
 layout(location = 4) in vec3 pc_inPosWorld[];
-layout(location = 5) in int pc_inTexIndex[];
+layout(location = 5) flat in int pc_inTexIndex[];
 layout(location = 7) in vec3 pc_inLocalPos[];
 layout(location = 8) in vec3 pc_inLocalNormal[];
 
@@ -23,6 +23,15 @@ layout(location = 11) out vec3 tc_fragTexWeights[];
 layout(location = 7) out vec3 tc_fragLocalPos[];
 layout(location = 8) out vec3 tc_fragLocalNormal[];
 
+
+// Compute per-edge tess factor using nearest endpoint distance to camera
+float computeEdgeTess(vec3 a, vec3 b, float nearDist, float farDist, float minLevel, float maxLevel, float materialLevel) {
+    float da = length(a - ubo.viewPos.xyz);
+    float db = length(b - ubo.viewPos.xyz);
+    float d = min(da, db);
+    float factor = clamp(1.0 - smoothstep(nearDist, farDist, d), 0.0, 1.0); // 1.0 at near, 0.0 at far
+    return mix(minLevel, maxLevel, factor) + materialLevel;
+}
 
 void main() {
     // Pass through per-vertex data to evaluation stage
@@ -77,22 +86,21 @@ void main() {
     float minLevel = ubo.tessParams.z;
     float maxLevel = ubo.tessParams.w;
 
-    float outer;
-    float inner;
-    // If global tessellation is disabled, or mapping is not enabled for this patch, force tessellation to 1 (no subdivision)
+    float outer0, outer1, outer2, inner;
     if (!tessEnabled) {
-        outer = 1.0;
+        outer0 = outer1 = outer2 = 1.0;
         inner = 1.0;
     } else {
-        // Compute an adaptive tess value in [minLevel, maxLevel] based on camera distance
-        float factor = clamp(1.0 - smoothstep(nearDist, farDist, dist), 0.0, 1.0); // 1.0 at near, 0.0 at far
-        float tess = mix(minLevel, maxLevel, factor) + materialLevel;
-        outer = tess;
-        inner = tess;
+        // Map tess levels to edges: Outer0 = edge (v1,v2); Outer1 = edge (v2,v0); Outer2 = edge (v0,v1)
+        outer0 = computeEdgeTess(p1, p2, nearDist, farDist, minLevel, maxLevel, materialLevel);
+        outer1 = computeEdgeTess(p2, p0, nearDist, farDist, minLevel, maxLevel, materialLevel);
+        outer2 = computeEdgeTess(p0, p1, nearDist, farDist, minLevel, maxLevel, materialLevel);
+        // Inner level uses the max to avoid cracks across patches
+        inner = max(max(outer0, outer1), outer2);
     }
 
-    gl_TessLevelOuter[0] = outer;
-    gl_TessLevelOuter[1] = outer;
-    gl_TessLevelOuter[2] = outer;
+    gl_TessLevelOuter[0] = outer0;
+    gl_TessLevelOuter[1] = outer1;
+    gl_TessLevelOuter[2] = outer2;
     gl_TessLevelInner[0] = inner;
 }

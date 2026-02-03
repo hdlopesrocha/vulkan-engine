@@ -14,8 +14,8 @@ layout(location = 0) out vec4 outColor;
 // Use the same UBO as main shader
 #include "includes/ubo.glsl"
 
-// Water-specific parameters (set 1, binding 7)
-layout(set = 1, binding = 7) uniform WaterParamsUBO {
+// Water-specific parameters (set 0, binding 7)
+layout(set = 0, binding = 7) uniform WaterParamsUBO {
     vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=foamDepthThreshold
     vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
     vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=shoreStrength, w=shoreFalloff

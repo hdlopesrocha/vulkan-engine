@@ -14,13 +14,12 @@ layout(location = 5) in int inTexIndex;
 layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec2 fragUV;
 layout(location = 2) out vec3 fragNormal;
-layout(location = 5) flat out ivec3 fragTexIndices;  // Changed from int to ivec3
-layout(location = 11) out vec3 fragTexWeights;       // Added
 layout(location = 4) out vec3 fragPosWorld;
+layout(location = 5) flat out int fragTexIndex;      // per-vertex texture index for TCS
 layout(location = 6) out vec4 fragPosLightSpace;
-layout(location = 10) out vec3 fragSharpNormal;      // Added
-layout(location = 7) out vec3 fragPosWorldNotDisplaced;  // Renamed from fragLocalPos
-// layout(location = 8) out vec3 fragLocalNormal;    // Removed - not used by fragment shader
+layout(location = 7) out vec3 fragLocalPos;          // provide local/world pos to TCS
+layout(location = 8) out vec3 fragLocalNormal;       // provide local/world normal to TCS
+layout(location = 10) out vec3 fragSharpNormal;      // face normal
 
 void main() {
     fragColor = inColor;
@@ -32,20 +31,19 @@ void main() {
     // For uniform scaling, mat3(model) works. For non-uniform scaling, use transpose(inverse(model))
     fragNormal = normalize(mat3(model) * inNormal);
     
-    // Provide per-vertex tex index as ivec3 (fragment shader expects this)
-    fragTexIndices = ivec3(inTexIndex, inTexIndex, inTexIndex);
-    // Set default texture weights (no blending in vertex shader)
-    fragTexWeights = vec3(1.0, 0.0, 0.0);
+    // Pass per-vertex texture index as flat int for patch compression in TCS
+    fragTexIndex = inTexIndex;
     
     // compute world-space position and pass to fragment
     vec4 worldPos = model * vec4(inPos, 1.0);
     fragPosWorld = worldPos.xyz;
-    fragPosWorldNotDisplaced = worldPos.xyz;  // No displacement in vertex shader
+    fragLocalPos = worldPos.xyz;       // Use world-space position as local basis for displacement
     
     // compute light-space position for shadow mapping
     fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
     
     // Compute face normal (sharp normal) from model normal
+    fragLocalNormal = fragNormal;      // Propagate normal for tessellation stages
     fragSharpNormal = normalize(mat3(model) * inNormal);
     
     // apply MVP transform to the vertex position
