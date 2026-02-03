@@ -75,11 +75,11 @@ void IndirectRenderer::cleanup(VulkanApp* app) {
     if (computeDescriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(app->getDevice(), computeDescriptorPool, nullptr);
 }
 
-uint32_t IndirectRenderer::addMesh(VulkanApp* app, const Geometry& mesh, const glm::mat4& model) {
-    return addMesh(app, mesh, model, nextId++);
+uint32_t IndirectRenderer::addMesh(VulkanApp* app, const Geometry& mesh) {
+    return addMesh(app, mesh, nextId++);
 }
 
-uint32_t IndirectRenderer::addMesh(VulkanApp* app, const Geometry& mesh, const glm::mat4& model, uint32_t customId) {
+uint32_t IndirectRenderer::addMesh(VulkanApp* app, const Geometry& mesh, uint32_t customId) {
     std::lock_guard<std::mutex> guard(mutex);
     std::cout << "[IndirectRenderer::addMesh] Adding/replacing mesh ID " << customId << " with " << mesh.vertices.size() << " vertices and " << mesh.indices.size() << " indices.\n";
     auto computeVertexCount = [](const MeshInfo& info, const std::vector<uint32_t>& indices) -> uint32_t {
@@ -106,22 +106,28 @@ uint32_t IndirectRenderer::addMesh(VulkanApp* app, const Geometry& mesh, const g
     idToIndex.clear();
     bool replaced = false;
 
-    auto appendMesh = [&](uint32_t id, const std::vector<Vertex>& verts, const std::vector<uint32_t>& idxs, const glm::mat4& modelMat) {
+    auto appendMesh = [&](uint32_t id, const std::vector<Vertex>& verts, const std::vector<uint32_t>& idxs) {
         MeshInfo m{};
         m.id = id;
         m.baseVertex = static_cast<uint32_t>(newVertices.size());
         m.firstIndex = static_cast<uint32_t>(newIndices.size());
         m.indexCount = static_cast<uint32_t>(idxs.size());
-        m.model = modelMat;
+        m.model = glm::mat4(1.0f);
         m.active = true;
 
-        glm::vec3 minp(FLT_MAX), maxp(-FLT_MAX);
-        for (auto& v : verts) {
-            minp = glm::min(minp, v.position);
-            maxp = glm::max(maxp, v.position);
+        if (verts.empty()) {
+            // Empty mesh: set degenerate zero-sized bounds at origin
+            m.boundsMin = glm::vec4(0.0f);
+            m.boundsMax = glm::vec4(0.0f);
+        } else {
+            glm::vec3 minp(FLT_MAX), maxp(-FLT_MAX);
+            for (const auto& v : verts) {
+                minp = glm::min(minp, v.position);
+                maxp = glm::max(maxp, v.position);
+            }
+            m.boundsMin = glm::vec4(minp, 0.0f);
+            m.boundsMax = glm::vec4(maxp, 0.0f);
         }
-        m.boundsMin = glm::vec4(minp, 0.0f);
-        m.boundsMax = glm::vec4(maxp, 0.0f);
 
         newVertices.insert(newVertices.end(), verts.begin(), verts.end());
         newIndices.insert(newIndices.end(), idxs.begin(), idxs.end());
@@ -151,11 +157,11 @@ uint32_t IndirectRenderer::addMesh(VulkanApp* app, const Geometry& mesh, const g
 
         std::vector<Vertex> verts(mergedVertices.begin() + vBegin, mergedVertices.begin() + vEnd);
         std::vector<uint32_t> idxs(mergedIndices.begin() + iBegin, mergedIndices.begin() + iEnd);
-        appendMesh(m.id, verts, idxs, m.model);
+        appendMesh(m.id, verts, idxs);
     }
 
     // Append/replace the target mesh last so its offsets reflect the new packed layout
-    appendMesh(customId, mesh.vertices, mesh.indices, model);
+    appendMesh(customId, mesh.vertices, mesh.indices);
     replaced = true;
 
     // Swap in the packed state
@@ -338,9 +344,9 @@ bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
         // Update models buffer entry
         if (modelsBuffer.buffer != VK_NULL_HANDLE) {
             VkDeviceSize modelOffset = activeIdx * sizeof(glm::mat4);
-            glm::mat4 identity = glm::mat4(1.0f);
+            glm::mat4 model = info.model;
             vkMapMemory(app->getDevice(), modelsBuffer.memory, modelOffset, sizeof(glm::mat4), 0, &data);
-            memcpy(data, &identity, sizeof(glm::mat4));
+            memcpy(data, &model, sizeof(glm::mat4));
             vkUnmapMemory(app->getDevice(), modelsBuffer.memory);
         }
         
