@@ -102,6 +102,9 @@ public:
     // Query mesh info (copy) for use in the app (model matrix etc.)
     MeshInfo getMeshInfo(uint32_t meshId) const;
 
+    // Return a copy of all active mesh infos (thread-safe)
+    std::vector<MeshInfo> getActiveMeshInfos() const;
+
 private:
     mutable std::mutex mutex;
     uint32_t nextId = 1;

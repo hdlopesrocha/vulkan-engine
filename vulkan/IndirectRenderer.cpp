@@ -1058,4 +1058,13 @@ IndirectRenderer::MeshInfo IndirectRenderer::getMeshInfo(uint32_t meshId) const 
     if (it == idToIndex.end()) return empty;
     return meshes[it->second];
 }
+
+std::vector<IndirectRenderer::MeshInfo> IndirectRenderer::getActiveMeshInfos() const {
+    std::vector<MeshInfo> out;
+    std::lock_guard<std::mutex> guard(mutex);
+    for (const auto &m : meshes) {
+        if (m.active) out.push_back(m);
+    }
+    return out;
+}
  
