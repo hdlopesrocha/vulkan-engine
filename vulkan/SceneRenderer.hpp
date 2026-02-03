@@ -83,6 +83,17 @@ public:
     // Track model ids for opaque/solid meshes (moved from SolidRenderer)
     std::unordered_map<NodeID, Model3DVersion> solidChunks;
 
+    // Debug cubes for nodes (populated by change handlers after geometry generation)
+    std::unordered_map<NodeID, DebugCubeRenderer::CubeWithColor> nodeDebugCubes;
+    void addDebugCubeForNode(NodeID id, const DebugCubeRenderer::CubeWithColor& cube) { nodeDebugCubes[id] = cube; }
+    void removeDebugCubeForNode(NodeID id) { nodeDebugCubes.erase(id); }
+    std::vector<DebugCubeRenderer::CubeWithColor> getDebugNodeCubes() const {
+        std::vector<DebugCubeRenderer::CubeWithColor> out;
+        out.reserve(nodeDebugCubes.size());
+        for (const auto &p : nodeDebugCubes) out.push_back(p.second);
+        return out;
+    }
+
     // Register/inspect opaque model versions (moved from SolidRenderer)
     void registerModelVersion(NodeID id, const Model3DVersion& ver) { solidChunks[id] = ver; }
     size_t getRegisteredModelCount() const { return solidChunks.size(); }

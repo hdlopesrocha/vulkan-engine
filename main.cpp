@@ -356,18 +356,27 @@ public:
             sceneRenderer->mainPass(commandBuffer, unusedRpInfo, frameIdx, waterEnabled, vegetationEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode, profilingEnabled, queryPool,
                 viewProj, uboStatic, sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), true, false, true, 0, 0.0f, 0.0f);
 
-            // Render debug cubes for expanded octree nodes
-            if (octreeExplorerWidget && octreeExplorerWidget->isVisible() && sceneRenderer->debugCubeRenderer) {
-                // Convert from OctreeExplorerWidget::CubeWithColor to DebugCubeRenderer::CubeWithColor
-                const auto& widgetCubes = octreeExplorerWidget->getExpandedCubes();
+            // Render debug cubes for expanded octree nodes + node instances from change handlers
+            if (sceneRenderer && sceneRenderer->debugCubeRenderer) {
                 std::vector<DebugCubeRenderer::CubeWithColor> debugCubes;
-                debugCubes.reserve(widgetCubes.size());
-                for (const auto& wc : widgetCubes) {
-                    // Convert BoundingCube -> BoundingBox for renderer
-                    debugCubes.push_back({BoundingBox(wc.cube.getMin(), wc.cube.getMax()), wc.color});
+                // Add widget-expanded cubes when explorer is visible
+                if (octreeExplorerWidget && octreeExplorerWidget->isVisible()) {
+                    const auto& widgetCubes = octreeExplorerWidget->getExpandedCubes();
+                    debugCubes.reserve(widgetCubes.size());
+                    for (const auto& wc : widgetCubes) {
+                        // Convert BoundingCube -> BoundingBox for renderer
+                        debugCubes.push_back({BoundingBox(wc.cube.getMin(), wc.cube.getMax()), wc.color});
+                    }
                 }
-                sceneRenderer->debugCubeRenderer->setCubes(debugCubes);
-                sceneRenderer->debugCubeRenderer->render(commandBuffer, getMainDescriptorSet());
+                // Append node cubes produced by change handlers (post-tessellation)
+                auto nodeCubes = sceneRenderer->getDebugNodeCubes();
+                debugCubes.reserve(debugCubes.size() + nodeCubes.size());
+                for (auto &nc : nodeCubes) debugCubes.push_back(nc);
+
+                if (!debugCubes.empty()) {
+                    sceneRenderer->debugCubeRenderer->setCubes(debugCubes);
+                    sceneRenderer->debugCubeRenderer->render(commandBuffer, getMainDescriptorSet());
+                }
             }
 
             // Render per-mesh bounding boxes (if enabled in settings)
