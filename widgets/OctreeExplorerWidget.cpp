@@ -38,7 +38,16 @@ void OctreeExplorerWidget::render() {
     if (ImGui::Button("Expand All")) {
         expandAll = true;
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Expand all nodes in the tree for this frame");
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Persist Expand", &expandAllPersistent)) {
+        // toggled persistent expand
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Collapse All")) {
+        expandAllPersistent = false;
+        collapseAll = true;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Expand/collapse helpers: Expand All = one frame, Persist Expand = keep expanded, Collapse All = collapse now");
 
     const Octree& tree = (selectedLayer == 0) ? scene->getOpaqueOctree() : scene->transparentOctree;
     renderTree(tree);
@@ -61,6 +70,14 @@ void OctreeExplorerWidget::renderTree(const Octree& tree) {
 
     ImGuiTreeNodeFlags rootFlags = expandAll ? ImGuiTreeNodeFlags_DefaultOpen : 0;
     std::string label = "Level 0 | " + std::string(spaceTypeToString(root->getType()));
+
+    // Honor expand/collapse before the root tree node (single-frame or persistent)
+    if (collapseAll) {
+        ImGui::SetNextItemOpen(false, ImGuiCond_Always);
+    } else if (expandAll || expandAllPersistent) {
+        ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    }
+
     bool open = ImGui::TreeNodeEx(label.c_str(), rootFlags);
     ImGui::SameLine();
     
@@ -74,7 +91,10 @@ void OctreeExplorerWidget::renderTree(const Octree& tree) {
         renderNode(root, rootCube, 0, allocator, rootFlags);
         ImGui::TreePop();
     }
+
+    // Reset single-frame expand/collapse flags
     if (expandAll) expandAll = false;
+    if (collapseAll) collapseAll = false;
 }
 
 void OctreeExplorerWidget::renderNode(OctreeNode* node, const BoundingCube& cube, int depth, OctreeAllocator* allocator, ImGuiTreeNodeFlags extraFlags) {
@@ -114,6 +134,13 @@ void OctreeExplorerWidget::renderNode(OctreeNode* node, const BoundingCube& cube
             if (child->isSimplified()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[simplified]"); ImGui::SameLine(); }
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "v%u", child->version);
         } else {
+            // Apply expand/collapse to children (single-frame, persistent, or collapse)
+            if (collapseAll) {
+                ImGui::SetNextItemOpen(false, ImGuiCond_Always);
+            } else if (expandAll || expandAllPersistent) {
+                ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+            }
+
             bool isExpanded = ImGui::TreeNodeEx(label.c_str(), flags);
             ImGui::SameLine();
             if (child->isChunk()) { ImGui::TextColored(ImVec4(nodeColor.r, nodeColor.g, nodeColor.b, 1.0f), "[chunk]"); ImGui::SameLine(); }

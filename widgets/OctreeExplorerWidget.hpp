@@ -28,6 +28,8 @@ private:
     bool chunksOnly = false;
     std::vector<CubeWithColor> expandedCubes; // Cubes of expanded nodes with colors
     bool expandAll = true; // Expand all nodes on first render
+    bool expandAllPersistent = false; // Persistently keep nodes expanded
+    bool collapseAll = false; // Trigger collapse of all nodes for one frame
     
     // Color priority (higher = more important): dirty > chunk > simplified > leaf
     glm::vec3 getNodeColor(OctreeNode* node) const {
