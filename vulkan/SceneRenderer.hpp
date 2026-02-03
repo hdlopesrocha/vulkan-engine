@@ -73,6 +73,10 @@ public:
     std::vector<PendingNode> pendingCreated;
     std::vector<PendingNode> pendingUpdated;
     std::vector<PendingNode> pendingErased;
+
+    // Track model ids for transparent/water meshes so we can remove them if erased/updated
+    std::unordered_map<NodeID, Model3DVersion> transparentModelVersions;
+
     void shadowPass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VkDescriptorSet shadowPassDescriptorSet, const UniformObject &uboStatic, bool shadowsEnabled, bool shadowTessellationEnabled);
     void depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool);
     void skyPass(VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj);
