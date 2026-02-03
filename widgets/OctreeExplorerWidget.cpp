@@ -34,6 +34,12 @@ void OctreeExplorerWidget::render() {
     ImGui::SliderInt("Max Depth", &maxDepth, 1, 32);
     ImGui::Checkbox("Show chunks only", &chunksOnly);
 
+    // Expand all nodes on demand
+    if (ImGui::Button("Expand All")) {
+        expandAll = true;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Expand all nodes in the tree for this frame");
+
     const Octree& tree = (selectedLayer == 0) ? scene->getOpaqueOctree() : scene->transparentOctree;
     renderTree(tree);
 
