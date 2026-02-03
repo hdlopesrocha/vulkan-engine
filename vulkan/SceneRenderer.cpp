@@ -505,3 +505,20 @@ void SceneRenderer::processPendingNodeChanges() {
         solidRenderer->getIndirectRenderer().rebuild(app);
     }
 }
+
+// Runtime introspection helpers for UI/debug
+size_t SceneRenderer::getPendingCreatedCount() {
+    std::lock_guard<std::mutex> lock(pendingMutex);
+    return pendingCreated.size();
+}
+size_t SceneRenderer::getPendingUpdatedCount() {
+    std::lock_guard<std::mutex> lock(pendingMutex);
+    return pendingUpdated.size();
+}
+size_t SceneRenderer::getPendingErasedCount() {
+    std::lock_guard<std::mutex> lock(pendingMutex);
+    return pendingErased.size();
+}
+size_t SceneRenderer::getTransparentModelCount() {
+    return transparentModelVersions.size();
+} 

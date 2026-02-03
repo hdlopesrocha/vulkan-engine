@@ -417,27 +417,31 @@ public:
 
                 // Statistics: loaded/visible counts
                 ImGui::Text("Textures Loaded (CPU): %u", loadedTextureLayers);
-                size_t gpuLoaded = sceneRenderer && sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getIndirectRenderer().getMeshCount() : 0;
-                uint32_t gpuVisible = 0;
-                if (sceneRenderer && sceneRenderer->solidRenderer) {
-                    gpuVisible = sceneRenderer->solidRenderer->getIndirectRenderer().readVisibleCount(this);
-                }
-                ImGui::Text("Loaded (GPU): %zu", gpuLoaded);
-                ImGui::Text("Visible (GPU cull): %u", gpuVisible);
 
-                size_t waterLoaded = sceneRenderer && sceneRenderer->waterRenderer ? sceneRenderer->waterRenderer->getIndirectRenderer().getMeshCount() : 0;
-                uint32_t waterVisible = 0;
-                if (sceneRenderer && sceneRenderer->waterRenderer) {
-                    waterVisible = sceneRenderer->waterRenderer->getIndirectRenderer().readVisibleCount(this);
-                }
-                ImGui::Text("Water Loaded: %zu", waterLoaded);
-                ImGui::Text("Water Visible: %u", waterVisible);
+                // Opaque (solid)
+                size_t opaqueLoaded = sceneRenderer && sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getIndirectRenderer().getMeshCount() : 0;
+                uint32_t opaqueVisible = sceneRenderer && sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getIndirectRenderer().readVisibleCount(this) : 0;
+                ImGui::Text("Opaque - Loaded (GPU): %zu  Visible (GPU cull): %u", opaqueLoaded, opaqueVisible);
 
+                // Transparent / water
+                size_t transparentLoaded = sceneRenderer && sceneRenderer->waterRenderer ? sceneRenderer->waterRenderer->getIndirectRenderer().getMeshCount() : 0;
+                uint32_t transparentVisible = sceneRenderer && sceneRenderer->waterRenderer ? sceneRenderer->waterRenderer->getIndirectRenderer().readVisibleCount(this) : 0;
+                ImGui::Text("Transparent - Loaded (GPU): %zu  Visible (GPU cull): %u", transparentLoaded, transparentVisible);
+                size_t transparentTracked = sceneRenderer ? sceneRenderer->getTransparentModelCount() : 0;
+                ImGui::Text("Transparent Models Tracked: %zu", transparentTracked);
+
+                // Vegetation
                 size_t vegChunks = sceneRenderer && sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getChunkCount() : 0;
                 size_t vegInstances = sceneRenderer && sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getInstanceTotal() : 0;
                 ImGui::Text("Vegetation Chunks: %zu", vegChunks);
                 ImGui::Text("Vegetation Instances: %zu", vegInstances);
-                    
+
+                // Pending node change queues
+                size_t pendingCreated = sceneRenderer ? sceneRenderer->getPendingCreatedCount() : 0;
+                size_t pendingUpdated = sceneRenderer ? sceneRenderer->getPendingUpdatedCount() : 0;
+                size_t pendingErased = sceneRenderer ? sceneRenderer->getPendingErasedCount() : 0;
+                ImGui::Text("Pending Created/Updated/Erased: %zu / %zu / %zu", pendingCreated, pendingUpdated, pendingErased);
+
                 if (profilingEnabled) {
                     ImGui::Separator();
                     ImGui::Text("--- GPU Timing (ms) ---");

@@ -97,6 +97,12 @@ public:
     // Process pending node change queues on the main thread
     void processPendingNodeChanges();
 
+    // Runtime introspection helpers for UI/debug
+    size_t getPendingCreatedCount();
+    size_t getPendingUpdatedCount();
+    size_t getPendingErasedCount();
+    size_t getTransparentModelCount();
+
     // Resize offscreen resources when the swapchain changes
     void onSwapchainResized(uint32_t width, uint32_t height);
 };
