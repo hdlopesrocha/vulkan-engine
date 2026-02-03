@@ -1,9 +1,11 @@
 #include "SolidSpaceChangeHandler.hpp"
 
+// Default empty callback used to initialize reference members
+static NodeDataCallback emptyNodeDataCallback;
+
 SolidSpaceChangeHandler::SolidSpaceChangeHandler(
     OctreeLayer<InstanceData> * solidInfo
-) {
-    this->solidInfo = solidInfo;
+) : solidInfo(solidInfo), onNodeUpdated(emptyNodeDataCallback), onNodeCreated(emptyNodeDataCallback), onNodeErased(emptyNodeDataCallback) {
 };
 
 void SolidSpaceChangeHandler::create(OctreeNodeData& nodeData) {

@@ -11,9 +11,9 @@ class SolidSpaceChangeHandler : public OctreeChangeHandler {
 	OctreeLayer<InstanceData> * solidInfo;
 
 	// Callback for when a node is updated (for mesh loading)
-	std::function<void(const OctreeNodeData&)> onNodeUpdated;
-	std::function<void(const OctreeNodeData&)> onNodeCreated;
-	std::function<void(const OctreeNodeData&)> onNodeErased;
+	NodeDataCallback &onNodeUpdated;
+	NodeDataCallback &onNodeCreated;
+	NodeDataCallback &onNodeErased;
 
 	public:
 	SolidSpaceChangeHandler(

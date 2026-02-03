@@ -1,9 +1,11 @@
 #include "LiquidSpaceChangeHandler.hpp"
 
+// Default empty callback used to initialize reference members
+static NodeDataCallback emptyNodeDataCallback;
+
 LiquidSpaceChangeHandler::LiquidSpaceChangeHandler(
     OctreeLayer<InstanceData> * liquidInfo
-) {
-    this->liquidInfo = liquidInfo;
+) : liquidInfo(liquidInfo), onNodeUpdated(emptyNodeDataCallback), onNodeErased(emptyNodeDataCallback), onNodeCreated(emptyNodeDataCallback) {
 };
 
 void LiquidSpaceChangeHandler::create(OctreeNodeData& nodeData) {

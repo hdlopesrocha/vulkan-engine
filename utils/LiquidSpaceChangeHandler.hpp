@@ -11,9 +11,9 @@ class LiquidSpaceChangeHandler : public OctreeChangeHandler {
 
 
 	// Callback for when a node is updated (for mesh loading)
-	NodeDataCallback onNodeUpdated;
-	NodeDataCallback onNodeErased;
-	NodeDataCallback onNodeCreated;
+	NodeDataCallback &onNodeUpdated;
+	NodeDataCallback &onNodeErased;
+	NodeDataCallback &onNodeCreated;
 
 	public:
 	LiquidSpaceChangeHandler(
