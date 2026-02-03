@@ -358,6 +358,9 @@ void SceneRenderer::processPendingNodeChanges() {
     size_t addedCount = 0;
     size_t removedCount = 0;
 
+    // Debug: raw pending counts
+    fprintf(stderr, "[SceneRenderer::processPendingNodeChanges] raw pending: created=%zu updated=%zu erased=%zu\n", created.size(), updated.size(), erased.size());
+
     // Coalesce created/updated nodes per Layer and NodeID to avoid duplicated GPU updates for the same chunk
     std::unordered_map<Layer, std::unordered_map<NodeID, OctreeNodeData>> uniqueCreated;
     std::unordered_map<Layer, std::unordered_map<NodeID, OctreeNodeData>> uniqueUpdated;
@@ -374,6 +377,17 @@ void SceneRenderer::processPendingNodeChanges() {
     for (const auto &p : erased) {
         NodeID nid = reinterpret_cast<NodeID>(p.node.node);
         uniqueErased[p.layer].insert(nid);
+    }
+
+    // Debug: print coalesced counts per layer
+    for (const auto &layerPair : uniqueCreated) {
+        fprintf(stderr, "[SceneRenderer::processPendingNodeChanges] unique created layer=%d count=%zu\n", static_cast<int>(layerPair.first), layerPair.second.size());
+    }
+    for (const auto &layerPair : uniqueUpdated) {
+        fprintf(stderr, "[SceneRenderer::processPendingNodeChanges] unique updated layer=%d count=%zu\n", static_cast<int>(layerPair.first), layerPair.second.size());
+    }
+    for (const auto &layerPair : uniqueErased) {
+        fprintf(stderr, "[SceneRenderer::processPendingNodeChanges] unique erased layer=%d count=%zu\n", static_cast<int>(layerPair.first), layerPair.second.size());
     }
 
     // Process created nodes, one requestModel3D per unique NodeID
