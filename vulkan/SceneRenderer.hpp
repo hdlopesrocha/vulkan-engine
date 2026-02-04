@@ -123,14 +123,14 @@ public:
     void onNodeErased(Layer layer, const OctreeNodeData &node);
 
     // Process pending node change queues on the main thread
-    void processPendingNodeChanges(Scene* scene);
+    void processPendingNodeChanges(Scene& scene);
 
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
     // Process nodes for a single Layer (nodeMap maps NodeID->OctreeNodeData)
-    void processNodeLayer(Scene* scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry);
+    void processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry);
 
     // Overload: accept raw pending node vector and coalesce inside (per-layer dispatch)
-    void processNodes(Scene* scene, const std::vector<PendingNode>& pendingNodes, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry);
+    void processNodes(Scene& scene, const std::vector<PendingNode>& pendingNodes, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry);
 
     // Process erased node id set for a single Layer
     void processErasedNodeSet(Layer layer, const std::unordered_set<NodeID>& nodeSet, const std::function<void(Layer, NodeID)>& onErased);

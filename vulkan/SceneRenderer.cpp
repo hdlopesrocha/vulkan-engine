@@ -341,12 +341,12 @@ void SceneRenderer::onNodeErased(Layer layer, const OctreeNodeData &node) {
     pendingErased.push_back(PendingNode{layer, node});
 }
 
-void SceneRenderer::processNodeLayer(Scene* scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry) {
+void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry) {
 
     // Make a local copy of the node data so the callback may safely outlive this stack frame
     OctreeNodeData nodeCopy = nodeData;
     // Capture nodeCopy by value so async callbacks receive a safe copy
-    scene->requestModel3D(layer, nodeCopy, [this, layer, nid, nodeCopy, &onGeometry](const Geometry &geom) {
+    scene.requestModel3D(layer, nodeCopy, [this, layer, nid, nodeCopy, &onGeometry](const Geometry &geom) {
         std::cout << "[SceneRenderer::processNodeLayer] Received geometry for layer=" << static_cast<int>(layer) << " nid=" << nid << " with " << geom.vertices.size() << " vertices and " << geom.indices.size() << " indices.\n";
         onGeometry(layer, nid, nodeCopy, geom);
     });
@@ -363,7 +363,7 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler() const {
 }
 
 // Accept pending nodes and coalesce into per-layer maps, then call the map-based processor
-void SceneRenderer::processNodes(Scene* scene, const std::vector<PendingNode>& pendingNodes, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry) {
+void SceneRenderer::processNodes(Scene& scene, const std::vector<PendingNode>& pendingNodes, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry) {
     //std::cout << "[SceneRenderer::processNodes] Processing " << pendingNodes.size() << " pending nodes.\n";
     std::unordered_map<NodeID, std::pair<Layer, OctreeNodeData>> uniqueMap;
     for (const auto &p : pendingNodes) {
@@ -374,9 +374,13 @@ void SceneRenderer::processNodes(Scene* scene, const std::vector<PendingNode>& p
     size_t total = 0;
     for (auto &layerPair : uniqueMap) {
         Layer layer = layerPair.second.first;
+        NodeID nid = layerPair.first;
+        OctreeNodeData& nodeData = layerPair.second.second;
         //fprintf(stdout, "[SceneRenderer::processNodes] unique layer=%d count=1\n", static_cast<int>(layer));
         ++total;
-        processNodeLayer(scene, layer, layerPair.first, layerPair.second.second, onGeometry);
+//void SceneRenderer::processNodeLayer(Scene* scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry) {;
+        
+        processNodeLayer(scene, layer, nid, nodeData, onGeometry);
     }
     //fprintf(stdout, "[SceneRenderer::processNodes] totals: unique=%zu transparentTracked=%zu\n", total, transparentChunks.size());
 }
@@ -406,7 +410,7 @@ void SceneRenderer::processErasedNodeSet(Layer layer, const std::unordered_set<N
     }
 }
 
-void SceneRenderer::processPendingNodeChanges(Scene* scene) {
+void SceneRenderer::processPendingNodeChanges(Scene& scene) {
     std::vector<PendingNode> created;
     std::vector<PendingNode> updated;
     std::vector<PendingNode> erased;
@@ -440,12 +444,23 @@ void SceneRenderer::processPendingNodeChanges(Scene* scene) {
 
     // Delegate processing/coalescing: created/updated
     auto onGeometry = [&](Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
-        std::cout << "[SceneRenderer::processPendingNodeChanges::onGeometry] layer=" << static_cast<int>(layer) << " nid=" << nid << " with " << geom.vertices.size() << " vertices and " << geom.indices.size() << " indices.\n";
+        //std::cout << "[SceneRenderer::processPendingNodeChanges::onGeometry] layer=" << static_cast<int>(layer) << " nid=" << nid << " with " << geom.vertices.size() << " vertices and " << geom.indices.size() << " indices.\n";
         ensureMeshForNode(layer, nid, nd, geom);
         // Create debug cube instance for this node now that geometry is available
         if (debugCubeRenderer) {
             DebugCubeRenderer::CubeWithColor c;
-            c.cube = BoundingBox(nd.cube.getMin(), nd.cube.getMax());
+            // Compute world-space AABB from geometry vertices using same model as used for mesh
+            glm::vec3 minp(nd.cube.getMax()), maxp(nd.cube.getMin());
+            for (const auto &v : geom.vertices) {
+                minp = glm::min(minp, v.position);
+                maxp = glm::max(maxp, v.position);
+            }
+            if (minp.x == FLT_MAX) {
+                // Fallback to node cube if geometry empty
+                minp = nd.cube.getMin();
+                maxp = nd.cube.getMax();
+            }
+            c.cube = BoundingBox(minp, maxp);
             c.color = (layer == LAYER_OPAQUE) ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(0.0f, 0.5f, 1.0f);
             addDebugCubeForNode(nid, c);
         }
