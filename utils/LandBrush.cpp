@@ -3,11 +3,12 @@
 
 LandBrush::LandBrush() {
     this->underground = DISCARD_BRUSH_INDEX;
-    this->grass = 4;
-    this->sand = 8;
-    this->softSand = 10;
-    this->rock = 7;
-    this->snow = 9;
+    this->grass = 3;      // textures/grass_color.jpg (index 3)
+    this->sand = 8;       // textures/sand_color.jpg (index 8)
+    this->softSand = 10;  // textures/soft_sand_color.jpg (index 10)
+    this->rock = 7;       // textures/rock_color.jpg (index 7)
+    this->snow = 9;       // textures/snow_color.jpg (index 9)
+
     this->grassMixSand = 11;
     this->grassMixSnow = 12;
     this->rockMixGrass = 13;
