@@ -130,7 +130,7 @@ public:
         }
 
         uint32_t loadedTextureLayers_local = 0;
-        struct TextureTriple { const char* albedo; const char* normal; const char* bump; };
+        // Use shared TextureTriple defined in TextureArrayManager.hpp
         const std::vector<TextureTriple> textureTriples = {
             { "textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg" },
             { "textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg" },
@@ -147,11 +147,8 @@ public:
 
              
         textureArrayManager.currentLayer = 0;
-        // Build tuple list and use TextureArrayManager::loadTriples for convenience
-        std::vector<std::tuple<const char*, const char*, const char*>> tripleList;
-        tripleList.reserve(textureTriples.size());
-        for (const auto &tr : textureTriples) tripleList.emplace_back(tr.albedo, tr.normal, tr.bump);
-        loadedTextureLayers_local = textureArrayManager.loadTriples(tripleList);
+        // Bulk load the triples directly using TextureTriple vector already defined above
+        loadedTextureLayers_local = textureArrayManager.loadTriples(textureTriples);
         // Record into member so UI can display counts
         loadedTextureLayers = loadedTextureLayers_local;
 
