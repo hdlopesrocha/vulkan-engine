@@ -53,12 +53,12 @@ public:
         Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
         long trianglesCount = 0;
         ThreadContext context = ThreadContext(data.cube);
-        Tesselator tesselator(&trianglesCount, &context);
+        Tesselator tesselator(&trianglesCount);
         std::vector<OctreeNodeTriangleHandler*> handlers;
         handlers.emplace_back(&tesselator);
-        Processor processor(&trianglesCount, threadPool, &context, &handlers);
-        processor.iterateFlatIn(*tree, data);
-        
+        Processor processor(&tessCount, threadPool, &context, &handlers);
+        tree->iterateFlat(processor, data);
+
         if(!tesselator.geometry.indices.empty()) {
             callback(tesselator.geometry);
         }

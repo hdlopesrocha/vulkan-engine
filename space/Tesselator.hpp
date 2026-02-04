@@ -6,10 +6,9 @@
 #include "../math/Vertex.hpp"
 
 class Tesselator : public OctreeNodeTriangleHandler{
-    ThreadContext * context;
 public:
     Geometry geometry;
-    Tesselator(long * count, ThreadContext * context);
+    Tesselator(long * count);
     void handle(Vertex &v0, Vertex &v1, Vertex &v2, bool sign) override;
 };
 

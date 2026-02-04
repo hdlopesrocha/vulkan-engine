@@ -4,7 +4,7 @@
 #include <cmath>
 
 
-Tesselator::Tesselator(long * count, ThreadContext * context): OctreeNodeTriangleHandler(count), context(context), geometry() {
+Tesselator::Tesselator(long * count): OctreeNodeTriangleHandler(count), geometry() {
 
 }
 
