@@ -120,6 +120,17 @@ public:
     bool sceneLoading = false;
 
     void setup() override {
+
+        uint32_t mixWidth = (textureArrayManager.width ? textureArrayManager.width : 512u);
+        uint32_t mixHeight = (textureArrayManager.height ? textureArrayManager.height : 512u);
+        textureMixer = std::make_shared<TextureMixer>();
+        textureMixer->init(this, mixWidth, mixHeight, &textureArrayManager);
+        mixerParams.clear();
+        uint32_t layerCount = textureArrayManager.layerAmount ? textureArrayManager.layerAmount : 1u;
+        uint32_t editableLayer = (loadedTextureLayers < layerCount) ? loadedTextureLayers : 0u;
+        uint32_t availableLayers = std::max(layerCount, std::max(loadedTextureLayers, 1u));
+   
+
         // If the texture arrays aren't allocated yet, allocate defaults here so other systems have arrays
         if (textureArrayManager.layerAmount == 0) {
             const uint32_t defaultLayers = 64;
@@ -158,6 +169,33 @@ public:
             textureArrayManager.getImTexture(i, 2);
         }
 
+              // Ensure we have at least one default mixer entry so the UI isn't empty
+        // Default mixer targets the editable layer and mixes with sensible defaults (dirt=1 if available)
+        MixerParameters defaultMixer{};
+        defaultMixer.targetLayer = editableLayer;
+        defaultMixer.primaryTextureIdx = (availableLayers > 1) ? 1u : 0u;
+        defaultMixer.secondaryTextureIdx = (availableLayers > 2) ? 2u : defaultMixer.primaryTextureIdx;
+        mixerParams.push_back(defaultMixer);
+
+        // Add explicit mixes used by LandBrush so the UI pre-populates sensible combinations:
+        // grassMixSand, grassMixSnow, rockMixGrass, rockMixSnow, rockMixSand
+        auto pushMix = [&](uint32_t target, uint32_t primary, uint32_t secondary){
+            if (target < availableLayers && primary < availableLayers && secondary < availableLayers) {
+                MixerParameters m{};
+                m.targetLayer = target;
+                m.primaryTextureIdx = primary;
+                m.secondaryTextureIdx = secondary;
+                mixerParams.push_back(m);
+            }
+        };
+        
+        // Indices from LandBrush: grass=3, rock=7, sand=8, snow=9
+        pushMix(editableLayer++, 3u, 8u); // grassMixSand
+        pushMix(editableLayer++, 3u, 9u); // grassMixSnow
+        pushMix(editableLayer++, 7u, 3u); // rockMixGrass
+        pushMix(editableLayer++, 7u, 9u); // rockMixSnow
+        pushMix(editableLayer++, 7u, 8u); // rockMixSand
+
         // Ensure SceneRenderer exists and initialize it (SceneRenderer now owns SkySettings)
         if (!sceneRenderer) {
             sceneRenderer = std::make_unique<SceneRenderer>(this, &textureArrayManager, &materialManager);
@@ -182,33 +220,19 @@ public:
         }
 
 
-        // Restore additional widgets and editors
-        uint32_t mixWidth = (textureArrayManager.width ? textureArrayManager.width : 512u);
-        uint32_t mixHeight = (textureArrayManager.height ? textureArrayManager.height : 512u);
-        textureMixer = std::make_shared<TextureMixer>();
-        textureMixer->init(this, mixWidth, mixHeight, &textureArrayManager);
-        mixerParams.clear();
-        uint32_t layerCount = textureArrayManager.layerAmount ? textureArrayManager.layerAmount : 1u;
-        uint32_t editableLayer = (loadedTextureLayers < layerCount) ? loadedTextureLayers : 0u;
-        uint32_t availableLayers = std::max(layerCount, std::max(loadedTextureLayers, 1u));
-        MixerParameters defaultMixer{};
-        defaultMixer.targetLayer = editableLayer;
-        defaultMixer.primaryTextureIdx = (availableLayers > 1) ? 1u : 0u;
-        defaultMixer.secondaryTextureIdx = (availableLayers > 2) ? 2u : defaultMixer.primaryTextureIdx;
-        mixerParams.push_back(defaultMixer);
         // Initial generation deferred: user can press Generate in the Animated Textures UI
         // If you want automatic generation at startup, enable it here once TextureArrayManager is guaranteed available
         fprintf(stderr, "[TextureMixer] Initial generation deferred; press Generate in Animated Textures to create content\n");
-        textureMixer->setEditableLayer(defaultMixer.targetLayer);
+        textureMixer->setEditableLayer(editableLayer);
         // Prime ImGui descriptors so the texture viewer shows immediately
-        textureArrayManager.setLayerInitialized(defaultMixer.targetLayer, true);
-        textureArrayManager.getImTexture(defaultMixer.targetLayer, 0);
-        textureArrayManager.getImTexture(defaultMixer.targetLayer, 1);
-        textureArrayManager.getImTexture(defaultMixer.targetLayer, 2);
+        textureArrayManager.setLayerInitialized(editableLayer, true);
+        textureArrayManager.getImTexture(editableLayer, 0);
+        textureArrayManager.getImTexture(editableLayer, 1);
+        textureArrayManager.getImTexture(editableLayer, 2);
 
         textureMixerWidget = std::make_shared<TextureMixerWidget>(textureMixer, mixerParams, "Texture Mixer");
 
-        size_t materialCount = std::max<size_t>(static_cast<size_t>(loadedTextureLayers), static_cast<size_t>(defaultMixer.targetLayer + 1));
+        size_t materialCount = std::max<size_t>(static_cast<size_t>(loadedTextureLayers), static_cast<size_t>(loadedTextureLayers+ 1));
         if (materialCount == 0) {
             materialCount = layerCount ? layerCount : 1u;
         }
