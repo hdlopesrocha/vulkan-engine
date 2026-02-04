@@ -378,8 +378,8 @@ void DebugCubeRenderer::render(VkCommandBuffer& cmd, VkDescriptorSet descriptorS
     vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
     vkCmdBindIndexBuffer(cmd, cubeVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
     
-    // Set line width (if supported)
-    vkCmdSetLineWidth(cmd, 2.0f);
+    // Line width is specified statically in the pipeline (1.0). Do not call vkCmdSetLineWidth
+    // unless the pipeline is created with VK_DYNAMIC_STATE_LINE_WIDTH and the device enables wideLines.
     
     // Single instanced draw call for all cubes
     vkCmdDrawIndexed(cmd, cubeVBO.indexCount, static_cast<uint32_t>(activeCubes.size()), 0, 0, 0);
