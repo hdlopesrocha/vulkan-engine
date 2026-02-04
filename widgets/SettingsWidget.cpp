@@ -153,6 +153,11 @@ void SettingsWidget::render() {
             // toggled overlay of per-mesh bounding boxes
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Render bounding boxes for meshes currently uploaded to the GPU");
+
+        if (ImGui::Checkbox("Show Debug Cubes", &settings.showDebugCubes)) {
+            // toggled overlay of debug octree cubes and node instance cubes
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Render debug octree/node cubes produced by the engine and explorer");
     }
     ImGui::End();
 }

@@ -24,6 +24,7 @@ public:
     bool getVegetationEnabled() const { return settings.vegetationEnabled; }
     float getTriplanarThreshold() const { return settings.triplanarThreshold; }
     float getTriplanarExponent() const { return settings.triplanarExponent; }
+    bool getShowDebugCubes() const { return settings.showDebugCubes; }
 
     // Callback setter for debug actions
     void setDumpShadowDepthCallback(std::function<void()> cb) { onDumpShadowDepth = cb; }

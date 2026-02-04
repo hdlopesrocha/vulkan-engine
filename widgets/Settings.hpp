@@ -25,6 +25,7 @@ public:
         tessMaxDistance = 30.0f;
         tessMinDistance = 10.0f;
         vsyncEnabled = true;
+        showDebugCubes = false;
         showBoundingBoxes = false;
     }
 
@@ -36,6 +37,7 @@ public:
     bool normalMappingEnabled = true;
 
     // Debug visuals
+    bool showDebugCubes = false;
     bool showBoundingBoxes = false;
 
     // Input settings

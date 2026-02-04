@@ -243,7 +243,7 @@ public:
         MainSceneLoader loader = MainSceneLoader();
         mainScene->loadScene(loader);
     
-        sceneRenderer->processPendingNodeChanges(mainScene);
+        sceneRenderer->processPendingNodeChanges(*mainScene);
         // Create octree explorer widget bound to loaded scene
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
 
@@ -293,7 +293,7 @@ public:
             sceneRenderer->waterRenderer->advanceTime(deltaTime);
         }
         // Process any pending mesh updates from scene change handlers
-        if (sceneRenderer) sceneRenderer->processPendingNodeChanges(mainScene);
+        if (sceneRenderer) sceneRenderer->processPendingNodeChanges(*mainScene);
     }
 
     void preRenderPass(VkCommandBuffer &commandBuffer) override {
@@ -357,7 +357,7 @@ public:
                 viewProj, uboStatic, sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), true, false, true, 0, 0.0f, 0.0f);
 
             // Render debug cubes for expanded octree nodes + node instances from change handlers
-            if (sceneRenderer && sceneRenderer->debugCubeRenderer) {
+            if (settings.showDebugCubes && sceneRenderer && sceneRenderer->debugCubeRenderer) {
                 std::vector<DebugCubeRenderer::CubeWithColor> debugCubes;
                 // Add widget-expanded cubes when explorer is visible
                 if (octreeExplorerWidget && octreeExplorerWidget->isVisible()) {
