@@ -4,6 +4,18 @@
 #include <stdexcept>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
+#include <mutex>
+#include <vector>
+
+// Async submission bookkeeping
+std::mutex pendingCmdMutex;
+std::vector<std::pair<VkCommandBuffer,VkFence>> pendingCommandBuffers;
+
+std::mutex extraSemaphoreMutex;
+std::vector<VkSemaphore> extraWaitSemaphores;
+// semaphores scheduled for destruction paired with the frame fence they were associated with
+std::vector<std::pair<VkSemaphore,VkFence>> semaphoresPendingDestroy;
+
 #include "VulkanApp.hpp"
 #include "TextureArrayManager.hpp"
 #include "imgui.h"
@@ -582,7 +594,11 @@ void VulkanApp::createFramebuffers() {
             throw std::runtime_error("failed to create framebuffer!");
         }
     }
+
+    // Called here to cleanup any completed async submissions from previous runs
+    processPendingCommandBuffers();
 }
+
 
 void VulkanApp::createCommandPool() {
     // destroy command pool (if any)
@@ -600,6 +616,12 @@ void VulkanApp::createCommandPool() {
     if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
         throw std::runtime_error("failed to create command pool!");
     }
+
+    // initialize async bookkeeping containers
+    // pendingCommandBuffers and extraWaitSemaphores are guarded by mutexes
+    pendingCommandBuffers.clear();
+    extraWaitSemaphores.clear();
+    semaphoresPendingDestroy.clear();
 }
 
 VkCommandBuffer VulkanApp::beginSingleTimeCommands() {
@@ -674,7 +696,7 @@ void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, Vk
 }
 
 void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount, uint32_t baseArrayLayer) {
-    // Check if image format supports linear blitting
+    // Existing blocking helper kept for convenience
     VkFormatProperties formatProperties;
     vkGetPhysicalDeviceFormatProperties(physicalDevice, imageFormat, &formatProperties);
 
@@ -683,7 +705,12 @@ void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t tex
     }
 
     VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+    recordGenerateMipmaps(commandBuffer, image, imageFormat, texWidth, texHeight, mipLevels, layerCount, baseArrayLayer);
+    endSingleTimeCommands(commandBuffer);
+}
 
+// Record mipmap generation commands into an existing command buffer (no begin/end or wait)
+void VulkanApp::recordGenerateMipmaps(VkCommandBuffer commandBuffer, VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount, uint32_t baseArrayLayer) {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.image = image;
@@ -693,7 +720,6 @@ void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t tex
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.layerCount = 1;
 
-    // Generate per-layer mipmaps by blitting each layer independently
     for (uint32_t layer = 0; layer < layerCount; ++layer) {
         int32_t mipWidth = texWidth;
         int32_t mipHeight = texHeight;
@@ -784,8 +810,82 @@ void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t tex
                             0, nullptr,
                             1, &barrier);
     }
+}
+// Process any pending command buffers (free command buffers and fences when fence signaled)
+void VulkanApp::processPendingCommandBuffers() {
+    std::lock_guard<std::mutex> lk(pendingCmdMutex);
+    for (auto it = pendingCommandBuffers.begin(); it != pendingCommandBuffers.end(); ) {
+        VkCommandBuffer cmd = it->first;
+        VkFence fence = it->second;
+        VkResult st = vkGetFenceStatus(device, fence);
+        if (st == VK_SUCCESS) {
+            // free command buffer and destroy fence
+            vkFreeCommandBuffers(device, commandPool, 1, &cmd);
+            vkDestroyFence(device, fence, nullptr);
+            it = pendingCommandBuffers.erase(it);
+        } else if (st == VK_ERROR_DEVICE_LOST) {
+            // Something bad happened; free resources conservatively
+            vkFreeCommandBuffers(device, commandPool, 1, &cmd);
+            vkDestroyFence(device, fence, nullptr);
+            it = pendingCommandBuffers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
 
-    endSingleTimeCommands(commandBuffer);
+// Submit a pre-recorded command buffer asynchronously and return a fence that will be signaled on completion.
+VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore) {
+    // End command buffer here (caller recorded commands assumed)
+    vkEndCommandBuffer(commandBuffer);
+
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = 0;
+    VkFence fence = VK_NULL_HANDLE;
+    if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create fence for async submit");
+    }
+
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    if (outSemaphore) {
+        VkSemaphoreCreateInfo semInfo{};
+        semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        if (vkCreateSemaphore(device, &semInfo, nullptr, &semaphore) != VK_SUCCESS) {
+            vkDestroyFence(device, fence, nullptr);
+            throw std::runtime_error("failed to create semaphore for async submit");
+        }
+    }
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    if (semaphore != VK_NULL_HANDLE) {
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = &semaphore;
+    }
+
+    if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence) != VK_SUCCESS) {
+        if (semaphore != VK_NULL_HANDLE) vkDestroySemaphore(device, semaphore, nullptr);
+        vkDestroyFence(device, fence, nullptr);
+        throw std::runtime_error("failed to submit async command buffer");
+    }
+
+    // Track command buffer+fence ownership so we can free command buffers later when fence signals
+    {
+        std::lock_guard<std::mutex> lk(pendingCmdMutex);
+        pendingCommandBuffers.emplace_back(commandBuffer, fence);
+    }
+
+    if (semaphore != VK_NULL_HANDLE && outSemaphore) {
+        *outSemaphore = semaphore;
+        // register the semaphore so drawFrame will wait on it and later clean it up
+        std::lock_guard<std::mutex> lk(extraSemaphoreMutex);
+        extraWaitSemaphores.push_back(semaphore);
+    }
+
+    return fence;
 }
 
 void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t arrayLayers) {
@@ -911,43 +1011,11 @@ void VulkanApp::createSyncObjects() {
     // imagesInFlight tracks which fence is using each swapchain image (initialized null)
     imagesInFlight.clear();
     imagesInFlight.resize(numImages, VK_NULL_HANDLE);
-}
 
-TextureImage VulkanApp::createTextureImage(const char * filename) {
-    TextureImage textureImage;
-    int texWidth, texHeight, texChannels;
-    unsigned char* pixels = stbi_load(filename, &texWidth, &texHeight, &texChannels, 4);
-    if (!pixels) {
-        throw std::runtime_error("failed to load texture image!");
-    }
-
-    VkDeviceSize imageSize = texWidth * texHeight * 4;
-
-    Buffer stagingBuffer = createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    // Convert sRGB -> linear (stored as UNORM) to preserve previous sampling behavior
-    convertSRGB8ToLinearInPlace(pixels, static_cast<size_t>(texWidth) * static_cast<size_t>(texHeight));
-
-    void* data;
-    vkMapMemory(device, stagingBuffer.memory, 0, imageSize, 0, &data);
-    memcpy(data, pixels, static_cast<size_t>(imageSize));
-    vkUnmapMemory(device, stagingBuffer.memory);
-
-    stbi_image_free(pixels);
-
-    // use UNORM format (no automatic sRGB->linear conversion)
-    textureImage.mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
-    createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, textureImage.mipLevels, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage.image, textureImage.memory);
-
-    transitionImageLayout(textureImage.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    copyBufferToImage(stagingBuffer.buffer, textureImage.image, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
-    // generate the mipmap chain
-    generateMipmaps(textureImage.image, VK_FORMAT_R8G8B8A8_UNORM, texWidth, texHeight, textureImage.mipLevels);
-
-    vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
-    vkFreeMemory(device, stagingBuffer.memory, nullptr);
-    createTextureImageView(textureImage);
-    return textureImage;
+    // async submission bookkeeping
+    pendingCommandBuffers.clear();
+    semaphoresPendingDestroy.clear();
+    extraWaitSemaphores.clear();
 }
 
 TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& filenames, bool srgb) {
@@ -1390,8 +1458,14 @@ VkDescriptorSet VulkanApp::createDescriptorSet(VkDescriptorSetLayout layout) {
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts = &layout;
 
+    if (layout == VK_NULL_HANDLE) {
+        fprintf(stderr, "[VulkanApp::createDescriptorSet] ERROR: requested layout is VK_NULL_HANDLE\n");
+        throw std::runtime_error("createDescriptorSet called with VK_NULL_HANDLE layout");
+    }
+
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
+        fprintf(stderr, "[VulkanApp::createDescriptorSet] vkAllocateDescriptorSets failed for layout=%p\n", (void*)layout);
         throw std::runtime_error("failed to allocate descriptor set!");
     }
     return descriptorSet;
@@ -1840,11 +1914,38 @@ void VulkanApp::drawFrame() {
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
     // Wait on the semaphore used for this acquire (indexed by semaphoreIndex)
-    VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[semaphoreIndex] };
-    VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-    submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = waitSemaphores;
-    submitInfo.pWaitDstStageMask = waitStages;
+    std::vector<VkSemaphore> waitSemaphoresVec = { imageAvailableSemaphores[semaphoreIndex] };
+    std::vector<VkPipelineStageFlags> waitStagesVec = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+
+    // Pull extra semaphores signaled by async generation submissions (if any)
+    {
+        std::lock_guard<std::mutex> lk(extraSemaphoreMutex);
+        for (auto &s : extraWaitSemaphores) {
+            waitSemaphoresVec.push_back(s);
+            waitStagesVec.push_back(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        }
+        // Move them to semaphoresPendingDestroy so they can be destroyed after this frame's fence signals
+        if (!extraWaitSemaphores.empty()) {
+            for (auto &s : extraWaitSemaphores) semaphoresPendingDestroy.emplace_back(s, inFlightFences[currentFrame]);
+            extraWaitSemaphores.clear();
+        }
+    }
+
+    submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphoresVec.size());
+    submitInfo.pWaitSemaphores = waitSemaphoresVec.data();
+    submitInfo.pWaitDstStageMask = waitStagesVec.data();
+
+    // Copy the wait arrays into local storage so address stays valid while submitInfo references them
+    std::vector<VkSemaphore> localWaitSemaphores = std::move(waitSemaphoresVec);
+    std::vector<VkPipelineStageFlags> localWaitStages = std::move(waitStagesVec);
+    submitInfo.waitSemaphoreCount = static_cast<uint32_t>(localWaitSemaphores.size());
+    submitInfo.pWaitSemaphores = localWaitSemaphores.data();
+    submitInfo.pWaitDstStageMask = localWaitStages.data();
+
+    // We'll also fill the signal semaphores from renderFinishedSemaphores as before
+    VkSemaphore initialSignalSemaphores[] = { renderFinishedSemaphores[semaphoreIndex] };
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = initialSignalSemaphores;
 
     // Debug: check commandBuffers size and imageIndex
     //std::cerr << "[DEBUG] commandBuffers.size()=" << commandBuffers.size() << " imageIndex=" << imageIndex << std::endl;
@@ -1879,6 +1980,9 @@ void VulkanApp::drawFrame() {
 
     // Hook for compute/barrier operations before render pass
     preRenderPass(commandBuffer);
+
+    // Process any completed async generation submissions and free their command buffers/fences/semaphores
+    processPendingCommandBuffers();
 
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1926,6 +2030,20 @@ void VulkanApp::drawFrame() {
         return;
     }
 
+    // Cleanup any semaphores that were associated with earlier frames and are now safe to destroy
+    for (auto it = semaphoresPendingDestroy.begin(); it != semaphoresPendingDestroy.end(); ) {
+        VkSemaphore s = it->first;
+        VkFence f = it->second;
+        VkResult st = vkGetFenceStatus(device, f);
+        if (st == VK_SUCCESS) {
+            // frame fence signaled -> safe to destroy semaphore
+            vkDestroySemaphore(device, s, nullptr);
+            it = semaphoresPendingDestroy.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     presentInfo.waitSemaphoreCount = 1;
@@ -1947,6 +2065,17 @@ void VulkanApp::drawFrame() {
     } else if (r != VK_SUCCESS) {
         std::cerr << "vkQueuePresentKHR failed: " << r << std::endl;
         return;
+    }
+
+    // Process pending command buffers and semaphores cleanup now that present is done
+    processPendingCommandBuffers();
+    for (auto it = semaphoresPendingDestroy.begin(); it != semaphoresPendingDestroy.end();) {
+        VkSemaphore s = it->first; VkFence f = it->second;
+        VkResult st = vkGetFenceStatus(device, f);
+        if (st == VK_SUCCESS) {
+            vkDestroySemaphore(device, s, nullptr);
+            it = semaphoresPendingDestroy.erase(it);
+        } else ++it;
     }
     //std::cerr << "presented image " << imageIndex << "\n";
 

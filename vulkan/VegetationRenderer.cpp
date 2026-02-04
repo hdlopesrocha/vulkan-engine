@@ -100,6 +100,10 @@ void VegetationRenderer::onTextureArraysReallocated() {
 bool VegetationRenderer::ensureVegDescriptorSet() {
     if (!app) return false;
     if (!vegetationTextureArrayManager) return false;
+    if (descriptorSetLayout == VK_NULL_HANDLE) {
+        fprintf(stderr, "[VEGETATION] ensureVegDescriptorSet: descriptorSetLayout not created yet, deferring allocation\n");
+        return false;
+    }
     // Need valid view and sampler
     if (vegetationTextureArrayManager->albedoArray.view == VK_NULL_HANDLE || vegetationTextureArrayManager->albedoSampler == VK_NULL_HANDLE) return false;
     uint32_t managerVersion = vegetationTextureArrayManager->getVersion();

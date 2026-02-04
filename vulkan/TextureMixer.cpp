@@ -5,6 +5,10 @@
 #include "TextureArrayManager.hpp"
 #include <algorithm>
 #include <stdexcept>
+#include <mutex>
+#include <vector>
+#include <tuple>
+#include <string>
 
 uint32_t TextureMixer::getArrayLayerCount() const {
 	return textureArrayManager ? textureArrayManager->layerAmount : 0;
@@ -24,12 +28,17 @@ int TextureMixer::getBytesPerPixel() const {
 
 TextureMixer::TextureMixer() {}
 
+// Global instance pointer (set in init)
+static TextureMixer* g_texture_mixer_instance = nullptr;
+TextureMixer* TextureMixer::getGlobalInstance() { return g_texture_mixer_instance; }
+
 void TextureMixer::init(VulkanApp* app, uint32_t width, uint32_t height, TextureArrayManager* textureArrayManager) {
 	this->app = app;
 	this->textureArrayManager = textureArrayManager;
 	this->width = width;
 	this->height = height;
-	// No editable textures created anymore; we will write directly into texture arrays when available
+	// Register global instance so other systems can query/wait on layer generations
+	g_texture_mixer_instance = this;
 
 	// Create compute pipeline and descriptor sets so we can generate textures on demand
 	createComputePipeline();
@@ -49,14 +58,146 @@ void TextureMixer::setOnTextureGenerated(std::function<void()> callback) {
 }
 
 void TextureMixer::generateInitialTextures(std::vector<MixerParameters> &mixerParams) {
+	if (!textureArrayManager || textureArrayManager->layerAmount == 0) {
+		std::lock_guard<std::mutex> lk(logsMutex);
+		logs.emplace_back("Skipping generateInitialTextures: no texture arrays available");
+		fprintf(stderr, "[TextureMixer] Skipping generateInitialTextures: no texture arrays available\n");
+		return;
+	}
 	printf("Generating initial textures (Albedo, Normal, Bump)...\n");
 	for (auto &param : mixerParams) {
-		generatePerlinNoise(param);
+		try {
+			generatePerlinNoise(param);
+		} catch (const std::exception &e) {
+			std::lock_guard<std::mutex> lk(logsMutex);
+			char buf[256];
+			snprintf(buf, sizeof(buf), "generateInitialTextures: skipped layer=%zu reason=%s", param.targetLayer, e.what());
+			logs.emplace_back(buf);
+			fprintf(stderr, "[TextureMixer] generateInitialTextures: skipped layer=%zu reason=%s\n", param.targetLayer, e.what());
+		}
 	}
 }
 
 
+// Queue a generation request from UI thread; will be flushed synchronously from the main update loop
+void TextureMixer::enqueueGenerate(const MixerParameters &params, int map) {
+	std::lock_guard<std::mutex> lk(pendingRequestsMutex);
+	pendingRequests.emplace_back(params, map);
+	// Log the enqueue
+	{
+		std::lock_guard<std::mutex> lk2(logsMutex);
+		char buf[128];
+		snprintf(buf, sizeof(buf), "Enqueued generation: layer=%zu map=%d", params.targetLayer, map);
+		logs.emplace_back(buf);
+	}
+}
+
+// Flush pending requests synchronously; intended to be called from main update() before frame command buffers are recorded
+void TextureMixer::flushPendingRequests() {
+	std::vector<std::pair<MixerParameters,int>> tasks;
+	{
+		std::lock_guard<std::mutex> lk(pendingRequestsMutex);
+		tasks.swap(pendingRequests);
+	}
+	for (auto &t : tasks) {
+		// For lower-latency, submit generation asynchronously and track fences
+		generatePerlinNoise(const_cast<MixerParameters&>(t.first), t.second);
+	}
+}
+
+void TextureMixer::pollPendingGenerations() {
+	// also poll VulkanApp pending command buffer cleanup to free resources
+	if (app) app->processPendingCommandBuffers();
+	// pull any completed fences and promote their logs
+
+	std::vector<std::tuple<VkFence, uint32_t>> completed;
+	{
+		std::lock_guard<std::mutex> lk(pendingFencesMutex);
+		for (auto it = pendingFences.begin(); it != pendingFences.end(); ) {
+			VkFence f = std::get<0>(*it);
+			uint32_t layer = std::get<1>(*it);
+			VkResult st = vkGetFenceStatus(app->getDevice(), f);
+			if (st == VK_SUCCESS) {
+				// generation complete
+				completed.push_back(*it);
+				it = pendingFences.erase(it);
+			} else if (st == VK_ERROR_DEVICE_LOST) {
+				it = pendingFences.erase(it);
+			} else {
+				++it;
+			}
+		}
+	}
+
+	for (auto &c : completed) {
+		uint32_t layer = std::get<1>(c);
+		// Mark layer initialized so previews show up
+		if (textureArrayManager) textureArrayManager->setLayerInitialized(layer, true);
+		if (onTextureGeneratedCallback) onTextureGeneratedCallback();
+		{
+			std::lock_guard<std::mutex> lkll(logsMutex);
+			char buf[128];
+			snprintf(buf, sizeof(buf), "Generation complete: layer=%u", layer);
+			logs.emplace_back(buf);
+		}
+	}
+
+	// also append a simple summary log line for diagnostics
+	{
+		std::lock_guard<std::mutex> lkll(logsMutex);
+		char buf[128];
+		snprintf(buf, sizeof(buf), "Pending: requests=%zu fences=%zu", pendingRequests.size(), pendingFences.size());
+		logs.emplace_back(buf);
+	}
+}
+
+size_t TextureMixer::getPendingGenerationCount() {
+	std::lock_guard<std::mutex> lk1(pendingRequestsMutex);
+	std::lock_guard<std::mutex> lk2(pendingFencesMutex);
+	return pendingRequests.size() + pendingFences.size();
+}
+
+std::vector<std::string> TextureMixer::consumeLogs() {
+	std::lock_guard<std::mutex> lk(logsMutex);
+	auto out = logs;
+	logs.clear();
+	return out;
+}
+
+
+bool TextureMixer::isLayerGenerationPending(uint32_t layer) {
+	std::lock_guard<std::mutex> lk(pendingFencesMutex);
+	for (auto &t : pendingFences) {
+		if (std::get<1>(t) == layer) return true;
+	}
+	return false;
+}
+
+bool TextureMixer::waitForLayerGeneration(uint32_t layer, uint64_t timeoutNs) {
+	TextureMixer* g = getGlobalInstance();
+	if (!g || !g->app) return false;
+	std::vector<VkFence> fences;
+	{
+		std::lock_guard<std::mutex> lk(pendingFencesMutex);
+		for (auto &t : pendingFences) {
+			if (std::get<1>(t) == layer) fences.push_back(std::get<0>(t));
+		}
+	}
+	if (fences.empty()) return false;
+	VkResult r = vkWaitForFences(g->app->getDevice(), static_cast<uint32_t>(fences.size()), fences.data(), VK_TRUE, timeoutNs);
+	if (r == VK_SUCCESS) {
+		// process pending generations so state advances
+		if (g->app) g->app->processPendingCommandBuffers();
+		g->pollPendingGenerations();
+		return true;
+	}
+	return false;
+}
+
 void TextureMixer::cleanup() {
+	// Clear global instance pointer
+	if (g_texture_mixer_instance == this) g_texture_mixer_instance = nullptr;
+
 	// No editable textures to cleanup when using global texture arrays
 
 	if (computePipeline != VK_NULL_HANDLE) {
@@ -79,6 +220,12 @@ void TextureMixer::cleanup() {
 	if (computeSampler != VK_NULL_HANDLE) {
 		vkDestroySampler(app->getDevice(), computeSampler, nullptr);
 		computeSampler = VK_NULL_HANDLE;
+	}
+
+	// clear log buffer
+	{
+		std::lock_guard<std::mutex> lk(logsMutex);
+		logs.clear();
 	}
 }
 
@@ -202,7 +349,16 @@ void TextureMixer::createTripleComputeDescriptorSet() {
 	allocInfo.descriptorSetCount = 1;
 	allocInfo.pSetLayouts = &computeDescriptorSetLayout;
 
+	if (computeDescriptorSetLayout == VK_NULL_HANDLE) {
+		fprintf(stderr, "[TextureMixer::createTripleComputeDescriptorSet] ERROR: computeDescriptorSetLayout is VK_NULL_HANDLE\n");
+		throw std::runtime_error("TextureMixer: computeDescriptorSetLayout is VK_NULL_HANDLE");
+	}
+	if (computeDescriptorPool == VK_NULL_HANDLE) {
+		fprintf(stderr, "[TextureMixer::createTripleComputeDescriptorSet] ERROR: computeDescriptorPool is VK_NULL_HANDLE\n");
+		throw std::runtime_error("TextureMixer: computeDescriptorPool is VK_NULL_HANDLE");
+	}
 	if (vkAllocateDescriptorSets(app->getDevice(), &allocInfo, &tripleComputeDescSet) != VK_SUCCESS) {
+		fprintf(stderr, "[TextureMixer::createTripleComputeDescriptorSet] vkAllocateDescriptorSets failed\n");
 		throw std::runtime_error("failed to allocate compute triple descriptor set!");
 	}
 
@@ -314,7 +470,16 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet)
 	allocInfo.descriptorSetCount = 1;
 	allocInfo.pSetLayouts = &computeDescriptorSetLayout;
 
+	if (computeDescriptorSetLayout == VK_NULL_HANDLE) {
+		fprintf(stderr, "[TextureMixer::createComputeDescriptorSet] ERROR: computeDescriptorSetLayout is VK_NULL_HANDLE\n");
+		throw std::runtime_error("TextureMixer: computeDescriptorSetLayout is VK_NULL_HANDLE");
+	}
+	if (computeDescriptorPool == VK_NULL_HANDLE) {
+		fprintf(stderr, "[TextureMixer::createComputeDescriptorSet] ERROR: computeDescriptorPool is VK_NULL_HANDLE\n");
+		throw std::runtime_error("TextureMixer: computeDescriptorPool is VK_NULL_HANDLE");
+	}
 	if (vkAllocateDescriptorSets(app->getDevice(), &allocInfo, &descSet) != VK_SUCCESS) {
+		fprintf(stderr, "[TextureMixer::createComputeDescriptorSet] vkAllocateDescriptorSets failed\n");
 		throw std::runtime_error("failed to allocate compute descriptor set!");
 	}
 
@@ -382,15 +547,27 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet)
 	if (!writes.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
-void TextureMixer::generatePerlinNoise(MixerParameters &params) {
+void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
+	// log immediate sync generation requests too for diagnostics
+	{
+		std::lock_guard<std::mutex> lkll(logsMutex);
+		char buf[128];
+		snprintf(buf, sizeof(buf), "Immediate generate called: layer=%zu map=%d", params.targetLayer, map);
+		logs.emplace_back(buf);
+	}
 	// generate regardless of external texture lists
 	if(params.targetLayer == params.primaryTextureIdx || 
 	   params.targetLayer == params.secondaryTextureIdx) {
 		return; // avoid sampling and writing to the same layer
 	}
 
-	// We now perform a single dispatch that writes all three images (albedo, normal, bump)
-	VkDescriptorSet descSet = tripleComputeDescSet;
+	// Choose descriptor set and images to generate based on 'map' (-1 = all, 0=albedo,1=normal,2=bump)
+	VkDescriptorSet descSet = VK_NULL_HANDLE;
+	bool genA = false, genN = false, genB = false;
+	if (map == -1) { descSet = tripleComputeDescSet; genA = genN = genB = true; }
+	else if (map == 0) { descSet = albedoComputeDescSet; genA = true; }
+	else if (map == 1) { descSet = normalComputeDescSet; genN = true; }
+	else if (map == 2) { descSet = bumpComputeDescSet; genB = true; }
 	if (descSet == VK_NULL_HANDLE) return;
 
 	PerlinPushConstants pushConstants;
@@ -415,28 +592,37 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 
 	VkCommandBuffer commandBuffer = app->beginSingleTimeCommands();
 
-	// Transition the three target images (or the selected array layer) to GENERAL for compute write
-	VkImageMemoryBarrier barriers[3]{};
-	for (int i = 0; i < 3; ++i) {
-		barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-		barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barriers[i].subresourceRange.baseMipLevel = 0;
-		barriers[i].subresourceRange.levelCount = 1;
-		// default to layer 0 for editable textures; may be overridden below when writing into arrays
-		barriers[i].subresourceRange.baseArrayLayer = 0;
-		barriers[i].subresourceRange.layerCount = 1;
-		barriers[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		barriers[i].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	// Build a list of image barriers only for the maps we will generate
+	std::vector<VkImageMemoryBarrier> barriers;
+	// mkBarrierLayer is used to transition only the target array layer (more precise, avoids whole-array races)
+	auto mkBarrierLayer = [&](VkImage img, uint32_t baseArrayLayer, uint32_t layerCount, uint32_t mipLevels) {
+		VkImageMemoryBarrier b{};
+		b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // assume readable initially
+		b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		b.subresourceRange.baseMipLevel = 0;
+		b.subresourceRange.levelCount = mipLevels;
+		b.subresourceRange.baseArrayLayer = baseArrayLayer;
+		b.subresourceRange.layerCount = layerCount;
+		b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		b.image = img;
+		return b;
+	};
+
+	// Only prepare per-layer barriers once we know the target layer
+	// (we'll prepare these after evaluating targetLayer below)
+
+	if (barriers.empty()) {
+		throw std::runtime_error("TextureMixer: invalid target map selection or missing TextureArrayManager");
 	}
 
 	// If a TextureArrayManager is present and a valid target layer was specified,
-	// update the storage-image descriptors to point at the per-layer 2D views
-	// so the compute shader can write directly into the array layer. Otherwise
-	// write into the editable 2D textures as before.
+	// ensure we will use array-layer views for storage writes and prepare
+	// per-layer barriers (we only touch the requested layer to avoid races)
 	bool useArrayLayer = false;
 	uint32_t targetLayer = 0;
 	if (textureArrayManager) {
@@ -444,37 +630,43 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 		if (targetLayer < textureArrayManager->layerAmount) {
 			useArrayLayer = true;
 			// Ensure per-layer views exist for preview purposes
-			textureArrayManager->getImTexture(targetLayer, 0);
-			textureArrayManager->getImTexture(targetLayer, 1);
-			textureArrayManager->getImTexture(targetLayer, 2);
+			if (genA) textureArrayManager->getImTexture(targetLayer, 0);
+			if (genN) textureArrayManager->getImTexture(targetLayer, 1);
+			if (genB) textureArrayManager->getImTexture(targetLayer, 2);
 
-			// Transition ALL layers and ALL mip levels to GENERAL for compute
-			// (sampler reads from any layer/mip, storage writes to target layer mip 0)
-			barriers[0].image = textureArrayManager->albedoArray.image;
-			barriers[0].subresourceRange.baseArrayLayer = 0;
-			barriers[0].subresourceRange.layerCount = textureArrayManager->layerAmount;
-			barriers[0].subresourceRange.levelCount = textureArrayManager->albedoArray.mipLevels;
-			barriers[1].image = textureArrayManager->normalArray.image;
-			barriers[1].subresourceRange.baseArrayLayer = 0;
-			barriers[1].subresourceRange.layerCount = textureArrayManager->layerAmount;
-			barriers[1].subresourceRange.levelCount = textureArrayManager->normalArray.mipLevels;
-			barriers[2].image = textureArrayManager->bumpArray.image;
-			barriers[2].subresourceRange.baseArrayLayer = 0;
-			barriers[2].subresourceRange.layerCount = textureArrayManager->layerAmount;
-			barriers[2].subresourceRange.levelCount = textureArrayManager->bumpArray.mipLevels;
-
-			// Transition from SHADER_READ_ONLY (or UNDEFINED for uninitialized) to GENERAL
-			for (int i = 0; i < 3; ++i) {
-				barriers[i].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-				barriers[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-				barriers[i].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-			}
+			// Build barriers for the specific target layer only
+			if (genA) barriers.push_back(mkBarrierLayer(textureArrayManager->albedoArray.image, targetLayer, 1, textureArrayManager->albedoArray.mipLevels));
+			if (genN) barriers.push_back(mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels));
+			if (genB) barriers.push_back(mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels));
 		}
+	}
+	// Ensure each barrier has the correct full range info (all layers,
+	// full mip count for that image) and set transition flags
+	for (auto &barrier : barriers) {
+		// barrier.image and layerCount/mipLevels were set by mkBarrier
+		// update levelCount to the full mip level count if needed
+		// (mkBarrier accepted mipLevels; ensure it applied)
+		barrier.subresourceRange.baseArrayLayer = 0;
+		// keep layerCount as set by mkBarrier (should already be textureArrayManager->layerAmount)
+		barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 	}
 
 	if (!useArrayLayer) {
 		throw std::runtime_error("TextureMixer: invalid target layer or missing TextureArrayManager");
+	}
+
+	// Log precise barrier info for debugging (image -> base layer)
+	{
+		std::lock_guard<std::mutex> lkll(logsMutex);
+		for (auto &b : barriers) {
+			char buf[256];
+			snprintf(buf, sizeof(buf), "Pre-barrier: image=%p baseLayer=%u layers=%u newLayout=%d",
+				(void*)b.image, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount, b.newLayout);
+			logs.emplace_back(buf);
+		}
 	}
 
 	vkCmdPipelineBarrier(
@@ -484,7 +676,7 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 		0,
 		0, nullptr,
 		0, nullptr,
-		3, barriers
+		static_cast<uint32_t>(barriers.size()), barriers.data()
 	);
 
 	printf("[TextureMixer] vkCmdBindPipeline: computePipeline=%p\n", (void*)computePipeline);
@@ -497,29 +689,31 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 	uint32_t groupCountY = (height + 15) / 16;
 
 	vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
+
 	if (useArrayLayer && textureArrayManager) {
-		// After compute, transition ALL layers and ALL mip levels back to SHADER_READ_ONLY_OPTIMAL
-		// (except target layer which goes through mipmap generation)
-		VkImageMemoryBarrier postBarriers[3]{};
-		for (int i = 0; i < 3; ++i) {
-			postBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			postBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-			postBarriers[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			postBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			postBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			postBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			postBarriers[i].subresourceRange.baseMipLevel = 0;
-			postBarriers[i].subresourceRange.baseArrayLayer = 0;
-			postBarriers[i].subresourceRange.layerCount = textureArrayManager->layerAmount;
-			postBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-			postBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		// After compute, transition generated images back to SHADER_READ_ONLY_OPTIMAL
+		std::vector<VkImageMemoryBarrier> postBarriers;
+		if (genA) postBarriers.push_back(mkBarrierLayer(textureArrayManager->albedoArray.image, targetLayer, 1, textureArrayManager->albedoArray.mipLevels));
+		if (genN) postBarriers.push_back(mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels));
+		if (genB) postBarriers.push_back(mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels));
+
+		for (auto &barrier : postBarriers) {
+			barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		}
-		postBarriers[0].image = textureArrayManager->albedoArray.image;
-		postBarriers[0].subresourceRange.levelCount = textureArrayManager->albedoArray.mipLevels;
-		postBarriers[1].image = textureArrayManager->normalArray.image;
-		postBarriers[1].subresourceRange.levelCount = textureArrayManager->normalArray.mipLevels;
-		postBarriers[2].image = textureArrayManager->bumpArray.image;
-		postBarriers[2].subresourceRange.levelCount = textureArrayManager->bumpArray.mipLevels;
+
+		// log post-barrier info
+		{
+			std::lock_guard<std::mutex> lkll(logsMutex);
+			for (auto &b : postBarriers) {
+				char buf[256];
+				snprintf(buf, sizeof(buf), "Post-barrier: image=%p baseLayer=%u layers=%u newLayout=%d",
+					(void*)b.image, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount, b.newLayout);
+				logs.emplace_back(buf);
+			}
+		}
 
 		vkCmdPipelineBarrier(
 			commandBuffer,
@@ -528,74 +722,69 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params) {
 			0,
 			0, nullptr,
 			0, nullptr,
-			3, postBarriers
+			static_cast<uint32_t>(postBarriers.size()), postBarriers.data()
 		);
 
-
-
-
-		// Prepare target layer's base level for mipmap generation
-		// (all layers were just transitioned to SHADER_READ_ONLY, now target goes to TRANSFER_DST)
-		VkImageMemoryBarrier prepBarriers[3]{};
-		for (int i = 0; i < 3; ++i) {
-			prepBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			prepBarriers[i].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			prepBarriers[i].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			prepBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			prepBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			prepBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			prepBarriers[i].subresourceRange.baseMipLevel = 0;
-			prepBarriers[i].subresourceRange.levelCount = 1;
-			prepBarriers[i].subresourceRange.baseArrayLayer = targetLayer;
-			prepBarriers[i].subresourceRange.layerCount = 1;
-			prepBarriers[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			prepBarriers[i].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		}
-		prepBarriers[0].image = textureArrayManager->albedoArray.image;
-		prepBarriers[1].image = textureArrayManager->normalArray.image;
-		prepBarriers[2].image = textureArrayManager->bumpArray.image;
-
-		vkCmdPipelineBarrier(
-			commandBuffer,
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			VK_PIPELINE_STAGE_TRANSFER_BIT,
-			0,
-			0, nullptr,
-			0, nullptr,
-			3, prepBarriers
-		);
-
-		// End the command buffer so we can run mipmap generation commands
-		app->endSingleTimeCommands(commandBuffer);
-
-		// Generate mipmaps for the target layer on each array (if they have multiple mip levels)
-		if (textureArrayManager->albedoArray.mipLevels > 1) {
-app->generateMipmaps(textureArrayManager->albedoArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->albedoArray.mipLevels, 1, targetLayer);
+		// Prepare target layer's base level for mipmap generation (only for generated maps)
+		targetLayer = static_cast<uint32_t>(params.targetLayer);
+		if (targetLayer < textureArrayManager->layerAmount) {
+			// set pre-conditions: ensure we don't start copying into an array layer that is currently
+			// being generated by TextureMixer itself (avoid layout races). If another generation is
+			// pending for this layer, wait for it here.
+			TextureMixer* g = TextureMixer::getGlobalInstance();
+			if (g) {
+				if (g->isLayerGenerationPending(targetLayer)) {
+					std::lock_guard<std::mutex> lkll(logsMutex);
+					char buf[128];
+					snprintf(buf, sizeof(buf), "Waiting for generation to finish for layer=%u before mips/copy", targetLayer);
+					logs.emplace_back(buf);
+					// Block until generation completes
+					g->waitForLayerGeneration(targetLayer);
+				}
 			}
-			if (textureArrayManager->normalArray.mipLevels > 1) {
-				app->generateMipmaps(textureArrayManager->normalArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->normalArray.mipLevels, 1, targetLayer);
+			// For each generated map, record mipmap generation commands into our same command buffer
+			if (genA && textureArrayManager->albedoArray.mipLevels > 1) {
+				// Record mip generation directly into our command buffer to keep submission atomic and async
+				app->recordGenerateMipmaps(commandBuffer, textureArrayManager->albedoArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->albedoArray.mipLevels, 1, targetLayer);
 			}
-			if (textureArrayManager->bumpArray.mipLevels > 1) {
-				app->generateMipmaps(textureArrayManager->bumpArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->bumpArray.mipLevels, 1, targetLayer);
+			if (genN && textureArrayManager->normalArray.mipLevels > 1) {
+				app->recordGenerateMipmaps(commandBuffer, textureArrayManager->normalArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->normalArray.mipLevels, 1, targetLayer);
+			}
+			if (genB && textureArrayManager->bumpArray.mipLevels > 1) {
+				app->recordGenerateMipmaps(commandBuffer, textureArrayManager->bumpArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->bumpArray.mipLevels, 1, targetLayer);
+			}
+
+			// Submit the recorded command buffer asynchronously and get a fence so we can track completion
+			VkSemaphore signalSem = VK_NULL_HANDLE;
+			VkFence fence = app->submitCommandBufferAsync(commandBuffer, &signalSem);
+
+			// Log submission
+			{
+				std::lock_guard<std::mutex> lkll(logsMutex);
+				char buf[128];
+				snprintf(buf, sizeof(buf), "Submitted async generation: layer=%u maps=%s%s%s", targetLayer, genA?"A":"", genN?"N":"", genB?"B":"");
+				logs.emplace_back(buf);
+			}
+
+			// Record pending fence so we can call back when generation completes
+			{
+				std::lock_guard<std::mutex> lk(pendingFencesMutex);
+				pendingFences.push_back(std::make_tuple(fence, targetLayer));
+			}
+
+			// don't end the single-time command here (ownership transferred to VulkanApp)
+			commandBuffer = VK_NULL_HANDLE;
+			// Do not mark layer initialized yet — will do when fence signals
+		} else {
+			// end command buffer if we haven't already
+			if (commandBuffer != VK_NULL_HANDLE) app->endSingleTimeCommands(commandBuffer);
 		}
-
-		// Mark the layer initialized after the write
-		textureArrayManager->setLayerInitialized(targetLayer, true);
-
-		// Additional debug: print sampler handles and the array view used for sampling
-		printf("[TextureMixer] albedoSampler=%p albedoArray.view=%p\n",
-			(void*)textureArrayManager->albedoSampler, (void*)textureArrayManager->albedoArray.view);
-		printf("[TextureMixer] normalSampler=%p normalArray.view=%p\n",
-			(void*)textureArrayManager->normalSampler, (void*)textureArrayManager->normalArray.view);
-		printf("[TextureMixer] bumpSampler=%p bumpArray.view=%p\n",
-			(void*)textureArrayManager->bumpSampler, (void*)textureArrayManager->bumpArray.view);
 	} else {
-		// Transition images back to SHADER_READ_ONLY_OPTIMAL
-		for (int i = 0; i < 3; ++i) {
-			barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-			barriers[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			barriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-			barriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		for (auto &barrier : barriers) {
+			barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		}
 
 		vkCmdPipelineBarrier(
@@ -605,12 +794,11 @@ app->generateMipmaps(textureArrayManager->albedoArray.image, VK_FORMAT_R8G8B8A8_
 			0,
 			0, nullptr,
 			0, nullptr,
-			3, barriers
+			static_cast<uint32_t>(barriers.size()), barriers.data()
 		);
 
 		app->endSingleTimeCommands(commandBuffer);
 	}
-
 	printf("[TextureMixer] generatePerlinNoise: useArrayLayer=%d targetLayer=%u primary=%u secondary=%u\n",
 		useArrayLayer ? 1 : 0, targetLayer, pushConstants.primaryLayer, pushConstants.secondaryLayer);
 
@@ -619,6 +807,11 @@ app->generateMipmaps(textureArrayManager->albedoArray.image, VK_FORMAT_R8G8B8A8_
 		printf("[TextureMixer] albedoArray.image=%p albedoLayerView=%p\n", (void*)textureArrayManager->albedoArray.image, (void*)textureArrayManager->albedoLayerViews[targetLayer]);
 		printf("[TextureMixer] normalArray.image=%p normalLayerView=%p\n", (void*)textureArrayManager->normalArray.image, (void*)textureArrayManager->normalLayerViews[targetLayer]);
 		printf("[TextureMixer] bumpArray.image=%p bumpLayerView=%p\n", (void*)textureArrayManager->bumpArray.image, (void*)textureArrayManager->bumpLayerViews[targetLayer]);
+
+		std::lock_guard<std::mutex> lkll(logsMutex);
+		char buf[256];
+		snprintf(buf, sizeof(buf), "Generated layer=%u maps=%s%s%s", targetLayer, genA?"A":"", genN?"N":"", genB?"B":"");
+		logs.emplace_back(buf);
 	}
 
 	printf("Perlin noise generation complete!\n");
