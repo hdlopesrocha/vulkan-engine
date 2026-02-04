@@ -23,5 +23,8 @@ private:
     // Active tab (0=albedo,1=normal,2=bump) — used to regenerate only the selected map
     int activeMap = 0;
 
+    // Local diagnostics cache for the widget
+    std::vector<std::string> diagLog;
+
     void renderTextureTab(int map);
 };

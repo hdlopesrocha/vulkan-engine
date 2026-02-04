@@ -9,6 +9,8 @@ class VulkanApp;
 #include <random>
 #include <cstring>
 #include <functional>
+#include <mutex>
+#include <vector>
 
 // Vulkan-only helper that manages compute pipelines and the EditableTexture instances.
 // UI is handled by `widgets::AnimatedTextureWidget`.
@@ -45,6 +47,18 @@ public:
     // Generate all textures initially
     void generateInitialTextures(std::vector<MixerParameters> &mixerParams);
 
+    // Queue a generation request from UI thread; flushed synchronously from main update
+    void enqueueGenerate(const MixerParameters &params, int map = -1);
+    // Flush pending generation requests synchronously (call from main update loop)
+    void flushPendingRequests();
+
+    // Poll for completed async generation fences and invoke callbacks (called from update()/preRender)
+    void pollPendingGenerations();
+
+    // Diagnostics: number of pending async generations and a small log buffer
+    size_t getPendingGenerationCount();
+    std::vector<std::string> consumeLogs();
+
     void cleanup();
 
     // Query array layer dimensions (0 if none)
@@ -54,7 +68,8 @@ public:
     int getBytesPerPixel() const;
 
     // Generate Perlin noise for a texture using explicit parameters (used by UI widget)
-    void generatePerlinNoise(MixerParameters &params);
+    // map: -1 = all maps, 0 = albedo, 1 = normal, 2 = bump
+    void generatePerlinNoise(MixerParameters &params, int map = -1);
 
 private:
     VulkanApp* app = nullptr;
@@ -79,6 +94,29 @@ private:
 
     // Callback function to notify when textures are generated
     std::function<void()> onTextureGeneratedCallback;
+
+    // Pending generation requests (thread-safe queue)
+    std::mutex pendingRequestsMutex;
+    std::vector<std::pair<MixerParameters,int>> pendingRequests;
+
+    // Pending async fences (fence, layer) for in-flight generation submissions
+    std::mutex pendingFencesMutex;
+    std::vector<std::tuple<VkFence, uint32_t>> pendingFences;
+
+    // Diagnostics: small textual log buffer for UI and a mutex to protect it
+    std::mutex logsMutex;
+    std::vector<std::string> logs;
+
+public:
+    // Query whether a layer currently has an in-flight generation
+    bool isLayerGenerationPending(uint32_t layer);
+    // Block until generation for a specific layer completes (returns true if waited)
+    // This uses Vulkan fences and will block until the generation fence signals.
+    bool waitForLayerGeneration(uint32_t layer, uint64_t timeoutNs = UINT64_MAX);
+
+    // Global instance accessor (set on init) so external systems can wait for generations
+    static TextureMixer* getGlobalInstance();
+
     // If editable textures are represented inside a TextureArrayManager, store the layer index
 public:
     // If editable textures are represented inside a TextureArrayManager, store the layer index

@@ -227,7 +227,10 @@ uint TextureArrayManager::load(const char* albedoFile, const char* normalFile, c
 
 	VulkanApp* a = this->app;
 	VkDevice device = a->getDevice();
-
+	std::cout << "[TextureArrayManager] Loading textures into layer " << currentLayer << ": "
+			  << (albedoFile ? albedoFile : "(none)") << ", "
+			  << (normalFile ? normalFile : "(none)") << ", "
+			  << (bumpFile ? bumpFile : "(none)") << std::endl;
 	struct Img { const char* path; TextureImage* dstImage; VkFormat format; bool srgb; } imgs[3] = {
 		{ albedoFile, &albedoArray, VK_FORMAT_R8G8B8A8_UNORM, true },
 		{ normalFile, &normalArray, VK_FORMAT_R8G8B8A8_UNORM, false },
@@ -452,9 +455,18 @@ void TextureArrayManager::updateLayerFromEditable(uint32_t layer, const Editable
 	updateLayerFromEditableMap(layer, tex, 0);
 }
 
+#include "TextureMixer.hpp"
+
 void TextureArrayManager::updateLayerFromEditableMap(uint32_t layer, const EditableTexture& tex, int map) {
 	if (!app) throw std::runtime_error("TextureArrayManager::updateLayerFromEditableMap: no VulkanApp");
 	if (layer >= layerAmount) throw std::runtime_error("TextureArrayManager::updateLayerFromEditableMap: layer out of range");
+
+	// If a per-layer generation is in-flight for this layer, wait for it to finish to avoid layout races
+	TextureMixer* gm = TextureMixer::getGlobalInstance();
+	if (gm && gm->isLayerGenerationPending(layer)) {
+		fprintf(stderr, "[TextureArrayManager] Waiting for pending generation on layer %u before copying\n", layer);
+		gm->waitForLayerGeneration(layer);
+	}
 
 	VulkanApp* a = this->app;
 	VkDevice device = a->getDevice();
@@ -507,7 +519,8 @@ void TextureArrayManager::updateLayerFromEditableMap(uint32_t layer, const Edita
 	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
 					  0, nullptr, 0, nullptr, 1, &srcBarrier);
 
-	// Copy into selected array layer
+	// Copy into selected array layer (ensure we log what we're doing)
+	fprintf(stderr, "[TextureArrayManager] Copying into array image %p layer=%u\n", (void*)dstImage, layer);
 	doBarrier(dstImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, layer);
 	VkImageCopy copyRegion{};
 	copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -524,6 +537,7 @@ void TextureArrayManager::updateLayerFromEditableMap(uint32_t layer, const Edita
 	vkCmdCopyImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
 	// Transition dst layer back to SHADER_READ_ONLY_OPTIMAL
+	fprintf(stderr, "[TextureArrayManager] Transitioning dst layer %u back to SHADER_READ_ONLY_OPTIMAL\n", layer);
 	VkImageMemoryBarrier dstBack{};
 	dstBack.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 	dstBack.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;

@@ -37,6 +37,24 @@ void AnimatedTextureWidget::render() {
 
     ImGui::Text("Perlin Noise Generator");
 
+    // Diagnostics: show pending generation count and recent logs
+    if (textures) {
+        size_t pending = textures->getPendingGenerationCount();
+        if (pending > 0) {
+            ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.1f, 1.0f), "Generation pending: %zu", pending);
+        }
+        auto newLogs = textures->consumeLogs();
+        for (auto &l : newLogs) diagLog.push_back(l);
+        if (!diagLog.empty()) {
+            ImGui::Separator();
+            ImGui::Text("Diagnostics:");
+            int start = diagLog.size() > 10 ? static_cast<int>(diagLog.size() - 10) : 0;
+            for (int i = start; i < static_cast<int>(diagLog.size()); ++i) {
+                ImGui::Text("%s", diagLog[i].c_str());
+            }
+        }
+    }
+
     uint32_t maxLayers = textures->getArrayLayerCount();
 
     // Navigation: show only one MixerParameters entry at a time
@@ -74,7 +92,7 @@ void AnimatedTextureWidget::render() {
         // If the selection changed, generate the Perlin preview for the newly selected mixer once
         if (previousIndex != currentMixerIndex) {
             if (maxLayers > 0) {
-                textures->generatePerlinNoise(mp);
+                textures->enqueueGenerate(mp);
             } else {
                 // No texture arrays available — skip generation and show guidance
                 fprintf(stderr, "[AnimatedTextureWidget] Skipping Perlin generation: no texture arrays available (target layer=%zu)\n", mp.targetLayer);
@@ -108,7 +126,7 @@ void AnimatedTextureWidget::render() {
         if (paramsChanged) {
             // Regenerate only the currently active map to avoid updating all three editable textures
             if (maxLayers > 0) {
-                textures->generatePerlinNoise(mp);
+                textures->enqueueGenerate(mp, activeMap);
             } else {
                 fprintf(stderr, "[AnimatedTextureWidget] Params changed but no texture arrays allocated — generation skipped.\n");
             }
@@ -118,7 +136,7 @@ void AnimatedTextureWidget::render() {
         if (maxLayers > 0) {
             ImGui::SameLine();
             if (ImGui::Button("Generate")) {
-                textures->generatePerlinNoise(mp);
+                textures->enqueueGenerate(mp, activeMap);
             }
         } else {
             ImGui::SameLine(); ImGui::TextDisabled("(no texture arrays)");

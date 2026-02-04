@@ -139,6 +139,14 @@ protected:
         // Generate mipmaps for an image. Works on array textures by specifying
         // layerCount and baseArrayLayer to affect a subset of layers.
         void generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount = 1, uint32_t baseArrayLayer = 0);
+
+        // Record mipmap generation commands into an existing command buffer (no begin/end or wait)
+        void recordGenerateMipmaps(VkCommandBuffer commandBuffer, VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount = 1, uint32_t baseArrayLayer = 0);
+
+        // Submit a pre-recorded command buffer asynchronously and return a fence that will be signaled on completion.
+        // If outSemaphore is non-null, the submission will signal that semaphore when finished (useful to make frame submit wait on generation).
+        VkFence submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore = nullptr);
+        void processPendingCommandBuffers();
         void createDescriptorSetLayout();
     void cleanupSwapchain();
     void recreateSwapchain();
