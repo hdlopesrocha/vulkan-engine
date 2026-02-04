@@ -73,7 +73,12 @@ void AnimatedTextureWidget::render() {
 
         // If the selection changed, generate the Perlin preview for the newly selected mixer once
         if (previousIndex != currentMixerIndex) {
-            textures->generatePerlinNoise(mp);
+            if (maxLayers > 0) {
+                textures->generatePerlinNoise(mp);
+            } else {
+                // No texture arrays available — skip generation and show guidance
+                fprintf(stderr, "[AnimatedTextureWidget] Skipping Perlin generation: no texture arrays available (target layer=%zu)\n", mp.targetLayer);
+            }
         }
 
         ImGui::Separator();
@@ -102,7 +107,21 @@ void AnimatedTextureWidget::render() {
 
         if (paramsChanged) {
             // Regenerate only the currently active map to avoid updating all three editable textures
-            textures->generatePerlinNoise(mp);
+            if (maxLayers > 0) {
+                textures->generatePerlinNoise(mp);
+            } else {
+                fprintf(stderr, "[AnimatedTextureWidget] Params changed but no texture arrays allocated — generation skipped.\n");
+            }
+        }
+
+        // Manual generate button (useful when changing layers/params)
+        if (maxLayers > 0) {
+            ImGui::SameLine();
+            if (ImGui::Button("Generate")) {
+                textures->generatePerlinNoise(mp);
+            }
+        } else {
+            ImGui::SameLine(); ImGui::TextDisabled("(no texture arrays)");
         }
     }
 
