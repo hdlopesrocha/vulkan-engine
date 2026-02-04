@@ -13,7 +13,7 @@ class VulkanApp;
 #include <vector>
 
 // Vulkan-only helper that manages compute pipelines and the EditableTexture instances.
-// UI is handled by `widgets::AnimatedTextureWidget`.
+// UI is handled by `widgets::TextureMixerWidget`.
 struct MixerParameters {
     size_t targetLayer;
     uint primaryTextureIdx;

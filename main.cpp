@@ -28,7 +28,7 @@
 #include "widgets/RenderPassDebugWidget.hpp"
 #include "widgets/BillboardWidget.hpp"
 #include "widgets/BillboardCreator.hpp"
-#include "widgets/AnimatedTextureWidget.hpp"
+#include "widgets/TextureMixerWidget.hpp"
 #include "widgets/TextureViewerWidget.hpp"
 #include "widgets/CameraWidget.hpp"
 #include "widgets/DebugWidget.hpp"
@@ -84,7 +84,7 @@ public:
     std::shared_ptr<BillboardWidget> billboardWidget;
     std::shared_ptr<BillboardCreator> billboardCreator;
     std::unique_ptr<BillboardWidgetManager> billboardWidgetManager;
-    std::shared_ptr<AnimatedTextureWidget> animatedTextureWidget;
+    std::shared_ptr<TextureMixerWidget> textureMixerWidget;
     std::shared_ptr<TextureViewer> textureViewer;
     std::shared_ptr<CameraWidget> cameraWidget;
     std::shared_ptr<DebugWidget> debugWidget;
@@ -216,7 +216,7 @@ public:
         textureArrayManager.getImTexture(defaultMixer.targetLayer, 1);
         textureArrayManager.getImTexture(defaultMixer.targetLayer, 2);
 
-        animatedTextureWidget = std::make_shared<AnimatedTextureWidget>(textureMixer, mixerParams, "Editable Textures");
+        textureMixerWidget = std::make_shared<TextureMixerWidget>(textureMixer, mixerParams, "Texture Mixer");
 
         size_t materialCount = std::max<size_t>(static_cast<size_t>(loadedTextureLayers), static_cast<size_t>(defaultMixer.targetLayer + 1));
         if (materialCount == 0) {
@@ -264,7 +264,7 @@ public:
         // Create octree explorer widget bound to loaded scene
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
 
-        widgetManager.addWidget(animatedTextureWidget);
+        widgetManager.addWidget(textureMixerWidget);
         widgetManager.addWidget(textureViewer);
         widgetManager.addWidget(cameraWidget);
         widgetManager.addWidget(debugWidget);
