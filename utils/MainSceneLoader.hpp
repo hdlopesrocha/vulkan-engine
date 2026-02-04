@@ -102,7 +102,7 @@ public:
             BoxDistanceFunction function = BoxDistanceFunction();
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             WrappedBox wrappedFunction = WrappedBox(&function);
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*2.0f, simplifier, opaqueHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(0), minSize*2.0f, simplifier, opaqueHandler);
         }
 
         {
@@ -113,7 +113,7 @@ public:
             SphereDistanceFunction function = SphereDistanceFunction();
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             WrappedSphere wrappedFunction = WrappedSphere(&function);
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(6), minSize*0.5f, simplifier, opaqueHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(5), minSize*0.5f, simplifier, opaqueHandler);
         }
 
         {
@@ -135,7 +135,7 @@ public:
             SphereDistanceFunction function = SphereDistanceFunction();
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             WrappedSphere wrappedFunction = WrappedSphere(&function);
-            opaqueLayer.del(&wrappedFunction, model, translate, scale, SimpleBrush(5), minSize, simplifier, opaqueHandler);
+            opaqueLayer.del(&wrappedFunction, model, translate, scale, SimpleBrush(4), minSize, simplifier, opaqueHandler);
         }
         
         {
@@ -158,7 +158,7 @@ public:
             SphereDistanceFunction function = SphereDistanceFunction();
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             WrappedSphere wrappedFunction = WrappedSphere(&function);
-            transparentLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*0.1f, simplifier, transparentHandler);
+            transparentLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(0), minSize*0.1f, simplifier, transparentHandler);
         }
 
         {
@@ -278,7 +278,7 @@ public:
             OctreeDifferenceFunction function(&opaqueLayer, waterBox, minSize*2.0f);
             WrappedOctreeDifference wrappedFunction = WrappedOctreeDifference(&function);
             //wrappedFunction.cacheEnabled = true;
-            transparentLayer.add(&wrappedFunction, model, translate, scale, WaterBrush(1), minSize, simplifier, transparentHandler);
+            transparentLayer.add(&wrappedFunction, model, translate, scale, WaterBrush(0), minSize, simplifier, transparentHandler);
         }
 
         {
@@ -289,7 +289,7 @@ public:
             BoxDistanceFunction function = BoxDistanceFunction();
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             WrappedBox wrappedFunction = WrappedBox(&function);
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*4, simplifier, opaqueHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(0), minSize*4, simplifier, opaqueHandler);
         }
 
         {
@@ -300,7 +300,7 @@ public:
             BoxDistanceFunction function = BoxDistanceFunction();
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             WrappedBox wrappedFunction = WrappedBox(&function);
-            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*0.25, simplifier, opaqueHandler);
+            opaqueLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(0), minSize*0.25, simplifier, opaqueHandler);
         }
 
    
