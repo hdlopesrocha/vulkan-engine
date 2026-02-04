@@ -129,7 +129,7 @@ public:
             // (e.g., no vegetation renderer), allocate a sensible default set here.
             if (sceneRenderer->textureArrayManager.layerAmount == 0) {
                 const uint32_t defaultLayers = 64;
-                const uint32_t defaultSize = 512;
+                const uint32_t defaultSize = 1024;
                 sceneRenderer->textureArrayManager.allocate(defaultLayers, defaultSize, defaultSize, this);
                 printf("[MyApp::setup] Allocated default texture arrays: layers=%u size=%ux%u\n", defaultLayers, defaultSize, defaultSize);
             }
