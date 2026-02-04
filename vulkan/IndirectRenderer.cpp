@@ -12,7 +12,6 @@ void IndirectRenderer::init(VulkanApp* app) {
 void IndirectRenderer::cleanup(VulkanApp* app) {
     // meshes no longer own per-mesh buffers; clear CPU lists
     meshes.clear();
-    idToIndex.clear();
     if (vertexBuffer.buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(app->getDevice(), vertexBuffer.buffer, nullptr);
     }
@@ -76,112 +75,57 @@ void IndirectRenderer::cleanup(VulkanApp* app) {
 }
 
 uint32_t IndirectRenderer::addMesh(VulkanApp* app, const Geometry& mesh) {
-    return addMesh(app, mesh, nextId++);
+    return updateMesh(app, mesh, nextId++);
 }
 
-uint32_t IndirectRenderer::addMesh(VulkanApp* app, const Geometry& mesh, uint32_t customId) {
+uint32_t IndirectRenderer::updateMesh(VulkanApp* app, const Geometry& mesh, uint32_t customId) {
     std::lock_guard<std::mutex> guard(mutex);
     std::cout << "[IndirectRenderer::addMesh] Adding/replacing mesh ID " << customId << " with " << mesh.vertices.size() << " vertices and " << mesh.indices.size() << " indices.\n";
-    auto computeVertexCount = [](const MeshInfo& info, const std::vector<uint32_t>& indices) -> uint32_t {
-        if (info.indexCount == 0 || indices.empty()) return 0;
-        uint32_t maxIdx = 0;
-        size_t begin = info.firstIndex;
-        size_t end = std::min(indices.size(), static_cast<size_t>(info.firstIndex + info.indexCount));
-        for (size_t i = begin; i < end; ++i) {
-            if (indices[i] > maxIdx) maxIdx = indices[i];
+
+    MeshInfo m{};
+    m.id = customId;
+    m.baseVertex = static_cast<uint32_t>(mergedVertices.size());
+    m.firstIndex = static_cast<uint32_t>(mergedIndices.size());
+    m.indexCount = static_cast<uint32_t>(mesh.indices.size());
+    m.model = glm::mat4(1.0f);
+    m.active = true;
+
+    if (mesh.vertices.empty()) {
+        // Empty mesh: set degenerate zero-sized bounds at origin
+        m.boundsMin = glm::vec4(0.0f);
+        m.boundsMax = glm::vec4(0.0f);
+    } else {
+        glm::vec3 minp(FLT_MAX), maxp(-FLT_MAX);
+        for (const auto& v : mesh.vertices) {
+            minp = glm::min(minp, v.position);
+            maxp = glm::max(maxp, v.position);
         }
-        return maxIdx + 1; // vertices are 0-based
-    };
-
-    // Repack all active meshes, replacing any existing mesh with this ID
-    std::vector<MeshInfo> newMeshes;
-    std::vector<Vertex> newVertices;
-    std::vector<uint32_t> newIndices;
-    std::vector<VkDrawIndexedIndirectCommand> newIndirect;
-    newMeshes.reserve(meshes.size() + 1);
-    newVertices.reserve(mergedVertices.size() + mesh.vertices.size());
-    newIndices.reserve(mergedIndices.size() + mesh.indices.size());
-    newIndirect.reserve(indirectCommands.size() + 1);
-
-    idToIndex.clear();
-    bool replaced = false;
-
-    auto appendMesh = [&](uint32_t id, const std::vector<Vertex>& verts, const std::vector<uint32_t>& idxs) {
-        MeshInfo m{};
-        m.id = id;
-        m.baseVertex = static_cast<uint32_t>(newVertices.size());
-        m.firstIndex = static_cast<uint32_t>(newIndices.size());
-        m.indexCount = static_cast<uint32_t>(idxs.size());
-        m.model = glm::mat4(1.0f);
-        m.active = true;
-
-        if (verts.empty()) {
-            // Empty mesh: set degenerate zero-sized bounds at origin
-            m.boundsMin = glm::vec4(0.0f);
-            m.boundsMax = glm::vec4(0.0f);
-        } else {
-            glm::vec3 minp(FLT_MAX), maxp(-FLT_MAX);
-            for (const auto& v : verts) {
-                minp = glm::min(minp, v.position);
-                maxp = glm::max(maxp, v.position);
-            }
-            m.boundsMin = glm::vec4(minp, 0.0f);
-            m.boundsMax = glm::vec4(maxp, 0.0f);
-        }
-
-        newVertices.insert(newVertices.end(), verts.begin(), verts.end());
-        newIndices.insert(newIndices.end(), idxs.begin(), idxs.end());
-
-        VkDrawIndexedIndirectCommand cmd{};
-        cmd.indexCount = m.indexCount;
-        cmd.instanceCount = 1;
-        cmd.firstIndex = m.firstIndex;
-        cmd.vertexOffset = static_cast<int32_t>(m.baseVertex);
-        cmd.firstInstance = static_cast<uint32_t>(newIndirect.size());
-        newIndirect.push_back(cmd);
-
-        idToIndex[m.id] = newMeshes.size();
-        newMeshes.push_back(m);
-    };
-
-    // Keep all active meshes except the one we are replacing
-    for (const auto& m : meshes) {
-        if (!m.active || m.id == customId) continue;
-        uint32_t vCount = computeVertexCount(m, mergedIndices);
-        if (vCount == 0 || m.indexCount == 0) continue;
-        size_t vBegin = std::min(static_cast<size_t>(m.baseVertex), mergedVertices.size());
-        size_t vEnd = std::min(vBegin + vCount, mergedVertices.size());
-        size_t iBegin = std::min(static_cast<size_t>(m.firstIndex), mergedIndices.size());
-        size_t iEnd = std::min(iBegin + m.indexCount, mergedIndices.size());
-        if (vBegin >= vEnd || iBegin >= iEnd) continue;
-
-        std::vector<Vertex> verts(mergedVertices.begin() + vBegin, mergedVertices.begin() + vEnd);
-        std::vector<uint32_t> idxs(mergedIndices.begin() + iBegin, mergedIndices.begin() + iEnd);
-        appendMesh(m.id, verts, idxs);
+        m.boundsMin = glm::vec4(minp, 0.0f);
+        m.boundsMax = glm::vec4(maxp, 0.0f);
     }
 
-    // Append/replace the target mesh last so its offsets reflect the new packed layout
-    appendMesh(customId, mesh.vertices, mesh.indices);
-    replaced = true;
+    mergedVertices.insert(mergedVertices.end(), mesh.vertices.begin(), mesh.vertices.end());
+    mergedIndices.insert(mergedIndices.end(), mesh.indices.begin(), mesh.indices.end());
 
-    // Swap in the packed state
-    meshes.swap(newMeshes);
-    mergedVertices.swap(newVertices);
-    mergedIndices.swap(newIndices);
-    indirectCommands.swap(newIndirect);
+    VkDrawIndexedIndirectCommand cmd{};
+    cmd.indexCount = m.indexCount;
+    cmd.instanceCount = 1;
+    cmd.firstIndex = m.firstIndex;
+    cmd.vertexOffset = static_cast<int32_t>(m.baseVertex);
+    cmd.firstInstance = static_cast<uint32_t>(indirectCommands.size());
+    indirectCommands.push_back(cmd);
 
-    if (customId >= nextId) nextId = customId + 1;
-    dirty = true;
+    meshes[m.id] = m; // insert or replace
+
     return customId;
 }
 
+
 void IndirectRenderer::removeMesh(uint32_t meshId) {
     std::lock_guard<std::mutex> guard(mutex);
-    auto it = idToIndex.find(meshId);
-    if (it == idToIndex.end()) return;
-    size_t idx = it->second;
-    meshes[idx].active = false;
-    idToIndex.erase(it);
+    auto it = meshes.find(meshId);
+    if (it == meshes.end()) return;
+    it->second.active = false;
     dirty = true;
 }
 
@@ -216,66 +160,45 @@ bool IndirectRenderer::ensureCapacity(VulkanApp* app, size_t vertexCount, size_t
     return !needsRebuild;
 }
 
-bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
+bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t meshId) {
     std::lock_guard<std::mutex> guard(mutex);
-    
-    auto it = idToIndex.find(meshId);
-    if (it == idToIndex.end()) {
-        printf("[IndirectRenderer::uploadMesh] meshId %u not found\n", meshId);
+    auto it = meshes.find(meshId);
+    if (it == meshes.end()) {
+        printf("[IndirectRenderer::uploadMeshVerticesAndIndices] meshId %u not found\n", meshId);
         return false;
     }
-    
-    size_t idx = it->second;
-    MeshInfo& info = meshes[idx];
+    MeshInfo& info = it->second;
     if (!info.active) {
-        printf("[IndirectRenderer::uploadMesh] meshId %u is inactive\n", meshId);
+        printf("[IndirectRenderer::uploadMeshVerticesAndIndices] meshId %u is inactive\n", meshId);
         return false;
     }
-    
-    // Check if buffers exist and have capacity
     if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) {
-        printf("[IndirectRenderer::uploadMesh] buffers not created, need rebuild()\n");
+        printf("[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()\n");
         return false;
     }
-    
-    size_t vertexEnd = info.baseVertex + (info.indexCount > 0 ? 
-        (mergedIndices.size() > info.firstIndex ? 
-            *std::max_element(mergedIndices.begin() + info.firstIndex, 
-                              mergedIndices.begin() + info.firstIndex + info.indexCount) + 1 : 0) : 0);
-    
-    // For simplicity, calculate actual vertex count from the mesh range
-    // Find the mesh's vertex range by looking at indices
     uint32_t maxVertexIdx = 0;
     for (size_t i = info.firstIndex; i < info.firstIndex + info.indexCount && i < mergedIndices.size(); ++i) {
         if (mergedIndices[i] > maxVertexIdx) maxVertexIdx = mergedIndices[i];
     }
     size_t meshVertexCount = maxVertexIdx + 1;
-    
     if (info.baseVertex + meshVertexCount > vertexCapacity) {
-        printf("[IndirectRenderer::uploadMesh] vertex capacity exceeded (%u + %zu > %zu)\n", 
-               info.baseVertex, meshVertexCount, vertexCapacity);
+        printf("[IndirectRenderer::uploadMeshVerticesAndIndices] vertex capacity exceeded (%u + %zu > %zu)\n", info.baseVertex, meshVertexCount, vertexCapacity);
         return false;
     }
     if (info.firstIndex + info.indexCount > indexCapacity) {
-        printf("[IndirectRenderer::uploadMesh] index capacity exceeded\n");
+        printf("[IndirectRenderer::uploadMeshVerticesAndIndices] index capacity exceeded\n");
         return false;
     }
-    
-    // Upload vertex data for this mesh via staging buffer
     VkDeviceSize vertexOffset = info.baseVertex * sizeof(Vertex);
     VkDeviceSize vertexSize = meshVertexCount * sizeof(Vertex);
-    
     if (vertexSize > 0 && info.baseVertex < mergedVertices.size()) {
         Buffer stagingVertex = app->createBuffer(vertexSize,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        
         void* data;
         vkMapMemory(app->getDevice(), stagingVertex.memory, 0, vertexSize, 0, &data);
         memcpy(data, &mergedVertices[info.baseVertex], vertexSize);
         vkUnmapMemory(app->getDevice(), stagingVertex.memory);
-        
-        // Copy via single-time command buffer
         VkCommandBuffer cmd = app->beginSingleTimeCommands();
         VkBufferCopy copyRegion{};
         copyRegion.srcOffset = 0;
@@ -283,26 +206,19 @@ bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
         copyRegion.size = vertexSize;
         vkCmdCopyBuffer(cmd, stagingVertex.buffer, vertexBuffer.buffer, 1, &copyRegion);
         app->endSingleTimeCommands(cmd);
-        
         vkDestroyBuffer(app->getDevice(), stagingVertex.buffer, nullptr);
         vkFreeMemory(app->getDevice(), stagingVertex.memory, nullptr);
     }
-    
-    // Upload index data for this mesh via staging buffer
     VkDeviceSize indexOffset = info.firstIndex * sizeof(uint32_t);
     VkDeviceSize indexSize = info.indexCount * sizeof(uint32_t);
-    
     if (indexSize > 0 && info.firstIndex < mergedIndices.size()) {
         Buffer stagingIndex = app->createBuffer(indexSize,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        
         void* data;
         vkMapMemory(app->getDevice(), stagingIndex.memory, 0, indexSize, 0, &data);
         memcpy(data, &mergedIndices[info.firstIndex], indexSize);
         vkUnmapMemory(app->getDevice(), stagingIndex.memory);
-        
-        // Copy via single-time command buffer
         VkCommandBuffer cmd = app->beginSingleTimeCommands();
         VkBufferCopy copyRegion{};
         copyRegion.srcOffset = 0;
@@ -310,38 +226,41 @@ bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
         copyRegion.size = indexSize;
         vkCmdCopyBuffer(cmd, stagingIndex.buffer, indexBuffer.buffer, 1, &copyRegion);
         app->endSingleTimeCommands(cmd);
-        
         vkDestroyBuffer(app->getDevice(), stagingIndex.buffer, nullptr);
         vkFreeMemory(app->getDevice(), stagingIndex.memory, nullptr);
     }
-    
-    // Update indirect command for this mesh
-    if (indirectBuffer.buffer != VK_NULL_HANDLE && idx < meshCapacity) {
-        // Find the active mesh index (position in compacted list)
-        size_t activeIdx = 0;
-        for (size_t i = 0; i < idx; ++i) {
-            if (meshes[i].active) ++activeIdx;
-        }
-        
+    return true;
+}
+
+bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
+    if (!uploadMeshVerticesAndIndices(app, meshId)) {
+        return false;
+    }
+    uploadMeshMetaBuffers(app);
+    return true;
+}
+
+// Write all mesh indirect/model/bounds buffers for all active meshes
+void IndirectRenderer::uploadMeshMetaBuffers(VulkanApp* app) {
+    std::lock_guard<std::mutex> guard(mutex);
+    if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
+    size_t activeIdx = 0;
+    for (auto& kv : meshes) {
+        MeshInfo& info = kv.second;
+        if (!info.active) continue;
         VkDrawIndexedIndirectCommand cmd{};
         cmd.indexCount = info.indexCount;
         cmd.instanceCount = 1;
         cmd.firstIndex = info.firstIndex;
         cmd.vertexOffset = static_cast<int32_t>(info.baseVertex);
         cmd.firstInstance = static_cast<uint32_t>(activeIdx);
-        
         VkDeviceSize cmdOffset = activeIdx * sizeof(VkDrawIndexedIndirectCommand);
         VkDeviceSize cmdSize = sizeof(VkDrawIndexedIndirectCommand);
-        
-        // Indirect buffer is host-visible, can map directly
         void* data;
         vkMapMemory(app->getDevice(), indirectBuffer.memory, cmdOffset, cmdSize, 0, &data);
         memcpy(data, &cmd, cmdSize);
         vkUnmapMemory(app->getDevice(), indirectBuffer.memory);
-        
         info.indirectOffset = cmdOffset;
-        
-        // Update models buffer entry
         if (modelsBuffer.buffer != VK_NULL_HANDLE) {
             VkDeviceSize modelOffset = activeIdx * sizeof(glm::mat4);
             glm::mat4 model = info.model;
@@ -349,8 +268,6 @@ bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
             memcpy(data, &model, sizeof(glm::mat4));
             vkUnmapMemory(app->getDevice(), modelsBuffer.memory);
         }
-        
-        // Update bounds buffer entry  
         if (boundsBuffer.buffer != VK_NULL_HANDLE) {
             VkDeviceSize boundsOffset = activeIdx * 2 * sizeof(glm::vec4);
             glm::vec4 bounds[2] = { info.boundsMin, info.boundsMax };
@@ -358,64 +275,7 @@ bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
             memcpy(data, bounds, sizeof(bounds));
             vkUnmapMemory(app->getDevice(), boundsBuffer.memory);
         }
-    }
-    
-    return true;
-}
-
-void IndirectRenderer::eraseMeshFromGPU(VulkanApp* app, uint32_t meshId) {
-    std::lock_guard<std::mutex> guard(mutex);
-    
-    // Find the mesh's position in the active command list
-    // Since the mesh was just marked inactive by removeMesh(), we need to find its former position
-    // by counting active meshes before it
-    size_t meshIdx = SIZE_MAX;
-    for (size_t i = 0; i < meshes.size(); ++i) {
-        if (meshes[i].id == meshId) {
-            meshIdx = i;
-            break;
-        }
-    }
-    
-    if (meshIdx == SIZE_MAX) {
-        // Mesh not found at all - might have been removed already
-        return;
-    }
-    
-    // Count how many active meshes were before this one to get its command index
-    size_t activeIdx = 0;
-    for (size_t i = 0; i < meshIdx; ++i) {
-        if (meshes[i].active) ++activeIdx;
-    }
-    
-    // Zero out the indirect command so GPU culling produces no draws for this slot
-    if (indirectBuffer.buffer != VK_NULL_HANDLE) {
-        VkDrawIndexedIndirectCommand zeroCmd{};
-        zeroCmd.indexCount = 0;
-        zeroCmd.instanceCount = 0;
-        zeroCmd.firstIndex = 0;
-        zeroCmd.vertexOffset = 0;
-        zeroCmd.firstInstance = 0;
-        
-        VkDeviceSize cmdOffset = activeIdx * sizeof(VkDrawIndexedIndirectCommand);
-        void* data;
-        vkMapMemory(app->getDevice(), indirectBuffer.memory, cmdOffset, sizeof(VkDrawIndexedIndirectCommand), 0, &data);
-        memcpy(data, &zeroCmd, sizeof(VkDrawIndexedIndirectCommand));
-        vkUnmapMemory(app->getDevice(), indirectBuffer.memory);
-    }
-    
-    // Zero out bounds so culling shader skips this mesh entirely (degenerate AABB)
-    if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-        // Set min > max to make AABB invalid/degenerate - culling will reject it
-        glm::vec4 invalidBounds[2] = { 
-            glm::vec4(FLT_MAX, FLT_MAX, FLT_MAX, 0.0f),   // min
-            glm::vec4(-FLT_MAX, -FLT_MAX, -FLT_MAX, 0.0f) // max (less than min = invalid)
-        };
-        VkDeviceSize boundsOffset = activeIdx * 2 * sizeof(glm::vec4);
-        void* data;
-        vkMapMemory(app->getDevice(), boundsBuffer.memory, boundsOffset, sizeof(invalidBounds), 0, &data);
-        memcpy(data, invalidBounds, sizeof(invalidBounds));
-        vkUnmapMemory(app->getDevice(), boundsBuffer.memory);
+        ++activeIdx;
     }
 }
 
@@ -423,7 +283,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     std::lock_guard<std::mutex> guard(mutex);
     
     size_t activeMeshCount = 0;
-    for (const auto& m : meshes) if (m.active) ++activeMeshCount;
+    for (const auto& kv : meshes) if (kv.second.active) ++activeMeshCount;
     printf("[IndirectRenderer::rebuild] Called. dirty=%d, meshes.size()=%zu, activeMeshCount=%zu, mergedVertices=%zu, mergedIndices=%zu\n",
         dirty, meshes.size(), activeMeshCount, mergedVertices.size(), mergedIndices.size());
     
@@ -542,14 +402,14 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // Rebuild indirect command list from active meshes so GPU-side compaction matches models/bounds
     std::vector<VkDrawIndexedIndirectCommand> cmds;
     cmds.reserve(meshes.size());
-    for (size_t i = 0; i < meshes.size(); ++i) {
-        if (!meshes[i].active) continue;
+    for (const auto& kv : meshes) {
+        const MeshInfo& info = kv.second;
+        if (!info.active) continue;
         VkDrawIndexedIndirectCommand cmd{};
-        cmd.indexCount = meshes[i].indexCount;
+        cmd.indexCount = info.indexCount;
         cmd.instanceCount = 1;
-        cmd.firstIndex = meshes[i].firstIndex;
-        cmd.vertexOffset = static_cast<int32_t>(meshes[i].baseVertex);
-        // Use firstInstance to carry the model index so shaders can fetch per-draw model
+        cmd.firstIndex = info.firstIndex;
+        cmd.vertexOffset = static_cast<int32_t>(info.baseVertex);
         cmd.firstInstance = static_cast<uint32_t>(cmds.size());
         cmds.push_back(cmd);
     }
@@ -599,10 +459,10 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // order as the indirect commands so shaders can index by draw ID.
     std::vector<glm::mat4> models;
     models.reserve(meshes.size());
-    for (size_t i = 0; i < meshes.size(); ++i) {
-        if (!meshes[i].active) continue;
-        // Use the stored model matrix for each mesh
-        models.push_back(meshes[i].model);
+    for (const auto& kv : meshes) {
+        const MeshInfo& info = kv.second;
+        if (!info.active) continue;
+        models.push_back(info.model);
     }
     
     static bool printedModels = false;
@@ -637,10 +497,11 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // Upload bounds SSBO (two vec4s per active mesh: min, max)
     std::vector<glm::vec4> boundsData;
     boundsData.reserve(meshes.size() * 2);
-    for (size_t i = 0; i < meshes.size(); ++i) {
-        if (!meshes[i].active) continue;
-        boundsData.push_back(meshes[i].boundsMin);
-        boundsData.push_back(meshes[i].boundsMax);
+    for (const auto& kv : meshes) {
+        const MeshInfo& info = kv.second;
+        if (!info.active) continue;
+        boundsData.push_back(info.boundsMin);
+        boundsData.push_back(info.boundsMax);
     }
     VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 2;
     VkDeviceSize boundsDataSize = sizeof(glm::vec4) * boundsData.size();
@@ -809,20 +670,29 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         countBuf.offset = 0;
         countBuf.range = VK_WHOLE_SIZE;
 
-        VkWriteDescriptorSet writes[5] = {};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = computeDescriptorSet;
-        writes[0].dstBinding = 0;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[0].descriptorCount = 1;
-        writes[0].pBufferInfo = &inBuf;
+        // Check all buffers are valid before updating descriptor set
+        if (indirectBuffer.buffer == VK_NULL_HANDLE ||
+            compactIndirectBuffer.buffer == VK_NULL_HANDLE ||
+            modelsBuffer.buffer == VK_NULL_HANDLE ||
+            boundsBuffer.buffer == VK_NULL_HANDLE ||
+            visibleCountBuffer.buffer == VK_NULL_HANDLE) {
+            fprintf(stderr, "[IndirectRenderer] Skipping compute descriptor set update: one or more buffers are VK_NULL_HANDLE\n");
+        } else {
+            VkWriteDescriptorSet writes[5] = {};
+            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet = computeDescriptorSet;
+            writes[0].dstBinding = 0;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[0].descriptorCount = 1;
+            writes[0].pBufferInfo = &inBuf;
 
-        writes[1] = writes[0]; writes[1].dstBinding = 1; writes[1].pBufferInfo = &outBuf;
-        writes[2] = writes[0]; writes[2].dstBinding = 2; writes[2].pBufferInfo = &modelsBuf;
-        writes[3] = writes[0]; writes[3].dstBinding = 3; writes[3].pBufferInfo = &boundsBuf;
-        writes[4] = writes[0]; writes[4].dstBinding = 4; writes[4].pBufferInfo = &countBuf;
+            writes[1] = writes[0]; writes[1].dstBinding = 1; writes[1].pBufferInfo = &outBuf;
+            writes[2] = writes[0]; writes[2].dstBinding = 2; writes[2].pBufferInfo = &modelsBuf;
+            writes[3] = writes[0]; writes[3].dstBinding = 3; writes[3].pBufferInfo = &boundsBuf;
+            writes[4] = writes[0]; writes[4].dstBinding = 4; writes[4].pBufferInfo = &countBuf;
 
-        vkUpdateDescriptorSets(app->getDevice(), 5, writes, 0, nullptr);
+            vkUpdateDescriptorSets(app->getDevice(), 5, writes, 0, nullptr);
+        }
     }
 
     // Try to load optional device function for indirect-count draws
@@ -1060,17 +930,16 @@ void IndirectRenderer::updateModelsDescriptorSet(VulkanApp* app, VkDescriptorSet
 IndirectRenderer::MeshInfo IndirectRenderer::getMeshInfo(uint32_t meshId) const {
     IndirectRenderer::MeshInfo empty;
     std::lock_guard<std::mutex> guard(mutex);
-    auto it = idToIndex.find(meshId);
-    if (it == idToIndex.end()) return empty;
-    return meshes[it->second];
+    auto it = meshes.find(meshId);
+    if (it == meshes.end()) return empty;
+    return it->second;
 }
 
 std::vector<IndirectRenderer::MeshInfo> IndirectRenderer::getActiveMeshInfos() const {
     std::vector<MeshInfo> out;
     std::lock_guard<std::mutex> guard(mutex);
-    for (const auto &m : meshes) {
-        if (m.active) out.push_back(m);
+    for (const auto& kv : meshes) {
+        if (kv.second.active) out.push_back(kv.second);
     }
     return out;
 }
- 
