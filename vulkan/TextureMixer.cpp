@@ -82,12 +82,21 @@ void TextureMixer::generateInitialTextures(std::vector<MixerParameters> &mixerPa
 // Queue a generation request from UI thread; will be flushed synchronously from the main update loop
 void TextureMixer::enqueueGenerate(const MixerParameters &params, int map) {
 	std::lock_guard<std::mutex> lk(pendingRequestsMutex);
-	pendingRequests.emplace_back(params, map);
-	// Log the enqueue
+	// Coalesce requests for the same target layer and map: replace older request if present
+	bool replaced = false;
+	for (auto &r : pendingRequests) {
+		if (r.first.targetLayer == params.targetLayer && r.second == map) {
+			r.first = params; // replace
+			replaced = true;
+			break;
+		}
+	}
+	if (!replaced) pendingRequests.emplace_back(params, map);
+	// Log the enqueue or replacement
 	{
 		std::lock_guard<std::mutex> lk2(logsMutex);
 		char buf[128];
-		snprintf(buf, sizeof(buf), "Enqueued generation: layer=%zu map=%d", params.targetLayer, map);
+		snprintf(buf, sizeof(buf), "%s generation: layer=%zu map=%d", replaced ? "Replaced" : "Enqueued", params.targetLayer, map);
 		logs.emplace_back(buf);
 	}
 }
@@ -740,22 +749,43 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 					g->waitForLayerGeneration(targetLayer);
 				}
 			}
-			// For each generated map, record mipmap generation commands into our same command buffer
-			if (genA && textureArrayManager->albedoArray.mipLevels > 1) {
-				// Record mip generation directly into our command buffer to keep submission atomic and async
+// Sanity checks: ensure textureArrayManager and image handles exist before recording mips
+		if (textureArrayManager) {
+			if (genA && textureArrayManager->albedoArray.mipLevels > 1 && textureArrayManager->albedoArray.image != VK_NULL_HANDLE) {
 				app->recordGenerateMipmaps(commandBuffer, textureArrayManager->albedoArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->albedoArray.mipLevels, 1, targetLayer);
+			} else if (genA) {
+				std::lock_guard<std::mutex> lkll(logsMutex); logs.emplace_back("Skipping albedo mipgen: missing image or mipLevels <= 1");
 			}
-			if (genN && textureArrayManager->normalArray.mipLevels > 1) {
+			if (genN && textureArrayManager->normalArray.mipLevels > 1 && textureArrayManager->normalArray.image != VK_NULL_HANDLE) {
 				app->recordGenerateMipmaps(commandBuffer, textureArrayManager->normalArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->normalArray.mipLevels, 1, targetLayer);
+			} else if (genN) {
+				std::lock_guard<std::mutex> lkll(logsMutex); logs.emplace_back("Skipping normal mipgen: missing image or mipLevels <= 1");
 			}
-			if (genB && textureArrayManager->bumpArray.mipLevels > 1) {
+			if (genB && textureArrayManager->bumpArray.mipLevels > 1 && textureArrayManager->bumpArray.image != VK_NULL_HANDLE) {
 				app->recordGenerateMipmaps(commandBuffer, textureArrayManager->bumpArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->bumpArray.mipLevels, 1, targetLayer);
+			} else if (genB) {
+				std::lock_guard<std::mutex> lkll(logsMutex); logs.emplace_back("Skipping bump mipgen: missing image or mipLevels <= 1");
+			}
+		} else {
+			std::lock_guard<std::mutex> lkll(logsMutex); logs.emplace_back("Skipping mipgen: no TextureArrayManager attached");
 			}
 
 			// Submit the recorded command buffer asynchronously and get a fence so we can track completion
 			VkSemaphore signalSem = VK_NULL_HANDLE;
-			VkFence fence = app->submitCommandBufferAsync(commandBuffer, &signalSem);
+		VkFence fence = VK_NULL_HANDLE;
+		try {
+			fence = app->submitCommandBufferAsync(commandBuffer, &signalSem);
+		} catch (const std::exception &e) {
+			std::lock_guard<std::mutex> lkll(logsMutex);
+			char buf[256];
+			snprintf(buf, sizeof(buf), "Async submit failed for layer=%u maps=%s%s%s reason=%s", targetLayer, genA?"A":"", genN?"N":"", genB?"B":"", e.what());
+			logs.emplace_back(buf);
+			// Free the command buffer locally to avoid leak
+			if (commandBuffer != VK_NULL_HANDLE) app->endSingleTimeCommands(commandBuffer);
+			commandBuffer = VK_NULL_HANDLE;
+		}
 
+		if (fence != VK_NULL_HANDLE) {
 			// Log submission
 			{
 				std::lock_guard<std::mutex> lkll(logsMutex);
@@ -772,10 +802,12 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 
 			// don't end the single-time command here (ownership transferred to VulkanApp)
 			commandBuffer = VK_NULL_HANDLE;
-			// Do not mark layer initialized yet — will do when fence signals
 		} else {
-			// end command buffer if we haven't already
-			if (commandBuffer != VK_NULL_HANDLE) app->endSingleTimeCommands(commandBuffer);
+			// submission failed or no fence; ensure command buffer ended if still present
+			if (commandBuffer != VK_NULL_HANDLE) {
+				app->endSingleTimeCommands(commandBuffer);
+				commandBuffer = VK_NULL_HANDLE;
+			}
 		}
 	} else {
 		for (auto &barrier : barriers) {
@@ -817,4 +849,5 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 	if (onTextureGeneratedCallback) {
 		onTextureGeneratedCallback();
 	}
+}
 }
