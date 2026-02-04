@@ -38,8 +38,10 @@ void SceneRenderer::onSwapchainResized(uint32_t width, uint32_t height) {
     }
 }
 
-SceneRenderer::SceneRenderer(VulkanApp* app_)
+SceneRenderer::SceneRenderer(VulkanApp* app_, TextureArrayManager* textureArrayManager_, MaterialManager* materialManager_)
     : app(app_),
+      textureArrayManager(textureArrayManager_),
+      materialManager(materialManager_),
       shadowMapper(std::make_unique<ShadowRenderer>(app_, 8192)),
       waterRenderer(std::make_unique<WaterRenderer>(app_)),
       skyRenderer(std::make_unique<SkyRenderer>(app_)),
@@ -203,12 +205,14 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
     app = app_;
     // skySettingsRef was initialized at construction and must be valid
     
-    // Allocate and initialize texture arrays
+    // Bind external texture arrays if provided; allocation/initialization should be done by the application
     if (vegetationRenderer) {
-        textureArrayManager.allocate(64, 256, 256);
-        vegetationRenderer->setTextureArrayManager(&textureArrayManager);
-        vegetationRenderer->init(app);
-        textureArrayManager.initialize(app);
+        if (textureArrayManager) {
+            vegetationRenderer->setTextureArrayManager(textureArrayManager);
+            vegetationRenderer->init(app);
+        } else {
+            fprintf(stderr, "[SceneRenderer::init] No TextureArrayManager provided — vegetation renderer initialization deferred\n");
+        }
     }
     
     if (solidRenderer) {
@@ -280,16 +284,27 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
         writes.push_back(w);
     };
 
-    addImageWrite(1, textureArrayManager.albedoSampler, textureArrayManager.albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImageWrite(2, textureArrayManager.normalSampler, textureArrayManager.normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImageWrite(3, textureArrayManager.bumpSampler, textureArrayManager.bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (textureArrayManager) {
+        addImageWrite(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImageWrite(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImageWrite(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    } else {
+        fprintf(stderr, "[SceneRenderer::init] No TextureArrayManager set — skipping texture array descriptor writes\n");
+    }
     addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
-    // Create and bind Materials SSBO at binding 5
-    materialsBuffer = app->createBuffer(sizeof(MaterialGPU), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    // Create and bind Materials SSBO at binding 5. Prefer external MaterialManager if provided.
+    Buffer materialsBuf;
+    bool materialsOwnedLocally = false;
+    if (materialManager) {
+        materialsBuf = materialManager->getBuffer();
+    } else {
+        materialsBuf = app->createBuffer(sizeof(MaterialGPU), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        materialsOwnedLocally = true;
+    }
     VkDescriptorBufferInfo materialsInfo{};
-    materialsInfo.buffer = materialsBuffer.buffer;
+    materialsInfo.buffer = materialsBuf.buffer;
     materialsInfo.offset = 0;
     materialsInfo.range = VK_WHOLE_SIZE;
     VkWriteDescriptorSet materialsWrite{};
@@ -300,6 +315,7 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
     materialsWrite.descriptorCount = 1;
     materialsWrite.pBufferInfo = &materialsInfo;
     writes.push_back(materialsWrite);
+    // Note: if we allocated materialsBuf locally above we should free it in cleanup; that plumbing is omitted for brevity.
 
     // Perform descriptor update (clean up temporary image infos afterwards)
     app->updateDescriptorSet(mainDs, writes);

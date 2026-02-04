@@ -40,9 +40,10 @@ public:
 
     VulkanApp* app = nullptr;
 
-    // Texture array manager for albedo/normal/bump arrays
-    TextureArrayManager textureArrayManager;
-    
+    // Texture array manager for albedo/normal/bump arrays (owned by application)
+    TextureArrayManager* textureArrayManager = nullptr;
+    MaterialManager* materialManager = nullptr;
+
     // Main uniform buffer
     Buffer mainUniformBuffer;
     
@@ -60,7 +61,7 @@ public:
     SkySettings skySettings;
     SkySettings& getSkySettings() { return skySettings; }
 
-    SceneRenderer(VulkanApp* app_);
+    SceneRenderer(VulkanApp* app_, TextureArrayManager* textureArrayManager_, MaterialManager* materialManager_);
     ~SceneRenderer();
 
     void createPipelines();

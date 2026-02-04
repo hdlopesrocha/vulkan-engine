@@ -101,6 +101,10 @@ public:
     AtlasManager vegetationAtlasManager;
     TextureArrayManager vegetationTextureArrayManager;
 
+    // Global texture arrays and material manager (moved from SceneRenderer)
+    TextureArrayManager textureArrayManager;
+    MaterialManager materialManager;
+
     // Texture editing / UI helpers
     std::shared_ptr<TextureMixer> textureMixer;
     std::vector<MixerParameters> mixerParams;
@@ -116,25 +120,61 @@ public:
     bool sceneLoading = false;
 
     void setup() override {
+        // If the texture arrays aren't allocated yet, allocate defaults here so other systems have arrays
+        if (textureArrayManager.layerAmount == 0) {
+            const uint32_t defaultLayers = 64;
+            const uint32_t defaultSize = 1024;
+            textureArrayManager.allocate(defaultLayers, defaultSize, defaultSize);
+            textureArrayManager.initialize(this);
+            printf("[MyApp::setup] Allocated default texture arrays: layers=%u size=%ux%u\n", defaultLayers, defaultSize, defaultSize);
+        }
+
+        uint32_t loadedTextureLayers_local = 0;
+        struct TextureTriple { const char* albedo; const char* normal; const char* bump; };
+        const std::vector<TextureTriple> textureTriples = {
+            { "textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg" },
+            { "textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg" },
+            { "textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg" },
+            { "textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg" },
+            { "textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg" },
+            { "textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg" },
+            { "textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg" },
+            { "textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg" },
+            { "textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg" },
+            { "textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg" },
+            { "textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg" }
+        };
+
+             
+        textureArrayManager.currentLayer = 0;
+        for (const auto& triple : textureTriples) {
+            if (textureArrayManager.currentLayer >= textureArrayManager.layerAmount) {
+                fprintf(stderr, "[TextureLoad] Reached texture array capacity (%u layers)\n", textureArrayManager.layerAmount);
+                break;
+            }
+            try {
+                textureArrayManager.load(triple.albedo, triple.normal, triple.bump);
+                ++loadedTextureLayers_local;
+            } catch (const std::exception& e) {
+                fprintf(stderr, "[TextureLoad] Failed to load %s: %s\n", triple.albedo ? triple.albedo : "(null)", e.what());
+            }
+        }
+        // Record into member so UI can display counts
+        loadedTextureLayers = loadedTextureLayers_local;
+
+        for (uint32_t i = 0; i < loadedTextureLayers; ++i) {
+            textureArrayManager.getImTexture(i, 0);
+            textureArrayManager.getImTexture(i, 1);
+            textureArrayManager.getImTexture(i, 2);
+        }
 
         // Ensure SceneRenderer exists and initialize it (SceneRenderer now owns SkySettings)
         if (!sceneRenderer) {
-            sceneRenderer = std::make_unique<SceneRenderer>(this);
+            sceneRenderer = std::make_unique<SceneRenderer>(this, &textureArrayManager, &materialManager);
+            // Initialize SceneRenderer after managers are set
             sceneRenderer->init(this, getMainDescriptorSet());
             sceneRenderer->createPipelines();
             printf("[MyApp::setup] Created and initialized SceneRenderer\n");
-
-            // Ensure texture arrays exist so TextureMixer and AnimatedTextureWidget can
-            // target array layers for perlin generation. If not allocated by SceneRenderer
-            // (e.g., no vegetation renderer), allocate a sensible default set here.
-            if (sceneRenderer->textureArrayManager.layerAmount == 0) {
-                const uint32_t defaultLayers = 64;
-                const uint32_t defaultSize = 1024;
-                // Use the public allocate API then call initialize(app) to create GPU resources
-                sceneRenderer->textureArrayManager.allocate(defaultLayers, defaultSize, defaultSize);
-                sceneRenderer->textureArrayManager.initialize(this);
-                printf("[MyApp::setup] Allocated default texture arrays: layers=%u size=%ux%u\n", defaultLayers, defaultSize, defaultSize);
-            }
         } else {
             if (sceneRenderer->solidRenderer) {
                 sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
@@ -151,54 +191,14 @@ public:
             }
         }
 
-        // Load legacy texture triples (albedo, normal, height) into the texture array manager
-        if (sceneRenderer) {
-            uint32_t loadedTextureLayers_local = 0;
-            struct TextureTriple { const char* albedo; const char* normal; const char* bump; };
-            const std::vector<TextureTriple> textureTriples = {
-                { "textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg" },
-                { "textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg" },
-                { "textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg" },
-                { "textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg" },
-                { "textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg" },
-                { "textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg" },
-                { "textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg" },
-                { "textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg" },
-                { "textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg" },
-                { "textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg" },
-                { "textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg" }
-            };
-
-            sceneRenderer->textureArrayManager.currentLayer = 0;
-            for (const auto& triple : textureTriples) {
-                if (sceneRenderer->textureArrayManager.currentLayer >= sceneRenderer->textureArrayManager.layerAmount) {
-                    fprintf(stderr, "[TextureLoad] Reached texture array capacity (%u layers)\n", sceneRenderer->textureArrayManager.layerAmount);
-                    break;
-                }
-                try {
-                    sceneRenderer->textureArrayManager.load(triple.albedo, triple.normal, triple.bump);
-                    ++loadedTextureLayers_local;
-                } catch (const std::exception& e) {
-                    fprintf(stderr, "[TextureLoad] Failed to load %s: %s\n", triple.albedo ? triple.albedo : "(null)", e.what());
-                }
-            }
-            // Record into member so UI can display counts
-            loadedTextureLayers = loadedTextureLayers_local;
-
-            for (uint32_t i = 0; i < loadedTextureLayers; ++i) {
-                sceneRenderer->textureArrayManager.getImTexture(i, 0);
-                sceneRenderer->textureArrayManager.getImTexture(i, 1);
-                sceneRenderer->textureArrayManager.getImTexture(i, 2);
-            }
-        }
 
         // Restore additional widgets and editors
-        uint32_t mixWidth = sceneRenderer ? (sceneRenderer->textureArrayManager.width ? sceneRenderer->textureArrayManager.width : 512u) : 512u;
-        uint32_t mixHeight = sceneRenderer ? (sceneRenderer->textureArrayManager.height ? sceneRenderer->textureArrayManager.height : 512u) : 512u;
+        uint32_t mixWidth = (textureArrayManager.width ? textureArrayManager.width : 512u);
+        uint32_t mixHeight = (textureArrayManager.height ? textureArrayManager.height : 512u);
         textureMixer = std::make_shared<TextureMixer>();
-        textureMixer->init(this, mixWidth, mixHeight, sceneRenderer ? &sceneRenderer->textureArrayManager : nullptr);
+        textureMixer->init(this, mixWidth, mixHeight, &textureArrayManager);
         mixerParams.clear();
-        uint32_t layerCount = sceneRenderer ? sceneRenderer->textureArrayManager.layerAmount : 1u;
+        uint32_t layerCount = textureArrayManager.layerAmount ? textureArrayManager.layerAmount : 1u;
         uint32_t editableLayer = (loadedTextureLayers < layerCount) ? loadedTextureLayers : 0u;
         uint32_t availableLayers = std::max(layerCount, std::max(loadedTextureLayers, 1u));
         MixerParameters defaultMixer{};
@@ -206,15 +206,15 @@ public:
         defaultMixer.primaryTextureIdx = (availableLayers > 1) ? 1u : 0u;
         defaultMixer.secondaryTextureIdx = (availableLayers > 2) ? 2u : defaultMixer.primaryTextureIdx;
         mixerParams.push_back(defaultMixer);
-        textureMixer->generateInitialTextures(mixerParams);
+        // Initial generation deferred: user can press Generate in the Animated Textures UI
+        // If you want automatic generation at startup, enable it here once TextureArrayManager is guaranteed available
+        fprintf(stderr, "[TextureMixer] Initial generation deferred; press Generate in Animated Textures to create content\n");
         textureMixer->setEditableLayer(defaultMixer.targetLayer);
         // Prime ImGui descriptors so the texture viewer shows immediately
-        if (sceneRenderer) {
-            sceneRenderer->textureArrayManager.setLayerInitialized(defaultMixer.targetLayer, true);
-            sceneRenderer->textureArrayManager.getImTexture(defaultMixer.targetLayer, 0);
-            sceneRenderer->textureArrayManager.getImTexture(defaultMixer.targetLayer, 1);
-            sceneRenderer->textureArrayManager.getImTexture(defaultMixer.targetLayer, 2);
-        }
+        textureArrayManager.setLayerInitialized(defaultMixer.targetLayer, true);
+        textureArrayManager.getImTexture(defaultMixer.targetLayer, 0);
+        textureArrayManager.getImTexture(defaultMixer.targetLayer, 1);
+        textureArrayManager.getImTexture(defaultMixer.targetLayer, 2);
 
         animatedTextureWidget = std::make_shared<AnimatedTextureWidget>(textureMixer, mixerParams, "Editable Textures");
 
@@ -223,12 +223,17 @@ public:
             materialCount = layerCount ? layerCount : 1u;
         }
         materials.assign(materialCount, MaterialProperties{});
+        // Allocate GPU-side material storage via MaterialManager
+        materialManager.allocate(materialCount, this);
+        for (size_t i = 0; i < materialCount; ++i) materialManager.update(i, materials[i], this);
+
         textureViewer = std::make_shared<TextureViewer>();
-        textureViewer->init(sceneRenderer ? &sceneRenderer->textureArrayManager : nullptr, &materials);
+        textureViewer->init(&textureArrayManager, &materials);
         textureViewer->setOnMaterialChanged([](size_t) {});
         skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
         // Create settings widget (was missing previously)
         settingsWidget = std::make_shared<SettingsWidget>(settings);
+        // Inform SceneRenderer about the MaterialManager
         waterWidget = std::make_shared<WaterWidget>(sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr);
         renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(this, sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr, sceneRenderer ? sceneRenderer->solidRenderer.get() : nullptr);
         billboardWidget = std::make_shared<BillboardWidget>();
@@ -304,6 +309,11 @@ public:
         if (waterEnabled && sceneRenderer && sceneRenderer->waterRenderer) {
             sceneRenderer->waterRenderer->advanceTime(deltaTime);
         }
+        // Flush any pending texture generation requests so they happen before command buffers are recorded
+        if (textureMixer) textureMixer->flushPendingRequests();
+        // Poll for completed async generations and process their fences
+        if (textureMixer) textureMixer->pollPendingGenerations();
+
         // Process any pending mesh updates from scene change handlers
         if (sceneRenderer) sceneRenderer->processPendingNodeChanges(*mainScene);
     }
