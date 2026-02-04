@@ -83,7 +83,15 @@ void TextureMixerWidget::render() {
             ImGui::Text("Primary"); ImGui::NextColumn(); ImGui::Text("Secondary"); ImGui::NextColumn();
             ImTextureID pTex = (ImTextureID)textures->getPreviewDescriptor(activeMap, mp.primaryTextureIdx);
             ImTextureID sTex = (ImTextureID)textures->getPreviewDescriptor(activeMap, mp.secondaryTextureIdx);
-            ImGui::Image(pTex, ImVec2(128,128)); ImGui::NextColumn(); ImGui::Image(sTex, ImVec2(128,128)); ImGui::NextColumn();
+            // Make the primary/secondary previews clickable so they become the main preview source
+            if (pTex) {
+                if (ImGui::ImageButton(pTex, ImVec2(128,128))) { mp.primaryTextureIdx = mp.primaryTextureIdx; previewSource = 1; }
+            } else ImGui::Dummy(ImVec2(128,128));
+            ImGui::NextColumn();
+            if (sTex) {
+                if (ImGui::ImageButton(sTex, ImVec2(128,128))) { mp.secondaryTextureIdx = mp.secondaryTextureIdx; previewSource = 2; }
+            } else ImGui::Dummy(ImVec2(128,128));
+            ImGui::NextColumn();
             ImGui::Columns(1);
 
             ImGui::Text("Choose Primary (click thumbnail)");
@@ -91,7 +99,7 @@ void TextureMixerWidget::render() {
             for (uint32_t l = 0; l < maxLayers; ++l) {
                 ImTextureID img = (ImTextureID)textures->getPreviewDescriptor(activeMap, l);
                 if (!img) continue;
-                if (ImGui::ImageButton(img, ImVec2(thumb, thumb))) { mp.primaryTextureIdx = l; }
+                if (ImGui::ImageButton(img, ImVec2(thumb, thumb))) { mp.primaryTextureIdx = l; previewSource = 1; }
                 if ((l+1) % 12 != 0) ImGui::SameLine();
             }
             ImGui::Separator();
@@ -99,7 +107,7 @@ void TextureMixerWidget::render() {
             for (uint32_t l = 0; l < maxLayers; ++l) {
                 ImTextureID img = (ImTextureID)textures->getPreviewDescriptor(activeMap, l);
                 if (!img) continue;
-                if (ImGui::ImageButton(img, ImVec2(thumb, thumb))) { mp.secondaryTextureIdx = l; }
+                if (ImGui::ImageButton(img, ImVec2(thumb, thumb))) { mp.secondaryTextureIdx = l; previewSource = 2; }
                 if ((l+1) % 12 != 0) ImGui::SameLine();
             }
 
@@ -125,9 +133,15 @@ void TextureMixerWidget::renderTextureTab(int map) {
     ImVec2 imageSize(previewSize, previewSize);
     ImTextureID texID = nullptr;
     if (!mixerParams.empty()) {
-        uint32_t layer = static_cast<uint32_t>(mixerParams[currentMixerIndex].targetLayer);
+        MixerParameters &mp = mixerParams[currentMixerIndex];
+        uint32_t layer = static_cast<uint32_t>(mp.targetLayer);
+        // Show main preview based on previewSource: target, primary or secondary
+        if (previewSource == 1) layer = static_cast<uint32_t>(mp.primaryTextureIdx);
+        else if (previewSource == 2) layer = static_cast<uint32_t>(mp.secondaryTextureIdx);
         texID = (ImTextureID)textures->getPreviewDescriptor(map, layer);
-    } else texID = (ImTextureID)textures->getPreviewDescriptor(map);
+    } else {
+        texID = (ImTextureID)textures->getPreviewDescriptor(map);
+    }
 
     if (texID) {
         ImVec2 pos = ImGui::GetCursorScreenPos();
