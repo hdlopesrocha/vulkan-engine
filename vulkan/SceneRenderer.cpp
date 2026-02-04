@@ -426,6 +426,28 @@ void SceneRenderer::processErasedNodeSet(Layer layer, const std::unordered_set<N
     }
 }
 
+// Ensure mesh exists and is up-to-date for a node: insert or replace when needed
+void SceneRenderer::updateMeshForNode(Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
+    IndirectRenderer &renderer = layer == LAYER_OPAQUE ? solidRenderer->getIndirectRenderer() : waterRenderer->getIndirectRenderer();
+
+    const auto &cur = layer == LAYER_OPAQUE ? solidChunks : transparentChunks;
+    auto it = cur.find(nid);
+    if (it != cur.end()) {
+        if (it->second.version >= nd.node->version) {
+            return; // already up-to-date
+        }
+        if (it->second.meshId != UINT32_MAX) {
+            renderer.removeMesh(it->second.meshId);
+        }
+    }
+    uint32_t meshId = renderer.addMesh(app, geom);
+    Model3DVersion mv{meshId, nd.node->version};
+    registerModelVersion(nid, mv);
+    renderer.uploadMesh(app, meshId);
+
+}
+
+
 void SceneRenderer::processPendingNodeChanges(Scene& scene) {
     std::vector<PendingNode> created;
     std::vector<PendingNode> updated;
@@ -439,54 +461,11 @@ void SceneRenderer::processPendingNodeChanges(Scene& scene) {
     size_t addedCount = 0;
     size_t removedCount = 0;
 
-    // Ensure mesh exists and is up-to-date for a node: insert or replace when needed
-    auto ensureMeshForNode = [&](Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
-        IndirectRenderer &renderer = layer == LAYER_OPAQUE ? solidRenderer->getIndirectRenderer() : waterRenderer->getIndirectRenderer();
-
-        const auto &cur = layer == LAYER_OPAQUE ? solidChunks : transparentChunks;
-        auto it = cur.find(nid);
-        if (it != cur.end()) {
-            if (it->second.version >= nd.node->version) {
-                return; // already up-to-date
-            }
-            if (it->second.meshId != UINT32_MAX) {
-                renderer.removeMesh(it->second.meshId);
-            }
-        }
-        uint32_t meshId = renderer.addMesh(app, geom);
-        Model3DVersion mv{meshId, nd.node->version};
-        registerModelVersion(nid, mv);
-        // Try to upload this mesh immediately. If per-mesh upload fails (e.g., buffers
-        // not yet created), trigger a full rebuild which waits for GPU idle and
-        // uploads merged buffers. This ensures asynchronously-delivered geometry
-        // becomes available to the GPU before the next render.
-        if (!renderer.uploadMesh(app, meshId)) {
-            renderer.rebuild(app);
-        }
-    };
 
     // Delegate processing/coalescing: created/updated
     auto onGeometry = [&](Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
-        //std::cout << "[SceneRenderer::processPendingNodeChanges::onGeometry] layer=" << static_cast<int>(layer) << " nid=" << nid << " with " << geom.vertices.size() << " vertices and " << geom.indices.size() << " indices.\n";
-        ensureMeshForNode(layer, nid, nd, geom);
-        // Create debug cube instance for this node now that geometry is available
-        if (debugCubeRenderer) {
-            DebugCubeRenderer::CubeWithColor c;
-            // Compute world-space AABB from geometry vertices using same model as used for mesh
-            glm::vec3 minp(nd.cube.getMax()), maxp(nd.cube.getMin());
-            for (const auto &v : geom.vertices) {
-                minp = glm::min(minp, v.position);
-                maxp = glm::max(maxp, v.position);
-            }
-            if (minp.x == FLT_MAX) {
-                // Fallback to node cube if geometry empty
-                minp = nd.cube.getMin();
-                maxp = nd.cube.getMax();
-            }
-            c.cube = BoundingBox(minp, maxp);
-            c.color = (layer == LAYER_OPAQUE) ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(0.0f, 0.5f, 1.0f);
-            addDebugCubeForNode(nid, c);
-        }
+        updateMeshForNode(layer, nid, nd, geom);
+        addDebugCubeForGeometry(layer, nid, nd, geom);
         ++addedCount;
     };
 
@@ -541,4 +520,23 @@ bool SceneRenderer::hasModelForNode(Layer layer, NodeID nid) const {
     } else {
         return transparentChunks.find(nid) != transparentChunks.end();
     }
-} 
+}
+
+void SceneRenderer::addDebugCubeForGeometry(Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+    if (!debugCubeRenderer) return;
+    DebugCubeRenderer::CubeWithColor c;
+    // Compute world-space AABB from geometry vertices using same model as used for mesh
+    glm::vec3 minp(nd.cube.getMax()), maxp(nd.cube.getMin());
+    for (const auto &v : geom.vertices) {
+        minp = glm::min(minp, v.position);
+        maxp = glm::max(maxp, v.position);
+    }
+    if (minp.x == FLT_MAX) {
+        // Fallback to node cube if geometry empty
+        minp = nd.cube.getMin();
+        maxp = nd.cube.getMax();
+    }
+    c.cube = BoundingBox(minp, maxp);
+    c.color = (layer == LAYER_OPAQUE) ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(0.0f, 0.5f, 1.0f);
+    addDebugCubeForNode(nid, c);
+}
