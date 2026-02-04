@@ -32,6 +32,7 @@ class LiquidSpaceChangeHandler;
 #include "PassUBO.hpp"
 
 class SceneRenderer {
+    void addDebugCubeForGeometry(Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom);
 public:
     // UBOs for main, shadow, and water passes
     PassUBO<UniformObject> mainPassUBO;
@@ -125,6 +126,7 @@ public:
 
     // Process pending node change queues on the main thread
     void processPendingNodeChanges(Scene& scene);
+    void updateMeshForNode(Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom);
 
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
     // Process nodes for a single Layer (nodeMap maps NodeID->OctreeNodeData)
