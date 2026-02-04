@@ -64,16 +64,17 @@ void TextureMixer::generateInitialTextures(std::vector<MixerParameters> &mixerPa
 		fprintf(stderr, "[TextureMixer] Skipping generateInitialTextures: no texture arrays available\n");
 		return;
 	}
-	printf("Generating initial textures (Albedo, Normal, Bump)...\n");
+	printf("Enqueuing initial textures for generation (Albedo, Normal, Bump)...\n");
 	for (auto &param : mixerParams) {
+		fprintf(stderr, "[TextureMixer] generateInitialTextures: enqueueing generation for layer=%zu\n", param.targetLayer);
 		try {
-			generatePerlinNoise(param);
+			enqueueGenerate(param);
 		} catch (const std::exception &e) {
 			std::lock_guard<std::mutex> lk(logsMutex);
 			char buf[256];
-			snprintf(buf, sizeof(buf), "generateInitialTextures: skipped layer=%zu reason=%s", param.targetLayer, e.what());
+			snprintf(buf, sizeof(buf), "generateInitialTextures: enqueue failed for layer=%zu reason=%s", param.targetLayer, e.what());
 			logs.emplace_back(buf);
-			fprintf(stderr, "[TextureMixer] generateInitialTextures: skipped layer=%zu reason=%s\n", param.targetLayer, e.what());
+			fprintf(stderr, "[TextureMixer] generateInitialTextures: enqueue failed for layer=%zu reason=%s\n", param.targetLayer, e.what());
 		}
 	}
 }
@@ -123,9 +124,7 @@ void TextureMixer::flushPendingRequests() {
 }
 
 void TextureMixer::pollPendingGenerations() {
-	// also poll VulkanApp pending command buffer cleanup to free resources
-	if (app) app->processPendingCommandBuffers();
-	// pull any completed fences and promote their logs
+	// Pull any completed fences and promote their logs (check fences BEFORE letting VulkanApp destroy them)
 
 	std::vector<std::tuple<VkFence, uint32_t>> completed;
 	{
@@ -133,6 +132,7 @@ void TextureMixer::pollPendingGenerations() {
 		for (auto it = pendingFences.begin(); it != pendingFences.end(); ) {
 			VkFence f = std::get<0>(*it);
 			uint32_t layer = std::get<1>(*it);
+			if (!app) { ++it; continue; }
 			VkResult st = vkGetFenceStatus(app->getDevice(), f);
 			if (st == VK_SUCCESS) {
 				// generation complete
@@ -145,6 +145,9 @@ void TextureMixer::pollPendingGenerations() {
 			}
 		}
 	}
+
+	// Let VulkanApp process and cleanup any pending command buffers/fences now that we've recorded completed ones
+	if (app) app->processPendingCommandBuffers();
 
 	for (auto &c : completed) {
 		uint32_t layer = std::get<1>(c);
@@ -544,11 +547,13 @@ void TextureMixer::updateComputeDescriptorSets() {
 		vkUpdateDescriptorSets(dev, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 		std::lock_guard<std::mutex> lk(logsMutex);
 		logs.emplace_back("updateComputeDescriptorSets: descriptor sets updated with texture arrays");
+		fprintf(stderr, "[TextureMixer] updateComputeDescriptorSets: wrote %zu descriptors\n", writes.size());
 	}
 }
 
 void TextureMixer::attachTextureArrayManager(TextureArrayManager* tam) {
 	this->textureArrayManager = tam;
+	fprintf(stderr, "[TextureMixer] attachTextureArrayManager called: tam=%p\n", (void*)tam);
 	updateComputeDescriptorSets();
 }
 
