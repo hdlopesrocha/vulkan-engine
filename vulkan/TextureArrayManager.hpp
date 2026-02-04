@@ -20,6 +20,8 @@ void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount);
 #include <vector>
 #include <backends/imgui_impl_vulkan.h>
 
+struct TextureTriple { const char* albedo; const char* normal; const char* bump; };
+
 class TextureArrayManager {
 public:
     // Number of layers in the texture arrays
@@ -74,7 +76,7 @@ public:
 
     // Convenience: load multiple triples (albedo, normal, bump) into consecutive layers.
     // Returns the number of successfully loaded layers.
-    size_t loadTriples(const std::vector<std::tuple<const char*, const char*, const char*>> &triples);
+    size_t loadTriples(const std::vector<TextureTriple> &triples);
 
     // Update a specific array layer from an EditableTexture (copies image -> array layer)
     void updateLayerFromEditable(uint32_t layer, const class EditableTexture& tex);

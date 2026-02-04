@@ -5,6 +5,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
 #include <mutex>
+#include <functional>
 #include <vector>
 
 // Async submission bookkeeping
@@ -15,6 +16,10 @@ std::mutex extraSemaphoreMutex;
 std::vector<VkSemaphore> extraWaitSemaphores;
 // semaphores scheduled for destruction paired with the frame fence they were associated with
 std::vector<std::pair<VkSemaphore,VkFence>> semaphoresPendingDestroy;
+
+// Deferred destruction bookkeeping (resource destroy callbacks paired with a fence to wait on)
+std::mutex deferredDestroyMutex;
+std::vector<std::pair<VkFence, std::function<void()>>> deferredDestroys;
 
 #include "VulkanApp.hpp"
 #include "TextureArrayManager.hpp"
@@ -813,6 +818,7 @@ void VulkanApp::recordGenerateMipmaps(VkCommandBuffer commandBuffer, VkImage ima
 }
 // Process any pending command buffers (free command buffers and fences when fence signaled)
 void VulkanApp::processPendingCommandBuffers() {
+    // First, process pending command buffers and free their command buffers when fences signal
     std::lock_guard<std::mutex> lk(pendingCmdMutex);
     for (auto it = pendingCommandBuffers.begin(); it != pendingCommandBuffers.end(); ) {
         VkCommandBuffer cmd = it->first;
@@ -831,6 +837,31 @@ void VulkanApp::processPendingCommandBuffers() {
         } else {
             ++it;
         }
+    }
+
+    // Then process deferred-destruction callbacks. For callbacks registered with a specific fence,
+    // execute them when that fence signals. For callbacks registered with VK_NULL_HANDLE (wait-for-all),
+    // execute them only when there are no pending command buffers remaining.
+    std::lock_guard<std::mutex> dd(deferredDestroyMutex);
+    for (auto it = deferredDestroys.begin(); it != deferredDestroys.end(); ) {
+        VkFence f = it->first;
+        auto fn = it->second; // copy the function so we can call it safely
+        bool canRun = false;
+        if (f == VK_NULL_HANDLE) {
+            // run when no pending command buffers are outstanding
+            if (pendingCommandBuffers.empty()) canRun = true;
+        } else {
+            VkResult st = vkGetFenceStatus(device, f);
+            if (st == VK_SUCCESS || st == VK_ERROR_DEVICE_LOST) canRun = true;
+        }
+        if (canRun) {
+            try {
+                fn();
+            } catch (...) {
+                // swallow exceptions from destroy callbacks
+            }
+            it = deferredDestroys.erase(it);
+        } else ++it;
     }
 }
 
@@ -937,6 +968,37 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
 
     endSingleTimeCommands(commandBuffer);
 }
+
+// Deferred-destruction helpers
+void VulkanApp::deferDestroyUntilAllPending(std::function<void()> destroyFn) {
+    // If no pending command buffers, run immediately to avoid delaying cleanup unnecessarily
+    {
+        std::lock_guard<std::mutex> lk(pendingCmdMutex);
+        if (pendingCommandBuffers.empty()) {
+            try { destroyFn(); } catch (...) {}
+            return;
+        }
+    }
+    // Otherwise enqueue with a VK_NULL_HANDLE fence meaning 'wait for all pending'
+    std::lock_guard<std::mutex> dd(deferredDestroyMutex);
+    deferredDestroys.emplace_back(VK_NULL_HANDLE, destroyFn);
+}
+
+void VulkanApp::deferDestroyUntilFence(VkFence fence, std::function<void()> destroyFn) {
+    if (fence == VK_NULL_HANDLE) {
+        deferDestroyUntilAllPending(destroyFn);
+        return;
+    }
+    std::lock_guard<std::mutex> dd(deferredDestroyMutex);
+    deferredDestroys.emplace_back(fence, destroyFn);
+}
+
+bool VulkanApp::hasPendingCommandBuffers() {
+    std::lock_guard<std::mutex> lk(pendingCmdMutex);
+    return !pendingCommandBuffers.empty();
+}
+
+
 
 void VulkanApp::copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
     VkCommandBuffer commandBuffer = beginSingleTimeCommands();
