@@ -133,6 +133,12 @@ void TextureMixer::pollPendingGenerations() {
 			VkFence f = std::get<0>(*it);
 			uint32_t layer = std::get<1>(*it);
 			if (!app) { ++it; continue; }
+			// If VulkanApp doesn't know about this fence any more, treat it as completed (it was cleaned up elsewhere)
+			if (!app || !app->isFencePending(f)) {
+				completed.push_back(*it);
+				it = pendingFences.erase(it);
+				continue;
+			}
 			VkResult st = vkGetFenceStatus(app->getDevice(), f);
 			if (st == VK_SUCCESS) {
 				// generation complete
@@ -152,7 +158,13 @@ void TextureMixer::pollPendingGenerations() {
 	for (auto &c : completed) {
 		uint32_t layer = std::get<1>(c);
 		// Mark layer initialized so previews show up
-		if (textureArrayManager) textureArrayManager->setLayerInitialized(layer, true);
+		if (textureArrayManager) {
+			textureArrayManager->setLayerInitialized(layer, true);
+			// After generation completes, ensure tracked layout is SHADER_READ_ONLY_OPTIMAL for all maps
+			textureArrayManager->setLayerLayout(0, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			textureArrayManager->setLayerLayout(1, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			textureArrayManager->setLayerLayout(2, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		}
 		if (onTextureGeneratedCallback) onTextureGeneratedCallback();
 		{
 			std::lock_guard<std::mutex> lkll(logsMutex);
@@ -755,9 +767,9 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 			if (genB) textureArrayManager->getImTexture(targetLayer, 2);
 
 			// Build barriers for the specific target layer only
-			if (genA) barriers.push_back(mkBarrierLayer(textureArrayManager->albedoArray.image, targetLayer, 1, textureArrayManager->albedoArray.mipLevels));
-			if (genN) barriers.push_back(mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels));
-			if (genB) barriers.push_back(mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels));
+			if (genA) { auto b = mkBarrierLayer(textureArrayManager->albedoArray.image, targetLayer, 1, textureArrayManager->albedoArray.mipLevels); b.oldLayout = textureArrayManager->getLayerLayout(0, targetLayer); barriers.push_back(b); }
+			if (genN) { auto b = mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels); b.oldLayout = textureArrayManager->getLayerLayout(1, targetLayer); barriers.push_back(b); }
+			if (genB) { auto b = mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels); b.oldLayout = textureArrayManager->getLayerLayout(2, targetLayer); barriers.push_back(b); }
 		}
 	}
 	// Ensure each barrier has the correct full range info (all layers,
@@ -795,6 +807,13 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 		0, nullptr,
 		static_cast<uint32_t>(barriers.size()), barriers.data()
 	);
+
+		// Update tracked layouts for each generated map to GENERAL (we will write into them)
+		if (textureArrayManager) {
+			if (genA) textureArrayManager->setLayerLayout(0, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
+			if (genN) textureArrayManager->setLayerLayout(1, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
+			if (genB) textureArrayManager->setLayerLayout(2, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
+		}
 
 	printf("[TextureMixer] vkCmdBindPipeline: computePipeline=%p\n", (void*)computePipeline);
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);

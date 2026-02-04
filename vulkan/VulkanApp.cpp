@@ -865,6 +865,16 @@ void VulkanApp::processPendingCommandBuffers() {
     }
 }
 
+// Check whether a fence is currently tracked as pending
+bool VulkanApp::isFencePending(VkFence fence) {
+    std::lock_guard<std::mutex> lk(pendingCmdMutex);
+    for (auto &p : pendingCommandBuffers) {
+        if (p.second == fence) return true;
+    }
+    return false;
+}
+
+
 // Submit a pre-recorded command buffer asynchronously and return a fence that will be signaled on completion.
 VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore) {
     // End command buffer here (caller recorded commands assumed)

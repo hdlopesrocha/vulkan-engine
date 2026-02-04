@@ -50,6 +50,12 @@ public:
     std::vector<ImTextureID> bumpImTextures;
     // Track which layers have been initialized (contains valid data)
     std::vector<char> layerInitialized;
+
+    // Track current per-layer image layout for each array (used by TextureMixer to pick correct oldLayout)
+    std::vector<VkImageLayout> albedoLayerLayouts;
+    std::vector<VkImageLayout> normalLayerLayouts;
+    std::vector<VkImageLayout> bumpLayerLayouts;
+
     TextureArrayManager() = default;
     TextureArrayManager(uint32_t layers, uint32_t w, uint32_t h)
         : layerAmount(layers), width(w), height(h) {}
@@ -86,6 +92,10 @@ public:
     // Query/set layer initialized state
     bool isLayerInitialized(uint32_t layer) const;
     void setLayerInitialized(uint32_t layer, bool v=true);
+
+    // Query and update per-layer layouts (map: 0=albedo,1=normal,2=bump)
+    VkImageLayout getLayerLayout(int map, uint32_t layer) const;
+    void setLayerLayout(int map, uint32_t layer, VkImageLayout layout);
 
 private:
     // Listeners called when allocate()/destroy() change GPU resources

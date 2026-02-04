@@ -294,6 +294,19 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	// initialize layer initialized flags
 	layerInitialized.clear();
 	layerInitialized.resize(layerAmount, 0);
+
+	// initialize per-layer layout trackers to UNDEFINED by default
+	albedoLayerLayouts.clear(); albedoLayerLayouts.resize(layerAmount, VK_IMAGE_LAYOUT_UNDEFINED);
+	normalLayerLayouts.clear(); normalLayerLayouts.resize(layerAmount, VK_IMAGE_LAYOUT_UNDEFINED);
+	bumpLayerLayouts.clear(); bumpLayerLayouts.resize(layerAmount, VK_IMAGE_LAYOUT_UNDEFINED);
+
+	// After creating arrays we transitioned all mips/layers to SHADER_READ_ONLY_OPTIMAL above; reflect that state
+	for (uint32_t i = 0; i < layerAmount; ++i) {
+		albedoLayerLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		normalLayerLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		bumpLayerLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	}
+
 	// bump version so users can detect reallocation of GPU resources
 	++this->version;
 	// notify listeners that arrays changed
@@ -369,32 +382,35 @@ uint TextureArrayManager::load(const char* albedoFile, const char* normalFile, c
 		// Transition this layer to TRANSFER_DST_OPTIMAL
 		VkImageMemoryBarrier barrier1{};
 		barrier1.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier1.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		barrier1.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		barrier1.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier1.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier1.image = imgs[i].dstImage->image;
-		barrier1.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier1.subresourceRange.baseMipLevel = 0;
-		barrier1.subresourceRange.levelCount = imgs[i].dstImage->mipLevels;
-		barrier1.subresourceRange.baseArrayLayer = currentLayer;
-		barrier1.subresourceRange.layerCount = 1;
-		barrier1.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		barrier1.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	// Use current tracked layout as oldLayout so transitions are correct
+	VkImageLayout currentLayout = getLayerLayout(i, currentLayer);
+	barrier1.oldLayout = currentLayout;
+	barrier1.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barrier1.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier1.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier1.image = imgs[i].dstImage->image;
+	barrier1.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier1.subresourceRange.baseMipLevel = 0;
+	barrier1.subresourceRange.levelCount = imgs[i].dstImage->mipLevels;
+	barrier1.subresourceRange.baseArrayLayer = currentLayer;
+	barrier1.subresourceRange.layerCount = 1;
+	barrier1.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	barrier1.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-							 0, nullptr, 0, nullptr, 1, &barrier1);
-
-		VkBufferImageCopy region{};
-		region.bufferOffset = 0;
-		region.bufferRowLength = 0;
-		region.bufferImageHeight = 0;
-		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		region.imageSubresource.mipLevel = 0;
-		region.imageSubresource.baseArrayLayer = currentLayer;
-		region.imageSubresource.layerCount = 1;
-		region.imageOffset = {0,0,0};
-		region.imageExtent = { width, height, 1 };
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+				 0, nullptr, 0, nullptr, 1, &barrier1);
+	// reflect the pending state
+	setLayerLayout(i, currentLayer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+	VkBufferImageCopy region{};
+	region.bufferOffset = 0;
+	region.bufferRowLength = 0;
+	region.bufferImageHeight = 0;
+	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.imageSubresource.mipLevel = 0;
+	region.imageSubresource.baseArrayLayer = currentLayer;
+	region.imageSubresource.layerCount = 1;
+	region.imageOffset = {0,0,0};
+	region.imageExtent = { width, height, 1 };
 
 		vkCmdCopyBufferToImage(cmd, staging.buffer, imgs[i].dstImage->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
@@ -404,6 +420,8 @@ uint TextureArrayManager::load(const char* albedoFile, const char* normalFile, c
 		// Generate mipmaps for the uploaded layer (this will transition mip levels to correct layouts)
 		if (imgs[i].dstImage->mipLevels > 1) {
 			a->generateMipmaps(imgs[i].dstImage->image, imgs[i].format, static_cast<int32_t>(width), static_cast<int32_t>(height), imgs[i].dstImage->mipLevels, 1, currentLayer);
+			// mark layer layout as SHADER_READ_ONLY_OPTIMAL after mipgen
+			setLayerLayout(i, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		} else {
 			// single-level: transition layer to SHADER_READ_ONLY_OPTIMAL
 			VkCommandBuffer cmd2 = a->beginSingleTimeCommands();
@@ -425,6 +443,8 @@ uint TextureArrayManager::load(const char* albedoFile, const char* normalFile, c
 			vkCmdPipelineBarrier(cmd2, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
 					 0, nullptr, 0, nullptr, 1, &barrier);
 			a->endSingleTimeCommands(cmd2);
+			// set tracked layout
+			setLayerLayout(i, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		}
 		if (staging.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, staging.buffer, nullptr);
 		if (staging.memory != VK_NULL_HANDLE) vkFreeMemory(device, staging.memory, nullptr);
@@ -452,6 +472,27 @@ size_t TextureArrayManager::loadTriples(const std::vector<TextureTriple> &triple
 		}
 	}
 	return loaded;
+}
+
+// Per-layer layout helpers
+VkImageLayout TextureArrayManager::getLayerLayout(int map, uint32_t layer) const {
+	if (layer >= layerAmount) return VK_IMAGE_LAYOUT_UNDEFINED;
+	switch (map) {
+		case 0: return (albedoLayerLayouts.size() > layer) ? albedoLayerLayouts[layer] : VK_IMAGE_LAYOUT_UNDEFINED;
+		case 1: return (normalLayerLayouts.size() > layer) ? normalLayerLayouts[layer] : VK_IMAGE_LAYOUT_UNDEFINED;
+		case 2: return (bumpLayerLayouts.size() > layer) ? bumpLayerLayouts[layer] : VK_IMAGE_LAYOUT_UNDEFINED;
+		default: return VK_IMAGE_LAYOUT_UNDEFINED;
+	}
+}
+
+void TextureArrayManager::setLayerLayout(int map, uint32_t layer, VkImageLayout layout) {
+	if (layer >= layerAmount) return;
+	switch (map) {
+		case 0: if (albedoLayerLayouts.size() > layer) albedoLayerLayouts[layer] = layout; break;
+		case 1: if (normalLayerLayouts.size() > layer) normalLayerLayouts[layer] = layout; break;
+		case 2: if (bumpLayerLayouts.size() > layer) bumpLayerLayouts[layer] = layout; break;
+		default: break;
+	}
 }
 
 int TextureArrayManager::addAllocationListener(std::function<void()> cb) {	// find an empty slot or push

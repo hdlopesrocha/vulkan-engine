@@ -129,6 +129,14 @@ public:
     VkDescriptorSet getPreviewDescriptor(int map, uint32_t layer);
     // Return number of layers in the attached TextureArrayManager (0 if none)
     uint32_t getArrayLayerCount() const;
+
+    // Re-write compute descriptor sets after a TextureArrayManager is available
+    void updateComputeDescriptorSets();
+
+    // Attach/replace the TextureArrayManager used and refresh descriptors
+    void attachTextureArrayManager(TextureArrayManager* tam);
+
+
 private:
 
 
@@ -137,10 +145,5 @@ private:
     // Helper to create a descriptor set targeting a single map (map index: 0=albedo,1=normal,2=bump)
     void createComputeDescriptorSet(int map, VkDescriptorSet& descSet);
 
-    // Re-write compute descriptor sets after a TextureArrayManager is available
-    void updateComputeDescriptorSets();
-
-    // Attach/replace the TextureArrayManager used and refresh descriptors
-    void attachTextureArrayManager(TextureArrayManager* tam);
 };
 

@@ -2,6 +2,8 @@
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
 #include "components/ScrollablePicker.hpp"
+#include "components/TexturePreview.hpp"
+#include "components/TexturePreviewTabs.hpp"
 
 TextureMixerWidget::TextureMixerWidget(std::shared_ptr<TextureMixer> textures_, std::vector<MixerParameters>& mixerParams_, const char* title)
     : Widget(title), textures(std::move(textures_)), mixerParams(mixerParams_) {}
@@ -12,12 +14,7 @@ void TextureMixerWidget::render() {
         return;
     }
 
-    if (ImGui::BeginTabBar("TextureTabBar")) {
-        if (ImGui::BeginTabItem("Albedo")) { activeMap = 0; renderTextureTab(0); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Normal")) { activeMap = 1; renderTextureTab(1); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Bump"))   { activeMap = 2; renderTextureTab(2); ImGui::EndTabItem(); }
-        ImGui::EndTabBar();
-    }
+    ImGuiComponents::RenderTexturePreviewTabs("TextureTabBar", textures, mixerParams, currentMixerIndex, previewSource, activeMap);
 
     ImGui::Separator();
     ImGui::Text("Perlin Noise Generator");
@@ -26,13 +23,7 @@ void TextureMixerWidget::render() {
         size_t pending = textures->getPendingGenerationCount();
         if (pending > 0) ImGui::TextColored(ImVec4(1.0f,0.9f,0.1f,1.0f), "Generation pending: %zu", pending);
         auto newLogs = textures->consumeLogs();
-        for (auto &l : newLogs) diagLog.push_back(l);
-        if (!diagLog.empty()) {
-            ImGui::Separator();
-            ImGui::Text("Diagnostics:");
-            int start = diagLog.size() > 8 ? static_cast<int>(diagLog.size() - 8) : 0;
-            for (int i = start; i < static_cast<int>(diagLog.size()); ++i) ImGui::Text("%s", diagLog[i].c_str());
-        }
+
     }
 
     uint32_t maxLayers = textures->getArrayLayerCount();
@@ -133,41 +124,4 @@ void TextureMixerWidget::render() {
     ImGui::End();
 }
 
-void TextureMixerWidget::renderTextureTab(int map) {
-    float previewSize = 256.0f;
-    ImVec2 imageSize(previewSize, previewSize);
-    ImTextureID texID = nullptr;
-    if (!mixerParams.empty()) {
-        MixerParameters &mp = mixerParams[currentMixerIndex];
-        uint32_t layer = static_cast<uint32_t>(mp.targetLayer);
-        // Show main preview based on previewSource: target, primary or secondary
-        if (previewSource == 1) layer = static_cast<uint32_t>(mp.primaryTextureIdx);
-        else if (previewSource == 2) layer = static_cast<uint32_t>(mp.secondaryTextureIdx);
-        texID = (ImTextureID)textures->getPreviewDescriptor(map, layer);
-    } else {
-        texID = (ImTextureID)textures->getPreviewDescriptor(map);
-    }
 
-    if (texID) {
-        ImVec2 pos = ImGui::GetCursorScreenPos();
-        ImVec2 end = ImVec2(pos.x + imageSize.x, pos.y + imageSize.y);
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const float tile = 16.0f;
-        ImU32 colA = IM_COL32(200,200,200,255);
-        ImU32 colB = IM_COL32(160,160,160,255);
-        for (float y = pos.y; y < end.y; y += tile) {
-            for (float x = pos.x; x < end.x; x += tile) {
-                bool odd = (static_cast<int>((x - pos.x) / tile) + static_cast<int>((y - pos.y) / tile)) & 1;
-                ImVec2 q0(x, y);
-                ImVec2 q1(std::min(x + tile, end.x), std::min(y + tile, end.y));
-                dl->AddRectFilled(q0, q1, odd ? colA : colB);
-            }
-        }
-        ImGui::Image(texID, imageSize);
-    } else {
-        ImGui::Text("Texture preview not available");
-    }
-
-    ImGui::Text("Size: %dx%d", textures->getLayerWidth(), textures->getLayerHeight());
-    ImGui::Text("Format: RGBA8");
-}

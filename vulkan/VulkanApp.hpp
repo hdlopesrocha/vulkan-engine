@@ -147,6 +147,8 @@ protected:
         // If outSemaphore is non-null, the submission will signal that semaphore when finished (useful to make frame submit wait on generation).
         VkFence submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore = nullptr);
         void processPendingCommandBuffers();
+        // Query whether a given fence is still tracked as pending by VulkanApp
+        bool isFencePending(VkFence fence);
         // Deferred destruction helpers
         void deferDestroyUntilAllPending(std::function<void()> destroyFn);
         void deferDestroyUntilFence(VkFence fence, std::function<void()> destroyFn);

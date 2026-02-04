@@ -11,7 +11,7 @@ public:
     void render() override;
 
 private:
-    void renderTextureTab(int map);
+    // The tabbed preview UI is rendered by ImGuiComponents::RenderTexturePreviewTabs
 
     std::shared_ptr<TextureMixer> textures;
     std::vector<MixerParameters>& mixerParams;
