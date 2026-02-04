@@ -1,3 +1,5 @@
+// ...existing code...
+// IndirectRenderer.hpp
 #pragma once
 
 #include "VulkanApp.hpp"
@@ -6,6 +8,7 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <cstdint>
 
 // Manages a single large vertex/index/indirect buffer and provides a simple
 // CPU-side allocator for adding/removing meshes. Draws are performed via
@@ -13,6 +16,10 @@
 // append-first and supports reclamation on remove (simple free list rebuild).
 class IndirectRenderer {
 public:
+    // Upload vertex and index data for a single mesh
+    bool uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t meshId);
+    // Write all mesh indirect/model/bounds buffers for all active meshes
+    void uploadMeshMetaBuffers(VulkanApp* app);
     struct MeshInfo {
         uint32_t id = UINT32_MAX;
         uint32_t baseVertex = 0;
@@ -36,7 +43,7 @@ public:
     // to a small CPU-side array used for push constants (we still push per-draw).
     uint32_t addMesh(VulkanApp* app, const Geometry& mesh);
     // Add mesh with a custom ID (e.g., node ID from octree). If mesh with this ID exists, it is replaced.
-    uint32_t addMesh(VulkanApp* app, const Geometry& mesh, uint32_t customId);
+    uint32_t updateMesh(VulkanApp* app, const Geometry& mesh, uint32_t customId);
     void removeMesh(uint32_t meshId);
 
     // Rebuild GPU backing buffers from current CPU mesh list. Call before drawing
@@ -48,6 +55,9 @@ public:
     bool uploadMesh(VulkanApp* app, uint32_t meshId);
     
     // Erase a mesh from GPU by zeroing its indirect command (prevents culling from reading trash).
+
+        public:
+            // Needed for main.cpp and other modules
     // Call after removeMesh() for runtime removals.
     void eraseMeshFromGPU(VulkanApp* app, uint32_t meshId);
     
@@ -59,6 +69,7 @@ public:
     // Check if dirty flag is set (needs rebuild or incremental uploads)
     bool isDirty() const { return dirty; }
 
+public:
     // Bind merged vertex/index buffers once and draw all provided mesh ids.
     // This avoids binding per-mesh buffers; push constants must be set per-draw
     // by this function (it will push each mesh's model before issuing its draw).
@@ -85,13 +96,13 @@ public:
     const Buffer& getModelsBuffer() const { return modelsBuffer; }
     const Buffer& getCompactIndirectBuffer() const { return compactIndirectBuffer; }
     VkPipeline getComputePipeline() const { return computePipeline; }
-    
+
     // Get count of active meshes
     size_t getMeshCount() const {
         std::lock_guard<std::mutex> lock(mutex);
         size_t count = 0;
         for (const auto& m : meshes) {
-            if (m.active) ++count;
+            if (m.second.active) ++count;
         }
         return count;
     }
@@ -108,8 +119,7 @@ public:
 private:
     mutable std::mutex mutex;
     uint32_t nextId = 1;
-    std::vector<MeshInfo> meshes; // sparse list; index by insertion order
-    std::unordered_map<uint32_t, size_t> idToIndex;
+    std::unordered_map<uint32_t, MeshInfo> meshes; // nodeId -> MeshInfo
 
     // CPU-side combined buffers
     std::vector<Vertex> mergedVertices;
