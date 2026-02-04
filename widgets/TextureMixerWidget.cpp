@@ -1,6 +1,7 @@
 #include "TextureMixerWidget.hpp"
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
+#include "components/ScrollablePicker.hpp"
 
 TextureMixerWidget::TextureMixerWidget(std::shared_ptr<TextureMixer> textures_, std::vector<MixerParameters>& mixerParams_, const char* title)
     : Widget(title), textures(std::move(textures_)), mixerParams(mixerParams_) {}
@@ -95,20 +96,21 @@ void TextureMixerWidget::render() {
             ImGui::Columns(1);
 
             ImGui::Text("Choose Primary (click thumbnail)");
-            const float thumb = 48.0f;
-            for (uint32_t l = 0; l < maxLayers; ++l) {
-                ImTextureID img = (ImTextureID)textures->getPreviewDescriptor(activeMap, l);
-                if (!img) continue;
-                if (ImGui::ImageButton(img, ImVec2(thumb, thumb))) { mp.primaryTextureIdx = l; previewSource = 1; }
-                if ((l+1) % 12 != 0) ImGui::SameLine();
+            {
+                size_t idx = mp.primaryTextureIdx;
+                if (ImGuiComponents::ScrollableTexturePicker("MixerPrimary", maxLayers, idx, [this](size_t l){ return (ImTextureID)textures->getPreviewDescriptor(this->activeMap, static_cast<uint32_t>(l)); }, 48.0f, 2, true, true)) {
+                    mp.primaryTextureIdx = static_cast<uint32_t>(idx);
+                    previewSource = 1;
+                }
             }
             ImGui::Separator();
             ImGui::Text("Choose Secondary (click thumbnail)");
-            for (uint32_t l = 0; l < maxLayers; ++l) {
-                ImTextureID img = (ImTextureID)textures->getPreviewDescriptor(activeMap, l);
-                if (!img) continue;
-                if (ImGui::ImageButton(img, ImVec2(thumb, thumb))) { mp.secondaryTextureIdx = l; previewSource = 2; }
-                if ((l+1) % 12 != 0) ImGui::SameLine();
+            {
+                size_t idx = mp.secondaryTextureIdx;
+                if (ImGuiComponents::ScrollableTexturePicker("MixerSecondary", maxLayers, idx, [this](size_t l){ return (ImTextureID)textures->getPreviewDescriptor(this->activeMap, static_cast<uint32_t>(l)); }, 48.0f, 2, true, true)) {
+                    mp.secondaryTextureIdx = static_cast<uint32_t>(idx);
+                    previewSource = 2;
+                }
             }
 
             // Manual generate

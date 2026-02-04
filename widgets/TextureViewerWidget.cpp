@@ -1,5 +1,6 @@
 #include "TextureViewerWidget.hpp"
 #include <string>
+#include "components/ScrollablePicker.hpp"
 
 void TextureViewer::render() {
     if (!arrayManager || !materials) return;
@@ -19,33 +20,125 @@ void TextureViewer::render() {
     // clamp currentIndex
     if (currentIndex >= tc) currentIndex = 0;
 
-    if (ImGui::Button("<")) {
-        if (currentIndex == 0) currentIndex = tc - 1;
-        else --currentIndex;
+    // Navigation styled like TextureMixer: "Texture X of Y" with Prev/Next and direct index input
+    ImGui::PushID(0);
+    ImGui::Text("Texture %zu of %zu", currentIndex + 1, tc);
+    ImGui::SameLine(); if (ImGui::Button("Prev") && currentIndex > 0) --currentIndex;
+    ImGui::SameLine(); if (ImGui::Button("Next") && currentIndex + 1 < tc) ++currentIndex;
+    ImGui::SameLine(); int idxInput = static_cast<int>(currentIndex);
+    ImGui::NewLine();
+    ImGui::Text("Choose Albedo (click thumbnail)");
+    {
+        size_t idx = currentIndex;
+        if (ImGuiComponents::ScrollableTexturePicker("PickerAlbedo", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 0) : nullptr; }, 48.0f, false, true)) {
+            currentIndex = idx;
+        }
     }
-    ImGui::SameLine();
-    ImGui::Text("%zu / %zu", currentIndex + 1, tc);
-    ImGui::SameLine();
-    if (ImGui::Button(">")) {
-        currentIndex = (currentIndex + 1) % tc;
+
+
+    if (ImGui::InputInt("##tex_idx", &idxInput)) {
+        if (idxInput < 0) idxInput = 0;
+        if (static_cast<size_t>(idxInput) >= tc) idxInput = static_cast<int>(tc - 1);
+        currentIndex = static_cast<size_t>(idxInput);
     }
+    ImGui::PopID();
+
+    // Compact pickers live in the Albedo/Normal/Height tabs below — remove the duplicated top-row picker
+    ImGui::Separator();
+    ImGui::Text("Use the tabs below to pick Albedo / Normal / Height thumbnails.");
+    ImGui::Separator();
 
     std::string tabBarId = std::string("tabs_") + std::to_string(currentIndex);
     if (ImGui::BeginTabBar(tabBarId.c_str())) {
         const float previewSize = 256.0f; // 25% of previous size
+        const float thumb = 48.0f; // thumbnail size for compact picker
         if (ImGui::BeginTabItem("Albedo")) {
             ImTextureID tex = arrayManager->getImTexture(currentIndex, 0);
-            if (tex) ImGui::Image(tex, ImVec2(previewSize, previewSize));
+            if (tex) {
+                ImGui::Image(tex, ImVec2(previewSize, previewSize));
+            } else {
+                ImGui::Text("Texture preview not available");
+                if (ImGui::Button("Recreate descriptor")) {
+                    arrayManager->getImTexture(currentIndex, 0); // attempt to force creation
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Log info")) {
+                    fprintf(stderr, "[TextureViewer] Preview NULL: layer=%zu map=Albedo layerInitialized=%d layerAmount=%u albedo.image=%p albedoSampler=%p\n",
+                        currentIndex,
+                        arrayManager->isLayerInitialized(static_cast<uint32_t>(currentIndex)) ? 1 : 0,
+                        arrayManager->layerAmount,
+                        (void*)arrayManager->albedoArray.image,
+                        (void*)arrayManager->albedoSampler);
+                }
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Choose Albedo (click thumbnail)");
+            {
+                size_t idx = currentIndex;
+                if (ImGuiComponents::ScrollableTexturePicker("PickerAlbedo", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 0) : nullptr; }, 48.0f, 2, true, true)) {
+                    currentIndex = idx;
+                }
+            }
+
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Normal")) {
             ImTextureID tex = arrayManager->getImTexture(currentIndex, 1);
-            if (tex) ImGui::Image(tex, ImVec2(previewSize, previewSize));
+            if (tex) {
+                ImGui::Image(tex, ImVec2(previewSize, previewSize));
+            } else {
+                ImGui::Text("Texture preview not available");
+                if (ImGui::Button("Recreate descriptor")) { arrayManager->getImTexture(currentIndex, 1); }
+                ImGui::SameLine();
+                if (ImGui::Button("Log info")) {
+                    fprintf(stderr, "[TextureViewer] Preview NULL: layer=%zu map=Normal layerInitialized=%d layerAmount=%u normal.image=%p normalSampler=%p\n",
+                        currentIndex,
+                        arrayManager->isLayerInitialized(static_cast<uint32_t>(currentIndex)) ? 1 : 0,
+                        arrayManager->layerAmount,
+                        (void*)arrayManager->normalArray.image,
+                        (void*)arrayManager->normalSampler);
+                }
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Choose Normal (click thumbnail)");
+            {
+                size_t idx = currentIndex;
+                if (ImGuiComponents::ScrollableTexturePicker("PickerNormal", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 1) : nullptr; }, 48.0f, 2, true, true)) {
+                    currentIndex = idx;
+                }
+            }
+
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Height")) {
             ImTextureID tex = arrayManager->getImTexture(currentIndex, 2);
-            if (tex) ImGui::Image(tex, ImVec2(previewSize, previewSize));
+            if (tex) {
+                ImGui::Image(tex, ImVec2(previewSize, previewSize));
+            } else {
+                ImGui::Text("Texture preview not available");
+                if (ImGui::Button("Recreate descriptor")) { arrayManager->getImTexture(currentIndex, 2); }
+                ImGui::SameLine();
+                if (ImGui::Button("Log info")) {
+                    fprintf(stderr, "[TextureViewer] Preview NULL: layer=%zu map=Height layerInitialized=%d layerAmount=%u bump.image=%p bumpSampler=%p\n",
+                        currentIndex,
+                        arrayManager->isLayerInitialized(static_cast<uint32_t>(currentIndex)) ? 1 : 0,
+                        arrayManager->layerAmount,
+                        (void*)arrayManager->bumpArray.image,
+                        (void*)arrayManager->bumpSampler);
+                }
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Choose Height (click thumbnail)");
+            {
+                size_t idx = currentIndex;
+                if (ImGuiComponents::ScrollableTexturePicker("PickerHeight", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 2) : nullptr; }, 48.0f, 2, true, true)) {
+                    currentIndex = idx;
+                }
+            }
+
             ImGui::EndTabItem();
         }
         // Material tab removed from tabs — material UI will be shown under the preview
