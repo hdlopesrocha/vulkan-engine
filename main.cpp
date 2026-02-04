@@ -130,7 +130,9 @@ public:
             if (sceneRenderer->textureArrayManager.layerAmount == 0) {
                 const uint32_t defaultLayers = 64;
                 const uint32_t defaultSize = 1024;
-                sceneRenderer->textureArrayManager.allocate(defaultLayers, defaultSize, defaultSize, this);
+                // Use the public allocate API then call initialize(app) to create GPU resources
+                sceneRenderer->textureArrayManager.allocate(defaultLayers, defaultSize, defaultSize);
+                sceneRenderer->textureArrayManager.initialize(this);
                 printf("[MyApp::setup] Allocated default texture arrays: layers=%u size=%ux%u\n", defaultLayers, defaultSize, defaultSize);
             }
         } else {
