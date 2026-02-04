@@ -1,6 +1,7 @@
 #include "TextureViewerWidget.hpp"
 #include <string>
 #include "components/ScrollablePicker.hpp"
+#include "../vulkan/TextureMixer.hpp"
 
 void TextureViewer::render() {
     if (!arrayManager || !materials) return;
@@ -78,6 +79,14 @@ void TextureViewer::render() {
                 size_t idx = currentIndex;
                 if (ImGuiComponents::ScrollableTexturePicker("PickerAlbedo", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 0) : nullptr; }, 48.0f, 2, true, true)) {
                     currentIndex = idx;
+                    // Touch generator: enqueue generate for the current viewer selection to ensure preview is up-to-date
+                    if (arrayManager && textureMixer) {
+                        MixerParameters mp{};
+                        mp.targetLayer = currentIndex;
+                        mp.primaryTextureIdx = static_cast<uint32_t>(currentIndex);
+                        mp.secondaryTextureIdx = static_cast<uint32_t>(currentIndex);
+                        textureMixer->enqueueGenerate(mp, 0);
+                    }
                 }
             }
 
@@ -205,3 +214,4 @@ void TextureViewer::init(TextureArrayManager* arrayManager, std::vector<Material
     this->arrayManager = arrayManager;
     this->materials = materials;
 }
+

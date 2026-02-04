@@ -58,22 +58,6 @@ void TextureMixerWidget::render() {
             if (maxLayers > 0) textures->enqueueGenerate(mp);
             else fprintf(stderr, "[TextureMixerWidget] Skipping Perlin generation: no texture arrays available (target layer=%zu)\n", mp.targetLayer);
         }
-
-        ImGui::Separator();
-        ImGui::Text("Noise Parameters");
-        bool paramsChanged = false;
-        int scale = static_cast<int>(mp.perlinScale);
-        if (ImGui::SliderInt("Scale", &scale, 1, 32)) { mp.perlinScale = static_cast<float>(scale); paramsChanged = true; }
-        if (ImGui::SliderFloat("Octaves", &mp.perlinOctaves, 1.0f, 8.0f)) paramsChanged = true;
-        if (ImGui::SliderFloat("Persistence", &mp.perlinPersistence, 0.0f, 1.0f)) paramsChanged = true;
-        if (ImGui::SliderFloat("Lacunarity", &mp.perlinLacunarity, 1.0f, 4.0f)) paramsChanged = true;
-        if (ImGui::SliderFloat("Time", &mp.perlinTime, 0.0f, 100.0f)) paramsChanged = true;
-
-        ImGui::Separator();
-        ImGui::Text("Adjustments");
-        if (ImGui::SliderFloat("Brightness", &mp.perlinBrightness, -1.0f, 1.0f)) paramsChanged = true;
-        if (ImGui::SliderFloat("Contrast", &mp.perlinContrast, 0.0f, 5.0f)) paramsChanged = true;
-
         // Texture selection UI: allow picking primary and secondary layers via thumbnails
         if (maxLayers > 0) {
             ImGui::Separator();
@@ -95,30 +79,49 @@ void TextureMixerWidget::render() {
             ImGui::NextColumn();
             ImGui::Columns(1);
 
-            ImGui::Text("Choose Primary (click thumbnail)");
-            {
-                size_t idx = mp.primaryTextureIdx;
-                if (ImGuiComponents::ScrollableTexturePicker("MixerPrimary", maxLayers, idx, [this](size_t l){ return (ImTextureID)textures->getPreviewDescriptor(this->activeMap, static_cast<uint32_t>(l)); }, 48.0f, 2, true, true)) {
-                    mp.primaryTextureIdx = static_cast<uint32_t>(idx);
-                    previewSource = 1;
-                }
-            }
-            ImGui::Separator();
-            ImGui::Text("Choose Secondary (click thumbnail)");
-            {
-                size_t idx = mp.secondaryTextureIdx;
-                if (ImGuiComponents::ScrollableTexturePicker("MixerSecondary", maxLayers, idx, [this](size_t l){ return (ImTextureID)textures->getPreviewDescriptor(this->activeMap, static_cast<uint32_t>(l)); }, 48.0f, 2, true, true)) {
-                    mp.secondaryTextureIdx = static_cast<uint32_t>(idx);
-                    previewSource = 2;
-                }
-            }
+            ImGui::Columns(2, "pickers_cols", true);
+            ImGui::Text("Choose Primary (click thumbnail)"); ImGui::NextColumn();
+            ImGui::Text("Choose Secondary (click thumbnail)"); ImGui::NextColumn();
 
-            // Manual generate
-            ImGui::Separator();
-            if (ImGui::Button("Generate")) textures->enqueueGenerate(mp, activeMap);
+            {
+                size_t primaryIdx = mp.primaryTextureIdx;
+                if (ImGuiComponents::ScrollableTexturePicker("MixerPrimary", maxLayers, primaryIdx, [this](size_t l){ return (ImTextureID)textures->getPreviewDescriptor(this->activeMap, static_cast<uint32_t>(l)); }, 48.0f, 2, true, true)) {
+                    mp.primaryTextureIdx = static_cast<uint32_t>(primaryIdx);
+                    previewSource = 1;
+                    // Trigger perlin generation for this map when primary selection changes
+                    if (textures) textures->enqueueGenerate(mp, activeMap);
+                }
+            }
+            ImGui::NextColumn();
+            {
+                size_t secondaryIdx = mp.secondaryTextureIdx;
+                if (ImGuiComponents::ScrollableTexturePicker("MixerSecondary", maxLayers, secondaryIdx, [this](size_t l){ return (ImTextureID)textures->getPreviewDescriptor(this->activeMap, static_cast<uint32_t>(l)); }, 48.0f, 2, true, true)) {
+                    mp.secondaryTextureIdx = static_cast<uint32_t>(secondaryIdx);
+                    previewSource = 2;
+                    // Trigger perlin generation for this map when secondary selection changes
+                    if (textures) textures->enqueueGenerate(mp, activeMap);
+                }
+            }
+            ImGui::NextColumn();
+            ImGui::Columns(1);
         } else {
             ImGui::Text("No texture arrays allocated — using editable textures");
         }
+
+        ImGui::Separator();
+        ImGui::Text("Noise Parameters");
+        bool paramsChanged = false;
+        int scale = static_cast<int>(mp.perlinScale);
+        if (ImGui::SliderInt("Scale", &scale, 1, 32)) { mp.perlinScale = static_cast<float>(scale); paramsChanged = true; }
+        if (ImGui::SliderFloat("Octaves", &mp.perlinOctaves, 1.0f, 8.0f)) paramsChanged = true;
+        if (ImGui::SliderFloat("Persistence", &mp.perlinPersistence, 0.0f, 1.0f)) paramsChanged = true;
+        if (ImGui::SliderFloat("Lacunarity", &mp.perlinLacunarity, 1.0f, 4.0f)) paramsChanged = true;
+        if (ImGui::SliderFloat("Time", &mp.perlinTime, 0.0f, 100.0f)) paramsChanged = true;
+
+        ImGui::Separator();
+        ImGui::Text("Adjustments");
+        if (ImGui::SliderFloat("Brightness", &mp.perlinBrightness, -1.0f, 1.0f)) paramsChanged = true;
+        if (ImGui::SliderFloat("Contrast", &mp.perlinContrast, 0.0f, 5.0f)) paramsChanged = true;
 
         if (paramsChanged) {
             if (maxLayers > 0) textures->enqueueGenerate(mp, activeMap);
