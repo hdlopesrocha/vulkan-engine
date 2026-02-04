@@ -654,11 +654,18 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     return NodeOperationResult(node, shapeType, resultType, resultSDF, shapeSDF, process, isSimplified, brushIndex);
 }
 
-
+void Octree::iterate(IteratorHandler &handler, OctreeNodeData data) {
+	handler.iterate(*this, data);
+}
 void Octree::iterate(IteratorHandler &handler) {
     OctreeNodeData data(0, root, *this, ContainmentType::Intersects, NULL);
 	handler.iterate(*this, data);
 }
+
+void Octree::iterateFlat(IteratorHandler &handler, OctreeNodeData data) {
+    handler.iterateFlatIn(*this, data);
+}
+
 
 void Octree::iterateFlat(IteratorHandler &handler) {
     OctreeNodeData data(0, root, *this, ContainmentType::Intersects, NULL);

@@ -40,8 +40,11 @@ public:
     void del(WrappedSignedDistanceFunction *function, const Transformation model, glm::vec4 translate, glm::vec4 scale, const TexturePainter &painter, float minSize, Simplifier &simplifier, const OctreeChangeHandler &changeHandler);
     void reset();
     NodeOperationResult shape(OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext, ContainmentType parentContainment);
-    void iterate(IteratorHandler &handler);
-    void iterateFlat(IteratorHandler &handler);
+        void iterate(IteratorHandler &handler);
+        void iterateFlat(IteratorHandler &handler);
+        void iterate(IteratorHandler &handler, OctreeNodeData data);
+        void iterateFlat(IteratorHandler &handler, OctreeNodeData data);
+
     void iterateParallel(IteratorHandler &handler);
     OctreeNodeLevel getNodeAt(const glm::vec3 &pos, int level, bool simplification) const;
     OctreeNode* getNodeAt(const glm::vec3 &pos, bool simplification) const;
