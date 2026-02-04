@@ -138,6 +138,7 @@ public:
             textureArrayManager.allocate(defaultLayers, defaultSize, defaultSize);
             textureArrayManager.initialize(this);
             printf("[MyApp::setup] Allocated default texture arrays: layers=%u size=%ux%u\n", defaultLayers, defaultSize, defaultSize);
+            if (textureMixer) textureMixer->attachTextureArrayManager(&textureArrayManager); // refresh compute descriptors now that arrays exist
         }
 
         uint32_t loadedTextureLayers_local = 0;
@@ -160,6 +161,8 @@ public:
         textureArrayManager.currentLayer = 0;
         // Bulk load the triples directly using TextureTriple vector already defined above
         loadedTextureLayers_local = textureArrayManager.loadTriples(textureTriples);
+        // Ensure mixer descriptor sets are updated with newly loaded arrays
+        if (textureMixer) textureMixer->attachTextureArrayManager(&textureArrayManager);
         // Record into member so UI can display counts
         loadedTextureLayers = loadedTextureLayers_local;
 

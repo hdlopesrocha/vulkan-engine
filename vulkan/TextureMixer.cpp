@@ -462,6 +462,96 @@ void TextureMixer::createTripleComputeDescriptorSet() {
 	if (!writes.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
+void TextureMixer::updateComputeDescriptorSets() {
+	if (!app) return;
+	if (!textureArrayManager) {
+		std::lock_guard<std::mutex> lk(logsMutex);
+		logs.emplace_back("updateComputeDescriptorSets: no TextureArrayManager attached");
+		return;
+	}
+
+	VkDevice dev = app->getDevice();
+
+	VkDescriptorImageInfo albedoImageInfo{};
+	albedoImageInfo.imageView = textureArrayManager->albedoArray.view;
+	albedoImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+	VkDescriptorImageInfo normalImageInfo{};
+	normalImageInfo.imageView = textureArrayManager->normalArray.view;
+	normalImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+	VkDescriptorImageInfo bumpImageInfo{};
+	bumpImageInfo.imageView = textureArrayManager->bumpArray.view;
+	bumpImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+	VkDescriptorImageInfo albedoSamplerInfo{}; albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view; albedoSamplerInfo.sampler = textureArrayManager->albedoSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	VkDescriptorImageInfo normalSamplerInfo{}; normalSamplerInfo.imageView = textureArrayManager->normalArray.view; normalSamplerInfo.sampler = textureArrayManager->normalSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	VkDescriptorImageInfo bumpSamplerInfo{}; bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view; bumpSamplerInfo.sampler = textureArrayManager->bumpSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+	std::vector<VkWriteDescriptorSet> writes;
+
+	auto pushStorage = [&](VkDescriptorSet set, uint32_t binding, VkDescriptorImageInfo *info) {
+		if (set == VK_NULL_HANDLE || info->imageView == VK_NULL_HANDLE) return;
+		VkWriteDescriptorSet w{};
+		w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		w.dstSet = set;
+		w.dstBinding = binding;
+		w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		w.descriptorCount = 1;
+		w.pImageInfo = info;
+		writes.push_back(w);
+	};
+	auto pushSampler = [&](VkDescriptorSet set, uint32_t binding, VkDescriptorImageInfo *info) {
+		if (set == VK_NULL_HANDLE || info->imageView == VK_NULL_HANDLE || info->sampler == VK_NULL_HANDLE) return;
+		VkWriteDescriptorSet w{};
+		w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		w.dstSet = set;
+		w.dstBinding = binding;
+		w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		w.descriptorCount = 1;
+		w.pImageInfo = info;
+		writes.push_back(w);
+	};
+
+	// Update triple descriptor set (bind all storage images and samplers)
+	if (tripleComputeDescSet != VK_NULL_HANDLE) {
+		pushStorage(tripleComputeDescSet, 0, &albedoImageInfo);
+		pushSampler(tripleComputeDescSet, 1, &albedoSamplerInfo);
+		pushSampler(tripleComputeDescSet, 2, &normalSamplerInfo);
+		pushSampler(tripleComputeDescSet, 3, &bumpSamplerInfo);
+		pushStorage(tripleComputeDescSet, 4, &normalImageInfo);
+		pushStorage(tripleComputeDescSet, 5, &bumpImageInfo);
+	}
+
+	// Update per-map descriptor sets if they were allocated
+	if (albedoComputeDescSet != VK_NULL_HANDLE) {
+		pushStorage(albedoComputeDescSet, 0, &albedoImageInfo);
+		pushSampler(albedoComputeDescSet, 1, &albedoSamplerInfo);
+		pushSampler(albedoComputeDescSet, 2, &albedoSamplerInfo); // keep existing behavior (bind same sampler to 2)
+	}
+	if (normalComputeDescSet != VK_NULL_HANDLE) {
+		pushStorage(normalComputeDescSet, 0, &normalImageInfo);
+		pushSampler(normalComputeDescSet, 1, &normalSamplerInfo);
+		pushSampler(normalComputeDescSet, 2, &normalSamplerInfo);
+	}
+	if (bumpComputeDescSet != VK_NULL_HANDLE) {
+		pushStorage(bumpComputeDescSet, 0, &bumpImageInfo);
+		pushSampler(bumpComputeDescSet, 1, &bumpSamplerInfo);
+		pushSampler(bumpComputeDescSet, 2, &bumpSamplerInfo);
+	}
+
+	if (!writes.empty()) {
+		vkUpdateDescriptorSets(dev, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+		std::lock_guard<std::mutex> lk(logsMutex);
+		logs.emplace_back("updateComputeDescriptorSets: descriptor sets updated with texture arrays");
+	}
+}
+
+void TextureMixer::attachTextureArrayManager(TextureArrayManager* tam) {
+	this->textureArrayManager = tam;
+	updateComputeDescriptorSets();
+}
+
 VkDescriptorSet TextureMixer::getPreviewDescriptor(int map) {
 	if (textureArrayManager && editableLayer != UINT32_MAX) {
 		ImTextureID id = textureArrayManager->getImTexture(editableLayer, map);
@@ -581,11 +671,26 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 	// Choose descriptor set and images to generate based on 'map' (-1 = all, 0=albedo,1=normal,2=bump)
 	VkDescriptorSet descSet = VK_NULL_HANDLE;
 	bool genA = false, genN = false, genB = false;
-	if (map == -1) { descSet = tripleComputeDescSet; genA = genN = genB = true; }
-	else if (map == 0) { descSet = albedoComputeDescSet; genA = true; }
-	else if (map == 1) { descSet = normalComputeDescSet; genN = true; }
-	else if (map == 2) { descSet = bumpComputeDescSet; genB = true; }
-	if (descSet == VK_NULL_HANDLE) return;
+	// Prefer the triple descriptor set which binds all samplers and result storage images
+	if (tripleComputeDescSet != VK_NULL_HANDLE) {
+		// If map == -1 we generate all maps; otherwise only mark the requested one(s)
+		descSet = tripleComputeDescSet;
+		if (map == -1) { genA = genN = genB = true; }
+		else if (map == 0) { genA = true; }
+		else if (map == 1) { genN = true; }
+		else if (map == 2) { genB = true; }
+	} else {
+		// Fallback to per-map descriptor sets (legacy behavior)
+		if (map == -1) { descSet = tripleComputeDescSet; genA = genN = genB = true; }
+		else if (map == 0) { descSet = albedoComputeDescSet; genA = true; }
+		else if (map == 1) { descSet = normalComputeDescSet; genN = true; }
+		else if (map == 2) { descSet = bumpComputeDescSet; genB = true; }
+	}
+	if (descSet == VK_NULL_HANDLE) {
+		std::lock_guard<std::mutex> lkll(logsMutex);
+		logs.emplace_back("No compute descriptor set available for Perlin generation");
+		return;
+	}
 
 	PerlinPushConstants pushConstants;
 	pushConstants.scale = params.perlinScale;
