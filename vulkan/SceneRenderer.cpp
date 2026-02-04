@@ -440,6 +440,13 @@ void SceneRenderer::processPendingNodeChanges(Scene& scene) {
         uint32_t meshId = renderer.addMesh(app, geom);
         Model3DVersion mv{meshId, nd.node->version};
         registerModelVersion(nid, mv);
+        // Try to upload this mesh immediately. If per-mesh upload fails (e.g., buffers
+        // not yet created), trigger a full rebuild which waits for GPU idle and
+        // uploads merged buffers. This ensures asynchronously-delivered geometry
+        // becomes available to the GPU before the next render.
+        if (!renderer.uploadMesh(app, meshId)) {
+            renderer.rebuild(app);
+        }
     };
 
     // Delegate processing/coalescing: created/updated
