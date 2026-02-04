@@ -101,7 +101,15 @@ void TextureMixer::flushPendingRequests() {
 	}
 	for (auto &t : tasks) {
 		// For lower-latency, submit generation asynchronously and track fences
-		generatePerlinNoise(const_cast<MixerParameters&>(t.first), t.second);
+		try {
+			generatePerlinNoise(const_cast<MixerParameters&>(t.first), t.second);
+		} catch (const std::exception &e) {
+			std::lock_guard<std::mutex> lkll(logsMutex);
+			char buf[256];
+			snprintf(buf, sizeof(buf), "generate Perlin failed: layer=%zu map=%d reason=%s", t.first.targetLayer, t.second, e.what());
+			logs.emplace_back(buf);
+			fprintf(stderr, "[TextureMixer] generatePerlinNoise failed: %s\n", e.what());
+		}
 	}
 }
 
@@ -613,13 +621,6 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 		return b;
 	};
 
-	// Only prepare per-layer barriers once we know the target layer
-	// (we'll prepare these after evaluating targetLayer below)
-
-	if (barriers.empty()) {
-		throw std::runtime_error("TextureMixer: invalid target map selection or missing TextureArrayManager");
-	}
-
 	// If a TextureArrayManager is present and a valid target layer was specified,
 	// ensure we will use array-layer views for storage writes and prepare
 	// per-layer barriers (we only touch the requested layer to avoid races)
@@ -644,10 +645,7 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 	// full mip count for that image) and set transition flags
 	for (auto &barrier : barriers) {
 		// barrier.image and layerCount/mipLevels were set by mkBarrier
-		// update levelCount to the full mip level count if needed
-		// (mkBarrier accepted mipLevels; ensure it applied)
-		barrier.subresourceRange.baseArrayLayer = 0;
-		// keep layerCount as set by mkBarrier (should already be textureArrayManager->layerAmount)
+		// ensure the access masks and layouts are correct for compute write
 		barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
 		barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
