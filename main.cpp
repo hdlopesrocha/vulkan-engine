@@ -147,18 +147,11 @@ public:
 
              
         textureArrayManager.currentLayer = 0;
-        for (const auto& triple : textureTriples) {
-            if (textureArrayManager.currentLayer >= textureArrayManager.layerAmount) {
-                fprintf(stderr, "[TextureLoad] Reached texture array capacity (%u layers)\n", textureArrayManager.layerAmount);
-                break;
-            }
-            try {
-                textureArrayManager.load(triple.albedo, triple.normal, triple.bump);
-                ++loadedTextureLayers_local;
-            } catch (const std::exception& e) {
-                fprintf(stderr, "[TextureLoad] Failed to load %s: %s\n", triple.albedo ? triple.albedo : "(null)", e.what());
-            }
-        }
+        // Build tuple list and use TextureArrayManager::loadTriples for convenience
+        std::vector<std::tuple<const char*, const char*, const char*>> tripleList;
+        tripleList.reserve(textureTriples.size());
+        for (const auto &tr : textureTriples) tripleList.emplace_back(tr.albedo, tr.normal, tr.bump);
+        loadedTextureLayers_local = textureArrayManager.loadTriples(tripleList);
         // Record into member so UI can display counts
         loadedTextureLayers = loadedTextureLayers_local;
 

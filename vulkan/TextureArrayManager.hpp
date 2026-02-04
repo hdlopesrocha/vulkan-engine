@@ -72,6 +72,10 @@ public:
     // Load a triple of images into the current layer and increment the layer counter
     uint load(const char* albedoFile, const char* normalFile, const char* bumpFile);
 
+    // Convenience: load multiple triples (albedo, normal, bump) into consecutive layers.
+    // Returns the number of successfully loaded layers.
+    size_t loadTriples(const std::vector<std::tuple<const char*, const char*, const char*>> &triples);
+
     // Update a specific array layer from an EditableTexture (copies image -> array layer)
     void updateLayerFromEditable(uint32_t layer, const class EditableTexture& tex);
 

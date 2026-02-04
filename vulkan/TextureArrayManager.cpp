@@ -6,6 +6,7 @@
 #include "../vulkan/EditableTexture.hpp"
 #include <cmath>
 #include <stb/stb_image.h>
+#include <tuple> // for loadTriples helper
 
 // Convert in-place 8-bit RGBA sRGB values to linear (also 8-bit)
 void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount) {
@@ -338,6 +339,28 @@ uint TextureArrayManager::load(const char* albedoFile, const char* normalFile, c
 	// increment current layer
 	setLayerInitialized(currentLayer, true);
 	return currentLayer++;
+}
+
+size_t TextureArrayManager::loadTriples(const std::vector<std::tuple<const char*, const char*, const char*>> &triples) {
+	if (!app) throw std::runtime_error("TextureArrayManager::loadTriples: manager has no VulkanApp");
+	if (layerAmount == 0) throw std::runtime_error("TextureArrayManager::loadTriples: layerAmount == 0");
+	size_t loaded = 0;
+	for (const auto &t : triples) {
+		if (currentLayer >= layerAmount) {
+			fprintf(stderr, "[TextureArrayManager] Reached texture array capacity (%u layers)\n", layerAmount);
+			break;
+		}
+		const char* a = std::get<0>(t);
+		const char* n = std::get<1>(t);
+		const char* b = std::get<2>(t);
+		try {
+			load(a, n, b);
+			++loaded;
+		} catch (const std::exception &e) {
+			fprintf(stderr, "[TextureArrayManager] Failed to load %s: %s\n", a ? a : "(null)", e.what());
+		}
+	}
+	return loaded;
 }
 
 int TextureArrayManager::addAllocationListener(std::function<void()> cb) {	// find an empty slot or push
