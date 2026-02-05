@@ -16,6 +16,8 @@
 // append-first and supports reclamation on remove (simple free list rebuild).
 class IndirectRenderer {
 public:
+        // Allow external code to force the dirty flag
+        void setDirty(bool value) { dirty = value; }
     // Upload vertex and index data for a single mesh
     bool uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t meshId);
     // Write all mesh indirect/model/bounds buffers for all active meshes

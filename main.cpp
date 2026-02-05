@@ -246,11 +246,13 @@ public:
         uniqueSolidHandler.handleEvents();
         uniqueLiquidHandler.handleEvents();
 
-        // Rebuild indirect buffers after all initial meshes are loaded
+        // Force indirect buffer rebuild after all initial meshes are loaded (ignore dirty flag)
         if (sceneRenderer && sceneRenderer->solidRenderer) {
+            sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
             sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
         }
         if (sceneRenderer && sceneRenderer->waterRenderer) {
+            sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
             sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
         }
 
@@ -535,7 +537,17 @@ public:
             fprintf(stdout  , "[MyApp::draw] Error: mainScene is nullptr, skipping draw.\n");
             return;
         }
-        
+
+        // --- SAFETY: Ensure indirect buffers are rebuilt if dirty before first draw ---
+        if (sceneRenderer->solidRenderer && sceneRenderer->solidRenderer->getIndirectRenderer().isDirty()) {
+            printf("[MyApp::draw] solidRenderer indirect buffer dirty, rebuilding before draw...\n");
+            sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
+        }
+        if (sceneRenderer->waterRenderer && sceneRenderer->waterRenderer->getIndirectRenderer().isDirty()) {
+            printf("[MyApp::draw] waterRenderer indirect buffer dirty, rebuilding before draw...\n");
+            sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
+        }
+
         uint32_t frameIdx = getCurrentFrame();
         glm::mat4 viewProj = camera.getViewProjectionMatrix();
         glm::mat4 invViewProj = glm::inverse(viewProj);
