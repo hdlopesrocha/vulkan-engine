@@ -96,7 +96,6 @@ void SceneRenderer::mainPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginIn
         fprintf(stderr, "[SceneRenderer::mainPass] solidRenderer is nullptr, skipping.\n");
         return;
     }
-    solidRenderer->getIndirectRenderer().rebuild(app);
     solidRenderer->draw(commandBuffer, app, perTextureDescriptorSet, wireframeEnabled);
     //fprintf(stderr, "[SceneRenderer::mainPass] After solidRenderer->draw.\n");
 
@@ -149,7 +148,6 @@ void SceneRenderer::waterPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginI
 
     // Run water geometry pass offscreen on a temporary command buffer to avoid nested render passes
     VkCommandBuffer cmd = app->beginSingleTimeCommands();
-    waterRenderer->getIndirectRenderer().rebuild(app);
     waterRenderer->beginWaterGeometryPass(cmd, frameIdx);
     // TODO: Render water geometry here if needed (use waterRenderer APIs)
     waterRenderer->endWaterGeometryPass(cmd);
