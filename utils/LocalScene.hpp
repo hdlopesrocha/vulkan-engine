@@ -22,9 +22,11 @@ public:
     // Instance/visibility layers and change handlers (owned by LocalScene)
     OctreeLayer<InstanceData> opaqueLayerInfo;
     OctreeLayer<InstanceData> transparentLayerInfo;
-    const SolidSpaceChangeHandler &opaqueLayerChangeHandler;
-    const LiquidSpaceChangeHandler &transparentLayerChangeHandler;
-    LocalScene(const SolidSpaceChangeHandler &opaqueLayerChangeHandler, const LiquidSpaceChangeHandler &transparentLayerChangeHandler) : 
+    const OctreeChangeHandler &opaqueLayerChangeHandler;
+    const OctreeChangeHandler &transparentLayerChangeHandler;
+
+    
+    LocalScene(const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) : 
         opaqueOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)), 
         transparentOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)),
         threadPool(std::thread::hardware_concurrency()),

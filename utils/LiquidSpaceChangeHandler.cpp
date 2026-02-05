@@ -3,21 +3,20 @@
 // Default empty callback used to initialize reference members
 static NodeDataCallback emptyNodeDataCallback;
 
-LiquidSpaceChangeHandler::LiquidSpaceChangeHandler(
-		const NodeDataCallback & onNodeUpdated,
-		const NodeDataCallback & onNodeErased
-	) : onNodeUpdated(onNodeUpdated), onNodeErased(onNodeErased) {
-};
 
+LiquidSpaceChangeHandler::LiquidSpaceChangeHandler(
+		const NodeDataCallback& onNodeUpdatedCallback,
+    	const NodeDataCallback& onNodeDeletedCallback
+	)
+    : onNodeUpdatedCallback(onNodeUpdatedCallback),
+      onNodeDeletedCallback(onNodeDeletedCallback) {
+}
 
 void LiquidSpaceChangeHandler::onNodeAdded(const OctreeNodeData& nodeData) const {
-    if (onNodeUpdated) {
-        onNodeUpdated(nodeData);
-    }
+    onNodeUpdatedCallback(nodeData);
 };
 
 void LiquidSpaceChangeHandler::onNodeDeleted(const OctreeNodeData& nodeData) const {
-    if (onNodeErased) {
-        onNodeErased(nodeData);
-    }
+    onNodeDeletedCallback(nodeData);
 };
+

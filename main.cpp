@@ -252,12 +252,17 @@ public:
         // Initialize and load the main scene so rendering has valid scene data
         SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler();
         LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler();
-        
-        mainScene = new LocalScene(solidHandler, liquidHandler);
+        UniqueOctreeChangeHandler uniqueSolidHandler = UniqueOctreeChangeHandler(solidHandler);
+        UniqueOctreeChangeHandler uniqueLiquidHandler = UniqueOctreeChangeHandler(liquidHandler);
+
+
+        mainScene = new LocalScene(uniqueSolidHandler, uniqueLiquidHandler);
         MainSceneLoader loader = MainSceneLoader();
         mainScene->loadScene(loader);
     
-        sceneRenderer->processPendingNodeChanges(*mainScene);
+        uniqueSolidHandler.handleEvents();
+        uniqueLiquidHandler.handleEvents();
+
         // Create octree explorer widget bound to loaded scene
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
 
@@ -311,8 +316,6 @@ public:
         // Poll for completed async generations and process their fences
         if (textureMixer) textureMixer->pollPendingGenerations();
 
-        // Process any pending mesh updates from scene change handlers
-        if (sceneRenderer) sceneRenderer->processPendingNodeChanges(*mainScene);
     }
 
     void preRenderPass(VkCommandBuffer &commandBuffer) override {
@@ -495,12 +498,7 @@ public:
                 ImGui::Text("Vegetation Chunks: %zu", vegChunks);
                 ImGui::Text("Vegetation Instances: %zu", vegInstances);
 
-                // Pending node change queues
-                size_t pendingCreated = sceneRenderer ? sceneRenderer->getPendingCreatedCount() : 0;
-                size_t pendingUpdated = sceneRenderer ? sceneRenderer->getPendingUpdatedCount() : 0;
-                size_t pendingErased = sceneRenderer ? sceneRenderer->getPendingErasedCount() : 0;
-                ImGui::Text("Pending Created/Updated/Erased: %zu / %zu / %zu", pendingCreated, pendingUpdated, pendingErased);
-
+              
                 if (profilingEnabled) {
                     ImGui::Separator();
                     ImGui::Text("--- GPU Timing (ms) ---");

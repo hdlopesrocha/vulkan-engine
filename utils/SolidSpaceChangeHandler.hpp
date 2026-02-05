@@ -6,17 +6,16 @@
 #include "../space/InstanceData.hpp"
 #include "../space/DebugInstanceData.hpp"
 #include <functional>
+#include "UniqueOctreeChangeHandler.hpp"
 
 class SolidSpaceChangeHandler : public OctreeChangeHandler {
 
-	// Callback for when a node is updated (for mesh loading)
-	const NodeDataCallback &onNodeUpdated;
-	const NodeDataCallback &onNodeErased;
-
+	const NodeDataCallback& onNodeUpdatedCallback;
+	const NodeDataCallback& onNodeDeletedCallback;
 	public:
 	SolidSpaceChangeHandler(
-		const NodeDataCallback & onNodeUpdated,
-		const NodeDataCallback & onNodeErased
+		const NodeDataCallback& onNodeUpdatedCallback,
+    	const NodeDataCallback& onNodeDeletedCallback
 	);
 
 	void onNodeAdded(const OctreeNodeData& data) const override;

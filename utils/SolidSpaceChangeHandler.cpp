@@ -1,22 +1,18 @@
 #include "SolidSpaceChangeHandler.hpp"
 
-// Default empty callback used to initialize reference members
-static NodeDataCallback emptyNodeDataCallback;
 
 SolidSpaceChangeHandler::SolidSpaceChangeHandler(
-		const NodeDataCallback & onNodeUpdated,
-		const NodeDataCallback & onNodeErased
-	) : onNodeUpdated(onNodeUpdated), onNodeErased(onNodeErased) {
-};
+		const NodeDataCallback& onNodeUpdatedCallback,
+    	const NodeDataCallback& onNodeDeletedCallback
+	)
+    : onNodeUpdatedCallback(onNodeUpdatedCallback),
+      onNodeDeletedCallback(onNodeDeletedCallback) {
+}
 
 void SolidSpaceChangeHandler::onNodeAdded(const OctreeNodeData& nodeData) const {
-    if (onNodeUpdated) {
-        onNodeUpdated(nodeData);
-    }
+    onNodeUpdatedCallback(nodeData);
 };
 
 void SolidSpaceChangeHandler::onNodeDeleted(const OctreeNodeData& nodeData) const {
-    if (onNodeErased) {
-        onNodeErased(nodeData);
-    }
+    onNodeDeletedCallback(nodeData);
 };

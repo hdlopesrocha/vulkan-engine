@@ -5,24 +5,31 @@
 
 int main(int argc, char** argv) {
 
+    NodeDataCallback liquidNodeEventCallback = [](const OctreeNodeData& nd) {
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        std::cout << "Transparent node updated" << std::endl;
+    };
+    
+    NodeDataCallback liquidNodeEraseCallback = [](const OctreeNodeData& nd) {
+        std::cout << "Transparent node erased" << std::endl;
+    };
+
+    NodeDataCallback solidNodeEventCallback = [](const OctreeNodeData& nd) {
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        std::cout << "Opaque node updated" << std::endl;
+    };
+
+    NodeDataCallback solidNodeEraseCallback = [](const OctreeNodeData& nd) {
+        std::cout << "Opaque node erased" << std::endl;
+    };
+
     // Initialize and load the main scene so rendering has valid scene data
-    SolidSpaceChangeHandler solidHandler(
-        [](const OctreeNodeData& nd){ 
-            std::cout << "Opaque node updated" << std::endl;
-        },
-        [](const OctreeNodeData& nd){
-            std::cout << "Opaque node erased" << std::endl;
-        
-        }
+    UniqueOctreeChangeHandler solidHandler(
+        SolidSpaceChangeHandler(solidNodeEventCallback, solidNodeEraseCallback)
     );
 
-    LiquidSpaceChangeHandler liquidHandler(
-        [](const OctreeNodeData& nd){ 
-            std::cout << "Transparent node updated" << std::endl            ;
-        },
-        [](const OctreeNodeData& nd){ 
-            std::cout << "Transparent node erased" << std::endl;
-        }
+    UniqueOctreeChangeHandler liquidHandler(
+        LiquidSpaceChangeHandler(liquidNodeEventCallback, liquidNodeEraseCallback)  
     );
         
 

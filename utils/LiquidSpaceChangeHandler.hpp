@@ -5,18 +5,17 @@
 #include "../space/OctreeNodeData.hpp"
 #include "../space/InstanceData.hpp"
 #include <functional>
+#include "UniqueOctreeChangeHandler.hpp"
 
 class LiquidSpaceChangeHandler : public OctreeChangeHandler {
 
-
-	// Callback for when a node is updated (for mesh loading)
-	const NodeDataCallback &onNodeUpdated;
-	const NodeDataCallback &onNodeErased;
+	const NodeDataCallback& onNodeUpdatedCallback;
+    const NodeDataCallback& onNodeDeletedCallback;
 
 	public:
 	LiquidSpaceChangeHandler(
-		const NodeDataCallback & onNodeUpdated,
-		const NodeDataCallback & onNodeErased
+		const NodeDataCallback& onNodeUpdatedCallback,
+    	const NodeDataCallback& onNodeDeletedCallback
 	);
 
 	void onNodeAdded(const OctreeNodeData& data) const override;

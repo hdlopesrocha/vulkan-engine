@@ -15,7 +15,6 @@ enum Layer {
     LAYER_COUNT = 3
 };
 
-typedef uintptr_t NodeID;
 
 // Visible nodes are reported via a callback lambda taking a NodeID and its version
 using VisibleNodeCallback = std::function<void(std::vector<OctreeNodeData>&)>;

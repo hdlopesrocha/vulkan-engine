@@ -5,6 +5,7 @@
 #include <functional>
 
 class OctreeNode;
+typedef uintptr_t NodeID;
 
 
 class OctreeChangeHandler {
