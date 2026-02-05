@@ -3,6 +3,7 @@
 #include "../utils/SolidSpaceChangeHandler.hpp"
 #include "../utils/LiquidSpaceChangeHandler.hpp"
 #include "../utils/LocalScene.hpp"
+#include "../math/ContainmentType.hpp"
 #include <mutex>
 
 void SceneRenderer::cleanup() {
@@ -95,6 +96,7 @@ void SceneRenderer::mainPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginIn
         fprintf(stderr, "[SceneRenderer::mainPass] solidRenderer is nullptr, skipping.\n");
         return;
     }
+    solidRenderer->getIndirectRenderer().rebuild(app);
     solidRenderer->draw(commandBuffer, app, perTextureDescriptorSet, wireframeEnabled);
     //fprintf(stderr, "[SceneRenderer::mainPass] After solidRenderer->draw.\n");
 
@@ -103,6 +105,8 @@ void SceneRenderer::mainPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginIn
         fprintf(stderr, "[SceneRenderer::mainPass] vegetationRenderer is nullptr, skipping.\n");
     } else if (vegetationEnabled) {
         try {
+            // If you have a vegetation buffer rebuild method, call it here (e.g., vegetationRenderer->rebuildBuffers(app);)
+            // vegetationRenderer->rebuildBuffers(app); // Uncomment and implement if needed
             vegetationRenderer->draw(commandBuffer, perTextureDescriptorSet, viewProj);
             //fprintf(stderr, "[SceneRenderer::mainPass] After vegetationRenderer->draw.\n");
         } catch (...) {
@@ -145,6 +149,7 @@ void SceneRenderer::waterPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginI
 
     // Run water geometry pass offscreen on a temporary command buffer to avoid nested render passes
     VkCommandBuffer cmd = app->beginSingleTimeCommands();
+    waterRenderer->getIndirectRenderer().rebuild(app);
     waterRenderer->beginWaterGeometryPass(cmd, frameIdx);
     // TODO: Render water geometry here if needed (use waterRenderer APIs)
     waterRenderer->endWaterGeometryPass(cmd);
@@ -310,23 +315,6 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
     if (skyRenderer) {
         skyRenderer->initSky(skySettings, mainDs);
     }
-    
-
-    liquidNodeEventCallback = [this](const OctreeNodeData& nd) {
-        NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        std::cout << "[SceneRenderer] Liquid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
-    };
-    liquidNodeEraseCallback = [this](const OctreeNodeData& nd) {
-        std::cout << "[SceneRenderer] Liquid node erase: nid=" << reinterpret_cast<NodeID>(nd.node) << "\n";
-    };
-
-    solidNodeEventCallback = [this](const OctreeNodeData& nd) {
-        NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        std::cout << "[SceneRenderer] Solid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
-    };
-    solidNodeEraseCallback = [this](const OctreeNodeData& nd) {
-        std::cout << "[SceneRenderer] Solid node erase: nid=" << reinterpret_cast<NodeID>(nd.node) << "\n";
-    };
 
     printf("[SceneRenderer::init] Initialization complete\n");
 }
@@ -346,11 +334,69 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
 }
 
 // Return Solid/Liquid change handlers that reference the callbacks stored on this object
-SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler() const {
+SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene) {
+    solidNodeEventCallback = [this, scene](const OctreeNodeData& nd) {
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        std::cout << "[SceneRenderer] Solid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
+        // Trigger solid mesh update for this node if needed
+        if (nd.containmentType != ContainmentType::Disjoint) {
+            OctreeNodeData nodeCopy = nd;
+            this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
+                [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+                    this->updateMeshForNode(layer, nid, nd, geom);
+                }
+            );
+        }
+    };
+    
+    solidNodeEraseCallback = [this, scene](const OctreeNodeData& nd) {
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        std::cout << "[SceneRenderer] Solid node erase: nid=" << nid << "\n";
+        // Remove solid mesh for this node if it exists
+        auto it = solidChunks.find(nid);
+        if (it != solidChunks.end()) {
+            if (it->second.meshId != UINT32_MAX) {
+                solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+            }
+            solidChunks.erase(it);
+            removeDebugCubeForNode(nid);
+        }
+    };
+    
     return SolidSpaceChangeHandler(solidNodeEventCallback, solidNodeEraseCallback);
 }
 
-LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler() const {
+LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scene) {
+
+    liquidNodeEventCallback = [this, scene](const OctreeNodeData& nd) {
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        std::cout << "[SceneRenderer] Liquid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
+        // Trigger water mesh update for this node if needed
+        if (nd.containmentType != ContainmentType::Disjoint) {
+            OctreeNodeData nodeCopy = nd;
+            this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
+                [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+                    this->updateMeshForNode(layer, nid, nd, geom);
+                }
+            );
+        }
+    };
+
+    liquidNodeEraseCallback = [this, scene](const OctreeNodeData& nd) {
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        std::cout << "[SceneRenderer] Liquid node erase: nid=" << nid << "\n";
+        // Remove water mesh for this node if it exists
+        auto it = transparentChunks.find(nid);
+        if (it != transparentChunks.end()) {
+            if (it->second.meshId != UINT32_MAX) {
+                waterRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+            }
+            transparentChunks.erase(it);
+            removeDebugCubeForNode(nid);
+        }
+    };
+
+
     return LiquidSpaceChangeHandler(liquidNodeEventCallback, liquidNodeEraseCallback);
 }
 

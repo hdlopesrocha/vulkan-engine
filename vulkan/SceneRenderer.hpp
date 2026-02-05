@@ -144,8 +144,8 @@ public:
     bool hasModelForNode(Layer layer, NodeID nid) const;
 
     // Create change handlers pre-bound to this renderer
-    SolidSpaceChangeHandler makeSolidSpaceChangeHandler() const;
-    LiquidSpaceChangeHandler makeLiquidSpaceChangeHandler() const;
+    SolidSpaceChangeHandler makeSolidSpaceChangeHandler(Scene* scene);
+    LiquidSpaceChangeHandler makeLiquidSpaceChangeHandler(Scene* scene);
 
     // Resize offscreen resources when the swapchain changes
     void onSwapchainResized(uint32_t width, uint32_t height);
@@ -157,4 +157,6 @@ private:
     NodeDataCallback liquidNodeEventCallback;
     NodeDataCallback liquidNodeEraseCallback;
 };
+
+// ...existing code...
 

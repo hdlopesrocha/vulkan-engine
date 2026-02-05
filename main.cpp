@@ -58,7 +58,7 @@
 class MyApp : public VulkanApp, public IEventHandler {
 public:
     Settings settings;
-    std::unique_ptr<SceneRenderer> sceneRenderer;
+    SceneRenderer * sceneRenderer;
     LocalScene * mainScene;
     VkQueryPool queryPool = VK_NULL_HANDLE;
     static constexpr uint32_t QUERY_COUNT = 12;
@@ -176,28 +176,10 @@ public:
             textureArrayManager.getImTexture(i, 2);
         }
 
-        // Ensure SceneRenderer exists and initialize it (SceneRenderer now owns SkySettings)
-        if (!sceneRenderer) {
-            sceneRenderer = std::make_unique<SceneRenderer>(this, &textureArrayManager, &materialManager);
-            // Initialize SceneRenderer after managers are set
-            sceneRenderer->init(this, getMainDescriptorSet());
-            sceneRenderer->createPipelines();
-            printf("[MyApp::setup] Created and initialized SceneRenderer\n");
-        } else {
-            if (sceneRenderer->solidRenderer) {
-                sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
-                printf("[MyApp::setup] Rebuilt opaque IndirectRenderer\n");
-            }
-            if (sceneRenderer->waterRenderer) {
-                sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
-                printf("[MyApp::setup] Rebuilt water IndirectRenderer\n");
-            }
-            // If SceneRenderer already existed ensure the sky UBO is bound into the main descriptor set
-            if (sceneRenderer && sceneRenderer->skyRenderer) {
-                sceneRenderer->skyRenderer->initSky(sceneRenderer->getSkySettings(), getMainDescriptorSet());
-                printf("[MyApp::setup] Initialized SkyRenderer with SceneRenderer-owned SkySettings and main descriptor set\n");
-            }
-        }
+        printf("[MyApp::setup] Created and initialized SceneRenderer\n");
+        sceneRenderer = new SceneRenderer(this, &textureArrayManager, &materialManager);
+        sceneRenderer->init(this, getMainDescriptorSet());
+        sceneRenderer->createPipelines();
 
 
         // Trigger initial generation for configured mixers so UI previews show meaningful results
@@ -247,21 +229,30 @@ public:
         vegetationTextureArrayManager.initialize(this);
         vegetationAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
 
-        auto sr = sceneRenderer.get();
-
         // Initialize and load the main scene so rendering has valid scene data
-        SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler();
-        LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler();
+        mainScene = new LocalScene();
+
+        // If you have vegetation: sceneRenderer->vegetationRenderer->rebuildBuffers(this);
+
+        SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler(mainScene);
+        LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler(mainScene);
         UniqueOctreeChangeHandler uniqueSolidHandler = UniqueOctreeChangeHandler(solidHandler);
         UniqueOctreeChangeHandler uniqueLiquidHandler = UniqueOctreeChangeHandler(liquidHandler);
 
-
-        mainScene = new LocalScene(uniqueSolidHandler, uniqueLiquidHandler);
+        
         MainSceneLoader loader = MainSceneLoader();
-        mainScene->loadScene(loader);
-    
+        mainScene->loadScene(loader, uniqueSolidHandler, uniqueLiquidHandler);
+        
         uniqueSolidHandler.handleEvents();
         uniqueLiquidHandler.handleEvents();
+
+        // Rebuild indirect buffers after all initial meshes are loaded
+        if (sceneRenderer && sceneRenderer->solidRenderer) {
+            sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
+        }
+        if (sceneRenderer && sceneRenderer->waterRenderer) {
+            sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
+        }
 
         // Create octree explorer widget bound to loaded scene
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);

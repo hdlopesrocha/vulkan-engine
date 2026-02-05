@@ -33,7 +33,7 @@ class Scene {
 public:
     Scene() = default;
     ~Scene() = default;
-    virtual void loadScene(SceneLoaderCallback& callback) = 0;
+    virtual void loadScene(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) = 0;
     virtual void requestVisibleNodes(Layer layer, glm::mat4 viewMatrix, const VisibleNodeCallback& callback) = 0;
     virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback) = 0;
     virtual bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) = 0;

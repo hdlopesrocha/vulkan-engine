@@ -33,10 +33,10 @@ int main(int argc, char** argv) {
     );
         
 
-    LocalScene mainScene = LocalScene( solidHandler, liquidHandler );
+    LocalScene mainScene;
 
     MainSceneLoader mainSceneLoader = MainSceneLoader();
-    mainScene.loadScene(mainSceneLoader);
+    mainScene.loadScene(mainSceneLoader, solidHandler, liquidHandler);
 
     std::cout << "server: started" << std::endl;
     return 0;

@@ -2,14 +2,12 @@
 #include <iostream>
 #include <chrono>
 
-LocalScene::LocalScene(const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler)
+LocalScene::LocalScene()
     : opaqueOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)),
       transparentOctree(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9)),
       threadPool(std::thread::hardware_concurrency()),
       opaqueLayerInfo(),
-      transparentLayerInfo(),
-      opaqueLayerChangeHandler(opaqueLayerChangeHandler),
-      transparentLayerChangeHandler(transparentLayerChangeHandler) {}
+      transparentLayerInfo() {}
 
 LocalScene::~LocalScene() = default;
 
@@ -43,7 +41,7 @@ bool LocalScene::isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version)
     return data.node->version >= version;
 }
 
-void LocalScene::loadScene(SceneLoaderCallback& callback) {
+void LocalScene::loadScene(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) {
     std::cout << "LocalScene::loadScene() " << std::endl;
     auto startTime = std::chrono::steady_clock::now();
     callback.loadScene(opaqueOctree, opaqueLayerChangeHandler, transparentOctree, transparentLayerChangeHandler);
