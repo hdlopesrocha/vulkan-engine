@@ -28,6 +28,7 @@ class LiquidSpaceChangeHandler;
 #include "IndirectRenderer.hpp"
 #include "ShadowRenderer.hpp"
 #include "WaterRenderer.hpp"
+#include "../utils/UniqueOctreeChangeHandler.hpp"
 
 #include "PassUBO.hpp"
 
@@ -74,10 +75,6 @@ public:
         Layer layer;
         OctreeNodeData node;
     };
-    std::mutex pendingMutex;
-    std::vector<PendingNode> pendingCreated;
-    std::vector<PendingNode> pendingUpdated;
-    std::vector<PendingNode> pendingErased;
 
     // Track model ids for transparent/water meshes so we can remove them if erased/updated
     std::unordered_map<NodeID, Model3DVersion> transparentChunks;
@@ -125,7 +122,6 @@ public:
     void onNodeErased(Layer layer, const OctreeNodeData &node);
 
     // Process pending node change queues on the main thread
-    void processPendingNodeChanges(Scene& scene);
     void updateMeshForNode(Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom);
 
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
@@ -142,9 +138,6 @@ public:
     void processErasedNodeSet(const std::vector<PendingNode>& pendingNodes, const std::function<void(Layer, NodeID)>& onErased);
 
     // Runtime introspection helpers for UI/debug
-    size_t getPendingCreatedCount();
-    size_t getPendingUpdatedCount();
-    size_t getPendingErasedCount();
     size_t getTransparentModelCount();
 
     // Query whether a model for the given node is already registered

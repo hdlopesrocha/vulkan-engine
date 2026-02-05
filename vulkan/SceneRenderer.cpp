@@ -2,6 +2,8 @@
 
 #include "../utils/SolidSpaceChangeHandler.hpp"
 #include "../utils/LiquidSpaceChangeHandler.hpp"
+#include "../utils/LocalScene.hpp"
+#include <mutex>
 
 void SceneRenderer::cleanup() {
     // Cleanup all sub-renderers to properly destroy GPU resources
@@ -51,32 +53,7 @@ SceneRenderer::SceneRenderer(VulkanApp* app_, TextureArrayManager* textureArrayM
       boundingBoxRenderer(std::make_unique<DebugCubeRenderer>(app_)),
       skySettings()
 {
-    // All renderer members are now properly instantiated and internal SkySettings constructed
 
-    // Initialize callbacks bound to this renderer so they outlive handler instances
-    solidNodeEventCallback = [this](const OctreeNodeData& nd) {
-        NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        if (hasModelForNode(LAYER_OPAQUE, nid)) {
-            onNodeUpdated(LAYER_OPAQUE, nd);
-        } else {
-            onNodeCreated(LAYER_OPAQUE, nd);
-        }
-    };
-    solidNodeEraseCallback = [this](const OctreeNodeData& nd) {
-        onNodeErased(LAYER_OPAQUE, nd);
-    };
-
-    liquidNodeEventCallback = [this](const OctreeNodeData& nd) {
-        NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        if (hasModelForNode(LAYER_TRANSPARENT, nid)) {
-            onNodeUpdated(LAYER_TRANSPARENT, nd);
-        } else {
-            onNodeCreated(LAYER_TRANSPARENT, nd);
-        }
-    };
-    liquidNodeEraseCallback = [this](const OctreeNodeData& nd) {
-        onNodeErased(LAYER_TRANSPARENT, nd);
-    };
 }
 
 SceneRenderer::~SceneRenderer() {
@@ -334,28 +311,27 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
         skyRenderer->initSky(skySettings, mainDs);
     }
     
+
+    liquidNodeEventCallback = [this](const OctreeNodeData& nd) {
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        std::cout << "[SceneRenderer] Liquid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
+    };
+    liquidNodeEraseCallback = [this](const OctreeNodeData& nd) {
+        std::cout << "[SceneRenderer] Liquid node erase: nid=" << reinterpret_cast<NodeID>(nd.node) << "\n";
+    };
+
+    solidNodeEventCallback = [this](const OctreeNodeData& nd) {
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        std::cout << "[SceneRenderer] Solid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
+    };
+    solidNodeEraseCallback = [this](const OctreeNodeData& nd) {
+        std::cout << "[SceneRenderer] Solid node erase: nid=" << reinterpret_cast<NodeID>(nd.node) << "\n";
+    };
+
     printf("[SceneRenderer::init] Initialization complete\n");
 }
 
-#include "../utils/LocalScene.hpp"
 
-#include <mutex>
-
-
-void SceneRenderer::onNodeCreated(Layer layer, const OctreeNodeData &node) {
-    std::lock_guard<std::mutex> lock(pendingMutex);
-    pendingCreated.push_back(PendingNode{layer, node});
-}
-
-void SceneRenderer::onNodeUpdated(Layer layer, const OctreeNodeData &node) {
-    std::lock_guard<std::mutex> lock(pendingMutex);
-    pendingUpdated.push_back(PendingNode{layer, node});
-}
-
-void SceneRenderer::onNodeErased(Layer layer, const OctreeNodeData &node) {
-    std::lock_guard<std::mutex> lock(pendingMutex);
-    pendingErased.push_back(PendingNode{layer, node});
-}
 
 void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry) {
 
@@ -378,53 +354,6 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler() const {
     return LiquidSpaceChangeHandler(liquidNodeEventCallback, liquidNodeEraseCallback);
 }
 
-// Accept pending nodes and coalesce into per-layer maps, then call the map-based processor
-void SceneRenderer::processNodes(Scene& scene, const std::vector<PendingNode>& pendingNodes, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry) {
-    //std::cout << "[SceneRenderer::processNodes] Processing " << pendingNodes.size() << " pending nodes.\n";
-    std::unordered_map<NodeID, std::pair<Layer, OctreeNodeData>> uniqueMap;
-    for (const auto &p : pendingNodes) {
-        NodeID nid = reinterpret_cast<NodeID>(p.node.node);
-        uniqueMap[nid] = std::make_pair(p.layer, p.node); // last write wins
-    }
-
-    size_t total = 0;
-    for (auto &layerPair : uniqueMap) {
-        Layer layer = layerPair.second.first;
-        NodeID nid = layerPair.first;
-        OctreeNodeData& nodeData = layerPair.second.second;
-        //fprintf(stdout, "[SceneRenderer::processNodes] unique layer=%d count=1\n", static_cast<int>(layer));
-        ++total;
-//void SceneRenderer::processNodeLayer(Scene* scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry) {;
-        
-        processNodeLayer(scene, layer, nid, nodeData, onGeometry);
-    }
-    //fprintf(stdout, "[SceneRenderer::processNodes] totals: unique=%zu transparentTracked=%zu\n", total, transparentChunks.size());
-}
-
-// Accept pending erased nodes, coalesce per-layer NodeID set, then call map-based processor
-void SceneRenderer::processErasedNodeSet(const std::vector<PendingNode>& pendingNodes, const std::function<void(Layer, NodeID)>& onErased) {
-    std::unordered_map<Layer, std::unordered_set<NodeID>> uniqueSet;
-    for (const auto &p : pendingNodes) {
-        NodeID nid = reinterpret_cast<NodeID>(p.node.node);
-        uniqueSet[p.layer].insert(nid);
-    }
-
-    size_t total = 0;
-    for (auto &layerPair : uniqueSet) {
-        Layer layer = layerPair.first;
-        //fprintf(stdout, "[SceneRenderer::processErasedNodeSet] unique erased layer=%d count=%zu\n", static_cast<int>(layer), layerPair.second.size());
-        total += layerPair.second.size();
-        // Dispatch per-layer
-        processErasedNodeSet(layer, layerPair.second, onErased);
-    }
-    //fprintf(stdout, "[SceneRenderer::processErasedNodeSet] totals: uniqueErased=%zu\n", total);
-}
-
-void SceneRenderer::processErasedNodeSet(Layer layer, const std::unordered_set<NodeID>& nodeSet, const std::function<void(Layer, NodeID)>& onErased) {
-    for (const NodeID nid : nodeSet) {
-        onErased(layer, nid);
-    }
-}
 
 // Ensure mesh exists and is up-to-date for a node: insert or replace when needed
 void SceneRenderer::updateMeshForNode(Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
@@ -447,69 +376,6 @@ void SceneRenderer::updateMeshForNode(Layer layer, NodeID nid, const OctreeNodeD
 
 }
 
-
-void SceneRenderer::processPendingNodeChanges(Scene& scene) {
-    std::vector<PendingNode> created;
-    std::vector<PendingNode> updated;
-    std::vector<PendingNode> erased;
-    {
-        std::lock_guard<std::mutex> lock(pendingMutex);
-        created.swap(pendingCreated);
-        updated.swap(pendingUpdated);
-        erased.swap(pendingErased);
-    }
-    size_t addedCount = 0;
-    size_t removedCount = 0;
-
-
-    // Delegate processing/coalescing: created/updated
-    auto onGeometry = [&](Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
-        updateMeshForNode(layer, nid, nd, geom);
-        addDebugCubeForGeometry(layer, nid, nd, geom);
-        ++addedCount;
-    };
-
-    // Process created/updated pending lists (coalescing happens inside overload)
-    processNodes(scene, created, onGeometry);
-    processNodes(scene, updated, onGeometry);
-
-    // Process erased nodes (coalescing + handling)
-    auto onErase = [&](Layer layer, NodeID nid) {
-        auto chunks = layer == LAYER_OPAQUE ? &solidChunks : &transparentChunks;
-        auto renderer = layer == LAYER_OPAQUE ? &solidRenderer->getIndirectRenderer() : &waterRenderer->getIndirectRenderer();
-
-        auto it = chunks->find(nid);
-        if (it != chunks->end() && it->second.meshId != UINT32_MAX) {
-            renderer->removeMesh(it->second.meshId);
-            chunks->erase(it);
-            // Remove debug cube instance for this node
-            removeDebugCubeForNode(nid);
-            ++removedCount;
-        }
-    };
-
-    processErasedNodeSet(erased, onErase);
-
-    if (addedCount > 0 || removedCount > 0) {
-        printf("[SceneRenderer::processPendingNodeChanges] added=%zu removed=%zu -> rebuilding\n", addedCount, removedCount);
-        solidRenderer->getIndirectRenderer().rebuild(app);
-        waterRenderer->getIndirectRenderer().rebuild(app);
-    }
-}
-
-// Runtime introspection helpers for UI/debug
-size_t SceneRenderer::getPendingCreatedCount() {
-    std::lock_guard<std::mutex> lock(pendingMutex);
-    return pendingCreated.size();
-}
-size_t SceneRenderer::getPendingUpdatedCount() {
-    std::lock_guard<std::mutex> lock(pendingMutex);
-    return pendingUpdated.size();
-}
-size_t SceneRenderer::getPendingErasedCount() {
-    std::lock_guard<std::mutex> lock(pendingMutex);
-    return pendingErased.size();
-}
 size_t SceneRenderer::getTransparentModelCount() {
     return transparentChunks.size();
 }
@@ -540,3 +406,4 @@ void SceneRenderer::addDebugCubeForGeometry(Layer layer, NodeID nid, const Octre
     c.color = (layer == LAYER_OPAQUE) ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(0.0f, 0.5f, 1.0f);
     addDebugCubeForNode(nid, c);
 }
+
