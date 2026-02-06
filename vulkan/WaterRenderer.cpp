@@ -1,8 +1,17 @@
+
 #include "WaterRenderer.hpp"
 #include "../utils/FileReader.hpp"
 #include <stdexcept>
 #include <iostream>
 #include <array>
+
+// Global image layout tracking for WaterRenderer render targets
+static VkImageLayout sceneColorImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+static VkImageLayout sceneDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+static VkImageLayout waterDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+static VkImageLayout waterNormalImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+static VkImageLayout waterMaskImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+static VkImageLayout waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 WaterRenderer::WaterRenderer(VulkanApp* app) : app(app) {}
 
@@ -337,29 +346,34 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         }
     };
     
+    // Layout tracking for all render target images
+    static VkImageLayout sceneColorImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+    static VkImageLayout sceneDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+    static VkImageLayout waterDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    static VkImageLayout waterNormalImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    static VkImageLayout waterMaskImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    // waterGeomDepthImageLayout is already declared earlier, do not redeclare
+
     // Create per-frame scene offscreen render targets (2 sets for 2 frames in flight)
     for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
-        // Create scene offscreen color target - use swapchain format for pipeline compatibility
-        // Add TRANSFER_SRC for blitting to swapchain
         createImage(app->getSwapchainImageFormat(),
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
                     sceneColorImages[frameIdx], sceneColorMemories[frameIdx], sceneColorImageViews[frameIdx]);
-        
-        // Create scene offscreen depth target
-        // Add TRANSFER_SRC for copying to main depth buffer
+        sceneColorImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
+
         createImage(VK_FORMAT_D32_SFLOAT,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT,
                     sceneDepthImages[frameIdx], sceneDepthMemories[frameIdx], sceneDepthImageViews[frameIdx]);
+        sceneDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
         fprintf(stderr, "[WaterRenderer] sceneDepthImages[%d] = %p\n", frameIdx, (void*)sceneDepthImages[frameIdx]);
-        
-        // Create scene framebuffer
+
         std::array<VkImageView, 2> sceneAttachments = {
             sceneColorImageViews[frameIdx],
             sceneDepthImageViews[frameIdx]
         };
-        
+
         VkFramebufferCreateInfo sceneFbInfo{};
         sceneFbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         sceneFbInfo.renderPass = sceneRenderPass;
@@ -368,11 +382,93 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         sceneFbInfo.width = width;
         sceneFbInfo.height = height;
         sceneFbInfo.layers = 1;
-        
+
         if (vkCreateFramebuffer(device, &sceneFbInfo, nullptr, &sceneFramebuffers[frameIdx]) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create scene offscreen framebuffer!");
         }
     }
+
+    createImage(VK_FORMAT_R32G32B32A32_SFLOAT, 
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                waterDepthImage, waterDepthMemory, waterDepthImageView);
+    waterDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    createImage(VK_FORMAT_R16G16B16A16_SFLOAT,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                waterNormalImage, waterNormalMemory, waterNormalImageView);
+    waterNormalImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    createImage(VK_FORMAT_R8_UNORM,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                waterMaskImage, waterMaskMemory, waterMaskImageView);
+    waterMaskImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    createImage(VK_FORMAT_D32_SFLOAT,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT,
+                waterGeomDepthImage, waterGeomDepthMemory, waterGeomDepthImageView);
+    waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    fprintf(stderr, "[WaterRenderer] waterGeomDepthImage = %p\n", (void*)waterGeomDepthImage);
+
+    // Transition all images to their required layouts
+    auto transitionImageLayout = [&](VkImage image, VkImageLayout& currentLayout, VkImageLayout newLayout, VkImageAspectFlags aspect) {
+        if (currentLayout != newLayout) {
+            VkCommandBuffer cmd = app->beginSingleTimeCommands();
+            VkImageMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout = currentLayout;
+            barrier.newLayout = newLayout;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = image;
+            barrier.subresourceRange.aspectMask = aspect;
+            barrier.subresourceRange.baseMipLevel = 0;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.subresourceRange.baseArrayLayer = 0;
+            barrier.subresourceRange.layerCount = 1;
+            barrier.srcAccessMask = 0;
+
+            VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            if (newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            } else if (newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+                barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                dstStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            } else if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+                barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                dstStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+            } else {
+                barrier.dstAccessMask = 0;
+                dstStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+            }
+
+            vkCmdPipelineBarrier(
+                cmd,
+                srcStage,
+                dstStage,
+                0, 0, nullptr, 0, nullptr, 1, &barrier
+            );
+            app->endSingleTimeCommands(cmd);
+            currentLayout = newLayout;
+        }
+    };
+
+    // Transition scene color images
+    for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
+        transitionImageLayout(sceneColorImages[frameIdx], sceneColorImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+        transitionImageLayout(sceneDepthImages[frameIdx], sceneDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+    }
+    transitionImageLayout(waterDepthImage, waterDepthImageLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+    transitionImageLayout(waterNormalImage, waterNormalImageLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+    transitionImageLayout(waterMaskImage, waterMaskImageLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+    transitionImageLayout(waterGeomDepthImage, waterGeomDepthImageLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    // ...existing code...
     
     // Create water world position image (xyz=worldPos, w=linearDepth)
     createImage(VK_FORMAT_R32G32B32A32_SFLOAT, 
@@ -400,12 +496,13 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
                 waterGeomDepthImage, waterGeomDepthMemory, waterGeomDepthImageView);
     fprintf(stderr, "[WaterRenderer] waterGeomDepthImage = %p\n", (void*)waterGeomDepthImage);
 
-    // Transition waterGeomDepthImage from UNDEFINED to DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-    {
+    // Track and transition waterGeomDepthImage layout correctly
+    static VkImageLayout waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (waterGeomDepthImageLayout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
         VkCommandBuffer cmd = app->beginSingleTimeCommands();
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.oldLayout = waterGeomDepthImageLayout;
         barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -424,6 +521,7 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
             0, 0, nullptr, 0, nullptr, 1, &barrier
         );
         app->endSingleTimeCommands(cmd);
+        waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
     // Create per-frame water framebuffers using the dedicated water geometry depth buffer
@@ -997,14 +1095,18 @@ void WaterRenderer::renderWaterPostProcess(VkCommandBuffer cmd, VkFramebuffer sw
         write.pImageInfo = &imageInfos[i];
         writes.push_back(write);
     }
-    VkWriteDescriptorSet bufWrite{};
-    bufWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    bufWrite.dstSet = postProcessDescriptorSet;
-    bufWrite.dstBinding = 5;
-    bufWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    bufWrite.descriptorCount = 1;
-    bufWrite.pBufferInfo = &bufferInfo;
-    writes.push_back(bufWrite);
+    if (bufferInfo.buffer != VK_NULL_HANDLE) {
+        VkWriteDescriptorSet bufWrite{};
+        bufWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        bufWrite.dstSet = postProcessDescriptorSet;
+        bufWrite.dstBinding = 5;
+        bufWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bufWrite.descriptorCount = 1;
+        bufWrite.pBufferInfo = &bufferInfo;
+        writes.push_back(bufWrite);
+    } else {
+        fprintf(stderr, "[WaterRenderer] Skipping post-process UBO binding: buffer is VK_NULL_HANDLE\n");
+    }
 
     if (!writes.empty()) vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     if (beginRenderPass) {

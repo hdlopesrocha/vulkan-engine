@@ -772,15 +772,18 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 			if (genB) { auto b = mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels); b.oldLayout = textureArrayManager->getLayerLayout(2, targetLayer); barriers.push_back(b); }
 		}
 	}
-	// Ensure each barrier has the correct full range info (all layers,
-	// full mip count for that image) and set transition flags
-	for (auto &barrier : barriers) {
-		// barrier.image and layerCount/mipLevels were set by mkBarrier
-		// ensure the access masks and layouts are correct for compute write
+	// Set access masks and newLayout, but keep oldLayout from tracked layout
+	for (size_t i = 0; i < barriers.size(); ++i) {
+		auto &barrier = barriers[i];
 		barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-		barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		// Update tracked layout after transition
+		if (textureArrayManager) {
+			if (genA && i == 0) textureArrayManager->setLayerLayout(0, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
+			if (genN && ((genA ? 1 : 0) + (i == (genA ? 1 : 0))) == 1) textureArrayManager->setLayerLayout(1, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
+			if (genB && ((genA ? 1 : 0) + (genN ? 1 : 0) + (i == ((genA ? 1 : 0) + (genN ? 1 : 0)))) == 2) textureArrayManager->setLayerLayout(2, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
+		}
 	}
 
 	if (!useArrayLayer) {
@@ -808,12 +811,7 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 		static_cast<uint32_t>(barriers.size()), barriers.data()
 	);
 
-		// Update tracked layouts for each generated map to GENERAL (we will write into them)
-		if (textureArrayManager) {
-			if (genA) textureArrayManager->setLayerLayout(0, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
-			if (genN) textureArrayManager->setLayerLayout(1, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
-			if (genB) textureArrayManager->setLayerLayout(2, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
-		}
+		// Already updated tracked layouts above
 
 	printf("[TextureMixer] vkCmdBindPipeline: computePipeline=%p\n", (void*)computePipeline);
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
@@ -833,11 +831,18 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 		if (genN) postBarriers.push_back(mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels));
 		if (genB) postBarriers.push_back(mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels));
 
-		for (auto &barrier : postBarriers) {
-			barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		for (size_t i = 0; i < postBarriers.size(); ++i) {
+			auto &barrier = postBarriers[i];
+			barrier.oldLayout = textureArrayManager->getLayerLayout((genA && i == 0) ? 0 : (genN && ((genA ? 1 : 0) + (i == (genA ? 1 : 0))) == 1) ? 1 : 2, targetLayer);
 			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
 			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			// Update tracked layout after transition
+			if (textureArrayManager) {
+				if (genA && i == 0) textureArrayManager->setLayerLayout(0, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+				if (genN && ((genA ? 1 : 0) + (i == (genA ? 1 : 0))) == 1) textureArrayManager->setLayerLayout(1, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+				if (genB && ((genA ? 1 : 0) + (genN ? 1 : 0) + (i == ((genA ? 1 : 0) + (genN ? 1 : 0)))) == 2) textureArrayManager->setLayerLayout(2, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			}
 		}
 
 		// log post-barrier info

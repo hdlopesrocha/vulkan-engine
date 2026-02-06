@@ -149,7 +149,9 @@ void SceneRenderer::waterPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginI
     // Run water geometry pass offscreen on a temporary command buffer to avoid nested render passes
     VkCommandBuffer cmd = app->beginSingleTimeCommands();
     waterRenderer->beginWaterGeometryPass(cmd, frameIdx);
-    // TODO: Render water geometry here if needed (use waterRenderer APIs)
+    // Indirect rendering for water geometry (same as solid matter)
+    // Use waterIndirectRenderer and match solidRenderer->draw signature
+    waterRenderer->getIndirectRenderer().drawPrepared(cmd, app);
     waterRenderer->endWaterGeometryPass(cmd);
     app->endSingleTimeCommands(cmd);
 
@@ -412,6 +414,9 @@ void SceneRenderer::updateMeshForNode(Layer layer, NodeID nid, const OctreeNodeD
         if (it->second.meshId != UINT32_MAX) {
             renderer.removeMesh(it->second.meshId);
         }
+    }
+    if (layer == LAYER_TRANSPARENT) {
+        printf("[SceneRenderer::updateMeshForNode] WATER: nid=%llu, verts=%zu, indices=%zu\n", (unsigned long long)nid, geom.vertices.size(), geom.indices.size());
     }
     uint32_t meshId = renderer.addMesh(app, geom);
     Model3DVersion mv{meshId, nd.node->version};
