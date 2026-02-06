@@ -1,3 +1,4 @@
+// ...existing code...
 #include "SceneRenderer.hpp"
 
 #include "../utils/SolidSpaceChangeHandler.hpp"
@@ -151,7 +152,8 @@ void SceneRenderer::waterPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginI
     waterRenderer->beginWaterGeometryPass(cmd, frameIdx);
     // Indirect rendering for water geometry (same as solid matter)
     // Use waterIndirectRenderer and match solidRenderer->draw signature
-    waterRenderer->getIndirectRenderer().drawPrepared(cmd, app);
+    auto &waterIndirectRenderer = waterRenderer->getIndirectRenderer();
+    waterIndirectRenderer.drawPrepared(cmd, app);
     waterRenderer->endWaterGeometryPass(cmd);
     app->endSingleTimeCommands(cmd);
 
@@ -276,17 +278,16 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
     addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
     // Create and bind Materials SSBO at binding 5. Prefer external MaterialManager if provided.
-    Buffer materialsBuf;
-    bool materialsOwnedLocally = false;
+    // Always create a valid materialsBuffer for descriptor binding 5
     if (materialManager) {
-        materialsBuf = materialManager->getBuffer();
+        materialsBuffer = materialManager->getBuffer();
     } else {
-        materialsBuf = app->createBuffer(sizeof(MaterialGPU), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        // Fallback: create a dummy buffer and keep it alive for the renderer lifetime
+        materialsBuffer = app->createBuffer(sizeof(MaterialGPU), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        materialsOwnedLocally = true;
     }
     VkDescriptorBufferInfo materialsInfo{};
-    materialsInfo.buffer = materialsBuf.buffer;
+    materialsInfo.buffer = materialsBuffer.buffer;
     materialsInfo.offset = 0;
     materialsInfo.range = VK_WHOLE_SIZE;
     VkWriteDescriptorSet materialsWrite{};
@@ -297,7 +298,6 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
     materialsWrite.descriptorCount = 1;
     materialsWrite.pBufferInfo = &materialsInfo;
     writes.push_back(materialsWrite);
-    // Note: if we allocated materialsBuf locally above we should free it in cleanup; that plumbing is omitted for brevity.
 
     // Perform descriptor update (clean up temporary image infos afterwards)
     app->updateDescriptorSet(mainDs, writes);
@@ -409,19 +409,25 @@ void SceneRenderer::updateMeshForNode(Layer layer, NodeID nid, const OctreeNodeD
     auto it = cur.find(nid);
     if (it != cur.end()) {
         if (it->second.version >= nd.node->version) {
+            printf("[SceneRenderer::updateMeshForNode] Node %llu already up-to-date (version %u >= %u)\n", (unsigned long long)nid, it->second.version, nd.node->version);
             return; // already up-to-date
         }
         if (it->second.meshId != UINT32_MAX) {
+            printf("[SceneRenderer::updateMeshForNode] Removing old mesh for node %llu (meshId=%u)\n", (unsigned long long)nid, it->second.meshId);
             renderer.removeMesh(it->second.meshId);
         }
     }
-    if (layer == LAYER_TRANSPARENT) {
-        printf("[SceneRenderer::updateMeshForNode] WATER: nid=%llu, verts=%zu, indices=%zu\n", (unsigned long long)nid, geom.vertices.size(), geom.indices.size());
-    }
+    printf("[SceneRenderer::updateMeshForNode] Adding mesh for node %llu (layer=%s): verts=%zu, indices=%zu\n", (unsigned long long)nid, (layer == LAYER_OPAQUE ? "OPAQUE" : "TRANSPARENT"), geom.vertices.size(), geom.indices.size());
     uint32_t meshId = renderer.addMesh(app, geom);
+    printf("[SceneRenderer::updateMeshForNode] meshId=%u assigned to node %llu, version=%u\n", meshId, (unsigned long long)nid, nd.node->version);
     Model3DVersion mv{meshId, nd.node->version};
     registerModelVersion(nid, mv);
     renderer.uploadMesh(app, meshId);
+    // After all mesh uploads, force a buffer rebuild if dirty
+    if (renderer.isDirty()) {
+        printf("[SceneRenderer::updateMeshForNode] Forcing buffer rebuild for %s renderer after mesh upload.\n", (layer == LAYER_OPAQUE ? "solid" : "water"));
+        renderer.rebuild(app);
+    }
 
 }
 

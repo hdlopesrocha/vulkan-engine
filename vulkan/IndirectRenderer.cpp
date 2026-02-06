@@ -838,18 +838,34 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, VulkanApp* app, uint32_
     }
 
     static int frameCount = 0;
-    if (frameCount < 3) {
+    if (frameCount < 10) {
         std::lock_guard<std::mutex> lock(mutex);
         printf("[IndirectRenderer::drawPrepared] Frame %d: vertexBuffer=%p (verts=%zu), indexBuffer=%p (indices=%zu), drawCommands=%zu\n",
                frameCount, (void*)vertexBuffer.buffer, mergedVertices.size(),
                (void*)indexBuffer.buffer, mergedIndices.size(), indirectCommands.size());
-        
+        size_t activeMeshCount = 0;
+        for (const auto& kv : meshes) if (kv.second.active) ++activeMeshCount;
+        printf("[IndirectRenderer::drawPrepared] meshes.size()=%zu, activeMeshCount=%zu\n", meshes.size(), activeMeshCount);
+        int meshPrint = 0;
+        for (const auto& kv : meshes) {
+            if (!kv.second.active) continue;
+            printf("  Mesh id=%u: baseVertex=%u, firstIndex=%u, indexCount=%u, boundsMin=(%.2f,%.2f,%.2f), boundsMax=(%.2f,%.2f,%.2f)\n",
+                kv.second.id, kv.second.baseVertex, kv.second.firstIndex, kv.second.indexCount,
+                kv.second.boundsMin.x, kv.second.boundsMin.y, kv.second.boundsMin.z,
+                kv.second.boundsMax.x, kv.second.boundsMax.y, kv.second.boundsMax.z);
+            if (++meshPrint >= 5) break;
+        }
+        // Print first few indirect commands
+        for (size_t i = 0; i < std::min(size_t(3), indirectCommands.size()); ++i) {
+            const auto& cmd = indirectCommands[i];
+            printf("  IndirectCmd[%zu]: indexCount=%u, instanceCount=%u, firstIndex=%u, vertexOffset=%d, firstInstance=%u\n",
+                i, cmd.indexCount, cmd.instanceCount, cmd.firstIndex, cmd.vertexOffset, cmd.firstInstance);
+        }
         // Check if using indirect count
         if (cmdDrawIndexedIndirectCount) {
             printf("[IndirectRenderer::drawPrepared] Using GPU-driven count from visibleCountBuffer=%p\n",
                    (void*)visibleCountBuffer.buffer);
         }
-        
         frameCount++;
     }
 

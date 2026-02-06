@@ -468,8 +468,6 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
     transitionImageLayout(waterMaskImage, waterMaskImageLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
     transitionImageLayout(waterGeomDepthImage, waterGeomDepthImageLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
 
-    // ...existing code...
-    
     // Create water world position image (xyz=worldPos, w=linearDepth)
     createImage(VK_FORMAT_R32G32B32A32_SFLOAT, 
                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
