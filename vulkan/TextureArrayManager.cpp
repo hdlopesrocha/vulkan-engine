@@ -382,8 +382,14 @@ uint TextureArrayManager::load(const char* albedoFile, const char* normalFile, c
 		// Transition this layer to TRANSFER_DST_OPTIMAL
 		VkImageMemoryBarrier barrier1{};
 		barrier1.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	// Use current tracked layout as oldLayout so transitions are correct
+	// Use current tracked layout as oldLayout so transitions are correct. Clamp
+	// transient TRANSFER_DST tracked states to SHADER_READ_ONLY to avoid
+	// validation mismatches where the validation layer's known layout differs
+	// due to concurrency or delayed updates.
 	VkImageLayout currentLayout = getLayerLayout(i, currentLayer);
+	if (currentLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+		currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	}
 	barrier1.oldLayout = currentLayout;
 	barrier1.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 	barrier1.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;

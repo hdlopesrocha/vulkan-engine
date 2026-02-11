@@ -74,6 +74,9 @@ public:
     // Public initializer that completes GPU resource allocation using an app
     void initialize(class VulkanApp* app) { allocate(layerAmount, width, height, app); }
 
+    // Destroy GPU resources (images, views, memory, samplers)
+    void destroy(class VulkanApp* app);
+
     // Return an ImGui texture handle for a given array layer and map (0=albedo,1=normal,2=bump)
     ImTextureID getImTexture(size_t layer, int map);
 
@@ -104,8 +107,6 @@ private:
     // Notify registered listeners safely (copies callbacks and catches exceptions)
     void notifyAllocationListeners();
 
-    // Destroy GPU resources (images, views, memory, samplers)
-    void destroy(class VulkanApp* app);
     // Create an empty (zeroed) triple at the current layer for later editing, then increment layer counter
     uint create();
 

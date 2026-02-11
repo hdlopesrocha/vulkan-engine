@@ -30,6 +30,44 @@ void SceneRenderer::cleanup() {
     if (boundingBoxRenderer) {
         boundingBoxRenderer->cleanup();
     }
+    // Destroy UBO and SSBO buffers owned by this renderer
+    if (app) {
+        VkDevice dev = app->getDevice();
+        if (mainUniformBuffer.buffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(dev, mainUniformBuffer.buffer, nullptr);
+            if (mainUniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(dev, mainUniformBuffer.memory, nullptr);
+            mainUniformBuffer = {};
+        }
+        // Only destroy materialsBuffer if it is not the same buffer owned by the MaterialManager
+        if (materialsBuffer.buffer != VK_NULL_HANDLE) {
+            bool ownedByManager = false;
+            if (materialManager) {
+                const Buffer &mgrBuf = materialManager->getBuffer();
+                if (mgrBuf.buffer == materialsBuffer.buffer && mgrBuf.memory == materialsBuffer.memory) ownedByManager = true;
+            }
+            if (!ownedByManager) {
+                vkDestroyBuffer(dev, materialsBuffer.buffer, nullptr);
+                if (materialsBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(dev, materialsBuffer.memory, nullptr);
+                materialsBuffer = {};
+            }
+        }
+        // Destroy Pass UBO buffers if allocated
+        if (mainPassUBO.buffer.buffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(dev, mainPassUBO.buffer.buffer, nullptr);
+            if (mainPassUBO.buffer.memory != VK_NULL_HANDLE) vkFreeMemory(dev, mainPassUBO.buffer.memory, nullptr);
+            mainPassUBO.buffer = {};
+        }
+        if (shadowPassUBO.buffer.buffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(dev, shadowPassUBO.buffer.buffer, nullptr);
+            if (shadowPassUBO.buffer.memory != VK_NULL_HANDLE) vkFreeMemory(dev, shadowPassUBO.buffer.memory, nullptr);
+            shadowPassUBO.buffer = {};
+        }
+        if (waterPassUBO.buffer.buffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(dev, waterPassUBO.buffer.buffer, nullptr);
+            if (waterPassUBO.buffer.memory != VK_NULL_HANDLE) vkFreeMemory(dev, waterPassUBO.buffer.memory, nullptr);
+            waterPassUBO.buffer = {};
+        }
+    }
 }
 
 void SceneRenderer::onSwapchainResized(uint32_t width, uint32_t height) {
@@ -281,6 +319,13 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
     // Always create a valid materialsBuffer for descriptor binding 5
     if (materialManager) {
         materialsBuffer = materialManager->getBuffer();
+        // If the MaterialManager exists but hasn't allocated its GPU buffer yet,
+        // create a local fallback so the descriptor update does not receive a
+        // VK_NULL_HANDLE buffer (which triggers validation errors).
+        if (materialsBuffer.buffer == VK_NULL_HANDLE) {
+            materialsBuffer = app->createBuffer(sizeof(MaterialGPU), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }
     } else {
         // Fallback: create a dummy buffer and keep it alive for the renderer lifetime
         materialsBuffer = app->createBuffer(sizeof(MaterialGPU), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,

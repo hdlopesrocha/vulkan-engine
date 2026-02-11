@@ -588,6 +588,9 @@ public:
         if (textureMixer) {
             textureMixer->cleanup();
         }
+        // Destroy global managers that own Vulkan resources so they free GPU objects
+        textureArrayManager.destroy(this);
+        materialManager.destroy(this);
     }
 
     void onSwapchainResized(uint32_t width, uint32_t height) override {
