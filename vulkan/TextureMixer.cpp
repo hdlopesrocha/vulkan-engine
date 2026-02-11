@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <stdexcept>
 #include <mutex>
+#include <thread>
+#include <chrono>
 #include <vector>
 #include <tuple>
 #include <string>
@@ -766,10 +768,53 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 			if (genN) textureArrayManager->getImTexture(targetLayer, 1);
 			if (genB) textureArrayManager->getImTexture(targetLayer, 2);
 
+			// Before building barriers, ensure any prior generation or transfer that
+			// touches this layer has completed. We call processPendingCommandBuffers
+			// to advance completed fences, then wait briefly if the tracked layout
+			// indicates a transfer-in-progress. This prevents using stale tracked
+			// layouts as barrier.oldLayout.
+			if (app) app->processPendingCommandBuffers();
+			// If another generation for this layer is pending, wait for it.
+			if (isLayerGenerationPending(targetLayer)) {
+				waitForLayerGeneration(targetLayer);
+			}
+			// If tracked layout is TRANSFER_DST, wait for it to become SHADER_READ_ONLY
+			// (do a short polling wait while pumping pending command buffers).
+			int waitCount = 0;
+			while (textureArrayManager->getLayerLayout(0, targetLayer) == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && waitCount < 200) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+				if (app) app->processPendingCommandBuffers();
+				++waitCount;
+			}
+			if (waitCount >= 200) {
+				std::lock_guard<std::mutex> lkll(logsMutex);
+				logs.emplace_back("Warning: waited for transfer dst layout but it persisted");
+			}
+
 			// Build barriers for the specific target layer only
-			if (genA) { auto b = mkBarrierLayer(textureArrayManager->albedoArray.image, targetLayer, 1, textureArrayManager->albedoArray.mipLevels); b.oldLayout = textureArrayManager->getLayerLayout(0, targetLayer); barriers.push_back(b); }
-			if (genN) { auto b = mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels); b.oldLayout = textureArrayManager->getLayerLayout(1, targetLayer); barriers.push_back(b); }
-			if (genB) { auto b = mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels); b.oldLayout = textureArrayManager->getLayerLayout(2, targetLayer); barriers.push_back(b); }
+			if (genA) {
+				auto b = mkBarrierLayer(textureArrayManager->albedoArray.image, targetLayer, 1, textureArrayManager->albedoArray.mipLevels);
+				VkImageLayout tracked = textureArrayManager->getLayerLayout(0, targetLayer);
+				// Avoid using transient TRANSFER_DST layout as barrier oldLayout for compute transitions;
+				// prefer SHADER_READ_ONLY as the common prior state to prevent validation mismatches.
+				if (tracked == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) tracked = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				b.oldLayout = tracked;
+				barriers.push_back(b);
+			}
+			if (genN) {
+				auto b = mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels);
+				VkImageLayout tracked = textureArrayManager->getLayerLayout(1, targetLayer);
+				if (tracked == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) tracked = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				b.oldLayout = tracked;
+				barriers.push_back(b);
+			}
+			if (genB) {
+				auto b = mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels);
+				VkImageLayout tracked = textureArrayManager->getLayerLayout(2, targetLayer);
+				if (tracked == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) tracked = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				b.oldLayout = tracked;
+				barriers.push_back(b);
+			}
 		}
 	}
 	// Set access masks and newLayout, but keep oldLayout from tracked layout
@@ -778,12 +823,7 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 		barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
 		barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		// Update tracked layout after transition
-		if (textureArrayManager) {
-			if (genA && i == 0) textureArrayManager->setLayerLayout(0, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
-			if (genN && ((genA ? 1 : 0) + (i == (genA ? 1 : 0))) == 1) textureArrayManager->setLayerLayout(1, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
-			if (genB && ((genA ? 1 : 0) + (genN ? 1 : 0) + (i == ((genA ? 1 : 0) + (genN ? 1 : 0)))) == 2) textureArrayManager->setLayerLayout(2, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
-		}
+		// Tracked layouts will be updated when the generation fence signals
 	}
 
 	if (!useArrayLayer) {
@@ -824,25 +864,39 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 
 	vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
 
-	if (useArrayLayer && textureArrayManager) {
+		if (useArrayLayer && textureArrayManager) {
 		// After compute, transition generated images back to SHADER_READ_ONLY_OPTIMAL
 		std::vector<VkImageMemoryBarrier> postBarriers;
-		if (genA) postBarriers.push_back(mkBarrierLayer(textureArrayManager->albedoArray.image, targetLayer, 1, textureArrayManager->albedoArray.mipLevels));
-		if (genN) postBarriers.push_back(mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels));
-		if (genB) postBarriers.push_back(mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels));
-
-		for (size_t i = 0; i < postBarriers.size(); ++i) {
-			auto &barrier = postBarriers[i];
-			barrier.oldLayout = textureArrayManager->getLayerLayout((genA && i == 0) ? 0 : (genN && ((genA ? 1 : 0) + (i == (genA ? 1 : 0))) == 1) ? 1 : 2, targetLayer);
-			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			// Update tracked layout after transition
-			if (textureArrayManager) {
-				if (genA && i == 0) textureArrayManager->setLayerLayout(0, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-				if (genN && ((genA ? 1 : 0) + (i == (genA ? 1 : 0))) == 1) textureArrayManager->setLayerLayout(1, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-				if (genB && ((genA ? 1 : 0) + (genN ? 1 : 0) + (i == ((genA ? 1 : 0) + (genN ? 1 : 0)))) == 2) textureArrayManager->setLayerLayout(2, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-			}
+		// Build explicit post barriers per-map so we can clamp tracked oldLayout values safely
+		if (genA) {
+			auto b = mkBarrierLayer(textureArrayManager->albedoArray.image, targetLayer, 1, textureArrayManager->albedoArray.mipLevels);
+			VkImageLayout tracked = textureArrayManager->getLayerLayout(0, targetLayer);
+			if (tracked == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) tracked = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			b.oldLayout = tracked;
+			b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+			b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			postBarriers.push_back(b);
+		}
+		if (genN) {
+			auto b = mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels);
+			VkImageLayout tracked = textureArrayManager->getLayerLayout(1, targetLayer);
+			if (tracked == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) tracked = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			b.oldLayout = tracked;
+			b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+			b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			postBarriers.push_back(b);
+		}
+		if (genB) {
+			auto b = mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels);
+			VkImageLayout tracked = textureArrayManager->getLayerLayout(2, targetLayer);
+			if (tracked == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) tracked = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			b.oldLayout = tracked;
+			b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+			b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			postBarriers.push_back(b);
 		}
 
 		// log post-barrier info

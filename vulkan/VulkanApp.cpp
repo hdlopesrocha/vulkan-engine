@@ -248,8 +248,13 @@ void VulkanApp::cleanup() {
     }
     glfwTerminate();
 
+    // Ensure any pending command buffers have been processed and deferred destruction callbacks
+    // have been executed before destroying the device to avoid object-tracking warnings.
+    processPendingCommandBuffers();
     printf("[VulkanApp] about to vkDestroyDevice(device=%p)\n", (void*)device);
     if (device != VK_NULL_HANDLE) {
+        // One more attempt to process pending callbacks after waiting
+        processPendingCommandBuffers();
         vkDestroyDevice(device, nullptr);
         device = VK_NULL_HANDLE;
     }
