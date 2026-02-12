@@ -4,6 +4,7 @@
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeChangeHandler.hpp"
 #include <functional>
+#include <mutex>
 
 class UniqueOctreeChangeHandler : public OctreeChangeHandler {
 public:
@@ -19,6 +20,6 @@ public:
     const std::unordered_map<NodeID, OctreeNodeData>& allAdded() const;
     const std::unordered_map<NodeID, OctreeNodeData>& allDeleted() const;
 private:
-    mutable std::unordered_map<NodeID, OctreeNodeData> added;
-    mutable std::unordered_map<NodeID, OctreeNodeData> deleted;
+    mutable std::unordered_map<NodeID, std::pair<OctreeNodeData,bool>> updates;
+    mutable std::mutex mtx;
 };

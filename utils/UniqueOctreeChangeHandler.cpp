@@ -6,27 +6,27 @@ UniqueOctreeChangeHandler::UniqueOctreeChangeHandler(const OctreeChangeHandler &
 
 void UniqueOctreeChangeHandler::onNodeAdded(const OctreeNodeData& data) const {
     NodeID id = reinterpret_cast<NodeID>(data.node);
-    added[id] = OctreeNodeData{data};
+    std::lock_guard<std::mutex> guard(mtx);
+    updates[id] = {OctreeNodeData{data} , true};
 }
 void UniqueOctreeChangeHandler::onNodeDeleted(const OctreeNodeData& data) const {
     NodeID id = reinterpret_cast<NodeID>(data.node);
-    deleted[id] = OctreeNodeData{data};
+    std::lock_guard<std::mutex> guard(mtx);
+    updates[id] = {OctreeNodeData{data} , false };
 }
 void UniqueOctreeChangeHandler::handleEvents() {
-    for (const auto& e : deleted) {
-        handler.onNodeDeleted(e.second);  
-    }
-    for (const auto& e : added) {
-        handler.onNodeAdded(e.second);
+    std::lock_guard<std::mutex> guard(mtx);
+    for (const auto& e : updates) {
+        if(e.second.second) {
+            handler.onNodeAdded(e.second.first);
+        }
+        else {
+            handler.onNodeDeleted(e.second.first);
+        }
     }
 }
 void UniqueOctreeChangeHandler::clear() {
-    added.clear();
-    deleted.clear();
+    std::lock_guard<std::mutex> guard(mtx);
+    updates.clear();
 }
-const std::unordered_map<NodeID, OctreeNodeData>& UniqueOctreeChangeHandler::allAdded() const {
-    return added;
-}
-const std::unordered_map<NodeID, OctreeNodeData>& UniqueOctreeChangeHandler::allDeleted() const {
-    return deleted;
-}
+

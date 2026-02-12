@@ -32,6 +32,15 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
     handlers.emplace_back(&tesselator);
     Processor processor(&tessCount, threadPool, &context, &handlers);
     tree->iterateFlat(processor, data);
+    // Log geometry stats for every chunk
+    printf("[requestModel3D] Node %p, Layer %d, Cube Min=(%.2f,%.2f,%.2f), Max=(%.2f,%.2f,%.2f), Verts=%zu, Indices=%zu\n",
+        data.node, (int)layer,
+        data.cube.getMin().x, data.cube.getMin().y, data.cube.getMin().z,
+        data.cube.getMax().x, data.cube.getMax().y, data.cube.getMax().z,
+        tesselator.geometry.vertices.size(), tesselator.geometry.indices.size());
+    if (tesselator.geometry.indices.empty()) {
+        printf("[requestModel3D] EMPTY geometry for node %p, Layer %d\n", data.node, (int)layer);
+    }
     if(!tesselator.geometry.indices.empty()) {
         callback(tesselator.geometry);
     }
