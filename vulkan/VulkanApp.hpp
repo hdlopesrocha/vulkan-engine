@@ -197,8 +197,8 @@ protected:
     void createDescriptorPool(uint32_t uboCount, uint32_t samplerCount);
         VkDescriptorSet createDescriptorSet(VkDescriptorSetLayout layout);
         VkDescriptorSet createMaterialDescriptorSet();
-        void updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors);
-        void updateDescriptorSet(VkDescriptorSet &descriptorSet, const std::vector<VkWriteDescriptorSet> &descriptors);
+        void updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> descriptors);
+        void updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &descriptors);
         void registerDescriptorSet(VkDescriptorSet ds) { if (ds != VK_NULL_HANDLE) registeredDescriptorSets.push_back(ds); }
         const std::vector<VkDescriptorSet>& getRegisteredDescriptorSets() const { return registeredDescriptorSets; }
         VkDescriptorSetLayout getMaterialDescriptorSetLayout() const { return materialDescriptorSetLayout; }

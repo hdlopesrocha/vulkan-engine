@@ -60,45 +60,6 @@ void VulkanApp::initVulkan() {
     std::cerr << "[DEBUG][initVulkan] commandBuffers.size() after createCommandBuffers: " << commandBuffers.size() << std::endl;
     createSyncObjects();
     initImGui();
-
-    // Debug: dump current resource manager per-type counts
-    {
-        auto dm = resources.getDeviceMemoryMap();
-        auto imgs = resources.getImageMap();
-        auto ivs = resources.getImageViewMap();
-        auto sams = resources.getSamplerMap();
-        auto fbs = resources.getFramebufferMap();
-        auto bufs = resources.getBufferMap();
-        auto pipes = resources.getPipelineMap();
-        auto playouts = resources.getPipelineLayoutMap();
-        auto shmods = resources.getShaderModuleMap();
-        auto dPools = resources.getDescriptorPoolMap();
-        auto dSets = resources.getDescriptorSetMap();
-        auto dLayouts = resources.getDescriptorSetLayoutMap();
-        auto rps = resources.getRenderPassMap();
-        auto sems = resources.getSemaphoreMap();
-        auto fns = resources.getFenceMap();
-        auto cps = resources.getCommandPoolMap();
-
-        size_t total = dm.size() + imgs.size() + ivs.size() + sams.size() + fbs.size() + bufs.size() + pipes.size() + playouts.size() + shmods.size() + dPools.size() + dSets.size() + dLayouts.size() + rps.size() + sems.size() + fns.size() + cps.size();
-        std::cerr << "[RESOURCE_DUMP] total=" << total << std::endl;
-        std::cerr << "[RESOURCE_DUMP] DeviceMemories: " << dm.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] Images: " << imgs.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] ImageViews: " << ivs.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] Samplers: " << sams.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] Framebuffers: " << fbs.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] Buffers: " << bufs.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] Pipelines: " << pipes.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] PipelineLayouts: " << playouts.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] ShaderModules: " << shmods.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] DescriptorPools: " << dPools.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] DescriptorSets: " << dSets.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] DescriptorSetLayouts: " << dLayouts.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] RenderPasses: " << rps.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] Semaphores: " << sems.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] Fences: " << fns.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP] CommandPools: " << cps.size() << std::endl;
-    }
 }
 
 
@@ -1745,7 +1706,20 @@ VkDescriptorSet VulkanApp::createMaterialDescriptorSet() {
     return createDescriptorSet(materialDescriptorSetLayout);
 }
 
-void VulkanApp::updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initializer_list<VkWriteDescriptorSet> descriptors) {
+void VulkanApp::updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &descriptors) {
+    // Debugging: log imageView values before calling into Vulkan
+    for (size_t i = 0; i < descriptors.size(); ++i) {
+        const VkWriteDescriptorSet &w = descriptors[i];
+        if (w.pImageInfo) {
+            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] binding=%u type=%d imageView=%p sampler=%p\n", i, w.dstBinding, w.descriptorType, (void*)w.pImageInfo[0].imageView, (void*)w.pImageInfo[0].sampler);
+        } else if (w.pBufferInfo) {
+            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] binding=%u type=%d buffer=%p\n", i, w.dstBinding, w.descriptorType, (void*)w.pBufferInfo[0].buffer);
+        }
+    }
+    vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptors.size()), descriptors.data(), 0, nullptr);
+}
+
+void VulkanApp::updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> descriptors) {
     std::vector<VkWriteDescriptorSet> descriptorWrites(descriptors);
     // Debugging: log imageView values before calling into Vulkan
     for (size_t i = 0; i < descriptorWrites.size(); ++i) {
@@ -1759,18 +1733,6 @@ void VulkanApp::updateDescriptorSet(VkDescriptorSet &descriptorSet, std::initial
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 }
 
-void VulkanApp::updateDescriptorSet(VkDescriptorSet &descriptorSet, const std::vector<VkWriteDescriptorSet> &descriptors) {
-    // Debugging: log imageView values before calling into Vulkan
-    for (size_t i = 0; i < descriptors.size(); ++i) {
-        const VkWriteDescriptorSet &w = descriptors[i];
-        if (w.pImageInfo) {
-            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] binding=%u type=%d imageView=%p sampler=%p\n", i, w.dstBinding, w.descriptorType, (void*)w.pImageInfo[0].imageView, (void*)w.pImageInfo[0].sampler);
-        } else if (w.pBufferInfo) {
-            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] binding=%u type=%d buffer=%p\n", i, w.dstBinding, w.descriptorType, (void*)w.pBufferInfo[0].buffer);
-        }
-    }
-    vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptors.size()), descriptors.data(), 0, nullptr);
-}
 
 VkShaderModule VulkanApp::createShaderModule(const std::vector<char>& code) {
     VkShaderModuleCreateInfo createInfo{};
@@ -2767,47 +2729,6 @@ void VulkanApp::run() {
     initWindow();
     initVulkan();
     setup();
-
-    // Post-setup resource dump: many objects (pipelines, descriptor sets)
-    // are created by `setup()`. Dump counts again so we can verify
-    // everything (including imgui/backend-registered items) is tracked.
-    {
-        auto dm = resources.getDeviceMemoryMap();
-        auto imgs = resources.getImageMap();
-        auto ivs = resources.getImageViewMap();
-        auto sams = resources.getSamplerMap();
-        auto fbs = resources.getFramebufferMap();
-        auto bufs = resources.getBufferMap();
-        auto pipes = resources.getPipelineMap();
-        auto playouts = resources.getPipelineLayoutMap();
-        auto shmods = resources.getShaderModuleMap();
-        auto dPools = resources.getDescriptorPoolMap();
-        auto dSets = resources.getDescriptorSetMap();
-        auto dLayouts = resources.getDescriptorSetLayoutMap();
-        auto rps = resources.getRenderPassMap();
-        auto sems = resources.getSemaphoreMap();
-        auto fns = resources.getFenceMap();
-        auto cps = resources.getCommandPoolMap();
-
-        size_t total = dm.size() + imgs.size() + ivs.size() + sams.size() + fbs.size() + bufs.size() + pipes.size() + playouts.size() + shmods.size() + dPools.size() + dSets.size() + dLayouts.size() + rps.size() + sems.size() + fns.size() + cps.size();
-        std::cerr << "[RESOURCE_DUMP][post-setup] total=" << total << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] DeviceMemories: " << dm.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] Images: " << imgs.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] ImageViews: " << ivs.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] Samplers: " << sams.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] Framebuffers: " << fbs.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] Buffers: " << bufs.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] Pipelines: " << pipes.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] PipelineLayouts: " << playouts.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] ShaderModules: " << shmods.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] DescriptorPools: " << dPools.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] DescriptorSets: " << dSets.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] DescriptorSetLayouts: " << dLayouts.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] RenderPasses: " << rps.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] Semaphores: " << sems.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] Fences: " << fns.size() << std::endl;
-        std::cerr << "[RESOURCE_DUMP][post-setup] CommandPools: " << cps.size() << std::endl;
-    }
 
     mainLoop();
     cleanup();
