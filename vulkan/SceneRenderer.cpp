@@ -34,8 +34,6 @@ void SceneRenderer::cleanup() {
     if (app) {
         VkDevice dev = app->getDevice();
         if (mainUniformBuffer.buffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(dev, mainUniformBuffer.buffer, nullptr);
-            if (mainUniformBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(dev, mainUniformBuffer.memory, nullptr);
             mainUniformBuffer = {};
         }
         // Only destroy materialsBuffer if it is not the same buffer owned by the MaterialManager
@@ -46,25 +44,17 @@ void SceneRenderer::cleanup() {
                 if (mgrBuf.buffer == materialsBuffer.buffer && mgrBuf.memory == materialsBuffer.memory) ownedByManager = true;
             }
             if (!ownedByManager) {
-                vkDestroyBuffer(dev, materialsBuffer.buffer, nullptr);
-                if (materialsBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(dev, materialsBuffer.memory, nullptr);
                 materialsBuffer = {};
             }
         }
         // Destroy Pass UBO buffers if allocated
         if (mainPassUBO.buffer.buffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(dev, mainPassUBO.buffer.buffer, nullptr);
-            if (mainPassUBO.buffer.memory != VK_NULL_HANDLE) vkFreeMemory(dev, mainPassUBO.buffer.memory, nullptr);
             mainPassUBO.buffer = {};
         }
         if (shadowPassUBO.buffer.buffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(dev, shadowPassUBO.buffer.buffer, nullptr);
-            if (shadowPassUBO.buffer.memory != VK_NULL_HANDLE) vkFreeMemory(dev, shadowPassUBO.buffer.memory, nullptr);
             shadowPassUBO.buffer = {};
         }
         if (waterPassUBO.buffer.buffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(dev, waterPassUBO.buffer.buffer, nullptr);
-            if (waterPassUBO.buffer.memory != VK_NULL_HANDLE) vkFreeMemory(dev, waterPassUBO.buffer.memory, nullptr);
             waterPassUBO.buffer = {};
         }
     }

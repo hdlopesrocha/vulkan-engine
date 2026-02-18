@@ -15,6 +15,7 @@
 #include <vulkan/vulkan.h>
 
 #include "vulkan.hpp"
+#include "VulkanResourceManager.hpp"
 
 class VulkanApp {
     public:
@@ -91,6 +92,9 @@ private:
     VkImageView depthImageView = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> commandBuffers;
+
+    // Central resource manager for automatic cleanup
+    VulkanResourceManager resources;
     
 protected:
     // set when the framebuffer (GLFW window) is resized so we can recreate swapchain
@@ -147,6 +151,8 @@ protected:
         // If outSemaphore is non-null, the submission will signal that semaphore when finished (useful to make frame submit wait on generation).
         VkFence submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore = nullptr);
         void processPendingCommandBuffers();
+        // Wait for all tracked pending command buffers to finish (blocks).
+        void waitForAllPendingCommandBuffers();
         // Query whether a given fence is still tracked as pending by VulkanApp
         bool isFencePending(VkFence fence);
         // Deferred destruction helpers
@@ -257,6 +263,11 @@ protected:
         int getWidth();
         int getHeight();
         
+        enum class ResourceType { Buffer, DeviceMemory, Image, ImageView, Sampler, Framebuffer, ShaderModule, PipelineLayout, Pipeline, DescriptorPool, DescriptorSetLayout, DescriptorSet };
+
+        // Query whether a handle is currently registered in the app's resource registry
+        bool isResourceRegistered(uintptr_t handle) const;
+        
         // Public utility methods for texture manipulation
         uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
         VkCommandBuffer beginSingleTimeCommands();
@@ -265,6 +276,8 @@ protected:
         // Image helpers (moved from protected so external helpers can use them)
         void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory);
         void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels = 1, uint32_t arrayLayers = 1);
+        // Transition a specific array layer range (baseArrayLayer, layerCount) synchronously.
+        void transitionImageLayoutLayer(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);
         void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
 
         void run();

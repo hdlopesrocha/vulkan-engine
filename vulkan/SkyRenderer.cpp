@@ -128,35 +128,23 @@ void SkyRenderer::render(VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Bu
 }
 
 void SkyRenderer::cleanup() {
-    if (skyPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(app->getDevice(), skyPipeline, nullptr);
-        skyPipeline = VK_NULL_HANDLE;
-    }
-    if (skyGridPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(app->getDevice(), skyGridPipeline, nullptr);
-        skyGridPipeline = VK_NULL_HANDLE;
-    }
-    if (skyVertModule != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(app->getDevice(), skyVertModule, nullptr);
-        skyVertModule = VK_NULL_HANDLE;
-    }
-    if (skyFragModule != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(app->getDevice(), skyFragModule, nullptr);
-        skyFragModule = VK_NULL_HANDLE;
-    }
-    if (skyGridFragModule != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(app->getDevice(), skyGridFragModule, nullptr);
-        skyGridFragModule = VK_NULL_HANDLE;
-    }
+    // Clear local handles; actual destruction is handled by VulkanResourceManager
+    skyPipeline = VK_NULL_HANDLE;
+    skyGridPipeline = VK_NULL_HANDLE;
+    skyVertModule = VK_NULL_HANDLE;
+    skyFragModule = VK_NULL_HANDLE;
+    skyGridFragModule = VK_NULL_HANDLE;
 
-    // Cleanup sky sphere and VBO
+    // Cleanup sky sphere and VBO handles
     if (skySphere) {
         skySphere->cleanup();
         skySphere.reset();
     }
-    if (skyVBO.vertexBuffer.buffer != VK_NULL_HANDLE || skyVBO.indexCount > 0) {
-        skyVBO.destroy(app->getDevice());
-    }
+    skyVBO.vertexBuffer.buffer = VK_NULL_HANDLE;
+    skyVBO.vertexBuffer.memory = VK_NULL_HANDLE;
+    skyVBO.indexBuffer.buffer = VK_NULL_HANDLE;
+    skyVBO.indexBuffer.memory = VK_NULL_HANDLE;
+    skyVBO.indexCount = 0;
 }
 
 void SkyRenderer::initSky(SkySettings &settings, VkDescriptorSet descriptorSet) {

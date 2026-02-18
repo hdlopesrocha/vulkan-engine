@@ -120,6 +120,9 @@ void DebugCubeRenderer::loadGridTexture() {
         fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to create grid texture image!\n");
         return;
     }
+    printf("[DebugCubeRenderer] createImage: gridTextureImage=%p\n", (void*)gridTextureImage);
+    // Register grid texture image
+    app->resources.addImage(gridTextureImage, "DebugCubeRenderer: gridTextureImage");
     
     // Allocate memory
     VkMemoryRequirements memRequirements;
@@ -135,8 +138,11 @@ void DebugCubeRenderer::loadGridTexture() {
         fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to allocate grid texture memory!\n");
         return;
     }
+    printf("[DebugCubeRenderer] allocateMemory: gridTextureMemory=%p\n", (void*)gridTextureMemory);
     
     vkBindImageMemory(app->getDevice(), gridTextureImage, gridTextureMemory, 0);
+    // Register grid texture memory
+    app->resources.addDeviceMemory(gridTextureMemory, "DebugCubeRenderer: gridTextureMemory");
     
     // Transition and copy
     app->transitionImageLayout(gridTextureImage, VK_FORMAT_R8G8B8A8_SRGB, 
@@ -145,9 +151,9 @@ void DebugCubeRenderer::loadGridTexture() {
     app->transitionImageLayout(gridTextureImage, VK_FORMAT_R8G8B8A8_SRGB,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     
-    // Cleanup staging buffer
-    vkDestroyBuffer(app->getDevice(), stagingBuffer.buffer, nullptr);
-    vkFreeMemory(app->getDevice(), stagingBuffer.memory, nullptr);
+    // Defer actual destruction to VulkanResourceManager; clear local handles
+    stagingBuffer.buffer = VK_NULL_HANDLE;
+    stagingBuffer.memory = VK_NULL_HANDLE;
     
     // Create image view
     VkImageViewCreateInfo viewInfo{};
@@ -165,6 +171,9 @@ void DebugCubeRenderer::loadGridTexture() {
         fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to create grid texture view!\n");
         return;
     }
+    printf("[DebugCubeRenderer] createImageView: gridTextureView=%p for image=%p\n", (void*)gridTextureView, (void*)gridTextureImage);
+    // Register grid texture view
+    app->resources.addImageView(gridTextureView, "DebugCubeRenderer: gridTextureView");
     
     // Create sampler
     VkSamplerCreateInfo samplerInfo{};
@@ -185,6 +194,9 @@ void DebugCubeRenderer::loadGridTexture() {
     if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &gridTextureSampler) != VK_SUCCESS) {
         fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to create grid texture sampler!\n");
     }
+    printf("[DebugCubeRenderer] createSampler: gridTextureSampler=%p\n", (void*)gridTextureSampler);
+    // Register grid texture sampler
+    app->resources.addSampler(gridTextureSampler, "DebugCubeRenderer: gridTextureSampler");
     
     printf("[DebugCubeRenderer] Loaded grid texture: %dx%d\n", texWidth, texHeight);
 }
@@ -216,6 +228,9 @@ void DebugCubeRenderer::createGridDescriptorSet() {
         fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to create grid descriptor set layout!\n");
         return;
     }
+    printf("[DebugCubeRenderer] createDescriptorSetLayout: gridDescriptorSetLayout=%p\n", (void*)gridDescriptorSetLayout);
+    // Register descriptor set layout
+    app->resources.addDescriptorSetLayout(gridDescriptorSetLayout, "DebugCubeRenderer: gridDescriptorSetLayout");
     
     // Create descriptor pool
     VkDescriptorPoolSize poolSizes[2];
@@ -234,6 +249,9 @@ void DebugCubeRenderer::createGridDescriptorSet() {
         fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to create grid descriptor pool!\n");
         return;
     }
+    printf("[DebugCubeRenderer] createDescriptorPool: gridDescriptorPool=%p\n", (void*)gridDescriptorPool);
+    // Register descriptor pool
+    app->resources.addDescriptorPool(gridDescriptorPool, "DebugCubeRenderer: gridDescriptorPool");
     
     // Allocate descriptor set
     VkDescriptorSetAllocateInfo allocInfo{};
@@ -246,6 +264,8 @@ void DebugCubeRenderer::createGridDescriptorSet() {
         fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to allocate grid descriptor set!\n");
         return;
     }
+    // Register descriptor set for tracking
+    app->resources.addDescriptorSet(gridDescriptorSet, "DebugCubeRenderer: gridDescriptorSet");
     
     // Update descriptor set with texture
     VkDescriptorImageInfo imageInfo{};
@@ -296,9 +316,9 @@ void DebugCubeRenderer::updateInstanceBuffer() {
     // Resize buffer if needed
     if (activeCubes.size() > instanceBufferCapacity) {
         if (instanceBuffer.buffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(app->getDevice(), instanceBuffer.buffer, nullptr);
-            vkFreeMemory(app->getDevice(), instanceBuffer.memory, nullptr);
-        }
+                // Defer destruction to VulkanResourceManager; clear local handles
+                instanceBuffer = {};
+            }
         
         instanceBufferCapacity = activeCubes.size() * 2;  // Allocate extra
         instanceBuffer = app->createBuffer(
@@ -386,56 +406,24 @@ void DebugCubeRenderer::render(VkCommandBuffer& cmd, VkDescriptorSet descriptorS
 }
 
 void DebugCubeRenderer::cleanup() {
-    if (pipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(app->getDevice(), pipeline, nullptr);
-        pipeline = VK_NULL_HANDLE;
-    }
-    
-    if (instanceBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), instanceBuffer.buffer, nullptr);
-        vkFreeMemory(app->getDevice(), instanceBuffer.memory, nullptr);
-        instanceBuffer.buffer = VK_NULL_HANDLE;
-        instanceBuffer.memory = VK_NULL_HANDLE;
-    }
-    
-    if (pipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(app->getDevice(), pipelineLayout, nullptr);
-        pipelineLayout = VK_NULL_HANDLE;
-    }
-    if (vertModule != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(app->getDevice(), vertModule, nullptr);
-        vertModule = VK_NULL_HANDLE;
-    }
-    if (fragModule != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(app->getDevice(), fragModule, nullptr);
-        fragModule = VK_NULL_HANDLE;
-    }
-    if (gridTextureSampler != VK_NULL_HANDLE) {
-        vkDestroySampler(app->getDevice(), gridTextureSampler, nullptr);
-        gridTextureSampler = VK_NULL_HANDLE;
-    }
-    if (gridTextureView != VK_NULL_HANDLE) {
-        vkDestroyImageView(app->getDevice(), gridTextureView, nullptr);
-        gridTextureView = VK_NULL_HANDLE;
-    }
-    if (gridTextureImage != VK_NULL_HANDLE) {
-        vkDestroyImage(app->getDevice(), gridTextureImage, nullptr);
-        gridTextureImage = VK_NULL_HANDLE;
-    }
-    if (gridTextureMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(app->getDevice(), gridTextureMemory, nullptr);
-        gridTextureMemory = VK_NULL_HANDLE;
-    }
-    if (gridDescriptorSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(app->getDevice(), gridDescriptorSetLayout, nullptr);
-        gridDescriptorSetLayout = VK_NULL_HANDLE;
-    }
-    if (gridDescriptorPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(app->getDevice(), gridDescriptorPool, nullptr);
-        gridDescriptorPool = VK_NULL_HANDLE;
-    }
-    
-    if (cubeVBO.vertexBuffer.buffer != VK_NULL_HANDLE) {
-        cubeVBO.destroy(app->getDevice());
-    }
+    // Destruction of Vulkan objects is centralized in VulkanResourceManager.
+    // Clear local handles to avoid accidental use; actual destroys happen
+    // during `resources.cleanup(device)`.
+    pipeline = VK_NULL_HANDLE;
+    instanceBuffer.buffer = VK_NULL_HANDLE;
+    instanceBuffer.memory = VK_NULL_HANDLE;
+    pipelineLayout = VK_NULL_HANDLE;
+    vertModule = VK_NULL_HANDLE;
+    fragModule = VK_NULL_HANDLE;
+    gridTextureSampler = VK_NULL_HANDLE;
+    gridTextureView = VK_NULL_HANDLE;
+    gridTextureImage = VK_NULL_HANDLE;
+    gridTextureMemory = VK_NULL_HANDLE;
+    gridDescriptorSetLayout = VK_NULL_HANDLE;
+    gridDescriptorPool = VK_NULL_HANDLE;
+    cubeVBO.vertexBuffer.buffer = VK_NULL_HANDLE;
+    cubeVBO.vertexBuffer.memory = VK_NULL_HANDLE;
+    cubeVBO.indexBuffer.buffer = VK_NULL_HANDLE;
+    cubeVBO.indexBuffer.memory = VK_NULL_HANDLE;
+    cubeVBO.indexCount = 0;
 }

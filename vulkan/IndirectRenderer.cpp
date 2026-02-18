@@ -12,66 +12,19 @@ void IndirectRenderer::init(VulkanApp* app) {
 void IndirectRenderer::cleanup(VulkanApp* app) {
     // meshes no longer own per-mesh buffers; clear CPU lists
     meshes.clear();
-    if (vertexBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), vertexBuffer.buffer, nullptr);
-    }
-    if (vertexBuffer.memory != VK_NULL_HANDLE) {
-        vkFreeMemory(app->getDevice(), vertexBuffer.memory, nullptr);
-    }
+    // Clear local handles; destruction is centralized in VulkanResourceManager.
     vertexBuffer = {};
-    
-    if (indexBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), indexBuffer.buffer, nullptr);
-    }
-    if (indexBuffer.memory != VK_NULL_HANDLE) {
-        vkFreeMemory(app->getDevice(), indexBuffer.memory, nullptr);
-    }
     indexBuffer = {};
-    
-    if (indirectBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), indirectBuffer.buffer, nullptr);
-    }
-    if (indirectBuffer.memory != VK_NULL_HANDLE) {
-        vkFreeMemory(app->getDevice(), indirectBuffer.memory, nullptr);
-    }
     indirectBuffer = {};
-    
-    if (compactIndirectBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), compactIndirectBuffer.buffer, nullptr);
-    }
-    if (compactIndirectBuffer.memory != VK_NULL_HANDLE) {
-        vkFreeMemory(app->getDevice(), compactIndirectBuffer.memory, nullptr);
-    }
     compactIndirectBuffer = {};
-    
-    if (modelsBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), modelsBuffer.buffer, nullptr);
-    }
-    if (modelsBuffer.memory != VK_NULL_HANDLE) {
-        vkFreeMemory(app->getDevice(), modelsBuffer.memory, nullptr);
-    }
     modelsBuffer = {};
-    
-    if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), boundsBuffer.buffer, nullptr);
-    }
-    if (boundsBuffer.memory != VK_NULL_HANDLE) {
-        vkFreeMemory(app->getDevice(), boundsBuffer.memory, nullptr);
-    }
     boundsBuffer = {};
-    
-    if (visibleCountBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), visibleCountBuffer.buffer, nullptr);
-    }
-    if (visibleCountBuffer.memory != VK_NULL_HANDLE) {
-        vkFreeMemory(app->getDevice(), visibleCountBuffer.memory, nullptr);
-    }
     visibleCountBuffer = {};
 
-    if (computePipeline != VK_NULL_HANDLE) vkDestroyPipeline(app->getDevice(), computePipeline, nullptr);
-    if (computePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(app->getDevice(), computePipelineLayout, nullptr);
-    if (computeDescriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(app->getDevice(), computeDescriptorSetLayout, nullptr);
-    if (computeDescriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(app->getDevice(), computeDescriptorPool, nullptr);
+    computePipeline = VK_NULL_HANDLE;
+    computePipelineLayout = VK_NULL_HANDLE;
+    computeDescriptorSetLayout = VK_NULL_HANDLE;
+    computeDescriptorPool = VK_NULL_HANDLE;
 }
 
 uint32_t IndirectRenderer::addMesh(VulkanApp* app, const Geometry& mesh) {
@@ -206,8 +159,9 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
         copyRegion.size = vertexSize;
         vkCmdCopyBuffer(cmd, stagingVertex.buffer, vertexBuffer.buffer, 1, &copyRegion);
         app->endSingleTimeCommands(cmd);
-        vkDestroyBuffer(app->getDevice(), stagingVertex.buffer, nullptr);
-        vkFreeMemory(app->getDevice(), stagingVertex.memory, nullptr);
+        // Rely on VulkanResourceManager to destroy tracked buffers/memory later
+        stagingVertex.buffer = VK_NULL_HANDLE;
+        stagingVertex.memory = VK_NULL_HANDLE;
     }
     VkDeviceSize indexOffset = info.firstIndex * sizeof(uint32_t);
     VkDeviceSize indexSize = info.indexCount * sizeof(uint32_t);
@@ -226,8 +180,9 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
         copyRegion.size = indexSize;
         vkCmdCopyBuffer(cmd, stagingIndex.buffer, indexBuffer.buffer, 1, &copyRegion);
         app->endSingleTimeCommands(cmd);
-        vkDestroyBuffer(app->getDevice(), stagingIndex.buffer, nullptr);
-        vkFreeMemory(app->getDevice(), stagingIndex.memory, nullptr);
+        // Rely on VulkanResourceManager to destroy tracked buffers/memory later
+        stagingIndex.buffer = VK_NULL_HANDLE;
+        stagingIndex.memory = VK_NULL_HANDLE;
     }
     return true;
 }
@@ -317,13 +272,11 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     }
     if (mergedVertices.empty() || mergedIndices.empty()) {
         if (vertexBuffer.buffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(app->getDevice(), vertexBuffer.buffer, nullptr);
-            vkFreeMemory(app->getDevice(), vertexBuffer.memory, nullptr);
+            // Defer actual destruction to VulkanResourceManager; clear local handle
             vertexBuffer = {};
         }
         if (indexBuffer.buffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(app->getDevice(), indexBuffer.buffer, nullptr);
-            vkFreeMemory(app->getDevice(), indexBuffer.memory, nullptr);
+            // Defer actual destruction to VulkanResourceManager; clear local handle
             indexBuffer = {};
         }
         vertexCapacity = 0;
@@ -331,13 +284,11 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     } else {
         // Recreate vertex/index buffers with capacity-based sizing
         if (vertexBuffer.buffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(app->getDevice(), vertexBuffer.buffer, nullptr);
-            vkFreeMemory(app->getDevice(), vertexBuffer.memory, nullptr);
+            // Defer actual destruction to VulkanResourceManager; clear local handle
             vertexBuffer = {};
         }
         if (indexBuffer.buffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(app->getDevice(), indexBuffer.buffer, nullptr);
-            vkFreeMemory(app->getDevice(), indexBuffer.memory, nullptr);
+            // Defer actual destruction to VulkanResourceManager; clear local handle
             indexBuffer = {};
         }
         
@@ -372,8 +323,9 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             vkCmdCopyBuffer(cmd, staging.buffer, vertexBuffer.buffer, 1, &copyRegion);
             app->endSingleTimeCommands(cmd);
             
-            vkDestroyBuffer(app->getDevice(), staging.buffer, nullptr);
-            vkFreeMemory(app->getDevice(), staging.memory, nullptr);
+            // Defer actual destruction to VulkanResourceManager; clear local handle
+            staging.buffer = VK_NULL_HANDLE;
+            staging.memory = VK_NULL_HANDLE;
         }
         
         if (!mergedIndices.empty()) {
@@ -394,8 +346,9 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             vkCmdCopyBuffer(cmd, staging.buffer, indexBuffer.buffer, 1, &copyRegion);
             app->endSingleTimeCommands(cmd);
             
-            vkDestroyBuffer(app->getDevice(), staging.buffer, nullptr);
-            vkFreeMemory(app->getDevice(), staging.memory, nullptr);
+            // Defer actual destruction to VulkanResourceManager; clear local handle
+            staging.buffer = VK_NULL_HANDLE;
+            staging.memory = VK_NULL_HANDLE;
         }
     }
 
@@ -431,8 +384,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     VkDeviceSize indirectBufferSize = sizeof(VkDrawIndexedIndirectCommand) * meshCapacity;
     VkDeviceSize indirectDataSize = sizeof(VkDrawIndexedIndirectCommand) * indirectCommands.size();
     if (indirectBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), indirectBuffer.buffer, nullptr);
-        vkFreeMemory(app->getDevice(), indirectBuffer.memory, nullptr);
+        // Defer actual destruction to VulkanResourceManager; clear local handle
         indirectBuffer = {};
     }
     if (meshCapacity > 0) {
@@ -478,8 +430,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     VkDeviceSize modelsBufferSize = sizeof(glm::mat4) * meshCapacity;
     VkDeviceSize modelsDataSize = sizeof(glm::mat4) * models.size();
     if (modelsBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), modelsBuffer.buffer, nullptr);
-        vkFreeMemory(app->getDevice(), modelsBuffer.memory, nullptr);
+        // Defer actual destruction to VulkanResourceManager; clear local handle
         modelsBuffer = {};
     }
     if (meshCapacity > 0) {
@@ -506,8 +457,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 2;
     VkDeviceSize boundsDataSize = sizeof(glm::vec4) * boundsData.size();
     if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), boundsBuffer.buffer, nullptr);
-        vkFreeMemory(app->getDevice(), boundsBuffer.memory, nullptr);
+        // Defer actual destruction to VulkanResourceManager; clear local handle
         boundsBuffer = {};
     }
     if (meshCapacity > 0) {
@@ -527,8 +477,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     VkDeviceSize compactSize = indirectBufferSize; // same capacity as full indirect buffer
     printf("[IndirectRenderer::rebuild] meshes=%zu activeCmds=%zu capacity=%zu\n", meshes.size(), cmds.size(), meshCapacity);
     if (compactIndirectBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), compactIndirectBuffer.buffer, nullptr);
-        vkFreeMemory(app->getDevice(), compactIndirectBuffer.memory, nullptr);
+        // Defer actual destruction to VulkanResourceManager; clear local handle
         compactIndirectBuffer = {};
     }
     if (compactSize > 0) {
@@ -551,8 +500,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // Create or zero the visible count buffer (single uint) - host-visible for compute shader writes
     VkDeviceSize countSize = sizeof(uint32_t);
     if (visibleCountBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), visibleCountBuffer.buffer, nullptr);
-        vkFreeMemory(app->getDevice(), visibleCountBuffer.memory, nullptr);
+        // Defer actual destruction to VulkanResourceManager; clear local handle
         visibleCountBuffer = {};
     }
     visibleCountBuffer = app->createBuffer(countSize, 
@@ -587,6 +535,8 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         if (vkCreateDescriptorSetLayout(app->getDevice(), &layoutInfo, nullptr, &computeDescriptorSetLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create compute descriptor set layout!");
         }
+        // central manager
+        app->resources.addDescriptorSetLayout(computeDescriptorSetLayout, "IndirectRenderer: computeDescriptorSetLayout");
 
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -603,6 +553,8 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         if (vkCreatePipelineLayout(app->getDevice(), &plinfo, nullptr, &computePipelineLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create compute pipeline layout!");
         }
+        // central manager
+        app->resources.addPipelineLayout(computePipelineLayout, "IndirectRenderer: computePipelineLayout");
 
         auto compCode = FileReader::readFile("shaders/indirect.comp.spv");
         VkShaderModule compModule = app->createShaderModule(compCode);
@@ -619,10 +571,15 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         pipelineInfo.layout = computePipelineLayout;
 
         if (vkCreateComputePipelines(app->getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline) != VK_SUCCESS) {
+            // Pipeline creation failed: unregister and destroy the shader module immediately
+            app->resources.removeShaderModule(compModule);
             vkDestroyShaderModule(app->getDevice(), compModule, nullptr);
             throw std::runtime_error("failed to create compute pipeline!");
         }
-        vkDestroyShaderModule(app->getDevice(), compModule, nullptr);
+        // track compute pipeline
+        app->resources.addPipeline(computePipeline, "IndirectRenderer: computePipeline");
+        // Clear local shader module reference; manager owns destruction
+        compModule = VK_NULL_HANDLE;
 
         // Descriptor pool
         VkDescriptorPoolSize poolSize{};
@@ -633,9 +590,15 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         poolInfo.poolSizeCount = 1;
         poolInfo.pPoolSizes = &poolSize;
         poolInfo.maxSets = 4;
+        // Allow freeing descriptor sets if needed
+        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         if (vkCreateDescriptorPool(app->getDevice(), &poolInfo, nullptr, &computeDescriptorPool) != VK_SUCCESS) {
             throw std::runtime_error("failed to create compute descriptor pool");
         }
+        // track descriptor pool in central manager
+        app->resources.addDescriptorPool(computeDescriptorPool, "IndirectRenderer: computeDescriptorPool");
+        app->resources.addDescriptorPool(computeDescriptorPool, "IndirectRenderer: computeDescriptorPool");
+        /* duplicate registration removed */
 
         VkDescriptorSetAllocateInfo alloc{};
         alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -645,6 +608,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         if (vkAllocateDescriptorSets(app->getDevice(), &alloc, &computeDescriptorSet) != VK_SUCCESS) {
             throw std::runtime_error("failed to allocate compute descriptor set");
         }
+        app->resources.addDescriptorSet(computeDescriptorSet, "IndirectRenderer: computeDescriptorSet");
     }
 
     // Update compute descriptor set with buffer infos

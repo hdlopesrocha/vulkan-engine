@@ -2,11 +2,13 @@
 #include <vulkan/vulkan.h>
 #include <vector>
 #include <stdexcept>
+#include <unordered_set>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
 #include <mutex>
 #include <functional>
 #include <vector>
+#include <limits>
 
 // Async submission bookkeeping
 std::mutex pendingCmdMutex;
@@ -21,13 +23,16 @@ std::vector<std::pair<VkSemaphore,VkFence>> semaphoresPendingDestroy;
 std::mutex deferredDestroyMutex;
 std::vector<std::pair<VkFence, std::function<void()>>> deferredDestroys;
 
+// Buffers registered for automatic cleanup at final app shutdown.
+std::mutex buffersPendingMutex;
+std::vector<std::pair<VkBuffer, VkDeviceMemory>> buffersPendingAutoDestroy;
 #include "VulkanApp.hpp"
 #include "TextureArrayManager.hpp"
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_vulkan.h"
 #include <cmath>
-
+#include "VulkanResourceManager.hpp"
 
 void VulkanApp::initVulkan() {
     createInstance();
@@ -55,6 +60,45 @@ void VulkanApp::initVulkan() {
     std::cerr << "[DEBUG][initVulkan] commandBuffers.size() after createCommandBuffers: " << commandBuffers.size() << std::endl;
     createSyncObjects();
     initImGui();
+
+    // Debug: dump current resource manager per-type counts
+    {
+        auto dm = resources.getDeviceMemoryMap();
+        auto imgs = resources.getImageMap();
+        auto ivs = resources.getImageViewMap();
+        auto sams = resources.getSamplerMap();
+        auto fbs = resources.getFramebufferMap();
+        auto bufs = resources.getBufferMap();
+        auto pipes = resources.getPipelineMap();
+        auto playouts = resources.getPipelineLayoutMap();
+        auto shmods = resources.getShaderModuleMap();
+        auto dPools = resources.getDescriptorPoolMap();
+        auto dSets = resources.getDescriptorSetMap();
+        auto dLayouts = resources.getDescriptorSetLayoutMap();
+        auto rps = resources.getRenderPassMap();
+        auto sems = resources.getSemaphoreMap();
+        auto fns = resources.getFenceMap();
+        auto cps = resources.getCommandPoolMap();
+
+        size_t total = dm.size() + imgs.size() + ivs.size() + sams.size() + fbs.size() + bufs.size() + pipes.size() + playouts.size() + shmods.size() + dPools.size() + dSets.size() + dLayouts.size() + rps.size() + sems.size() + fns.size() + cps.size();
+        std::cerr << "[RESOURCE_DUMP] total=" << total << std::endl;
+        std::cerr << "[RESOURCE_DUMP] DeviceMemories: " << dm.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] Images: " << imgs.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] ImageViews: " << ivs.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] Samplers: " << sams.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] Framebuffers: " << fbs.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] Buffers: " << bufs.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] Pipelines: " << pipes.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] PipelineLayouts: " << playouts.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] ShaderModules: " << shmods.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] DescriptorPools: " << dPools.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] DescriptorSets: " << dSets.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] DescriptorSetLayouts: " << dLayouts.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] RenderPasses: " << rps.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] Semaphores: " << sems.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] Fences: " << fns.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP] CommandPools: " << cps.size() << std::endl;
+    }
 }
 
 
@@ -97,6 +141,7 @@ void VulkanApp::createImageViews() {
         if (vkCreateImageView(device, &createInfo, nullptr, &swapchainImageViews[i]) != VK_SUCCESS) {
             throw std::runtime_error("failed to create image views!");
         }
+        resources.addImageView(swapchainImageViews[i], "VulkanApp: swapchainImageView");
     }
 }
 
@@ -182,59 +227,45 @@ void VulkanApp::cleanup() {
     printf("[VulkanApp] cleanup start - device=%p\n", (void*)device);
     if (device != VK_NULL_HANDLE) vkDeviceWaitIdle(device);
 
-    // destroy sync objects
-    for (auto f : inFlightFences) {
-        if (f != VK_NULL_HANDLE) vkDestroyFence(device, f, nullptr);
-    }
-    for (auto s : renderFinishedSemaphores) {
-        if (s != VK_NULL_HANDLE) vkDestroySemaphore(device, s, nullptr);
-    }
-    for (auto s : imageAvailableSemaphores) {
-        if (s != VK_NULL_HANDLE) vkDestroySemaphore(device, s, nullptr);
-    }
-
-    // command pool
-    if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
-
-    // framebuffers
-    for (auto fb : swapchainFramebuffers) {
-        if (fb != VK_NULL_HANDLE) vkDestroyFramebuffer(device, fb, nullptr);
-    }
-
+    // Allow the derived app to release manager-owned Vulkan resources now while
+    // the device, descriptor pools and command pool are still valid. This
+    // ensures per-manager destructors can call Vulkan destroy functions (or
+    // ImGui removal) before we tear down common objects below.
     clean();
+    // Process any deferred-destruction callbacks immediately so resources
+    // scheduled with deferDestroyUntilAllPending() are released while the
+    // device is still valid.
+    processPendingCommandBuffers();
 
+    // Do not destroy objects that are tracked by VulkanResourceManager here.
+    // Let the centralized manager perform destruction while the device is still valid.
+    // Process pending command buffers and run deferred destroys one more time,
+    // then invoke the resource manager to cleanup tracked Vulkan objects.
+    processPendingCommandBuffers();
+    {
+        std::lock_guard<std::mutex> dd(deferredDestroyMutex);
+        for (auto &p : deferredDestroys) {
+            try { p.second(); } catch (...) {}
+        }
+        deferredDestroys.clear();
+    }
     // ImGui cleanup (must happen before destroying descriptor pools and device)
     printf("[VulkanApp] calling cleanupImGui() - imguiDescriptorPool=%p\n", (void*)imguiDescriptorPool);
     cleanupImGui();
     printf("[VulkanApp] cleanupImGui() returned\n");
-    // depth resources
-    if (depthImageView != VK_NULL_HANDLE) vkDestroyImageView(device, depthImageView, nullptr);
-    if (depthImage != VK_NULL_HANDLE) vkDestroyImage(device, depthImage, nullptr);
-    if (depthImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, depthImageMemory, nullptr);
-    if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-    if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-    if (materialDescriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, materialDescriptorSetLayout, nullptr);
 
-    // destroy pipeline
-    if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+    // Clear local semaphore handles now that ResourceManager destroyed tracked semaphores
+    for (auto &s : imageAvailableSemaphores) s = VK_NULL_HANDLE;
+    for (auto &s : renderFinishedSemaphores) s = VK_NULL_HANDLE;
+    imageAvailableSemaphores.clear();
+    renderFinishedSemaphores.clear();
 
-    // render pass
-    if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
-    if (continuationRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, continuationRenderPass, nullptr);
-
-    // image views
-    for (auto iv : swapchainImageViews) {
-        if (iv != VK_NULL_HANDLE) vkDestroyImageView(device, iv, nullptr);
-    }
-
-    // swapchain
+    // Swapchain and surface teardown (not owned by resource manager)
     if (swapchain != VK_NULL_HANDLE) {
         auto fp = (PFN_vkDestroySwapchainKHR)vkGetInstanceProcAddr(instance, "vkDestroySwapchainKHR");
         if (fp) fp(device, swapchain, nullptr);
         swapchain = VK_NULL_HANDLE;
     }
-
-    // destroy surface
     if (surface != VK_NULL_HANDLE) {
         auto fp = (PFN_vkDestroySurfaceKHR)vkGetInstanceProcAddr(instance, "vkDestroySurfaceKHR");
         if (fp) fp(instance, surface, nullptr);
@@ -250,10 +281,29 @@ void VulkanApp::cleanup() {
 
     // Ensure any pending command buffers have been processed and deferred destruction callbacks
     // have been executed before destroying the device to avoid object-tracking warnings.
+    // Wait for all pending command buffers (blocks until fences signal) so deferred destroys
+    // that were enqueued with VK_NULL_HANDLE can run safely.
+    waitForAllPendingCommandBuffers();
+    // Process pending command buffers and deferred destroys once more to flush callbacks.
     processPendingCommandBuffers();
+    // As a final safety measure, run any remaining deferred destroy callbacks now while
+    // the device and related objects are still valid. This prevents vkDestroyDevice
+    // object-tracking warnings for things that were missed.
+    {
+        std::lock_guard<std::mutex> dd(deferredDestroyMutex);
+        for (auto &p : deferredDestroys) {
+            try { p.second(); } catch (...) {}
+        }
+        deferredDestroys.clear();
+    }
+    // Final sweep: let the centralized resource manager destroy remaining objects
+    resources.cleanup(device);
+    // Old per-app registry removed; centralized cleanup done above.
     printf("[VulkanApp] about to vkDestroyDevice(device=%p)\n", (void*)device);
     if (device != VK_NULL_HANDLE) {
-        // One more attempt to process pending callbacks after waiting
+        // Ensure the device is idle and no further commands are executing
+        vkDeviceWaitIdle(device);
+        // Final sweep of pending callbacks
         processPendingCommandBuffers();
         vkDestroyDevice(device, nullptr);
         device = VK_NULL_HANDLE;
@@ -299,6 +349,8 @@ void VulkanApp::initImGui() {
     if (vkCreateDescriptorPool(device, &pool_info, nullptr, &imguiDescriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("failed to create ImGui descriptor pool!");
     }
+    // Register ImGui descriptor pool
+    resources.addDescriptorPool(imguiDescriptorPool, "VulkanApp: imguiDescriptorPool");
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -339,6 +391,8 @@ void VulkanApp::cleanupImGui() {
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
+        // Unregister and destroy descriptor pool immediately to avoid leaks
+        resources.removeDescriptorPool(imguiDescriptorPool);
         vkDestroyDescriptorPool(device, imguiDescriptorPool, nullptr);
         imguiDescriptorPool = VK_NULL_HANDLE;
         printf("[VulkanApp] cleanupImGui done\n");
@@ -540,6 +594,8 @@ void VulkanApp::createRenderPasses() {
     if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create render pass!");
     }
+    // Register render pass
+    resources.addRenderPass(renderPass, "VulkanApp: renderPass");
     // Create continuation render pass (loads existing color and depth instead of clearing)
     VkAttachmentDescription contColorAttachment{};
     contColorAttachment.format = swapchainImageFormat;
@@ -583,6 +639,7 @@ void VulkanApp::createRenderPasses() {
     if (vkCreateRenderPass(device, &contRenderPassInfo, nullptr, &continuationRenderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create continuation render pass!");
     }
+    resources.addRenderPass(continuationRenderPass, "VulkanApp: continuationRenderPass");
 }
 
 void VulkanApp::createFramebuffers() {
@@ -603,6 +660,7 @@ void VulkanApp::createFramebuffers() {
         if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &swapchainFramebuffers[i]) != VK_SUCCESS) {
             throw std::runtime_error("failed to create framebuffer!");
         }
+        resources.addFramebuffer(swapchainFramebuffers[i], "VulkanApp: swapchainFramebuffer");
     }
 
     // Called here to cleanup any completed async submissions from previous runs
@@ -613,6 +671,8 @@ void VulkanApp::createFramebuffers() {
 void VulkanApp::createCommandPool() {
     // destroy command pool (if any)
     if (commandPool != VK_NULL_HANDLE) {
+        // Unregister and destroy existing command pool to avoid manager double-destroy later
+        resources.removeCommandPool(commandPool);
         vkDestroyCommandPool(device, commandPool, nullptr);
         commandPool = VK_NULL_HANDLE;
     }
@@ -626,6 +686,9 @@ void VulkanApp::createCommandPool() {
     if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
         throw std::runtime_error("failed to create command pool!");
     }
+
+    // Register command pool
+    resources.addCommandPool(commandPool, "VulkanApp: commandPool");
 
     // initialize async bookkeeping containers
     // pendingCommandBuffers and extraWaitSemaphores are guarded by mutexes
@@ -703,6 +766,9 @@ void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, Vk
     }
 
     vkBindImageMemory(device, image, imageMemory, 0);
+    // Register image and its memory for final-sweep safety
+    resources.addImage(image, "VulkanApp: image");
+    resources.addDeviceMemory(imageMemory, "VulkanApp: imageMemory");
 }
 
 void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount, uint32_t baseArrayLayer) {
@@ -823,50 +889,74 @@ void VulkanApp::recordGenerateMipmaps(VkCommandBuffer commandBuffer, VkImage ima
 }
 // Process any pending command buffers (free command buffers and fences when fence signaled)
 void VulkanApp::processPendingCommandBuffers() {
-    // First, process pending command buffers and free their command buffers when fences signal
-    std::lock_guard<std::mutex> lk(pendingCmdMutex);
-    for (auto it = pendingCommandBuffers.begin(); it != pendingCommandBuffers.end(); ) {
-        VkCommandBuffer cmd = it->first;
-        VkFence fence = it->second;
-        VkResult st = vkGetFenceStatus(device, fence);
-        if (st == VK_SUCCESS) {
-            // free command buffer and destroy fence
-            vkFreeCommandBuffers(device, commandPool, 1, &cmd);
-            vkDestroyFence(device, fence, nullptr);
-            it = pendingCommandBuffers.erase(it);
-        } else if (st == VK_ERROR_DEVICE_LOST) {
-            // Something bad happened; free resources conservatively
-            vkFreeCommandBuffers(device, commandPool, 1, &cmd);
-            vkDestroyFence(device, fence, nullptr);
-            it = pendingCommandBuffers.erase(it);
-        } else {
-            ++it;
+    // Process deferred-destruction callbacks first to avoid inspecting fences that
+    // we might destroy below. For callbacks registered with a specific fence,
+    // execute them when that fence signals. For callbacks registered with
+    // VK_NULL_HANDLE (wait-for-all), execute them only when there are no pending
+    // command buffers remaining.
+    {
+        std::lock_guard<std::mutex> dd(deferredDestroyMutex);
+        for (auto it = deferredDestroys.begin(); it != deferredDestroys.end(); ) {
+            VkFence f = it->first;
+            auto fn = it->second; // copy the function so we can call it safely
+            bool canRun = false;
+            if (f == VK_NULL_HANDLE) {
+                // run when no pending command buffers are outstanding
+                std::lock_guard<std::mutex> lk(pendingCmdMutex);
+                if (pendingCommandBuffers.empty()) canRun = true;
+            } else {
+                VkResult st = vkGetFenceStatus(device, f);
+                if (st == VK_SUCCESS || st == VK_ERROR_DEVICE_LOST) canRun = true;
+            }
+            if (canRun) {
+                try {
+                    fn();
+                } catch (...) {
+                    // swallow exceptions from destroy callbacks
+                }
+                it = deferredDestroys.erase(it);
+            } else ++it;
         }
     }
 
-    // Then process deferred-destruction callbacks. For callbacks registered with a specific fence,
-    // execute them when that fence signals. For callbacks registered with VK_NULL_HANDLE (wait-for-all),
-    // execute them only when there are no pending command buffers remaining.
-    std::lock_guard<std::mutex> dd(deferredDestroyMutex);
-    for (auto it = deferredDestroys.begin(); it != deferredDestroys.end(); ) {
-        VkFence f = it->first;
-        auto fn = it->second; // copy the function so we can call it safely
-        bool canRun = false;
-        if (f == VK_NULL_HANDLE) {
-            // run when no pending command buffers are outstanding
-            if (pendingCommandBuffers.empty()) canRun = true;
-        } else {
-            VkResult st = vkGetFenceStatus(device, f);
-            if (st == VK_SUCCESS || st == VK_ERROR_DEVICE_LOST) canRun = true;
-        }
-        if (canRun) {
-            try {
-                fn();
-            } catch (...) {
-                // swallow exceptions from destroy callbacks
+    // Now process pending command buffers and free their command buffers when fences signal
+    {
+        std::lock_guard<std::mutex> lk(pendingCmdMutex);
+        for (auto it = pendingCommandBuffers.begin(); it != pendingCommandBuffers.end(); ) {
+            VkCommandBuffer cmd = it->first;
+            VkFence fence = it->second;
+            VkResult st = vkGetFenceStatus(device, fence);
+            if (st == VK_SUCCESS) {
+                // free command buffer and destroy fence (remove from manager first)
+                vkFreeCommandBuffers(device, commandPool, 1, &cmd);
+                resources.removeFence(fence);
+                vkDestroyFence(device, fence, nullptr);
+                it = pendingCommandBuffers.erase(it);
+            } else if (st == VK_ERROR_DEVICE_LOST) {
+                // Something bad happened; free resources conservatively
+                vkFreeCommandBuffers(device, commandPool, 1, &cmd);
+                resources.removeFence(fence);
+                vkDestroyFence(device, fence, nullptr);
+                it = pendingCommandBuffers.erase(it);
+            } else {
+                ++it;
             }
-            it = deferredDestroys.erase(it);
-        } else ++it;
+        }
+    }
+}
+
+void VulkanApp::waitForAllPendingCommandBuffers() {
+    std::vector<VkFence> fences;
+    {
+        std::lock_guard<std::mutex> lk(pendingCmdMutex);
+        fences.reserve(pendingCommandBuffers.size());
+        for (auto &p : pendingCommandBuffers) fences.push_back(p.second);
+    }
+    if (!fences.empty()) {
+        // Wait indefinitely until all tracked fences signal
+        vkWaitForFences(device, static_cast<uint32_t>(fences.size()), fences.data(), VK_TRUE, std::numeric_limits<uint64_t>::max());
+        // Clear out any completed entries
+        processPendingCommandBuffers();
     }
 }
 
@@ -892,15 +982,20 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
     if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
         throw std::runtime_error("failed to create fence for async submit");
     }
+    // Register fence for async submit
+    resources.addFence(fence, "VulkanApp::submitCommandBufferAsync: fence");
 
     VkSemaphore semaphore = VK_NULL_HANDLE;
     if (outSemaphore) {
         VkSemaphoreCreateInfo semInfo{};
         semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         if (vkCreateSemaphore(device, &semInfo, nullptr, &semaphore) != VK_SUCCESS) {
+            resources.removeFence(fence);
             vkDestroyFence(device, fence, nullptr);
             throw std::runtime_error("failed to create semaphore for async submit");
         }
+        // Register semaphore for async submit
+        resources.addSemaphore(semaphore, "VulkanApp::submitCommandBufferAsync: semaphore");
     }
 
     VkSubmitInfo submitInfo{};
@@ -913,7 +1008,11 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
     }
 
     if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence) != VK_SUCCESS) {
-        if (semaphore != VK_NULL_HANDLE) vkDestroySemaphore(device, semaphore, nullptr);
+        if (semaphore != VK_NULL_HANDLE) {
+            resources.removeSemaphore(semaphore);
+            vkDestroySemaphore(device, semaphore, nullptr);
+        }
+        resources.removeFence(fence);
         vkDestroyFence(device, fence, nullptr);
         throw std::runtime_error("failed to submit async command buffer");
     }
@@ -970,6 +1069,67 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     } else {
         throw std::invalid_argument("unsupported layout transition!");
+    }
+
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        sourceStage, destinationStage,
+        0,
+        0, nullptr,
+        0, nullptr,
+        1, &barrier
+    );
+
+    endSingleTimeCommands(commandBuffer);
+}
+
+void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount) {
+    if (image == VK_NULL_HANDLE) throw std::runtime_error("transitionImageLayoutLayer called with VK_NULL_HANDLE image");
+    VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = mipLevels;
+    barrier.subresourceRange.baseArrayLayer = baseArrayLayer;
+    barrier.subresourceRange.layerCount = layerCount;
+
+    VkPipelineStageFlags sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    VkPipelineStageFlags destinationStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+
+    // Common transitions supported here — add cases as needed.
+    if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_GENERAL) {
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        destinationStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    } else if (oldLayout == VK_IMAGE_LAYOUT_GENERAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        sourceStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    } else {
+        // Fallback conservative barrier
+        barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        sourceStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        destinationStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
     }
 
     vkCmdPipelineBarrier(
@@ -1075,6 +1235,9 @@ void VulkanApp::createSyncObjects() {
             vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS) {
             throw std::runtime_error("failed to create semaphores for image " + std::to_string(i));
         }
+        // Register semaphores
+        resources.addSemaphore(imageAvailableSemaphores[i], "VulkanApp: imageAvailableSemaphore");
+        resources.addSemaphore(renderFinishedSemaphores[i], "VulkanApp: renderFinishedSemaphore");
     }
     
     // Fences per frame-in-flight
@@ -1083,6 +1246,8 @@ void VulkanApp::createSyncObjects() {
         if (vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
             throw std::runtime_error("failed to create fence for frame " + std::to_string(i));
         }
+        // Register fence
+        resources.addFence(inFlightFences[i], "VulkanApp: inFlightFence");
     }
 
     // imagesInFlight tracks which fence is using each swapchain image (initialized null)
@@ -1159,10 +1324,12 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
     if (vkCreateImage(device, &imageInfo, nullptr, &textureImage.image) != VK_SUCCESS) {
-        vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
-        vkFreeMemory(device, stagingBuffer.memory, nullptr);
+        // Rely on VulkanResourceManager to destroy tracked staging buffer/memory later
+        stagingBuffer.buffer = VK_NULL_HANDLE;
+        stagingBuffer.memory = VK_NULL_HANDLE;
         throw std::runtime_error("failed to create texture array image!");
     }
+    printf("[VulkanApp] createImage(array): image=%p layers=%u mipLevels=%u format=%d\n", (void*)textureImage.image, (unsigned)imageInfo.arrayLayers, textureImage.mipLevels, (int)chosenFormat);
 
     VkMemoryRequirements memRequirements;
     vkGetImageMemoryRequirements(device, textureImage.image, &memRequirements);
@@ -1173,9 +1340,10 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
     allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     if (vkAllocateMemory(device, &allocInfo, nullptr, &textureImage.memory) != VK_SUCCESS) {
-        vkDestroyImage(device, textureImage.image, nullptr);
-        vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
-        vkFreeMemory(device, stagingBuffer.memory, nullptr);
+        // Rely on VulkanResourceManager to destroy tracked resources later
+        textureImage.image = VK_NULL_HANDLE;
+        stagingBuffer.buffer = VK_NULL_HANDLE;
+        stagingBuffer.memory = VK_NULL_HANDLE;
         throw std::runtime_error("failed to allocate texture image memory!");
     }
 
@@ -1234,8 +1402,9 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
     // generate mipmaps for the array texture (per-layer)
     generateMipmaps(textureImage.image, chosenFormat, texWidth, texHeight, textureImage.mipLevels, layerCount);
 
-    vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
-    vkFreeMemory(device, stagingBuffer.memory, nullptr);
+    // Defer destruction to VulkanResourceManager; clear local handles
+    stagingBuffer.buffer = VK_NULL_HANDLE;
+    stagingBuffer.memory = VK_NULL_HANDLE;
 
     // create view for array texture
     VkImageViewCreateInfo viewInfo{};
@@ -1252,6 +1421,9 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
     if (vkCreateImageView(device, &viewInfo, nullptr, &textureImage.view) != VK_SUCCESS) {
         throw std::runtime_error("failed to create texture image view (array)!");
     }
+    printf("[VulkanApp] createImageView(array): view=%p image=%p\n", (void*)textureImage.view, (void*)textureImage.image);
+    // Register image view for final-sweep safety
+    resources.addImageView(textureImage.view, "VulkanApp::createTextureImageArray view");
 
     return textureImage;
 }
@@ -1272,6 +1444,9 @@ void VulkanApp::createTextureImageView(TextureImage &textureImage) {
     if (vkCreateImageView(device, &viewInfo, nullptr, &textureImage.view) != VK_SUCCESS) {
         throw std::runtime_error("failed to create texture image view!");
     }
+    printf("[VulkanApp] createImageView: view=%p image=%p\n", (void*)textureImage.view, (void*)textureImage.image);
+    // Register image view
+    resources.addImageView(textureImage.view, "VulkanApp: textureImage.view");
 }
 
 VkSampler VulkanApp::createTextureSampler(uint32_t mipLevels) {
@@ -1305,6 +1480,9 @@ VkSampler VulkanApp::createTextureSampler(uint32_t mipLevels) {
     if (vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
         throw std::runtime_error("failed to create texture sampler!");
     }
+    printf("[VulkanApp] createSampler: sampler=%p mipLevels=%u\n", (void*)textureSampler, (unsigned)mipLevels);
+    // Register sampler in resource registry for final-sweep safety
+    resources.addSampler(textureSampler, "VulkanApp: textureSampler");
     return textureSampler;
 }
 
@@ -1393,6 +1571,9 @@ void VulkanApp::createDescriptorSetLayout() {
         throw std::runtime_error("failed to create descriptor set layout!");
     }
 
+    // Register the main descriptor set layout for inspection/cleanup
+    resources.addDescriptorSetLayout(descriptorSetLayout, "VulkanApp: descriptorSetLayout");
+
     // Allocate the main UBO/sampler/materials descriptor set and store it
     mainDescriptorSet = createDescriptorSet(descriptorSetLayout);
 
@@ -1413,6 +1594,9 @@ void VulkanApp::createDescriptorSetLayout() {
     if (vkCreateDescriptorSetLayout(device, &materialLayoutInfo, nullptr, &materialDescriptorSetLayout) != VK_SUCCESS) {
         throw std::runtime_error("failed to create material descriptor set layout!");
     }
+
+    // Register material descriptor set layout
+    resources.addDescriptorSetLayout(materialDescriptorSetLayout, "VulkanApp::createDescriptorSetLayout materialDescriptorSetLayout");
 
     // If we later add a normal map sampler (binding 2), extend bindings dynamically when required by the app.
 }
@@ -1453,6 +1637,9 @@ void VulkanApp::createDepthResources() {
     }
 
     vkBindImageMemory(device, depthImage, depthImageMemory, 0);
+    // Register depth image and its memory
+    resources.addImage(depthImage, "VulkanApp: depthImage");
+    resources.addDeviceMemory(depthImageMemory, "VulkanApp: depthImageMemory");
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -1469,7 +1656,8 @@ void VulkanApp::createDepthResources() {
         throw std::runtime_error("failed to create depth image view!");
     }
 
-    fprintf(stderr, "[VulkanApp] depthImage (swapchain) = %p\n", (void*)depthImage);
+    resources.addImageView(depthImageView, "VulkanApp: depthImageView");
+
 
     // transition depth image to DEPTH_STENCIL_ATTACHMENT_OPTIMAL
     VkCommandBuffer commandBuffer = beginSingleTimeCommands();
@@ -1526,6 +1714,8 @@ void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("failed to create descriptor pool!");
     }
+    // Register default descriptor pool for app-managed allocations
+    resources.addDescriptorPool(descriptorPool, "VulkanApp: descriptorPool");
 }
 
 VkDescriptorSet VulkanApp::createDescriptorSet(VkDescriptorSetLayout layout) {
@@ -1545,6 +1735,8 @@ VkDescriptorSet VulkanApp::createDescriptorSet(VkDescriptorSetLayout layout) {
         fprintf(stderr, "[VulkanApp::createDescriptorSet] vkAllocateDescriptorSets failed for layout=%p\n", (void*)layout);
         throw std::runtime_error("failed to allocate descriptor set!");
     }
+    // Register descriptor set so manager can track it for inspection
+    resources.addDescriptorSet(descriptorSet, "VulkanApp: descriptorSet");
     return descriptorSet;
 }
 
@@ -1590,6 +1782,8 @@ VkShaderModule VulkanApp::createShaderModule(const std::vector<char>& code) {
     if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
         throw std::runtime_error("failed to create shader module!");
     }
+    // Track shader module creation
+    resources.addShaderModule(shaderModule, "VulkanApp: shaderModule");
     return shaderModule;
 }
 
@@ -1689,12 +1883,7 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
     pipelineLayoutInfo.pSetLayouts = setLayouts.empty() ? nullptr : setLayouts.data();
     // Diagnostic: print provided set layouts for easier debugging of descriptor mismatches
-    if (!setLayouts.empty()) {
-        fprintf(stderr, "[createGraphicsPipeline] setLayouts count=%u\n", static_cast<uint32_t>(setLayouts.size()));
-        for (size_t i = 0; i < setLayouts.size(); ++i) {
-            fprintf(stderr, "  set[%zu] = %p\n", i, (void*)setLayouts[i]);
-        }
-    } else {
+    if (setLayouts.empty()) {
         fprintf(stderr, "[createGraphicsPipeline] setLayouts count=0\n");
     }
     if (pushConstantRange) {
@@ -1709,6 +1898,8 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
         throw std::runtime_error("failed to create pipeline layout!");
     }
+    // Track pipeline layout for cleanup
+    resources.addPipelineLayout(pipelineLayout, "VulkanApp: pipelineLayout");
 
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -1753,7 +1944,9 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create graphics pipeline!");
     }
-    std::cerr << "graphics pipeline created\n";
+    // Track pipeline for cleanup
+    resources.addPipeline(graphicsPipeline, "VulkanApp: graphicsPipeline");
+    std::cout << "graphics pipeline created\n";
     registeredPipelines.push_back(graphicsPipeline);
     return {graphicsPipeline, pipelineLayout};
 }
@@ -1782,7 +1975,6 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer.buffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to create buffer!");
     }
-
     VkMemoryRequirements memRequirements;
     vkGetBufferMemoryRequirements(device, buffer.buffer, &memRequirements);
 
@@ -1796,6 +1988,9 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     }
 
     vkBindBufferMemory(device, buffer.buffer, buffer.memory, 0);
+    // Register buffer and its memory so the VulkanResourceManager tracks them
+    resources.addBuffer(buffer.buffer, "VulkanApp: buffer.buffer");
+    resources.addDeviceMemory(buffer.memory, "VulkanApp: buffer.memory");
     return buffer;
 }
 
@@ -1840,11 +2035,17 @@ Buffer VulkanApp::createVertexBuffer(const std::vector<Vertex> &vertices) {
     vkCmdCopyBuffer(cmd, stagingBuffer.buffer, vertexBuffer.buffer, 1, &copyRegion);
     endSingleTimeCommands(cmd);
     
-    // Clean up staging buffer
-    vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
-    vkFreeMemory(device, stagingBuffer.memory, nullptr);
+    // Defer actual destruction to VulkanResourceManager; clear local handles
+    stagingBuffer.buffer = VK_NULL_HANDLE;
+    stagingBuffer.memory = VK_NULL_HANDLE;
     
     return vertexBuffer;
+}
+
+bool VulkanApp::isResourceRegistered(uintptr_t handle) const {
+    if (handle == 0) return false;
+    auto e = resources.find(handle);
+    return e.has_value();
 }
 
 Buffer VulkanApp::createIndexBuffer(const std::vector<uint> &indices) {
@@ -1872,9 +2073,9 @@ Buffer VulkanApp::createIndexBuffer(const std::vector<uint> &indices) {
     vkCmdCopyBuffer(cmd, stagingBuffer.buffer, indexBuffer.buffer, 1, &copyRegion);
     endSingleTimeCommands(cmd);
     
-    // Clean up staging buffer
-    vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
-    vkFreeMemory(device, stagingBuffer.memory, nullptr);
+    // Defer actual destruction to VulkanResourceManager; clear local handles
+    stagingBuffer.buffer = VK_NULL_HANDLE;
+    stagingBuffer.memory = VK_NULL_HANDLE;
     
     return indexBuffer;
 }
@@ -1902,9 +2103,9 @@ Buffer VulkanApp::createDeviceLocalBuffer(const void* data, VkDeviceSize size, V
     vkCmdCopyBuffer(cmd, stagingBuffer.buffer, gpuBuffer.buffer, 1, &copyRegion);
     endSingleTimeCommands(cmd);
     
-    // Clean up staging buffer
-    vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
-    vkFreeMemory(device, stagingBuffer.memory, nullptr);
+    // Defer actual destruction to VulkanResourceManager; clear local handles
+    stagingBuffer.buffer = VK_NULL_HANDLE;
+    stagingBuffer.memory = VK_NULL_HANDLE;
     
     return gpuBuffer;
 }
@@ -2113,7 +2314,8 @@ void VulkanApp::drawFrame() {
         VkFence f = it->second;
         VkResult st = vkGetFenceStatus(device, f);
         if (st == VK_SUCCESS) {
-            // frame fence signaled -> safe to destroy semaphore
+            // frame fence signaled -> safe to destroy semaphore (unregister first)
+            resources.removeSemaphore(s);
             vkDestroySemaphore(device, s, nullptr);
             it = semaphoresPendingDestroy.erase(it);
         } else {
@@ -2150,6 +2352,7 @@ void VulkanApp::drawFrame() {
         VkSemaphore s = it->first; VkFence f = it->second;
         VkResult st = vkGetFenceStatus(device, f);
         if (st == VK_SUCCESS) {
+            resources.removeSemaphore(s);
             vkDestroySemaphore(device, s, nullptr);
             it = semaphoresPendingDestroy.erase(it);
         } else ++it;
@@ -2166,26 +2369,39 @@ void VulkanApp::drawFrame() {
 void VulkanApp::cleanupSwapchain() {
     // destroy framebuffers
     for (auto fb : swapchainFramebuffers) {
-        if (fb != VK_NULL_HANDLE) vkDestroyFramebuffer(device, fb, nullptr);
+        if (fb != VK_NULL_HANDLE) {
+            resources.removeFramebuffer(fb);
+            vkDestroyFramebuffer(device, fb, nullptr);
+        }
     }
     swapchainFramebuffers.clear();
 
-    // destroy image views
-    for (auto iv : swapchainImageViews) {
-        if (iv != VK_NULL_HANDLE) vkDestroyImageView(device, iv, nullptr);
+    // Defer destruction to VulkanResourceManager; clear local handles for swapchain image views
+    // Explicitly unregister and destroy swapchain image views now to ensure they're
+    // released before device teardown (avoid manager ordering surprises).
+    for (auto &iv : swapchainImageViews) {
+        if (iv != VK_NULL_HANDLE) {
+            resources.removeImageView(iv);
+            vkDestroyImageView(device, iv, nullptr);
+            iv = VK_NULL_HANDLE;
+        }
     }
     swapchainImageViews.clear();
 
     // destroy depth resources
+    // Unregister and destroy depth resources now
     if (depthImageView != VK_NULL_HANDLE) {
+        resources.removeImageView(depthImageView);
         vkDestroyImageView(device, depthImageView, nullptr);
         depthImageView = VK_NULL_HANDLE;
     }
     if (depthImage != VK_NULL_HANDLE) {
+        resources.removeImage(depthImage);
         vkDestroyImage(device, depthImage, nullptr);
         depthImage = VK_NULL_HANDLE;
     }
     if (depthImageMemory != VK_NULL_HANDLE) {
+        resources.removeDeviceMemory(depthImageMemory);
         vkFreeMemory(device, depthImageMemory, nullptr);
         depthImageMemory = VK_NULL_HANDLE;
     }
@@ -2551,6 +2767,47 @@ void VulkanApp::run() {
     initWindow();
     initVulkan();
     setup();
+
+    // Post-setup resource dump: many objects (pipelines, descriptor sets)
+    // are created by `setup()`. Dump counts again so we can verify
+    // everything (including imgui/backend-registered items) is tracked.
+    {
+        auto dm = resources.getDeviceMemoryMap();
+        auto imgs = resources.getImageMap();
+        auto ivs = resources.getImageViewMap();
+        auto sams = resources.getSamplerMap();
+        auto fbs = resources.getFramebufferMap();
+        auto bufs = resources.getBufferMap();
+        auto pipes = resources.getPipelineMap();
+        auto playouts = resources.getPipelineLayoutMap();
+        auto shmods = resources.getShaderModuleMap();
+        auto dPools = resources.getDescriptorPoolMap();
+        auto dSets = resources.getDescriptorSetMap();
+        auto dLayouts = resources.getDescriptorSetLayoutMap();
+        auto rps = resources.getRenderPassMap();
+        auto sems = resources.getSemaphoreMap();
+        auto fns = resources.getFenceMap();
+        auto cps = resources.getCommandPoolMap();
+
+        size_t total = dm.size() + imgs.size() + ivs.size() + sams.size() + fbs.size() + bufs.size() + pipes.size() + playouts.size() + shmods.size() + dPools.size() + dSets.size() + dLayouts.size() + rps.size() + sems.size() + fns.size() + cps.size();
+        std::cerr << "[RESOURCE_DUMP][post-setup] total=" << total << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] DeviceMemories: " << dm.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] Images: " << imgs.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] ImageViews: " << ivs.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] Samplers: " << sams.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] Framebuffers: " << fbs.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] Buffers: " << bufs.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] Pipelines: " << pipes.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] PipelineLayouts: " << playouts.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] ShaderModules: " << shmods.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] DescriptorPools: " << dPools.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] DescriptorSets: " << dSets.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] DescriptorSetLayouts: " << dLayouts.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] RenderPasses: " << rps.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] Semaphores: " << sems.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] Fences: " << fns.size() << std::endl;
+        std::cerr << "[RESOURCE_DUMP][post-setup] CommandPools: " << cps.size() << std::endl;
+    }
 
     mainLoop();
     cleanup();

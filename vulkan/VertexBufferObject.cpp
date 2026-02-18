@@ -2,8 +2,9 @@
 #include "VertexBufferObject.hpp"
 
 void VertexBufferObject::destroy(VkDevice device) {
-    if (vertexBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, vertexBuffer.buffer, nullptr);
-    if (vertexBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(device, vertexBuffer.memory, nullptr);
-    if (indexBuffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, indexBuffer.buffer, nullptr);
-    if (indexBuffer.memory != VK_NULL_HANDLE) vkFreeMemory(device, indexBuffer.memory, nullptr);
+    // Rely on VulkanResourceManager to destroy tracked buffers/memory later
+    vertexBuffer.buffer = VK_NULL_HANDLE;
+    vertexBuffer.memory = VK_NULL_HANDLE;
+    indexBuffer.buffer = VK_NULL_HANDLE;
+    indexBuffer.memory = VK_NULL_HANDLE;
 }

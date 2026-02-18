@@ -37,6 +37,8 @@ void SolidRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create solid image!");
         }
+        // Debug: print created image handle for leak tracing
+        fprintf(stderr, "[SolidRenderer] createImage: image=%p format=%d usage=0x%x\n", (void*)image, (int)format, usage);
 
         VkMemoryRequirements memReq;
         vkGetImageMemoryRequirements(device, image, &memReq);
@@ -51,6 +53,9 @@ void SolidRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         }
 
         vkBindImageMemory(device, image, memory, 0);
+        // Register image and memory
+        app->resources.addImage(image, "SolidRenderer: image");
+        app->resources.addDeviceMemory(memory, "SolidRenderer: memory");
 
         VkImageViewCreateInfo viewInfo{};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -66,6 +71,8 @@ void SolidRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         if (vkCreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create solid image view!");
         }
+        fprintf(stderr, "[SolidRenderer] createImageView: view=%p image=%p format=%d\n", (void*)view, (void*)image, (int)format);
+        app->resources.addImageView(view, "SolidRenderer: view");
     };
 
     // Create simple render pass for solid offscreen (color+depth)
@@ -110,6 +117,8 @@ void SolidRenderer::createRenderTargets(uint32_t width, uint32_t height) {
     if (vkCreateRenderPass(device, &rpInfo, nullptr, &solidRenderPass) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create solid render pass!");
     }
+    // Register solid render pass
+    app->resources.addRenderPass(solidRenderPass, "SolidRenderer: solidRenderPass");
 
     for (int i = 0; i < 2; ++i) {
         createImage(app->getSwapchainImageFormat(), VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
@@ -129,46 +138,24 @@ void SolidRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         if (vkCreateFramebuffer(device, &fbInfo, nullptr, &solidFramebuffers[i]) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create solid framebuffer!");
         }
+        app->resources.addFramebuffer(solidFramebuffers[i], "SolidRenderer: framebuffer");
     }
 }
 
 void SolidRenderer::destroyRenderTargets() {
     if (!app) return;
     VkDevice device = app->getDevice();
+    // Clear local handles; destruction is centralized in VulkanResourceManager
     for (int i = 0; i < 2; ++i) {
-        if (solidFramebuffers[i] != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(device, solidFramebuffers[i], nullptr);
-            solidFramebuffers[i] = VK_NULL_HANDLE;
-        }
-        if (solidColorImageViews[i] != VK_NULL_HANDLE) {
-            vkDestroyImageView(device, solidColorImageViews[i], nullptr);
-            solidColorImageViews[i] = VK_NULL_HANDLE;
-        }
-        if (solidColorImages[i] != VK_NULL_HANDLE) {
-            vkDestroyImage(device, solidColorImages[i], nullptr);
-            solidColorImages[i] = VK_NULL_HANDLE;
-        }
-        if (solidColorMemories[i] != VK_NULL_HANDLE) {
-            vkFreeMemory(device, solidColorMemories[i], nullptr);
-            solidColorMemories[i] = VK_NULL_HANDLE;
-        }
-        if (solidDepthImageViews[i] != VK_NULL_HANDLE) {
-            vkDestroyImageView(device, solidDepthImageViews[i], nullptr);
-            solidDepthImageViews[i] = VK_NULL_HANDLE;
-        }
-        if (solidDepthImages[i] != VK_NULL_HANDLE) {
-            vkDestroyImage(device, solidDepthImages[i], nullptr);
-            solidDepthImages[i] = VK_NULL_HANDLE;
-        }
-        if (solidDepthMemories[i] != VK_NULL_HANDLE) {
-            vkFreeMemory(device, solidDepthMemories[i], nullptr);
-            solidDepthMemories[i] = VK_NULL_HANDLE;
-        }
+        solidFramebuffers[i] = VK_NULL_HANDLE;
+        solidColorImageViews[i] = VK_NULL_HANDLE;
+        solidColorImages[i] = VK_NULL_HANDLE;
+        solidColorMemories[i] = VK_NULL_HANDLE;
+        solidDepthImageViews[i] = VK_NULL_HANDLE;
+        solidDepthImages[i] = VK_NULL_HANDLE;
+        solidDepthMemories[i] = VK_NULL_HANDLE;
     }
-    if (solidRenderPass != VK_NULL_HANDLE) {
-        vkDestroyRenderPass(device, solidRenderPass, nullptr);
-        solidRenderPass = VK_NULL_HANDLE;
-    }
+    solidRenderPass = VK_NULL_HANDLE;
 }
 
 void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear) {
@@ -298,11 +285,11 @@ void SolidRenderer::createPipelines() {
     depthPrePassPipeline = depthPipeline;
     depthPrePassPipelineLayout = depthLayout;
 
-    // Destroy shader modules
-    vkDestroyShaderModule(app->getDevice(), teseShader.info.module, nullptr);
-    vkDestroyShaderModule(app->getDevice(), tescShader.info.module, nullptr);
-    vkDestroyShaderModule(app->getDevice(), fragmentShader.info.module, nullptr);
-    vkDestroyShaderModule(app->getDevice(), vertexShader.info.module, nullptr);
+    // Clear local shader module references; destruction handled by VulkanResourceManager
+    teseShader.info.module = VK_NULL_HANDLE;
+    tescShader.info.module = VK_NULL_HANDLE;
+    fragmentShader.info.module = VK_NULL_HANDLE;
+    vertexShader.info.module = VK_NULL_HANDLE;
 }
 
 void SolidRenderer::depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool) {
@@ -408,30 +395,14 @@ void SolidRenderer::draw(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDe
 
 void SolidRenderer::cleanup() {
     if (!app) return;
-    if (graphicsPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(app->getDevice(), graphicsPipeline, nullptr);
-        graphicsPipeline = VK_NULL_HANDLE;
-    }
-    if (graphicsPipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(app->getDevice(), graphicsPipelineLayout, nullptr);
-        graphicsPipelineLayout = VK_NULL_HANDLE;
-    }
-    if (graphicsPipelineWire != VK_NULL_HANDLE) {
-        vkDestroyPipeline(app->getDevice(), graphicsPipelineWire, nullptr);
-        graphicsPipelineWire = VK_NULL_HANDLE;
-    }
-    if (graphicsPipelineWireLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(app->getDevice(), graphicsPipelineWireLayout, nullptr);
-        graphicsPipelineWireLayout = VK_NULL_HANDLE;
-    }
-    if (depthPrePassPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(app->getDevice(), depthPrePassPipeline, nullptr);
-        depthPrePassPipeline = VK_NULL_HANDLE;
-    }
-    if (depthPrePassPipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(app->getDevice(), depthPrePassPipelineLayout, nullptr);
-        depthPrePassPipelineLayout = VK_NULL_HANDLE;
-    }
+    // Ensure render targets (images, views, framebuffers) are released
+    destroyRenderTargets();
+    graphicsPipeline = VK_NULL_HANDLE;
+    graphicsPipelineLayout = VK_NULL_HANDLE;
+    graphicsPipelineWire = VK_NULL_HANDLE;
+    graphicsPipelineWireLayout = VK_NULL_HANDLE;
+    depthPrePassPipeline = VK_NULL_HANDLE;
+    depthPrePassPipelineLayout = VK_NULL_HANDLE;
 
     // Remove meshes
     for (auto &entry : solidChunks) {

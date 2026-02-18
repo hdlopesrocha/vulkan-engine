@@ -21,11 +21,11 @@ void MaterialManager::allocate(size_t count, VulkanApp* app) {
 
     // Destroy previous buffer if size differs
     if (materialBuffer.buffer != VK_NULL_HANDLE && materialBufferSize != newSize) {
-        vkDestroyBuffer(app->getDevice(), materialBuffer.buffer, nullptr);
+        // Defer actual destruction to VulkanResourceManager; clear local handle
         materialBuffer.buffer = VK_NULL_HANDLE;
     }
     if (materialBuffer.memory != VK_NULL_HANDLE && materialBuffer.buffer == VK_NULL_HANDLE) {
-        vkFreeMemory(app->getDevice(), materialBuffer.memory, nullptr);
+        // Defer actual freeing to VulkanResourceManager; clear local handle
         materialBuffer.memory = VK_NULL_HANDLE;
     }
 
@@ -63,14 +63,9 @@ void MaterialManager::update(size_t index, const MaterialProperties& mat, Vulkan
 
 void MaterialManager::destroy(VulkanApp* app) {
     if (!app) return;
-    if (materialBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), materialBuffer.buffer, nullptr);
-        materialBuffer.buffer = VK_NULL_HANDLE;
-    }
-    if (materialBuffer.memory != VK_NULL_HANDLE) {
-        vkFreeMemory(app->getDevice(), materialBuffer.memory, nullptr);
-        materialBuffer.memory = VK_NULL_HANDLE;
-    }
+    // Defer destruction/freeing to VulkanResourceManager; clear local handles
+    materialBuffer.buffer = VK_NULL_HANDLE;
+    materialBuffer.memory = VK_NULL_HANDLE;
     materialCount = 0;
     materialBufferSize = 0;
     cpuCache.clear();

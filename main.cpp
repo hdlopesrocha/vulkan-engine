@@ -34,7 +34,7 @@
 #include "widgets/DebugWidget.hpp"
 #include "widgets/ShadowMapWidget.hpp"
 #include "widgets/LightWidget.hpp"
-#include "widgets/VulkanObjectsWidget.hpp"
+#include "widgets/VulkanResourcesManagerWidget.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
 #include "widgets/OctreeExplorerWidget.hpp"
 #include "utils/MainSceneLoader.hpp"
@@ -90,7 +90,7 @@ public:
     std::shared_ptr<DebugWidget> debugWidget;
     std::shared_ptr<ShadowMapWidget> shadowWidget;
     std::shared_ptr<LightWidget> lightWidget;
-    std::shared_ptr<VulkanObjectsWidget> vulkanObjectsWidget;
+    std::shared_ptr<VulkanResourcesManagerWidget> vulkanResourcesManagerWidget;
     std::shared_ptr<VegetationAtlasEditor> vegetationAtlasEditor;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
     WidgetManager widgetManager;
@@ -223,7 +223,7 @@ public:
         debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &cubeCount);
         shadowWidget = std::make_shared<ShadowMapWidget>(sceneRenderer ? sceneRenderer->shadowMapper.get() : nullptr, &shadowParams);
         lightWidget = std::make_shared<LightWidget>(&light);
-        vulkanObjectsWidget = std::make_shared<VulkanObjectsWidget>(this);
+        vulkanResourcesManagerWidget = std::make_shared<VulkanResourcesManagerWidget>(&resources, this);
 
         vegetationTextureArrayManager.allocate(3, 512, 512);
         vegetationTextureArrayManager.initialize(this);
@@ -269,7 +269,7 @@ public:
         widgetManager.addWidget(skyWidget);
         widgetManager.addWidget(waterWidget);
         widgetManager.addWidget(renderPassDebugWidget);
-        widgetManager.addWidget(vulkanObjectsWidget);
+        widgetManager.addWidget(vulkanResourcesManagerWidget);
         widgetManager.addWidget(vegetationAtlasEditor);
         widgetManager.addWidget(billboardWidget);
         widgetManager.addWidget(billboardCreator);
@@ -585,12 +585,11 @@ public:
         if (sceneRenderer) {
             sceneRenderer->cleanup();
         }
-        if (textureMixer) {
-            textureMixer->cleanup();
-        }
-        // Destroy global managers that own Vulkan resources so they free GPU objects
-        textureArrayManager.destroy(this);
-        materialManager.destroy(this);
+        // NOTE: Vulkan-owned objects for global managers are now cleaned up by
+        // `VulkanResourceManager::cleanup(device)`. Avoid calling manager-level
+        // destroy/cleanup routines here that perform Vulkan destroys to prevent
+        // double-destruction ordering issues. If a manager needs CPU-only
+        // cleanup, add a dedicated method and call it here.
     }
 
     void onSwapchainResized(uint32_t width, uint32_t height) override {

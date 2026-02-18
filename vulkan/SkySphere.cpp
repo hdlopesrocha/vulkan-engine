@@ -12,12 +12,11 @@ void SkySphere::init(SkySettings& settings,
     skySettings = &settings;
     VkDeviceSize sbSize = sizeof(SkyUniform);
 
+    // Defer actual destruction to VulkanResourceManager; clear local handles
     if (skyBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), skyBuffer.buffer, nullptr);
         skyBuffer.buffer = VK_NULL_HANDLE;
     }
     if (skyBuffer.memory != VK_NULL_HANDLE) {
-        vkFreeMemory(app->getDevice(), skyBuffer.memory, nullptr);
         skyBuffer.memory = VK_NULL_HANDLE;
     }
     skyBuffer = app->createBuffer(sbSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -76,12 +75,7 @@ void SkySphere::update() {
 }
 
 void SkySphere::cleanup() {
-    if (skyBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(app->getDevice(), skyBuffer.buffer, nullptr);
-        skyBuffer.buffer = VK_NULL_HANDLE;
-    }
-    if (skyBuffer.memory != VK_NULL_HANDLE) {
-        vkFreeMemory(app->getDevice(), skyBuffer.memory, nullptr);
-        skyBuffer.memory = VK_NULL_HANDLE;
-    }
+    // Clear local handles; VulkanResourceManager will perform destruction
+    skyBuffer.buffer = VK_NULL_HANDLE;
+    skyBuffer.memory = VK_NULL_HANDLE;
 }

@@ -39,25 +39,13 @@ void VegetationRenderer::cleanup() {
     for (NodeID id : idsToDestroy) destroyInstanceBuffer(id);
     chunkBuffers.clear();
     chunkInstanceCounts.clear();
-    if (app && vegetationPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(app->getDevice(), vegetationPipeline, nullptr);
-        vegetationPipeline = VK_NULL_HANDLE;
-    }
-    if (app && pipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(app->getDevice(), pipelineLayout, nullptr);
-        pipelineLayout = VK_NULL_HANDLE;
-    }
-    if (app && descriptorSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(app->getDevice(), descriptorSetLayout, nullptr);
-        descriptorSetLayout = VK_NULL_HANDLE;
-    }
-    // Free and reset vegetation descriptor set if present
-    if (app && vegDescriptorSet != VK_NULL_HANDLE) {
-        VkDescriptorSet ds = vegDescriptorSet;
-        vkFreeDescriptorSets(app->getDevice(), app->getDescriptorPool(), 1, &ds);
-        vegDescriptorSet = VK_NULL_HANDLE;
-        vegDescriptorVersion = 0;
-    }
+    // Clear local handles; central manager handles destruction of Vulkan objects
+    vegetationPipeline = VK_NULL_HANDLE;
+    pipelineLayout = VK_NULL_HANDLE;
+    descriptorSetLayout = VK_NULL_HANDLE;
+    // Free and reset vegetation descriptor set handle locally
+    vegDescriptorSet = VK_NULL_HANDLE;
+    vegDescriptorVersion = 0;
     // Unregister allocation listener if set
     if (vegetationTextureArrayManager && vegTextureListenerId != -1) {
         vegetationTextureArrayManager->removeAllocationListener(vegTextureListenerId);
@@ -86,6 +74,7 @@ void VegetationRenderer::onTextureArraysReallocated() {
     if (!app) return;
     if (vegDescriptorSet != VK_NULL_HANDLE) {
         VkDescriptorSet ds = vegDescriptorSet;
+        app->resources.removeDescriptorSet(ds);
         vkFreeDescriptorSets(app->getDevice(), app->getDescriptorPool(), 1, &ds);
         vegDescriptorSet = VK_NULL_HANDLE;
         vegDescriptorVersion = 0;
@@ -112,6 +101,7 @@ bool VegetationRenderer::ensureVegDescriptorSet() {
         // Free previous descriptor set if any
         if (vegDescriptorSet != VK_NULL_HANDLE) {
             VkDescriptorSet ds = vegDescriptorSet;
+            app->resources.removeDescriptorSet(ds);
             vkFreeDescriptorSets(app->getDevice(), app->getDescriptorPool(), 1, &ds);
             vegDescriptorSet = VK_NULL_HANDLE;
             vegDescriptorVersion = 0;
@@ -157,6 +147,8 @@ void VegetationRenderer::createPipelines(VkRenderPass renderPassOverride) {
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create vegetation descriptor set layout");
     }
+    // Register descriptor set layout
+    app->resources.addDescriptorSetLayout(descriptorSetLayout, "VegetationRenderer: descriptorSetLayout");
 
     // Pipeline layout: set 0 = UBO, set 1 = vegetation textures
     std::vector<VkDescriptorSetLayout> setLayouts;
@@ -238,9 +230,11 @@ void VegetationRenderer::createPipelines(VkRenderPass renderPassOverride) {
         fprintf(stderr, "[VEGETATION PIPELINE] Created pipeline=%p layout=%p\n", (void*)vegetationPipeline, (void*)pipelineLayout);
     }
 
-    vkDestroyShaderModule(device, vertShader, nullptr);
-    vkDestroyShaderModule(device, geomShader, nullptr);
-    vkDestroyShaderModule(device, fragShader, nullptr);
+    // Clear local shader module references; destruction handled by VulkanResourceManager
+    vertShader = VK_NULL_HANDLE;
+    geomShader = VK_NULL_HANDLE;
+    fragShader = VK_NULL_HANDLE;
+    // shader modules are tracked by the central manager for final cleanup
 }
 
 void VegetationRenderer::setChunkInstances(NodeID chunkId, const std::vector<glm::vec3>& positions) {
@@ -333,6 +327,9 @@ void VegetationRenderer::createInstanceBuffer(NodeID chunkId, const std::vector<
     VkBufferCreateInfo stagingBufInfo = bufInfo;
     stagingBufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     if (vkCreateBuffer(device, &stagingBufInfo, nullptr, &stagingBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to create staging buffer");
+    fprintf(stderr, "[VegetationRenderer] createBuffer: stagingBuffer=%p size=%llu usage=0x%x\n", (void*)stagingBuffer, (unsigned long long)stagingBufInfo.size, (unsigned)stagingBufInfo.usage);
+    // Register staging buffer with resource manager
+    app->resources.addBuffer(stagingBuffer, "VegetationRenderer: stagingBuffer");
     VkMemoryRequirements stagingMemReq;
     vkGetBufferMemoryRequirements(device, stagingBuffer, &stagingMemReq);
     VkMemoryAllocateInfo stagingAllocInfo{};
@@ -354,6 +351,8 @@ void VegetationRenderer::createInstanceBuffer(NodeID chunkId, const std::vector<
     stagingAllocInfo.memoryTypeIndex = stagingTypeIndex;
     if (vkAllocateMemory(device, &stagingAllocInfo, nullptr, &stagingMemory) != VK_SUCCESS) throw std::runtime_error("Failed to allocate staging buffer memory");
     vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
+    // Register staging memory
+    app->resources.addDeviceMemory(stagingMemory, "VegetationRenderer: stagingMemory");
     void* stagingData;
     vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &stagingData);
     std::memcpy(stagingData, positions.data(), bufferSize);
@@ -362,6 +361,9 @@ void VegetationRenderer::createInstanceBuffer(NodeID chunkId, const std::vector<
     // 2. Create device-local buffer
     bufInfo.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     if (vkCreateBuffer(device, &bufInfo, nullptr, &buffer) != VK_SUCCESS) throw std::runtime_error("Failed to create buffer");
+    fprintf(stderr, "[VegetationRenderer] createBuffer: buffer=%p size=%llu usage=0x%x\n", (void*)buffer, (unsigned long long)bufInfo.size, (unsigned)bufInfo.usage);
+    // Register device-local buffer
+    app->resources.addBuffer(buffer, "VegetationRenderer: buffer");
         // 3. Create indirect buffer (host visible, small)
         VkBufferCreateInfo indirectBufInfo{};
         indirectBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -369,6 +371,9 @@ void VegetationRenderer::createInstanceBuffer(NodeID chunkId, const std::vector<
         indirectBufInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
         indirectBufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         if (vkCreateBuffer(device, &indirectBufInfo, nullptr, &indirectBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to create indirect buffer");
+        fprintf(stderr, "[VegetationRenderer] createBuffer: indirectBuffer=%p size=%llu usage=0x%x\n", (void*)indirectBuffer, (unsigned long long)indirectBufInfo.size, (unsigned)indirectBufInfo.usage);
+        // Register indirect buffer and its memory
+        app->resources.addBuffer(indirectBuffer, "VegetationRenderer: indirectBuffer");
         VkMemoryRequirements indirectMemReq;
         vkGetBufferMemoryRequirements(device, indirectBuffer, &indirectMemReq);
         VkMemoryAllocateInfo indirectAllocInfo{};
@@ -416,6 +421,8 @@ void VegetationRenderer::createInstanceBuffer(NodeID chunkId, const std::vector<
     allocInfo.memoryTypeIndex = deviceLocalTypeIndex;
     if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS) throw std::runtime_error("Failed to allocate buffer memory");
     vkBindBufferMemory(device, buffer, memory, 0);
+    // Register device-local memory
+    app->resources.addDeviceMemory(memory, "VegetationRenderer: memory");
 
     // 3. Copy from staging to device-local buffer
     VkCommandBufferAllocateInfo cmdBufAllocInfo{};
@@ -443,9 +450,9 @@ void VegetationRenderer::createInstanceBuffer(NodeID chunkId, const std::vector<
     vkQueueWaitIdle(graphicsQueue);
     vkFreeCommandBuffers(device, commandPool, 1, &cmdBuf);
 
-    // 4. Cleanup staging buffer
-    vkDestroyBuffer(device, stagingBuffer, nullptr);
-    vkFreeMemory(device, stagingMemory, nullptr);
+    // Defer actual destruction to VulkanResourceManager; clear local handles
+    stagingBuffer = VK_NULL_HANDLE;
+    stagingMemory = VK_NULL_HANDLE;
 
     InstanceBuffer ibuf;
     ibuf.buffer = buffer;
@@ -461,10 +468,11 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId) {
     auto it = chunkBuffers.find(chunkId);
     if (it != chunkBuffers.end()) {
         VkDevice device = app->getDevice();
-        if (it->second.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, it->second.buffer, nullptr);
-        if (it->second.memory != VK_NULL_HANDLE) vkFreeMemory(device, it->second.memory, nullptr);
-        if (it->second.indirectBuffer != VK_NULL_HANDLE) vkDestroyBuffer(device, it->second.indirectBuffer, nullptr);
-        if (it->second.indirectMemory != VK_NULL_HANDLE) vkFreeMemory(device, it->second.indirectMemory, nullptr);
+        // Defer actual destruction to VulkanResourceManager; clear local handles
+        it->second.buffer = VK_NULL_HANDLE;
+        it->second.memory = VK_NULL_HANDLE;
+        it->second.indirectBuffer = VK_NULL_HANDLE;
+        it->second.indirectMemory = VK_NULL_HANDLE;
         chunkBuffers.erase(it);
     }
 }
