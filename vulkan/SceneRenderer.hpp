@@ -40,7 +40,7 @@ public:
     PassUBO<UniformObject> shadowPassUBO;
     PassUBO<WaterParamsGPU> waterPassUBO;
 
-    VulkanApp* app = nullptr;
+    // No stored VulkanApp*: methods accept VulkanApp* when needed
 
     // Texture array manager for albedo/normal/bump arrays (owned by application)
     TextureArrayManager* textureArrayManager = nullptr;
@@ -63,11 +63,14 @@ public:
     SkySettings skySettings;
     SkySettings& getSkySettings() { return skySettings; }
 
-    SceneRenderer(VulkanApp* app_, TextureArrayManager* textureArrayManager_, MaterialManager* materialManager_);
+    SceneRenderer(TextureArrayManager* textureArrayManager_, MaterialManager* materialManager_);
     ~SceneRenderer();
 
-    void createPipelines();
+    void createPipelines(VulkanApp* app);
     void createDescriptorSets(MaterialManager &materialManager, TextureArrayManager &textureArrayManager, VkDescriptorSet &outDescriptorSet, VkDescriptorSet &outShadowPassDescriptorSet, size_t tripleCount);
+
+    // Cleanup and resource destruction (accepts app for Vulkan operations)
+    void cleanup(VulkanApp* app);
 
    
     // Pending change queues (thread-safe)
@@ -107,14 +110,14 @@ public:
         solidChunks.clear();
     }
 
-    void shadowPass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VkDescriptorSet shadowPassDescriptorSet, const UniformObject &uboStatic, bool shadowsEnabled, bool shadowTessellationEnabled);
+    void shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VkDescriptorSet shadowPassDescriptorSet, const UniformObject &uboStatic, bool shadowsEnabled, bool shadowTessellationEnabled);
     void depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool);
-    void skyPass(VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj);
-    void mainPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
+    void skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj);
+    void mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
                   const UniformObject &uboStatic, const WaterParams &waterParams, float waterTime, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent);
-    void waterPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime);
-    void init(VulkanApp* app_, VkDescriptorSet descriptorSet = VK_NULL_HANDLE);
-    void cleanup();
+    void waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime);
+    void init(VulkanApp* app_);
+    // cleanup declared above (accepts VulkanApp*)
 
     // Incremental change handling (called from SolidSpaceChangeHandler callbacks)
     void onNodeCreated(Layer layer, const OctreeNodeData &node);
@@ -122,7 +125,7 @@ public:
     void onNodeErased(Layer layer, const OctreeNodeData &node);
 
     // Process pending node change queues on the main thread
-    void updateMeshForNode(Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom);
+    void updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom);
 
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
     // Process nodes for a single Layer (nodeMap maps NodeID->OctreeNodeData)
@@ -144,11 +147,11 @@ public:
     bool hasModelForNode(Layer layer, NodeID nid) const;
 
     // Create change handlers pre-bound to this renderer
-    SolidSpaceChangeHandler makeSolidSpaceChangeHandler(Scene* scene);
-    LiquidSpaceChangeHandler makeLiquidSpaceChangeHandler(Scene* scene);
+    SolidSpaceChangeHandler makeSolidSpaceChangeHandler(Scene* scene, VulkanApp* app);
+    LiquidSpaceChangeHandler makeLiquidSpaceChangeHandler(Scene* scene, VulkanApp* app);
 
     // Resize offscreen resources when the swapchain changes
-    void onSwapchainResized(uint32_t width, uint32_t height);
+    void onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height);
 
 private:
     // Callbacks stored here so handler references remain valid

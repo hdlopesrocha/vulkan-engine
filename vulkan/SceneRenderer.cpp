@@ -7,16 +7,16 @@
 #include "../math/ContainmentType.hpp"
 #include <mutex>
 
-void SceneRenderer::cleanup() {
-    // Cleanup all sub-renderers to properly destroy GPU resources
-    if (waterRenderer) {
-        waterRenderer->cleanup();
+void SceneRenderer::cleanup(VulkanApp* app) {
+    // Cleanup all sub-renderers to properly destroy GPU resources (app may be null)
+    if (waterRenderer && app) {
+        waterRenderer->cleanup(app);
     }
-    if (solidRenderer) {
-        solidRenderer->cleanup();
+    if (solidRenderer && app) {
+        solidRenderer->cleanup(app);
     }
-    if (shadowMapper) {
-        shadowMapper->cleanup();
+    if (shadowMapper && app) {
+        shadowMapper->cleanup(app);
     }
     if (skyRenderer) {
         skyRenderer->cleanup();
@@ -30,67 +30,66 @@ void SceneRenderer::cleanup() {
     if (boundingBoxRenderer) {
         boundingBoxRenderer->cleanup();
     }
-    // Destroy UBO and SSBO buffers owned by this renderer
-    if (app) {
-        VkDevice dev = app->getDevice();
-        if (mainUniformBuffer.buffer != VK_NULL_HANDLE) {
-            mainUniformBuffer = {};
+
+    // Clear local CPU-side handles; Vulkan objects are destroyed via VulkanResourceManager
+    if (mainUniformBuffer.buffer != VK_NULL_HANDLE) {
+        mainUniformBuffer = {};
+    }
+    // Only clear materialsBuffer if it is not the same buffer owned by the MaterialManager
+    if (materialsBuffer.buffer != VK_NULL_HANDLE) {
+        bool ownedByManager = false;
+        if (materialManager) {
+            const Buffer &mgrBuf = materialManager->getBuffer();
+            if (mgrBuf.buffer == materialsBuffer.buffer && mgrBuf.memory == materialsBuffer.memory) ownedByManager = true;
         }
-        // Only destroy materialsBuffer if it is not the same buffer owned by the MaterialManager
-        if (materialsBuffer.buffer != VK_NULL_HANDLE) {
-            bool ownedByManager = false;
-            if (materialManager) {
-                const Buffer &mgrBuf = materialManager->getBuffer();
-                if (mgrBuf.buffer == materialsBuffer.buffer && mgrBuf.memory == materialsBuffer.memory) ownedByManager = true;
-            }
-            if (!ownedByManager) {
-                materialsBuffer = {};
-            }
+        if (!ownedByManager) {
+            materialsBuffer = {};
         }
-        // Destroy Pass UBO buffers if allocated
-        if (mainPassUBO.buffer.buffer != VK_NULL_HANDLE) {
-            mainPassUBO.buffer = {};
-        }
-        if (shadowPassUBO.buffer.buffer != VK_NULL_HANDLE) {
-            shadowPassUBO.buffer = {};
-        }
-        if (waterPassUBO.buffer.buffer != VK_NULL_HANDLE) {
-            waterPassUBO.buffer = {};
-        }
+    }
+    if (mainPassUBO.buffer.buffer != VK_NULL_HANDLE) {
+        mainPassUBO.buffer = {};
+    }
+    if (shadowPassUBO.buffer.buffer != VK_NULL_HANDLE) {
+        shadowPassUBO.buffer = {};
+    }
+    if (waterPassUBO.buffer.buffer != VK_NULL_HANDLE) {
+        waterPassUBO.buffer = {};
     }
 }
 
-void SceneRenderer::onSwapchainResized(uint32_t width, uint32_t height) {
+void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height) {
     // Recreate offscreen targets that depend on swapchain size
     if (solidRenderer) {
-        solidRenderer->createRenderTargets(width, height);
+        solidRenderer->createRenderTargets(app, width, height);
     }
     if (waterRenderer) {
-        waterRenderer->createRenderTargets(width, height);
+        waterRenderer->createRenderTargets(app, width, height);
     }
 }
 
-SceneRenderer::SceneRenderer(VulkanApp* app_, TextureArrayManager* textureArrayManager_, MaterialManager* materialManager_)
-    : app(app_),
+SceneRenderer::SceneRenderer(TextureArrayManager* textureArrayManager_, MaterialManager* materialManager_)
+    :
       textureArrayManager(textureArrayManager_),
       materialManager(materialManager_),
-      shadowMapper(std::make_unique<ShadowRenderer>(app_, 8192)),
-      waterRenderer(std::make_unique<WaterRenderer>(app_)),
-      skyRenderer(std::make_unique<SkyRenderer>(app_)),
-      solidRenderer(std::make_unique<SolidRenderer>(app_)),
-      vegetationRenderer(std::make_unique<VegetationRenderer>(app_)),
-      debugCubeRenderer(std::make_unique<DebugCubeRenderer>(app_)),
-      boundingBoxRenderer(std::make_unique<DebugCubeRenderer>(app_)),
+    shadowMapper(std::make_unique<ShadowRenderer>(8192)),
+    waterRenderer(std::make_unique<WaterRenderer>()),
+    skyRenderer(std::make_unique<SkyRenderer>()),
+    solidRenderer(std::make_unique<SolidRenderer>()),
+    vegetationRenderer(std::make_unique<VegetationRenderer>()),
+    debugCubeRenderer(std::make_unique<DebugCubeRenderer>()),
+    boundingBoxRenderer(std::make_unique<DebugCubeRenderer>()),
       skySettings()
 {
 
 }
 
 SceneRenderer::~SceneRenderer() {
-    cleanup();
+    // Do not attempt Vulkan cleanup here (app is not available). The owner
+    // (MyApp) must call `sceneRenderer->cleanup(app)` before destroying the
+    // VulkanApp instance.
 }
 
-void SceneRenderer::shadowPass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VkDescriptorSet shadowPassDescriptorSet, const UniformObject &uboStatic, bool shadowsEnabled, bool shadowTessellationEnabled) {
+void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VkDescriptorSet shadowPassDescriptorSet, const UniformObject &uboStatic, bool shadowsEnabled, bool shadowTessellationEnabled) {
     if (commandBuffer == VK_NULL_HANDLE) {
         fprintf(stderr, "[SceneRenderer::shadowPass] commandBuffer is VK_NULL_HANDLE, skipping.\n");
         return;
@@ -101,15 +100,15 @@ void SceneRenderer::shadowPass(VkCommandBuffer &commandBuffer, VkQueryPool query
     if (!shadowsEnabled) return;
 
     VkCommandBuffer cmd = app->beginSingleTimeCommands();
-    shadowMapper->beginShadowPass(cmd, lightSpaceMatrix);
+    shadowMapper->beginShadowPass(app, cmd, lightSpaceMatrix);
     // TODO: Render objects to shadow map using shadowMapper->renderObject(...)
     // End and transition
-    shadowMapper->endShadowPass(cmd);
+    shadowMapper->endShadowPass(app, cmd);
     app->endSingleTimeCommands(cmd);
 
 }
 
-void SceneRenderer::mainPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
+void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
                   const UniformObject &uboStatic, const WaterParams &waterParams, float waterTime, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent) {
     if (commandBuffer == VK_NULL_HANDLE) {
         fprintf(stderr, "[SceneRenderer::mainPass] commandBuffer is VK_NULL_HANDLE, skipping.\n");
@@ -135,7 +134,7 @@ void SceneRenderer::mainPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginIn
         try {
             // If you have a vegetation buffer rebuild method, call it here (e.g., vegetationRenderer->rebuildBuffers(app);)
             // vegetationRenderer->rebuildBuffers(app); // Uncomment and implement if needed
-            vegetationRenderer->draw(commandBuffer, perTextureDescriptorSet, viewProj);
+            vegetationRenderer->draw(app, commandBuffer, perTextureDescriptorSet, viewProj);
             //fprintf(stderr, "[SceneRenderer::mainPass] After vegetationRenderer->draw.\n");
         } catch (...) {
             fprintf(stderr, "[SceneRenderer::mainPass] Exception in vegetationRenderer->draw.\n");
@@ -143,7 +142,7 @@ void SceneRenderer::mainPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginIn
     }
 }
 
-void SceneRenderer::skyPass(VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj) {
+void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj) {
     if (!skyRenderer) {
         fprintf(stderr, "[SceneRenderer::skyPass] skyRenderer is nullptr, skipping.\n");
         return;
@@ -151,13 +150,13 @@ void SceneRenderer::skyPass(VkCommandBuffer &commandBuffer, VkDescriptorSet perT
     try {
         // skySettings owned by this renderer
         SkySettings::Mode mode = skySettings.mode;
-        skyRenderer->render(commandBuffer, perTextureDescriptorSet, mainUniformBuffer, uboStatic, viewProj, mode);
+        skyRenderer->render(app, commandBuffer, perTextureDescriptorSet, mainUniformBuffer, uboStatic, viewProj, mode);
     } catch (...) {
         fprintf(stderr, "[SceneRenderer::skyPass] Exception in skyRenderer->render.\n");
     }
 }
 
-void SceneRenderer::waterPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime) {
+void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime) {
     static int frameCount = 0;
     if (frameCount++ == 0) {
         printf("[DEBUG] WaterRenderer::waterPass called for the first time\n");
@@ -173,7 +172,7 @@ void SceneRenderer::waterPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginI
     // Bind the solid offscreen outputs so water uses the solid pass for refraction/foam
     VkImageView sceneColorView = solidRenderer ? solidRenderer->getColorView(frameIdx) : VK_NULL_HANDLE;
     VkImageView sceneDepthView = solidRenderer ? solidRenderer->getDepthView(frameIdx) : VK_NULL_HANDLE;
-    waterRenderer->updateSceneTexturesBinding(sceneColorView, sceneDepthView, frameIdx);
+    waterRenderer->updateSceneTexturesBinding(app, sceneColorView, sceneDepthView, frameIdx);
 
     // Run water geometry pass offscreen on a temporary command buffer to avoid nested render passes
     VkCommandBuffer cmd = app->beginSingleTimeCommands();
@@ -181,7 +180,7 @@ void SceneRenderer::waterPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginI
     // Indirect rendering for water geometry (same as solid matter)
     // Use waterIndirectRenderer and match solidRenderer->draw signature
     auto &waterIndirectRenderer = waterRenderer->getIndirectRenderer();
-    waterIndirectRenderer.drawPrepared(cmd, app);
+    waterIndirectRenderer.drawPrepared(cmd);
     waterRenderer->endWaterGeometryPass(cmd);
     app->endSingleTimeCommands(cmd);
 
@@ -191,57 +190,56 @@ void SceneRenderer::waterPass(VkCommandBuffer &commandBuffer, VkRenderPassBeginI
 }
 
 
-void SceneRenderer::createPipelines() {
+void SceneRenderer::createPipelines(VulkanApp* app) {
     // Solid and vegetation have public createPipelines
-    if (solidRenderer) solidRenderer->createPipelines();
+    if (solidRenderer) solidRenderer->createPipelines(app);
 
     // WaterRenderer initialization (requires a Buffer for params and render targets) is performed elsewhere via WaterRenderer::init(Buffer&)
 
     // SkyRenderer pipelines must match the solid render pass
-    if (skyRenderer) skyRenderer->init(solidRenderer ? solidRenderer->getRenderPass() : VK_NULL_HANDLE);
+    if (skyRenderer) skyRenderer->init(app, solidRenderer ? solidRenderer->getRenderPass() : VK_NULL_HANDLE);
 
 
 
     // Water pipeline creation requires initialization with buffers/targets and is handled by WaterRenderer::init()/createRenderTargets elsewhere
     // Shadow pipeline creation is performed during ShadowRenderer::init()
-    shadowMapper->init();
+    shadowMapper->init(app);
 
-    if (vegetationRenderer) vegetationRenderer->createPipelines(solidRenderer ? solidRenderer->getRenderPass() : VK_NULL_HANDLE);
+    if (vegetationRenderer) vegetationRenderer->createPipelines(app, solidRenderer ? solidRenderer->getRenderPass() : VK_NULL_HANDLE);
 }
 
-void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
-    if (!app_) {
-        fprintf(stderr, "[SceneRenderer::init] app_ is nullptr!\n");
+void SceneRenderer::init(VulkanApp* app) {
+    if (!app) {
+        fprintf(stderr, "[SceneRenderer::init] app is nullptr!\n");
         return;
     }
-    app = app_;
     // skySettingsRef was initialized at construction and must be valid
     
     // Bind external texture arrays if provided; allocation/initialization should be done by the application
     if (vegetationRenderer) {
         if (textureArrayManager) {
-            vegetationRenderer->setTextureArrayManager(textureArrayManager);
-            vegetationRenderer->init(app);
+            vegetationRenderer->setTextureArrayManager(textureArrayManager, app);
+            vegetationRenderer->init();
         } else {
             fprintf(stderr, "[SceneRenderer::init] No TextureArrayManager provided — vegetation renderer initialization deferred\n");
         }
     }
     
     if (solidRenderer) {
-        solidRenderer->init(app);
-        solidRenderer->createRenderTargets(app->getWidth(), app->getHeight());
+        solidRenderer->init();
+        solidRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     }
 
     // Create pipelines for all renderers (solid renderer now has its render pass ready)
-    createPipelines();
+    createPipelines(app);
     
     // Initialize debug cube renderer
     if (debugCubeRenderer) {
-        debugCubeRenderer->init(solidRenderer ? solidRenderer->getRenderPass() : VK_NULL_HANDLE);
+        debugCubeRenderer->init(app, solidRenderer ? solidRenderer->getRenderPass() : VK_NULL_HANDLE);
     }
     // Initialize bounding box renderer (reuses cube wireframe pipeline)
     if (boundingBoxRenderer) {
-        boundingBoxRenderer->init(solidRenderer ? solidRenderer->getRenderPass() : VK_NULL_HANDLE);
+        boundingBoxRenderer->init(app, solidRenderer ? solidRenderer->getRenderPass() : VK_NULL_HANDLE);
     }
     
     // Create main uniform buffer
@@ -253,7 +251,7 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
 
     // Initialize sky renderer with our owned settings now that descriptor sets are ready
     if (skyRenderer) {
-        skyRenderer->initSky(skySettings, mainDs);
+        skyRenderer->initSky(app, skySettings, mainDs);
     }
     
     // Bind main uniform buffer into the app's main descriptor set (binding 0)
@@ -335,7 +333,7 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
     writes.push_back(materialsWrite);
 
     // Perform descriptor update (clean up temporary image infos afterwards)
-    app->updateDescriptorSet(mainDs, writes);
+    app->updateDescriptorSet(writes);
     for (auto &w : writes) {
         if (w.pImageInfo) delete w.pImageInfo;
     }
@@ -343,12 +341,12 @@ void SceneRenderer::init(VulkanApp* app_, VkDescriptorSet descriptorSet) {
     // Initialize WaterRenderer
     Buffer waterParamsBuffer = app->createBuffer(sizeof(WaterUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    waterRenderer->init(waterParamsBuffer);
-    waterRenderer->createRenderTargets(app->getWidth(), app->getHeight());
+    waterRenderer->init(app, waterParamsBuffer);
+    waterRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     
     // Initialize sky renderer with sphere VBO now that descriptor sets are ready
     if (skyRenderer) {
-        skyRenderer->initSky(skySettings, mainDs);
+        skyRenderer->initSky(app, skySettings, mainDs);
     }
 
     printf("[SceneRenderer::init] Initialization complete\n");
@@ -369,16 +367,16 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
 }
 
 // Return Solid/Liquid change handlers that reference the callbacks stored on this object
-SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene) {
-    solidNodeEventCallback = [this, scene](const OctreeNodeData& nd) {
+SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
+    solidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         std::cout << "[SceneRenderer] Solid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
         // Trigger solid mesh update for this node if needed
         if (nd.containmentType != ContainmentType::Disjoint) {
             OctreeNodeData nodeCopy = nd;
             this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
-                [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
-                    this->updateMeshForNode(layer, nid, nd, geom);
+                [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+                    this->updateMeshForNode(app, layer, nid, nd, geom);
                 }
             );
         }
@@ -401,17 +399,17 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene)
     return SolidSpaceChangeHandler(solidNodeEventCallback, solidNodeEraseCallback);
 }
 
-LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scene) {
+LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
 
-    liquidNodeEventCallback = [this, scene](const OctreeNodeData& nd) {
+    liquidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         std::cout << "[SceneRenderer] Liquid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
         // Trigger water mesh update for this node if needed
         if (nd.containmentType != ContainmentType::Disjoint) {
             OctreeNodeData nodeCopy = nd;
             this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
-                [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
-                    this->updateMeshForNode(layer, nid, nd, geom);
+                [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+                    this->updateMeshForNode(app, layer, nid, nd, geom);
                 }
             );
         }
@@ -437,7 +435,7 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
 
 
 // Ensure mesh exists and is up-to-date for a node: insert or replace when needed
-void SceneRenderer::updateMeshForNode(Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
+void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
     IndirectRenderer &renderer = layer == LAYER_OPAQUE ? solidRenderer->getIndirectRenderer() : waterRenderer->getIndirectRenderer();
 
     const auto &cur = layer == LAYER_OPAQUE ? solidChunks : transparentChunks;
@@ -453,7 +451,7 @@ void SceneRenderer::updateMeshForNode(Layer layer, NodeID nid, const OctreeNodeD
         }
     }
     printf("[SceneRenderer::updateMeshForNode] Adding mesh for node %llu (layer=%s): verts=%zu, indices=%zu\n", (unsigned long long)nid, (layer == LAYER_OPAQUE ? "OPAQUE" : "TRANSPARENT"), geom.vertices.size(), geom.indices.size());
-    uint32_t meshId = renderer.addMesh(app, geom);
+    uint32_t meshId = renderer.addMesh(geom);
     printf("[SceneRenderer::updateMeshForNode] meshId=%u assigned to node %llu, version=%u\n", meshId, (unsigned long long)nid, nd.node->version);
     Model3DVersion mv{meshId, nd.node->version};
     registerModelVersion(nid, mv);

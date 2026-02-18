@@ -3,16 +3,14 @@
 #include "ShaderStage.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 
-SolidRenderer::SolidRenderer(VulkanApp* app_) : app(app_), indirectRenderer() {}
-SolidRenderer::~SolidRenderer() { cleanup(); }
+SolidRenderer::SolidRenderer() : indirectRenderer() {}
+SolidRenderer::~SolidRenderer() { cleanup(nullptr); }
 
-void SolidRenderer::init(VulkanApp* app_) {
-    if (app_) app = app_;
-    if (!app) return;
-    indirectRenderer.init(app);
+void SolidRenderer::init() {
+    indirectRenderer.init();
 }
 
-void SolidRenderer::createRenderTargets(uint32_t width, uint32_t height) {
+void SolidRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
     if (!app) return;
     renderWidth = width;
     renderHeight = height;
@@ -142,7 +140,7 @@ void SolidRenderer::createRenderTargets(uint32_t width, uint32_t height) {
     }
 }
 
-void SolidRenderer::destroyRenderTargets() {
+void SolidRenderer::destroyRenderTargets(VulkanApp* app) {
     if (!app) return;
     VkDevice device = app->getDevice();
     // Clear local handles; destruction is centralized in VulkanResourceManager
@@ -180,7 +178,7 @@ void SolidRenderer::endPass(VkCommandBuffer cmd) {
     vkCmdEndRenderPass(cmd);
 }
 
-void SolidRenderer::createPipelines() {
+void SolidRenderer::createPipelines(VulkanApp* app) {
     if (!app) return;
 
     ShaderStage vertexShader = ShaderStage(
@@ -292,7 +290,7 @@ void SolidRenderer::createPipelines() {
     vertexShader.info.module = VK_NULL_HANDLE;
 }
 
-void SolidRenderer::depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool) {
+void SolidRenderer::depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VulkanApp* app) {
     if (!app) {
         fprintf(stderr, "[SolidRenderer::depthPrePass] app is nullptr, skipping.\n");
         return;
@@ -322,8 +320,8 @@ void SolidRenderer::draw(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDe
         printf("[DEBUG] SolidRenderer::draw called for the first time\n");
     }
     
-    if (!app) {
-        fprintf(stderr, "[SolidRenderer::draw] app is nullptr, skipping.\n");
+    if (!appArg) {
+        fprintf(stderr, "[SolidRenderer::draw] appArg is nullptr, skipping.\n");
         return;
     }
     
@@ -351,8 +349,8 @@ void SolidRenderer::draw(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDe
     VkViewport viewport{};
     viewport.x = 0.0f;
     viewport.y = 0.0f;
-    viewport.width = static_cast<float>(app->getWidth());
-    viewport.height = static_cast<float>(app->getHeight());
+    viewport.width = static_cast<float>(appArg->getWidth());
+    viewport.height = static_cast<float>(appArg->getHeight());
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
     
@@ -365,7 +363,7 @@ void SolidRenderer::draw(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDe
 
     VkRect2D scissor{};
     scissor.offset = {0, 0};
-    scissor.extent = {static_cast<uint32_t>(app->getWidth()), static_cast<uint32_t>(app->getHeight())};
+    scissor.extent = {static_cast<uint32_t>(appArg->getWidth()), static_cast<uint32_t>(appArg->getHeight())};
     
     if (!printedOnce) {
         printf("[SolidRenderer::draw] scissor: offset=(%d,%d) extent=(%u,%u)\n",
@@ -389,14 +387,14 @@ void SolidRenderer::draw(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDe
     
     // Draw all meshes using GPU-culled indirect commands
     //printf("[SolidRenderer::draw] About to call drawPrepared\n");
-    indirectRenderer.drawPrepared(commandBuffer, app);
+    indirectRenderer.drawPrepared(commandBuffer);
     //printf("[SolidRenderer::draw] drawPrepared returned\n");
 }
 
-void SolidRenderer::cleanup() {
-    if (!app) return;
+void SolidRenderer::cleanup(VulkanApp* app) {
+    if (app == nullptr) return;
     // Ensure render targets (images, views, framebuffers) are released
-    destroyRenderTargets();
+    destroyRenderTargets(app);
     graphicsPipeline = VK_NULL_HANDLE;
     graphicsPipelineLayout = VK_NULL_HANDLE;
     graphicsPipelineWire = VK_NULL_HANDLE;
@@ -410,5 +408,5 @@ void SolidRenderer::cleanup() {
     }
     solidChunks.clear();
 
-    indirectRenderer.cleanup(app);
+    indirectRenderer.cleanup();
 }

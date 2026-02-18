@@ -12,19 +12,19 @@
 
 class SolidRenderer {
 public:
-    explicit SolidRenderer(VulkanApp* app_ = nullptr);
+    explicit SolidRenderer();
     ~SolidRenderer();
 
-    void init(VulkanApp* app_);
-    void createPipelines();
-    void createRenderTargets(uint32_t width, uint32_t height);
-    void destroyRenderTargets();
+    void init();
+    void createPipelines(VulkanApp* app);
+    void createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
+    void destroyRenderTargets(VulkanApp* app);
     void beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear);
     void endPass(VkCommandBuffer cmd);
-    void cleanup();
+    void cleanup(VulkanApp* app);
 
     // Depth pre-pass that binds depthPrePassPipeline and draws indirect only
-    void depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool);
+    void depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VulkanApp* app);
 
     // Draw main solid geometry: bind pipeline (wireframe or normal) and draw
     void draw(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled);
@@ -44,7 +44,7 @@ public:
 public:
     VkPipelineLayout getGraphicsPipelineLayout() const { return graphicsPipelineLayout; }
 private:
-    VulkanApp* app = nullptr;
+    
     IndirectRenderer indirectRenderer;
     VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     VkPipelineLayout graphicsPipelineLayout = VK_NULL_HANDLE;

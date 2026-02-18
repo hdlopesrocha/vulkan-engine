@@ -13,28 +13,28 @@ static VkImageLayout waterNormalImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 static VkImageLayout waterMaskImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 static VkImageLayout waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-WaterRenderer::WaterRenderer(VulkanApp* app) : app(app) {}
+WaterRenderer::WaterRenderer() {}
 
 WaterRenderer::~WaterRenderer() {}
 
-void WaterRenderer::init(Buffer& waterParamsBuffer) {
+void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer) {
     this->waterParamsBuffer = waterParamsBuffer;
-    waterIndirectRenderer.init(app);
-    createSamplers();
-    createWaterRenderPass();
-    createSceneRenderPass();
-    createWaterPipelines();
-    createPostProcessPipeline();
-    createDescriptorSets();
+    waterIndirectRenderer.init();
+    createSamplers(app);
+    createWaterRenderPass(app);
+    createSceneRenderPass(app);
+    createWaterPipelines(app);
+    createPostProcessPipeline(app);
+    createDescriptorSets(app);
 }
 
-void WaterRenderer::cleanup() {
+void WaterRenderer::cleanup(VulkanApp* app) {
     VkDevice device = app->getDevice();
     VulkanApp* appPtr = app;
     
-    waterIndirectRenderer.cleanup(app);
+    waterIndirectRenderer.cleanup();
     // Clear local handles; VulkanResourceManager is responsible for actual destruction
-    destroyRenderTargets();
+    destroyRenderTargets(app);
     waterGeometryPipeline = VK_NULL_HANDLE;
     waterPostProcessPipeline = VK_NULL_HANDLE;
     waterPostProcessPipelineLayout = VK_NULL_HANDLE;
@@ -49,7 +49,7 @@ void WaterRenderer::cleanup() {
     waterUniformBuffer = {};
 }
 
-void WaterRenderer::createSamplers() {
+void WaterRenderer::createSamplers(VulkanApp* app) {
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -72,7 +72,7 @@ void WaterRenderer::createSamplers() {
     app->resources.addSampler(linearSampler, "WaterRenderer: linearSampler");
 }
 
-void WaterRenderer::createSceneRenderPass() {
+void WaterRenderer::createSceneRenderPass(VulkanApp* app) {
     // Scene render pass outputs color + depth to offscreen targets
     std::array<VkAttachmentDescription, 2> attachments{};
     
@@ -153,7 +153,7 @@ void WaterRenderer::endScenePass(VkCommandBuffer cmd) {
     vkCmdEndRenderPass(cmd);
 }
 
-void WaterRenderer::createWaterRenderPass() {
+void WaterRenderer::createWaterRenderPass(VulkanApp* app) {
     // Water geometry pass outputs:
     // 0: Water world position (RGBA32_SFLOAT - xyz=worldPos, w=linearDepth)
     // 1: Water normals (RGBA16_SFLOAT)
@@ -239,12 +239,12 @@ void WaterRenderer::createWaterRenderPass() {
     app->resources.addRenderPass(waterRenderPass, "WaterRenderer: waterRenderPass");
 }
 
-void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
+void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
     if (renderWidth == width && renderHeight == height && waterFramebuffers[0] != VK_NULL_HANDLE) {
         return; // Already created at this size
     }
     
-    destroyRenderTargets();
+    destroyRenderTargets(app);
     
     renderWidth = width;
     renderHeight = height;
@@ -532,14 +532,14 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         
         // Update both descriptor sets to bind their frame's scene images
         for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
-            updateSceneTexturesBinding(sceneColorImageViews[frameIdx], sceneDepthImageViews[frameIdx], frameIdx);
+            updateSceneTexturesBinding(app, sceneColorImageViews[frameIdx], sceneDepthImageViews[frameIdx], frameIdx);
         }
     }
     
     std::cout << "[WaterRenderer] Created render targets (2 sets) " << width << "x" << height << std::endl;
 }
 
-void WaterRenderer::destroyRenderTargets() {
+void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
     VkDevice device = app->getDevice();
     VulkanApp* appPtr = app;
     // Clear per-frame framebuffer/image handles; actual Vulkan destruction
@@ -577,7 +577,7 @@ void WaterRenderer::destroyRenderTargets() {
     }
 }
 
-void WaterRenderer::createWaterPipelines() {
+void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     VkDevice device = app->getDevice();
     
     // Create uniform buffer for water params (for post-process pass)
@@ -758,7 +758,7 @@ void WaterRenderer::createWaterPipelines() {
     if (teseModule) teseModule = VK_NULL_HANDLE;
 }
 
-void WaterRenderer::createPostProcessPipeline() {
+void WaterRenderer::createPostProcessPipeline(VulkanApp* app) {
     // Post-process pipeline composites scene + water into the swapchain
     VkDevice device = app->getDevice();
     
@@ -922,7 +922,7 @@ void WaterRenderer::createPostProcessPipeline() {
     }
 }
 
-void WaterRenderer::createDescriptorSets() {
+void WaterRenderer::createDescriptorSets(VulkanApp* app) {
     if (postProcessDescriptorSetLayout == VK_NULL_HANDLE) return;
     
     VkDevice device = app->getDevice();
@@ -1007,7 +1007,7 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
     vkCmdEndRenderPass(cmd);
 }
 
-void WaterRenderer::renderWaterPostProcess(VkCommandBuffer cmd, VkFramebuffer swapchainFramebuffer,
+void WaterRenderer::renderWaterPostProcess(VulkanApp* app, VkCommandBuffer cmd, VkFramebuffer swapchainFramebuffer,
                                             VkRenderPass swapchainRenderPass,
                                             VkImageView sceneColorView, VkImageView sceneDepthView,
                                             const WaterParams& params,
@@ -1124,7 +1124,7 @@ void WaterRenderer::renderWaterPostProcess(VkCommandBuffer cmd, VkFramebuffer sw
     // This allows ImGui or other overlays to be rendered in the same pass
 }
 
-void WaterRenderer::updateSceneTexturesBinding(VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex) {
+void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex) {
     if (waterDepthDescriptorSets[frameIndex] == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
         return;
     }

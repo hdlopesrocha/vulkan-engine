@@ -72,15 +72,15 @@ struct WaterUBO {
 
 class WaterRenderer {
 public:
-    WaterRenderer(VulkanApp* app);
+    WaterRenderer();
     ~WaterRenderer();
 
-    void init(Buffer& waterParamsBuffer);
-    void cleanup();
+    void init(VulkanApp* app, Buffer& waterParamsBuffer);
+    void cleanup(VulkanApp* app);
 
     // Create offscreen render targets for water rendering
-    void createRenderTargets(uint32_t width, uint32_t height);
-    void destroyRenderTargets();
+    void createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
+    void destroyRenderTargets(VulkanApp* app);
 
     // Get the indirect renderer for water meshes
     IndirectRenderer& getIndirectRenderer() { return waterIndirectRenderer; }
@@ -91,7 +91,7 @@ public:
 
     // Render water post-process to swapchain (apply refraction)
     // This starts and ends its own render pass that outputs to the provided swapchain framebuffer
-    void renderWaterPostProcess(VkCommandBuffer cmd, VkFramebuffer swapchainFramebuffer,
+    void renderWaterPostProcess(VulkanApp* app, VkCommandBuffer cmd, VkFramebuffer swapchainFramebuffer,
                                  VkRenderPass swapchainRenderPass,
                                  VkImageView sceneColorView, VkImageView sceneDepthView,
                                  const WaterParams& params,
@@ -144,7 +144,7 @@ public:
     VkImageView getSceneDepthImageView(uint32_t frameIndex) const { return sceneDepthImageViews[frameIndex]; }
     
     // Update the scene textures binding (color + depth) for refraction and edge foam
-    void updateSceneTexturesBinding(VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex);
+    void updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex);
 
     // Register model version for water meshes (stored here)
     void registerModelVersion(NodeID id, const Model3DVersion& ver) { waterNodeModelVersions[id] = ver; }
@@ -158,14 +158,14 @@ public:
     }
 
 private:
-    void createWaterRenderPass();
-    void createSceneRenderPass();
-    void createWaterPipelines();
-    void createPostProcessPipeline();
-    void createDescriptorSets();
-    void createSamplers();
+    void createWaterRenderPass(VulkanApp* app);
+    void createSceneRenderPass(VulkanApp* app);
+    void createWaterPipelines(VulkanApp* app);
+    void createPostProcessPipeline(VulkanApp* app);
+    void createDescriptorSets(VulkanApp* app);
+    void createSamplers(VulkanApp* app);
 
-    VulkanApp* app;
+    
     WaterParams params;
 
     // Indirect renderer for water geometry
