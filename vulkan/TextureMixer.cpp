@@ -12,6 +12,22 @@
 #include <tuple>
 #include <string>
 
+static const char* layoutName(VkImageLayout l) {
+	switch (l) {
+		case VK_IMAGE_LAYOUT_UNDEFINED: return "UNDEFINED";
+		case VK_IMAGE_LAYOUT_GENERAL: return "GENERAL";
+		case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: return "COLOR_ATTACHMENT_OPTIMAL";
+		case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL: return "DEPTH_STENCIL_ATTACHMENT_OPTIMAL";
+		case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL: return "DEPTH_STENCIL_READ_ONLY_OPTIMAL";
+		case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: return "SHADER_READ_ONLY_OPTIMAL";
+		case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: return "TRANSFER_SRC_OPTIMAL";
+		case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: return "TRANSFER_DST_OPTIMAL";
+		case VK_IMAGE_LAYOUT_PREINITIALIZED: return "PREINITIALIZED";
+		case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: return "PRESENT_SRC_KHR";
+		default: return "UNKNOWN";
+	}
+}
+
 uint32_t TextureMixer::getArrayLayerCount() const {
 	return textureArrayManager ? textureArrayManager->layerAmount : 0;
 }
@@ -45,6 +61,7 @@ void TextureMixer::init(VulkanApp* app, uint32_t width, uint32_t height, Texture
 	// Create compute pipeline and descriptor sets so we can generate textures on demand
 	createComputePipeline();
 	printf("[EditableTextureSet] Compute pipeline created for editable textures\n");
+	
 }
 
 // Backwards-compatible overload: callers that don't pass a TextureArrayManager
@@ -234,27 +251,13 @@ void TextureMixer::cleanup() {
 
 	// No editable textures to cleanup when using global texture arrays
 
-	if (computePipeline != VK_NULL_HANDLE) {
-		vkDestroyPipeline(app->getDevice(), computePipeline, nullptr);
-		computePipeline = VK_NULL_HANDLE;
-	}
-	if (computePipelineLayout != VK_NULL_HANDLE) {
-		vkDestroyPipelineLayout(app->getDevice(), computePipelineLayout, nullptr);
-		computePipelineLayout = VK_NULL_HANDLE;
-	}
-	if (computeDescriptorSetLayout != VK_NULL_HANDLE) {
-		vkDestroyDescriptorSetLayout(app->getDevice(), computeDescriptorSetLayout, nullptr);
-		computeDescriptorSetLayout = VK_NULL_HANDLE;
-	}
-	if (computeDescriptorPool != VK_NULL_HANDLE) {
-		vkDestroyDescriptorPool(app->getDevice(), computeDescriptorPool, nullptr);
-		computeDescriptorPool = VK_NULL_HANDLE;
-	}
+	// Clear local handles; VulkanResourceManager will destroy tracked objects
+	computePipeline = VK_NULL_HANDLE;
+	computePipelineLayout = VK_NULL_HANDLE;
+	computeDescriptorSetLayout = VK_NULL_HANDLE;
+	computeDescriptorPool = VK_NULL_HANDLE;
 
-	if (computeSampler != VK_NULL_HANDLE) {
-		vkDestroySampler(app->getDevice(), computeSampler, nullptr);
-		computeSampler = VK_NULL_HANDLE;
-	}
+	computeSampler = VK_NULL_HANDLE;
 
 	// clear log buffer
 	{
@@ -312,6 +315,8 @@ void TextureMixer::createComputePipeline() {
 	if (vkCreateDescriptorSetLayout(app->getDevice(), &layoutInfo, nullptr, &computeDescriptorSetLayout) != VK_SUCCESS) {
 		throw std::runtime_error("failed to create compute descriptor set layout!");
 	}
+	// Track compute descriptor set layout
+	app->resources.addDescriptorSetLayout(computeDescriptorSetLayout, "TextureMixer: computeDescriptorSetLayout");
 
 	VkPushConstantRange pushConstantRange{};
 	pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -328,6 +333,8 @@ void TextureMixer::createComputePipeline() {
 	if (vkCreatePipelineLayout(app->getDevice(), &pipelineLayoutInfo, nullptr, &computePipelineLayout) != VK_SUCCESS) {
 		throw std::runtime_error("failed to create compute pipeline layout!");
 	}
+	// Track compute pipeline layout
+	app->resources.addPipelineLayout(computePipelineLayout, "TextureMixer: computePipelineLayout");
 
 	auto computeShaderCode = FileReader::readFile("shaders/perlin_noise.comp.spv");
 	VkShaderModule computeShaderModule = app->createShaderModule(computeShaderCode);
@@ -346,8 +353,13 @@ void TextureMixer::createComputePipeline() {
 	if (vkCreateComputePipelines(app->getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline) != VK_SUCCESS) {
 		throw std::runtime_error("failed to create compute pipeline!");
 	}
+	// Track compute pipeline
+	app->resources.addPipeline(computePipeline, "TextureMixer: computePipeline");
+	// Also add to central resource manager
+	app->resources.addPipeline(computePipeline, "TextureMixer: computePipeline");
 
-	vkDestroyShaderModule(app->getDevice(), computeShaderModule, nullptr);
+	// Clear local shader module reference; destruction handled by VulkanResourceManager
+	computeShaderModule = VK_NULL_HANDLE;
 
 	VkDescriptorPoolSize poolSizes[2] = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -361,12 +373,18 @@ void TextureMixer::createComputePipeline() {
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = 2;
 	poolInfo.pPoolSizes = poolSizes;
-	// Provide generous capacity to avoid allocation failures
-	poolInfo.maxSets = 10;
+	// Provide generous capacity to avoid allocation failures (increased)
+	poolInfo.maxSets = 128;
+	// Allow freeing individual descriptor sets (TextureMixer frees temp sets)
+	poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
 
 	if (vkCreateDescriptorPool(app->getDevice(), &poolInfo, nullptr, &computeDescriptorPool) != VK_SUCCESS) {
 		throw std::runtime_error("failed to create compute descriptor pool!");
 	}
+	// Track compute descriptor pool
+	app->resources.addDescriptorPool(computeDescriptorPool, "TextureMixer: computeDescriptorPool");
+	// Also add to central resource manager
+	app->resources.addDescriptorPool(computeDescriptorPool, "TextureMixer: computeDescriptorPool");
 
 	// Create a single descriptor set that binds albedo/normal/bump storage images and samplers
 	createTripleComputeDescriptorSet();
@@ -396,6 +414,9 @@ void TextureMixer::createTripleComputeDescriptorSet() {
 		throw std::runtime_error("failed to allocate compute triple descriptor set!");
 	}
 
+	// Register descriptor set
+	app->resources.addDescriptorSet(tripleComputeDescSet, "TextureMixer: tripleComputeDescSet");
+
 	// Storage image infos: albedo (binding 0), normal (binding 4), bump (binding 5)
 	VkDescriptorImageInfo albedoImageInfo{};
 	if (textureArrayManager) albedoImageInfo.imageView = textureArrayManager->albedoArray.view;
@@ -418,18 +439,18 @@ void TextureMixer::createTripleComputeDescriptorSet() {
 	VkDescriptorImageInfo bumpSamplerInfo{};
 
 	if (textureArrayManager) {
-		// Use GENERAL layout because during compute we transition all layers to GENERAL
+		// Samplers are read-only sources for the compute shader: use SHADER_READ_ONLY_OPTIMAL
 		albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view;
 		albedoSamplerInfo.sampler = textureArrayManager->albedoSampler;
-		albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+		albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 		normalSamplerInfo.imageView = textureArrayManager->normalArray.view;
 		normalSamplerInfo.sampler = textureArrayManager->normalSampler;
-		normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+		normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 		bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view;
 		bumpSamplerInfo.sampler = textureArrayManager->bumpSampler;
-		bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+		bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	} else {
 		// No TextureArrayManager: leave sampler imageViews null (not supported)
 		albedoSamplerInfo.imageView = VK_NULL_HANDLE; albedoSamplerInfo.sampler = VK_NULL_HANDLE; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -501,9 +522,9 @@ void TextureMixer::updateComputeDescriptorSets() {
 	bumpImageInfo.imageView = textureArrayManager->bumpArray.view;
 	bumpImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-	VkDescriptorImageInfo albedoSamplerInfo{}; albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view; albedoSamplerInfo.sampler = textureArrayManager->albedoSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-	VkDescriptorImageInfo normalSamplerInfo{}; normalSamplerInfo.imageView = textureArrayManager->normalArray.view; normalSamplerInfo.sampler = textureArrayManager->normalSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-	VkDescriptorImageInfo bumpSamplerInfo{}; bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view; bumpSamplerInfo.sampler = textureArrayManager->bumpSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	VkDescriptorImageInfo albedoSamplerInfo{}; albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view; albedoSamplerInfo.sampler = textureArrayManager->albedoSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	VkDescriptorImageInfo normalSamplerInfo{}; normalSamplerInfo.imageView = textureArrayManager->normalArray.view; normalSamplerInfo.sampler = textureArrayManager->normalSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	VkDescriptorImageInfo bumpSamplerInfo{}; bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view; bumpSamplerInfo.sampler = textureArrayManager->bumpSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 	std::vector<VkWriteDescriptorSet> writes;
 
@@ -608,6 +629,7 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet)
 		fprintf(stderr, "[TextureMixer::createComputeDescriptorSet] vkAllocateDescriptorSets failed\n");
 		throw std::runtime_error("failed to allocate compute descriptor set!");
 	}
+	app->resources.addDescriptorSet(descSet, "TextureMixer: descSet");
 
 	VkDescriptorImageInfo imageInfo{};
 	// Storage image for per-map generation: bind the array view (entire array) and use push constant to select layer
@@ -648,7 +670,7 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet)
 			samplerInfo.imageView = textureArrayManager->bumpArray.view;
 			samplerInfo.sampler = textureArrayManager->bumpSampler;
 		}
-		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	} else {
 		samplerInfo.imageView = VK_NULL_HANDLE;
 		samplerInfo.sampler = VK_NULL_HANDLE;
@@ -731,28 +753,7 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 	// Require a TextureArrayManager for array-based generation
 	if (!textureArrayManager) throw std::runtime_error("TextureMixer requires a TextureArrayManager for array-based generation");
 
-	VkCommandBuffer commandBuffer = app->beginSingleTimeCommands();
-
-	// Build a list of image barriers only for the maps we will generate
-	std::vector<VkImageMemoryBarrier> barriers;
-	// mkBarrierLayer is used to transition only the target array layer (more precise, avoids whole-array races)
-	auto mkBarrierLayer = [&](VkImage img, uint32_t baseArrayLayer, uint32_t layerCount, uint32_t mipLevels) {
-		VkImageMemoryBarrier b{};
-		b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // assume readable initially
-		b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		b.subresourceRange.baseMipLevel = 0;
-		b.subresourceRange.levelCount = mipLevels;
-		b.subresourceRange.baseArrayLayer = baseArrayLayer;
-		b.subresourceRange.layerCount = layerCount;
-		b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-		b.image = img;
-		return b;
-	};
+	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 
 	// If a TextureArrayManager is present and a valid target layer was specified,
 	// ensure we will use array-layer views for storage writes and prepare
@@ -768,18 +769,17 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 			if (genN) textureArrayManager->getImTexture(targetLayer, 1);
 			if (genB) textureArrayManager->getImTexture(targetLayer, 2);
 
-			// Before building barriers, ensure any prior generation or transfer that
-			// touches this layer has completed. We call processPendingCommandBuffers
-			// to advance completed fences, then wait briefly if the tracked layout
-			// indicates a transfer-in-progress. This prevents using stale tracked
-			// layouts as barrier.oldLayout.
-			if (app) app->processPendingCommandBuffers();
+			// Before performing layout changes, ensure any prior generation or transfer
+			// that touches this layer has completed. Use the synchronous helper to
+			// transition the specific layer to GENERAL so the validation layer's
+			// known layout is updated before we write descriptors and dispatch.
+			if (app) app->waitForAllPendingCommandBuffers();
 			// If another generation for this layer is pending, wait for it.
 			if (isLayerGenerationPending(targetLayer)) {
 				waitForLayerGeneration(targetLayer);
 			}
-			// If tracked layout is TRANSFER_DST, wait for it to become SHADER_READ_ONLY
-			// (do a short polling wait while pumping pending command buffers).
+			// If tracked layout is TRANSFER_DST, wait briefly while pumping pending
+			// command buffers so any transfer completes.
 			int waitCount = 0;
 			while (textureArrayManager->getLayerLayout(0, targetLayer) == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && waitCount < 200) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -791,71 +791,198 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 				logs.emplace_back("Warning: waited for transfer dst layout but it persisted");
 			}
 
-			// Build barriers for the specific target layer only
+			// Synchronously transition the target array layer(s) to GENERAL so
+			// the validation layer will accept subsequent transitions and the
+			// descriptor writes that expect GENERAL layout.
 			if (genA) {
-				auto b = mkBarrierLayer(textureArrayManager->albedoArray.image, targetLayer, 1, textureArrayManager->albedoArray.mipLevels);
-				VkImageLayout tracked = textureArrayManager->getLayerLayout(0, targetLayer);
-				// Avoid using transient TRANSFER_DST layout as barrier oldLayout for compute transitions;
-				// prefer SHADER_READ_ONLY as the common prior state to prevent validation mismatches.
-				if (tracked == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) tracked = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				b.oldLayout = tracked;
-				barriers.push_back(b);
+					app->transitionImageLayoutLayer(textureArrayManager->albedoArray.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, textureArrayManager->albedoArray.mipLevels, targetLayer, 1);
+					// Update tracked layout to reflect the synchronous transition we just performed
+					textureArrayManager->setLayerLayout(0, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
 			}
 			if (genN) {
-				auto b = mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels);
-				VkImageLayout tracked = textureArrayManager->getLayerLayout(1, targetLayer);
-				if (tracked == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) tracked = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				b.oldLayout = tracked;
-				barriers.push_back(b);
+					app->transitionImageLayoutLayer(textureArrayManager->normalArray.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, textureArrayManager->normalArray.mipLevels, targetLayer, 1);
+					textureArrayManager->setLayerLayout(1, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
 			}
 			if (genB) {
-				auto b = mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels);
-				VkImageLayout tracked = textureArrayManager->getLayerLayout(2, targetLayer);
-				if (tracked == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) tracked = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				b.oldLayout = tracked;
-				barriers.push_back(b);
+					app->transitionImageLayoutLayer(textureArrayManager->bumpArray.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, textureArrayManager->bumpArray.mipLevels, targetLayer, 1);
+					textureArrayManager->setLayerLayout(2, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
+			}
+
+			// Debug: print tracked layouts and pending state to help diagnose layout mismatches
+			{
+				VkImageLayout la = textureArrayManager->getLayerLayout(0, targetLayer);
+				VkImageLayout ln = textureArrayManager->getLayerLayout(1, targetLayer);
+				VkImageLayout lb = textureArrayManager->getLayerLayout(2, targetLayer);
+				fprintf(stderr, "[TextureMixer] Debug: targetLayer=%u trackedLayouts A=%s N=%s B=%s hasPendingCmds=%d\n",
+					targetLayer, layoutName(la), layoutName(ln), layoutName(lb), app ? (int)app->hasPendingCommandBuffers() : 0);
 			}
 		}
-	}
-	// Set access masks and newLayout, but keep oldLayout from tracked layout
-	for (size_t i = 0; i < barriers.size(); ++i) {
-		auto &barrier = barriers[i];
-		barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-		barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		// Tracked layouts will be updated when the generation fence signals
 	}
 
 	if (!useArrayLayer) {
 		throw std::runtime_error("TextureMixer: invalid target layer or missing TextureArrayManager");
 	}
 
-	// Log precise barrier info for debugging (image -> base layer)
+	// Begin recording the command buffer for compute dispatch and post-barriers
+	commandBuffer = app->beginSingleTimeCommands();
+
+	// Helper to build an image memory barrier for a specific array layer range
+	auto mkBarrierLayer = [&](VkImage img, uint32_t baseArrayLayer, uint32_t layerCount, uint32_t mipLevels) {
+		VkImageMemoryBarrier b{};
+		b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		b.subresourceRange.baseMipLevel = 0;
+		b.subresourceRange.levelCount = mipLevels;
+		b.subresourceRange.baseArrayLayer = baseArrayLayer;
+		b.subresourceRange.layerCount = layerCount;
+		b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		b.image = img;
+		return b;
+	};
+
+	// Before allocating descriptors, transition the target layer(s) to GENERAL
+	// so the compute shader can write into them. Use tracked layouts as oldLayout
+	// to avoid validation mismatches.
+	std::vector<VkImageMemoryBarrier> preBarriers;
+	if (genA) {
+		VkImageMemoryBarrier b = mkBarrierLayer(textureArrayManager->albedoArray.image, targetLayer, 1, textureArrayManager->albedoArray.mipLevels);
+		// use tracked layout as oldLayout
+		b.oldLayout = textureArrayManager->getLayerLayout(0, targetLayer);
+		if (b.oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		preBarriers.push_back(b);
+	}
+	if (genN) {
+		VkImageMemoryBarrier b = mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels);
+		b.oldLayout = textureArrayManager->getLayerLayout(1, targetLayer);
+		if (b.oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		preBarriers.push_back(b);
+	}
+	if (genB) {
+		VkImageMemoryBarrier b = mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels);
+		b.oldLayout = textureArrayManager->getLayerLayout(2, targetLayer);
+		if (b.oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		preBarriers.push_back(b);
+	}
+	if (!preBarriers.empty()) {
+		// Log pre-barriers
+		for (auto &b : preBarriers) {
+			fprintf(stderr, "[TextureMixer] Pre-barrier: image=%p layer=%u old=%s new=%s\n", (void*)b.image, b.subresourceRange.baseArrayLayer, layoutName(b.oldLayout), layoutName(b.newLayout));
+		}
+		vkCmdPipelineBarrier(
+			commandBuffer,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			0,
+			0, nullptr,
+			0, nullptr,
+			static_cast<uint32_t>(preBarriers.size()), preBarriers.data()
+		);
+	}
+
+	// Allocate and write a temporary descriptor set for this dispatch so we
+	// don't update descriptor sets that may be in-use by pending command buffers.
+	VkDescriptorSet tempDesc = VK_NULL_HANDLE;
 	{
-		std::lock_guard<std::mutex> lkll(logsMutex);
-		for (auto &b : barriers) {
-			char buf[256];
-			snprintf(buf, sizeof(buf), "Pre-barrier: image=%p baseLayer=%u layers=%u newLayout=%d",
-				(void*)b.image, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount, b.newLayout);
-			logs.emplace_back(buf);
+		VkDescriptorSetAllocateInfo ainfo{};
+		ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		ainfo.descriptorPool = computeDescriptorPool;
+		ainfo.descriptorSetCount = 1;
+		ainfo.pSetLayouts = &computeDescriptorSetLayout;
+		VkResult allocRes = vkAllocateDescriptorSets(app->getDevice(), &ainfo, &tempDesc);
+		if (allocRes != VK_SUCCESS) {
+			// Allocation failed; fall back to using the already-prepared descriptor set
+			// (tripleComputeDescSet or per-map descSet) instead of throwing. This avoids
+			// spamming allocation failures when the pool is temporarily exhausted.
+			fprintf(stderr, "[TextureMixer] Warning: failed to allocate temp compute descriptor set, falling back to existing set\n");
+			tempDesc = descSet;
+			// Allocation failed; fall back to existing descriptor set. Ensure the
+			// descriptor's imageLayout matches the per-dispatch transitions (GENERAL)
+			// by updating the bound descriptor set to reference the target layer
+			// per-layer views with VK_IMAGE_LAYOUT_GENERAL.
+			if (textureArrayManager && tempDesc != VK_NULL_HANDLE && targetLayer < textureArrayManager->layerAmount) {
+				VkDescriptorImageInfo albedoUpd{}; albedoUpd.imageView = textureArrayManager->albedoLayerViews[targetLayer]; albedoUpd.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+				VkDescriptorImageInfo normalUpd{}; normalUpd.imageView = textureArrayManager->normalLayerViews[targetLayer]; normalUpd.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+				VkDescriptorImageInfo bumpUpd{}; bumpUpd.imageView = textureArrayManager->bumpLayerViews[targetLayer]; bumpUpd.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+				VkDescriptorImageInfo albedoSampUpd{}; albedoSampUpd.imageView = textureArrayManager->albedoLayerViews[targetLayer]; albedoSampUpd.sampler = textureArrayManager->albedoSampler; albedoSampUpd.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+				VkDescriptorImageInfo normalSampUpd{}; normalSampUpd.imageView = textureArrayManager->normalLayerViews[targetLayer]; normalSampUpd.sampler = textureArrayManager->normalSampler; normalSampUpd.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+				VkDescriptorImageInfo bumpSampUpd{}; bumpSampUpd.imageView = textureArrayManager->bumpLayerViews[targetLayer]; bumpSampUpd.sampler = textureArrayManager->bumpSampler; bumpSampUpd.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+				std::vector<VkWriteDescriptorSet> fallbackWrites;
+				auto mkStor = [&](uint32_t binding, VkDescriptorImageInfo &info){ VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = tempDesc; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w.descriptorCount = 1; w.pImageInfo = &info; fallbackWrites.push_back(w); };
+				auto mkSamp = [&](uint32_t binding, VkDescriptorImageInfo &info){ VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = tempDesc; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.descriptorCount = 1; w.pImageInfo = &info; fallbackWrites.push_back(w); };
+				mkStor(0, albedoUpd);
+				mkSamp(1, albedoSampUpd);
+				mkSamp(2, normalSampUpd);
+				mkSamp(3, bumpSampUpd);
+				mkStor(4, normalUpd);
+				mkStor(5, bumpUpd);
+				// Debug: print fallback write infos
+				for (auto &w : fallbackWrites) {
+					if (w.pImageInfo) {
+						fprintf(stderr, "[TextureMixer] Fallback write dstBinding=%u imageView=%p imageLayout=%s\n", w.dstBinding, (void*)w.pImageInfo->imageView, layoutName(w.pImageInfo->imageLayout));
+					}
+				}
+				if (!fallbackWrites.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(fallbackWrites.size()), fallbackWrites.data(), 0, nullptr);
+			}
+		} else {
+			// Build image infos targeting the specific layer using the per-layer
+			// array views (`albedoLayerViews[targetLayer]`). These per-layer
+			// views are 2D_ARRAY with layerCount=1 so they satisfy the SPIR-V
+			// arrayed requirement while referencing only the target layer.
+			// Since we transition the target layer to GENERAL before dispatch,
+			// set descriptor imageLayout to GENERAL for both storage and sampler
+			// descriptors in the temporary set so layout matches at use time.
+			VkDescriptorImageInfo albedoStorageInfo{}; albedoStorageInfo.imageView = textureArrayManager->albedoLayerViews[targetLayer]; albedoStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			VkDescriptorImageInfo normalStorageInfo{}; normalStorageInfo.imageView = textureArrayManager->normalLayerViews[targetLayer]; normalStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			VkDescriptorImageInfo bumpStorageInfo{}; bumpStorageInfo.imageView = textureArrayManager->bumpLayerViews[targetLayer]; bumpStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+			VkDescriptorImageInfo albedoSamplerInfo{}; albedoSamplerInfo.imageView = textureArrayManager->albedoLayerViews[targetLayer]; albedoSamplerInfo.sampler = textureArrayManager->albedoSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			VkDescriptorImageInfo normalSamplerInfo{}; normalSamplerInfo.imageView = textureArrayManager->normalLayerViews[targetLayer]; normalSamplerInfo.sampler = textureArrayManager->normalSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			VkDescriptorImageInfo bumpSamplerInfo{}; bumpSamplerInfo.imageView = textureArrayManager->bumpLayerViews[targetLayer]; bumpSamplerInfo.sampler = textureArrayManager->bumpSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+			std::vector<VkWriteDescriptorSet> tempWrites;
+			auto addStor = [&](uint32_t binding, VkDescriptorImageInfo &info){
+				if (info.imageView == VK_NULL_HANDLE) return;
+				VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = tempDesc; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w.descriptorCount = 1; w.pImageInfo = &info; tempWrites.push_back(w);
+			};
+			auto addSamp = [&](uint32_t binding, VkDescriptorImageInfo &info){
+				if (info.imageView == VK_NULL_HANDLE || info.sampler == VK_NULL_HANDLE) return;
+				VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = tempDesc; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.descriptorCount = 1; w.pImageInfo = &info; tempWrites.push_back(w);
+			};
+
+			addStor(0, albedoStorageInfo);
+			addSamp(1, albedoSamplerInfo);
+			addSamp(2, normalSamplerInfo);
+			addSamp(3, bumpSamplerInfo);
+			addStor(4, normalStorageInfo);
+			addStor(5, bumpStorageInfo);
+
+				// Debug: print temporary write infos
+				for (auto &w : tempWrites) {
+					if (w.pImageInfo) {
+						fprintf(stderr, "[TextureMixer] Temp write dstBinding=%u imageView=%p imageLayout=%s\n", w.dstBinding, (void*)w.pImageInfo->imageView, layoutName(w.pImageInfo->imageLayout));
+					}
+				}
+				if (!tempWrites.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(tempWrites.size()), tempWrites.data(), 0, nullptr);
 		}
 	}
 
-	vkCmdPipelineBarrier(
-		commandBuffer,
-		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		0,
-		0, nullptr,
-		0, nullptr,
-		static_cast<uint32_t>(barriers.size()), barriers.data()
-	);
-
-		// Already updated tracked layouts above
-
 	printf("[TextureMixer] vkCmdBindPipeline: computePipeline=%p\n", (void*)computePipeline);
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &descSet, 0, nullptr);
+	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &tempDesc, 0, nullptr);
 
 	vkCmdPushConstants(commandBuffer, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PerlinPushConstants), &pushConstants);
 
@@ -864,61 +991,50 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 
 	vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
 
+	// Predeclare barriers vector to cover non-array-layer code path
+	std::vector<VkImageMemoryBarrier> barriers;
+
 		if (useArrayLayer && textureArrayManager) {
-		// After compute, transition generated images back to SHADER_READ_ONLY_OPTIMAL
-		std::vector<VkImageMemoryBarrier> postBarriers;
-		// Build explicit post barriers per-map so we can clamp tracked oldLayout values safely
-		if (genA) {
-			auto b = mkBarrierLayer(textureArrayManager->albedoArray.image, targetLayer, 1, textureArrayManager->albedoArray.mipLevels);
-			VkImageLayout tracked = textureArrayManager->getLayerLayout(0, targetLayer);
-			if (tracked == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) tracked = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			b.oldLayout = tracked;
-			b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		// After compute, prepare the generated base mip level for mipmap generation.
+		// Transition mip level 0 of the written layer(s) from GENERAL -> TRANSFER_DST_OPTIMAL
+		// so `recordGenerateMipmaps` can perform blits and transitions correctly.
+		std::vector<VkImageMemoryBarrier> mipPrepBarriers;
+		auto mkBaseLevelPrep = [&](VkImage img, uint32_t baseArrayLayer, uint32_t mipLevels) {
+			VkImageMemoryBarrier b{};
+			b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			b.subresourceRange.baseMipLevel = 0;
+			b.subresourceRange.levelCount = 1;
+			b.subresourceRange.baseArrayLayer = baseArrayLayer;
+			b.subresourceRange.layerCount = 1;
 			b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-			b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			postBarriers.push_back(b);
-		}
-		if (genN) {
-			auto b = mkBarrierLayer(textureArrayManager->normalArray.image, targetLayer, 1, textureArrayManager->normalArray.mipLevels);
-			VkImageLayout tracked = textureArrayManager->getLayerLayout(1, targetLayer);
-			if (tracked == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) tracked = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			b.oldLayout = tracked;
-			b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-			b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			postBarriers.push_back(b);
-		}
-		if (genB) {
-			auto b = mkBarrierLayer(textureArrayManager->bumpArray.image, targetLayer, 1, textureArrayManager->bumpArray.mipLevels);
-			VkImageLayout tracked = textureArrayManager->getLayerLayout(2, targetLayer);
-			if (tracked == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) tracked = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			b.oldLayout = tracked;
-			b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-			b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			postBarriers.push_back(b);
-		}
+			b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			b.image = img;
+			return b;
+		};
 
-		// log post-barrier info
-		{
-			std::lock_guard<std::mutex> lkll(logsMutex);
-			for (auto &b : postBarriers) {
-				char buf[256];
-				snprintf(buf, sizeof(buf), "Post-barrier: image=%p baseLayer=%u layers=%u newLayout=%d",
-					(void*)b.image, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount, b.newLayout);
-				logs.emplace_back(buf);
+		if (genA) mipPrepBarriers.push_back(mkBaseLevelPrep(textureArrayManager->albedoArray.image, targetLayer, textureArrayManager->albedoArray.mipLevels));
+		if (genN) mipPrepBarriers.push_back(mkBaseLevelPrep(textureArrayManager->normalArray.image, targetLayer, textureArrayManager->normalArray.mipLevels));
+		if (genB) mipPrepBarriers.push_back(mkBaseLevelPrep(textureArrayManager->bumpArray.image, targetLayer, textureArrayManager->bumpArray.mipLevels));
+
+		if (!mipPrepBarriers.empty()) {
+			for (auto &b : mipPrepBarriers) {
+				fprintf(stderr, "[TextureMixer] Mip-prep barrier: image=%p layer=%u old=%s new=%s\n", (void*)b.image, b.subresourceRange.baseArrayLayer, layoutName(b.oldLayout), layoutName(b.newLayout));
 			}
+			vkCmdPipelineBarrier(
+				commandBuffer,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				0,
+				0, nullptr,
+				0, nullptr,
+				static_cast<uint32_t>(mipPrepBarriers.size()), mipPrepBarriers.data()
+			);
 		}
-
-		vkCmdPipelineBarrier(
-			commandBuffer,
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			0,
-			0, nullptr,
-			0, nullptr,
-			static_cast<uint32_t>(postBarriers.size()), postBarriers.data()
-		);
 
 		// Prepare target layer's base level for mipmap generation (only for generated maps)
 		targetLayer = static_cast<uint32_t>(params.targetLayer);
@@ -986,6 +1102,22 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 			{
 				std::lock_guard<std::mutex> lk(pendingFencesMutex);
 				pendingFences.push_back(std::make_tuple(fence, targetLayer));
+			}
+
+			// If we allocated a temporary descriptor set for this dispatch (tempDesc != descSet),
+			// free it when the fence signals so the descriptor pool doesn't leak and
+			// eventually exhaust causing allocation failures and fallback usage.
+			if (tempDesc != VK_NULL_HANDLE && tempDesc != descSet) {
+				VkDescriptorSet setToFree = tempDesc;
+				VkDescriptorPool pool = computeDescriptorPool;
+				VkDevice dev = app ? app->getDevice() : VK_NULL_HANDLE;
+				if (app && dev != VK_NULL_HANDLE && pool != VK_NULL_HANDLE) {
+					VulkanApp* localApp = app;
+					app->deferDestroyUntilFence(fence, [dev, pool, setToFree, localApp]() {
+						localApp->resources.removeDescriptorSet(setToFree);
+						vkFreeDescriptorSets(dev, pool, 1, &setToFree);
+					});
+				}
 			}
 
 			// don't end the single-time command here (ownership transferred to VulkanApp)

@@ -35,6 +35,9 @@ void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt,
 	if (vkCreateImageView(app->getDevice(), &viewInfo, nullptr, &view) != VK_SUCCESS) {
 		throw std::runtime_error("failed to create image view");
 	}
+    printf("[EditableTexture] createImageView: view=%p image=%p format=%d\n", (void*)view, (void*)image, (int)format);
+	// Register image view
+	app->resources.addImageView(view, "EditableTexture: view");
 
 	// sampler
 	VkSamplerCreateInfo samplerInfo{};
@@ -55,6 +58,9 @@ void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt,
 	if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &sampler) != VK_SUCCESS) {
 		throw std::runtime_error("failed to create texture sampler");
 	}
+    printf("[EditableTexture] createSampler: sampler=%p\n", (void*)sampler);
+	// Register sampler
+	app->resources.addSampler(sampler, "EditableTexture: sampler");
 
 	createImGuiDescriptor();
 }
@@ -64,10 +70,11 @@ void EditableTexture::cleanup() {
 		ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)imguiDescSet);
 		imguiDescSet = VK_NULL_HANDLE;
 	}
-	if (sampler != VK_NULL_HANDLE) vkDestroySampler(app->getDevice(), sampler, nullptr);
-	if (view != VK_NULL_HANDLE) vkDestroyImageView(app->getDevice(), view, nullptr);
-	if (image != VK_NULL_HANDLE) vkDestroyImage(app->getDevice(), image, nullptr);
-	if (memory != VK_NULL_HANDLE) vkFreeMemory(app->getDevice(), memory, nullptr);
+	// Do not destroy Vulkan objects here; central manager handles destruction.
+	sampler = VK_NULL_HANDLE;
+	view = VK_NULL_HANDLE;
+	image = VK_NULL_HANDLE;
+	memory = VK_NULL_HANDLE;
 	cpuData.clear();
 }
 
@@ -124,15 +131,15 @@ void EditableTexture::updateGPU() {
 	app->copyBufferToImage(staging.buffer, image, width, height);
 	app->transitionImageLayout(image, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-	// destroy staging
-	if (staging.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, staging.buffer, nullptr);
-	if (staging.memory != VK_NULL_HANDLE) vkFreeMemory(device, staging.memory, nullptr);
+	// Defer actual destruction to VulkanResourceManager; clear local handles
+	if (staging.buffer != VK_NULL_HANDLE) staging.buffer = VK_NULL_HANDLE;
+	if (staging.memory != VK_NULL_HANDLE) staging.memory = VK_NULL_HANDLE;
 
 	isDirty = false;
 }
 
 void EditableTexture::renderImGui() {
-	if (imguiDescSet == VK_NULL_HANDLE) createImGuiDescriptor();
+	if (imguiDescSet != VK_NULL_HANDLE) createImGuiDescriptor();
 	if (imguiDescSet != VK_NULL_HANDLE) {
 		ImGui::Image((ImTextureID)imguiDescSet, ImVec2((float)width, (float)height));
 	}
@@ -245,6 +252,7 @@ void EditableTexture::debugDumpFirstPixel() {
 	}
 	vkUnmapMemory(device, staging.memory);
 
-	if (staging.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, staging.buffer, nullptr);
-	if (staging.memory != VK_NULL_HANDLE) vkFreeMemory(device, staging.memory, nullptr);
+	// Defer actual destruction to VulkanResourceManager; clear local handles
+	if (staging.buffer != VK_NULL_HANDLE) staging.buffer = VK_NULL_HANDLE;
+	if (staging.memory != VK_NULL_HANDLE) staging.memory = VK_NULL_HANDLE;
 }
