@@ -5,8 +5,25 @@
 #include <sstream>
 #include <iomanip>
 
-VulkanResourcesManagerWidget::VulkanResourcesManagerWidget(VulkanResourceManager* mgr, VulkanApp* app)
-    : Widget("Vulkan Resources"), mgr(mgr), app(app) {}
+VulkanResourcesManagerWidget::VulkanResourcesManagerWidget(VulkanResourceManager* mgr)
+    : Widget("Vulkan Resources"), mgr(mgr) {}
+
+void VulkanResourcesManagerWidget::updateWithApp(VulkanApp* app) {
+    if (!app) { hasAppCache = false; return; }
+    cachedInstance = app->getInstance();
+    cachedPhysicalDevice = app->getPhysicalDevice();
+    cachedDevice = app->getDevice();
+    cachedGraphicsQueue = app->getGraphicsQueue();
+    cachedPresentQueue = app->getPresentQueue();
+    cachedSwapchain = app->getSwapchain();
+    cachedSwapchainFormat = app->getSwapchainImageFormat();
+    cachedSwapchainExtent = app->getSwapchainExtent();
+    cachedRegisteredDescriptorSets = app->getRegisteredDescriptorSets();
+    cachedRegisteredPipelines = app->getRegisteredPipelines();
+    cachedDescriptorPool = app->getDescriptorPool();
+    cachedImGuiDescriptorPool = app->getImGuiDescriptorPool();
+    hasAppCache = true;
+}
 
 static std::string handleToString(uint64_t v, bool hex) {
     std::ostringstream ss;
@@ -35,29 +52,29 @@ void VulkanResourcesManagerWidget::render() {
 
     // Device-dependent helper
     VkDevice device = VK_NULL_HANDLE;
-    if (app) device = app->getDevice();
+    if (hasAppCache) device = cachedDevice;
 
     // App-level handles and swapchain info (if available)
-    if (app) {
+    if (hasAppCache) {
         if (ImGui::TreeNode("App / Instance")) {
-            ImGui::Text("Instance: %s", handleToString(reinterpret_cast<uint64_t>(app->getInstance()), showHex).c_str());
-            ImGui::Text("PhysicalDevice: %s", handleToString(reinterpret_cast<uint64_t>(app->getPhysicalDevice()), showHex).c_str());
-            ImGui::Text("Device: %s", handleToString(reinterpret_cast<uint64_t>(app->getDevice()), showHex).c_str());
-            ImGui::Text("GraphicsQueue: %s", handleToString(reinterpret_cast<uint64_t>(app->getGraphicsQueue()), showHex).c_str());
-            ImGui::Text("PresentQueue: %s", handleToString(reinterpret_cast<uint64_t>(app->getPresentQueue()), showHex).c_str());
+            ImGui::Text("Instance: %s", handleToString(reinterpret_cast<uint64_t>(cachedInstance), showHex).c_str());
+            ImGui::Text("PhysicalDevice: %s", handleToString(reinterpret_cast<uint64_t>(cachedPhysicalDevice), showHex).c_str());
+            ImGui::Text("Device: %s", handleToString(reinterpret_cast<uint64_t>(cachedDevice), showHex).c_str());
+            ImGui::Text("GraphicsQueue: %s", handleToString(reinterpret_cast<uint64_t>(cachedGraphicsQueue), showHex).c_str());
+            ImGui::Text("PresentQueue: %s", handleToString(reinterpret_cast<uint64_t>(cachedPresentQueue), showHex).c_str());
 
             ImGui::Separator();
-            ImGui::Text("Swapchain: %s", handleToString(reinterpret_cast<uint64_t>(app->getSwapchain()), showHex).c_str());
-            ImGui::Text("Swapchain format: %d  extent=%dx%d", (int)app->getSwapchainImageFormat(), app->getSwapchainExtent().width, app->getSwapchainExtent().height);
-            ImGui::Text("Swapchain images: %zu", app->getSwapchainImages().size());
-            ImGui::Text("DescriptorPool: %s", handleToString(reinterpret_cast<uint64_t>(app->getDescriptorPool()), showHex).c_str());
-            ImGui::Text("ImGui DescriptorPool: %s", handleToString(reinterpret_cast<uint64_t>(app->getImGuiDescriptorPool()), showHex).c_str());
+            ImGui::Text("Swapchain: %s", handleToString(reinterpret_cast<uint64_t>(cachedSwapchain), showHex).c_str());
+            ImGui::Text("Swapchain format: %d  extent=%dx%d", (int)cachedSwapchainFormat, cachedSwapchainExtent.width, cachedSwapchainExtent.height);
+            ImGui::Text("Swapchain images: %zu", cachedRegisteredDescriptorSets.size());
+            ImGui::Text("DescriptorPool: %s", handleToString(reinterpret_cast<uint64_t>(cachedDescriptorPool), showHex).c_str());
+            ImGui::Text("ImGui DescriptorPool: %s", handleToString(reinterpret_cast<uint64_t>(cachedImGuiDescriptorPool), showHex).c_str());
 
             ImGui::TreePop();
         }
 
         // Registered descriptor sets and pipelines
-        const auto &rds = app->getRegisteredDescriptorSets();
+        const auto &rds = cachedRegisteredDescriptorSets;
         if (ImGui::TreeNode("Registered Descriptor Sets")) {
             if (rds.empty()) ImGui::TextUnformatted("(none registered)");
             for (size_t i = 0; i < rds.size(); ++i) {
@@ -67,7 +84,7 @@ void VulkanResourcesManagerWidget::render() {
             ImGui::TreePop();
         }
 
-        const auto &rpips = app->getRegisteredPipelines();
+        const auto &rpips = cachedRegisteredPipelines;
         if (ImGui::TreeNode("Registered Pipelines")) {
             if (rpips.empty()) ImGui::TextUnformatted("(none registered)");
             for (size_t i = 0; i < rpips.size(); ++i) {
@@ -108,7 +125,7 @@ void VulkanResourcesManagerWidget::render() {
             if (!show) { ++idx; continue; }
             ImGui::Bullet(); ImGui::SameLine();
             ImGui::Text("%s: %s %s", label.c_str(), handleStr.c_str(), desc.c_str());
-            if (device != VK_NULL_HANDLE && app && app->isResourceRegistered((uintptr_t)handle)) {
+            if (device != VK_NULL_HANDLE && mgr->find(handle).has_value()) {
                 VkMemoryRequirements mr = {};
                 vkGetImageMemoryRequirements(device, reinterpret_cast<VkImage>(handle), &mr);
                 ImGui::Text("    mem reqs: size=%llu alignment=%u memoryTypeBits=0x%X", (unsigned long long)mr.size, (unsigned)mr.alignment, mr.memoryTypeBits);
@@ -186,7 +203,7 @@ void VulkanResourcesManagerWidget::render() {
             if (filterBuf[0] != '\0' && label.find(filterBuf) == std::string::npos && handleStr.find(filterBuf) == std::string::npos && desc.find(filterBuf) == std::string::npos) { ++idx; continue; }
             ImGui::Bullet(); ImGui::SameLine();
             ImGui::Text("%s: %s %s", label.c_str(), handleStr.c_str(), desc.c_str());
-            if (device != VK_NULL_HANDLE && app && app->isResourceRegistered((uintptr_t)handle)) {
+            if (device != VK_NULL_HANDLE && mgr->find(handle).has_value()) {
                 VkMemoryRequirements mr = {};
                 vkGetBufferMemoryRequirements(device, reinterpret_cast<VkBuffer>(handle), &mr);
                 ImGui::Text("    mem reqs: size=%llu alignment=%u memoryTypeBits=0x%X", (unsigned long long)mr.size, (unsigned)mr.alignment, mr.memoryTypeBits);

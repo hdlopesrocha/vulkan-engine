@@ -4,12 +4,18 @@
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
 
-RenderPassDebugWidget::RenderPassDebugWidget(VulkanApp* app, WaterRenderer* waterRenderer, SolidRenderer* solidRenderer)
-    : Widget("Render Pass Debug"), app(app), waterRenderer(waterRenderer), solidRenderer(solidRenderer) {
+RenderPassDebugWidget::RenderPassDebugWidget(WaterRenderer* waterRenderer, SolidRenderer* solidRenderer)
+    : Widget("Render Pass Debug"), waterRenderer(waterRenderer), solidRenderer(solidRenderer) {
 }
 
 RenderPassDebugWidget::~RenderPassDebugWidget() {
     cleanup();
+}
+
+void RenderPassDebugWidget::setFrameInfo(uint32_t frameIndex, int width, int height) {
+    currentFrame = static_cast<int>(frameIndex);
+    cachedWidth = width;
+    cachedHeight = height;
 }
 
 void RenderPassDebugWidget::cleanup() {
@@ -99,13 +105,13 @@ void RenderPassDebugWidget::render() {
     }
 
     // Refresh descriptors for the active frame each draw
-    updateDescriptors(app->getCurrentFrame());
+    updateDescriptors(currentFrame);
     
     ImGui::Text("Frame: %d", currentFrame);
     ImGui::SliderFloat("Preview Scale", &previewScale, 0.1f, 1.0f);
     ImGui::Separator();
     
-    ImVec2 previewSize(app->getWidth() * previewScale, app->getHeight() * previewScale);
+    ImVec2 previewSize(static_cast<float>(cachedWidth) * previewScale, static_cast<float>(cachedHeight) * previewScale);
     
     ImGui::TextUnformatted("Solid Pass");
     ImGui::Checkbox("Show Solid Color", &showSceneColor);

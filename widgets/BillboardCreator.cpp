@@ -387,9 +387,9 @@ void BillboardCreator::composeBillboard(Billboard* billboard) {
     }
 
     // Update GPU textures
-    composedAlbedo.updateGPU();
-    composedNormal.updateGPU();
-    composedOpacity.updateGPU();
+    composedAlbedo.updateGPU(vulkanApp);
+    composedNormal.updateGPU(vulkanApp);
+    composedOpacity.updateGPU(vulkanApp);
 
     needsRecomposition = false;
     printf("Billboard composition complete\n");
