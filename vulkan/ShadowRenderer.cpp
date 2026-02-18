@@ -27,55 +27,38 @@ void ShadowRenderer::init() {
 
 void ShadowRenderer::cleanup() {
     VkDevice device = vulkanApp->getDevice();
-    
+
+    // If asynchronous submissions are active, defer destruction of resources
+    bool pending = vulkanApp->hasPendingCommandBuffers();
+
     if (shadowMapImGuiDescSet != VK_NULL_HANDLE) {
-        ImGui_ImplVulkan_RemoveTexture(shadowMapImGuiDescSet);
+        VkDescriptorSet ds = shadowMapImGuiDescSet;
+        if (pending) {
+            vulkanApp->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+        } else {
+            ImGui_ImplVulkan_RemoveTexture(ds);
+        }
         shadowMapImGuiDescSet = VK_NULL_HANDLE;
     }
-    // shadow pipeline uses the main app's pipeline layout; don't destroy it here
-    // shadow uses the main app's descriptor set layout; do not destroy it here
-    if (shadowFramebuffer != VK_NULL_HANDLE) {
-        vkDestroyFramebuffer(device, shadowFramebuffer, nullptr);
-        shadowFramebuffer = VK_NULL_HANDLE;
-    }
-    if (shadowRenderPass != VK_NULL_HANDLE) {
-        vkDestroyRenderPass(device, shadowRenderPass, nullptr);
-        shadowRenderPass = VK_NULL_HANDLE;
-    }
-    if (shadowMapSampler != VK_NULL_HANDLE) {
-        vkDestroySampler(device, shadowMapSampler, nullptr);
-        shadowMapSampler = VK_NULL_HANDLE;
-    }
-    if (shadowMapView != VK_NULL_HANDLE) {
-        vkDestroyImageView(device, shadowMapView, nullptr);
-        shadowMapView = VK_NULL_HANDLE;
-    }
-    if (shadowColorImageView != VK_NULL_HANDLE) {
-        vkDestroyImageView(device, shadowColorImageView, nullptr);
-        shadowColorImageView = VK_NULL_HANDLE;
-    }
-    if (shadowMapImage != VK_NULL_HANDLE) {
-        vkDestroyImage(device, shadowMapImage, nullptr);
-        shadowMapImage = VK_NULL_HANDLE;
-    }
-    if (shadowColorImage != VK_NULL_HANDLE) {
-        vkDestroyImage(device, shadowColorImage, nullptr);
-        shadowColorImage = VK_NULL_HANDLE;
-    }
-    if (shadowMapMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(device, shadowMapMemory, nullptr);
-        shadowMapMemory = VK_NULL_HANDLE;
-    }
-    if (shadowColorImageMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(device, shadowColorImageMemory, nullptr);
-        shadowColorImageMemory = VK_NULL_HANDLE;
-    }
+
+    // Do not destroy Vulkan objects here; the VulkanResourceManager owns
+    // destruction. Clear local handles to avoid accidental use.
+    shadowFramebuffer = VK_NULL_HANDLE;
+    shadowRenderPass = VK_NULL_HANDLE;
+    shadowMapSampler = VK_NULL_HANDLE;
+    shadowMapView = VK_NULL_HANDLE;
+    shadowColorImageView = VK_NULL_HANDLE;
+    shadowMapImage = VK_NULL_HANDLE;
+    shadowColorImage = VK_NULL_HANDLE;
+    shadowMapMemory = VK_NULL_HANDLE;
+    shadowColorImageMemory = VK_NULL_HANDLE;
+
+    // staging resources handled by centralized cleanup
+
 }
 
 void ShadowRenderer::createShadowMap() {
     VkDevice device = vulkanApp->getDevice();
-    
-    // Create depth image for shadow map
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -96,9 +79,15 @@ void ShadowRenderer::createShadowMap() {
     }
     
     fprintf(stderr, "[ShadowRenderer] shadowMapImage = %p\n", (void*)shadowMapImage);
+    // Register shadow map image
+    vulkanApp->resources.addImage(shadowMapImage, "ShadowRenderer: shadowMapImage");
     
     VkMemoryRequirements memRequirements;
     vkGetImageMemoryRequirements(device, shadowMapImage, &memRequirements);
+
+    if (memRequirements.size == 0) {
+        throw std::runtime_error("failed to get valid memory requirements for shadow map image (size == 0)");
+    }
     
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -110,6 +99,9 @@ void ShadowRenderer::createShadowMap() {
     }
     
     vkBindImageMemory(device, shadowMapImage, shadowMapMemory, 0);
+    // Register shadow map device memory
+    vulkanApp->resources.addDeviceMemory(shadowMapMemory, "ShadowRenderer: shadowMapMemory");
+    vulkanApp->resources.addDeviceMemory(shadowMapMemory, "ShadowRenderer: shadowMapMemory");
     
     // Create image view
     VkImageViewCreateInfo viewInfo{};
@@ -126,6 +118,10 @@ void ShadowRenderer::createShadowMap() {
     if (vkCreateImageView(device, &viewInfo, nullptr, &shadowMapView) != VK_SUCCESS) {
         throw std::runtime_error("failed to create shadow map image view!");
     }
+    fprintf(stderr, "[ShadowRenderer] createImageView: shadowMapView=%p image=%p\n", (void*)shadowMapView, (void*)shadowMapImage);
+    // Register shadow map image view
+    vulkanApp->resources.addImageView(shadowMapView, "ShadowRenderer: shadowMapView");
+    vulkanApp->resources.addImageView(shadowMapView, "ShadowRenderer: shadowMapView");
     
     // Create sampler for shadow map
     VkSamplerCreateInfo samplerInfo{};
@@ -145,6 +141,10 @@ void ShadowRenderer::createShadowMap() {
     if (vkCreateSampler(device, &samplerInfo, nullptr, &shadowMapSampler) != VK_SUCCESS) {
         throw std::runtime_error("failed to create shadow map sampler!");
     }
+    fprintf(stderr, "[ShadowRenderer] createSampler: shadowMapSampler=%p\n", (void*)shadowMapSampler);
+    // Register sampler
+    vulkanApp->resources.addSampler(shadowMapSampler, "ShadowRenderer: shadowMapSampler");
+    vulkanApp->resources.addSampler(shadowMapSampler, "ShadowRenderer: shadowMapSampler");
     
     // Transition shadow map from UNDEFINED to READ_ONLY_OPTIMAL so the render pass
     // can start from a valid layout on the first frame
@@ -195,6 +195,9 @@ void ShadowRenderer::createShadowMap() {
     if (vkCreateImage(device, &colorInfo, nullptr, &shadowColorImage) != VK_SUCCESS) {
         throw std::runtime_error("failed to create shadow color image!");
     }
+    fprintf(stderr, "[ShadowRenderer] createImage: shadowColorImage=%p\n", (void*)shadowColorImage);
+    // Register color image
+    vulkanApp->resources.addImage(shadowColorImage, "ShadowRenderer: shadowColorImage");
 
     vkGetImageMemoryRequirements(device, shadowColorImage, &memRequirements);
     allocInfo.allocationSize = memRequirements.size;
@@ -203,6 +206,8 @@ void ShadowRenderer::createShadowMap() {
         throw std::runtime_error("failed to allocate shadow color image memory!");
     }
     vkBindImageMemory(device, shadowColorImage, shadowColorImageMemory, 0);
+    // Register color image memory
+    vulkanApp->resources.addDeviceMemory(shadowColorImageMemory, "ShadowRenderer: shadowColorImageMemory");
 
     // color image view
     VkImageViewCreateInfo colorViewInfo{};
@@ -218,6 +223,9 @@ void ShadowRenderer::createShadowMap() {
     if (vkCreateImageView(device, &colorViewInfo, nullptr, &shadowColorImageView) != VK_SUCCESS) {
         throw std::runtime_error("failed to create shadow color image view!");
     }
+    fprintf(stderr, "[ShadowRenderer] createImageView: shadowColorImageView=%p image=%p\n", (void*)shadowColorImageView, (void*)shadowColorImage);
+    // Register color image view
+    vulkanApp->resources.addImageView(shadowColorImageView, "ShadowRenderer: shadowColorImageView");
 }
 
 void ShadowRenderer::createShadowRenderPass() {
@@ -283,6 +291,8 @@ void ShadowRenderer::createShadowRenderPass() {
     if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &shadowRenderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create shadow render pass!");
     }
+    // Register shadow render pass
+    vulkanApp->resources.addRenderPass(shadowRenderPass, "ShadowRenderer: shadowRenderPass");
 }
 
 void ShadowRenderer::createShadowFramebuffer() {
@@ -301,6 +311,8 @@ void ShadowRenderer::createShadowFramebuffer() {
     if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &shadowFramebuffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to create shadow framebuffer!");
     }
+    // Register shadow framebuffer with resource manager
+    vulkanApp->resources.addFramebuffer(shadowFramebuffer, "ShadowRenderer: shadowFramebuffer");
 }
 
 void ShadowRenderer::createShadowPipeline() {
@@ -529,8 +541,9 @@ void ShadowRenderer::readbackShadowDepth() {
     std::cerr << "[ShadowRenderer] depth stats: min=" << minD << " max=" << maxD << "\n";
 
     vkUnmapMemory(device, stagingBuffer.memory);
-    vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
-    vkFreeMemory(device, stagingBuffer.memory, nullptr);
+    // Defer actual destruction to VulkanResourceManager; clear local handles
+    stagingBuffer.buffer = VK_NULL_HANDLE;
+    stagingBuffer.memory = VK_NULL_HANDLE;
 }
 
 void ShadowRenderer::requestWireframeReadback() {

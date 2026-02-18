@@ -30,75 +30,23 @@ void WaterRenderer::init(Buffer& waterParamsBuffer) {
 
 void WaterRenderer::cleanup() {
     VkDevice device = app->getDevice();
+    VulkanApp* appPtr = app;
     
     waterIndirectRenderer.cleanup(app);
-    
+    // Clear local handles; VulkanResourceManager is responsible for actual destruction
     destroyRenderTargets();
-    
-    if (waterGeometryPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device, waterGeometryPipeline, nullptr);
-        waterGeometryPipeline = VK_NULL_HANDLE;
-    }
-    
-    if (waterPostProcessPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device, waterPostProcessPipeline, nullptr);
-        waterPostProcessPipeline = VK_NULL_HANDLE;
-    }
-    
-    if (waterPostProcessPipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(device, waterPostProcessPipelineLayout, nullptr);
-        waterPostProcessPipelineLayout = VK_NULL_HANDLE;
-    }
-    
-    if (postProcessDescriptorPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, postProcessDescriptorPool, nullptr);
-        postProcessDescriptorPool = VK_NULL_HANDLE;
-    }
-    
-    if (postProcessDescriptorSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device, postProcessDescriptorSetLayout, nullptr);
-        postProcessDescriptorSetLayout = VK_NULL_HANDLE;
-    }
-    
-    if (waterDepthDescriptorPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, waterDepthDescriptorPool, nullptr);
-        waterDepthDescriptorPool = VK_NULL_HANDLE;
-    }
-    
-    if (waterDepthDescriptorSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device, waterDepthDescriptorSetLayout, nullptr);
-        waterDepthDescriptorSetLayout = VK_NULL_HANDLE;
-    }
-    
-    // Destroy water pipeline layout (we create it ourselves now)
-    if (waterGeometryPipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(device, waterGeometryPipelineLayout, nullptr);
-        waterGeometryPipelineLayout = VK_NULL_HANDLE;
-    }
-    
-    if (waterRenderPass != VK_NULL_HANDLE) {
-        vkDestroyRenderPass(device, waterRenderPass, nullptr);
-        waterRenderPass = VK_NULL_HANDLE;
-    }
-    
-    if (sceneRenderPass != VK_NULL_HANDLE) {
-        vkDestroyRenderPass(device, sceneRenderPass, nullptr);
-        sceneRenderPass = VK_NULL_HANDLE;
-    }
-    
-    if (linearSampler != VK_NULL_HANDLE) {
-        vkDestroySampler(device, linearSampler, nullptr);
-        linearSampler = VK_NULL_HANDLE;
-    }
-    
-    if (waterUniformBuffer.buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(device, waterUniformBuffer.buffer, nullptr);
-        waterUniformBuffer.buffer = VK_NULL_HANDLE;
-    }
-    if (waterUniformBuffer.memory != VK_NULL_HANDLE) {
-        vkFreeMemory(device, waterUniformBuffer.memory, nullptr);
-        waterUniformBuffer.memory = VK_NULL_HANDLE;
-    }
+    waterGeometryPipeline = VK_NULL_HANDLE;
+    waterPostProcessPipeline = VK_NULL_HANDLE;
+    waterPostProcessPipelineLayout = VK_NULL_HANDLE;
+    postProcessDescriptorPool = VK_NULL_HANDLE;
+    postProcessDescriptorSetLayout = VK_NULL_HANDLE;
+    waterDepthDescriptorPool = VK_NULL_HANDLE;
+    waterDepthDescriptorSetLayout = VK_NULL_HANDLE;
+    waterGeometryPipelineLayout = VK_NULL_HANDLE;
+    waterRenderPass = VK_NULL_HANDLE;
+    sceneRenderPass = VK_NULL_HANDLE;
+    linearSampler = VK_NULL_HANDLE;
+    waterUniformBuffer = {};
 }
 
 void WaterRenderer::createSamplers() {
@@ -119,6 +67,9 @@ void WaterRenderer::createSamplers() {
     if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &linearSampler) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water linear sampler!");
     }
+    fprintf(stderr, "[WaterRenderer] createSampler: linearSampler=%p\n", (void*)linearSampler);
+    // Register water sampler
+    app->resources.addSampler(linearSampler, "WaterRenderer: linearSampler");
 }
 
 void WaterRenderer::createSceneRenderPass() {
@@ -176,6 +127,8 @@ void WaterRenderer::createSceneRenderPass() {
     if (vkCreateRenderPass(app->getDevice(), &renderPassInfo, nullptr, &sceneRenderPass) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create scene offscreen render pass!");
     }
+    // Register scene render pass
+    app->resources.addRenderPass(sceneRenderPass, "WaterRenderer: sceneRenderPass");
 }
 
 void WaterRenderer::beginScenePass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear) {
@@ -282,6 +235,8 @@ void WaterRenderer::createWaterRenderPass() {
     if (vkCreateRenderPass(app->getDevice(), &renderPassInfo, nullptr, &waterRenderPass) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water render pass!");
     }
+    // Register water render pass
+    app->resources.addRenderPass(waterRenderPass, "WaterRenderer: waterRenderPass");
 }
 
 void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
@@ -315,6 +270,10 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create water image!");
         }
+        // Debug: print created image handle for leak tracing
+        fprintf(stderr, "[WaterRenderer] createImage: image=%p format=%d usage=0x%x\n", (void*)image, (int)format, usage);
+        // Register image in app registry
+        app->resources.addImage(image, "WaterRenderer: image");
         
         VkMemoryRequirements memReq;
         vkGetImageMemoryRequirements(device, image, &memReq);
@@ -329,6 +288,8 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         }
         
         vkBindImageMemory(device, image, memory, 0);
+        // Register device memory
+        app->resources.addDeviceMemory(memory, "WaterRenderer: memory");
         
         VkImageViewCreateInfo viewInfo{};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -344,6 +305,9 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         if (vkCreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create water image view!");
         }
+        fprintf(stderr, "[WaterRenderer] createImageView: view=%p image=%p format=%d\n", (void*)view, (void*)image, (int)format);
+        // Register image view
+        app->resources.addImageView(view, "WaterRenderer: view");
     };
     
     // Layout tracking for all render target images
@@ -386,6 +350,8 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         if (vkCreateFramebuffer(device, &sceneFbInfo, nullptr, &sceneFramebuffers[frameIdx]) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create scene offscreen framebuffer!");
         }
+        // Register framebuffer
+        app->resources.addFramebuffer(sceneFramebuffers[frameIdx], "WaterRenderer: sceneFramebuffer");
     }
 
     createImage(VK_FORMAT_R32G32B32A32_SFLOAT, 
@@ -543,6 +509,8 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         if (vkCreateFramebuffer(device, &fbInfo, nullptr, &waterFramebuffers[frameIdx]) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create water framebuffer!");
         }
+        // Register water framebuffer
+        app->resources.addFramebuffer(waterFramebuffers[frameIdx], "WaterRenderer: waterFramebuffer");
     }
     
     // Allocate and update per-frame descriptor sets for scene textures
@@ -557,6 +525,10 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
         if (vkAllocateDescriptorSets(device, &allocInfo, waterDepthDescriptorSets.data()) != VK_SUCCESS) {
             throw std::runtime_error("Failed to allocate water depth descriptor sets!");
         }
+        // Register allocated descriptor sets
+        for (size_t i = 0; i < 2; ++i) {
+            app->resources.addDescriptorSet(waterDepthDescriptorSets[i], "WaterRenderer: waterDepthDescriptorSet");
+        }
         
         // Update both descriptor sets to bind their frame's scene images
         for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
@@ -569,49 +541,37 @@ void WaterRenderer::createRenderTargets(uint32_t width, uint32_t height) {
 
 void WaterRenderer::destroyRenderTargets() {
     VkDevice device = app->getDevice();
-    
-    // Destroy per-frame water framebuffers
+    VulkanApp* appPtr = app;
+    // Clear per-frame framebuffer/image handles; actual Vulkan destruction
+    // will be performed by the VulkanResourceManager.
     for (int i = 0; i < 2; ++i) {
-        if (waterFramebuffers[i] != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(device, waterFramebuffers[i], nullptr);
-            waterFramebuffers[i] = VK_NULL_HANDLE;
-        }
+        waterFramebuffers[i] = VK_NULL_HANDLE;
     }
-    
-    // Destroy per-frame scene framebuffers
     for (int i = 0; i < 2; ++i) {
-        if (sceneFramebuffers[i] != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(device, sceneFramebuffers[i], nullptr);
-            sceneFramebuffers[i] = VK_NULL_HANDLE;
-        }
+        sceneFramebuffers[i] = VK_NULL_HANDLE;
     }
-    
-    auto destroyImage = [&](VkImage& image, VkDeviceMemory& memory, VkImageView& view) {
-        if (view != VK_NULL_HANDLE) {
-            vkDestroyImageView(device, view, nullptr);
-            view = VK_NULL_HANDLE;
-        }
-        if (image != VK_NULL_HANDLE) {
-            vkDestroyImage(device, image, nullptr);
-            image = VK_NULL_HANDLE;
-        }
-        if (memory != VK_NULL_HANDLE) {
-            vkFreeMemory(device, memory, nullptr);
-            memory = VK_NULL_HANDLE;
-        }
-    };
-    
-    // Destroy per-frame scene images
     for (int i = 0; i < 2; ++i) {
-        destroyImage(sceneColorImages[i], sceneColorMemories[i], sceneColorImageViews[i]);
-        destroyImage(sceneDepthImages[i], sceneDepthMemories[i], sceneDepthImageViews[i]);
+        sceneColorImages[i] = VK_NULL_HANDLE;
+        sceneColorMemories[i] = VK_NULL_HANDLE;
+        sceneColorImageViews[i] = VK_NULL_HANDLE;
+        sceneDepthImages[i] = VK_NULL_HANDLE;
+        sceneDepthMemories[i] = VK_NULL_HANDLE;
+        sceneDepthImageViews[i] = VK_NULL_HANDLE;
     }
-    destroyImage(waterDepthImage, waterDepthMemory, waterDepthImageView);
-    destroyImage(waterNormalImage, waterNormalMemory, waterNormalImageView);
-    destroyImage(waterMaskImage, waterMaskMemory, waterMaskImageView);
-    destroyImage(waterGeomDepthImage, waterGeomDepthMemory, waterGeomDepthImageView);
-    
-    // Reset descriptor pool to free descriptor sets
+    waterDepthImage = VK_NULL_HANDLE;
+    waterDepthMemory = VK_NULL_HANDLE;
+    waterDepthImageView = VK_NULL_HANDLE;
+    waterNormalImage = VK_NULL_HANDLE;
+    waterNormalMemory = VK_NULL_HANDLE;
+    waterNormalImageView = VK_NULL_HANDLE;
+    waterMaskImage = VK_NULL_HANDLE;
+    waterMaskMemory = VK_NULL_HANDLE;
+    waterMaskImageView = VK_NULL_HANDLE;
+    waterGeomDepthImage = VK_NULL_HANDLE;
+    waterGeomDepthMemory = VK_NULL_HANDLE;
+    waterGeomDepthImageView = VK_NULL_HANDLE;
+
+    // Reset descriptor pool to free descriptor sets (safe to reset even if pending)
     if (waterDepthDescriptorPool != VK_NULL_HANDLE) {
         vkResetDescriptorPool(device, waterDepthDescriptorPool, 0);
     }
@@ -668,6 +628,8 @@ void WaterRenderer::createWaterPipelines() {
     if (vkCreateDescriptorSetLayout(device, &depthLayoutInfo, nullptr, &waterDepthDescriptorSetLayout) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water depth descriptor set layout!");
     }
+    // Register water depth descriptor set layout
+    app->resources.addDescriptorSetLayout(waterDepthDescriptorSetLayout, "WaterRenderer: waterDepthDescriptorSetLayout");
     
     // Create descriptor pool for scene textures (color + depth), 2 sets for 2 frames
     VkDescriptorPoolSize depthPoolSize{};
@@ -683,6 +645,8 @@ void WaterRenderer::createWaterPipelines() {
     if (vkCreateDescriptorPool(device, &depthPoolInfo, nullptr, &waterDepthDescriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water depth descriptor pool!");
     }
+    // Register water depth descriptor pool with resource manager
+    app->resources.addDescriptorPool(waterDepthDescriptorPool, "WaterRenderer: waterDepthDescriptorPool");
     
     // Descriptor sets are allocated and updated per-frame in createRenderTargets()
     // after scene images are created
@@ -787,11 +751,11 @@ void WaterRenderer::createWaterPipelines() {
     waterGeometryPipeline = pipeline;
     waterGeometryPipelineLayout = layout;
     
-    // Cleanup shader modules
-    vkDestroyShaderModule(device, vertModule, nullptr);
-    vkDestroyShaderModule(device, fragModule, nullptr);
-    if (tescModule) vkDestroyShaderModule(device, tescModule, nullptr);
-    if (teseModule) vkDestroyShaderModule(device, teseModule, nullptr);
+    // Clear local shader module references; destruction handled by VulkanResourceManager
+    vertModule = VK_NULL_HANDLE;
+    fragModule = VK_NULL_HANDLE;
+    if (tescModule) tescModule = VK_NULL_HANDLE;
+    if (teseModule) teseModule = VK_NULL_HANDLE;
 }
 
 void WaterRenderer::createPostProcessPipeline() {
@@ -829,6 +793,9 @@ void WaterRenderer::createPostProcessPipeline() {
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &postProcessDescriptorSetLayout) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water post-process descriptor set layout!");
     }
+    // register descriptor set layout
+    app->resources.addDescriptorSetLayout(postProcessDescriptorSetLayout, "WaterRenderer: postProcessDescriptorSetLayout");
+    app->resources.addDescriptorSetLayout(postProcessDescriptorSetLayout, "WaterRenderer: postProcessDescriptorSetLayout");
     
     // Create pipeline layout
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
@@ -839,6 +806,9 @@ void WaterRenderer::createPostProcessPipeline() {
     if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &waterPostProcessPipelineLayout) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water post-process pipeline layout!");
     }
+    // register pipeline layout
+    app->resources.addPipelineLayout(waterPostProcessPipelineLayout, "WaterRenderer: waterPostProcessPipelineLayout");
+    app->resources.addPipelineLayout(waterPostProcessPipelineLayout, "WaterRenderer: waterPostProcessPipelineLayout");
     
     // Load shaders
     auto vertCode = FileReader::readFile("shaders/fullscreen.vert.spv");
@@ -938,9 +908,14 @@ void WaterRenderer::createPostProcessPipeline() {
         std::cerr << "[WaterRenderer] Warning: Failed to create post-process pipeline" << std::endl;
         waterPostProcessPipeline = VK_NULL_HANDLE;
     }
+    if (waterPostProcessPipeline != VK_NULL_HANDLE) {
+        app->resources.addPipeline(waterPostProcessPipeline, "WaterRenderer: waterPostProcessPipeline");
+        app->resources.addPipeline(waterPostProcessPipeline, "WaterRenderer: waterPostProcessPipeline");
+    }
     
-    vkDestroyShaderModule(device, vertModule, nullptr);
-    vkDestroyShaderModule(device, fragModule, nullptr);
+    // Clear local shader module references; destruction handled by VulkanResourceManager
+    vertModule = VK_NULL_HANDLE;
+    fragModule = VK_NULL_HANDLE;
     
     if (waterPostProcessPipeline != VK_NULL_HANDLE) {
         std::cout << "[WaterRenderer] Created post-process pipeline" << std::endl;
@@ -969,6 +944,8 @@ void WaterRenderer::createDescriptorSets() {
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &postProcessDescriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water post-process descriptor pool!");
     }
+    // Register post-process descriptor pool with resource manager
+    app->resources.addDescriptorPool(postProcessDescriptorPool, "WaterRenderer: postProcessDescriptorPool");
     
     // Allocate descriptor set
     VkDescriptorSetAllocateInfo allocInfo{};
@@ -980,6 +957,7 @@ void WaterRenderer::createDescriptorSets() {
     if (vkAllocateDescriptorSets(device, &allocInfo, &postProcessDescriptorSet) != VK_SUCCESS) {
         throw std::runtime_error("Failed to allocate water post-process descriptor set!");
     }
+    app->resources.addDescriptorSet(postProcessDescriptorSet, "WaterRenderer: postProcessDescriptorSet");
 }
 
 void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex) {
