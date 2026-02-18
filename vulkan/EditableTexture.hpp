@@ -24,13 +24,13 @@ public:
     void fill(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255);
     
     // Upload changes to GPU
-    void updateGPU();
+    void updateGPU(VulkanApp* app);
     
     // Render ImGui widget
     void renderImGui();
 
     // Debug: read back the first pixel from GPU and print its values
-    void debugDumpFirstPixel();
+    void debugDumpFirstPixel(VulkanApp* app);
     
     VkImageView getView() const;
     VkSampler getSampler() const;
@@ -46,7 +46,6 @@ public:
     TextureImage getTextureImage() const;
     
 private:
-    VulkanApp* app = nullptr;
     uint32_t width = 0;
     uint32_t height = 0;
     VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -70,7 +69,7 @@ private:
     
     void createImGuiDescriptor();
     
-    void transitionImageLayout(VkImageLayout oldLayout, VkImageLayout newLayout);
+    void transitionImageLayout(VulkanApp* app, VkImageLayout oldLayout, VkImageLayout newLayout);
     
-    void copyBufferToImage(VkBuffer buffer);
+    void copyBufferToImage(VulkanApp* app, VkBuffer buffer);
 };

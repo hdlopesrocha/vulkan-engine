@@ -50,10 +50,10 @@ public:
     // Queue a generation request from UI thread; flushed synchronously from main update
     void enqueueGenerate(const MixerParameters &params, int map = -1);
     // Flush pending generation requests synchronously (call from main update loop)
-    void flushPendingRequests();
+    void flushPendingRequests(VulkanApp* app);
 
     // Poll for completed async generation fences and invoke callbacks (called from update()/preRender)
-    void pollPendingGenerations();
+    void pollPendingGenerations(VulkanApp* app);
 
     // Diagnostics: number of pending async generations and a small log buffer
     size_t getPendingGenerationCount();
@@ -69,10 +69,10 @@ public:
 
     // Generate Perlin noise for a texture using explicit parameters (used by UI widget)
     // map: -1 = all maps, 0 = albedo, 1 = normal, 2 = bump
-    void generatePerlinNoise(MixerParameters &params, int map = -1);
+    void generatePerlinNoise(VulkanApp* app, MixerParameters &params, int map = -1);
 
 private:
-    VulkanApp* app = nullptr;
+    // No stored VulkanApp*; callers pass `VulkanApp*` to methods that need it
     VkSampler computeSampler = VK_NULL_HANDLE;
     // EditableTexture instances removed; use TextureArrayManager arrays instead
     uint32_t width = 0, height = 0;
@@ -112,7 +112,7 @@ public:
     bool isLayerGenerationPending(uint32_t layer);
     // Block until generation for a specific layer completes (returns true if waited)
     // This uses Vulkan fences and will block until the generation fence signals.
-    bool waitForLayerGeneration(uint32_t layer, uint64_t timeoutNs = UINT64_MAX);
+    bool waitForLayerGeneration(VulkanApp* app, uint32_t layer, uint64_t timeoutNs = UINT64_MAX);
 
     // Global instance accessor (set on init) so external systems can wait for generations
     static TextureMixer* getGlobalInstance();
@@ -131,7 +131,7 @@ public:
     uint32_t getArrayLayerCount() const;
 
     // Re-write compute descriptor sets after a TextureArrayManager is available
-    void updateComputeDescriptorSets();
+    void updateComputeDescriptorSets(VulkanApp* app);
 
     // Attach/replace the TextureArrayManager used and refresh descriptors
     void attachTextureArrayManager(TextureArrayManager* tam);
@@ -140,10 +140,10 @@ public:
 private:
 
 
-    void createComputePipeline();
-    void createTripleComputeDescriptorSet();
+    void createComputePipeline(VulkanApp* app);
+    void createTripleComputeDescriptorSet(VulkanApp* app);
     // Helper to create a descriptor set targeting a single map (map index: 0=albedo,1=normal,2=bump)
-    void createComputeDescriptorSet(int map, VkDescriptorSet& descSet);
+    void createComputeDescriptorSet(int map, VkDescriptorSet& descSet, VulkanApp* app);
 
 };
 

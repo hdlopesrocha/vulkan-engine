@@ -4,7 +4,6 @@
 #include <backends/imgui_impl_vulkan.h>
 
 void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt, const char* nm) {
-	this->app = app;
 	width = w;
 	height = h;
 	format = fmt;
@@ -114,7 +113,7 @@ void EditableTexture::fill(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
 	isDirty = true;
 }
 
-void EditableTexture::updateGPU() {
+void EditableTexture::updateGPU(VulkanApp* app) {
 	if (!isDirty) return;
 	VkDevice device = app->getDevice();
 	size_t bufSize = cpuData.size();
@@ -178,15 +177,15 @@ void EditableTexture::createImGuiDescriptor() {
 	}
 }
 
-void EditableTexture::transitionImageLayout(VkImageLayout oldLayout, VkImageLayout newLayout) {
+void EditableTexture::transitionImageLayout(VulkanApp* app, VkImageLayout oldLayout, VkImageLayout newLayout) {
 	app->transitionImageLayout(image, format, oldLayout, newLayout);
 }
 
-void EditableTexture::copyBufferToImage(VkBuffer buffer) {
+void EditableTexture::copyBufferToImage(VulkanApp* app, VkBuffer buffer) {
 	app->copyBufferToImage(buffer, image, width, height);
 }
 
-void EditableTexture::debugDumpFirstPixel() {
+void EditableTexture::debugDumpFirstPixel(VulkanApp* app) {
 	// Create a staging buffer large enough for one row
 	VkDevice device = app->getDevice();
 	size_t pixelSize = bytesPerPixel;

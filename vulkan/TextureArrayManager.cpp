@@ -215,6 +215,8 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 	}
 	albedoLayerViews.clear(); normalLayerViews.clear(); bumpLayerViews.clear();
 	albedoImTextures.clear(); normalImTextures.clear(); bumpImTextures.clear();
+	// clear stored app pointer (no longer valid after destroy)
+	this->app = nullptr;
 	// bump version to indicate array resources were destroyed
 	++this->version;
 	// notify listeners that arrays were destroyed
@@ -223,6 +225,9 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 
 void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, VulkanApp* app) {
 	if (!app) throw std::runtime_error("TextureArrayManager::allocate: app is null");
+
+	// Store back-pointer for legacy UI convenience (ImGui descriptors)
+	this->app = app;
 
 	layerAmount = layers;
 	width = w;
@@ -336,8 +341,8 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	albedoSampler = app->createTextureSampler(mipLevels);
 	normalSampler = app->createTextureSampler(mipLevels);
 	bumpSampler = app->createTextureSampler(mipLevels);
-	// store app reference for later load() calls
-	this->app = app;
+	// Do NOT store `app` in this manager; callers pass `app` explicitly to GPU operations
+	(void)app; // keep parameter used, but don't retain pointer
 	// initialize layer initialized flags
 	layerInitialized.clear();
 	layerInitialized.resize(layerAmount, 0);
@@ -375,12 +380,11 @@ static unsigned char* resizeNearest(const unsigned char* src, int srcW, int srcH
 	return dst;
 }
 
-uint TextureArrayManager::load(const char* albedoFile, const char* normalFile, const char* bumpFile) {
-	if (!app) throw std::runtime_error("TextureArrayManager::load: manager has no VulkanApp (call allocate(..., app) first)");
+uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char* normalFile, const char* bumpFile) {
+	if (!a) throw std::runtime_error("TextureArrayManager::load: app is null");
 	if (layerAmount == 0) throw std::runtime_error("TextureArrayManager::load: layerAmount == 0");
 	if (currentLayer >= layerAmount) throw std::runtime_error("TextureArrayManager::load: currentLayer >= layerAmount");
 
-	VulkanApp* a = this->app;
 	VkDevice device = a->getDevice();
 	std::cout << "[TextureArrayManager] Loading textures into layer " << currentLayer << ": "
 			  << (albedoFile ? albedoFile : "(none)") << ", "
@@ -516,8 +520,8 @@ uint TextureArrayManager::load(const char* albedoFile, const char* normalFile, c
 	return currentLayer++;
 }
 
-size_t TextureArrayManager::loadTriples(const std::vector<TextureTriple> &triples) {
-	if (!app) throw std::runtime_error("TextureArrayManager::loadTriples: manager has no VulkanApp");
+size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureTriple> &triples) {
+	if (!a) throw std::runtime_error("TextureArrayManager::loadTriples: app is null");
 	if (layerAmount == 0) throw std::runtime_error("TextureArrayManager::loadTriples: layerAmount == 0");
 	size_t loaded = 0;
 	for (const auto &t : triples) {
@@ -526,7 +530,7 @@ size_t TextureArrayManager::loadTriples(const std::vector<TextureTriple> &triple
 			break;
 		}
 		try {
-			load(t.albedo, t.normal, t.bump);
+			load(a, t.albedo, t.normal, t.bump);
 			++loaded;
 		} catch (const std::exception &e) {
 			fprintf(stderr, "[TextureArrayManager] Failed to load %s: %s\n", t.albedo ? t.albedo : "(null)", e.what());
@@ -578,12 +582,11 @@ void TextureArrayManager::removeAllocationListener(int listenerId) {
 	if (idx < allocationListeners.size()) allocationListeners[idx] = {};
 }
 
-uint TextureArrayManager::create() {
-	if (!app) throw std::runtime_error("TextureArrayManager::create: manager has no VulkanApp (call allocate(..., app) first)");
+uint TextureArrayManager::create(VulkanApp* a) {
+	if (!a) throw std::runtime_error("TextureArrayManager::create: app is null");
 	if (layerAmount == 0) throw std::runtime_error("TextureArrayManager::create: layerAmount == 0");
 	if (currentLayer >= layerAmount) throw std::runtime_error("TextureArrayManager::create: currentLayer >= layerAmount");
 
-	VulkanApp* a = this->app;
 	VkDevice device = a->getDevice();
 
 	VkDeviceSize imageSize = static_cast<VkDeviceSize>(width) * height * 4;
@@ -675,25 +678,23 @@ uint TextureArrayManager::create() {
 	return currentLayer++;
 }
 
-void TextureArrayManager::updateLayerFromEditable(uint32_t layer, const EditableTexture& tex) {
-	// Keep backward-compatible behavior (copy into albedo array)
-	updateLayerFromEditableMap(layer, tex, 0);
+void TextureArrayManager::updateLayerFromEditable(VulkanApp* app, uint32_t layer, const EditableTexture& tex) {
+	updateLayerFromEditableMap(app, layer, tex, 0);
 }
 
 #include "TextureMixer.hpp"
 
-void TextureArrayManager::updateLayerFromEditableMap(uint32_t layer, const EditableTexture& tex, int map) {
-	if (!app) throw std::runtime_error("TextureArrayManager::updateLayerFromEditableMap: no VulkanApp");
+void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t layer, const EditableTexture& tex, int map) {
+	if (!a) throw std::runtime_error("TextureArrayManager::updateLayerFromEditableMap: no VulkanApp");
 	if (layer >= layerAmount) throw std::runtime_error("TextureArrayManager::updateLayerFromEditableMap: layer out of range");
 
 	// If a per-layer generation is in-flight for this layer, wait for it to finish to avoid layout races
 	TextureMixer* gm = TextureMixer::getGlobalInstance();
 	if (gm && gm->isLayerGenerationPending(layer)) {
 		fprintf(stderr, "[TextureArrayManager] Waiting for pending generation on layer %u before copying\n", layer);
-		gm->waitForLayerGeneration(layer);
+		gm->waitForLayerGeneration(a, layer);
 	}
 
-	VulkanApp* a = this->app;
 	VkDevice device = a->getDevice();
 
 	VkImage srcImage = tex.getImage();
@@ -818,8 +819,8 @@ void TextureArrayManager::updateLayerFromEditableMap(uint32_t layer, const Edita
 			// If an ImGui descriptor exists for this layer, remove it so we can recreate a fresh one
 			if ((*texVec)[layer] && (VkDescriptorSet)(*texVec)[layer] != VK_NULL_HANDLE) {
 			VkDescriptorSet ds = (VkDescriptorSet)(*texVec)[layer];
-			if (app && app->hasPendingCommandBuffers()) {
-				app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+			if (a && a->hasPendingCommandBuffers()) {
+				a->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
 				(*texVec)[layer] = nullptr;
 			} else {
 				ImGui_ImplVulkan_RemoveTexture(ds);

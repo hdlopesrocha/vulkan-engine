@@ -38,9 +38,11 @@ public:
     VkSampler albedoSampler = VK_NULL_HANDLE;
     VkSampler normalSampler = VK_NULL_HANDLE;
     VkSampler bumpSampler = VK_NULL_HANDLE;
-    // Back-reference to the VulkanApp used to allocate resources (optional)
-    class VulkanApp* app = nullptr;
     uint currentLayer = 0;
+    // Back-pointer to `VulkanApp` (used for ImGui descriptor creation and legacy convenience methods).
+    // Kept for backward compatibility with UI code that calls `getImTexture()` without an app.
+    VulkanApp* app = nullptr;
+
     // Per-layer 2D views and ImGui texture IDs (created on demand for UI display)
     std::vector<VkImageView> albedoLayerViews;
     std::vector<VkImageView> normalLayerViews;
@@ -77,6 +79,13 @@ public:
     // Destroy GPU resources (images, views, memory, samplers)
     void destroy(class VulkanApp* app);
 
+    // Variant of load/create/update that accepts an explicit VulkanApp instead of relying on an internal pointer
+    uint load(class VulkanApp* app, const char* albedoFile, const char* normalFile, const char* bumpFile);
+    size_t loadTriples(class VulkanApp* app, const std::vector<TextureTriple> &triples);
+    uint create(class VulkanApp* app);
+    void updateLayerFromEditable(class VulkanApp* app, uint32_t layer, const class EditableTexture& tex);
+    void updateLayerFromEditableMap(class VulkanApp* app, uint32_t layer, const class EditableTexture& tex, int map);
+
     // Return an ImGui texture handle for a given array layer and map (0=albedo,1=normal,2=bump)
     ImTextureID getImTexture(size_t layer, int map);
 
@@ -88,10 +97,9 @@ public:
     size_t loadTriples(const std::vector<TextureTriple> &triples);
 
     // Update a specific array layer from an EditableTexture (copies image -> array layer)
-    void updateLayerFromEditable(uint32_t layer, const class EditableTexture& tex);
+    // (No-app convenience overload removed — prefer caller to pass `VulkanApp*`.)
 
-    // Update a specific array layer and map (0=albedo,1=normal,2=bump) from an EditableTexture
-    void updateLayerFromEditableMap(uint32_t layer, const class EditableTexture& tex, int map);
+
     // Query/set layer initialized state
     bool isLayerInitialized(uint32_t layer) const;
     void setLayerInitialized(uint32_t layer, bool v=true);

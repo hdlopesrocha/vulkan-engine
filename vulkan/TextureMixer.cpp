@@ -51,7 +51,6 @@ static TextureMixer* g_texture_mixer_instance = nullptr;
 TextureMixer* TextureMixer::getGlobalInstance() { return g_texture_mixer_instance; }
 
 void TextureMixer::init(VulkanApp* app, uint32_t width, uint32_t height, TextureArrayManager* textureArrayManager) {
-	this->app = app;
 	this->textureArrayManager = textureArrayManager;
 	this->width = width;
 	this->height = height;
@@ -59,9 +58,9 @@ void TextureMixer::init(VulkanApp* app, uint32_t width, uint32_t height, Texture
 	g_texture_mixer_instance = this;
 
 	// Create compute pipeline and descriptor sets so we can generate textures on demand
-	createComputePipeline();
+	createComputePipeline(app);
 	printf("[EditableTextureSet] Compute pipeline created for editable textures\n");
-	
+
 }
 
 // Backwards-compatible overload: callers that don't pass a TextureArrayManager
@@ -122,7 +121,7 @@ void TextureMixer::enqueueGenerate(const MixerParameters &params, int map) {
 }
 
 // Flush pending requests synchronously; intended to be called from main update() before frame command buffers are recorded
-void TextureMixer::flushPendingRequests() {
+void TextureMixer::flushPendingRequests(VulkanApp* app) {
 	std::vector<std::pair<MixerParameters,int>> tasks;
 	{
 		std::lock_guard<std::mutex> lk(pendingRequestsMutex);
@@ -131,7 +130,7 @@ void TextureMixer::flushPendingRequests() {
 	for (auto &t : tasks) {
 		// For lower-latency, submit generation asynchronously and track fences
 		try {
-			generatePerlinNoise(const_cast<MixerParameters&>(t.first), t.second);
+			generatePerlinNoise(app, const_cast<MixerParameters&>(t.first), t.second);
 		} catch (const std::exception &e) {
 			std::lock_guard<std::mutex> lkll(logsMutex);
 			char buf[256];
@@ -142,7 +141,7 @@ void TextureMixer::flushPendingRequests() {
 	}
 }
 
-void TextureMixer::pollPendingGenerations() {
+void TextureMixer::pollPendingGenerations(VulkanApp* app) {
 	// Pull any completed fences and promote their logs (check fences BEFORE letting VulkanApp destroy them)
 
 	std::vector<std::tuple<VkFence, uint32_t>> completed;
@@ -224,9 +223,9 @@ bool TextureMixer::isLayerGenerationPending(uint32_t layer) {
 	return false;
 }
 
-bool TextureMixer::waitForLayerGeneration(uint32_t layer, uint64_t timeoutNs) {
+bool TextureMixer::waitForLayerGeneration(VulkanApp* app, uint32_t layer, uint64_t timeoutNs) {
 	TextureMixer* g = getGlobalInstance();
-	if (!g || !g->app) return false;
+	if (!g || !app) return false;
 	std::vector<VkFence> fences;
 	{
 		std::lock_guard<std::mutex> lk(pendingFencesMutex);
@@ -235,11 +234,11 @@ bool TextureMixer::waitForLayerGeneration(uint32_t layer, uint64_t timeoutNs) {
 		}
 	}
 	if (fences.empty()) return false;
-	VkResult r = vkWaitForFences(g->app->getDevice(), static_cast<uint32_t>(fences.size()), fences.data(), VK_TRUE, timeoutNs);
+	VkResult r = vkWaitForFences(app->getDevice(), static_cast<uint32_t>(fences.size()), fences.data(), VK_TRUE, timeoutNs);
 	if (r == VK_SUCCESS) {
 		// process pending generations so state advances
-		if (g->app) g->app->processPendingCommandBuffers();
-		g->pollPendingGenerations();
+		if (app) app->processPendingCommandBuffers();
+		g->pollPendingGenerations(app);
 		return true;
 	}
 	return false;
@@ -267,7 +266,7 @@ void TextureMixer::cleanup() {
 }
 
 
-void TextureMixer::createComputePipeline() {
+void TextureMixer::createComputePipeline(VulkanApp* app) {
 	// Descriptor layout: three storage images (albedo, normal, bump) and three sampler arrays
 	VkDescriptorSetLayoutBinding bindings[6] = {};
 
@@ -355,8 +354,6 @@ void TextureMixer::createComputePipeline() {
 	}
 	// Track compute pipeline
 	app->resources.addPipeline(computePipeline, "TextureMixer: computePipeline");
-	// Also add to central resource manager
-	app->resources.addPipeline(computePipeline, "TextureMixer: computePipeline");
 
 	// Clear local shader module reference; destruction handled by VulkanResourceManager
 	computeShaderModule = VK_NULL_HANDLE;
@@ -383,18 +380,16 @@ void TextureMixer::createComputePipeline() {
 	}
 	// Track compute descriptor pool
 	app->resources.addDescriptorPool(computeDescriptorPool, "TextureMixer: computeDescriptorPool");
-	// Also add to central resource manager
-	app->resources.addDescriptorPool(computeDescriptorPool, "TextureMixer: computeDescriptorPool");
 
 	// Create a single descriptor set that binds albedo/normal/bump storage images and samplers
-	createTripleComputeDescriptorSet();
+	createTripleComputeDescriptorSet(app);
 	// Also create per-map descriptor sets so single-map generation is possible
-	createComputeDescriptorSet(0, albedoComputeDescSet);
-	createComputeDescriptorSet(1, normalComputeDescSet);
-	createComputeDescriptorSet(2, bumpComputeDescSet);
+	createComputeDescriptorSet(0, albedoComputeDescSet, app);
+	createComputeDescriptorSet(1, normalComputeDescSet, app);
+	createComputeDescriptorSet(2, bumpComputeDescSet, app);
 }
 
-void TextureMixer::createTripleComputeDescriptorSet() {
+void TextureMixer::createTripleComputeDescriptorSet(VulkanApp* app) {
 	VkDescriptorSetAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	allocInfo.descriptorPool = computeDescriptorPool;
@@ -500,7 +495,7 @@ void TextureMixer::createTripleComputeDescriptorSet() {
 	if (!writes.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
-void TextureMixer::updateComputeDescriptorSets() {
+void TextureMixer::updateComputeDescriptorSets(VulkanApp* app) {
 	if (!app) return;
 	if (!textureArrayManager) {
 		std::lock_guard<std::mutex> lk(logsMutex);
@@ -589,7 +584,7 @@ void TextureMixer::updateComputeDescriptorSets() {
 void TextureMixer::attachTextureArrayManager(TextureArrayManager* tam) {
 	this->textureArrayManager = tam;
 	fprintf(stderr, "[TextureMixer] attachTextureArrayManager called: tam=%p\n", (void*)tam);
-	updateComputeDescriptorSets();
+	// No stored app — caller should call updateComputeDescriptorSets(app) when app is available.
 }
 
 VkDescriptorSet TextureMixer::getPreviewDescriptor(int map) {
@@ -610,7 +605,7 @@ VkDescriptorSet TextureMixer::getPreviewDescriptor(int map, uint32_t layer) {
 	return getPreviewDescriptor(map);
 }
 
-void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet) {
+void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet, VulkanApp* app) {
 	VkDescriptorSetAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	allocInfo.descriptorPool = computeDescriptorPool;
@@ -695,7 +690,7 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet)
 	if (!writes.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
-void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
+void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, int map) {
 	// log immediate sync generation requests too for diagnostics
 	{
 		std::lock_guard<std::mutex> lkll(logsMutex);
@@ -776,7 +771,7 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 			if (app) app->waitForAllPendingCommandBuffers();
 			// If another generation for this layer is pending, wait for it.
 			if (isLayerGenerationPending(targetLayer)) {
-				waitForLayerGeneration(targetLayer);
+				waitForLayerGeneration(app, targetLayer);
 			}
 			// If tracked layout is TRANSFER_DST, wait briefly while pumping pending
 			// command buffers so any transfer completes.
@@ -1050,7 +1045,7 @@ void TextureMixer::generatePerlinNoise(MixerParameters &params, int map) {
 					snprintf(buf, sizeof(buf), "Waiting for generation to finish for layer=%u before mips/copy", targetLayer);
 					logs.emplace_back(buf);
 					// Block until generation completes
-					g->waitForLayerGeneration(targetLayer);
+					g->waitForLayerGeneration(app, targetLayer);
 				}
 			}
 // Sanity checks: ensure textureArrayManager and image handles exist before recording mips
