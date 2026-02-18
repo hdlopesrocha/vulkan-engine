@@ -5,11 +5,10 @@
 IndirectRenderer::IndirectRenderer() {}
 IndirectRenderer::~IndirectRenderer() {}
 
-void IndirectRenderer::init(VulkanApp* app) {
-    (void)app;
+void IndirectRenderer::init() {
 }
 
-void IndirectRenderer::cleanup(VulkanApp* app) {
+void IndirectRenderer::cleanup() {
     // meshes no longer own per-mesh buffers; clear CPU lists
     meshes.clear();
     // Clear local handles; destruction is centralized in VulkanResourceManager.
@@ -27,11 +26,11 @@ void IndirectRenderer::cleanup(VulkanApp* app) {
     computeDescriptorPool = VK_NULL_HANDLE;
 }
 
-uint32_t IndirectRenderer::addMesh(VulkanApp* app, const Geometry& mesh) {
-    return updateMesh(app, mesh, nextId++);
+uint32_t IndirectRenderer::addMesh(const Geometry& mesh) {
+    return updateMesh(mesh, nextId++);
 }
 
-uint32_t IndirectRenderer::updateMesh(VulkanApp* app, const Geometry& mesh, uint32_t customId) {
+uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
     std::lock_guard<std::mutex> guard(mutex);
     std::cout << "[IndirectRenderer::addMesh] Adding/replacing mesh ID " << customId << " with " << mesh.vertices.size() << " vertices and " << mesh.indices.size() << " indices.\n";
 
@@ -82,7 +81,7 @@ void IndirectRenderer::removeMesh(uint32_t meshId) {
     dirty = true;
 }
 
-bool IndirectRenderer::ensureCapacity(VulkanApp* app, size_t vertexCount, size_t indexCount, size_t meshCount) {
+bool IndirectRenderer::ensureCapacity(size_t vertexCount, size_t indexCount, size_t meshCount) {
     std::lock_guard<std::mutex> guard(mutex);
     
     // Add 25% headroom for future growth
@@ -715,7 +714,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     dirty = false;
 }
 
-void IndirectRenderer::drawMergedWithCull(VkCommandBuffer cmd, const glm::mat4& viewProj, VulkanApp* app, uint32_t maxDraws) {
+void IndirectRenderer::drawMergedWithCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws) {
     // NOTE: No mutex lock here - this is only called from the main render thread
     if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) return;
     // Default implementation splits: prepareCull() runs compute cull (outside render pass)
@@ -790,7 +789,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 0, nullptr, 2, barriers, 0, nullptr);
 }
 
-void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws) {
+void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
     // NOTE: No mutex lock here - this is only called from the main render thread
     if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) {
         static bool reported = false;
@@ -897,7 +896,7 @@ uint32_t IndirectRenderer::readVisibleCount(VulkanApp* app) const {
     return count;
 }
 
-void IndirectRenderer::updateModelsDescriptorSet(VulkanApp* app, VkDescriptorSet ds) {
+void IndirectRenderer::updateModelsDescriptorSet(VkDescriptorSet ds) {
     std::lock_guard<std::mutex> guard(mutex);
     // Mark descriptor as needing update; actual vkUpdateDescriptorSets deferred
     // to rebuild() which waits for GPU idle first.

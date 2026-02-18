@@ -38,14 +38,14 @@ public:
     IndirectRenderer();
     ~IndirectRenderer();
 
-    void init(VulkanApp* app);
-    void cleanup(VulkanApp* app);
+    void init();
+    void cleanup();
 
     // Add mesh and return mesh id. Model matrix is stored per-mesh and uploaded
     // to a small CPU-side array used for push constants (we still push per-draw).
-    uint32_t addMesh(VulkanApp* app, const Geometry& mesh);
+    uint32_t addMesh(const Geometry& mesh);
     // Add mesh with a custom ID (e.g., node ID from octree). If mesh with this ID exists, it is replaced.
-    uint32_t updateMesh(VulkanApp* app, const Geometry& mesh, uint32_t customId);
+    uint32_t updateMesh(const Geometry& mesh, uint32_t customId);
     void removeMesh(uint32_t meshId);
 
     // Rebuild GPU backing buffers from current CPU mesh list. Call before drawing
@@ -66,7 +66,7 @@ public:
     // Ensure GPU buffers have capacity for at least the given counts. 
     // Call this before a batch of addMesh+uploadMesh if you know the expected size.
     // Returns true if buffers are ready, false if they needed to be created/grown (triggers rebuild).
-    bool ensureCapacity(VulkanApp* app, size_t vertexCount, size_t indexCount, size_t meshCount);
+    bool ensureCapacity(size_t vertexCount, size_t indexCount, size_t meshCount);
     
     // Check if dirty flag is set (needs rebuild or incremental uploads)
     bool isDirty() const { return dirty; }
@@ -75,11 +75,11 @@ public:
     // Bind merged vertex/index buffers once and draw all provided mesh ids.
     // This avoids binding per-mesh buffers; push constants must be set per-draw
     // by this function (it will push each mesh's model before issuing its draw).
-    void drawMergedWithCull(VkCommandBuffer cmd, const glm::mat4& viewProj, VulkanApp* app, uint32_t maxDraws = 0);
+    void drawMergedWithCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws = 0);
     // Run GPU culling/compaction (must be called outside any render pass).
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws = 0);
     // Issue indirect draw using the compacted indirect buffer (call inside render pass).
-    void drawPrepared(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws = 0);
+    void drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws = 0);
     // Bind vertex/index buffers (call once before multiple drawIndirectOnly calls)
     void bindBuffers(VkCommandBuffer cmd);
     // Issue indirect draw only (buffers must already be bound via bindBuffers)
@@ -88,7 +88,7 @@ public:
     void drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pipelineLayout, uint32_t maxDraws = 0);
 
     // Update a descriptor set to point to the GPU-side models SSBO.
-    void updateModelsDescriptorSet(VulkanApp* app, VkDescriptorSet ds);
+    void updateModelsDescriptorSet(VkDescriptorSet ds);
     void setModelsDescriptorSet(VkDescriptorSet ds) { modelsDescriptorSet = ds; }
 
     // Accessors

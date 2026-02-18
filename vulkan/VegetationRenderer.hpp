@@ -12,14 +12,14 @@
 class VegetationRenderer {
 public:
     float billboardScale = 1.0f;
-    explicit VegetationRenderer(VulkanApp* app_ = nullptr);
+    explicit VegetationRenderer();
     ~VegetationRenderer();
 
-    void setTextureArrayManager(TextureArrayManager* mgr);
-    void onTextureArraysReallocated();
-    void init(VulkanApp* app_);
+    void setTextureArrayManager(TextureArrayManager* mgr, VulkanApp* app);
+    void onTextureArraysReallocated(VulkanApp* app);
+    void init();
     void cleanup();
-    void createPipelines(VkRenderPass renderPassOverride = VK_NULL_HANDLE);
+    void createPipelines(VulkanApp* app, VkRenderPass renderPassOverride = VK_NULL_HANDLE);
 
     // Register per-chunk vegetation instances
     void setChunkInstances(NodeID chunkId, const std::vector<glm::vec3>& positions);
@@ -28,14 +28,14 @@ public:
     void clearAllInstances();
 
     // Draw all visible vegetation chunks (frustum culling is per-chunk, matching geometry)
-    void draw(VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj);
+    void draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj);
 
     // Stats helpers
     size_t getChunkCount() const { return chunkInstanceCounts.size(); }
     size_t getInstanceTotal() const;
 
 private:
-    VulkanApp* app = nullptr;
+    
     VkPipeline vegetationPipeline = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
@@ -44,7 +44,7 @@ private:
     // Descriptor set allocated from the app's descriptor pool and re-created when the texture arrays are (re)allocated
     VkDescriptorSet vegDescriptorSet = VK_NULL_HANDLE;
     uint32_t vegDescriptorVersion = 0;
-    bool ensureVegDescriptorSet();
+    bool ensureVegDescriptorSet(VulkanApp* app);
     // Listener id returned from TextureArrayManager::addAllocationListener(), -1 if none
     int vegTextureListenerId = -1;
 
@@ -57,6 +57,8 @@ private:
     };
     std::unordered_map<NodeID, InstanceBuffer> chunkBuffers;
     std::unordered_map<NodeID, size_t> chunkInstanceCounts;
-    void createInstanceBuffer(NodeID chunkId, const std::vector<glm::vec3>& positions);
+    // Pending CPU-side positions that will be uploaded when `createPipelines(app, ...)` is called
+    std::unordered_map<NodeID, std::vector<glm::vec3>> pendingChunkPositions;
+    void createInstanceBuffer(NodeID chunkId, const std::vector<glm::vec3>& positions, VulkanApp* app);
     void destroyInstanceBuffer(NodeID chunkId);
 };

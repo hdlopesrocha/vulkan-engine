@@ -22,12 +22,11 @@ void VegetationRenderer::setChunkInstanceBuffer(NodeID chunkId, VkBuffer buffer,
 }
 
 
-VegetationRenderer::VegetationRenderer(VulkanApp* app_) : app(app_) {}
-VegetationRenderer::~VegetationRenderer() { cleanup(); }
+VegetationRenderer::VegetationRenderer() {}
+VegetationRenderer::~VegetationRenderer() { /* caller must call cleanup(app) */ }
 
-void VegetationRenderer::init(VulkanApp* app_) {
-    app = app_;
-    createPipelines();
+void VegetationRenderer::init() {
+
 }
 
 
@@ -53,7 +52,7 @@ void VegetationRenderer::cleanup() {
     }
 }
 
-void VegetationRenderer::setTextureArrayManager(TextureArrayManager* mgr) {
+void VegetationRenderer::setTextureArrayManager(TextureArrayManager* mgr, VulkanApp* app) {
     // Unregister old listener
     if (vegetationTextureArrayManager && vegTextureListenerId != -1) {
         vegetationTextureArrayManager->removeAllocationListener(vegTextureListenerId);
@@ -62,14 +61,14 @@ void VegetationRenderer::setTextureArrayManager(TextureArrayManager* mgr) {
     vegetationTextureArrayManager = mgr;
     if (!vegetationTextureArrayManager) return;
     // Try to allocate descriptor set immediately if possible
-    ensureVegDescriptorSet();
+    ensureVegDescriptorSet(app);
     // Register listener to react to future reallocations
-    vegTextureListenerId = vegetationTextureArrayManager->addAllocationListener([this]() {
-        this->onTextureArraysReallocated();
+    vegTextureListenerId = vegetationTextureArrayManager->addAllocationListener([this, app]() {
+        this->onTextureArraysReallocated(app);
     });
 }
 
-void VegetationRenderer::onTextureArraysReallocated() {
+void VegetationRenderer::onTextureArraysReallocated(VulkanApp* app) {
     fprintf(stderr, "[VEGETATION] onTextureArraysReallocated: invalidating vegDescriptorSet\n");
     if (!app) return;
     if (vegDescriptorSet != VK_NULL_HANDLE) {
@@ -79,14 +78,14 @@ void VegetationRenderer::onTextureArraysReallocated() {
         vegDescriptorSet = VK_NULL_HANDLE;
         vegDescriptorVersion = 0;
     }
-    if (ensureVegDescriptorSet()) {
+    if (ensureVegDescriptorSet(app)) {
         fprintf(stderr, "[VEGETATION] onTextureArraysReallocated: recreated vegDescriptorSet=%p\n", (void*)vegDescriptorSet);
     } else {
         fprintf(stderr, "[VEGETATION] onTextureArraysReallocated: descriptor still not ready\n");
     }
 }
 
-bool VegetationRenderer::ensureVegDescriptorSet() {
+bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
     if (!app) return false;
     if (!vegetationTextureArrayManager) return false;
     if (descriptorSetLayout == VK_NULL_HANDLE) {
@@ -128,7 +127,7 @@ bool VegetationRenderer::ensureVegDescriptorSet() {
 }
 
 
-void VegetationRenderer::createPipelines(VkRenderPass renderPassOverride) {
+void VegetationRenderer::createPipelines(VulkanApp* app, VkRenderPass renderPassOverride) {
     if (!app || !vegetationTextureArrayManager) return;
     VkDevice device = app->getDevice();
 
@@ -235,11 +234,18 @@ void VegetationRenderer::createPipelines(VkRenderPass renderPassOverride) {
     geomShader = VK_NULL_HANDLE;
     fragShader = VK_NULL_HANDLE;
     // shader modules are tracked by the central manager for final cleanup
+    // If there are pending CPU-side instance positions, upload them now that `app` is available
+    if (!pendingChunkPositions.empty()) {
+        for (auto &kv : pendingChunkPositions) {
+            createInstanceBuffer(kv.first, kv.second, app);
+        }
+        pendingChunkPositions.clear();
+    }
 }
 
 void VegetationRenderer::setChunkInstances(NodeID chunkId, const std::vector<glm::vec3>& positions) {
-    destroyInstanceBuffer(chunkId);
-    createInstanceBuffer(chunkId, positions);
+    // Defer GPU upload until pipelines are created (app available). Store CPU-side positions.
+    pendingChunkPositions[chunkId] = positions;
     chunkInstanceCounts[chunkId] = positions.size();
 }
 
@@ -258,7 +264,7 @@ size_t VegetationRenderer::getInstanceTotal() const {
 }
 
 
-void VegetationRenderer::draw(VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj) {
+void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj) {
     if (!app || vegetationPipeline == VK_NULL_HANDLE) {
         if (!app) fprintf(stderr, "[VEGETATION DRAW ERROR] app is null!\n");
         if (vegetationPipeline == VK_NULL_HANDLE) fprintf(stderr, "[VEGETATION DRAW ERROR] Attempted to bind VK_NULL_HANDLE pipeline!\n");
@@ -269,11 +275,8 @@ void VegetationRenderer::draw(VkCommandBuffer& commandBuffer, VkDescriptorSet ve
         return;
     }
 
-    //fprintf(stderr, "[VEGETATION DRAW] Binding pipeline=%p\n", (void*)vegetationPipeline);
-    VkDevice device = app->getDevice();
-
     // Ensure vegetation descriptor set is present and up-to-date
-    if (!ensureVegDescriptorSet()) {
+    if (!ensureVegDescriptorSet(app)) {
         fprintf(stderr, "[VEGETATION DRAW ERROR] vegDescriptorSet not ready, skipping draw.\n");
         return;
     }
@@ -287,7 +290,6 @@ void VegetationRenderer::draw(VkCommandBuffer& commandBuffer, VkDescriptorSet ve
         return;
     }
     VkDescriptorSet sets[2] = { globalSet, vegDescriptorSet };
-    //fprintf(stderr, "[VEGETATION DRAW] Binding descriptor sets: mainDs=%p, vegDs=%p\n", (void*)globalSet, (void*)vegDescriptorSet);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 2, sets, 0, nullptr);
 
     // Push billboard scale as push constant
@@ -302,7 +304,7 @@ void VegetationRenderer::draw(VkCommandBuffer& commandBuffer, VkDescriptorSet ve
     }
 }
 
-void VegetationRenderer::createInstanceBuffer(NodeID chunkId, const std::vector<glm::vec3>& positions) {
+void VegetationRenderer::createInstanceBuffer(NodeID chunkId, const std::vector<glm::vec3>& positions, VulkanApp* app) {
     if (!app || positions.empty()) return;
     VkDevice device = app->getDevice();
     VkPhysicalDevice physicalDevice = app->getPhysicalDevice();
@@ -464,10 +466,8 @@ void VegetationRenderer::createInstanceBuffer(NodeID chunkId, const std::vector<
 }
 
 void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId) {
-    if (!app) return;
     auto it = chunkBuffers.find(chunkId);
     if (it != chunkBuffers.end()) {
-        VkDevice device = app->getDevice();
         // Defer actual destruction to VulkanResourceManager; clear local handles
         it->second.buffer = VK_NULL_HANDLE;
         it->second.memory = VK_NULL_HANDLE;
