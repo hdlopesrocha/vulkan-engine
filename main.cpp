@@ -159,7 +159,7 @@ public:
         uint32_t texturesAmount = 0;
         textureArrayManager.currentLayer = 0;
         // Bulk load the triples directly using TextureTriple vector already defined above
-        texturesAmount = textureArrayManager.loadTriples(textureTriples);
+        texturesAmount = textureArrayManager.loadTriples(this, textureTriples);
         // Ensure mixer descriptor sets are updated with newly loaded arrays
         if (textureMixer) textureMixer->attachTextureArrayManager(&textureArrayManager);
         // Record into member so UI can display counts
@@ -175,12 +175,6 @@ public:
             textureArrayManager.getImTexture(i, 1);
             textureArrayManager.getImTexture(i, 2);
         }
-
-        printf("[MyApp::setup] Created and initialized SceneRenderer\n");
-        sceneRenderer = new SceneRenderer(this, &textureArrayManager, &materialManager);
-        sceneRenderer->init(this, getMainDescriptorSet());
-        sceneRenderer->createPipelines();
-
 
         // Trigger initial generation for configured mixers so UI previews show meaningful results
         // (Previously this was deferred to the user pressing "Generate" in the UI)
@@ -214,7 +208,9 @@ public:
         settingsWidget = std::make_shared<SettingsWidget>(settings);
         // Inform SceneRenderer about the MaterialManager
         waterWidget = std::make_shared<WaterWidget>(sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr);
-        renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(this, sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr, sceneRenderer ? sceneRenderer->solidRenderer.get() : nullptr);
+        renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr, sceneRenderer ? sceneRenderer->solidRenderer.get() : nullptr);
+        // Initialize widget frame info from MyApp (avoid storing VulkanApp* inside widget)
+        if (renderPassDebugWidget) renderPassDebugWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
         billboardWidget = std::make_shared<BillboardWidget>();
         billboardWidgetManager = std::make_unique<BillboardWidgetManager>(billboardWidget, sceneRenderer ? sceneRenderer->vegetationRenderer.get() : nullptr, nullptr);
         billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureArrayManager);
@@ -223,19 +219,27 @@ public:
         debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &cubeCount);
         shadowWidget = std::make_shared<ShadowMapWidget>(sceneRenderer ? sceneRenderer->shadowMapper.get() : nullptr, &shadowParams);
         lightWidget = std::make_shared<LightWidget>(&light);
-        vulkanResourcesManagerWidget = std::make_shared<VulkanResourcesManagerWidget>(&resources, this);
+        vulkanResourcesManagerWidget = std::make_shared<VulkanResourcesManagerWidget>(&resources);
+        vulkanResourcesManagerWidget->updateWithApp(this);
 
         vegetationTextureArrayManager.allocate(3, 512, 512);
         vegetationTextureArrayManager.initialize(this);
         vegetationAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
 
+
+
+        printf("[MyApp::setup] Created and initialized SceneRenderer\n");
+        sceneRenderer = new SceneRenderer(&textureArrayManager, &materialManager);
+        sceneRenderer->init(this);
+        sceneRenderer->createPipelines(this);
+        
         // Initialize and load the main scene so rendering has valid scene data
         mainScene = new LocalScene();
 
         // If you have vegetation: sceneRenderer->vegetationRenderer->rebuildBuffers(this);
 
-        SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler(mainScene);
-        LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler(mainScene);
+        SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler(mainScene, this);
+        LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler(mainScene, this);
         UniqueOctreeChangeHandler uniqueSolidHandler = UniqueOctreeChangeHandler(solidHandler);
         UniqueOctreeChangeHandler uniqueLiquidHandler = UniqueOctreeChangeHandler(liquidHandler);
 
@@ -305,16 +309,16 @@ public:
             sceneRenderer->waterRenderer->advanceTime(deltaTime);
         }
         // Flush any pending texture generation requests so they happen before command buffers are recorded
-        if (textureMixer) textureMixer->flushPendingRequests();
+        if (textureMixer) textureMixer->flushPendingRequests(this);
         // Poll for completed async generations and process their fences
-        if (textureMixer) textureMixer->pollPendingGenerations();
+        if (textureMixer) textureMixer->pollPendingGenerations(this);
 
     }
 
     void preRenderPass(VkCommandBuffer &commandBuffer) override {
         // Shadow pass (uses separate command buffer internally)
         if (sceneRenderer) {
-            sceneRenderer->shadowPass(commandBuffer, queryPool, shadowPassDescriptorSet, uboStatic, true, false);
+            sceneRenderer->shadowPass(this, commandBuffer, queryPool, shadowPassDescriptorSet, uboStatic, true, false);
         } else {
             fprintf(stderr, "[MyApp::preRenderPass] sceneRenderer is null, skipping shadow pass\n");
         }
@@ -367,8 +371,8 @@ public:
                 sceneRenderer->solidRenderer->beginPass(commandBuffer, frameIdx, colorClear, depthClear);
 
             VkRenderPassBeginInfo unusedRpInfo{};
-            sceneRenderer->skyPass(commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, viewProj);
-            sceneRenderer->mainPass(commandBuffer, unusedRpInfo, frameIdx, waterEnabled, vegetationEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode, profilingEnabled, queryPool,
+            sceneRenderer->skyPass(this, commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, viewProj);
+            sceneRenderer->mainPass(this, commandBuffer, unusedRpInfo, frameIdx, waterEnabled, vegetationEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode, profilingEnabled, queryPool,
                 viewProj, uboStatic, sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), true, false, true, 0, 0.0f, 0.0f);
 
             // Render debug cubes for expanded octree nodes + node instances from change handlers
@@ -390,7 +394,7 @@ public:
 
                 if (!debugCubes.empty()) {
                     sceneRenderer->debugCubeRenderer->setCubes(debugCubes);
-                    sceneRenderer->debugCubeRenderer->render(commandBuffer, getMainDescriptorSet());
+                    sceneRenderer->debugCubeRenderer->render(this, commandBuffer, getMainDescriptorSet());
                 }
             }
 
@@ -426,7 +430,7 @@ public:
 
                 if (!boxes.empty()) {
                     sceneRenderer->boundingBoxRenderer->setCubes(boxes);
-                    sceneRenderer->boundingBoxRenderer->render(commandBuffer, getMainDescriptorSet());
+                    sceneRenderer->boundingBoxRenderer->render(this, commandBuffer, getMainDescriptorSet());
                 }
             }
 
@@ -434,7 +438,7 @@ public:
 
             // Run water geometry pass offscreen and bind scene textures for post-process
             if (waterEnabled) {
-                sceneRenderer->waterPass(commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), profilingEnabled, queryPool,
+                sceneRenderer->waterPass(this, commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), profilingEnabled, queryPool,
                     sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime());
             }
         }
@@ -519,6 +523,10 @@ public:
 
         cubeCount = sceneRenderer ? sceneRenderer->getRegisteredModelCount() : 0;
 
+        // Update per-frame widget state (avoid storing VulkanApp* inside widgets)
+        if (renderPassDebugWidget) renderPassDebugWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
+        if (vulkanResourcesManagerWidget) vulkanResourcesManagerWidget->updateWithApp(this);
+
         // Render all widgets
         widgetManager.renderAll();
     }
@@ -555,6 +563,7 @@ public:
         // Composite offscreen scene + water into the swapchain
         if (sceneRenderer && sceneRenderer->waterRenderer) {
             sceneRenderer->waterRenderer->renderWaterPostProcess(
+                this,
                 commandBuffer,
                 renderPassInfo.framebuffer,
                 renderPassInfo.renderPass,
@@ -583,7 +592,7 @@ public:
     void clean() override {
         // Cleanup scene renderer and all sub-renderers
         if (sceneRenderer) {
-            sceneRenderer->cleanup();
+            sceneRenderer->cleanup(this);
         }
         // NOTE: Vulkan-owned objects for global managers are now cleaned up by
         // `VulkanResourceManager::cleanup(device)`. Avoid calling manager-level
@@ -594,7 +603,7 @@ public:
 
     void onSwapchainResized(uint32_t width, uint32_t height) override {
         if (sceneRenderer) {
-            sceneRenderer->onSwapchainResized(width, height);
+            sceneRenderer->onSwapchainResized(this, width, height);
         }
     }
 
