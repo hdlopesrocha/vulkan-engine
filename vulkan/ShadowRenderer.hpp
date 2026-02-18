@@ -4,30 +4,28 @@
 
 class ShadowRenderer {
 public:
-    ShadowRenderer(VulkanApp* app, uint32_t shadowMapSize = 2048);
+    ShadowRenderer(uint32_t shadowMapSize = 2048);
     ~ShadowRenderer();
-    void init();
-    void cleanup();
+    void init(VulkanApp* app);
+    void cleanup(VulkanApp* app);
     // Render shadow pass for a collection of objects
-    void beginShadowPass(VkCommandBuffer commandBuffer, const glm::mat4& lightSpaceMatrix);
-    void endShadowPass(VkCommandBuffer commandBuffer);
+    void beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, const glm::mat4& lightSpaceMatrix);
+    void endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer);
     // Render a single object to shadow map
-    void renderObject(VkCommandBuffer commandBuffer, 
-                      const VertexBufferObject& vbo, VkDescriptorSet descriptorSet);
+    // (use the VulkanApp pointer overload declared in the debug helpers section below)
     // Getters for resources
     VkImageView getShadowMapView() const { return shadowMapView; }
     VkSampler getShadowMapSampler() const { return shadowMapSampler; }
     VkDescriptorSet getImGuiDescriptorSet() const { return shadowMapImGuiDescSet; }
     uint32_t getShadowMapSize() const { return shadowMapSize; }
-    VkDescriptorSetLayout getShadowDescriptorSetLayout() const;
+    VkDescriptorSetLayout getShadowDescriptorSetLayout(VulkanApp* app) const;
     // debug: read back depth image to host and write PGM
-    void readbackShadowDepth();
+    // (use the VulkanApp pointer overload declared in the debug helpers section below)
     // Public getters for internal Vulkan handles
     VkRenderPass getShadowRenderPass() const { return shadowRenderPass; }
     VkFramebuffer getShadowFramebuffer() const { return shadowFramebuffer; }
     // Public getters for internal Vulkan handles
 private:
-    VulkanApp* vulkanApp;
     uint32_t shadowMapSize;
     // Shadow map resources
     VkImage shadowMapImage = VK_NULL_HANDLE;
@@ -51,10 +49,14 @@ private:
     bool requestWireframeReadbackFlag = false;
     bool performingWireframeReadback = false;
     
-    void createShadowMap();
-    void createShadowRenderPass();
-    void createShadowFramebuffer();
-    void createShadowPipeline();
+    void createShadowMap(VulkanApp* app);
+    void createShadowRenderPass(VulkanApp* app);
+    void createShadowFramebuffer(VulkanApp* app);
+    void createShadowPipeline(VulkanApp* app);
     // Request next shadow pass be rendered in wireframe and read back
     void requestWireframeReadback();
+    // Debug helpers
+    void renderObject(VulkanApp* app, VkCommandBuffer commandBuffer, 
+                      const VertexBufferObject& vbo, VkDescriptorSet descriptorSet);
+    void readbackShadowDepth(VulkanApp* app);
 };

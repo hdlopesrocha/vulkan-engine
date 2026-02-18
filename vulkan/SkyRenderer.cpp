@@ -6,11 +6,11 @@
 #include "VertexBufferObjectBuilder.hpp"
 #include "../math/SphereModel.hpp"
 
-SkyRenderer::SkyRenderer(VulkanApp* app_) : app(app_) {}
+SkyRenderer::SkyRenderer() {}
 
 SkyRenderer::~SkyRenderer() { cleanup(); }
 
-void SkyRenderer::init(VkRenderPass renderPassOverride) {
+void SkyRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
     // create sky gradient pipeline (vertex + fragment)
     skyVertModule = app->createShaderModule(FileReader::readFile("shaders/sky.vert.spv"));
     skyFragModule = app->createShaderModule(FileReader::readFile("shaders/sky.frag.spv"));
@@ -71,7 +71,7 @@ void SkyRenderer::init(VkRenderPass renderPassOverride) {
         fprintf(stderr, "[SKY GRID PIPELINE] Created pipeline=%p layout=%p\n", (void*)skyGridPipeline, (void*)skyGridPipelineLayout);
     }
 }
-void SkyRenderer::render(VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkySettings::Mode skyMode) {
+void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkySettings::Mode skyMode) {
     // Select pipeline based on sky mode
         VkPipeline activePipeline = (skyMode == SkySettings::Mode::Grid) ? skyGridPipeline : skyPipeline;
         VkPipelineLayout activeLayout = (skyMode == SkySettings::Mode::Grid) ? skyGridPipelineLayout : skyPipelineLayout;
@@ -147,7 +147,7 @@ void SkyRenderer::cleanup() {
     skyVBO.indexCount = 0;
 }
 
-void SkyRenderer::initSky(SkySettings &settings, VkDescriptorSet descriptorSet) {
+void SkyRenderer::initSky(VulkanApp* app, SkySettings &settings, VkDescriptorSet descriptorSet) {
     if (!app) return;
     // Create sphere VBO if not present
     if (skyVBO.vertexBuffer.buffer == VK_NULL_HANDLE && skyVBO.indexCount == 0) {
@@ -162,11 +162,11 @@ void SkyRenderer::initSky(SkySettings &settings, VkDescriptorSet descriptorSet) 
     }
 
     if (descriptorSet != VK_NULL_HANDLE && !skySphere) {
-        skySphere = std::make_unique<SkySphere>(app);
-        skySphere->init(settings, descriptorSet);
+        skySphere = std::make_unique<SkySphere>();
+        skySphere->init(app, settings, descriptorSet);
     }
 }
 
-void SkyRenderer::update() {
-    if (skySphere) skySphere->update();
+void SkyRenderer::update(VulkanApp* app) {
+    if (skySphere) skySphere->update(app);
 }

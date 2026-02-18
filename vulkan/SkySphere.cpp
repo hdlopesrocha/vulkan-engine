@@ -3,11 +3,11 @@
 #include "../Uniforms.hpp"
 #include <glm/glm.hpp>
 
-SkySphere::SkySphere(VulkanApp* app_) : app(app_) {}
+SkySphere::SkySphere() {}
 
 SkySphere::~SkySphere() { cleanup(); }
 
-void SkySphere::init(SkySettings& settings,
+void SkySphere::init(VulkanApp* app, SkySettings& settings,
                      VkDescriptorSet descriptorSet) {
     skySettings = &settings;
     VkDeviceSize sbSize = sizeof(SkyUniform);
@@ -49,12 +49,12 @@ void SkySphere::init(SkySettings& settings,
 
     if (descriptorSet != VK_NULL_HANDLE) {
         skyWrite.dstSet = descriptorSet;
-        app->updateDescriptorSet(descriptorSet, { skyWrite });
+        app->updateDescriptorSet({ skyWrite });
     }
 
 }
 
-void SkySphere::update() {
+void SkySphere::update(VulkanApp* app) {
     if (skyBuffer.buffer == VK_NULL_HANDLE) return;
     SkyUniform skyData;
     if (skySettings) {

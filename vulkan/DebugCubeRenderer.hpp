@@ -14,22 +14,22 @@ public:
         glm::vec3 color;
     };
 
-    explicit DebugCubeRenderer(VulkanApp* app);
+    explicit DebugCubeRenderer();
     ~DebugCubeRenderer();
 
     // Initialize pipeline and load grid texture
-    void init(VkRenderPass renderPassOverride = VK_NULL_HANDLE);
+    void init(VulkanApp* app, VkRenderPass renderPassOverride = VK_NULL_HANDLE);
 
     // Set which cubes to render this frame
     void setCubes(const std::vector<CubeWithColor>& cubes);
 
     // Render all registered cubes
-    void render(VkCommandBuffer& cmd, VkDescriptorSet descriptorSet);
+    void render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet descriptorSet);
 
     void cleanup();
 
 private:
-    VulkanApp* app = nullptr;
+    // VulkanApp is not stored; pass `app` into methods that need it.
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkShaderModule vertModule = VK_NULL_HANDLE;
@@ -54,8 +54,8 @@ private:
     // Cubes to render this frame
     std::vector<CubeWithColor> activeCubes;
     
-    void createCubeVBO();
-    void loadGridTexture();
-    void createGridDescriptorSet();
-    void updateInstanceBuffer();
+    void createCubeVBO(VulkanApp* app);
+    void loadGridTexture(VulkanApp* app);
+    void createGridDescriptorSet(VulkanApp* app);
+    void updateInstanceBuffer(VulkanApp* app);
 };

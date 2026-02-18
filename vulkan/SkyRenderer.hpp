@@ -11,25 +11,24 @@
 
 class SkyRenderer {
 public:
-    explicit SkyRenderer(VulkanApp* app);
+    explicit SkyRenderer();
     ~SkyRenderer();
 
     // Create sky pipelines; renderPassOverride lets callers supply a compatible render pass
-    void init(VkRenderPass renderPassOverride = VK_NULL_HANDLE);
+    void init(VulkanApp* app, VkRenderPass renderPassOverride = VK_NULL_HANDLE);
 
     // Render sky sphere using internal VBO/descriptor/uniform
-    void render(VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkySettings::Mode skyMode);
+    void render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkySettings::Mode skyMode);
 
     // Initialize the sky sphere and internal VBO (optional)
-    void initSky(SkySettings& skySettings, VkDescriptorSet descriptorSet);
+    void initSky(VulkanApp* app, SkySettings& skySettings, VkDescriptorSet descriptorSet);
 
     // Update sky internals (e.g. SkySphere animation)
-    void update();
+    void update(VulkanApp* app);
 
     void cleanup();
 
 private:
-    VulkanApp* app = nullptr;
     VkPipeline skyPipeline = VK_NULL_HANDLE;        // Gradient sky pipeline
     VkPipelineLayout skyPipelineLayout = VK_NULL_HANDLE;
     VkPipeline skyGridPipeline = VK_NULL_HANDLE;   // Grid sky pipeline

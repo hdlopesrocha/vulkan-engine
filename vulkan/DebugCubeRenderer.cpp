@@ -6,19 +6,19 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <stb/stb_image.h>
 
-DebugCubeRenderer::DebugCubeRenderer(VulkanApp* app_) : app(app_) {}
+DebugCubeRenderer::DebugCubeRenderer() {}
 
 DebugCubeRenderer::~DebugCubeRenderer() { cleanup(); }
 
-void DebugCubeRenderer::init(VkRenderPass renderPassOverride) {
+void DebugCubeRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
     // Create cube VBO
-    createCubeVBO();
+    createCubeVBO(app);
     
     // Load grid texture
-    loadGridTexture();
+    loadGridTexture(app);
     
     // Create descriptor set for grid texture
-    createGridDescriptorSet();
+    createGridDescriptorSet(app);
     
     // Create shader modules
     vertModule = app->createShaderModule(FileReader::readFile("shaders/debug_cube.vert.spv"));
@@ -65,7 +65,7 @@ void DebugCubeRenderer::init(VkRenderPass renderPassOverride) {
     }
 }
 
-void DebugCubeRenderer::createCubeVBO() {
+void DebugCubeRenderer::createCubeVBO(VulkanApp* app) {
     // Create a unit cube with min=(0,0,0) and max=(1,1,1)
     BoundingBox unitBox(glm::vec3(0.0f), glm::vec3(1.0f));
     BoxLineGeometry cubeGeom(unitBox);
@@ -74,7 +74,7 @@ void DebugCubeRenderer::createCubeVBO() {
     printf("[DebugCubeRenderer] Created cube VBO: vertices=%zu indices=%zu\n", cubeGeom.vertices.size(), cubeGeom.indices.size());
 }
 
-void DebugCubeRenderer::loadGridTexture() {
+void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
     // Load grid.png texture
     int texWidth, texHeight, texChannels;
     stbi_uc* pixels = stbi_load("textures/grid.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
@@ -201,7 +201,7 @@ void DebugCubeRenderer::loadGridTexture() {
     printf("[DebugCubeRenderer] Loaded grid texture: %dx%d\n", texWidth, texHeight);
 }
 
-void DebugCubeRenderer::createGridDescriptorSet() {
+void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
     // Create descriptor set layout for texture (binding 1) and instance buffer (binding 2)
     VkDescriptorSetLayoutBinding samplerLayoutBinding{};
     samplerLayoutBinding.binding = 1;
@@ -310,7 +310,7 @@ void DebugCubeRenderer::createGridDescriptorSet() {
     vkUpdateDescriptorSets(app->getDevice(), 1, &bufferWrite, 0, nullptr);
 }
 
-void DebugCubeRenderer::updateInstanceBuffer() {
+void DebugCubeRenderer::updateInstanceBuffer(VulkanApp* app) {
     if (activeCubes.empty()) return;
     
     // Resize buffer if needed
@@ -377,13 +377,13 @@ void DebugCubeRenderer::setCubes(const std::vector<CubeWithColor>& cubes) {
     activeCubes = cubes;
 }
 
-void DebugCubeRenderer::render(VkCommandBuffer& cmd, VkDescriptorSet descriptorSet) {
+void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet descriptorSet) {
     if (pipeline == VK_NULL_HANDLE || activeCubes.empty() || cubeVBO.vertexBuffer.buffer == VK_NULL_HANDLE || cubeVBO.indexCount == 0) {
         return;
     }
     
     // Update instance buffer before rendering
-    updateInstanceBuffer();
+    updateInstanceBuffer(app);
     
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     
