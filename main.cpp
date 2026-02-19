@@ -96,6 +96,9 @@ public:
     WidgetManager widgetManager;
     uint32_t loadedTextureLayers = 0;
 
+    // Helper to setup texture arrays, mixer and material GPU state
+    void setupTextures();
+
     // Billboard editing / vegetation resources
     BillboardManager billboardManager;
     AtlasManager vegetationAtlasManager;
@@ -120,95 +123,18 @@ public:
     bool sceneLoading = false;
 
     void setup() override {
+        textureArrayManager = TextureArrayManager();
+        // Texture setup moved to helper
+        setupTextures();
 
-        uint32_t mixWidth = (textureArrayManager.width ? textureArrayManager.width : 1024u);
-        uint32_t mixHeight = (textureArrayManager.height ? textureArrayManager.height : 1024u);
-        textureMixer = std::make_shared<TextureMixer>();
-        textureMixer->init(this, mixWidth, mixHeight, &textureArrayManager);
-        mixerParams.clear();
-        uint32_t layerCount = textureArrayManager.layerAmount ? textureArrayManager.layerAmount : 1u;
-        uint32_t editableLayer = (loadedTextureLayers < layerCount) ? loadedTextureLayers : 0u;
-        uint32_t availableLayers = std::max(layerCount, std::max(loadedTextureLayers, 1u));
-   
-
-        // If the texture arrays aren't allocated yet, allocate defaults here so other systems have arrays
-        if (textureArrayManager.layerAmount == 0) {
-            const uint32_t defaultLayers = 64;
-            const uint32_t defaultSize = 1024;
-            textureArrayManager.allocate(defaultLayers, defaultSize, defaultSize);
-            textureArrayManager.initialize(this);
-            printf("[MyApp::setup] Allocated default texture arrays: layers=%u size=%ux%u\n", defaultLayers, defaultSize, defaultSize);
-            if (textureMixer) textureMixer->attachTextureArrayManager(&textureArrayManager); // refresh compute descriptors now that arrays exist
-        }
-
-        // Use shared TextureTriple defined in TextureArrayManager.hpp
-        const std::vector<TextureTriple> textureTriples = {
-            { "textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg" },
-            { "textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg" },
-            { "textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg" },
-            { "textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg" },
-            { "textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg" },
-            { "textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg" },
-            { "textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg" },
-            { "textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg" },
-            { "textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg" },
-            { "textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg" },
-            { "textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg" }
-        };
-
-        uint32_t texturesAmount = 0;
-        textureArrayManager.currentLayer = 0;
-        // Bulk load the triples directly using TextureTriple vector already defined above
-        texturesAmount = textureArrayManager.loadTriples(this, textureTriples);
-        // Ensure mixer descriptor sets are updated with newly loaded arrays
-        if (textureMixer) textureMixer->attachTextureArrayManager(&textureArrayManager);
-        // Record into member so UI can display counts
-
-        mixerParams.push_back(MixerParameters{texturesAmount++, 3u, 8u}); // grassMixSand
-        mixerParams.push_back(MixerParameters{texturesAmount++, 3u, 9u}); // grassMixSnow
-        mixerParams.push_back(MixerParameters{texturesAmount++, 7u, 3u}); // rockMixGrass
-        mixerParams.push_back(MixerParameters{texturesAmount++, 7u, 9u}); // rockMixSnow
-        mixerParams.push_back(MixerParameters{texturesAmount++, 7u, 8u}); // rockMixSand
-        
-        for (uint32_t i = 0; i < texturesAmount; ++i) {
-            textureArrayManager.getImTexture(i, 0);
-            textureArrayManager.getImTexture(i, 1);
-            textureArrayManager.getImTexture(i, 2);
-        }
-
-        // Trigger initial generation for configured mixers so UI previews show meaningful results
-        // (Previously this was deferred to the user pressing "Generate" in the UI)
-        fprintf(stderr, "[TextureMixer] Running initial generation for configured mixers...\n");
-        textureMixer->setEditableLayer(editableLayer);
-        // Prime ImGui descriptors so the texture viewer shows immediately
-        textureArrayManager.setLayerInitialized(editableLayer, true);
-        textureArrayManager.getImTexture(editableLayer, 0);
-        textureArrayManager.getImTexture(editableLayer, 1);
-        textureArrayManager.getImTexture(editableLayer, 2);
-
-        // Generate textures for all configured mixer entries (async submissions tracked by TextureMixer)
-        if (textureMixer) textureMixer->generateInitialTextures(mixerParams);
-
-        textureMixerWidget = std::make_shared<TextureMixerWidget>(textureMixer, mixerParams, "Texture Mixer");
-
-        size_t materialCount = std::max<size_t>(static_cast<size_t>(loadedTextureLayers), static_cast<size_t>(loadedTextureLayers+ 1));
-        if (materialCount == 0) {
-            materialCount = layerCount ? layerCount : 1u;
-        }
-        materials.assign(materialCount, MaterialProperties{});
-        // Allocate GPU-side material storage via MaterialManager
-        materialManager.allocate(materialCount, this);
-        for (size_t i = 0; i < materialCount; ++i) materialManager.update(i, materials[i], this);
-
-
-        textureViewer = std::make_shared<TextureViewer>();
-        textureViewer->init(&textureArrayManager, &materials);
-        textureViewer->setOnMaterialChanged([](size_t) {});
 
         printf("[MyApp::setup] Created and initialized SceneRenderer\n");
         sceneRenderer = new SceneRenderer(&textureArrayManager, &materialManager);
         sceneRenderer->init(this);
 
+        textureViewer = std::make_shared<TextureViewer>();
+        textureViewer->init(&textureArrayManager, &materials);
+        textureViewer->setOnMaterialChanged([](size_t) {});
 
         skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
         // Create settings widget (was missing previously)
@@ -229,13 +155,9 @@ public:
         vulkanResourcesManagerWidget = std::make_shared<VulkanResourcesManagerWidget>(&resources);
         vulkanResourcesManagerWidget->updateWithApp(this);
 
-        vegetationTextureArrayManager.allocate(3, 512, 512);
-        vegetationTextureArrayManager.initialize(this);
+        vegetationTextureArrayManager.allocate(3, 512, 512, this);
         vegetationAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
 
-
-
-        
         
         // Initialize and load the main scene so rendering has valid scene data
         mainScene = new LocalScene();
@@ -296,6 +218,8 @@ public:
         printf("[Camera Setup] Final Position: (%.1f, %.1f, %.1f)\n", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
         printf("[Camera Setup] Forward: (%.3f, %.3f, %.3f)\n", camera.getForward().x, camera.getForward().y, camera.getForward().z);
     }
+
+// (setup implementation defined out-of-line below)
 
     void update(float deltaTime) override {
         // Poll keyboard input and publish events
@@ -601,6 +525,78 @@ public:
         }
     }
 };
+
+// Implementation: setupTextures (defined out-of-line to avoid inline/member-definition issues)
+void MyApp::setupTextures() {
+
+    textureArrayManager.allocate(32, 1024, 1024, this);
+
+    uint32_t layerCount =  textureArrayManager.layerAmount;
+    uint32_t editableLayer = (loadedTextureLayers < layerCount) ? loadedTextureLayers : 0u;
+    uint32_t availableLayers = std::max(layerCount, std::max(loadedTextureLayers, 1u));
+
+
+    // Use shared TextureTriple defined in TextureArrayManager.hpp
+    const std::vector<TextureTriple> textureTriples = {
+        { "textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg" },
+        { "textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg" },
+        { "textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg" },
+        { "textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg" },
+        { "textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg" },
+        { "textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg" },
+        { "textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg" },
+        { "textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg" },
+        { "textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg" },
+        { "textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg" },
+        { "textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg" }
+    };
+
+    uint32_t texturesAmount = 0;
+    // Bulk load the triples directly using TextureTriple vector already defined above
+    texturesAmount = textureArrayManager.loadTriples(this, textureTriples);
+    // Ensure mixer descriptor sets are updated with newly loaded arrays
+    
+    textureMixer = std::make_shared<TextureMixer>();
+    textureMixer->init(this, &textureArrayManager);
+    textureMixer->attachTextureArrayManager(&textureArrayManager);
+    // Record into member so UI can display counts
+    mixerParams.clear();
+    mixerParams.push_back(MixerParameters{texturesAmount++, 3u, 8u}); // grassMixSand
+    mixerParams.push_back(MixerParameters{texturesAmount++, 3u, 9u}); // grassMixSnow
+    mixerParams.push_back(MixerParameters{texturesAmount++, 7u, 3u}); // rockMixGrass
+    mixerParams.push_back(MixerParameters{texturesAmount++, 7u, 9u}); // rockMixSnow
+    mixerParams.push_back(MixerParameters{texturesAmount++, 7u, 8u}); // rockMixSand
+
+    for (uint32_t i = 0; i < texturesAmount; ++i) {
+        textureArrayManager.getImTexture(i, 0);
+        textureArrayManager.getImTexture(i, 1);
+        textureArrayManager.getImTexture(i, 2);
+    }
+
+    // Trigger initial generation for configured mixers so UI previews show meaningful results
+    // (Previously this was deferred to the user pressing "Generate" in the UI)
+    fprintf(stderr, "[TextureMixer] Running initial generation for configured mixers...\n");
+    textureMixer->setEditableLayer(editableLayer);
+    // Prime ImGui descriptors so the texture viewer shows immediately
+    textureArrayManager.setLayerInitialized(editableLayer, true);
+    textureArrayManager.getImTexture(editableLayer, 0);
+    textureArrayManager.getImTexture(editableLayer, 1);
+    textureArrayManager.getImTexture(editableLayer, 2);
+
+    // Generate textures for all configured mixer entries (async submissions tracked by TextureMixer)
+    textureMixer->generateInitialTextures(mixerParams);
+
+    textureMixerWidget = std::make_shared<TextureMixerWidget>(textureMixer, mixerParams, "Texture Mixer");
+
+    size_t materialCount = std::max<size_t>(static_cast<size_t>(loadedTextureLayers), static_cast<size_t>(loadedTextureLayers + 1));
+    if (materialCount == 0) {
+        materialCount = layerCount ? layerCount : 1u;
+    }
+    materials.assign(materialCount, MaterialProperties{});
+    // Allocate GPU-side material storage via MaterialManager
+    materialManager.allocate(materialCount, this);
+    for (size_t i = 0; i < materialCount; ++i) materialManager.update(i, materials[i], this);
+}
 
 int main(int argc, char** argv) {
     try {
