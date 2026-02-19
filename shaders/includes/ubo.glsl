@@ -29,9 +29,7 @@ layout(std430, set = 0, binding = 5) readonly buffer Materials {
 };
 
 // Per-draw model matrices for indirect rendering
-layout(std430, set = 0, binding = 8) readonly buffer Models {
-    mat4 models[];
-};
+// Models SSBO removed — shaders use identity models
 
 // Dedicated UBO for skysphere parameters. Bound separately so sky shaders
 // can read a small, focused uniform block instead of the large scene UBO.

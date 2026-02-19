@@ -24,10 +24,9 @@ layout(location = 10) out vec3 fragSharpNormal;      // face normal
 void main() {
     fragColor = inColor;
     fragUV = inUV;
-    // Get model matrix from models SSBO
-    // For indirect draws: use gl_BaseInstanceARB which gets firstInstance from the command
-    mat4 model = models[gl_BaseInstanceARB];
-    // Transform normal to world space using the model matrix
+    // Models removed: always use identity model matrix
+    mat4 model = mat4(1.0);
+    // Transform normal to world space (model is identity here)
     // For uniform scaling, mat3(model) works. For non-uniform scaling, use transpose(inverse(model))
     fragNormal = normalize(mat3(model) * inNormal);
     
