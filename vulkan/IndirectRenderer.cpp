@@ -16,7 +16,6 @@ void IndirectRenderer::cleanup() {
     indexBuffer = {};
     indirectBuffer = {};
     compactIndirectBuffer = {};
-    modelsBuffer = {};
     boundsBuffer = {};
     visibleCountBuffer = {};
 
@@ -39,7 +38,6 @@ uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
     m.baseVertex = static_cast<uint32_t>(mergedVertices.size());
     m.firstIndex = static_cast<uint32_t>(mergedIndices.size());
     m.indexCount = static_cast<uint32_t>(mesh.indices.size());
-    m.model = glm::mat4(1.0f);
     m.active = true;
 
     if (mesh.vertices.empty()) {
@@ -215,13 +213,7 @@ void IndirectRenderer::uploadMeshMetaBuffers(VulkanApp* app) {
         memcpy(data, &cmd, cmdSize);
         vkUnmapMemory(app->getDevice(), indirectBuffer.memory);
         info.indirectOffset = cmdOffset;
-        if (modelsBuffer.buffer != VK_NULL_HANDLE) {
-            VkDeviceSize modelOffset = activeIdx * sizeof(glm::mat4);
-            glm::mat4 model = info.model;
-            vkMapMemory(app->getDevice(), modelsBuffer.memory, modelOffset, sizeof(glm::mat4), 0, &data);
-            memcpy(data, &model, sizeof(glm::mat4));
-            vkUnmapMemory(app->getDevice(), modelsBuffer.memory);
-        }
+        // Models SSBO removed: shaders use identity model matrices, skip writing models
         if (boundsBuffer.buffer != VK_NULL_HANDLE) {
             VkDeviceSize boundsOffset = activeIdx * 2 * sizeof(glm::vec4);
             glm::vec4 bounds[2] = { info.boundsMin, info.boundsMax };
@@ -406,43 +398,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         offsetCursor += sizeof(VkDrawIndexedIndirectCommand);
     }
 
-    // Build and upload a GPU-side SSBO containing model matrices in the same
-    // order as the indirect commands so shaders can index by draw ID.
-    std::vector<glm::mat4> models;
-    models.reserve(meshes.size());
-    for (const auto& kv : meshes) {
-        const MeshInfo& info = kv.second;
-        if (!info.active) continue;
-        models.push_back(info.model);
-    }
-    
-    static bool printedModels = false;
-    if (!printedModels && !models.empty()) {
-        printf("[IndirectRenderer::rebuild] Sample model matrix [0]:\n");
-        printf("  [%.2f %.2f %.2f %.2f]\n", models[0][0][0], models[0][1][0], models[0][2][0], models[0][3][0]);
-        printf("  [%.2f %.2f %.2f %.2f]\n", models[0][0][1], models[0][1][1], models[0][2][1], models[0][3][1]);
-        printf("  [%.2f %.2f %.2f %.2f]\n", models[0][0][2], models[0][1][2], models[0][2][2], models[0][3][2]);
-        printf("  [%.2f %.2f %.2f %.2f]\n", models[0][0][3], models[0][1][3], models[0][2][3], models[0][3][3]);
-        printedModels = true;
-    }
-
-    VkDeviceSize modelsBufferSize = sizeof(glm::mat4) * meshCapacity;
-    VkDeviceSize modelsDataSize = sizeof(glm::mat4) * models.size();
-    if (modelsBuffer.buffer != VK_NULL_HANDLE) {
-        // Defer actual destruction to VulkanResourceManager; clear local handle
-        modelsBuffer = {};
-    }
-    if (meshCapacity > 0) {
-        // Use host-visible memory for models - updated when meshes change
-        modelsBuffer = app->createBuffer(modelsBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (modelsDataSize > 0) {
-            void* mdata;
-            vkMapMemory(app->getDevice(), modelsBuffer.memory, 0, modelsDataSize, 0, &mdata);
-            memcpy(mdata, models.data(), (size_t)modelsDataSize);
-            vkUnmapMemory(app->getDevice(), modelsBuffer.memory);
-        }
-    }
+    // Models SSBO removed: shaders use identity model matrices, no modelsBuffer
 
     // Upload bounds SSBO (two vec4s per active mesh: min, max)
     std::vector<glm::vec4> boundsData;
@@ -517,18 +473,33 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
     // Create compute pipeline + descriptor set for GPU culling if not present
     if (computePipeline == VK_NULL_HANDLE) {
-        // Descriptor layout bindings: 0=inCmds,1=outCmds,2=models,3=bounds,4=visibleCount
-        VkDescriptorSetLayoutBinding bindings[5] = {};
-        for (uint32_t i = 0; i < 5; ++i) {
-            bindings[i].binding = i;
-            bindings[i].descriptorCount = 1;
-            bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-            bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        }
+        // Descriptor layout bindings match shaders/indirect.comp:
+        //  binding 0 = inCmds, 1 = outCmds, 2 = bounds, 3 = VisibleCount
+        VkDescriptorSetLayoutBinding bindings[4] = {};
+        // inCmds (binding 0)
+        bindings[0].binding = 0;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        // outCmds (binding 1)
+        bindings[1].binding = 1;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        // bounds (binding 2)
+        bindings[2].binding = 2;
+        bindings[2].descriptorCount = 1;
+        bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        // VisibleCount (binding 3)
+        bindings[3].binding = 3;
+        bindings[3].descriptorCount = 1;
+        bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 5;
+        layoutInfo.bindingCount = 4; // bindings[0..3]
         layoutInfo.pBindings = bindings;
 
         if (vkCreateDescriptorSetLayout(app->getDevice(), &layoutInfo, nullptr, &computeDescriptorSetLayout) != VK_SUCCESS) {
@@ -620,10 +591,6 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         outBuf.buffer = compactIndirectBuffer.buffer;
         outBuf.offset = 0;
         outBuf.range = VK_WHOLE_SIZE;
-        VkDescriptorBufferInfo modelsBuf{};
-        modelsBuf.buffer = modelsBuffer.buffer;
-        modelsBuf.offset = 0;
-        modelsBuf.range = VK_WHOLE_SIZE;
         VkDescriptorBufferInfo boundsBuf{};
         boundsBuf.buffer = boundsBuffer.buffer;
         boundsBuf.offset = 0;
@@ -633,15 +600,14 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         countBuf.offset = 0;
         countBuf.range = VK_WHOLE_SIZE;
 
-        // Check all buffers are valid before updating descriptor set
+        // Check required buffers are valid before updating descriptor set
         if (indirectBuffer.buffer == VK_NULL_HANDLE ||
             compactIndirectBuffer.buffer == VK_NULL_HANDLE ||
-            modelsBuffer.buffer == VK_NULL_HANDLE ||
             boundsBuffer.buffer == VK_NULL_HANDLE ||
             visibleCountBuffer.buffer == VK_NULL_HANDLE) {
             fprintf(stderr, "[IndirectRenderer] Skipping compute descriptor set update: one or more buffers are VK_NULL_HANDLE\n");
         } else {
-            VkWriteDescriptorSet writes[5] = {};
+            VkWriteDescriptorSet writes[4] = {};
             writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[0].dstSet = computeDescriptorSet;
             writes[0].dstBinding = 0;
@@ -649,92 +615,30 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             writes[0].descriptorCount = 1;
             writes[0].pBufferInfo = &inBuf;
 
-            writes[1] = writes[0]; writes[1].dstBinding = 1; writes[1].pBufferInfo = &outBuf;
-            writes[2] = writes[0]; writes[2].dstBinding = 2; writes[2].pBufferInfo = &modelsBuf;
-            writes[3] = writes[0]; writes[3].dstBinding = 3; writes[3].pBufferInfo = &boundsBuf;
-            writes[4] = writes[0]; writes[4].dstBinding = 4; writes[4].pBufferInfo = &countBuf;
+            writes[1] = writes[0];
+            writes[1].dstBinding = 1; 
+            writes[1].pBufferInfo = &outBuf;
+            // bounds is at binding 2 in the shader
+            writes[2] = writes[0]; 
+            writes[2].dstBinding = 2;
+            writes[2].pBufferInfo = &boundsBuf;
+            // visible count is at binding 3 in the shader
+            writes[3] = writes[0]; 
+            writes[3].dstBinding = 3;
+            writes[3].pBufferInfo = &countBuf;
 
-            vkUpdateDescriptorSets(app->getDevice(), 5, writes, 0, nullptr);
+            vkUpdateDescriptorSets(app->getDevice(), 4, writes, 0, nullptr);
         }
     }
 
     // Try to load optional device function for indirect-count draws
     cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCountKHR");
 
-    // Always update the main descriptor set with the models SSBO after rebuild
-    if (modelsBuffer.buffer != VK_NULL_HANDLE) {
-        VkDescriptorSet mainSet = app->getMainDescriptorSet();
-        if (mainSet != VK_NULL_HANDLE) {
-            VkDescriptorBufferInfo bufInfo{};
-            bufInfo.buffer = modelsBuffer.buffer;
-            bufInfo.offset = 0;
-            bufInfo.range = VK_WHOLE_SIZE;
-            VkWriteDescriptorSet write{};
-            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = mainSet;
-            write.dstBinding = 8; // Models SSBO binding in main descriptor set
-            write.dstArrayElement = 0;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            write.descriptorCount = 1;
-            write.pBufferInfo = &bufInfo;
-            vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
-            modelsDescriptorSet = mainSet;
-            static bool printedOnce = false;
-            if (!printedOnce) {
-                printf("[IndirectRenderer::rebuild] Updated main descriptor set binding 8 with models buffer=%p\n", (void*)modelsBuffer.buffer);
-                printedOnce = true;
-            }
-        }
-    }
-
-    // Perform deferred descriptor update (now safe since we called vkDeviceWaitIdle above)
-    if (descriptorDirty && modelsBuffer.buffer != VK_NULL_HANDLE) {
-        // Update the main descriptor set (set 0) binding 8 with the models SSBO
-        VkDescriptorSet mainSet = app->getMainDescriptorSet();
-        if (mainSet != VK_NULL_HANDLE) {
-            VkDescriptorBufferInfo bufInfo{};
-            bufInfo.buffer = modelsBuffer.buffer;
-            bufInfo.offset = 0;
-            bufInfo.range = VK_WHOLE_SIZE;
-            VkWriteDescriptorSet write{};
-            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = mainSet;
-            write.dstBinding = 8; // Models SSBO binding in main descriptor set
-            write.dstArrayElement = 0;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            write.descriptorCount = 1;
-            write.pBufferInfo = &bufInfo;
-            vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
-            modelsDescriptorSet = mainSet;
-        }
-        descriptorDirty = false;
-        pendingDescriptorSet = VK_NULL_HANDLE;
-    }
+    // Models SSBO removed: skip updating main descriptor set for models
+    descriptorDirty = false;
+    pendingDescriptorSet = VK_NULL_HANDLE;
 
     dirty = false;
-}
-
-void IndirectRenderer::drawMergedWithCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws) {
-    // NOTE: No mutex lock here - this is only called from the main render thread
-    if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) return;
-    // Default implementation splits: prepareCull() runs compute cull (outside render pass)
-    // and drawPrepared() issues the indirect draw (inside render pass). For backward
-    // compatibility, drawMergedWithCull will perform both steps here (caller may
-    // instead call prepareCull/drawPrepared to ensure correct render-pass placement).
-    prepareCull(cmd, viewProj, maxDraws);
-    // After preparing, issue draw commands into the current command buffer.
-    // Bind merged geometry
-    VkBuffer vbs[] = { vertexBuffer.buffer };
-    VkDeviceSize offsets[] = { 0 };
-    vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
-    vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-    uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
-    if (cmdDrawIndexedIndirectCount) {
-        cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffer.buffer, 0, visibleCountBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
-    } else {
-        vkCmdDrawIndexedIndirect(cmd, compactIndirectBuffer.buffer, 0, static_cast<uint32_t>(indirectCommands.size()), sizeof(VkDrawIndexedIndirectCommand));
-    }
 }
 
 void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws) {
@@ -871,9 +775,7 @@ void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pi
         }
         return;
     }
-    // Push identity matrix for model transform
-    // glm::mat4 identity = glm::mat4(1.0f);
-    // vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &identity);
+    // No per-draw model push-constants: models are identity in shaders.
 
     uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
     if (cmdDrawIndexedIndirectCount) {
@@ -896,15 +798,7 @@ uint32_t IndirectRenderer::readVisibleCount(VulkanApp* app) const {
     return count;
 }
 
-void IndirectRenderer::updateModelsDescriptorSet(VkDescriptorSet ds) {
-    std::lock_guard<std::mutex> guard(mutex);
-    // Mark descriptor as needing update; actual vkUpdateDescriptorSets deferred
-    // to rebuild() which waits for GPU idle first.
-    descriptorDirty = true;
-    pendingDescriptorSet = ds;
-    // Also mark buffers dirty to trigger rebuild() on next frame
-    dirty = true;
-}
+
 
 IndirectRenderer::MeshInfo IndirectRenderer::getMeshInfo(uint32_t meshId) const {
     IndirectRenderer::MeshInfo empty;

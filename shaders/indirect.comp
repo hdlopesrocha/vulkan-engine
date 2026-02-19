@@ -18,15 +18,11 @@ layout(std430, binding = 1) writeonly buffer OutCmds {
     DrawCmd cmds[];
 } outCmds;
 
-layout(std430, binding = 2) readonly buffer Models {
-    mat4 models[];
-} modelsBuf;
-
-layout(std430, binding = 3) readonly buffer Bounds {
+layout(std430, binding = 2) readonly buffer Bounds {
     vec4 data[]; // min, max pairs
 } boundsBuf;
 
-layout(std430, binding = 4) buffer VisibleCount {
+layout(std430, binding = 3) buffer VisibleCount {
     uint count;
 };
 
@@ -35,8 +31,8 @@ layout(push_constant) uniform PC {
     uint targetLayer; // 0 = LAYER_OPAQUE, 1 = LAYER_TRANSPARENT (unused for now - all meshes in renderer are same layer)
 } pc;
 
-// Robust AABB vs frustum test using extracting clip-space planes from the viewProj*model matrix.
-// Normalize planes for stable distance tests and avoid false negatives when the camera is inside the AABB.
+// Robust AABB vs frustum test using extracted clip-space planes from the viewProj matrix
+// (models are identity in this pipeline). Normalize planes for stable distance tests and avoid false negatives when the camera is inside the AABB.
 bool aabbVisible(mat4 mvp, vec3 minp, vec3 maxp) {
     // Extract rows: GLSL `mat4` is column-major, so mvp[i] returns a column.
     // Build rows explicitly from columns
@@ -101,15 +97,15 @@ void main() {
         return;
     }
 
+    // Models are identity now
     mat4 model = mat4(1.0);
-    if (idx < modelsBuf.models.length()) model = modelsBuf.models[idx];
     mat4 mvp = pc.viewProj * model;
 
     if (!aabbVisible(mvp, minp, maxp)) return;
 
     uint dst = atomicAdd(count, 1);
-    // Keep the original firstInstance (idx) so shader can look up correct model matrix
+    // Keep the original firstInstance (idx) for identification (models are identity)
     DrawCmd cmd = inCmds.cmds[idx];
-    cmd.firstInstance = idx;  // Use input index for model lookup
+    cmd.firstInstance = idx;
     outCmds.cmds[dst] = cmd;
 }

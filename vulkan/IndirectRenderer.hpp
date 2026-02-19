@@ -27,7 +27,6 @@ public:
         uint32_t baseVertex = 0;
         uint32_t firstIndex = 0;
         uint32_t indexCount = 0;
-        glm::mat4 model = glm::mat4(1.0f);
         glm::vec4 boundsMin = glm::vec4(0.0f); // object-space AABB min (xyz)
         glm::vec4 boundsMax = glm::vec4(0.0f); // object-space AABB max (xyz)
         VkDeviceSize indirectOffset = 0; // byte offset into indirect buffer
@@ -41,8 +40,7 @@ public:
     void init();
     void cleanup();
 
-    // Add mesh and return mesh id. Model matrix is stored per-mesh and uploaded
-    // to a small CPU-side array used for push constants (we still push per-draw).
+    // Add mesh and return mesh id. Mesh transform is identity on GPU (no per-mesh model SSBO/push-constants).
     uint32_t addMesh(const Geometry& mesh);
     // Add mesh with a custom ID (e.g., node ID from octree). If mesh with this ID exists, it is replaced.
     uint32_t updateMesh(const Geometry& mesh, uint32_t customId);
@@ -72,10 +70,7 @@ public:
     bool isDirty() const { return dirty; }
 
 public:
-    // Bind merged vertex/index buffers once and draw all provided mesh ids.
-    // This avoids binding per-mesh buffers; push constants must be set per-draw
-    // by this function (it will push each mesh's model before issuing its draw).
-    void drawMergedWithCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws = 0);
+  
     // Run GPU culling/compaction (must be called outside any render pass).
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws = 0);
     // Issue indirect draw using the compacted indirect buffer (call inside render pass).
@@ -87,15 +82,10 @@ public:
     // Issue indirect draw with custom pipeline layout for push constants
     void drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pipelineLayout, uint32_t maxDraws = 0);
 
-    // Update a descriptor set to point to the GPU-side models SSBO.
-    void updateModelsDescriptorSet(VkDescriptorSet ds);
-    void setModelsDescriptorSet(VkDescriptorSet ds) { modelsDescriptorSet = ds; }
-
     // Accessors
     const Buffer& getVertexBuffer() const { return vertexBuffer; }
     const Buffer& getIndexBuffer() const { return indexBuffer; }
     const Buffer& getIndirectBuffer() const { return indirectBuffer; }
-    const Buffer& getModelsBuffer() const { return modelsBuffer; }
     const Buffer& getCompactIndirectBuffer() const { return compactIndirectBuffer; }
     VkPipeline getComputePipeline() const { return computePipeline; }
 
@@ -112,7 +102,7 @@ public:
     // Host-read of the GPU-visible count (requires GPU idle; stats-only).
     uint32_t readVisibleCount(VulkanApp* app) const;
 
-    // Query mesh info (copy) for use in the app (model matrix etc.)
+    // Query mesh info (copy) for use in the app (bounds, offsets, flags).
     MeshInfo getMeshInfo(uint32_t meshId) const;
 
     // Return a copy of all active mesh infos (thread-safe)
@@ -148,7 +138,6 @@ private:
     Buffer vertexBuffer;
     Buffer indexBuffer;
     Buffer indirectBuffer;
-    Buffer modelsBuffer;
     
     // Capacity tracking (in elements, not bytes)
     size_t vertexCapacity = 0;
@@ -158,5 +147,4 @@ private:
     bool dirty = false;
     bool descriptorDirty = false;  // flag for deferred descriptor update
     VkDescriptorSet pendingDescriptorSet = VK_NULL_HANDLE; // ds to update (VK_NULL_HANDLE means use/create material set)
-    VkDescriptorSet modelsDescriptorSet = VK_NULL_HANDLE;
 };
