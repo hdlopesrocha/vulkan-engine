@@ -23,11 +23,6 @@ void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount) {
     }
 }
 
-void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h) {
-	layerAmount = layers;
-	width = w;
-	height = h;
-}
 
 void TextureArrayManager::notifyAllocationListeners() {
 	std::vector<std::function<void()>> listenersCopy;

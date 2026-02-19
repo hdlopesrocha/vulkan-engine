@@ -59,8 +59,7 @@ public:
     std::vector<VkImageLayout> bumpLayerLayouts;
 
     TextureArrayManager() = default;
-    TextureArrayManager(uint32_t layers, uint32_t w, uint32_t h)
-        : layerAmount(layers), width(w), height(h) {}
+
     // Simple version counter incremented whenever GPU resources are (re)allocated
     uint32_t version = 0;
     uint32_t getVersion() const { return version; }
@@ -69,12 +68,6 @@ public:
     // Returns a listener id (>=0) that can be used to remove the listener.
     int addAllocationListener(std::function<void()> cb);
     void removeAllocationListener(int listenerId);
-
-    // Allocate host-only metadata (no GPU resources)
-    void allocate(uint32_t layers, uint32_t w, uint32_t h);
-
-    // Public initializer that completes GPU resource allocation using an app
-    void initialize(class VulkanApp* app) { allocate(layerAmount, width, height, app); }
 
     // Destroy GPU resources (images, views, memory, samplers)
     void destroy(class VulkanApp* app);
@@ -103,6 +96,7 @@ public:
     // Query/set layer initialized state
     bool isLayerInitialized(uint32_t layer) const;
     void setLayerInitialized(uint32_t layer, bool v=true);
+    void allocate(uint32_t layers, uint32_t w, uint32_t h, class VulkanApp* app);
 
     // Query and update per-layer layouts (map: 0=albedo,1=normal,2=bump)
     VkImageLayout getLayerLayout(int map, uint32_t layer) const;
@@ -115,9 +109,4 @@ private:
     // Notify registered listeners safely (copies callbacks and catches exceptions)
     void notifyAllocationListeners();
 
-    // Create an empty (zeroed) triple at the current layer for later editing, then increment layer counter
-    uint create();
-
-    // Allocate GPU image arrays via the provided VulkanApp
-    void allocate(uint32_t layers, uint32_t w, uint32_t h, class VulkanApp* app);
 };

@@ -50,10 +50,10 @@ TextureMixer::TextureMixer() {}
 static TextureMixer* g_texture_mixer_instance = nullptr;
 TextureMixer* TextureMixer::getGlobalInstance() { return g_texture_mixer_instance; }
 
-void TextureMixer::init(VulkanApp* app, uint32_t width, uint32_t height, TextureArrayManager* textureArrayManager) {
+void TextureMixer::init(VulkanApp* app, TextureArrayManager* textureArrayManager) {
 	this->textureArrayManager = textureArrayManager;
-	this->width = width;
-	this->height = height;
+	this->width = textureArrayManager->width;
+	this->height = textureArrayManager->height;
 	// Register global instance so other systems can query/wait on layer generations
 	g_texture_mixer_instance = this;
 
@@ -61,11 +61,6 @@ void TextureMixer::init(VulkanApp* app, uint32_t width, uint32_t height, Texture
 	createComputePipeline(app);
 	printf("[EditableTextureSet] Compute pipeline created for editable textures\n");
 
-}
-
-// Backwards-compatible overload: callers that don't pass a TextureArrayManager
-void TextureMixer::init(VulkanApp* app, uint32_t width, uint32_t height) {
-	init(app, width, height, nullptr);
 }
 
 // setTextureManager removed — EditableTextureSet creates its own compute sampler
