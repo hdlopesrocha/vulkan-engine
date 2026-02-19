@@ -56,7 +56,7 @@ private:
     // Request next shadow pass be rendered in wireframe and read back
     void requestWireframeReadback();
     // Debug helpers
-    void renderObject(VulkanApp* app, VkCommandBuffer commandBuffer, 
+    void render(VulkanApp* app, VkCommandBuffer commandBuffer, 
                       const VertexBufferObject& vbo, VkDescriptorSet descriptorSet);
     void readbackShadowDepth(VulkanApp* app);
 };

@@ -200,19 +200,26 @@ public:
         materialManager.allocate(materialCount, this);
         for (size_t i = 0; i < materialCount; ++i) materialManager.update(i, materials[i], this);
 
+
         textureViewer = std::make_shared<TextureViewer>();
         textureViewer->init(&textureArrayManager, &materials);
         textureViewer->setOnMaterialChanged([](size_t) {});
+
+        printf("[MyApp::setup] Created and initialized SceneRenderer\n");
+        sceneRenderer = new SceneRenderer(&textureArrayManager, &materialManager);
+        sceneRenderer->init(this);
+
+
         skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
         // Create settings widget (was missing previously)
         settingsWidget = std::make_shared<SettingsWidget>(settings);
         // Inform SceneRenderer about the MaterialManager
         waterWidget = std::make_shared<WaterWidget>(sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr);
-        renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr, sceneRenderer ? sceneRenderer->solidRenderer.get() : nullptr);
+        renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(sceneRenderer->waterRenderer.get() , sceneRenderer->solidRenderer.get());
         // Initialize widget frame info from MyApp (avoid storing VulkanApp* inside widget)
         if (renderPassDebugWidget) renderPassDebugWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
         billboardWidget = std::make_shared<BillboardWidget>();
-        billboardWidgetManager = std::make_unique<BillboardWidgetManager>(billboardWidget, sceneRenderer ? sceneRenderer->vegetationRenderer.get() : nullptr, nullptr);
+        billboardWidgetManager = std::make_unique<BillboardWidgetManager>(billboardWidget, sceneRenderer->vegetationRenderer.get() , nullptr);
         billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureArrayManager);
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
@@ -228,10 +235,7 @@ public:
 
 
 
-        printf("[MyApp::setup] Created and initialized SceneRenderer\n");
-        sceneRenderer = new SceneRenderer(&textureArrayManager, &materialManager);
-        sceneRenderer->init(this);
-        sceneRenderer->createPipelines(this);
+        
         
         // Initialize and load the main scene so rendering has valid scene data
         mainScene = new LocalScene();
@@ -250,16 +254,13 @@ public:
         uniqueSolidHandler.handleEvents();
         uniqueLiquidHandler.handleEvents();
 
-        // Force indirect buffer rebuild after all initial meshes are loaded (ignore dirty flag)
-        if (sceneRenderer && sceneRenderer->solidRenderer) {
-            sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
-            sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
-        }
-        if (sceneRenderer && sceneRenderer->waterRenderer) {
-            sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
-            sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
-        }
 
+        sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
+        sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
+
+        sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
+        sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
+    
         // Create octree explorer widget bound to loaded scene
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
 
@@ -352,96 +353,81 @@ public:
             fprintf(stderr, "[MyApp::preRenderPass] sceneRenderer is null, skipping UBO upload\n");
         }
 
-        // Run GPU frustum culling for opaque geometry
-        if (sceneRenderer && sceneRenderer->solidRenderer) {
-            sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
-        }
 
-            const bool waterEnabled = settings.waterEnabled;
-            const bool vegetationEnabled = settings.vegetationEnabled;
+        sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
 
-            // Render sky + solids/vegetation into the solid offscreen framebuffer (one per frame)
-            if (sceneRenderer && sceneRenderer->waterRenderer && sceneRenderer->solidRenderer) {
-            uint32_t frameIdx = getCurrentFrame();
-            VkClearValue colorClear{};
-            // Clear solid offscreen color to transparent so composite starts from empty scene
-            colorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-            VkClearValue depthClear{};
-            depthClear.depthStencil = {1.0f, 0};
-                sceneRenderer->solidRenderer->beginPass(commandBuffer, frameIdx, colorClear, depthClear);
+        const bool waterEnabled = settings.waterEnabled;
+        const bool vegetationEnabled = settings.vegetationEnabled;
 
-            VkRenderPassBeginInfo unusedRpInfo{};
-            sceneRenderer->skyPass(this, commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, viewProj);
-            sceneRenderer->mainPass(this, commandBuffer, unusedRpInfo, frameIdx, waterEnabled, vegetationEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode, profilingEnabled, queryPool,
-                viewProj, uboStatic, sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), true, false, true, 0, 0.0f, 0.0f);
+        // Render sky + solids/vegetation into the solid offscreen framebuffer (one per frame)
+        uint32_t frameIdx = getCurrentFrame();
+        VkClearValue colorClear{};
+        // Clear solid offscreen color to transparent so composite starts from empty scene
+        colorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        VkClearValue depthClear{};
+        depthClear.depthStencil = {1.0f, 0};
+            sceneRenderer->solidRenderer->beginPass(commandBuffer, frameIdx, colorClear, depthClear);
 
-            // Render debug cubes for expanded octree nodes + node instances from change handlers
-            if (settings.showDebugCubes && sceneRenderer && sceneRenderer->debugCubeRenderer) {
-                std::vector<DebugCubeRenderer::CubeWithColor> debugCubes;
-                // Add widget-expanded cubes when explorer is visible
-                if (octreeExplorerWidget && octreeExplorerWidget->isVisible()) {
-                    const auto& widgetCubes = octreeExplorerWidget->getExpandedCubes();
-                    debugCubes.reserve(widgetCubes.size());
-                    for (const auto& wc : widgetCubes) {
-                        // Convert BoundingCube -> BoundingBox for renderer
-                        debugCubes.push_back({BoundingBox(wc.cube.getMin(), wc.cube.getMax()), wc.color});
-                    }
-                }
-                // Append node cubes produced by change handlers (post-tessellation)
-                auto nodeCubes = sceneRenderer->getDebugNodeCubes();
-                debugCubes.reserve(debugCubes.size() + nodeCubes.size());
-                for (auto &nc : nodeCubes) debugCubes.push_back(nc);
+        VkRenderPassBeginInfo unusedRpInfo{};
+        sceneRenderer->skyPass(this, commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, viewProj);
+        sceneRenderer->mainPass(this, commandBuffer, unusedRpInfo, frameIdx, waterEnabled, vegetationEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode, profilingEnabled, queryPool,
+            viewProj, uboStatic, sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), true, false, true, 0, 0.0f, 0.0f);
 
-                if (!debugCubes.empty()) {
-                    sceneRenderer->debugCubeRenderer->setCubes(debugCubes);
-                    sceneRenderer->debugCubeRenderer->render(this, commandBuffer, getMainDescriptorSet());
+        // Render debug cubes for expanded octree nodes + node instances from change handlers
+        if (settings.showDebugCubes) {
+            std::vector<DebugCubeRenderer::CubeWithColor> debugCubes;
+            // Add widget-expanded cubes when explorer is visible
+            if (octreeExplorerWidget->isVisible()) {
+                const auto& widgetCubes = octreeExplorerWidget->getExpandedCubes();
+                debugCubes.reserve(widgetCubes.size());
+                for (const auto& wc : widgetCubes) {
+                    // Convert BoundingCube -> BoundingBox for renderer
+                    debugCubes.push_back({BoundingBox(wc.cube.getMin(), wc.cube.getMax()), wc.color});
                 }
             }
+            // Append node cubes produced by change handlers (post-tessellation)
+            auto nodeCubes = sceneRenderer->getDebugNodeCubes();
+            debugCubes.reserve(debugCubes.size() + nodeCubes.size());
+            for (auto &nc : nodeCubes) debugCubes.push_back(nc);
 
-            // Render per-mesh bounding boxes (if enabled in settings)
-            if (settings.showBoundingBoxes && sceneRenderer && sceneRenderer->boundingBoxRenderer) {
-                std::vector<DebugCubeRenderer::CubeWithColor> boxes;
-                auto gatherBoxesFrom = [&](const IndirectRenderer &ir, const glm::vec3 &color){
-                    auto infos = ir.getActiveMeshInfos();
-                    boxes.reserve(boxes.size() + infos.size());
-                    for (const auto &mi : infos) {
-                        // Object-space AABB
-                        glm::vec3 omin = glm::vec3(mi.boundsMin);
-                        glm::vec3 omax = glm::vec3(mi.boundsMax);
-                        // Transform 8 corners by model matrix and recompute world AABB
-                        glm::vec3 worldMin(FLT_MAX);
-                        glm::vec3 worldMax(-FLT_MAX);
-                        for (int a = 0; a < 2; ++a) for (int b = 0; b < 2; ++b) for (int c = 0; c < 2; ++c) {
-                            glm::vec3 corner = glm::vec3(a ? omax.x : omin.x, b ? omax.y : omin.y, c ? omax.z : omin.z);
-                            glm::vec4 wc = mi.model * glm::vec4(corner, 1.0f);
-                            worldMin = glm::min(worldMin, glm::vec3(wc));
-                            worldMax = glm::max(worldMax, glm::vec3(wc));
-                        }
-                        boxes.push_back({BoundingBox(worldMin, worldMax), color});
-                    }
-                };
-
-                if (sceneRenderer->solidRenderer) {
-                    gatherBoxesFrom(sceneRenderer->solidRenderer->getIndirectRenderer(), glm::vec3(0.0f, 1.0f, 0.0f));
-                }
-                if (sceneRenderer->waterRenderer) {
-                    gatherBoxesFrom(sceneRenderer->waterRenderer->getIndirectRenderer(), glm::vec3(0.0f, 0.5f, 1.0f));
-                }
-
-                if (!boxes.empty()) {
-                    sceneRenderer->boundingBoxRenderer->setCubes(boxes);
-                    sceneRenderer->boundingBoxRenderer->render(this, commandBuffer, getMainDescriptorSet());
-                }
-            }
-
-                sceneRenderer->solidRenderer->endPass(commandBuffer);
-
-            // Run water geometry pass offscreen and bind scene textures for post-process
-            if (waterEnabled) {
-                sceneRenderer->waterPass(this, commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), profilingEnabled, queryPool,
-                    sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime());
+            if (!debugCubes.empty()) {
+                sceneRenderer->debugCubeRenderer->setCubes(debugCubes);
+                sceneRenderer->debugCubeRenderer->render(this, commandBuffer, getMainDescriptorSet());
             }
         }
+
+        // Render per-mesh bounding boxes (if enabled in settings)
+        if (settings.showBoundingBoxes && sceneRenderer && sceneRenderer->boundingBoxRenderer) {
+            std::vector<DebugCubeRenderer::CubeWithColor> boxes;
+            auto gatherBoxesFrom = [&](const IndirectRenderer &ir, const glm::vec3 &color){
+                auto infos = ir.getActiveMeshInfos();
+                boxes.reserve(boxes.size() + infos.size());
+                for (const auto &mi : infos) {
+                    // Object-space AABB (meshes are not transformed by per-mesh model matrices)
+                    glm::vec3 worldMin = glm::vec3(mi.boundsMin);
+                    glm::vec3 worldMax = glm::vec3(mi.boundsMax);
+                    boxes.push_back({BoundingBox(worldMin, worldMax), color});
+                }
+            };
+
+            gatherBoxesFrom(sceneRenderer->solidRenderer->getIndirectRenderer(), glm::vec3(0.0f, 1.0f, 0.0f));
+            gatherBoxesFrom(sceneRenderer->waterRenderer->getIndirectRenderer(), glm::vec3(0.0f, 0.5f, 1.0f));
+        
+
+            if (!boxes.empty()) {
+                sceneRenderer->boundingBoxRenderer->setCubes(boxes);
+                sceneRenderer->boundingBoxRenderer->render(this, commandBuffer, getMainDescriptorSet());
+            }
+        }
+
+            sceneRenderer->solidRenderer->endPass(commandBuffer);
+
+        // Run water geometry pass offscreen and bind scene textures for post-process
+        if (waterEnabled) {
+            sceneRenderer->waterPass(this, commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), profilingEnabled, queryPool,
+                sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime());
+        }
+        
     }
 
     void renderImGui() override {
@@ -476,8 +462,8 @@ public:
                 ImGui::Text("Textures Loaded (CPU): %u", loadedTextureLayers);
 
                 // Opaque (solid)
-                size_t opaqueLoaded = sceneRenderer && sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getIndirectRenderer().getMeshCount() : 0;
-                uint32_t opaqueVisible = sceneRenderer && sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getIndirectRenderer().readVisibleCount(this) : 0;
+                size_t opaqueLoaded = sceneRenderer->solidRenderer->getIndirectRenderer().getMeshCount();
+                uint32_t opaqueVisible = sceneRenderer->solidRenderer->getIndirectRenderer().readVisibleCount(this);
                 ImGui::Text("Opaque - Loaded (GPU): %zu  Visible (GPU cull): %u", opaqueLoaded, opaqueVisible);
                 size_t opaqueTracked = sceneRenderer ? sceneRenderer->getRegisteredModelCount() : 0;
                 ImGui::Text("Opaque Models Tracked: %zu", opaqueTracked);
@@ -547,11 +533,11 @@ public:
         }
 
         // --- SAFETY: Ensure indirect buffers are rebuilt if dirty before first draw ---
-        if (sceneRenderer->solidRenderer && sceneRenderer->solidRenderer->getIndirectRenderer().isDirty()) {
+        if (sceneRenderer->solidRenderer->getIndirectRenderer().isDirty()) {
             printf("[MyApp::draw] solidRenderer indirect buffer dirty, rebuilding before draw...\n");
             sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
         }
-        if (sceneRenderer->waterRenderer && sceneRenderer->waterRenderer->getIndirectRenderer().isDirty()) {
+        if (sceneRenderer->waterRenderer->getIndirectRenderer().isDirty()) {
             printf("[MyApp::draw] waterRenderer indirect buffer dirty, rebuilding before draw...\n");
             sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
         }
@@ -567,8 +553,8 @@ public:
                 commandBuffer,
                 renderPassInfo.framebuffer,
                 renderPassInfo.renderPass,
-                sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getColorView(frameIdx) : VK_NULL_HANDLE,
-                sceneRenderer->solidRenderer ? sceneRenderer->solidRenderer->getDepthView(frameIdx) : VK_NULL_HANDLE,
+                sceneRenderer->solidRenderer->getColorView(frameIdx),
+                sceneRenderer->solidRenderer->getDepthView(frameIdx),
                 sceneRenderer->waterRenderer->getParams(),
                 viewProj,
                 invViewProj,

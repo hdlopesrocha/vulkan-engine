@@ -21,7 +21,7 @@ public:
     void render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkySettings::Mode skyMode);
 
     // Initialize the sky sphere and internal VBO (optional)
-    void initSky(VulkanApp* app, SkySettings& skySettings, VkDescriptorSet descriptorSet);
+    void init(VulkanApp* app, SkySettings& skySettings, VkDescriptorSet descriptorSet);
 
     // Update sky internals (e.g. SkySphere animation)
     void update(VulkanApp* app);

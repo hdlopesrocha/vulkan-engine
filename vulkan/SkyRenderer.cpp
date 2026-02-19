@@ -21,10 +21,7 @@ void SkyRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
     // Use the application's main descriptor set layout (set 0 contains the shared UBO)
     std::vector<VkDescriptorSetLayout> setLayouts;
     setLayouts.push_back(app->getDescriptorSetLayout());
-    VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(glm::mat4);
+    // No push-constants required for sky pipeline (sky uses UBO/viewPos to position the sphere).
     auto [pipeline, layout] = app->createGraphicsPipeline(
         { skyVert.info, skyFrag.info },
         std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
@@ -33,7 +30,7 @@ void SkyRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
             VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) }
         },
         setLayouts,
-        &pushConstantRange,
+        nullptr,
         VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true, VK_COMPARE_OP_LESS_OR_EQUAL,
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
         renderPassOverride
@@ -58,7 +55,7 @@ void SkyRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
             VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) }
         },
         setLayouts,
-        &pushConstantRange,
+        nullptr,
         VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true, VK_COMPARE_OP_LESS_OR_EQUAL,
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
         renderPassOverride
@@ -95,8 +92,7 @@ void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet d
     // Only bind the sky descriptor set (set 0)
     //fprintf(stderr, "[SKY RENDER] Binding descriptor set: skyDs=%p\n", (void*)descriptorSet);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeLayout, 0, 1, &descriptorSet, 0, nullptr);
-    // Push sky model matrix via push constants (visible to vertex + tessellation stages)
-    // vkCmdPushConstants(cmd, app->getPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0, sizeof(glm::mat4), &model);
+    // No push-constants used for sky; model is encoded into UBO/viewPos.
 
     // Explicitly set viewport/scissor because this pipeline relies on dynamic state
     VkExtent2D extent = app->getSwapchainExtent();
@@ -147,7 +143,7 @@ void SkyRenderer::cleanup() {
     skyVBO.indexCount = 0;
 }
 
-void SkyRenderer::initSky(VulkanApp* app, SkySettings &settings, VkDescriptorSet descriptorSet) {
+void SkyRenderer::init(VulkanApp* app, SkySettings &settings, VkDescriptorSet descriptorSet) {
     if (!app) return;
     // Create sphere VBO if not present
     if (skyVBO.vertexBuffer.buffer == VK_NULL_HANDLE && skyVBO.indexCount == 0) {

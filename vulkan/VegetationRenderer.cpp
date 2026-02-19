@@ -127,7 +127,7 @@ bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
 }
 
 
-void VegetationRenderer::createPipelines(VulkanApp* app, VkRenderPass renderPassOverride) {
+void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
     if (!app || !vegetationTextureArrayManager) return;
     VkDevice device = app->getDevice();
 

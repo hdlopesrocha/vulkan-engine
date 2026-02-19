@@ -19,7 +19,7 @@ public:
     void onTextureArraysReallocated(VulkanApp* app);
     void init();
     void cleanup();
-    void createPipelines(VulkanApp* app, VkRenderPass renderPassOverride = VK_NULL_HANDLE);
+    void init(VulkanApp* app, VkRenderPass renderPassOverride = VK_NULL_HANDLE);
 
     // Register per-chunk vegetation instances
     void setChunkInstances(NodeID chunkId, const std::vector<glm::vec3>& positions);

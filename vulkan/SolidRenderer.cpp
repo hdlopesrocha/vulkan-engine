@@ -206,12 +206,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     if (app->getDescriptorSetLayout() != VK_NULL_HANDLE) setLayouts.push_back(app->getDescriptorSetLayout());
     // Note: Removed material descriptor set layout since main shaders don't use set = 1
 
-    // Push constant range (model matrix, vertex+frag stages)
-    VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(glm::mat4);
-
+    // No per-mesh model push-constants are used anymore (models are identity in shaders).
     auto [pipeline, layout] = app->createGraphicsPipeline(
         {
             vertexShader.info,
@@ -228,7 +223,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
         },
         setLayouts,
-        &pushConstantRange,
+        nullptr,
         VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, solidRenderPass
     );
     graphicsPipeline = pipeline;
@@ -255,7 +250,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
         },
         setLayouts,
-        &pushConstantRange,
+        nullptr,
         VK_POLYGON_MODE_LINE, VK_CULL_MODE_BACK_BIT, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, solidRenderPass
     );
     graphicsPipelineWire = wirePipeline;
@@ -277,7 +272,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
         },
         setLayouts,
-        &pushConstantRange,
+        nullptr,
         VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, false, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, solidRenderPass
     );
     depthPrePassPipeline = depthPipeline;
@@ -314,10 +309,10 @@ void SolidRenderer::depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool que
     }
 }
 
-void SolidRenderer::draw(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled) {
+void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled) {
     static int frameCount = 0;
     if (frameCount++ == 0) {
-        printf("[DEBUG] SolidRenderer::draw called for the first time\n");
+        printf("[DEBUG] SolidRenderer::render called for the first time\n");
     }
     
     if (!appArg) {

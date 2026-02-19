@@ -402,7 +402,7 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
 }
 
-void ShadowRenderer::renderObject(VulkanApp* app, VkCommandBuffer commandBuffer, 
+void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, 
                                  const VertexBufferObject& vbo, VkDescriptorSet descriptorSet) {
 
     // Bind descriptor sets: material set (set 0) and per-instance set (set 1) if available.

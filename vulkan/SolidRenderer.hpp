@@ -27,7 +27,7 @@ public:
     void depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VulkanApp* app);
 
     // Draw main solid geometry: bind pipeline (wireframe or normal) and draw
-    void draw(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled);
+    void render(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled);
 
     // Access for adding meshes
     IndirectRenderer& getIndirectRenderer() { return indirectRenderer; }

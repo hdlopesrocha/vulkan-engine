@@ -1506,9 +1506,9 @@ void VulkanApp::createDescriptorSetLayout() {
     // Make the water params visible to both fragment and tessellation evaluation shaders
     waterParamsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
-    // Per-instance / per-draw descriptor set uses bindings: 0 (UBO), 1..3 (samplers), 4 (shadow), 5 (Materials SSBO), 6 (Sky UBO), 7 (water params), 8 (Models SSBO)
+    // Per-instance / per-draw descriptor set uses bindings: 0 (UBO), 1..3 (samplers), 4 (shadow), 5 (Materials SSBO), 6 (Sky UBO), 7 (water params)
     // Note: Materials (binding 5) is declared in shaders as set=0 binding=5, so include it in the main layout.
-    std::array<VkDescriptorSetLayoutBinding, 9> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding, shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding, waterParamsBinding, /* models */ VkDescriptorSetLayoutBinding{}};
+    std::array<VkDescriptorSetLayoutBinding, 8> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding, shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding, waterParamsBinding};
     // Fill the material binding at position 5
     bindings[5].binding = 5;
     bindings[5].descriptorCount = 1;
@@ -1516,12 +1516,7 @@ void VulkanApp::createDescriptorSetLayout() {
     bindings[5].pImmutableSamplers = nullptr;
     bindings[5].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
     
-    // Fill the models SSBO binding at position 8
-    bindings[8].binding = 8;
-    bindings[8].descriptorCount = 1;
-    bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[8].pImmutableSamplers = nullptr;
-    bindings[8].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+    // No models SSBO binding (models removed) - main descriptor set has no binding 8
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1538,15 +1533,8 @@ void VulkanApp::createDescriptorSetLayout() {
     // Allocate the main UBO/sampler/materials descriptor set and store it
     mainDescriptorSet = createDescriptorSet(descriptorSetLayout);
 
-    // Create a separate material descriptor layout used for models (different binding to avoid colliding with sky UBO)
-    VkDescriptorSetLayoutBinding modelsBinding{};
-    modelsBinding.binding = 8; // avoid binding 6 which is used by Sky UBO
-    modelsBinding.descriptorCount = 1;
-    modelsBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    modelsBinding.pImmutableSamplers = nullptr;
-    modelsBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-
-    std::array<VkDescriptorSetLayoutBinding, 2> materialBindings = { bindings[5], modelsBinding };
+    // Create a separate material descriptor layout used for materials only
+    std::array<VkDescriptorSetLayoutBinding, 1> materialBindings = { bindings[5] };
     VkDescriptorSetLayoutCreateInfo materialLayoutInfo{};
     materialLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     materialLayoutInfo.bindingCount = static_cast<uint32_t>(materialBindings.size());
