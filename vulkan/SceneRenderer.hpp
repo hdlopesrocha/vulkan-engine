@@ -60,13 +60,12 @@ public:
     std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;
     std::unique_ptr<DebugCubeRenderer> boundingBoxRenderer;
     // Sky settings owned by this renderer
-    SkySettings skySettings;
-    SkySettings& getSkySettings() { return skySettings; }
+    std::unique_ptr<SkySettings> skySettings;
+    SkySettings& getSkySettings() { return *skySettings; }
 
     SceneRenderer(TextureArrayManager* textureArrayManager_, MaterialManager* materialManager_);
     ~SceneRenderer();
 
-    void createPipelines(VulkanApp* app);
     void createDescriptorSets(MaterialManager &materialManager, TextureArrayManager &textureArrayManager, VkDescriptorSet &outDescriptorSet, VkDescriptorSet &outShadowPassDescriptorSet, size_t tripleCount);
 
     // Cleanup and resource destruction (accepts app for Vulkan operations)

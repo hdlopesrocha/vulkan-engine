@@ -658,15 +658,11 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     // Descriptor set ordering: set 0 = global UBO+samplers, set 1 = material set, set 2 = scene depth textures
     std::array<VkDescriptorSetLayout, 3> waterSetLayouts = {
         app->getDescriptorSetLayout(),           // Set 0: UBO + samplers
-        app->getMaterialDescriptorSetLayout(),   // Set 1: Materials / models
+        app->getMaterialDescriptorSetLayout(),   // Set 1: Materials
         waterDepthDescriptorSetLayout            // Set 2: Scene depth texture
     };
     
-    // Push constants (same as main pipeline - model matrix)
-    VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(glm::mat4);  // model matrix
+    // No per-mesh model push-constants are used for water (shaders use identity/no model push-constant).
 
     std::cout << "[WaterRenderer] Created water pipeline layout with 3 descriptor sets" << std::endl;
 
@@ -744,7 +740,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
         std::vector<VkVertexInputBindingDescription>{ bindingDesc },
         { attrDescs[0], attrDescs[1], attrDescs[2], attrDescs[3], attrDescs[4] },
         std::vector<VkDescriptorSetLayout>(waterSetLayouts.begin(), waterSetLayouts.end()),
-        &pushConstantRange,
+        nullptr,
         VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, false, true, VK_COMPARE_OP_LESS,
         hasTessellation ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
     );
@@ -1162,8 +1158,25 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].descriptorCount = 1;
     writes[1].pImageInfo = &imageInfos[1];
-    
-    // Only update if both image views are valid
-    if (!writes.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+}
+
+
+// Execute water's offscreen geometry pass (bind scene textures + run indirect water draw)
+// This was previously performed inline in SceneRenderer::waterPass
+void WaterRenderer::render(VulkanApp* app, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView) {
+    if (!app) return;
+
+    // Update per-frame scene descriptors
+    updateSceneTexturesBinding(app, sceneColorView, sceneDepthView, frameIndex);
+
+    // Run water geometry pass offscreen on a temporary command buffer to avoid nested render passes
+    VkCommandBuffer cmd = app->beginSingleTimeCommands();
+    beginWaterGeometryPass(cmd, frameIndex);
+    // Indirect rendering for water geometry
+    waterIndirectRenderer.drawPrepared(cmd);
+    endWaterGeometryPass(cmd);
+    app->endSingleTimeCommands(cmd);
 }
 
