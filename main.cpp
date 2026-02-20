@@ -195,7 +195,8 @@ public:
 
     void setup() override {
   
-
+        setupVegetationTextures();
+        
 
         printf("[MyApp::setup] Created and initialized SceneRenderer\n");
         sceneRenderer = new SceneRenderer();
@@ -209,7 +210,7 @@ public:
         // Create settings widget (was missing previously)
         settingsWidget = std::make_shared<SettingsWidget>(settings);
         // Inform SceneRenderer about the MaterialManager
-        waterWidget = std::make_shared<WaterWidget>(sceneRenderer ? sceneRenderer->waterRenderer.get() : nullptr);
+        waterWidget = std::make_shared<WaterWidget>(sceneRenderer->waterRenderer.get());
         renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(sceneRenderer->waterRenderer.get() , sceneRenderer->solidRenderer.get());
         // Initialize widget frame info from MyApp (avoid storing VulkanApp* inside widget)
         if (renderPassDebugWidget) renderPassDebugWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
@@ -219,15 +220,32 @@ public:
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
         debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &cubeCount);
-        shadowWidget = std::make_shared<ShadowMapWidget>(sceneRenderer ? sceneRenderer->shadowMapper.get() : nullptr, &shadowParams);
+        shadowWidget = std::make_shared<ShadowMapWidget>(sceneRenderer->shadowMapper.get(), &shadowParams);
         lightWidget = std::make_shared<LightWidget>(&light);
         vulkanResourcesManagerWidget = std::make_shared<VulkanResourcesManagerWidget>(&resources);
         vulkanResourcesManagerWidget->updateWithApp(this);
-
-        vegetationTextureArrayManager.allocate(3, 512, 512, this);
-        vegetationAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
+  // Create octree explorer widget bound to loaded scene
+        octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
 
         
+        widgetManager.addWidget(textureMixerWidget);
+        widgetManager.addWidget(textureViewer);
+        widgetManager.addWidget(cameraWidget);
+        widgetManager.addWidget(debugWidget);
+        widgetManager.addWidget(shadowWidget);
+        widgetManager.addWidget(settingsWidget);
+        widgetManager.addWidget(lightWidget);
+        widgetManager.addWidget(skyWidget);
+        widgetManager.addWidget(waterWidget);
+        widgetManager.addWidget(renderPassDebugWidget);
+        widgetManager.addWidget(vulkanResourcesManagerWidget);
+        widgetManager.addWidget(vegetationAtlasEditor);
+        widgetManager.addWidget(billboardWidget);
+        widgetManager.addWidget(billboardCreator);
+        widgetManager.addWidget(octreeExplorerWidget);
+
+
+
         // Initialize and load the main scene so rendering has valid scene data
         mainScene = new LocalScene();
 
@@ -251,27 +269,7 @@ public:
 
         sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
         sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
-    
-        // Create octree explorer widget bound to loaded scene
-        octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
-
-        widgetManager.addWidget(textureMixerWidget);
-        widgetManager.addWidget(textureViewer);
-        widgetManager.addWidget(cameraWidget);
-        widgetManager.addWidget(debugWidget);
-        widgetManager.addWidget(shadowWidget);
-        widgetManager.addWidget(settingsWidget);
-        widgetManager.addWidget(lightWidget);
-        widgetManager.addWidget(skyWidget);
-        widgetManager.addWidget(waterWidget);
-        widgetManager.addWidget(renderPassDebugWidget);
-        widgetManager.addWidget(vulkanResourcesManagerWidget);
-        widgetManager.addWidget(vegetationAtlasEditor);
-        widgetManager.addWidget(billboardWidget);
-        widgetManager.addWidget(billboardCreator);
-        widgetManager.addWidget(octreeExplorerWidget);
-
-        
+      
         // Subscribe event handlers
         eventManager.subscribe(&camera);  // Camera handles translate/rotate events
         eventManager.subscribe(this);     // MyApp handles close/fullscreen events
@@ -292,6 +290,9 @@ public:
             setupTextures();
         }).detach();
     }
+
+    // Move vegetation texture setup into its own method for clarity
+    void setupVegetationTextures();
 
 // (setup implementation defined out-of-line below)
 
@@ -610,6 +611,43 @@ int main(int argc, char** argv) {
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << std::endl;
         return 1;
+    }
+}
+
+// Implementation: setup vegetation textures
+void MyApp::setupVegetationTextures() {
+    // Allocate 3-layer texture arrays for vegetation (foliage, grass, wild)
+    vegetationTextureArrayManager.allocate(3, 512, 512, this);
+    vegetationAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
+
+    // Load the vegetation atlas textures (albedo, normal, opacity) into the texture array
+    std::vector<TextureTriple> vegTriples = {
+        { "textures/vegetation/foliage_color.jpg", "textures/vegetation/foliage_normal.jpg", "textures/vegetation/foliage_opacity.jpg" },
+        { "textures/vegetation/grass_color.jpg",   "textures/vegetation/grass_normal.jpg",   "textures/vegetation/grass_opacity.jpg" },
+        { "textures/vegetation/wild_color.jpg",    "textures/vegetation/wild_normal.jpg",    "textures/vegetation/wild_opacity.jpg" }
+    };
+    size_t loaded = vegetationTextureArrayManager.loadTriples(this, vegTriples);
+    fprintf(stderr, "[MyApp::setupVegetationTextures] Loaded %zu vegetation texture layers\n", loaded);
+
+    // Auto-detect atlas tiles from opacity maps and populate AtlasManager for each texture
+    const char* opacityPaths[3] = { "textures/vegetation/foliage_opacity.jpg", "textures/vegetation/grass_opacity.jpg", "textures/vegetation/wild_opacity.jpg" };
+    for (int atlasIndex = 0; atlasIndex < 3; ++atlasIndex) {
+        try {
+            int added = vegetationAtlasManager.autoDetectTiles(atlasIndex, opacityPaths[atlasIndex]);
+            fprintf(stderr, "[MyApp::setupVegetationTextures] Atlas %d: auto-detected %d tiles\n", atlasIndex, added);
+        } catch (...) {
+            fprintf(stderr, "[MyApp::setupVegetationTextures] Atlas %d: autoDetectTiles failed\n", atlasIndex);
+        }
+    }
+
+    // Create simple billboards for each detected atlas tile so they appear in the editor
+    for (int atlasIndex = 0; atlasIndex < 3; ++atlasIndex) {
+        size_t tileCount = vegetationAtlasManager.getTileCount(atlasIndex);
+        for (size_t tileIndex = 0; tileIndex < tileCount; ++tileIndex) {
+            std::string name = "Veg_" + std::to_string(atlasIndex) + "_" + std::to_string(tileIndex);
+            size_t bidx = billboardManager.createBillboard(name);
+            billboardManager.addLayer(bidx, atlasIndex, static_cast<int>(tileIndex));
+        }
     }
 }
 
