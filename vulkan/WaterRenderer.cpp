@@ -382,7 +382,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     // Transition all images to their required layouts
     auto transitionImageLayout = [&](VkImage image, VkImageLayout& currentLayout, VkImageLayout newLayout, VkImageAspectFlags aspect) {
         if (currentLayout != newLayout) {
-            VkCommandBuffer cmd = app->beginSingleTimeCommands();
+            app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
             VkImageMemoryBarrier barrier{};
             barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             barrier.oldLayout = currentLayout;
@@ -419,7 +419,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
                 dstStage,
                 0, 0, nullptr, 0, nullptr, 1, &barrier
             );
-            app->endSingleTimeCommands(cmd);
+            });
             currentLayout = newLayout;
         }
     };
@@ -463,7 +463,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     // Track and transition waterGeomDepthImage layout correctly
     static VkImageLayout waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (waterGeomDepthImageLayout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-        VkCommandBuffer cmd = app->beginSingleTimeCommands();
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = waterGeomDepthImageLayout;
@@ -484,7 +484,8 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
             0, 0, nullptr, 0, nullptr, 1, &barrier
         );
-        app->endSingleTimeCommands(cmd);
+        });
+        waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
@@ -1172,11 +1173,11 @@ void WaterRenderer::render(VulkanApp* app, uint32_t frameIndex, VkImageView scen
     updateSceneTexturesBinding(app, sceneColorView, sceneDepthView, frameIndex);
 
     // Run water geometry pass offscreen on a temporary command buffer to avoid nested render passes
-    VkCommandBuffer cmd = app->beginSingleTimeCommands();
-    beginWaterGeometryPass(cmd, frameIndex);
-    // Indirect rendering for water geometry
-    waterIndirectRenderer.drawPrepared(cmd);
-    endWaterGeometryPass(cmd);
-    app->endSingleTimeCommands(cmd);
+    app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+        beginWaterGeometryPass(cmd, frameIndex);
+        // Indirect rendering for water geometry
+        waterIndirectRenderer.drawPrepared(cmd);
+        endWaterGeometryPass(cmd);
+    });
 }
 

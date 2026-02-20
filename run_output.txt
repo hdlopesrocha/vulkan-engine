@@ -1,0 +1,1848 @@
+[VulkanApp] createDescriptorPool: this=0x7ffed8c72750 resources=0x7ffed8c72918 descriptorPool=0x30000000003
+[VulkanResourceManager] addDescriptorPool this=0x7ffed8c72918 dp=0x30000000003 desc=VulkanApp: descriptorPool bucket_count=2
+createLogicalDevice: graphicsFamily=0 presentFamily=0
+graphicsQueue handle: 0x60eb8ea86c00 presentQueue handle: 0x60eb8ea86c00
+[DEBUG] createSwapchain: swapchainImages.size()=4
+[DEBUG] createImageViews: swapchainImageViews.size()=4
+[DEBUG] createFramebuffers: swapchainFramebuffers.size()=4
+[DEBUG][initVulkan] swapchainFramebuffers.size() after createFramebuffers: 4
+[DEBUG][initVulkan] swapchainImages.size() after createSwapchain: 4
+[DEBUG][initVulkan] swapchainFramebuffers before createCommandBuffers: 0x170000000017 0x180000000018 0x190000000019 0x1a000000001a 
+[DEBUG][initVulkan] commandBuffers.size() before createCommandBuffers: 0
+[DEBUG] createCommandBuffers: requested 4 command buffers, swapchainFramebuffers=4
+[DEBUG] vkAllocateCommandBuffers result=0
+[DEBUG] createCommandBuffers: post-alloc commandBuffers.size()=4
+[DEBUG][initVulkan] commandBuffers.size() after createCommandBuffers: 4
+[VulkanResourceManager] addDescriptorPool this=0x7ffed8c72918 dp=0x270000000027 desc=VulkanApp: imguiDescriptorPool bucket_count=2
+[VEGETATION] ensureVegDescriptorSet: descriptorSetLayout not created yet, deferring allocation
+[SolidRenderer] createImage: image=0x370000000037 format=50 usage=0x14
+[SolidRenderer] createImageView: view=0x390000000039 image=0x370000000037 format=50
+[SolidRenderer] createImage: image=0x3a000000003a format=126 usage=0x24
+[SolidRenderer] createImageView: view=0x3c000000003c image=0x3a000000003a format=126
+[SolidRenderer] createImage: image=0x3e000000003e format=50 usage=0x14
+[SolidRenderer] createImageView: view=0x400000000040 image=0x3e000000003e format=50
+[SolidRenderer] createImage: image=0x410000000041 format=126 usage=0x24
+[SolidRenderer] createImageView: view=0x430000000043 image=0x410000000041 format=126
+[SKY PIPELINE] Created pipeline=0x520000000052 layout=0x510000000051
+[SKY GRID PIPELINE] Created pipeline=0x550000000055 layout=0x540000000054
+[ShadowRenderer] shadowMapImage = 0x560000000056
+[ShadowRenderer] createImageView: shadowMapView=0x580000000058 image=0x560000000056
+[ShadowRenderer] createSampler: shadowMapSampler=0x590000000059
+[ShadowRenderer] createImage: shadowColorImage=0x5b000000005b
+[ShadowRenderer] createImageView: shadowColorImageView=0x5d000000005d image=0x5b000000005b
+[VEGETATION PIPELINE] Created pipeline=0x650000000065 layout=0x640000000064
+[VulkanResourceManager] addDescriptorPool this=0x7ffed8c72918 dp=0x750000000075 desc=DebugCubeRenderer: gridDescriptorPool bucket_count=2
+[VulkanResourceManager] addDescriptorPool this=0x7ffed8c72918 dp=0x8c000000008c desc=DebugCubeRenderer: gridDescriptorPool bucket_count=5
+[VulkanApp::updateDescriptorSet] write[0] binding=6 type=6 buffer=0x9e000000009e
+[SceneRenderer::init] Skipping descriptor binding 1: imageView=(nil) sampler=(nil)
+[SceneRenderer::init] Skipping descriptor binding 2: imageView=(nil) sampler=(nil)
+[SceneRenderer::init] Skipping descriptor binding 3: imageView=(nil) sampler=(nil)
+[VulkanApp::updateDescriptorSet] write[0] binding=0 type=6 buffer=0x940000000094
+[VulkanApp::updateDescriptorSet] write[1] binding=4 type=1 imageView=0x580000000058 sampler=0x590000000059
+[VulkanApp::updateDescriptorSet] write[2] binding=5 type=7 buffer=0xa000000000a0
+[WaterRenderer] createSampler: linearSampler=0xa400000000a4
+[ImGui] ImGui_ImplVulkan_Init returned true
+[MyApp::setup] Created and initialized SceneRenderer
+graphics pipeline created
+[SolidRenderer] setAppGraphicsPipeline: pipeline=0x4a000000004a
+graphics pipeline created
+graphics pipeline created
+graphics pipeline created
+graphics pipeline created
+graphics pipeline created
+[DebugCubeRenderer] Created cube VBO: vertices=8 indices=32
+[DEBUG CUBE RENDERER] Loaded grid texture: 512x512, channels=4
+[DebugCubeRenderer] createImage: gridTextureImage=0x700000000070
+[DebugCubeRenderer] allocateMemory: gridTextureMemory=0x710000000071
+[DebugCubeRenderer] createImageView: gridTextureView=0x720000000072 for image=0x700000000070
+[DebugCubeRenderer] createSampler: gridTextureSampler=0x730000000073
+[DebugCubeRenderer] Loaded grid texture: 512x512
+[DebugCubeRenderer] createDescriptorSetLayout: gridDescriptorSetLayout=0x740000000074
+[DebugCubeRenderer] createDescriptorPool: gridDescriptorPool=0x750000000075
+graphics pipeline created
+[DebugCubeRenderer] Created cube VBO: vertices=8 indices=32
+[DEBUG CUBE RENDERER] Loaded grid texture: 512x512, channels=4
+[DebugCubeRenderer] createImage: gridTextureImage=0x870000000087
+[DebugCubeRenderer] allocateMemory: gridTextureMemory=0x880000000088
+[DebugCubeRenderer] createImageView: gridTextureView=0x890000000089 for image=0x870000000087
+[DebugCubeRenderer] createSampler: gridTextureSampler=0x8a000000008a
+[DebugCubeRenderer] Loaded grid texture: 512x512
+[DebugCubeRenderer] createDescriptorSetLayout: gridDescriptorSetLayout=0x8b000000008b
+[DebugCubeRenderer] createDescriptorPool: gridDescriptorPool=0x8c000000008c
+graphics pipeline created
+[SceneRenderer::init] mainDescriptorSet = 0x100000000010
+[SkyRenderer::initSky] Creating sphere VBO...
+[SkyRenderer::initSky] Created skyVBO: vertexBuffer=0x980000000098 indexCount=3072
+[SceneRenderer::init] Binding UBO: buffer=0x940000000094, binding=0, descriptorSet=0x100000000010
+[WaterRenderer] Initialized water params buffer with default values
+[VulkanResourceManager] addDescriptorPool this=0x7ffed8c72918 dp=0xaa00000000aa desc=WaterRenderer: waterDepthDescriptorPool bucket_count=5
+[WaterRenderer] Created water pipeline layout with 3 descriptor sets
+graphics pipeline created
+[WaterRenderer] Created post-process pipeline
+[VulkanResourceManager] addDescriptorPool this=0x7ffed8c72918 dp=0xb600000000b6 desc=WaterRenderer: postProcessDescriptorPool bucket_count=5
+[WaterRenderer] createImage: image=0xb800000000b8 format=50 usage=0x15
+[WaterRenderer] createImageView: view=0xba00000000ba image=0xb800000000b8 format=50
+[WaterRenderer] createImage: image=0xbb00000000bb format=126 usage=0x25
+[WaterRenderer] createImageView: view=0xbd00000000bd image=0xbb00000000bb format=126
+[WaterRenderer] sceneDepthImages[0] = 0xbb00000000bb
+[WaterRenderer] createImage: image=0xbf00000000bf format=50 usage=0x15
+[WaterRenderer] createImageView: view=0xc100000000c1 image=0xbf00000000bf format=50
+[WaterRenderer] createImage: image=0xc200000000c2 format=126 usage=0x25
+[WaterRenderer] createImageView: view=0xc400000000c4 image=0xc200000000c2 format=126
+[WaterRenderer] sceneDepthImages[1] = 0xc200000000c2
+[WaterRenderer] createImage: image=0xc600000000c6 format=109 usage=0x14
+[WaterRenderer] createImageView: view=0xc800000000c8 image=0xc600000000c6 format=109
+[WaterRenderer] createImage: image=0xc900000000c9 format=97 usage=0x14
+[WaterRenderer] createImageView: view=0xcb00000000cb image=0xc900000000c9 format=97
+[WaterRenderer] createImage: image=0xcc00000000cc format=9 usage=0x14
+[WaterRenderer] createImageView: view=0xce00000000ce image=0xcc00000000cc format=9
+[WaterRenderer] createImage: image=0xcf00000000cf format=126 usage=0x20
+[WaterRenderer] createImageView: view=0xd100000000d1 image=0xcf00000000cf format=126
+[WaterRenderer] waterGeomDepthImage = 0xcf00000000cf
+[WaterRenderer] createImage: image=0xd200000000d2 format=109 usage=0x14
+[WaterRenderer] createImageView: view=0xd400000000d4 image=0xd200000000d2 format=109
+[WaterRenderer] createImage: image=0xd500000000d5 format=97 usage=0x14
+[WaterRenderer] createImageView: view=0xd700000000d7 image=0xd500000000d5 format=97
+[WaterRenderer] createImage: image=0xd800000000d8 format=9 usage=0x14
+[WaterRenderer] createImageView: view=0xda00000000da image=0xd800000000d8 format=9
+[WaterRenderer] createImage: image=0xdb00000000db format=126 usage=0x20
+[WaterRenderer] createImageView: view=0xdd00000000dd image=0xdb00000000db format=126
+[WaterRenderer] waterGeomDepthImage = 0xdb00000000db
+[WaterRenderer] Created render targets (2 sets) 800x600
+[TextureArrayManager] cleanupTextureImage: image=(nil) view=(nil) memory=(nil)
+[TextureArrayManager] cleanupTextureImage: image=(nil) view=(nil) memory=(nil)
+[TextureArrayManager] cleanupTextureImage: image=(nil) view=(nil) memory=(nil)
+[TextureArrayManager] createArray: image=0xe200000000e2 format=37 layers=3 mipLevels=10
+[TextureArrayManager] createArray: view=0xe400000000e4 image=0xe200000000e2
+[TextureArrayManager] createArray: image=0xe500000000e5 format=37 layers=3 mipLevels=10
+[TextureArrayManager] createArray: view=0xe700000000e7 image=0xe500000000e5
+[TextureArrayManager] createArray: image=0xe800000000e8 format=37 layers=3 mipLevels=10
+[TextureArrayManager] createArray: view=0xea00000000ea image=0xe800000000e8
+[TextureArrayManager] cleanupSampler: sampler=(nil)
+[TextureArrayManager] cleanupSampler: sampler=(nil)
+[TextureArrayManager] cleanupSampler: sampler=(nil)
+[SkyRenderer::initSky] Sky VBO already exists: vertexBuffer=0x980000000098 indexCount=3072
+[SceneRenderer::init] Initialization complete
+[VulkanApp] createSampler: sampler=0xeb00000000eb mipLevels=10
+[VulkanApp] createSampler: sampler=0xec00000000ec mipLevels=10
+[VulkanApp] createSampler: sampler=0xed00000000ed mipLevels=10
+Allocator(1024)
+Allocator(1024)
+Allocator(1024)
+Allocator(1024)
+LocalScene::loadScene() 
+	GradientPerlinSurface
+	CachedHeightMapSurface
+	HeightMap
+	HeightMapDistanceFunction
+	WrappedHeightMap
+	opaqueLayer.add(heightmap)
+		Octree::add Ok! threads=512, works=5842904
+	opaqueLayer.add(box)
+		Octree::add Ok! threads=32, works=7368
+	opaqueLayer.add(sphere)
+		Octree::add Ok! threads=48, works=63712
+	opaqueLayer.del(sphere)
+		Octree::del Ok! threads=48, works=63504
+	opaqueLayer.del(sphere)
+		Octree::del Ok! threads=32, works=6296
+	opaqueLayer.del(capsule)
+		Octree::del Ok! threads=72, works=324688
+	transparentLayer.add(sphere)
+		Octree::add Ok! threads=192, works=441048
+	opaqueLayer.add(octahedron)
+		Octree::add Ok! threads=32, works=11208
+	opaqueLayer.add(pyramid)
+		Octree::add Ok! threads=32, works=11312
+	opaqueLayer.add(torus)
+		Octree::add Ok! threads=48, works=11192
+	opaqueLayer.add(cone)
+		Octree::add Ok! threads=48, works=11232
+	opaqueLayer.add(cylinder)
+		Octree::add Ok! threads=32, works=11240
+	opaqueLayer.add(perlinDistort)
+		Octree::add Ok! threads=144, works=349592
+	opaqueLayer.add(perlinCarve)
+		Octree::add Ok! threads=472, works=3018032
+	opaqueLayer.add(sineDistort)
+		Octree::add Ok! threads=88, works=212768
+	opaqueLayer.add(voronoiDistort)
+		Octree::add Ok! threads=200, works=406712
+	opaqueLayer.add(voronoiDistort)
+		Octree::add Ok! threads=167, works=406480
+	transparentLayer.add(water)
+		Octree::add Ok! threads=296, works=1678632
+	opaqueLayer.add(box)
+		Octree::add Ok! threads=16, works=5792
+	opaqueLayer.add(box)
+		Octree::add Ok! threads=200, works=1133720
+LocalScene::loadScene Ok! 9.624601s
+[SceneRenderer] Solid node event: nid=125661751010400 level=5 containment=1
+[requestModel3D] Node 0x7249e807e460, Layer 0, Cube Min=(2250.00,330.00,-630.00), Max=(2730.00,810.00,-150.00), Verts=812, Indices=3381
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661751082640 level=5 containment=1
+[requestModel3D] Node 0x7249e808fe90, Layer 0, Cube Min=(2730.00,330.00,-630.00), Max=(3210.00,810.00,-150.00), Verts=969, Indices=4206
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663697117776 level=5 containment=1
+[requestModel3D] Node 0x724a5c072250, Layer 0, Cube Min=(1770.00,330.00,-630.00), Max=(2250.00,810.00,-150.00), Verts=24, Indices=48
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125654905438464 level=5 containment=1
+[requestModel3D] Node 0x72485000c100, Layer 0, Cube Min=(1290.00,330.00,-630.00), Max=(1770.00,810.00,-150.00), Verts=26, Indices=60
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659336367648 level=5 containment=1
+[requestModel3D] Node 0x7249581b5e20, Layer 0, Cube Min=(330.00,330.00,1290.00), Max=(810.00,810.00,1770.00), Verts=27551, Indices=84168
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662959519120 level=5 containment=1
+[requestModel3D] Node 0x724a30104590, Layer 0, Cube Min=(330.00,330.00,330.00), Max=(810.00,810.00,810.00), Verts=42036, Indices=134499
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125656651191936 level=5 containment=1
+[requestModel3D] Node 0x7248b80ed680, Layer 0, Cube Min=(330.00,330.00,-150.00), Max=(810.00,810.00,330.00), Verts=22333, Indices=72657
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663496790976 level=5 containment=1
+[requestModel3D] Node 0x724a501663c0, Layer 0, Cube Min=(330.00,330.00,-630.00), Max=(810.00,810.00,-150.00), Verts=1548, Indices=5733
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660409478832 level=5 containment=1
+[requestModel3D] Node 0x72499811beb0, Layer 0, Cube Min=(-150.00,330.00,810.00), Max=(330.00,810.00,1290.00), Verts=1831, Indices=5529
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660409479168 level=5 containment=1
+[requestModel3D] Node 0x72499811c000, Layer 0, Cube Min=(-150.00,330.00,330.00), Max=(330.00,810.00,810.00), Verts=1028, Indices=3105
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125656717927376 level=5 containment=0
+[requestModel3D] Node 0x7248bc0923d0, Layer 0, Cube Min=(-150.00,-150.00,-3030.00), Max=(330.00,330.00,-2550.00), Verts=1035, Indices=3594
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125666248047264 level=5 containment=0
+[requestModel3D] Node 0x724af4133aa0, Layer 0, Cube Min=(-150.00,-150.00,-2070.00), Max=(330.00,330.00,-1590.00), Verts=1127, Indices=3558
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659066527184 level=5 containment=0
+[requestModel3D] Node 0x72494805edd0, Layer 0, Cube Min=(-150.00,-150.00,-3510.00), Max=(330.00,330.00,-3030.00), Verts=1005, Indices=2556
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661283365888 level=5 containment=0
+[requestModel3D] Node 0x7249cc283400, Layer 0, Cube Min=(-150.00,-150.00,-1590.00), Max=(330.00,330.00,-1110.00), Verts=968, Indices=3108
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125656717371056 level=5 containment=1
+[requestModel3D] Node 0x7248bc00a6b0, Layer 0, Cube Min=(-630.00,-150.00,-2070.00), Max=(-150.00,330.00,-1590.00), Verts=509, Indices=1872
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125666248244096 level=5 containment=1
+[requestModel3D] Node 0x724af4163b80, Layer 0, Cube Min=(-630.00,-150.00,-2550.00), Max=(-150.00,330.00,-2070.00), Verts=650, Indices=2118
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125655173942560 level=5 containment=1
+[requestModel3D] Node 0x72486001cd20, Layer 0, Cube Min=(1770.00,330.00,330.00), Max=(2250.00,810.00,810.00), Verts=956, Indices=2634
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661283366224 level=5 containment=1
+[requestModel3D] Node 0x7249cc283550, Layer 0, Cube Min=(-630.00,-150.00,-1590.00), Max=(-150.00,330.00,-1110.00), Verts=467, Indices=1506
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662690483168 level=5 containment=1
+[requestModel3D] Node 0x724a20071be0, Layer 0, Cube Min=(1290.00,330.00,810.00), Max=(1770.00,810.00,1290.00), Verts=652, Indices=1692
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660811236384 level=5 containment=1
+[requestModel3D] Node 0x7249b0041420, Layer 0, Cube Min=(1290.00,330.00,330.00), Max=(1770.00,810.00,810.00), Verts=293, Indices=855
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=106564831095088 level=0 containment=1
+[requestModel3D] Node 0x60eb8ee72930, Layer 0, Cube Min=(-10230.00,-10230.00,-10230.00), Max=(5130.00,5130.00,5130.00), Verts=274048, Indices=986637
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665576478480 level=5 containment=1
+[requestModel3D] Node 0x724acc0be710, Layer 0, Cube Min=(-3030.00,-150.00,3690.00), Max=(-2550.00,330.00,4170.00), Verts=136, Indices=459
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125654905524224 level=5 containment=1
+[requestModel3D] Node 0x724850021000, Layer 0, Cube Min=(-1110.00,-150.00,3690.00), Max=(-630.00,330.00,4170.00), Verts=142, Indices=492
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659068784032 level=5 containment=1
+[requestModel3D] Node 0x724948285da0, Layer 0, Cube Min=(3690.00,-150.00,-1110.00), Max=(4170.00,330.00,-630.00), Verts=154, Indices=594
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659068841824 level=5 containment=1
+[requestModel3D] Node 0x724948293f60, Layer 0, Cube Min=(-2070.00,-150.00,3690.00), Max=(-1590.00,330.00,4170.00), Verts=113, Indices=378
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659068887408 level=5 containment=0
+[requestModel3D] Node 0x72494829f170, Layer 0, Cube Min=(2730.00,330.00,-3030.00), Max=(3210.00,810.00,-2550.00), Verts=382, Indices=1842
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659068717264 level=5 containment=1
+[requestModel3D] Node 0x7249482758d0, Layer 0, Cube Min=(3690.00,-150.00,330.00), Max=(4170.00,330.00,810.00), Verts=175, Indices=564
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659068747504 level=5 containment=1
+[requestModel3D] Node 0x72494827cef0, Layer 0, Cube Min=(2730.00,-150.00,3690.00), Max=(3210.00,330.00,4170.00), Verts=147, Indices=480
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659068753328 level=5 containment=1
+[requestModel3D] Node 0x72494827e5b0, Layer 0, Cube Min=(3690.00,-150.00,3690.00), Max=(4170.00,330.00,4170.00), Verts=45, Indices=144
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661820092864 level=5 containment=1
+[requestModel3D] Node 0x7249ec2601c0, Layer 0, Cube Min=(-150.00,-150.00,3690.00), Max=(330.00,330.00,4170.00), Verts=145, Indices=501
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125666382795712 level=5 containment=1
+[requestModel3D] Node 0x724afc1b53c0, Layer 0, Cube Min=(3690.00,-150.00,-1590.00), Max=(4170.00,330.00,-1110.00), Verts=80, Indices=261
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125666382819344 level=5 containment=0
+[requestModel3D] Node 0x724afc1bb010, Layer 0, Cube Min=(-2070.00,-150.00,3210.00), Max=(-1590.00,330.00,3690.00), Verts=246, Indices=849
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125666382820688 level=5 containment=0
+[requestModel3D] Node 0x724afc1bb550, Layer 0, Cube Min=(-2070.00,330.00,-3030.00), Max=(-1590.00,810.00,-2550.00), Verts=379, Indices=1704
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125666382884080 level=5 containment=0
+[requestModel3D] Node 0x724afc1cacf0, Layer 0, Cube Min=(810.00,330.00,-3030.00), Max=(1290.00,810.00,-2550.00), Verts=621, Indices=1986
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658867532416 level=5 containment=0
+[requestModel3D] Node 0x72493c298280, Layer 0, Cube Min=(1770.00,-150.00,-150.00), Max=(2250.00,330.00,330.00), Verts=398, Indices=1464
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658867555040 level=5 containment=1
+[requestModel3D] Node 0x72493c29dae0, Layer 0, Cube Min=(3690.00,-150.00,3210.00), Max=(4170.00,330.00,3690.00), Verts=140, Indices=522
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658867595136 level=5 containment=0
+[requestModel3D] Node 0x72493c2a7780, Layer 0, Cube Min=(-3030.00,-150.00,2730.00), Max=(-2550.00,330.00,3210.00), Verts=216, Indices=876
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665442250160 level=5 containment=0
+[requestModel3D] Node 0x724ac40bbdb0, Layer 0, Cube Min=(810.00,-150.00,-150.00), Max=(1290.00,330.00,330.00), Verts=243, Indices=975
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665978618176 level=5 containment=0
+[requestModel3D] Node 0x724ae4041140, Layer 0, Cube Min=(810.00,330.00,-2070.00), Max=(1290.00,810.00,-1590.00), Verts=483, Indices=1884
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665978661184 level=5 containment=0
+[requestModel3D] Node 0x724ae404b940, Layer 0, Cube Min=(-1110.00,-150.00,-150.00), Max=(-630.00,330.00,330.00), Verts=222, Indices=909
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661684030672 level=5 containment=0
+[requestModel3D] Node 0x7249e409dcd0, Layer 0, Cube Min=(-2070.00,-150.00,810.00), Max=(-1590.00,330.00,1290.00), Verts=381, Indices=1764
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661684015776 level=5 containment=1
+[requestModel3D] Node 0x7249e409a2a0, Layer 0, Cube Min=(3690.00,-630.00,-150.00), Max=(4170.00,-150.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249e409a2a0, Layer 0
+[SceneRenderer] Solid node event: nid=125661684104368 level=5 containment=1
+[requestModel3D] Node 0x7249e40afcb0, Layer 0, Cube Min=(810.00,-150.00,3690.00), Max=(1290.00,330.00,4170.00), Verts=139, Indices=522
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664301437520 level=5 containment=1
+[requestModel3D] Node 0x724a800c5250, Layer 0, Cube Min=(-150.00,-630.00,-3510.00), Max=(330.00,-150.00,-3030.00), Verts=257, Indices=714
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658867390752 level=5 containment=1
+[requestModel3D] Node 0x72493c275920, Layer 0, Cube Min=(-150.00,-150.00,-150.00), Max=(330.00,330.00,330.00), Verts=470, Indices=1629
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658867406432 level=5 containment=0
+[requestModel3D] Node 0x72493c279660, Layer 0, Cube Min=(1770.00,330.00,-2070.00), Max=(2250.00,810.00,-1590.00), Verts=484, Indices=2007
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658867443056 level=5 containment=1
+[requestModel3D] Node 0x72493c282570, Layer 0, Cube Min=(3690.00,-150.00,1290.00), Max=(4170.00,330.00,1770.00), Verts=145, Indices=552
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658867450112 level=5 containment=0
+[requestModel3D] Node 0x72493c284100, Layer 0, Cube Min=(2730.00,-150.00,3210.00), Max=(3210.00,330.00,3690.00), Verts=387, Indices=1479
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661348001568 level=5 containment=0
+[requestModel3D] Node 0x7249d0027720, Layer 0, Cube Min=(-2070.00,-150.00,1770.00), Max=(-1590.00,330.00,2250.00), Verts=311, Indices=1440
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661348014672 level=5 containment=0
+[requestModel3D] Node 0x7249d002aa50, Layer 0, Cube Min=(-1110.00,330.00,-3030.00), Max=(-630.00,810.00,-2550.00), Verts=398, Indices=1842
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661348022176 level=5 containment=0
+[requestModel3D] Node 0x7249d002c7a0, Layer 0, Cube Min=(2730.00,-150.00,-150.00), Max=(3210.00,330.00,330.00), Verts=401, Indices=1632
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125666382788320 level=5 containment=1
+[requestModel3D] Node 0x724afc1b36e0, Layer 0, Cube Min=(1770.00,-150.00,3690.00), Max=(2250.00,330.00,4170.00), Verts=131, Indices=423
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661348052528 level=5 containment=0
+[requestModel3D] Node 0x7249d0033e30, Layer 0, Cube Min=(-2070.00,330.00,-2070.00), Max=(-1590.00,810.00,-1590.00), Verts=482, Indices=1839
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658867520320 level=5 containment=1
+[requestModel3D] Node 0x72493c295340, Layer 0, Cube Min=(3690.00,-150.00,2730.00), Max=(4170.00,330.00,3210.00), Verts=130, Indices=489
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659670791200 level=5 containment=0
+[requestModel3D] Node 0x72496c0a4420, Layer 0, Cube Min=(-3030.00,330.00,-3030.00), Max=(-2550.00,810.00,-2550.00), Verts=520, Indices=1917
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664234127760 level=5 containment=1
+[requestModel3D] Node 0x724a7c094190, Layer 0, Cube Min=(2730.00,-1110.00,810.00), Max=(3210.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a7c094190, Layer 0
+[SceneRenderer] Solid node event: nid=125664234190256 level=5 containment=0
+[requestModel3D] Node 0x724a7c0a35b0, Layer 0, Cube Min=(1770.00,330.00,-3030.00), Max=(2250.00,810.00,-2550.00), Verts=492, Indices=1728
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661683888304 level=5 containment=1
+[requestModel3D] Node 0x7249e407b0b0, Layer 0, Cube Min=(-3030.00,-630.00,3690.00), Max=(-2550.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249e407b0b0, Layer 0
+[SceneRenderer] Solid node event: nid=125661683917536 level=5 containment=1
+[requestModel3D] Node 0x7249e40822e0, Layer 0, Cube Min=(3690.00,-150.00,2250.00), Max=(4170.00,330.00,2730.00), Verts=170, Indices=555
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659737966480 level=5 containment=1
+[requestModel3D] Node 0x7249700b4790, Layer 0, Cube Min=(-630.00,-630.00,-3510.00), Max=(-150.00,-150.00,-3030.00), Verts=41, Indices=114
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661683933216 level=5 containment=1
+[requestModel3D] Node 0x7249e4086020, Layer 0, Cube Min=(-1110.00,-630.00,3690.00), Max=(-630.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249e4086020, Layer 0
+[SceneRenderer] Solid node event: nid=125661683977792 level=5 containment=1
+[requestModel3D] Node 0x7249e4090e40, Layer 0, Cube Min=(-3990.00,-150.00,-2070.00), Max=(-3510.00,330.00,-1590.00), Verts=351, Indices=1305
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661683861632 level=5 containment=1
+[requestModel3D] Node 0x7249e4074880, Layer 0, Cube Min=(-1110.00,-150.00,-3990.00), Max=(-630.00,330.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249e4074880, Layer 0
+[SceneRenderer] Solid node event: nid=125661683782672 level=5 containment=0
+[requestModel3D] Node 0x7249e4061410, Layer 0, Cube Min=(2730.00,-150.00,2730.00), Max=(3210.00,330.00,3210.00), Verts=281, Indices=1125
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661683807536 level=5 containment=0
+[requestModel3D] Node 0x7249e4067530, Layer 0, Cube Min=(1770.00,-150.00,1770.00), Max=(2250.00,330.00,2250.00), Verts=397, Indices=1500
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661683810000 level=5 containment=0
+[requestModel3D] Node 0x7249e4067ed0, Layer 0, Cube Min=(810.00,-150.00,3210.00), Max=(1290.00,330.00,3690.00), Verts=214, Indices=825
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661683869136 level=5 containment=0
+[requestModel3D] Node 0x7249e40765d0, Layer 0, Cube Min=(-150.00,-150.00,810.00), Max=(330.00,330.00,1290.00), Verts=239, Indices=930
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661819988128 level=5 containment=1
+[requestModel3D] Node 0x7249ec2468a0, Layer 0, Cube Min=(-3030.00,-150.00,-3990.00), Max=(-2550.00,330.00,-3510.00), Verts=111, Indices=273
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661683860176 level=5 containment=0
+[requestModel3D] Node 0x7249e40742d0, Layer 0, Cube Min=(-2070.00,-150.00,-150.00), Max=(-1590.00,330.00,330.00), Verts=461, Indices=1755
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661283621616 level=5 containment=1
+[requestModel3D] Node 0x7249cc2c1af0, Layer 0, Cube Min=(-3990.00,-150.00,-1110.00), Max=(-3510.00,330.00,-630.00), Verts=363, Indices=1260
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661283596416 level=5 containment=1
+[requestModel3D] Node 0x7249cc2bb880, Layer 0, Cube Min=(3690.00,-630.00,810.00), Max=(4170.00,-150.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249cc2bb880, Layer 0
+[SceneRenderer] Solid node event: nid=125663026038864 level=5 containment=0
+[requestModel3D] Node 0x724a34074850, Layer 0, Cube Min=(2730.00,330.00,-3510.00), Max=(3210.00,810.00,-3030.00), Verts=428, Indices=1941
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661080879376 level=5 containment=1
+[requestModel3D] Node 0x7249c0168110, Layer 0, Cube Min=(-150.00,-150.00,1770.00), Max=(330.00,330.00,2250.00), Verts=565, Indices=1962
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665240733072 level=5 containment=1
+[requestModel3D] Node 0x724ab808d590, Layer 0, Cube Min=(1770.00,330.00,810.00), Max=(2250.00,810.00,1290.00), Verts=4362, Indices=12162
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661080847456 level=5 containment=1
+[requestModel3D] Node 0x7249c0160460, Layer 0, Cube Min=(810.00,-1110.00,3690.00), Max=(1290.00,-630.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c0160460, Layer 0
+[SceneRenderer] Solid node event: nid=125661080848800 level=5 containment=1
+[requestModel3D] Node 0x7249c01609a0, Layer 0, Cube Min=(-1110.00,-1110.00,3690.00), Max=(-630.00,-630.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c01609a0, Layer 0
+[SceneRenderer] Solid node event: nid=125661080929552 level=5 containment=1
+[requestModel3D] Node 0x7249c0174510, Layer 0, Cube Min=(2730.00,-1110.00,-150.00), Max=(3210.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c0174510, Layer 0
+[SceneRenderer] Solid node event: nid=125660811644528 level=5 containment=1
+[requestModel3D] Node 0x7249b00a4e70, Layer 0, Cube Min=(810.00,-150.00,-3990.00), Max=(1290.00,330.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249b00a4e70, Layer 0
+[SceneRenderer] Solid node event: nid=125660811607680 level=5 containment=1
+[requestModel3D] Node 0x7249b009be80, Layer 0, Cube Min=(3690.00,-630.00,-1110.00), Max=(4170.00,-150.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249b009be80, Layer 0
+[SceneRenderer] Solid node event: nid=125660811688768 level=5 containment=0
+[requestModel3D] Node 0x7249b00afb40, Layer 0, Cube Min=(810.00,-150.00,2730.00), Max=(1290.00,330.00,3210.00), Verts=189, Indices=738
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663965521312 level=5 containment=1
+[requestModel3D] Node 0x724a6c06a5a0, Layer 0, Cube Min=(810.00,-1110.00,-150.00), Max=(1290.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a6c06a5a0, Layer 0
+[SceneRenderer] Solid node event: nid=125659402661232 level=5 containment=0
+[requestModel3D] Node 0x72495c0eed70, Layer 0, Cube Min=(2730.00,-150.00,810.00), Max=(3210.00,330.00,1290.00), Verts=564, Indices=1950
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661683718480 level=5 containment=0
+[requestModel3D] Node 0x7249e4051950, Layer 0, Cube Min=(-3030.00,330.00,1770.00), Max=(-2550.00,810.00,2250.00), Verts=231, Indices=1119
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659402650816 level=5 containment=1
+[requestModel3D] Node 0x72495c0ec4c0, Layer 0, Cube Min=(1770.00,-1110.00,3690.00), Max=(2250.00,-630.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495c0ec4c0, Layer 0
+[SceneRenderer] Solid node event: nid=125659402661008 level=5 containment=1
+[requestModel3D] Node 0x72495c0eec90, Layer 0, Cube Min=(-150.00,-1110.00,3690.00), Max=(330.00,-630.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495c0eec90, Layer 0
+[SceneRenderer] Solid node event: nid=125661683689808 level=5 containment=1
+[requestModel3D] Node 0x7249e404a950, Layer 0, Cube Min=(3690.00,-1110.00,-1110.00), Max=(4170.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249e404a950, Layer 0
+[SceneRenderer] Solid node event: nid=125664167241824 level=5 containment=1
+[requestModel3D] Node 0x724a780ca860, Layer 0, Cube Min=(-2070.00,-1110.00,3690.00), Max=(-1590.00,-630.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a780ca860, Layer 0
+[SceneRenderer] Solid node event: nid=125655644397360 level=5 containment=1
+[requestModel3D] Node 0x72487c0c5f30, Layer 0, Cube Min=(-3030.00,-1110.00,2730.00), Max=(-2550.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72487c0c5f30, Layer 0
+[SceneRenderer] Solid node event: nid=125656717561584 level=5 containment=1
+[requestModel3D] Node 0x7248bc038ef0, Layer 0, Cube Min=(-630.00,-150.00,-3030.00), Max=(-150.00,330.00,-2550.00), Verts=600, Indices=1920
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664167060592 level=5 containment=1
+[requestModel3D] Node 0x724a7809e470, Layer 0, Cube Min=(-1110.00,-1110.00,-3030.00), Max=(-630.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a7809e470, Layer 0
+[SceneRenderer] Solid node event: nid=125656717519920 level=5 containment=1
+[requestModel3D] Node 0x7248bc02ec30, Layer 0, Cube Min=(-150.00,-630.00,-2550.00), Max=(330.00,-150.00,-2070.00), Verts=249, Indices=690
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660811575296 level=5 containment=1
+[requestModel3D] Node 0x7249b0094000, Layer 0, Cube Min=(3690.00,-1110.00,-2070.00), Max=(4170.00,-630.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249b0094000, Layer 0
+[SceneRenderer] Solid node event: nid=125662958696000 level=5 containment=1
+[requestModel3D] Node 0x724a3003b640, Layer 0, Cube Min=(-1110.00,-1110.00,2730.00), Max=(-630.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a3003b640, Layer 0
+[SceneRenderer] Solid node event: nid=125662958720752 level=5 containment=1
+[requestModel3D] Node 0x724a300416f0, Layer 0, Cube Min=(810.00,-1110.00,-3030.00), Max=(1290.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a300416f0, Layer 0
+[SceneRenderer] Solid node event: nid=125659267874160 level=5 containment=1
+[requestModel3D] Node 0x724954063d70, Layer 0, Cube Min=(3690.00,-150.00,-3990.00), Max=(4170.00,330.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724954063d70, Layer 0
+[SceneRenderer] Solid node event: nid=125660274230816 level=5 containment=0
+[requestModel3D] Node 0x724990020620, Layer 0, Cube Min=(810.00,330.00,-1110.00), Max=(1290.00,810.00,-630.00), Verts=309, Indices=1371
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660811650912 level=5 containment=1
+[requestModel3D] Node 0x7249b00a6760, Layer 0, Cube Min=(2730.00,-150.00,-3990.00), Max=(3210.00,330.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249b00a6760, Layer 0
+[SceneRenderer] Solid node event: nid=125660274256128 level=5 containment=1
+[requestModel3D] Node 0x724990026900, Layer 0, Cube Min=(1770.00,-1110.00,2730.00), Max=(2250.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724990026900, Layer 0
+[SceneRenderer] Solid node event: nid=125659402752080 level=5 containment=1
+[requestModel3D] Node 0x72495c105050, Layer 0, Cube Min=(-2070.00,-150.00,-3990.00), Max=(-1590.00,330.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495c105050, Layer 0
+[SceneRenderer] Solid node event: nid=125660274284128 level=5 containment=1
+[requestModel3D] Node 0x72499002d660, Layer 0, Cube Min=(2730.00,-1110.00,2730.00), Max=(3210.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72499002d660, Layer 0
+[SceneRenderer] Solid node event: nid=125660274321984 level=5 containment=1
+[requestModel3D] Node 0x724990036a40, Layer 0, Cube Min=(-150.00,-1110.00,1770.00), Max=(330.00,-630.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724990036a40, Layer 0
+[SceneRenderer] Solid node event: nid=125658867369248 level=5 containment=0
+[requestModel3D] Node 0x72493c270520, Layer 0, Cube Min=(-3030.00,330.00,810.00), Max=(-2550.00,810.00,1290.00), Verts=497, Indices=2076
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659000041136 level=5 containment=1
+[requestModel3D] Node 0x7249440f6eb0, Layer 0, Cube Min=(-3030.00,-1110.00,-2070.00), Max=(-2550.00,-630.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249440f6eb0, Layer 0
+[SceneRenderer] Solid node event: nid=125659000026240 level=5 containment=1
+[requestModel3D] Node 0x7249440f3480, Layer 0, Cube Min=(810.00,-1110.00,1770.00), Max=(1290.00,-630.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249440f3480, Layer 0
+[SceneRenderer] Solid node event: nid=125661013830432 level=5 containment=1
+[requestModel3D] Node 0x7249bc176b20, Layer 0, Cube Min=(-2070.00,-1110.00,2730.00), Max=(-1590.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249bc176b20, Layer 0
+[SceneRenderer] Solid node event: nid=125658999824624 level=5 containment=0
+[requestModel3D] Node 0x7249440c20f0, Layer 0, Cube Min=(2730.00,-150.00,1290.00), Max=(3210.00,330.00,1770.00), Verts=524, Indices=1905
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661684116032 level=5 containment=1
+[requestModel3D] Node 0x7249e40b2a40, Layer 0, Cube Min=(3690.00,-150.00,1770.00), Max=(4170.00,330.00,2250.00), Verts=179, Indices=585
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659068632688 level=5 containment=1
+[requestModel3D] Node 0x724948260e70, Layer 0, Cube Min=(810.00,-1110.00,-1110.00), Max=(1290.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724948260e70, Layer 0
+[SceneRenderer] Solid node event: nid=125660342004336 level=5 containment=1
+[requestModel3D] Node 0x7249940c2a70, Layer 0, Cube Min=(-150.00,330.00,1290.00), Max=(330.00,810.00,1770.00), Verts=3508, Indices=11019
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661284583360 level=5 containment=1
+[requestModel3D] Node 0x7249cc3ac7c0, Layer 0, Cube Min=(-150.00,-1110.00,-1110.00), Max=(330.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249cc3ac7c0, Layer 0
+[SceneRenderer] Solid node event: nid=125661683606832 level=5 containment=1
+[requestModel3D] Node 0x7249e4036530, Layer 0, Cube Min=(1770.00,-1110.00,-3030.00), Max=(2250.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249e4036530, Layer 0
+[SceneRenderer] Solid node event: nid=125658999772752 level=5 containment=0
+[requestModel3D] Node 0x7249440b5650, Layer 0, Cube Min=(-3030.00,-150.00,2250.00), Max=(-2550.00,330.00,2730.00), Verts=401, Indices=1881
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665241413664 level=5 containment=1
+[requestModel3D] Node 0x724ab8133820, Layer 0, Cube Min=(-150.00,-1110.00,2730.00), Max=(330.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ab8133820, Layer 0
+[SceneRenderer] Solid node event: nid=125661013745408 level=5 containment=1
+[requestModel3D] Node 0x7249bc161f00, Layer 0, Cube Min=(-150.00,-1110.00,810.00), Max=(330.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249bc161f00, Layer 0
+[SceneRenderer] Solid node event: nid=125663025997632 level=5 containment=1
+[requestModel3D] Node 0x724a3406a740, Layer 0, Cube Min=(1770.00,-1110.00,-1110.00), Max=(2250.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a3406a740, Layer 0
+[SceneRenderer] Solid node event: nid=125659804461424 level=5 containment=0
+[requestModel3D] Node 0x72497401e970, Layer 0, Cube Min=(2730.00,330.00,-2550.00), Max=(3210.00,810.00,-2070.00), Verts=374, Indices=1722
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659739965952 level=5 containment=0
+[requestModel3D] Node 0x72497029ca00, Layer 0, Cube Min=(-150.00,-150.00,-630.00), Max=(330.00,330.00,-150.00), Verts=566, Indices=2133
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659267823088 level=5 containment=1
+[requestModel3D] Node 0x7249540575f0, Layer 0, Cube Min=(2730.00,-1110.00,3690.00), Max=(3210.00,-630.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249540575f0, Layer 0
+[SceneRenderer] Solid node event: nid=125659804472624 level=5 containment=1
+[requestModel3D] Node 0x724974021530, Layer 0, Cube Min=(1770.00,-1110.00,-2070.00), Max=(2250.00,-630.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724974021530, Layer 0
+[SceneRenderer] Solid node event: nid=125659739916896 level=5 containment=1
+[requestModel3D] Node 0x724970290a60, Layer 0, Cube Min=(3690.00,-1110.00,-150.00), Max=(4170.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724970290a60, Layer 0
+[SceneRenderer] Solid node event: nid=125659739948368 level=5 containment=1
+[requestModel3D] Node 0x724970298550, Layer 0, Cube Min=(3690.00,-1110.00,1770.00), Max=(4170.00,-630.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724970298550, Layer 0
+[SceneRenderer] Solid node event: nid=125659739987792 level=5 containment=1
+[requestModel3D] Node 0x7249702a1f50, Layer 0, Cube Min=(2730.00,-150.00,-630.00), Max=(3210.00,330.00,-150.00), Verts=975, Indices=3822
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663361438384 level=5 containment=0
+[requestModel3D] Node 0x724a480512b0, Layer 0, Cube Min=(810.00,330.00,-3510.00), Max=(1290.00,810.00,-3030.00), Verts=549, Indices=1893
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663361433568 level=5 containment=1
+[requestModel3D] Node 0x724a4804ffe0, Layer 0, Cube Min=(3690.00,-1110.00,3690.00), Max=(4170.00,-630.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a4804ffe0, Layer 0
+[SceneRenderer] Solid node event: nid=125662287707488 level=5 containment=0
+[requestModel3D] Node 0x724a08053d60, Layer 0, Cube Min=(-150.00,330.00,-1110.00), Max=(330.00,810.00,-630.00), Verts=67, Indices=180
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660141748384 level=5 containment=0
+[requestModel3D] Node 0x7249881c80a0, Layer 0, Cube Min=(-1110.00,330.00,-1110.00), Max=(-630.00,810.00,-630.00), Verts=192, Indices=882
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660141654080 level=5 containment=1
+[requestModel3D] Node 0x7249881b1040, Layer 0, Cube Min=(2730.00,-1110.00,1770.00), Max=(3210.00,-630.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249881b1040, Layer 0
+[SceneRenderer] Solid node event: nid=125658730795952 level=5 containment=1
+[requestModel3D] Node 0x7249340313b0, Layer 0, Cube Min=(810.00,-1110.00,-2070.00), Max=(1290.00,-630.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249340313b0, Layer 0
+[SceneRenderer] Solid node event: nid=125656918850432 level=5 containment=1
+[requestModel3D] Node 0x7248c802fb80, Layer 0, Cube Min=(3690.00,-630.00,2730.00), Max=(4170.00,-150.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248c802fb80, Layer 0
+[SceneRenderer] Solid node event: nid=125661819880592 level=5 containment=1
+[requestModel3D] Node 0x7249ec22c490, Layer 0, Cube Min=(-2070.00,-1110.00,-2070.00), Max=(-1590.00,-630.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249ec22c490, Layer 0
+[SceneRenderer] Solid node event: nid=125659939404256 level=5 containment=1
+[requestModel3D] Node 0x72497c0cf9e0, Layer 0, Cube Min=(3690.00,-630.00,1770.00), Max=(4170.00,-150.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72497c0cf9e0, Layer 0
+[SceneRenderer] Solid node event: nid=125661819842400 level=5 containment=1
+[requestModel3D] Node 0x7249ec222f60, Layer 0, Cube Min=(2730.00,-630.00,3690.00), Max=(3210.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249ec222f60, Layer 0
+[SceneRenderer] Solid node event: nid=125656918695408 level=5 containment=1
+[requestModel3D] Node 0x7248c8009df0, Layer 0, Cube Min=(810.00,-1110.00,2730.00), Max=(1290.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248c8009df0, Layer 0
+[SceneRenderer] Solid node event: nid=125661013914320 level=5 containment=1
+[requestModel3D] Node 0x7249bc18b2d0, Layer 0, Cube Min=(-3030.00,-1110.00,-150.00), Max=(-2550.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249bc18b2d0, Layer 0
+[SceneRenderer] Solid node event: nid=125661284510320 level=5 containment=1
+[requestModel3D] Node 0x7249cc39aa70, Layer 0, Cube Min=(-3030.00,-1110.00,810.00), Max=(-2550.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249cc39aa70, Layer 0
+[SceneRenderer] Solid node event: nid=125661013791328 level=5 containment=0
+[requestModel3D] Node 0x7249bc16d260, Layer 0, Cube Min=(810.00,330.00,-2550.00), Max=(1290.00,810.00,-2070.00), Verts=580, Indices=2040
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125656918760032 level=5 containment=1
+[requestModel3D] Node 0x7248c8019a60, Layer 0, Cube Min=(-3990.00,-150.00,-3030.00), Max=(-3510.00,330.00,-2550.00), Verts=157, Indices=558
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661013082672 level=5 containment=1
+[requestModel3D] Node 0x7249bc0c0230, Layer 0, Cube Min=(-2070.00,-1110.00,810.00), Max=(-1590.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249bc0c0230, Layer 0
+[SceneRenderer] Solid node event: nid=125656918762944 level=5 containment=1
+[requestModel3D] Node 0x7248c801a5c0, Layer 0, Cube Min=(3690.00,-630.00,3210.00), Max=(4170.00,-150.00,3690.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248c801a5c0, Layer 0
+[SceneRenderer] Solid node event: nid=125660947109536 level=5 containment=1
+[requestModel3D] Node 0x7249b81d56a0, Layer 0, Cube Min=(810.00,-630.00,3690.00), Max=(1290.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249b81d56a0, Layer 0
+[SceneRenderer] Solid node event: nid=125660947162288 level=5 containment=1
+[requestModel3D] Node 0x7249b81e24b0, Layer 0, Cube Min=(1770.00,-1110.00,810.00), Max=(2250.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249b81e24b0, Layer 0
+[SceneRenderer] Solid node event: nid=125656785141056 level=5 containment=1
+[requestModel3D] Node 0x7248c00abd40, Layer 0, Cube Min=(-630.00,330.00,-1110.00), Max=(-150.00,810.00,-630.00), Verts=293, Indices=1140
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660811289024 level=5 containment=1
+[requestModel3D] Node 0x7249b004e1c0, Layer 0, Cube Min=(-1110.00,-1110.00,-1590.00), Max=(-630.00,-630.00,-1110.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249b004e1c0, Layer 0
+[SceneRenderer] Solid node event: nid=125661012825808 level=5 containment=1
+[requestModel3D] Node 0x7249bc0816d0, Layer 0, Cube Min=(3210.00,-1110.00,-3030.00), Max=(3690.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249bc0816d0, Layer 0
+[SceneRenderer] Solid node event: nid=125666247117664 level=5 containment=1
+[requestModel3D] Node 0x724af4050b60, Layer 0, Cube Min=(-2070.00,-1110.00,-1590.00), Max=(-1590.00,-630.00,-1110.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724af4050b60, Layer 0
+[SceneRenderer] Solid node event: nid=125658932232432 level=5 containment=1
+[requestModel3D] Node 0x72494004c0f0, Layer 0, Cube Min=(2250.00,-1110.00,1770.00), Max=(2730.00,-630.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72494004c0f0, Layer 0
+[SceneRenderer] Solid node event: nid=125663025663488 level=5 containment=0
+[requestModel3D] Node 0x724a34018e00, Layer 0, Cube Min=(-3510.00,-150.00,330.00), Max=(-3030.00,330.00,810.00), Verts=4, Indices=6
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665240690608 level=5 containment=1
+[requestModel3D] Node 0x724ab8082fb0, Layer 0, Cube Min=(330.00,-1110.00,1290.00), Max=(810.00,-630.00,1770.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ab8082fb0, Layer 0
+[SceneRenderer] Solid node event: nid=125656382255136 level=5 containment=1
+[requestModel3D] Node 0x7248a8073020, Layer 0, Cube Min=(3210.00,-1110.00,-150.00), Max=(3690.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248a8073020, Layer 0
+[SceneRenderer] Solid node event: nid=125656851754704 level=5 containment=1
+[requestModel3D] Node 0x7248c4032ed0, Layer 0, Cube Min=(-2070.00,-1110.00,1290.00), Max=(-1590.00,-630.00,1770.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248c4032ed0, Layer 0
+[SceneRenderer] Solid node event: nid=125663965281472 level=5 containment=0
+[requestModel3D] Node 0x724a6c02fcc0, Layer 0, Cube Min=(-150.00,-150.00,1290.00), Max=(330.00,330.00,1770.00), Verts=205, Indices=843
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125656784648656 level=5 containment=0
+[requestModel3D] Node 0x7248c00339d0, Layer 0, Cube Min=(-2070.00,-150.00,-1590.00), Max=(-1590.00,330.00,-1110.00), Verts=128, Indices=513
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662758110912 level=5 containment=1
+[requestModel3D] Node 0x724a240f06c0, Layer 0, Cube Min=(-3510.00,-1110.00,-3990.00), Max=(-3030.00,-630.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a240f06c0, Layer 0
+[SceneRenderer] Solid node event: nid=125662223142784 level=5 containment=0
+[requestModel3D] Node 0x724a042c0f80, Layer 0, Cube Min=(-2070.00,-150.00,1290.00), Max=(-1590.00,330.00,1770.00), Verts=276, Indices=1248
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662758071152 level=5 containment=1
+[requestModel3D] Node 0x724a240e6b70, Layer 0, Cube Min=(-2550.00,-1110.00,810.00), Max=(-2070.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a240e6b70, Layer 0
+[SceneRenderer] Solid node event: nid=125666918101472 level=5 containment=1
+[requestModel3D] Node 0x724b1c0371e0, Layer 0, Cube Min=(-630.00,-1110.00,-1110.00), Max=(-150.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724b1c0371e0, Layer 0
+[SceneRenderer] Solid node event: nid=125654502902688 level=5 containment=1
+[requestModel3D] Node 0x724838028ba0, Layer 0, Cube Min=(-3030.00,330.00,-3990.00), Max=(-2550.00,810.00,-3510.00), Verts=394, Indices=1230
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663495760288 level=5 containment=1
+[requestModel3D] Node 0x724a5006a9a0, Layer 0, Cube Min=(2250.00,-1110.00,-1110.00), Max=(2730.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a5006a9a0, Layer 0
+[SceneRenderer] Solid node event: nid=125665576048112 level=5 containment=1
+[requestModel3D] Node 0x724acc0555f0, Layer 0, Cube Min=(3690.00,-1110.00,2250.00), Max=(4170.00,-630.00,2730.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724acc0555f0, Layer 0
+[SceneRenderer] Solid node event: nid=125661683976000 level=5 containment=0
+[requestModel3D] Node 0x7249e4090740, Layer 0, Cube Min=(810.00,-150.00,1770.00), Max=(1290.00,330.00,2250.00), Verts=231, Indices=897
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661819983760 level=5 containment=0
+[requestModel3D] Node 0x7249ec245790, Layer 0, Cube Min=(-1110.00,-150.00,1770.00), Max=(-630.00,330.00,2250.00), Verts=259, Indices=1158
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661012951152 level=5 containment=1
+[requestModel3D] Node 0x7249bc0a0070, Layer 0, Cube Min=(2730.00,-1110.00,3210.00), Max=(3210.00,-630.00,3690.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249bc0a0070, Layer 0
+[SceneRenderer] Solid node event: nid=125664032262464 level=5 containment=1
+[requestModel3D] Node 0x724a70010940, Layer 0, Cube Min=(-3990.00,-1110.00,2250.00), Max=(-3510.00,-630.00,2730.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a70010940, Layer 0
+[SceneRenderer] Solid node event: nid=125658596528176 level=5 containment=0
+[requestModel3D] Node 0x72492c025030, Layer 0, Cube Min=(-3510.00,330.00,-3030.00), Max=(-3030.00,810.00,-2550.00), Verts=340, Indices=1305
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658529740432 level=5 containment=1
+[requestModel3D] Node 0x724928073690, Layer 0, Cube Min=(330.00,-1110.00,-2070.00), Max=(810.00,-630.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724928073690, Layer 0
+[SceneRenderer] Solid node event: nid=125665039687984 level=5 containment=1
+[requestModel3D] Node 0x724aac0d2130, Layer 0, Cube Min=(330.00,-1110.00,-3990.00), Max=(810.00,-630.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724aac0d2130, Layer 0
+[SceneRenderer] Solid node event: nid=125660073012448 level=5 containment=1
+[requestModel3D] Node 0x72498403ace0, Layer 0, Cube Min=(2250.00,-1110.00,-3990.00), Max=(2730.00,-630.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72498403ace0, Layer 0
+[SceneRenderer] Solid node event: nid=125661283392320 level=5 containment=1
+[requestModel3D] Node 0x7249cc289b40, Layer 0, Cube Min=(1290.00,-1110.00,-150.00), Max=(1770.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249cc289b40, Layer 0
+[SceneRenderer] Solid node event: nid=125664435673808 level=5 containment=1
+[requestModel3D] Node 0x724a880c9ad0, Layer 0, Cube Min=(-2550.00,-1110.00,-150.00), Max=(-2070.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a880c9ad0, Layer 0
+[SceneRenderer] Solid node event: nid=125660811558496 level=5 containment=1
+[requestModel3D] Node 0x7249b008fe60, Layer 0, Cube Min=(2730.00,-1110.00,-2070.00), Max=(3210.00,-630.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249b008fe60, Layer 0
+[SceneRenderer] Solid node event: nid=125660945401488 level=5 containment=0
+[requestModel3D] Node 0x7249b8034690, Layer 0, Cube Min=(-1590.00,-150.00,-1110.00), Max=(-1110.00,330.00,-630.00), Verts=368, Indices=1323
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660947068320 level=5 containment=1
+[requestModel3D] Node 0x7249b81cb5a0, Layer 0, Cube Min=(-3990.00,-150.00,810.00), Max=(-3510.00,330.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249b81cb5a0, Layer 0
+[SceneRenderer] Solid node event: nid=125656784875984 level=5 containment=1
+[requestModel3D] Node 0x7248c006b1d0, Layer 0, Cube Min=(-3030.00,-1110.00,330.00), Max=(-2550.00,-630.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248c006b1d0, Layer 0
+[SceneRenderer] Solid node event: nid=125661012653648 level=5 containment=1
+[requestModel3D] Node 0x7249bc057650, Layer 0, Cube Min=(-2550.00,-1110.00,-2070.00), Max=(-2070.00,-630.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249bc057650, Layer 0
+[SceneRenderer] Solid node event: nid=125664234151616 level=5 containment=0
+[requestModel3D] Node 0x724a7c099ec0, Layer 0, Cube Min=(-3030.00,-150.00,-150.00), Max=(-2550.00,330.00,330.00), Verts=550, Indices=1911
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661818004368 level=5 containment=1
+[requestModel3D] Node 0x7249ec062390, Layer 0, Cube Min=(1290.00,-150.00,-630.00), Max=(1770.00,330.00,-150.00), Verts=425, Indices=1743
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659737448256 level=5 containment=0
+[requestModel3D] Node 0x724970035f40, Layer 0, Cube Min=(2250.00,-150.00,2250.00), Max=(2730.00,330.00,2730.00), Verts=366, Indices=1527
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660542654176 level=5 containment=0
+[requestModel3D] Node 0x7249a001d6e0, Layer 0, Cube Min=(-2550.00,-150.00,3210.00), Max=(-2070.00,330.00,3690.00), Verts=254, Indices=825
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661079558784 level=5 containment=1
+[requestModel3D] Node 0x7249c0025a80, Layer 0, Cube Min=(-3990.00,-630.00,2730.00), Max=(-3510.00,-150.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c0025a80, Layer 0
+[SceneRenderer] Solid node event: nid=125663093385984 level=5 containment=1
+[requestModel3D] Node 0x724a380aeb00, Layer 0, Cube Min=(-630.00,330.00,330.00), Max=(-150.00,810.00,810.00), Verts=84, Indices=210
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661482798592 level=5 containment=1
+[requestModel3D] Node 0x7249d80b4e00, Layer 0, Cube Min=(-1590.00,330.00,-3990.00), Max=(-1110.00,810.00,-3510.00), Verts=397, Indices=1404
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664368067232 level=5 containment=1
+[requestModel3D] Node 0x724a840502a0, Layer 0, Cube Min=(-3990.00,-630.00,-2070.00), Max=(-3510.00,-150.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a840502a0, Layer 0
+[SceneRenderer] Solid node event: nid=125661283367456 level=5 containment=0
+[requestModel3D] Node 0x7249cc283a20, Layer 0, Cube Min=(-150.00,-150.00,-1110.00), Max=(330.00,330.00,-630.00), Verts=885, Indices=2787
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662086416320 level=5 containment=0
+[requestModel3D] Node 0x7249fc05c7c0, Layer 0, Cube Min=(2250.00,-150.00,1290.00), Max=(2730.00,330.00,1770.00), Verts=393, Indices=1419
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125654502773536 level=5 containment=1
+[requestModel3D] Node 0x724838009320, Layer 0, Cube Min=(2250.00,-1110.00,-1590.00), Max=(2730.00,-630.00,-1110.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724838009320, Layer 0
+[SceneRenderer] Solid node event: nid=125661482816960 level=5 containment=1
+[requestModel3D] Node 0x7249d80b95c0, Layer 0, Cube Min=(3210.00,-1110.00,1770.00), Max=(3690.00,-630.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249d80b95c0, Layer 0
+[SceneRenderer] Solid node event: nid=125661079495840 level=5 containment=0
+[requestModel3D] Node 0x7249c00164a0, Layer 0, Cube Min=(3210.00,-150.00,-630.00), Max=(3690.00,330.00,-150.00), Verts=419, Indices=1926
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659067720256 level=5 containment=1
+[requestModel3D] Node 0x724948182240, Layer 0, Cube Min=(-1110.00,-1110.00,330.00), Max=(-630.00,-630.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724948182240, Layer 0
+[SceneRenderer] Solid node event: nid=125659738180768 level=5 containment=1
+[requestModel3D] Node 0x7249700e8ca0, Layer 0, Cube Min=(-630.00,-630.00,-2550.00), Max=(-150.00,-150.00,-2070.00), Verts=22, Indices=48
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665173221200 level=5 containment=1
+[requestModel3D] Node 0x724ab402af50, Layer 0, Cube Min=(-2070.00,-630.00,-3990.00), Max=(-1590.00,-150.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ab402af50, Layer 0
+[SceneRenderer] Solid node event: nid=125665240273904 level=5 containment=0
+[requestModel3D] Node 0x724ab801d3f0, Layer 0, Cube Min=(-1590.00,-150.00,2730.00), Max=(-1110.00,330.00,3210.00), Verts=252, Indices=951
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659670241776 level=5 containment=0
+[requestModel3D] Node 0x72496c01e1f0, Layer 0, Cube Min=(3210.00,-150.00,2730.00), Max=(3690.00,330.00,3210.00), Verts=237, Indices=864
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658261122880 level=5 containment=1
+[requestModel3D] Node 0x724918046f40, Layer 0, Cube Min=(-150.00,-1110.00,-1590.00), Max=(330.00,-630.00,-1110.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724918046f40, Layer 0
+[SceneRenderer] Solid node event: nid=125658933124672 level=5 containment=0
+[requestModel3D] Node 0x724940125e40, Layer 0, Cube Min=(-3030.00,-150.00,-2070.00), Max=(-2550.00,330.00,-1590.00), Verts=119, Indices=339
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659068192576 level=5 containment=0
+[requestModel3D] Node 0x7249481f5740, Layer 0, Cube Min=(2250.00,330.00,-2550.00), Max=(2730.00,810.00,-2070.00), Verts=467, Indices=2112
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659335195552 level=5 containment=1
+[requestModel3D] Node 0x724958097ba0, Layer 0, Cube Min=(2730.00,-1110.00,-2550.00), Max=(3210.00,-630.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724958097ba0, Layer 0
+[SceneRenderer] Solid node event: nid=125666985255824 level=5 containment=0
+[requestModel3D] Node 0x724b20042390, Layer 0, Cube Min=(810.00,-150.00,1290.00), Max=(1290.00,330.00,1770.00), Verts=246, Indices=951
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664234060208 level=5 containment=0
+[requestModel3D] Node 0x724a7c0839b0, Layer 0, Cube Min=(3210.00,-150.00,330.00), Max=(3690.00,330.00,810.00), Verts=594, Indices=2106
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125655644440368 level=5 containment=1
+[requestModel3D] Node 0x72487c0d0730, Layer 0, Cube Min=(-150.00,-1110.00,-3030.00), Max=(330.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72487c0d0730, Layer 0
+[SceneRenderer] Solid node event: nid=125661283323872 level=5 containment=0
+[requestModel3D] Node 0x7249cc278fe0, Layer 0, Cube Min=(-2550.00,330.00,-3510.00), Max=(-2070.00,810.00,-3030.00), Verts=550, Indices=1938
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661885023952 level=5 containment=1
+[requestModel3D] Node 0x7249f004c6d0, Layer 0, Cube Min=(-3990.00,-1110.00,-630.00), Max=(-3510.00,-630.00,-150.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249f004c6d0, Layer 0
+[SceneRenderer] Solid node event: nid=125661146679552 level=5 containment=0
+[requestModel3D] Node 0x7249c4028900, Layer 0, Cube Min=(3210.00,-150.00,1290.00), Max=(3690.00,330.00,1770.00), Verts=459, Indices=1884
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665441726160 level=5 containment=1
+[requestModel3D] Node 0x724ac403bed0, Layer 0, Cube Min=(-2550.00,-1110.00,1290.00), Max=(-2070.00,-630.00,1770.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ac403bed0, Layer 0
+[SceneRenderer] Solid node event: nid=125661146650208 level=5 containment=1
+[requestModel3D] Node 0x7249c4021660, Layer 0, Cube Min=(-3990.00,-1110.00,1290.00), Max=(-3510.00,-630.00,1770.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c4021660, Layer 0
+[SceneRenderer] Solid node event: nid=125660542712432 level=5 containment=1
+[requestModel3D] Node 0x7249a002ba70, Layer 0, Cube Min=(-1110.00,-630.00,-3990.00), Max=(-630.00,-150.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249a002ba70, Layer 0
+[SceneRenderer] Solid node event: nid=125656851598000 level=5 containment=0
+[requestModel3D] Node 0x7248c400cab0, Layer 0, Cube Min=(330.00,330.00,-1590.00), Max=(810.00,810.00,-1110.00), Verts=498, Indices=1794
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659334710096 level=5 containment=1
+[requestModel3D] Node 0x724958021350, Layer 0, Cube Min=(-630.00,-1110.00,2730.00), Max=(-150.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724958021350, Layer 0
+[SceneRenderer] Solid node event: nid=125660005862800 level=5 containment=1
+[requestModel3D] Node 0x724980030d90, Layer 0, Cube Min=(3210.00,-1110.00,2730.00), Max=(3690.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724980030d90, Layer 0
+[SceneRenderer] Solid node event: nid=125665240301808 level=5 containment=1
+[requestModel3D] Node 0x724ab80240f0, Layer 0, Cube Min=(3690.00,330.00,-3990.00), Max=(4170.00,810.00,-3510.00), Verts=137, Indices=420
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664636657392 level=5 containment=1
+[requestModel3D] Node 0x724a94075ef0, Layer 0, Cube Min=(-630.00,-1110.00,-3990.00), Max=(-150.00,-630.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a94075ef0, Layer 0
+[SceneRenderer] Solid node event: nid=125656650242272 level=5 containment=0
+[requestModel3D] Node 0x7248b80058e0, Layer 0, Cube Min=(-2550.00,-150.00,2250.00), Max=(-2070.00,330.00,2730.00), Verts=383, Indices=1740
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663697521840 level=5 containment=1
+[requestModel3D] Node 0x724a5c0d4cb0, Layer 0, Cube Min=(2250.00,-150.00,-630.00), Max=(2730.00,330.00,-150.00), Verts=872, Indices=3240
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658395098608 level=5 containment=1
+[requestModel3D] Node 0x72492000bdf0, Layer 0, Cube Min=(-3510.00,-1110.00,2250.00), Max=(-3030.00,-630.00,2730.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72492000bdf0, Layer 0
+[SceneRenderer] Solid node event: nid=125656382111424 level=5 containment=1
+[requestModel3D] Node 0x7248a804fec0, Layer 0, Cube Min=(1290.00,-630.00,3690.00), Max=(1770.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248a804fec0, Layer 0
+[SceneRenderer] Solid node event: nid=125661012629232 level=5 containment=0
+[requestModel3D] Node 0x7249bc0516f0, Layer 0, Cube Min=(-1110.00,-150.00,-1110.00), Max=(-630.00,330.00,-630.00), Verts=273, Indices=999
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659334654976 level=5 containment=0
+[requestModel3D] Node 0x724958013c00, Layer 0, Cube Min=(-3030.00,-150.00,-3030.00), Max=(-2550.00,330.00,-2550.00), Verts=22, Indices=54
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659267749488 level=5 containment=0
+[requestModel3D] Node 0x724954045670, Layer 0, Cube Min=(-3030.00,330.00,-2070.00), Max=(-2550.00,810.00,-1590.00), Verts=475, Indices=1800
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665307306272 level=5 containment=0
+[requestModel3D] Node 0x724abc00a920, Layer 0, Cube Min=(1290.00,-150.00,2250.00), Max=(1770.00,330.00,2730.00), Verts=234, Indices=885
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664233685280 level=5 containment=1
+[requestModel3D] Node 0x724a7c028120, Layer 0, Cube Min=(330.00,-1110.00,810.00), Max=(810.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a7c028120, Layer 0
+[SceneRenderer] Solid node event: nid=125659670795008 level=5 containment=0
+[requestModel3D] Node 0x72496c0a5300, Layer 0, Cube Min=(-1110.00,330.00,-2070.00), Max=(-630.00,810.00,-1590.00), Verts=513, Indices=1833
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125655644379760 level=5 containment=0
+[requestModel3D] Node 0x72487c0c1a70, Layer 0, Cube Min=(810.00,330.00,-1590.00), Max=(1290.00,810.00,-1110.00), Verts=432, Indices=1845
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660072898864 level=5 containment=1
+[requestModel3D] Node 0x72498401f130, Layer 0, Cube Min=(1290.00,-150.00,330.00), Max=(1770.00,330.00,810.00), Verts=326, Indices=1158
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125654368638144 level=5 containment=0
+[requestModel3D] Node 0x72483001d4c0, Layer 0, Cube Min=(-1590.00,330.00,-3510.00), Max=(-1110.00,810.00,-3030.00), Verts=499, Indices=1905
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659267700432 level=5 containment=0
+[requestModel3D] Node 0x7249540396d0, Layer 0, Cube Min=(2250.00,330.00,-2070.00), Max=(2730.00,810.00,-1590.00), Verts=458, Indices=1917
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660072956432 level=5 containment=1
+[requestModel3D] Node 0x72498402d210, Layer 0, Cube Min=(-3990.00,-1110.00,-2550.00), Max=(-3510.00,-630.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72498402d210, Layer 0
+[SceneRenderer] Solid node event: nid=125659871565936 level=5 containment=0
+[requestModel3D] Node 0x72497801d870, Layer 0, Cube Min=(330.00,330.00,-2070.00), Max=(810.00,810.00,-1590.00), Verts=524, Indices=1869
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663696883696 level=5 containment=1
+[requestModel3D] Node 0x724a5c038ff0, Layer 0, Cube Min=(-1590.00,-1110.00,-150.00), Max=(-1110.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a5c038ff0, Layer 0
+[SceneRenderer] Solid node event: nid=125659402512256 level=5 containment=1
+[requestModel3D] Node 0x72495c0ca780, Layer 0, Cube Min=(2730.00,-630.00,-3990.00), Max=(3210.00,-150.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495c0ca780, Layer 0
+[SceneRenderer] Solid node event: nid=125663696939248 level=5 containment=0
+[requestModel3D] Node 0x724a5c0468f0, Layer 0, Cube Min=(-1590.00,330.00,-1590.00), Max=(-1110.00,810.00,-1110.00), Verts=526, Indices=2076
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658932347920 level=5 containment=0
+[requestModel3D] Node 0x724940068410, Layer 0, Cube Min=(1770.00,330.00,-1590.00), Max=(2250.00,810.00,-1110.00), Verts=354, Indices=1698
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125655173952416 level=5 containment=1
+[requestModel3D] Node 0x72486001f3a0, Layer 0, Cube Min=(2250.00,-1110.00,2250.00), Max=(2730.00,-630.00,2730.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72486001f3a0, Layer 0
+[SceneRenderer] Solid node event: nid=125661081890560 level=5 containment=1
+[requestModel3D] Node 0x7249c025ef00, Layer 0, Cube Min=(-3990.00,-630.00,810.00), Max=(-3510.00,-150.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c025ef00, Layer 0
+[SceneRenderer] Solid node event: nid=125658932189536 level=5 containment=1
+[requestModel3D] Node 0x724940041960, Layer 0, Cube Min=(-1590.00,-1110.00,810.00), Max=(-1110.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724940041960, Layer 0
+[SceneRenderer] Solid node event: nid=125662086682368 level=5 containment=1
+[requestModel3D] Node 0x7249fc09d700, Layer 0, Cube Min=(3690.00,330.00,-1590.00), Max=(4170.00,810.00,-1110.00), Verts=94, Indices=348
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125656784775168 level=5 containment=1
+[requestModel3D] Node 0x7248c0052800, Layer 0, Cube Min=(-1590.00,-1110.00,-3030.00), Max=(-1110.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248c0052800, Layer 0
+[SceneRenderer] Solid node event: nid=125662959519008 level=5 containment=1
+[requestModel3D] Node 0x724a30104520, Layer 0, Cube Min=(330.00,330.00,810.00), Max=(810.00,810.00,1290.00), Verts=20574, Indices=63246
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664167033696 level=5 containment=1
+[requestModel3D] Node 0x724a78097b60, Layer 0, Cube Min=(-2550.00,330.00,-3990.00), Max=(-2070.00,810.00,-3510.00), Verts=496, Indices=1431
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125656180875120 level=5 containment=1
+[requestModel3D] Node 0x72489c065f70, Layer 0, Cube Min=(-3990.00,-1110.00,330.00), Max=(-3510.00,-630.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72489c065f70, Layer 0
+[SceneRenderer] Solid node event: nid=125661482839584 level=5 containment=1
+[requestModel3D] Node 0x7249d80bee20, Layer 0, Cube Min=(-630.00,-1110.00,-2070.00), Max=(-150.00,-630.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249d80bee20, Layer 0
+[SceneRenderer] Solid node event: nid=125663898486816 level=5 containment=0
+[requestModel3D] Node 0x724a6807c820, Layer 0, Cube Min=(-1110.00,330.00,-1590.00), Max=(-630.00,810.00,-1110.00), Verts=486, Indices=2064
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125655778125584 level=5 containment=0
+[requestModel3D] Node 0x72488404e710, Layer 0, Cube Min=(-1590.00,-150.00,-630.00), Max=(-1110.00,330.00,-150.00), Verts=366, Indices=1578
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661683844608 level=5 containment=0
+[requestModel3D] Node 0x7249e4070600, Layer 0, Cube Min=(1770.00,-150.00,2730.00), Max=(2250.00,330.00,3210.00), Verts=254, Indices=891
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665040015744 level=5 containment=1
+[requestModel3D] Node 0x724aac122180, Layer 0, Cube Min=(-1590.00,-1110.00,-3510.00), Max=(-1110.00,-630.00,-3030.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724aac122180, Layer 0
+[SceneRenderer] Solid node event: nid=125664301368512 level=5 containment=1
+[requestModel3D] Node 0x724a800b44c0, Layer 0, Cube Min=(330.00,-150.00,1290.00), Max=(810.00,330.00,1770.00), Verts=2864, Indices=9939
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665978537760 level=5 containment=1
+[requestModel3D] Node 0x724ae402d720, Layer 0, Cube Min=(1770.00,-1110.00,3210.00), Max=(2250.00,-630.00,3690.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ae402d720, Layer 0
+[SceneRenderer] Solid node event: nid=125665374472688 level=5 containment=1
+[requestModel3D] Node 0x724ac00189f0, Layer 0, Cube Min=(1290.00,330.00,-3990.00), Max=(1770.00,810.00,-3510.00), Verts=495, Indices=1599
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125666248262128 level=5 containment=1
+[requestModel3D] Node 0x724af41681f0, Layer 0, Cube Min=(-630.00,-150.00,-3510.00), Max=(-150.00,330.00,-3030.00), Verts=298, Indices=864
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661750690448 level=5 containment=1
+[requestModel3D] Node 0x7249e8030290, Layer 0, Cube Min=(2250.00,-150.00,-1110.00), Max=(2730.00,330.00,-630.00), Verts=1003, Indices=3468
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125656784644736 level=5 containment=1
+[requestModel3D] Node 0x7248c0032a80, Layer 0, Cube Min=(-630.00,-1110.00,-150.00), Max=(-150.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248c0032a80, Layer 0
+[SceneRenderer] Solid node event: nid=125665374390928 level=5 containment=1
+[requestModel3D] Node 0x724ac0004a90, Layer 0, Cube Min=(1770.00,-150.00,-1110.00), Max=(2250.00,330.00,-630.00), Verts=269, Indices=993
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665710122544 level=5 containment=1
+[requestModel3D] Node 0x724ad4032630, Layer 0, Cube Min=(330.00,-1110.00,-630.00), Max=(810.00,-630.00,-150.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ad4032630, Layer 0
+[SceneRenderer] Solid node event: nid=125659068114064 level=5 containment=0
+[requestModel3D] Node 0x7249481e2490, Layer 0, Cube Min=(-3510.00,-150.00,-1590.00), Max=(-3030.00,330.00,-1110.00), Verts=471, Indices=1785
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661818066416 level=5 containment=0
+[requestModel3D] Node 0x7249ec0715f0, Layer 0, Cube Min=(-3510.00,330.00,-3510.00), Max=(-3030.00,810.00,-3030.00), Verts=436, Indices=1743
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665710106976 level=5 containment=1
+[requestModel3D] Node 0x724ad402e960, Layer 0, Cube Min=(-1590.00,-1110.00,3210.00), Max=(-1110.00,-630.00,3690.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ad402e960, Layer 0
+[SceneRenderer] Solid node event: nid=125663898200880 level=5 containment=1
+[requestModel3D] Node 0x724a68036b30, Layer 0, Cube Min=(1290.00,-1110.00,-3030.00), Max=(1770.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a68036b30, Layer 0
+[SceneRenderer] Solid node event: nid=125656382299952 level=5 containment=1
+[requestModel3D] Node 0x7248a807df30, Layer 0, Cube Min=(-630.00,-1110.00,-3030.00), Max=(-150.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248a807df30, Layer 0
+[SceneRenderer] Solid node event: nid=125660947006928 level=5 containment=1
+[requestModel3D] Node 0x7249b81bc5d0, Layer 0, Cube Min=(-3030.00,-1110.00,1770.00), Max=(-2550.00,-630.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249b81bc5d0, Layer 0
+[SceneRenderer] Solid node event: nid=125661348014336 level=5 containment=0
+[requestModel3D] Node 0x7249d002a900, Layer 0, Cube Min=(-2070.00,-150.00,2730.00), Max=(-1590.00,330.00,3210.00), Verts=286, Indices=1191
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664166985872 level=5 containment=0
+[requestModel3D] Node 0x724a7808c090, Layer 0, Cube Min=(3210.00,330.00,-3510.00), Max=(3690.00,810.00,-3030.00), Verts=401, Indices=1716
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659804484944 level=5 containment=0
+[requestModel3D] Node 0x724974024550, Layer 0, Cube Min=(-1110.00,-150.00,-630.00), Max=(-630.00,330.00,-150.00), Verts=413, Indices=1749
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660947127568 level=5 containment=0
+[requestModel3D] Node 0x7249b81d9d10, Layer 0, Cube Min=(-2070.00,-150.00,330.00), Max=(-1590.00,330.00,810.00), Verts=432, Indices=1767
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664234079360 level=5 containment=1
+[requestModel3D] Node 0x724a7c088480, Layer 0, Cube Min=(-2550.00,-1110.00,1770.00), Max=(-2070.00,-630.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a7c088480, Layer 0
+[SceneRenderer] Solid node event: nid=125661079483744 level=5 containment=1
+[requestModel3D] Node 0x7249c0013560, Layer 0, Cube Min=(-1590.00,-630.00,3690.00), Max=(-1110.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c0013560, Layer 0
+[SceneRenderer] Solid node event: nid=125660139921200 level=5 containment=1
+[requestModel3D] Node 0x724988009f30, Layer 0, Cube Min=(-3510.00,-1110.00,2730.00), Max=(-3030.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724988009f30, Layer 0
+[SceneRenderer] Solid node event: nid=125661281041680 level=5 containment=1
+[requestModel3D] Node 0x7249cc04bd10, Layer 0, Cube Min=(2250.00,-1110.00,2730.00), Max=(2730.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249cc04bd10, Layer 0
+[SceneRenderer] Solid node event: nid=125661012974016 level=5 containment=0
+[requestModel3D] Node 0x7249bc0a59c0, Layer 0, Cube Min=(-3030.00,-150.00,-2550.00), Max=(-2550.00,330.00,-2070.00), Verts=92, Indices=246
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665307303136 level=5 containment=1
+[requestModel3D] Node 0x724abc009ce0, Layer 0, Cube Min=(-630.00,-150.00,-630.00), Max=(-150.00,330.00,-150.00), Verts=433, Indices=1896
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659336367536 level=5 containment=1
+[requestModel3D] Node 0x7249581b5db0, Layer 0, Cube Min=(330.00,330.00,1770.00), Max=(810.00,810.00,2250.00), Verts=23241, Indices=72453
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659068326672 level=5 containment=0
+[requestModel3D] Node 0x724948216310, Layer 0, Cube Min=(-1590.00,-150.00,3210.00), Max=(-1110.00,330.00,3690.00), Verts=252, Indices=888
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662757554736 level=5 containment=0
+[requestModel3D] Node 0x724a24068a30, Layer 0, Cube Min=(330.00,-150.00,2250.00), Max=(810.00,330.00,2730.00), Verts=264, Indices=1032
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665441593216 level=5 containment=0
+[requestModel3D] Node 0x724ac401b780, Layer 0, Cube Min=(-2550.00,330.00,1290.00), Max=(-2070.00,810.00,1770.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ac401b780, Layer 0
+[SceneRenderer] Solid node event: nid=125654771350672 level=5 containment=1
+[requestModel3D] Node 0x72484802bc90, Layer 0, Cube Min=(1770.00,-1110.00,-2550.00), Max=(2250.00,-630.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72484802bc90, Layer 0
+[SceneRenderer] Solid node event: nid=125664032702672 level=5 containment=1
+[requestModel3D] Node 0x724a7007c0d0, Layer 0, Cube Min=(-2550.00,-1110.00,2730.00), Max=(-2070.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a7007c0d0, Layer 0
+[SceneRenderer] Solid node event: nid=125664636462832 level=5 containment=1
+[requestModel3D] Node 0x724a940466f0, Layer 0, Cube Min=(-3990.00,-1110.00,-3990.00), Max=(-3510.00,-630.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a940466f0, Layer 0
+[SceneRenderer] Solid node event: nid=125661750682944 level=5 containment=0
+[requestModel3D] Node 0x7249e802e540, Layer 0, Cube Min=(-3510.00,-150.00,2250.00), Max=(-3030.00,330.00,2730.00), Verts=279, Indices=1272
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665240844304 level=5 containment=0
+[requestModel3D] Node 0x724ab80a8810, Layer 0, Cube Min=(1290.00,330.00,-3510.00), Max=(1770.00,810.00,-3030.00), Verts=454, Indices=1626
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665039609792 level=5 containment=1
+[requestModel3D] Node 0x724aac0befc0, Layer 0, Cube Min=(-3990.00,-630.00,3690.00), Max=(-3510.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724aac0befc0, Layer 0
+[SceneRenderer] Solid node event: nid=125654503258080 level=5 containment=1
+[requestModel3D] Node 0x72483807f7e0, Layer 0, Cube Min=(810.00,-1110.00,-3990.00), Max=(1290.00,-630.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72483807f7e0, Layer 0
+[SceneRenderer] Solid node event: nid=125661281789008 level=5 containment=1
+[requestModel3D] Node 0x7249cc102450, Layer 0, Cube Min=(-630.00,-630.00,3690.00), Max=(-150.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249cc102450, Layer 0
+[SceneRenderer] Solid node event: nid=125664233606192 level=5 containment=1
+[requestModel3D] Node 0x724a7c014c30, Layer 0, Cube Min=(3210.00,-630.00,-3990.00), Max=(3690.00,-150.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a7c014c30, Layer 0
+[SceneRenderer] Solid node event: nid=125658999916016 level=5 containment=0
+[requestModel3D] Node 0x7249440d85f0, Layer 0, Cube Min=(-2070.00,330.00,-3510.00), Max=(-1590.00,810.00,-3030.00), Verts=439, Indices=1812
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661482266128 level=5 containment=1
+[requestModel3D] Node 0x7249d8032e10, Layer 0, Cube Min=(-1590.00,-1110.00,-630.00), Max=(-1110.00,-630.00,-150.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249d8032e10, Layer 0
+[SceneRenderer] Solid node event: nid=125656382289424 level=5 containment=1
+[requestModel3D] Node 0x7248a807b610, Layer 0, Cube Min=(-1590.00,-1110.00,3690.00), Max=(-1110.00,-630.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248a807b610, Layer 0
+[SceneRenderer] Solid node event: nid=125663898148912 level=5 containment=1
+[requestModel3D] Node 0x724a6802a030, Layer 0, Cube Min=(-3990.00,-630.00,1770.00), Max=(-3510.00,-150.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a6802a030, Layer 0
+[SceneRenderer] Solid node event: nid=125663093396624 level=5 containment=1
+[requestModel3D] Node 0x724a380b1490, Layer 0, Cube Min=(-150.00,330.00,-150.00), Max=(330.00,810.00,330.00), Verts=2902, Indices=8157
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125656784907792 level=5 containment=1
+[requestModel3D] Node 0x7248c0072e10, Layer 0, Cube Min=(-3990.00,-150.00,-630.00), Max=(-3510.00,330.00,-150.00), Verts=446, Indices=1413
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665710159280 level=5 containment=1
+[requestModel3D] Node 0x724ad403b5b0, Layer 0, Cube Min=(-3990.00,-630.00,1290.00), Max=(-3510.00,-150.00,1770.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ad403b5b0, Layer 0
+[SceneRenderer] Solid node event: nid=125665710141584 level=5 containment=0
+[requestModel3D] Node 0x724ad4037090, Layer 0, Cube Min=(3210.00,330.00,-2550.00), Max=(3690.00,810.00,-2070.00), Verts=249, Indices=1152
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659737311152 level=5 containment=1
+[requestModel3D] Node 0x7249700147b0, Layer 0, Cube Min=(1290.00,-630.00,-3990.00), Max=(1770.00,-150.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249700147b0, Layer 0
+[SceneRenderer] Solid node event: nid=125654637273856 level=5 containment=0
+[requestModel3D] Node 0x72484004e300, Layer 0, Cube Min=(2250.00,-150.00,330.00), Max=(2730.00,330.00,810.00), Verts=283, Indices=1074
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659737504048 level=5 containment=1
+[requestModel3D] Node 0x724970043930, Layer 0, Cube Min=(330.00,-1110.00,-150.00), Max=(810.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724970043930, Layer 0
+[SceneRenderer] Solid node event: nid=125662086437024 level=5 containment=1
+[requestModel3D] Node 0x7249fc0618a0, Layer 0, Cube Min=(-3510.00,-1110.00,-3030.00), Max=(-3030.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249fc0618a0, Layer 0
+[SceneRenderer] Solid node event: nid=125655979429936 level=5 containment=0
+[requestModel3D] Node 0x724890049030, Layer 0, Cube Min=(-630.00,-150.00,2730.00), Max=(-150.00,330.00,3210.00), Verts=286, Indices=1161
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664435052176 level=5 containment=1
+[requestModel3D] Node 0x724a88031e90, Layer 0, Cube Min=(-2550.00,-1110.00,-3510.00), Max=(-2070.00,-630.00,-3030.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a88031e90, Layer 0
+[SceneRenderer] Solid node event: nid=125654637315760 level=5 containment=0
+[requestModel3D] Node 0x7248400586b0, Layer 0, Cube Min=(-630.00,-150.00,2250.00), Max=(-150.00,330.00,2730.00), Verts=321, Indices=1218
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664368822480 level=5 containment=1
+[requestModel3D] Node 0x724a841088d0, Layer 0, Cube Min=(-630.00,330.00,1290.00), Max=(-150.00,810.00,1770.00), Verts=186, Indices=462
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661146600800 level=5 containment=1
+[requestModel3D] Node 0x7249c4015560, Layer 0, Cube Min=(2250.00,-630.00,-3990.00), Max=(2730.00,-150.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c4015560, Layer 0
+[SceneRenderer] Solid node event: nid=125663361125872 level=5 containment=1
+[requestModel3D] Node 0x724a48004df0, Layer 0, Cube Min=(-1590.00,-1110.00,-1590.00), Max=(-1110.00,-630.00,-1110.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a48004df0, Layer 0
+[SceneRenderer] Solid node event: nid=125664703912160 level=5 containment=1
+[requestModel3D] Node 0x724a980998e0, Layer 0, Cube Min=(-3990.00,-630.00,330.00), Max=(-3510.00,-150.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a980998e0, Layer 0
+[SceneRenderer] Solid node event: nid=125664435112992 level=5 containment=1
+[requestModel3D] Node 0x724a88040c20, Layer 0, Cube Min=(-630.00,330.00,-1590.00), Max=(-150.00,810.00,-1110.00), Verts=570, Indices=1956
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658999258704 level=5 containment=1
+[requestModel3D] Node 0x724944037e50, Layer 0, Cube Min=(1290.00,-1110.00,3210.00), Max=(1770.00,-630.00,3690.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724944037e50, Layer 0
+[SceneRenderer] Solid node event: nid=125658395329584 level=5 containment=1
+[requestModel3D] Node 0x724920044430, Layer 0, Cube Min=(-630.00,-1110.00,-2550.00), Max=(-150.00,-630.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724920044430, Layer 0
+[SceneRenderer] Solid node event: nid=125659737329856 level=5 containment=1
+[requestModel3D] Node 0x7249700190c0, Layer 0, Cube Min=(2250.00,-1110.00,1290.00), Max=(2730.00,-630.00,1770.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249700190c0, Layer 0
+[SceneRenderer] Solid node event: nid=125661281212288 level=5 containment=1
+[requestModel3D] Node 0x7249cc075780, Layer 0, Cube Min=(2250.00,-150.00,3690.00), Max=(2730.00,330.00,4170.00), Verts=137, Indices=471
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660945481904 level=5 containment=0
+[requestModel3D] Node 0x7249b80480b0, Layer 0, Cube Min=(-3030.00,-150.00,1290.00), Max=(-2550.00,330.00,1770.00), Verts=84, Indices=285
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662824439824 level=5 containment=1
+[requestModel3D] Node 0x724a28032010, Layer 0, Cube Min=(2250.00,-1110.00,-150.00), Max=(2730.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a28032010, Layer 0
+[SceneRenderer] Solid node event: nid=125659670375200 level=5 containment=1
+[requestModel3D] Node 0x72496c03eb20, Layer 0, Cube Min=(810.00,-630.00,-3990.00), Max=(1290.00,-150.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72496c03eb20, Layer 0
+[SceneRenderer] Solid node event: nid=125659334912608 level=5 containment=1
+[requestModel3D] Node 0x724958052a60, Layer 0, Cube Min=(3210.00,-1110.00,3210.00), Max=(3690.00,-630.00,3690.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724958052a60, Layer 0
+[SceneRenderer] Solid node event: nid=125663025977920 level=5 containment=1
+[requestModel3D] Node 0x724a34065a40, Layer 0, Cube Min=(810.00,-1110.00,810.00), Max=(1290.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a34065a40, Layer 0
+[SceneRenderer] Solid node event: nid=125659334746832 level=5 containment=1
+[requestModel3D] Node 0x72495802a2d0, Layer 0, Cube Min=(-3990.00,-1110.00,-3510.00), Max=(-3510.00,-630.00,-3030.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495802a2d0, Layer 0
+[SceneRenderer] Solid node event: nid=125658867175680 level=5 containment=1
+[requestModel3D] Node 0x72493c241100, Layer 0, Cube Min=(-630.00,-1110.00,810.00), Max=(-150.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72493c241100, Layer 0
+[SceneRenderer] Solid node event: nid=125663696954592 level=5 containment=1
+[requestModel3D] Node 0x724a5c04a4e0, Layer 0, Cube Min=(2250.00,330.00,-3990.00), Max=(2730.00,810.00,-3510.00), Verts=360, Indices=1347
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125655777913856 level=5 containment=0
+[requestModel3D] Node 0x72488401ac00, Layer 0, Cube Min=(810.00,-150.00,-1110.00), Max=(1290.00,330.00,-630.00), Verts=183, Indices=771
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662824284576 level=5 containment=1
+[requestModel3D] Node 0x724a2800c1a0, Layer 0, Cube Min=(-3510.00,-630.00,3690.00), Max=(-3030.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a2800c1a0, Layer 0
+[SceneRenderer] Solid node event: nid=125665978392480 level=5 containment=0
+[requestModel3D] Node 0x724ae4009fa0, Layer 0, Cube Min=(-3510.00,-150.00,-2070.00), Max=(-3030.00,330.00,-1590.00), Verts=531, Indices=1935
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125656180617488 level=5 containment=1
+[requestModel3D] Node 0x72489c027110, Layer 0, Cube Min=(-2550.00,-1110.00,-2550.00), Max=(-2070.00,-630.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72489c027110, Layer 0
+[SceneRenderer] Solid node event: nid=125658999269904 level=5 containment=1
+[requestModel3D] Node 0x72494403aa10, Layer 0, Cube Min=(-630.00,330.00,-3990.00), Max=(-150.00,810.00,-3510.00), Verts=354, Indices=1395
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659334724992 level=5 containment=1
+[requestModel3D] Node 0x724958024d80, Layer 0, Cube Min=(2250.00,-1110.00,3690.00), Max=(2730.00,-630.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724958024d80, Layer 0
+[SceneRenderer] Solid node event: nid=125664301323824 level=5 containment=1
+[requestModel3D] Node 0x724a800a9630, Layer 0, Cube Min=(-3990.00,-630.00,2250.00), Max=(-3510.00,-150.00,2730.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a800a9630, Layer 0
+[SceneRenderer] Solid node event: nid=125660140133600 level=5 containment=1
+[requestModel3D] Node 0x72498803dce0, Layer 0, Cube Min=(330.00,-1110.00,-3510.00), Max=(810.00,-630.00,-3030.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72498803dce0, Layer 0
+[SceneRenderer] Solid node event: nid=125654637288304 level=5 containment=1
+[requestModel3D] Node 0x724840051b70, Layer 0, Cube Min=(1290.00,330.00,-1110.00), Max=(1770.00,810.00,-630.00), Verts=248, Indices=1026
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659068390960 level=5 containment=1
+[requestModel3D] Node 0x724948225e30, Layer 0, Cube Min=(-1110.00,-1110.00,-2550.00), Max=(-630.00,-630.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724948225e30, Layer 0
+[SceneRenderer] Solid node event: nid=125661347913936 level=5 containment=1
+[requestModel3D] Node 0x7249d00120d0, Layer 0, Cube Min=(-150.00,-630.00,-3990.00), Max=(330.00,-150.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249d00120d0, Layer 0
+[SceneRenderer] Solid node event: nid=125661283712128 level=5 containment=1
+[requestModel3D] Node 0x7249cc2d7c80, Layer 0, Cube Min=(3690.00,-150.00,-630.00), Max=(4170.00,330.00,-150.00), Verts=194, Indices=624
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658867529392 level=5 containment=0
+[requestModel3D] Node 0x72493c2976b0, Layer 0, Cube Min=(2730.00,-150.00,1770.00), Max=(3210.00,330.00,2250.00), Verts=252, Indices=987
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125654637182352 level=5 containment=0
+[requestModel3D] Node 0x724840037d90, Layer 0, Cube Min=(-2550.00,330.00,-2550.00), Max=(-2070.00,810.00,-2070.00), Verts=483, Indices=1950
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661616489184 level=5 containment=1
+[requestModel3D] Node 0x7249e00342e0, Layer 0, Cube Min=(-3990.00,-150.00,-3990.00), Max=(-3510.00,330.00,-3510.00), Verts=89, Indices=222
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125656180777104 level=5 containment=1
+[requestModel3D] Node 0x72489c04e090, Layer 0, Cube Min=(-3510.00,-1110.00,3210.00), Max=(-3030.00,-630.00,3690.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72489c04e090, Layer 0
+[SceneRenderer] Solid node event: nid=125664235011984 level=5 containment=1
+[requestModel3D] Node 0x724a7c16bf90, Layer 0, Cube Min=(-150.00,-1110.00,-150.00), Max=(330.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a7c16bf90, Layer 0
+[SceneRenderer] Solid node event: nid=125660811283984 level=5 containment=1
+[requestModel3D] Node 0x7249b004ce10, Layer 0, Cube Min=(3690.00,330.00,-3510.00), Max=(4170.00,810.00,-3030.00), Verts=160, Indices=561
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663898435392 level=5 containment=0
+[requestModel3D] Node 0x724a6806ff40, Layer 0, Cube Min=(-3510.00,330.00,2250.00), Max=(-3030.00,810.00,2730.00), Verts=191, Indices=897
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658867232128 level=5 containment=1
+[requestModel3D] Node 0x72493c24ed80, Layer 0, Cube Min=(-1590.00,-1110.00,-1110.00), Max=(-1110.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72493c24ed80, Layer 0
+[SceneRenderer] Solid node event: nid=125663898099728 level=5 containment=0
+[requestModel3D] Node 0x724a6801e010, Layer 0, Cube Min=(1770.00,-150.00,-1590.00), Max=(2250.00,330.00,-1110.00), Verts=116, Indices=381
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665240905008 level=5 containment=0
+[requestModel3D] Node 0x724ab80b7530, Layer 0, Cube Min=(3210.00,-150.00,2250.00), Max=(3690.00,330.00,2730.00), Verts=256, Indices=1092
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659068078544 level=5 containment=1
+[requestModel3D] Node 0x7249481d99d0, Layer 0, Cube Min=(2250.00,-1110.00,3210.00), Max=(2730.00,-630.00,3690.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249481d99d0, Layer 0
+[SceneRenderer] Solid node event: nid=125664301300528 level=5 containment=0
+[requestModel3D] Node 0x724a800a3b30, Layer 0, Cube Min=(-1590.00,-150.00,330.00), Max=(-1110.00,330.00,810.00), Verts=389, Indices=1830
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665040834544 level=5 containment=1
+[requestModel3D] Node 0x724aac1e9ff0, Layer 0, Cube Min=(-630.00,-150.00,-3990.00), Max=(-150.00,330.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724aac1e9ff0, Layer 0
+[SceneRenderer] Solid node event: nid=125659068636608 level=5 containment=1
+[requestModel3D] Node 0x724948261dc0, Layer 0, Cube Min=(2730.00,-1110.00,-3030.00), Max=(3210.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724948261dc0, Layer 0
+[SceneRenderer] Solid node event: nid=125655576741616 level=5 containment=0
+[requestModel3D] Node 0x7248780406f0, Layer 0, Cube Min=(-2070.00,-150.00,2250.00), Max=(-1590.00,330.00,2730.00), Verts=317, Indices=1464
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125666114984656 level=5 containment=0
+[requestModel3D] Node 0x724aec24dad0, Layer 0, Cube Min=(-3030.00,-150.00,810.00), Max=(-2550.00,330.00,1290.00), Verts=22, Indices=54
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661080483168 level=5 containment=1
+[requestModel3D] Node 0x7249c0107560, Layer 0, Cube Min=(3210.00,-1110.00,1290.00), Max=(3690.00,-630.00,1770.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c0107560, Layer 0
+[SceneRenderer] Solid node event: nid=125660140099216 level=5 containment=0
+[requestModel3D] Node 0x724988035690, Layer 0, Cube Min=(-2550.00,330.00,-1590.00), Max=(-2070.00,810.00,-1110.00), Verts=349, Indices=1458
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665978633408 level=5 containment=0
+[requestModel3D] Node 0x724ae4044cc0, Layer 0, Cube Min=(-150.00,330.00,-2070.00), Max=(330.00,810.00,-1590.00), Verts=783, Indices=2634
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659334623280 level=5 containment=1
+[requestModel3D] Node 0x72495800c030, Layer 0, Cube Min=(3210.00,-1110.00,-630.00), Max=(3690.00,-630.00,-150.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495800c030, Layer 0
+[SceneRenderer] Solid node event: nid=125660743993712 level=5 containment=1
+[requestModel3D] Node 0x7249ac020970, Layer 0, Cube Min=(-1590.00,-1110.00,1770.00), Max=(-1110.00,-630.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249ac020970, Layer 0
+[SceneRenderer] Solid node event: nid=125654368970896 level=5 containment=1
+[requestModel3D] Node 0x72483006e890, Layer 0, Cube Min=(3690.00,-1110.00,3210.00), Max=(4170.00,-630.00,3690.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72483006e890, Layer 0
+[SceneRenderer] Solid node event: nid=125662690462880 level=5 containment=0
+[requestModel3D] Node 0x724a2006cca0, Layer 0, Cube Min=(-1590.00,-150.00,-1590.00), Max=(-1110.00,330.00,-1110.00), Verts=47, Indices=114
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660878180768 level=5 containment=0
+[requestModel3D] Node 0x7249b40191a0, Layer 0, Cube Min=(-3510.00,-150.00,-3030.00), Max=(-3030.00,330.00,-2550.00), Verts=213, Indices=837
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662824395808 level=5 containment=1
+[requestModel3D] Node 0x724a28027420, Layer 0, Cube Min=(2250.00,-1110.00,-2070.00), Max=(2730.00,-630.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a28027420, Layer 0
+[SceneRenderer] Solid node event: nid=125659670201792 level=5 containment=1
+[requestModel3D] Node 0x72496c0145c0, Layer 0, Cube Min=(2250.00,-1110.00,-3030.00), Max=(2730.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72496c0145c0, Layer 0
+[SceneRenderer] Solid node event: nid=125656113450096 level=5 containment=1
+[requestModel3D] Node 0x724898018c70, Layer 0, Cube Min=(3690.00,-630.00,-3510.00), Max=(4170.00,-150.00,-3030.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724898018c70, Layer 0
+[SceneRenderer] Solid node event: nid=125658864887984 level=5 containment=0
+[requestModel3D] Node 0x72493c0128b0, Layer 0, Cube Min=(-2550.00,330.00,330.00), Max=(-2070.00,810.00,810.00), Verts=24, Indices=66
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663898828064 level=5 containment=1
+[requestModel3D] Node 0x724a680cfd20, Layer 0, Cube Min=(2730.00,330.00,-3990.00), Max=(3210.00,810.00,-3510.00), Verts=357, Indices=1386
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665039147488 level=5 containment=0
+[requestModel3D] Node 0x724aac04e1e0, Layer 0, Cube Min=(3210.00,330.00,-1590.00), Max=(3690.00,810.00,-1110.00), Verts=231, Indices=1047
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665374463616 level=5 containment=1
+[requestModel3D] Node 0x724ac0016680, Layer 0, Cube Min=(330.00,-630.00,-3990.00), Max=(810.00,-150.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ac0016680, Layer 0
+[SceneRenderer] Solid node event: nid=125664435711664 level=5 containment=0
+[requestModel3D] Node 0x724a880d2eb0, Layer 0, Cube Min=(2730.00,330.00,-1590.00), Max=(3210.00,810.00,-1110.00), Verts=211, Indices=951
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125656181306784 level=5 containment=1
+[requestModel3D] Node 0x72489c0cf5a0, Layer 0, Cube Min=(-3990.00,-150.00,1770.00), Max=(-3510.00,330.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72489c0cf5a0, Layer 0
+[SceneRenderer] Solid node event: nid=125661079624096 level=5 containment=1
+[requestModel3D] Node 0x7249c00359a0, Layer 0, Cube Min=(-3990.00,-1110.00,3210.00), Max=(-3510.00,-630.00,3690.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c00359a0, Layer 0
+[SceneRenderer] Solid node event: nid=125664636525664 level=5 containment=1
+[requestModel3D] Node 0x724a94055c60, Layer 0, Cube Min=(330.00,-630.00,3690.00), Max=(810.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a94055c60, Layer 0
+[SceneRenderer] Solid node event: nid=125662824898752 level=5 containment=0
+[requestModel3D] Node 0x724a280a20c0, Layer 0, Cube Min=(-2070.00,-150.00,-630.00), Max=(-1590.00,330.00,-150.00), Verts=490, Indices=1935
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125656180785392 level=5 containment=1
+[requestModel3D] Node 0x72489c0500f0, Layer 0, Cube Min=(-3990.00,330.00,1290.00), Max=(-3510.00,810.00,1770.00), Verts=352, Indices=1293
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662086751584 level=5 containment=0
+[requestModel3D] Node 0x7249fc0ae560, Layer 0, Cube Min=(-3030.00,330.00,2250.00), Max=(-2550.00,810.00,2730.00), Verts=4, Indices=6
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662153898224 level=5 containment=1
+[requestModel3D] Node 0x724a000b78f0, Layer 0, Cube Min=(3210.00,330.00,-3990.00), Max=(3690.00,810.00,-3510.00), Verts=363, Indices=1425
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664032828128 level=5 containment=1
+[requestModel3D] Node 0x724a7009aae0, Layer 0, Cube Min=(-2550.00,-1110.00,3690.00), Max=(-2070.00,-630.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a7009aae0, Layer 0
+[SceneRenderer] Solid node event: nid=125665173074352 level=5 containment=1
+[requestModel3D] Node 0x724ab40071b0, Layer 0, Cube Min=(3690.00,-1110.00,1290.00), Max=(4170.00,-630.00,1770.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ab40071b0, Layer 0
+[SceneRenderer] Solid node event: nid=125659670368592 level=5 containment=1
+[requestModel3D] Node 0x72496c03d150, Layer 0, Cube Min=(2730.00,-1110.00,-630.00), Max=(3210.00,-630.00,-150.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72496c03d150, Layer 0
+[SceneRenderer] Solid node event: nid=125656181021856 level=5 containment=0
+[requestModel3D] Node 0x72489c089ca0, Layer 0, Cube Min=(2250.00,330.00,-3510.00), Max=(2730.00,810.00,-3030.00), Verts=422, Indices=1701
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659267590656 level=5 containment=1
+[requestModel3D] Node 0x72495401ea00, Layer 0, Cube Min=(-3510.00,-1110.00,-1590.00), Max=(-3030.00,-630.00,-1110.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495401ea00, Layer 0
+[SceneRenderer] Solid node event: nid=125665241217984 level=5 containment=1
+[requestModel3D] Node 0x724ab8103bc0, Layer 0, Cube Min=(3690.00,-1110.00,810.00), Max=(4170.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ab8103bc0, Layer 0
+[SceneRenderer] Solid node event: nid=125662690216336 level=5 containment=0
+[requestModel3D] Node 0x724a20030990, Layer 0, Cube Min=(-1590.00,330.00,-1110.00), Max=(-1110.00,810.00,-630.00), Verts=149, Indices=624
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663093118048 level=5 containment=1
+[requestModel3D] Node 0x724a3806d460, Layer 0, Cube Min=(-150.00,330.00,-630.00), Max=(330.00,810.00,-150.00), Verts=269, Indices=480
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658730791136 level=5 containment=1
+[requestModel3D] Node 0x7249340300e0, Layer 0, Cube Min=(-150.00,-630.00,3690.00), Max=(330.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249340300e0, Layer 0
+[SceneRenderer] Solid node event: nid=125664234767008 level=5 containment=1
+[requestModel3D] Node 0x724a7c1302a0, Layer 0, Cube Min=(-3990.00,-1110.00,810.00), Max=(-3510.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a7c1302a0, Layer 0
+[SceneRenderer] Solid node event: nid=125661283715600 level=5 containment=0
+[requestModel3D] Node 0x7249cc2d8a10, Layer 0, Cube Min=(-3030.00,-150.00,3210.00), Max=(-2550.00,330.00,3690.00), Verts=241, Indices=987
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664300887616 level=5 containment=1
+[requestModel3D] Node 0x724a8003ee40, Layer 0, Cube Min=(1290.00,-1110.00,1290.00), Max=(1770.00,-630.00,1770.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a8003ee40, Layer 0
+[SceneRenderer] Solid node event: nid=125661080084192 level=5 containment=0
+[requestModel3D] Node 0x7249c00a5ee0, Layer 0, Cube Min=(-2550.00,330.00,810.00), Max=(-2070.00,810.00,1290.00), Verts=40, Indices=144
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660341436960 level=5 containment=1
+[requestModel3D] Node 0x724994038220, Layer 0, Cube Min=(-3990.00,-630.00,-150.00), Max=(-3510.00,-150.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724994038220, Layer 0
+[SceneRenderer] Solid node event: nid=125654368682944 level=5 containment=1
+[requestModel3D] Node 0x7248300283c0, Layer 0, Cube Min=(-630.00,-1110.00,2250.00), Max=(-150.00,-630.00,2730.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248300283c0, Layer 0
+[SceneRenderer] Solid node event: nid=125659267745232 level=5 containment=0
+[requestModel3D] Node 0x7249540445d0, Layer 0, Cube Min=(-3510.00,330.00,810.00), Max=(-3030.00,810.00,1290.00), Verts=449, Indices=1815
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125654368751600 level=5 containment=0
+[requestModel3D] Node 0x724830038ff0, Layer 0, Cube Min=(1290.00,-150.00,1290.00), Max=(1770.00,330.00,1770.00), Verts=392, Indices=1473
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665709968304 level=5 containment=0
+[requestModel3D] Node 0x724ad400cbb0, Layer 0, Cube Min=(2250.00,330.00,-1590.00), Max=(2730.00,810.00,-1110.00), Verts=360, Indices=1734
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660811017856 level=5 containment=0
+[requestModel3D] Node 0x7249b000be80, Layer 0, Cube Min=(-1590.00,-150.00,2250.00), Max=(-1110.00,330.00,2730.00), Verts=230, Indices=915
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659402674560 level=5 containment=1
+[requestModel3D] Node 0x72495c0f2180, Layer 0, Cube Min=(-3990.00,-150.00,3690.00), Max=(-3510.00,330.00,4170.00), Verts=153, Indices=483
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663898170192 level=5 containment=1
+[requestModel3D] Node 0x724a6802f350, Layer 0, Cube Min=(1290.00,-1110.00,-2070.00), Max=(1770.00,-630.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a6802f350, Layer 0
+[SceneRenderer] Solid node event: nid=125659068081120 level=5 containment=0
+[requestModel3D] Node 0x7249481da3e0, Layer 0, Cube Min=(3210.00,-150.00,-2550.00), Max=(3690.00,330.00,-2070.00), Verts=209, Indices=768
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125666181136144 level=5 containment=1
+[requestModel3D] Node 0x724af0163f10, Layer 0, Cube Min=(1290.00,-1110.00,1770.00), Max=(1770.00,-630.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724af0163f10, Layer 0
+[SceneRenderer] Solid node event: nid=125655778022864 level=5 containment=0
+[requestModel3D] Node 0x7248840355d0, Layer 0, Cube Min=(3210.00,330.00,810.00), Max=(3690.00,810.00,1290.00), Verts=4, Indices=6
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662086114592 level=5 containment=0
+[requestModel3D] Node 0x7249fc012d20, Layer 0, Cube Min=(3210.00,-150.00,-3030.00), Max=(3690.00,330.00,-2550.00), Verts=84, Indices=309
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660408411440 level=5 containment=0
+[requestModel3D] Node 0x724998017530, Layer 0, Cube Min=(2250.00,-150.00,-1590.00), Max=(2730.00,330.00,-1110.00), Verts=86, Indices=288
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665240759168 level=5 containment=0
+[requestModel3D] Node 0x724ab8093b80, Layer 0, Cube Min=(3210.00,-150.00,-1590.00), Max=(3690.00,330.00,-1110.00), Verts=264, Indices=996
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658529666608 level=5 containment=1
+[requestModel3D] Node 0x724928061630, Layer 0, Cube Min=(3210.00,-630.00,3690.00), Max=(3690.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724928061630, Layer 0
+[SceneRenderer] Solid node event: nid=125661013684464 level=5 containment=1
+[requestModel3D] Node 0x7249bc1530f0, Layer 0, Cube Min=(-1590.00,-150.00,-3990.00), Max=(-1110.00,330.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249bc1530f0, Layer 0
+[SceneRenderer] Solid node event: nid=125660341878880 level=5 containment=1
+[requestModel3D] Node 0x7249940a4060, Layer 0, Cube Min=(-1590.00,-1110.00,-2070.00), Max=(-1110.00,-630.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249940a4060, Layer 0
+[SceneRenderer] Solid node event: nid=125663093147168 level=5 containment=1
+[requestModel3D] Node 0x724a38074620, Layer 0, Cube Min=(-630.00,330.00,-150.00), Max=(-150.00,810.00,330.00), Verts=283, Indices=480
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659671376464 level=5 containment=0
+[requestModel3D] Node 0x72496c133250, Layer 0, Cube Min=(3210.00,-150.00,810.00), Max=(3690.00,330.00,1290.00), Verts=447, Indices=1878
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662824589920 level=5 containment=1
+[requestModel3D] Node 0x724a28056a60, Layer 0, Cube Min=(-3990.00,-1110.00,-1110.00), Max=(-3510.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a28056a60, Layer 0
+[SceneRenderer] Solid node event: nid=125660341665056 level=5 containment=0
+[requestModel3D] Node 0x72499406fd20, Layer 0, Cube Min=(-2550.00,-150.00,330.00), Max=(-2070.00,330.00,810.00), Verts=467, Indices=1740
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662086647088 level=5 containment=1
+[requestModel3D] Node 0x7249fc094d30, Layer 0, Cube Min=(-630.00,-150.00,-1110.00), Max=(-150.00,330.00,-630.00), Verts=490, Indices=1749
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658999195424 level=5 containment=1
+[requestModel3D] Node 0x724944028720, Layer 0, Cube Min=(-1590.00,-1110.00,330.00), Max=(-1110.00,-630.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724944028720, Layer 0
+[SceneRenderer] Solid node event: nid=125656180715488 level=5 containment=0
+[requestModel3D] Node 0x72489c03efe0, Layer 0, Cube Min=(3210.00,-150.00,-2070.00), Max=(3690.00,330.00,-1590.00), Verts=4, Indices=6
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661080992768 level=5 containment=0
+[requestModel3D] Node 0x7249c0183c00, Layer 0, Cube Min=(-3510.00,330.00,1290.00), Max=(-3030.00,810.00,1770.00), Verts=395, Indices=1827
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665173096304 level=5 containment=1
+[requestModel3D] Node 0x724ab400c770, Layer 0, Cube Min=(1770.00,330.00,-3990.00), Max=(2250.00,810.00,-3510.00), Verts=332, Indices=1221
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659603846320 level=5 containment=1
+[requestModel3D] Node 0x7249680cc4b0, Layer 0, Cube Min=(1290.00,-1110.00,-630.00), Max=(1770.00,-630.00,-150.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249680cc4b0, Layer 0
+[SceneRenderer] Solid node event: nid=125661347874512 level=5 containment=1
+[requestModel3D] Node 0x7249d00086d0, Layer 0, Cube Min=(3210.00,-150.00,3690.00), Max=(3690.00,330.00,4170.00), Verts=167, Indices=510
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661081004192 level=5 containment=0
+[requestModel3D] Node 0x7249c01868a0, Layer 0, Cube Min=(-630.00,-150.00,330.00), Max=(-150.00,330.00,810.00), Verts=315, Indices=1446
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125654368738160 level=5 containment=1
+[requestModel3D] Node 0x724830035b70, Layer 0, Cube Min=(3210.00,-1110.00,-3510.00), Max=(3690.00,-630.00,-3030.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724830035b70, Layer 0
+[SceneRenderer] Solid node event: nid=125659334951472 level=5 containment=1
+[requestModel3D] Node 0x72495805c230, Layer 0, Cube Min=(330.00,-1110.00,2250.00), Max=(810.00,-630.00,2730.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495805c230, Layer 0
+[SceneRenderer] Solid node event: nid=125666247589792 level=5 containment=1
+[requestModel3D] Node 0x724af40c3fa0, Layer 0, Cube Min=(-3030.00,-1110.00,-2550.00), Max=(-2550.00,-630.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724af40c3fa0, Layer 0
+[SceneRenderer] Solid node event: nid=125658999099760 level=5 containment=0
+[requestModel3D] Node 0x724944011170, Layer 0, Cube Min=(-3030.00,330.00,-1590.00), Max=(-2550.00,810.00,-1110.00), Verts=211, Indices=822
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661750764256 level=5 containment=1
+[requestModel3D] Node 0x7249e80422e0, Layer 0, Cube Min=(-3990.00,-630.00,-3990.00), Max=(-3510.00,-150.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249e80422e0, Layer 0
+[SceneRenderer] Solid node event: nid=125661146602704 level=5 containment=1
+[requestModel3D] Node 0x7249c4015cd0, Layer 0, Cube Min=(-2550.00,-1110.00,-3990.00), Max=(-2070.00,-630.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c4015cd0, Layer 0
+[SceneRenderer] Solid node event: nid=125659939255168 level=5 containment=1
+[requestModel3D] Node 0x72497c0ab380, Layer 0, Cube Min=(330.00,-150.00,810.00), Max=(810.00,330.00,1290.00), Verts=929, Indices=3243
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661146625216 level=5 containment=1
+[requestModel3D] Node 0x7249c401b4c0, Layer 0, Cube Min=(-630.00,-1110.00,1290.00), Max=(-150.00,-630.00,1770.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c401b4c0, Layer 0
+[SceneRenderer] Solid node event: nid=125659536037920 level=5 containment=1
+[requestModel3D] Node 0x724964021820, Layer 0, Cube Min=(3210.00,-1110.00,-2550.00), Max=(3690.00,-630.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724964021820, Layer 0
+[SceneRenderer] Solid node event: nid=125656918685216 level=5 containment=0
+[requestModel3D] Node 0x7248c8007620, Layer 0, Cube Min=(-2070.00,330.00,-2550.00), Max=(-1590.00,810.00,-2070.00), Verts=550, Indices=2067
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662757561344 level=5 containment=1
+[requestModel3D] Node 0x724a2406a400, Layer 0, Cube Min=(-3990.00,-630.00,-3510.00), Max=(-3510.00,-150.00,-3030.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a2406a400, Layer 0
+[SceneRenderer] Solid node event: nid=125664368574592 level=5 containment=1
+[requestModel3D] Node 0x724a840cc080, Layer 0, Cube Min=(-2550.00,-1110.00,-630.00), Max=(-2070.00,-630.00,-150.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a840cc080, Layer 0
+[SceneRenderer] Solid node event: nid=125661080376768 level=5 containment=0
+[requestModel3D] Node 0x7249c00ed5c0, Layer 0, Cube Min=(-3030.00,-150.00,330.00), Max=(-2550.00,330.00,810.00), Verts=233, Indices=633
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660140036384 level=5 containment=1
+[requestModel3D] Node 0x724988026120, Layer 0, Cube Min=(-1590.00,-1110.00,-2550.00), Max=(-1110.00,-630.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724988026120, Layer 0
+[SceneRenderer] Solid node event: nid=125664167260640 level=5 containment=1
+[requestModel3D] Node 0x724a780cf1e0, Layer 0, Cube Min=(-3990.00,-150.00,-150.00), Max=(-3510.00,330.00,330.00), Verts=418, Indices=1275
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663696920432 level=5 containment=0
+[requestModel3D] Node 0x724a5c041f70, Layer 0, Cube Min=(-630.00,-150.00,1290.00), Max=(-150.00,330.00,1770.00), Verts=294, Indices=1218
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659401790048 level=5 containment=1
+[requestModel3D] Node 0x72495c01a260, Layer 0, Cube Min=(330.00,-1110.00,-2550.00), Max=(810.00,-630.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495c01a260, Layer 0
+[SceneRenderer] Solid node event: nid=125666181257872 level=5 containment=1
+[requestModel3D] Node 0x724af0181a90, Layer 0, Cube Min=(-3990.00,-1110.00,-3030.00), Max=(-3510.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724af0181a90, Layer 0
+[SceneRenderer] Solid node event: nid=125654502797280 level=5 containment=1
+[requestModel3D] Node 0x72483800efe0, Layer 0, Cube Min=(2250.00,-1110.00,-2550.00), Max=(2730.00,-630.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72483800efe0, Layer 0
+[SceneRenderer] Solid node event: nid=125661012645024 level=5 containment=0
+[requestModel3D] Node 0x7249bc0554a0, Layer 0, Cube Min=(-3030.00,330.00,-2550.00), Max=(-2550.00,810.00,-2070.00), Verts=495, Indices=1806
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664166778896 level=5 containment=1
+[requestModel3D] Node 0x724a78059810, Layer 0, Cube Min=(-150.00,-1110.00,3210.00), Max=(330.00,-630.00,3690.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a78059810, Layer 0
+[SceneRenderer] Solid node event: nid=125665240832640 level=5 containment=1
+[requestModel3D] Node 0x724ab80a5a80, Layer 0, Cube Min=(-2550.00,-630.00,-3990.00), Max=(-2070.00,-150.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ab80a5a80, Layer 0
+[SceneRenderer] Solid node event: nid=125662086262560 level=5 containment=1
+[requestModel3D] Node 0x7249fc036f20, Layer 0, Cube Min=(2250.00,-1110.00,-3510.00), Max=(2730.00,-630.00,-3030.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249fc036f20, Layer 0
+[SceneRenderer] Solid node event: nid=125664301506080 level=5 containment=1
+[requestModel3D] Node 0x724a800d5e20, Layer 0, Cube Min=(3210.00,-150.00,-3990.00), Max=(3690.00,330.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a800d5e20, Layer 0
+[SceneRenderer] Solid node event: nid=125654637229840 level=5 containment=1
+[requestModel3D] Node 0x724840043710, Layer 0, Cube Min=(-3510.00,-630.00,-3990.00), Max=(-3030.00,-150.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724840043710, Layer 0
+[SceneRenderer] Solid node event: nid=125659401942352 level=5 containment=1
+[requestModel3D] Node 0x72495c03f550, Layer 0, Cube Min=(1290.00,-1110.00,810.00), Max=(1770.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495c03f550, Layer 0
+[SceneRenderer] Solid node event: nid=125665307684416 level=5 containment=1
+[requestModel3D] Node 0x724abc066e40, Layer 0, Cube Min=(-150.00,-630.00,-3030.00), Max=(330.00,-150.00,-2550.00), Verts=594, Indices=1764
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664703607680 level=5 containment=0
+[requestModel3D] Node 0x724a9804f380, Layer 0, Cube Min=(2730.00,-150.00,-1590.00), Max=(3210.00,330.00,-1110.00), Verts=276, Indices=1170
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661482877328 level=5 containment=0
+[requestModel3D] Node 0x7249d80c8190, Layer 0, Cube Min=(-3510.00,330.00,330.00), Max=(-3030.00,810.00,810.00), Verts=537, Indices=1848
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125654368668944 level=5 containment=1
+[requestModel3D] Node 0x724830024d10, Layer 0, Cube Min=(3210.00,-1110.00,330.00), Max=(3690.00,-630.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724830024d10, Layer 0
+[SceneRenderer] Solid node event: nid=125659335011392 level=5 containment=0
+[requestModel3D] Node 0x72495806ac40, Layer 0, Cube Min=(-1590.00,330.00,-2550.00), Max=(-1110.00,810.00,-2070.00), Verts=510, Indices=1881
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661013479040 level=5 containment=1
+[requestModel3D] Node 0x7249bc120e80, Layer 0, Cube Min=(3210.00,-1110.00,3690.00), Max=(3690.00,-630.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249bc120e80, Layer 0
+[SceneRenderer] Solid node event: nid=125658530453504 level=5 containment=1
+[requestModel3D] Node 0x724928121800, Layer 0, Cube Min=(3690.00,-1110.00,330.00), Max=(4170.00,-630.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724928121800, Layer 0
+[SceneRenderer] Solid node event: nid=125654637191200 level=5 containment=1
+[requestModel3D] Node 0x72484003a020, Layer 0, Cube Min=(1290.00,-1110.00,-3510.00), Max=(1770.00,-630.00,-3030.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72484003a020, Layer 0
+[SceneRenderer] Solid node event: nid=125665039357424 level=5 containment=1
+[requestModel3D] Node 0x724aac0815f0, Layer 0, Cube Min=(-3990.00,330.00,-3990.00), Max=(-3510.00,810.00,-3510.00), Verts=266, Indices=897
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663965577536 level=5 containment=0
+[requestModel3D] Node 0x724a6c078140, Layer 0, Cube Min=(-150.00,330.00,-3030.00), Max=(330.00,810.00,-2550.00), Verts=547, Indices=2013
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662086736352 level=5 containment=1
+[requestModel3D] Node 0x7249fc0aa9e0, Layer 0, Cube Min=(2250.00,330.00,-1110.00), Max=(2730.00,810.00,-630.00), Verts=1202, Indices=5010
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658999802544 level=5 containment=1
+[requestModel3D] Node 0x7249440bcab0, Layer 0, Cube Min=(3690.00,-1110.00,-3030.00), Max=(4170.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249440bcab0, Layer 0
+[SceneRenderer] Solid node event: nid=125659200398464 level=5 containment=1
+[requestModel3D] Node 0x72495000a480, Layer 0, Cube Min=(1290.00,-1110.00,-1590.00), Max=(1770.00,-630.00,-1110.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495000a480, Layer 0
+[SceneRenderer] Solid node event: nid=125660072968976 level=5 containment=1
+[requestModel3D] Node 0x724984030310, Layer 0, Cube Min=(-3510.00,-1110.00,-3510.00), Max=(-3030.00,-630.00,-3030.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724984030310, Layer 0
+[SceneRenderer] Solid node event: nid=125662287632544 level=5 containment=1
+[requestModel3D] Node 0x724a080418a0, Layer 0, Cube Min=(330.00,-1110.00,-3030.00), Max=(810.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a080418a0, Layer 0
+[SceneRenderer] Solid node event: nid=125666918029904 level=5 containment=1
+[requestModel3D] Node 0x724b1c025a50, Layer 0, Cube Min=(1290.00,-1110.00,2730.00), Max=(1770.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724b1c025a50, Layer 0
+[SceneRenderer] Solid node event: nid=125659402354880 level=5 containment=1
+[requestModel3D] Node 0x72495c0a40c0, Layer 0, Cube Min=(330.00,-1110.00,330.00), Max=(810.00,-630.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495c0a40c0, Layer 0
+[SceneRenderer] Solid node event: nid=125662153802448 level=5 containment=1
+[requestModel3D] Node 0x724a000a02d0, Layer 0, Cube Min=(-630.00,-630.00,-3990.00), Max=(-150.00,-150.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a000a02d0, Layer 0
+[SceneRenderer] Solid node event: nid=125656382389008 level=5 containment=0
+[requestModel3D] Node 0x7248a8093b10, Layer 0, Cube Min=(2250.00,-150.00,-150.00), Max=(2730.00,330.00,330.00), Verts=318, Indices=1302
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663361155440 level=5 containment=1
+[requestModel3D] Node 0x724a4800c170, Layer 0, Cube Min=(-2550.00,-1110.00,330.00), Max=(-2070.00,-630.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a4800c170, Layer 0
+[SceneRenderer] Solid node event: nid=125665240670000 level=5 containment=1
+[requestModel3D] Node 0x724ab807df30, Layer 0, Cube Min=(-3510.00,-1110.00,330.00), Max=(-3030.00,-630.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ab807df30, Layer 0
+[SceneRenderer] Solid node event: nid=125659402361936 level=5 containment=1
+[requestModel3D] Node 0x72495c0a5c50, Layer 0, Cube Min=(1290.00,-1110.00,330.00), Max=(1770.00,-630.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495c0a5c50, Layer 0
+[SceneRenderer] Solid node event: nid=125659200453456 level=5 containment=1
+[requestModel3D] Node 0x724950017b50, Layer 0, Cube Min=(-2550.00,-630.00,3690.00), Max=(-2070.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724950017b50, Layer 0
+[SceneRenderer] Solid node event: nid=125664301321136 level=5 containment=1
+[requestModel3D] Node 0x724a800a8bb0, Layer 0, Cube Min=(-630.00,-1110.00,-630.00), Max=(-150.00,-630.00,-150.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a800a8bb0, Layer 0
+[SceneRenderer] Solid node event: nid=125664703626048 level=5 containment=1
+[requestModel3D] Node 0x724a98053b40, Layer 0, Cube Min=(-3510.00,-1110.00,1770.00), Max=(-3030.00,-630.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a98053b40, Layer 0
+[SceneRenderer] Solid node event: nid=125666247868592 level=5 containment=1
+[requestModel3D] Node 0x724af41080b0, Layer 0, Cube Min=(-630.00,-630.00,-3030.00), Max=(-150.00,-150.00,-2550.00), Verts=187, Indices=540
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659335019120 level=5 containment=1
+[requestModel3D] Node 0x72495806ca70, Layer 0, Cube Min=(-3990.00,330.00,-3510.00), Max=(-3510.00,810.00,-3030.00), Verts=408, Indices=1485
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661281810512 level=5 containment=1
+[requestModel3D] Node 0x7249cc107850, Layer 0, Cube Min=(-3510.00,-1110.00,-2550.00), Max=(-3030.00,-630.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249cc107850, Layer 0
+[SceneRenderer] Solid node event: nid=125665710246080 level=5 containment=1
+[requestModel3D] Node 0x724ad40508c0, Layer 0, Cube Min=(-3030.00,-1110.00,-3510.00), Max=(-2550.00,-630.00,-3030.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724ad40508c0, Layer 0
+[SceneRenderer] Solid node event: nid=125659334913504 level=5 containment=1
+[requestModel3D] Node 0x724958052de0, Layer 0, Cube Min=(330.00,-150.00,330.00), Max=(810.00,330.00,810.00), Verts=2066, Indices=8070
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664233642480 level=5 containment=1
+[requestModel3D] Node 0x724a7c01d9f0, Layer 0, Cube Min=(1290.00,-1110.00,2250.00), Max=(1770.00,-630.00,2730.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a7c01d9f0, Layer 0
+[SceneRenderer] Solid node event: nid=125661818391840 level=5 containment=1
+[requestModel3D] Node 0x7249ec0c0d20, Layer 0, Cube Min=(-3990.00,-630.00,-1590.00), Max=(-3510.00,-150.00,-1110.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249ec0c0d20, Layer 0
+[SceneRenderer] Solid node event: nid=125662086528752 level=5 containment=0
+[requestModel3D] Node 0x7249fc077ef0, Layer 0, Cube Min=(-630.00,-150.00,810.00), Max=(-150.00,330.00,1290.00), Verts=219, Indices=912
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661683849424 level=5 containment=0
+[requestModel3D] Node 0x7249e40718d0, Layer 0, Cube Min=(-150.00,-150.00,2730.00), Max=(330.00,330.00,3210.00), Verts=186, Indices=735
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664435109856 level=5 containment=1
+[requestModel3D] Node 0x724a8803ffe0, Layer 0, Cube Min=(-1590.00,-1110.00,1290.00), Max=(-1110.00,-630.00,1770.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a8803ffe0, Layer 0
+[SceneRenderer] Solid node event: nid=125659401787472 level=5 containment=1
+[requestModel3D] Node 0x72495c019850, Layer 0, Cube Min=(-3990.00,-630.00,3210.00), Max=(-3510.00,-150.00,3690.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72495c019850, Layer 0
+[SceneRenderer] Solid node event: nid=125665240753456 level=5 containment=1
+[requestModel3D] Node 0x724ab8092530, Layer 0, Cube Min=(-3990.00,330.00,330.00), Max=(-3510.00,810.00,810.00), Verts=415, Indices=1242
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661282132112 level=5 containment=1
+[requestModel3D] Node 0x7249cc156090, Layer 0, Cube Min=(2730.00,-1110.00,330.00), Max=(3210.00,-630.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249cc156090, Layer 0
+[SceneRenderer] Solid node event: nid=125656382055536 level=5 containment=0
+[requestModel3D] Node 0x7248a8042470, Layer 0, Cube Min=(-3030.00,-150.00,1770.00), Max=(-2550.00,330.00,2250.00), Verts=203, Indices=834
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125666381026016 level=5 containment=1
+[requestModel3D] Node 0x724afc0052e0, Layer 0, Cube Min=(2250.00,-1110.00,-630.00), Max=(2730.00,-630.00,-150.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724afc0052e0, Layer 0
+[SceneRenderer] Solid node event: nid=125661884921008 level=5 containment=0
+[requestModel3D] Node 0x7249f00334b0, Layer 0, Cube Min=(330.00,-150.00,-1110.00), Max=(810.00,330.00,-630.00), Verts=197, Indices=777
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125666381129840 level=5 containment=0
+[requestModel3D] Node 0x724afc01e870, Layer 0, Cube Min=(330.00,330.00,-3510.00), Max=(810.00,810.00,-3030.00), Verts=568, Indices=2136
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659536076112 level=5 containment=1
+[requestModel3D] Node 0x72496402ad50, Layer 0, Cube Min=(330.00,-1110.00,-1590.00), Max=(810.00,-630.00,-1110.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72496402ad50, Layer 0
+[SceneRenderer] Solid node event: nid=125659737310816 level=5 containment=1
+[requestModel3D] Node 0x724970014660, Layer 0, Cube Min=(-1590.00,-1110.00,2250.00), Max=(-1110.00,-630.00,2730.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724970014660, Layer 0
+[SceneRenderer] Solid node event: nid=125666381019296 level=5 containment=1
+[requestModel3D] Node 0x724afc0038a0, Layer 0, Cube Min=(-2550.00,-1110.00,2250.00), Max=(-2070.00,-630.00,2730.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724afc0038a0, Layer 0
+[SceneRenderer] Solid node event: nid=125654771226560 level=5 containment=0
+[requestModel3D] Node 0x72484800d7c0, Layer 0, Cube Min=(330.00,330.00,-1110.00), Max=(810.00,810.00,-630.00), Verts=321, Indices=1326
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659068359264 level=5 containment=1
+[requestModel3D] Node 0x72494821e260, Layer 0, Cube Min=(1770.00,330.00,-1110.00), Max=(2250.00,810.00,-630.00), Verts=165, Indices=540
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659737328064 level=5 containment=1
+[requestModel3D] Node 0x7249700189c0, Layer 0, Cube Min=(-630.00,-1110.00,-3510.00), Max=(-150.00,-630.00,-3030.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249700189c0, Layer 0
+[SceneRenderer] Solid node event: nid=125667052177552 level=5 containment=1
+[requestModel3D] Node 0x724b24014890, Layer 0, Cube Min=(-630.00,-1110.00,330.00), Max=(-150.00,-630.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724b24014890, Layer 0
+[SceneRenderer] Solid node event: nid=106564831708976 level=5 containment=1
+[requestModel3D] Node 0x60eb8ef08730, Layer 0, Cube Min=(-1110.00,-1110.00,-2070.00), Max=(-630.00,-630.00,-1590.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x60eb8ef08730, Layer 0
+[SceneRenderer] Solid node event: nid=125660342004000 level=5 containment=1
+[requestModel3D] Node 0x7249940c2920, Layer 0, Cube Min=(-150.00,330.00,1770.00), Max=(330.00,810.00,2250.00), Verts=852, Indices=3330
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659068552608 level=5 containment=1
+[requestModel3D] Node 0x72494824d5a0, Layer 0, Cube Min=(-1110.00,-1110.00,-1110.00), Max=(-630.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72494824d5a0, Layer 0
+[SceneRenderer] Solid node event: nid=125664167024848 level=5 containment=0
+[requestModel3D] Node 0x724a780958d0, Layer 0, Cube Min=(1290.00,330.00,-2550.00), Max=(1770.00,810.00,-2070.00), Verts=428, Indices=1782
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662958675504 level=5 containment=1
+[requestModel3D] Node 0x724a30036630, Layer 0, Cube Min=(-2070.00,-630.00,3690.00), Max=(-1590.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a30036630, Layer 0
+[SceneRenderer] Solid node event: nid=125664032844032 level=5 containment=0
+[requestModel3D] Node 0x724a7009e900, Layer 0, Cube Min=(1290.00,330.00,-3030.00), Max=(1770.00,810.00,-2550.00), Verts=525, Indices=1860
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664703329168 level=5 containment=0
+[requestModel3D] Node 0x724a9800b390, Layer 0, Cube Min=(1290.00,330.00,-1590.00), Max=(1770.00,810.00,-1110.00), Verts=399, Indices=1842
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661081068368 level=5 containment=0
+[requestModel3D] Node 0x7249c0196350, Layer 0, Cube Min=(-1590.00,-150.00,1290.00), Max=(-1110.00,330.00,1770.00), Verts=261, Indices=1182
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663965653920 level=5 containment=1
+[requestModel3D] Node 0x724a6c08aba0, Layer 0, Cube Min=(1770.00,-150.00,810.00), Max=(2250.00,330.00,1290.00), Verts=1332, Indices=3861
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663965529712 level=5 containment=1
+[requestModel3D] Node 0x724a6c06c670, Layer 0, Cube Min=(-3990.00,-150.00,2730.00), Max=(-3510.00,330.00,3210.00), Verts=339, Indices=1407
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664569375776 level=5 containment=1
+[requestModel3D] Node 0x724a9004bc20, Layer 0, Cube Min=(2730.00,-150.00,-1110.00), Max=(3210.00,330.00,-630.00), Verts=1189, Indices=4425
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659603916656 level=5 containment=1
+[requestModel3D] Node 0x7249680dd770, Layer 0, Cube Min=(3210.00,-1110.00,2250.00), Max=(3690.00,-630.00,2730.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249680dd770, Layer 0
+[SceneRenderer] Solid node event: nid=125660811510000 level=5 containment=1
+[requestModel3D] Node 0x7249b00840f0, Layer 0, Cube Min=(-3030.00,-1110.00,-3030.00), Max=(-2550.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249b00840f0, Layer 0
+[SceneRenderer] Solid node event: nid=125662690404416 level=5 containment=1
+[requestModel3D] Node 0x724a2005e840, Layer 0, Cube Min=(-2550.00,-1110.00,-1590.00), Max=(-2070.00,-630.00,-1110.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a2005e840, Layer 0
+[SceneRenderer] Solid node event: nid=125667052187856 level=5 containment=1
+[requestModel3D] Node 0x724b240170d0, Layer 0, Cube Min=(-3510.00,-1110.00,-630.00), Max=(-3030.00,-630.00,-150.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724b240170d0, Layer 0
+[SceneRenderer] Solid node event: nid=125659670682880 level=5 containment=0
+[requestModel3D] Node 0x72496c089d00, Layer 0, Cube Min=(-630.00,330.00,-3510.00), Max=(-150.00,810.00,-3030.00), Verts=530, Indices=1929
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660140184320 level=5 containment=1
+[requestModel3D] Node 0x72498804a300, Layer 0, Cube Min=(-2070.00,-1110.00,-1110.00), Max=(-1590.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72498804a300, Layer 0
+[SceneRenderer] Solid node event: nid=125664435186928 level=5 containment=1
+[requestModel3D] Node 0x724a88052cf0, Layer 0, Cube Min=(3210.00,-1110.00,-1590.00), Max=(3690.00,-630.00,-1110.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a88052cf0, Layer 0
+[SceneRenderer] Solid node event: nid=125664368657696 level=5 containment=1
+[requestModel3D] Node 0x724a840e0520, Layer 0, Cube Min=(-3990.00,-630.00,-630.00), Max=(-3510.00,-150.00,-150.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a840e0520, Layer 0
+[SceneRenderer] Solid node event: nid=125658932308832 level=5 containment=1
+[requestModel3D] Node 0x72494005eb60, Layer 0, Cube Min=(-3990.00,-630.00,-3030.00), Max=(-3510.00,-150.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72494005eb60, Layer 0
+[SceneRenderer] Solid node event: nid=125654502999008 level=5 containment=1
+[requestModel3D] Node 0x7248380403e0, Layer 0, Cube Min=(2250.00,-1110.00,810.00), Max=(2730.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248380403e0, Layer 0
+[SceneRenderer] Solid node event: nid=125661283404080 level=5 containment=1
+[requestModel3D] Node 0x7249cc28c930, Layer 0, Cube Min=(2730.00,330.00,-1110.00), Max=(3210.00,810.00,-630.00), Verts=1377, Indices=6021
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659066592928 level=5 containment=0
+[requestModel3D] Node 0x72494806eea0, Layer 0, Cube Min=(-3510.00,-150.00,-630.00), Max=(-3030.00,330.00,-150.00), Verts=500, Indices=1857
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125654637353392 level=5 containment=1
+[requestModel3D] Node 0x7248400619b0, Layer 0, Cube Min=(-630.00,330.00,-2550.00), Max=(-150.00,810.00,-2070.00), Verts=496, Indices=1836
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665576301168 level=5 containment=0
+[requestModel3D] Node 0x724acc093270, Layer 0, Cube Min=(810.00,-150.00,810.00), Max=(1290.00,330.00,1290.00), Verts=427, Indices=1563
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659536030640 level=5 containment=0
+[requestModel3D] Node 0x72496401fbb0, Layer 0, Cube Min=(-2550.00,-150.00,-630.00), Max=(-2070.00,330.00,-150.00), Verts=237, Indices=915
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663495870400 level=5 containment=1
+[requestModel3D] Node 0x724a500857c0, Layer 0, Cube Min=(330.00,-150.00,1770.00), Max=(810.00,330.00,2250.00), Verts=341, Indices=1290
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125654502746320 level=5 containment=1
+[requestModel3D] Node 0x7248380028d0, Layer 0, Cube Min=(1290.00,-1110.00,-2550.00), Max=(1770.00,-630.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7248380028d0, Layer 0
+[SceneRenderer] Solid node event: nid=125660074167136 level=5 containment=0
+[requestModel3D] Node 0x724984154b60, Layer 0, Cube Min=(-150.00,-150.00,330.00), Max=(330.00,330.00,810.00), Verts=241, Indices=1053
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661080234192 level=5 containment=1
+[requestModel3D] Node 0x7249c00ca8d0, Layer 0, Cube Min=(1290.00,-1110.00,-1110.00), Max=(1770.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c00ca8d0, Layer 0
+[SceneRenderer] Solid node event: nid=125666248033696 level=5 containment=0
+[requestModel3D] Node 0x724af41305a0, Layer 0, Cube Min=(-150.00,-150.00,-2550.00), Max=(330.00,330.00,-2070.00), Verts=1211, Indices=3846
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665040909376 level=5 containment=1
+[requestModel3D] Node 0x724aac1fc440, Layer 0, Cube Min=(2250.00,-150.00,-3990.00), Max=(2730.00,330.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724aac1fc440, Layer 0
+[SceneRenderer] Solid node event: nid=125660946907232 level=5 containment=0
+[requestModel3D] Node 0x7249b81a4060, Layer 0, Cube Min=(-1590.00,-150.00,810.00), Max=(-1110.00,330.00,1290.00), Verts=303, Indices=1368
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660811191248 level=5 containment=0
+[requestModel3D] Node 0x7249b00363d0, Layer 0, Cube Min=(-3510.00,330.00,1770.00), Max=(-3030.00,810.00,2250.00), Verts=403, Indices=1857
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658596846512 level=5 containment=1
+[requestModel3D] Node 0x72492c072bb0, Layer 0, Cube Min=(810.00,-1110.00,-630.00), Max=(1290.00,-630.00,-150.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72492c072bb0, Layer 0
+[SceneRenderer] Solid node event: nid=125659670178496 level=5 containment=1
+[requestModel3D] Node 0x72496c00eac0, Layer 0, Cube Min=(330.00,-1110.00,1770.00), Max=(810.00,-630.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72496c00eac0, Layer 0
+[SceneRenderer] Solid node event: nid=125666179699616 level=5 containment=0
+[requestModel3D] Node 0x724af00053a0, Layer 0, Cube Min=(-2070.00,330.00,-1590.00), Max=(-1590.00,810.00,-1110.00), Verts=369, Indices=1644
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125659335388272 level=5 containment=0
+[requestModel3D] Node 0x7249580c6c70, Layer 0, Cube Min=(-630.00,330.00,-3030.00), Max=(-150.00,810.00,-2550.00), Verts=397, Indices=1689
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662824838272 level=5 containment=1
+[requestModel3D] Node 0x724a28093480, Layer 0, Cube Min=(-1110.00,-1110.00,-3990.00), Max=(-630.00,-630.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a28093480, Layer 0
+[SceneRenderer] Solid node event: nid=125664703678352 level=5 containment=0
+[requestModel3D] Node 0x724a98060790, Layer 0, Cube Min=(2250.00,-150.00,810.00), Max=(2730.00,330.00,1290.00), Verts=417, Indices=1509
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665978445904 level=5 containment=0
+[requestModel3D] Node 0x724ae4017050, Layer 0, Cube Min=(-2550.00,-150.00,1770.00), Max=(-2070.00,330.00,2250.00), Verts=471, Indices=2025
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660341744912 level=5 containment=1
+[requestModel3D] Node 0x724994083510, Layer 0, Cube Min=(-2550.00,-1110.00,3210.00), Max=(-2070.00,-630.00,3690.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724994083510, Layer 0
+[SceneRenderer] Solid node event: nid=125666179751584 level=5 containment=1
+[requestModel3D] Node 0x724af0011ea0, Layer 0, Cube Min=(330.00,-1110.00,2730.00), Max=(810.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724af0011ea0, Layer 0
+[SceneRenderer] Solid node event: nid=125664032767872 level=5 containment=1
+[requestModel3D] Node 0x724a7008bf80, Layer 0, Cube Min=(-630.00,-1110.00,1770.00), Max=(-150.00,-630.00,2250.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a7008bf80, Layer 0
+[SceneRenderer] Solid node event: nid=125664703704000 level=5 containment=1
+[requestModel3D] Node 0x724a98066bc0, Layer 0, Cube Min=(810.00,330.00,-3990.00), Max=(1290.00,810.00,-3510.00), Verts=365, Indices=1314
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660073814320 level=5 containment=0
+[requestModel3D] Node 0x7249840fe930, Layer 0, Cube Min=(1290.00,-150.00,3210.00), Max=(1770.00,330.00,3690.00), Verts=188, Indices=729
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664703614288 level=5 containment=0
+[requestModel3D] Node 0x724a98050d50, Layer 0, Cube Min=(-3510.00,-150.00,-150.00), Max=(-3030.00,330.00,330.00), Verts=429, Indices=1554
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661079580416 level=5 containment=1
+[requestModel3D] Node 0x7249c002af00, Layer 0, Cube Min=(-3510.00,-1110.00,810.00), Max=(-3030.00,-630.00,1290.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c002af00, Layer 0
+[SceneRenderer] Solid node event: nid=125661013466272 level=5 containment=1
+[requestModel3D] Node 0x7249bc11dca0, Layer 0, Cube Min=(-3510.00,-1110.00,-150.00), Max=(-3030.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249bc11dca0, Layer 0
+[SceneRenderer] Solid node event: nid=125658867285904 level=5 containment=0
+[requestModel3D] Node 0x72493c25bf90, Layer 0, Cube Min=(-1590.00,330.00,-2070.00), Max=(-1110.00,810.00,-1590.00), Verts=514, Indices=1851
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125663965652352 level=5 containment=0
+[requestModel3D] Node 0x724a6c08a580, Layer 0, Cube Min=(2730.00,330.00,-2070.00), Max=(3210.00,810.00,-1590.00), Verts=481, Indices=1863
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125662824446992 level=5 containment=1
+[requestModel3D] Node 0x724a28033c10, Layer 0, Cube Min=(-1590.00,-1110.00,2730.00), Max=(-1110.00,-630.00,3210.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a28033c10, Layer 0
+[SceneRenderer] Solid node event: nid=125661012632816 level=5 containment=1
+[requestModel3D] Node 0x7249bc0524f0, Layer 0, Cube Min=(3690.00,-630.00,-2550.00), Max=(4170.00,-150.00,-2070.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249bc0524f0, Layer 0
+[SceneRenderer] Solid node event: nid=125661482458448 level=5 containment=1
+[requestModel3D] Node 0x7249d8061d50, Layer 0, Cube Min=(1290.00,-150.00,3690.00), Max=(1770.00,330.00,4170.00), Verts=117, Indices=438
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125661081018192 level=5 containment=1
+[requestModel3D] Node 0x7249c0189f50, Layer 0, Cube Min=(2250.00,-630.00,3690.00), Max=(2730.00,-150.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249c0189f50, Layer 0
+[SceneRenderer] Solid node event: nid=125660744237072 level=5 containment=1
+[requestModel3D] Node 0x7249ac05c010, Layer 0, Cube Min=(-3990.00,-1110.00,-150.00), Max=(-3510.00,-630.00,330.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249ac05c010, Layer 0
+[SceneRenderer] Solid node event: nid=125664166572048 level=5 containment=1
+[requestModel3D] Node 0x724a78027010, Layer 0, Cube Min=(1290.00,-150.00,-3990.00), Max=(1770.00,330.00,-3510.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a78027010, Layer 0
+[SceneRenderer] Solid node event: nid=125666918067760 level=5 containment=1
+[requestModel3D] Node 0x724b1c02ee30, Layer 0, Cube Min=(3690.00,-630.00,-3030.00), Max=(4170.00,-150.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724b1c02ee30, Layer 0
+[SceneRenderer] Solid node event: nid=125661013619728 level=5 containment=0
+[requestModel3D] Node 0x7249bc143410, Layer 0, Cube Min=(1290.00,-150.00,2730.00), Max=(1770.00,330.00,3210.00), Verts=260, Indices=951
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665575938448 level=5 containment=1
+[requestModel3D] Node 0x724acc03a990, Layer 0, Cube Min=(-3510.00,-1110.00,-1110.00), Max=(-3030.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724acc03a990, Layer 0
+[SceneRenderer] Solid node event: nid=125664166479296 level=5 containment=1
+[requestModel3D] Node 0x724a780105c0, Layer 0, Cube Min=(1290.00,-150.00,-1110.00), Max=(1770.00,330.00,-630.00), Verts=158, Indices=540
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660073967648 level=5 containment=0
+[requestModel3D] Node 0x724984124020, Layer 0, Cube Min=(-3510.00,-150.00,-1110.00), Max=(-3030.00,330.00,-630.00), Verts=525, Indices=1899
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125665576475008 level=5 containment=1
+[requestModel3D] Node 0x724acc0bd980, Layer 0, Cube Min=(3690.00,-150.00,-150.00), Max=(4170.00,330.00,330.00), Verts=167, Indices=594
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125664032711520 level=5 containment=1
+[requestModel3D] Node 0x724a7007e360, Layer 0, Cube Min=(330.00,-1110.00,-1110.00), Max=(810.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a7007e360, Layer 0
+[SceneRenderer] Solid node event: nid=125659068301232 level=5 containment=1
+[requestModel3D] Node 0x72494820ffb0, Layer 0, Cube Min=(-2550.00,-1110.00,-3030.00), Max=(-2070.00,-630.00,-2550.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x72494820ffb0, Layer 0
+[SceneRenderer] Solid node event: nid=125666918102816 level=5 containment=0
+[requestModel3D] Node 0x724b1c037720, Layer 0, Cube Min=(2250.00,-150.00,3210.00), Max=(2730.00,330.00,3690.00), Verts=275, Indices=1128
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658395928784 level=5 containment=0
+[requestModel3D] Node 0x7249200d68d0, Layer 0, Cube Min=(1290.00,-150.00,1770.00), Max=(1770.00,330.00,2250.00), Verts=338, Indices=1245
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125658395830112 level=5 containment=1
+[requestModel3D] Node 0x7249200be760, Layer 0, Cube Min=(330.00,-1110.00,3690.00), Max=(810.00,-630.00,4170.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249200be760, Layer 0
+[SceneRenderer] Solid node event: nid=125665576085984 level=5 containment=1
+[requestModel3D] Node 0x724acc05e9e0, Layer 0, Cube Min=(810.00,-1110.00,2250.00), Max=(1290.00,-630.00,2730.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724acc05e9e0, Layer 0
+[SceneRenderer] Solid node event: nid=125658395870880 level=5 containment=1
+[requestModel3D] Node 0x7249200c86a0, Layer 0, Cube Min=(3210.00,-1110.00,-1110.00), Max=(3690.00,-630.00,-630.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x7249200c86a0, Layer 0
+[SceneRenderer] Solid node event: nid=125663898558048 level=5 containment=1
+[requestModel3D] Node 0x724a6808de60, Layer 0, Cube Min=(-150.00,-1110.00,330.00), Max=(330.00,-630.00,810.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724a6808de60, Layer 0
+[SceneRenderer] Solid node event: nid=125659939321584 level=5 containment=0
+[requestModel3D] Node 0x72497c0bb6f0, Layer 0, Cube Min=(3210.00,-150.00,3210.00), Max=(3690.00,330.00,3690.00), Verts=326, Indices=1236
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125667052210256 level=5 containment=1
+[requestModel3D] Node 0x724b2401c850, Layer 0, Cube Min=(-3990.00,-1110.00,-1590.00), Max=(-3510.00,-630.00,-1110.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724b2401c850, Layer 0
+[SceneRenderer] Solid node event: nid=125666381203152 level=5 containment=1
+[requestModel3D] Node 0x724afc0306d0, Layer 0, Cube Min=(1770.00,-1110.00,1290.00), Max=(2250.00,-630.00,1770.00), Verts=0, Indices=0
+[requestModel3D] EMPTY geometry for node 0x724afc0306d0, Layer 0
+[SceneRenderer] Solid node event: nid=125659335362400 level=5 containment=0
+[requestModel3D] Node 0x7249580c0760, Layer 0, Cube Min=(-1590.00,330.00,-3030.00), Max=(-1110.00,810.00,-2550.00), Verts=596, Indices=2103
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125654771223088 level=5 containment=1
+[requestModel3D] Node 0x72484800ca30, Layer 0, Cube Min=(-3990.00,330.00,810.00), Max=(-3510.00,810.00,1290.00), Verts=381, Indices=1386
+[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()
+[SceneRenderer] Solid node event: nid=125660542
