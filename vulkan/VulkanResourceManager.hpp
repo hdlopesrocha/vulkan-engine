@@ -9,7 +9,28 @@
 
 class VulkanResourceManager {
 public:
-    VulkanResourceManager() = default;
+    VulkanResourceManager() {
+        // some std::unordered_map implementations start with zero buckets
+        // which can trigger modulo-by-zero or free-of-sentinel bugs when the
+        // first insertion occurs.  Pre-reserve a small number of buckets to
+        // avoid these pitfalls and ensure safe use of operator[]/reserve/rehash.
+        deviceMemories.reserve(1);
+        images.reserve(1);
+        imageViews.reserve(1);
+        samplers.reserve(1);
+        framebuffers.reserve(1);
+        buffers.reserve(1);
+        pipelines.reserve(1);
+        pipelineLayouts.reserve(1);
+        shaderModules.reserve(1);
+        descriptorPools.reserve(1);
+        descriptorSets.reserve(1);
+        descriptorSetLayouts.reserve(1);
+        renderPasses.reserve(1);
+        semaphores.reserve(1);
+        fences.reserve(1);
+        commandPools.reserve(1);
+    }
     ~VulkanResourceManager() = default;
 
     // All add/remove methods accept an optional description string identifying where the object was created.

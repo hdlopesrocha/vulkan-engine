@@ -28,10 +28,6 @@ public:
     
     // Render ImGui widget
     void renderImGui();
-
-    // Debug: read back the first pixel from GPU and print its values
-    void debugDumpFirstPixel(VulkanApp* app);
-    
     VkImageView getView() const;
     VkSampler getSampler() const;
     VkImage getImage() const;
@@ -60,12 +56,6 @@ private:
     
     std::vector<uint8_t> cpuData;
     bool isDirty = false;
-    
-    void createImage();
-    
-    void createImageView();
-    
-    void createSampler();
     
     void createImGuiDescriptor();
     

@@ -31,7 +31,7 @@ uint32_t IndirectRenderer::addMesh(const Geometry& mesh) {
 
 uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
     std::lock_guard<std::mutex> guard(mutex);
-    std::cout << "[IndirectRenderer::addMesh] Adding/replacing mesh ID " << customId << " with " << mesh.vertices.size() << " vertices and " << mesh.indices.size() << " indices.\n";
+    //std::cout << "[IndirectRenderer::addMesh] Adding/replacing mesh ID " << customId << " with " << mesh.vertices.size() << " vertices and " << mesh.indices.size() << " indices.\n";
 
     MeshInfo m{};
     m.id = customId;
@@ -149,13 +149,13 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
         vkMapMemory(app->getDevice(), stagingVertex.memory, 0, vertexSize, 0, &data);
         memcpy(data, &mergedVertices[info.baseVertex], vertexSize);
         vkUnmapMemory(app->getDevice(), stagingVertex.memory);
-        VkCommandBuffer cmd = app->beginSingleTimeCommands();
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
         VkBufferCopy copyRegion{};
         copyRegion.srcOffset = 0;
         copyRegion.dstOffset = vertexOffset;
         copyRegion.size = vertexSize;
         vkCmdCopyBuffer(cmd, stagingVertex.buffer, vertexBuffer.buffer, 1, &copyRegion);
-        app->endSingleTimeCommands(cmd);
+        });
         // Rely on VulkanResourceManager to destroy tracked buffers/memory later
         stagingVertex.buffer = VK_NULL_HANDLE;
         stagingVertex.memory = VK_NULL_HANDLE;
@@ -170,13 +170,13 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
         vkMapMemory(app->getDevice(), stagingIndex.memory, 0, indexSize, 0, &data);
         memcpy(data, &mergedIndices[info.firstIndex], indexSize);
         vkUnmapMemory(app->getDevice(), stagingIndex.memory);
-        VkCommandBuffer cmd = app->beginSingleTimeCommands();
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
         VkBufferCopy copyRegion{};
         copyRegion.srcOffset = 0;
         copyRegion.dstOffset = indexOffset;
         copyRegion.size = indexSize;
         vkCmdCopyBuffer(cmd, stagingIndex.buffer, indexBuffer.buffer, 1, &copyRegion);
-        app->endSingleTimeCommands(cmd);
+        });
         // Rely on VulkanResourceManager to destroy tracked buffers/memory later
         stagingIndex.buffer = VK_NULL_HANDLE;
         stagingIndex.memory = VK_NULL_HANDLE;
@@ -236,8 +236,9 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     if (!dirty) return;
     printf("[IndirectRenderer::rebuild] dirty=true, rebuilding buffers...\n");
 
-    // Wait for GPU to finish using current buffers before destroying/recreating them
-    vkDeviceWaitIdle(app->getDevice());
+    // Wait for any async generation/submit to finish and for in-flight frames
+    app->waitForAllPendingCommandBuffers();
+    app->waitForFrameFences();
 
     // Calculate required capacity with 25% headroom for incremental adds
     size_t neededVertexCap = mergedVertices.size() + mergedVertices.size() / 4 + 1024;
@@ -306,13 +307,13 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             memcpy(data, mergedVertices.data(), dataSize);
             vkUnmapMemory(app->getDevice(), staging.memory);
             
-            VkCommandBuffer cmd = app->beginSingleTimeCommands();
+            app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
             VkBufferCopy copyRegion{};
             copyRegion.srcOffset = 0;
             copyRegion.dstOffset = 0;
             copyRegion.size = dataSize;
             vkCmdCopyBuffer(cmd, staging.buffer, vertexBuffer.buffer, 1, &copyRegion);
-            app->endSingleTimeCommands(cmd);
+            });
             
             // Defer actual destruction to VulkanResourceManager; clear local handle
             staging.buffer = VK_NULL_HANDLE;
@@ -329,13 +330,13 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             memcpy(data, mergedIndices.data(), dataSize);
             vkUnmapMemory(app->getDevice(), staging.memory);
             
-            VkCommandBuffer cmd = app->beginSingleTimeCommands();
+            app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
             VkBufferCopy copyRegion{};
             copyRegion.srcOffset = 0;
             copyRegion.dstOffset = 0;
             copyRegion.size = dataSize;
             vkCmdCopyBuffer(cmd, staging.buffer, indexBuffer.buffer, 1, &copyRegion);
-            app->endSingleTimeCommands(cmd);
+            });
             
             // Defer actual destruction to VulkanResourceManager; clear local handle
             staging.buffer = VK_NULL_HANDLE;
@@ -707,9 +708,9 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
     static int frameCount = 0;
     if (frameCount < 10) {
         std::lock_guard<std::mutex> lock(mutex);
-        printf("[IndirectRenderer::drawPrepared] Frame %d: vertexBuffer=%p (verts=%zu), indexBuffer=%p (indices=%zu), drawCommands=%zu\n",
-               frameCount, (void*)vertexBuffer.buffer, mergedVertices.size(),
-               (void*)indexBuffer.buffer, mergedIndices.size(), indirectCommands.size());
+        //printf("[IndirectRenderer::drawPrepared] Frame %d: vertexBuffer=%p (verts=%zu), indexBuffer=%p (indices=%zu), drawCommands=%zu\n",
+        //       frameCount, (void*)vertexBuffer.buffer, mergedVertices.size(),
+        //       (void*)indexBuffer.buffer, mergedIndices.size(), indirectCommands.size());
         size_t activeMeshCount = 0;
         for (const auto& kv : meshes) if (kv.second.active) ++activeMeshCount;
         printf("[IndirectRenderer::drawPrepared] meshes.size()=%zu, activeMeshCount=%zu\n", meshes.size(), activeMeshCount);
@@ -788,7 +789,7 @@ void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pi
 uint32_t IndirectRenderer::readVisibleCount(VulkanApp* app) const {
     if (!app || visibleCountBuffer.buffer == VK_NULL_HANDLE) return 0;
     // Stats-only: wait for GPU to finish so the counter is coherent before mapping.
-    vkDeviceWaitIdle(app->getDevice());
+    app->deviceWaitIdle();
     uint32_t count = 0;
     void* data = nullptr;
     if (vkMapMemory(app->getDevice(), visibleCountBuffer.memory, 0, sizeof(uint32_t), 0, &data) == VK_SUCCESS && data) {

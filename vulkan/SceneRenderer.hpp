@@ -40,12 +40,6 @@ public:
     PassUBO<UniformObject> shadowPassUBO;
     PassUBO<WaterParamsGPU> waterPassUBO;
 
-    // No stored VulkanApp*: methods accept VulkanApp* when needed
-
-    // Texture array manager for albedo/normal/bump arrays (owned by application)
-    TextureArrayManager* textureArrayManager = nullptr;
-    MaterialManager* materialManager = nullptr;
-
     // Main uniform buffer
     Buffer mainUniformBuffer;
     
@@ -63,9 +57,10 @@ public:
     std::unique_ptr<SkySettings> skySettings;
     SkySettings& getSkySettings() { return *skySettings; }
 
-    SceneRenderer(TextureArrayManager* textureArrayManager_, MaterialManager* materialManager_);
+    SceneRenderer();
     ~SceneRenderer();
 
+    void createPipelines(VulkanApp* app);
     void createDescriptorSets(MaterialManager &materialManager, TextureArrayManager &textureArrayManager, VkDescriptorSet &outDescriptorSet, VkDescriptorSet &outShadowPassDescriptorSet, size_t tripleCount);
 
     // Cleanup and resource destruction (accepts app for Vulkan operations)
@@ -115,7 +110,9 @@ public:
     void mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
                   const UniformObject &uboStatic, const WaterParams &waterParams, float waterTime, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent);
     void waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime);
-    void init(VulkanApp* app_);
+    void init(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager);
+    // Re-update main descriptor set when texture arrays are (re)allocated
+    void updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager);
     // cleanup declared above (accepts VulkanApp*)
 
     // Incremental change handling (called from SolidSpaceChangeHandler callbacks)

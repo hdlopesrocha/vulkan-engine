@@ -423,7 +423,7 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 		stbi_image_free(pixels);
 
 		// Build command buffer and perform per-layer copy with barriers
-		VkCommandBuffer cmd = a->beginSingleTimeCommands();
+		a->runSingleTimeCommands([&](VkCommandBuffer cmd) {
 
 		// Transition this layer to TRANSFER_DST_OPTIMAL
 		VkImageMemoryBarrier barrier1{};
@@ -469,8 +469,7 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 
 		vkCmdCopyBufferToImage(cmd, staging.buffer, imgs[i].dstImage->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-		// finish the short-lived command buffer so the copy is flushed
-		a->endSingleTimeCommands(cmd);
+		});
 
 		// Generate mipmaps for the uploaded layer (this will transition mip levels to correct layouts)
 		if (imgs[i].dstImage->mipLevels > 1) {
@@ -479,7 +478,7 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 			setLayerLayout(i, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		} else {
 			// single-level: transition layer to SHADER_READ_ONLY_OPTIMAL
-			VkCommandBuffer cmd2 = a->beginSingleTimeCommands();
+			a->runSingleTimeCommands([&](VkCommandBuffer cmd2) {
 			VkImageMemoryBarrier barrier{};
 			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -497,7 +496,7 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 
 			vkCmdPipelineBarrier(cmd2, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
 					 0, nullptr, 0, nullptr, 1, &barrier);
-			a->endSingleTimeCommands(cmd2);
+			});
 			// set tracked layout
 			setLayerLayout(i, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		}
@@ -599,7 +598,7 @@ uint TextureArrayManager::create(VulkanApp* a) {
 		TextureImage* dst = imgs[i];
 		if (!dst || dst->image == VK_NULL_HANDLE) continue;
 
-		VkCommandBuffer cmd = a->beginSingleTimeCommands();
+		a->runSingleTimeCommands([&](VkCommandBuffer cmd) {
 
 		// transition layer to TRANSFER_DST_OPTIMAL
 		VkImageMemoryBarrier barrier1{};
@@ -655,7 +654,7 @@ uint TextureArrayManager::create(VulkanApp* a) {
 								 0, nullptr, 0, nullptr, 1, &barrier2);
 		}
 
-		a->endSingleTimeCommands(cmd);
+		});
 		// Generate mipmaps for this layer if necessary (this also transitions to SHADER_READ_ONLY)
 		if (dst->mipLevels > 1) {
 			a->generateMipmaps(dst->image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), dst->mipLevels, 1, currentLayer);
@@ -700,7 +699,7 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 	else throw std::runtime_error("TextureArrayManager::updateLayerFromEditableMap: invalid map");
 
 	// Transition dst layer to TRANSFER_DST_OPTIMAL for the selected array image and src to TRANSFER_SRC_OPTIMAL
-	VkCommandBuffer cmd = a->beginSingleTimeCommands();
+	a->runSingleTimeCommands([&](VkCommandBuffer cmd) {
 
 	auto doBarrier = [&](VkImage dst, VkImageLayout oldDst, VkImageLayout newDst, uint32_t dstBaseLayer) {
 		VkImageMemoryBarrier barrier{};
@@ -783,8 +782,7 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 	srcBack.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
 						 0, nullptr, 0, nullptr, 1, &srcBack);
-
-	a->endSingleTimeCommands(cmd);
+	});
 
 		// Generate mipmaps for the updated layer if needed
 		{

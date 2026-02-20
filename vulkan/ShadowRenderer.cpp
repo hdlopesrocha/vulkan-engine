@@ -149,7 +149,7 @@ void ShadowRenderer::createShadowMap(VulkanApp* app) {
     // Transition shadow map from UNDEFINED to READ_ONLY_OPTIMAL so the render pass
     // can start from a valid layout on the first frame
     {
-        VkCommandBuffer cmd = app->beginSingleTimeCommands();
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -165,7 +165,7 @@ void ShadowRenderer::createShadowMap(VulkanApp* app) {
         barrier.srcAccessMask = 0;
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-        app->endSingleTimeCommands(cmd);
+        });
     }
     
     // Create ImGui descriptor set for shadow map visualization
@@ -444,8 +444,7 @@ void ShadowRenderer::readbackShadowDepth(VulkanApp* app) {
     Buffer stagingBuffer = app->createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     // Record commands: transition to TRANSFER_SRC, copy image to buffer, transition back to READ_ONLY
-    VkCommandBuffer cmd = app->beginSingleTimeCommands();
-
+    app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
@@ -499,8 +498,7 @@ void ShadowRenderer::readbackShadowDepth(VulkanApp* app) {
         0, nullptr,
         1, &barrier
     );
-
-    app->endSingleTimeCommands(cmd);
+    });
 
     // Map and write PGM
     void* data;

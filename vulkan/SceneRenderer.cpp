@@ -35,17 +35,7 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (mainUniformBuffer.buffer != VK_NULL_HANDLE) {
         mainUniformBuffer = {};
     }
-    // Only clear materialsBuffer if it is not the same buffer owned by the MaterialManager
-    if (materialsBuffer.buffer != VK_NULL_HANDLE) {
-        bool ownedByManager = false;
-        if (materialManager) {
-            const Buffer &mgrBuf = materialManager->getBuffer();
-            if (mgrBuf.buffer == materialsBuffer.buffer && mgrBuf.memory == materialsBuffer.memory) ownedByManager = true;
-        }
-        if (!ownedByManager) {
-            materialsBuffer = {};
-        }
-    }
+
     if (mainPassUBO.buffer.buffer != VK_NULL_HANDLE) {
         mainPassUBO.buffer = {};
     }
@@ -67,10 +57,7 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
     }
 }
 
-SceneRenderer::SceneRenderer(TextureArrayManager* textureArrayManager_, MaterialManager* materialManager_)
-    :
-      textureArrayManager(textureArrayManager_),
-      materialManager(materialManager_),
+SceneRenderer::SceneRenderer() :
     shadowMapper(std::make_unique<ShadowRenderer>(8192)),
     waterRenderer(std::make_unique<WaterRenderer>()),
     skyRenderer(std::make_unique<SkyRenderer>()),
@@ -99,12 +86,12 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
     // Record shadow pass on a temporary command buffer to avoid nested render passes
     if (!shadowsEnabled) return;
 
-    VkCommandBuffer cmd = app->beginSingleTimeCommands();
+    app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
     shadowMapper->beginShadowPass(app, cmd, lightSpaceMatrix);
     // TODO: Render objects to shadow map using shadowMapper->renderObject(...)
     // End and transition
     shadowMapper->endShadowPass(app, cmd);
-    app->endSingleTimeCommands(cmd);
+    });
 
 }
 
@@ -153,7 +140,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
     // on executing offscreen geometry and returning control to the main pass.
 }
 
-void SceneRenderer::init(VulkanApp* app) {
+void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager) {
     if (!app) {
         fprintf(stderr, "[SceneRenderer::init] app is nullptr!\n");
         return;
@@ -285,6 +272,13 @@ void SceneRenderer::init(VulkanApp* app) {
         if (w.pImageInfo) delete w.pImageInfo;
     }
 
+    // Register listener so we update the main descriptor set when texture arrays are allocated later
+    if (textureArrayManager) {
+        textureArrayManager->addAllocationListener([this, app, textureArrayManager]() {
+            this->updateTextureDescriptorSet(app, textureArrayManager);
+        });
+    }
+
     // Initialize WaterRenderer
     Buffer waterParamsBuffer = app->createBuffer(sizeof(WaterUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -296,6 +290,67 @@ void SceneRenderer::init(VulkanApp* app) {
     
 
     printf("[SceneRenderer::init] Initialization complete\n");
+}
+
+// Update only the texture / materials bindings in the app's main descriptor set.
+void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager) {
+    if (!app) return;
+    VkDescriptorSet mainDs = app->getMainDescriptorSet();
+    if (mainDs == VK_NULL_HANDLE) return;
+
+    std::vector<VkWriteDescriptorSet> writes;
+
+    // Helper to add image write if valid (allocates VkDescriptorImageInfo)
+    auto addImageWrite = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
+        if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
+            return;
+        }
+        VkDescriptorImageInfo* info = new VkDescriptorImageInfo();
+        info->sampler = sampler;
+        info->imageView = view;
+        info->imageLayout = layout;
+        VkWriteDescriptorSet w{};
+        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet = mainDs;
+        w.dstBinding = binding;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.descriptorCount = 1;
+        w.pImageInfo = info;
+        writes.push_back(w);
+    };
+
+    addImageWrite(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    addImageWrite(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    addImageWrite(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+
+    // Shadow map sampler (binding 4) may be present
+    if (shadowMapper) {
+        addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    }
+
+    // Materials SSBO (binding 5)
+    VkDescriptorBufferInfo materialsInfo{};
+    materialsInfo.buffer = materialsBuffer.buffer;
+    materialsInfo.offset = 0;
+    materialsInfo.range = VK_WHOLE_SIZE;
+    VkWriteDescriptorSet materialsWrite{};
+    materialsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    materialsWrite.dstSet = mainDs;
+    materialsWrite.dstBinding = 5;
+    materialsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    materialsWrite.descriptorCount = 1;
+    materialsWrite.pBufferInfo = &materialsInfo;
+    writes.push_back(materialsWrite);
+
+    // Apply descriptor updates
+    app->updateDescriptorSet(writes);
+
+    // cleanup allocated image infos
+    for (auto &w : writes) {
+        if (w.pImageInfo) delete w.pImageInfo;
+    }
+    fprintf(stderr, "[SceneRenderer] updateTextureDescriptorSet: updated main descriptor set with texture bindings\n");
 }
 
 

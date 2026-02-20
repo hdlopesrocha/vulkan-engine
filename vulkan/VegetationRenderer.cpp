@@ -73,8 +73,18 @@ void VegetationRenderer::onTextureArraysReallocated(VulkanApp* app) {
     if (!app) return;
     if (vegDescriptorSet != VK_NULL_HANDLE) {
         VkDescriptorSet ds = vegDescriptorSet;
+        // Remove from resource registry now to avoid later double-free.
         app->resources.removeDescriptorSet(ds);
-        vkFreeDescriptorSets(app->getDevice(), app->getDescriptorPool(), 1, &ds);
+        // If there are pending command buffers, defer freeing until they're done
+        if (app->hasPendingCommandBuffers()) {
+            VkDevice device = app->getDevice();
+            VkDescriptorPool pool = app->getDescriptorPool();
+            app->deferDestroyUntilAllPending([device, pool, ds]() {
+                vkFreeDescriptorSets(device, pool, 1, &ds);
+            });
+        } else {
+            vkFreeDescriptorSets(app->getDevice(), app->getDescriptorPool(), 1, &ds);
+        }
         vegDescriptorSet = VK_NULL_HANDLE;
         vegDescriptorVersion = 0;
     }
@@ -427,30 +437,14 @@ void VegetationRenderer::createInstanceBuffer(NodeID chunkId, const std::vector<
     app->resources.addDeviceMemory(memory, "VegetationRenderer: memory");
 
     // 3. Copy from staging to device-local buffer
-    VkCommandBufferAllocateInfo cmdBufAllocInfo{};
-    cmdBufAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cmdBufAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cmdBufAllocInfo.commandPool = commandPool;
-    cmdBufAllocInfo.commandBufferCount = 1;
-    VkCommandBuffer cmdBuf;
-    if (vkAllocateCommandBuffers(device, &cmdBufAllocInfo, &cmdBuf) != VK_SUCCESS) throw std::runtime_error("Failed to allocate command buffer");
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmdBuf, &beginInfo);
+    // Use VulkanApp helpers to allocate/submit/free a single-time command buffer
+    app->runSingleTimeCommands([&](VkCommandBuffer cmdBuf) {
     VkBufferCopy copyRegion{};
     copyRegion.srcOffset = 0;
     copyRegion.dstOffset = 0;
     copyRegion.size = bufferSize;
     vkCmdCopyBuffer(cmdBuf, stagingBuffer, buffer, 1, &copyRegion);
-    vkEndCommandBuffer(cmdBuf);
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &cmdBuf;
-    vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(graphicsQueue);
-    vkFreeCommandBuffers(device, commandPool, 1, &cmdBuf);
+    });
 
     // Defer actual destruction to VulkanResourceManager; clear local handles
     stagingBuffer = VK_NULL_HANDLE;

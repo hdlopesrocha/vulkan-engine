@@ -107,6 +107,18 @@ void VulkanResourceManager::addDescriptorPool(VkDescriptorPool dp, const char* d
         if (d.find("ImGui:") != std::string::npos) return;
     }
     std::lock_guard<std::mutex> lk(mtx);
+    // debug: log internal map state before insertion
+    size_t bc = descriptorPools.bucket_count();
+    fprintf(stderr, "[VulkanResourceManager] addDescriptorPool this=%p dp=%p desc=%s bucket_count=%zu\n",
+            (void*)this, (void*)dp, desc ? desc : "(null)", bc);
+    if (bc == 0) {
+        // ensure there's at least one bucket before using operator[];
+        // `reserve` is safer than `rehash` for empty maps as it won't try to
+        // free a sentinel pointer value that some implementations use.
+        descriptorPools.reserve(1);
+        bc = descriptorPools.bucket_count();
+        fprintf(stderr, "[VulkanResourceManager] reserved descriptorPools bucket_count=%zu\n", bc);
+    }
     descriptorPools[(uintptr_t)dp] = {dp, desc ? std::string(desc) : std::string()};
 }
 
