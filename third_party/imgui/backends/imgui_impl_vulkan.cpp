@@ -84,6 +84,15 @@
 #include "imgui.h"
 #ifndef IMGUI_DISABLE
 #include "imgui_impl_vulkan.h"
+#include "../../../vulkan/VulkanApp.hpp"
+
+// Weak C-linkage wrappers (defined in VulkanApp.cpp) so the ImGui backend
+// can call into the app when available without creating hard link-time
+// dependencies for other build targets.
+extern "C" void* ImGui_GetApp_C() __attribute__((weak));
+extern "C" void ImGui_SubmitCommandBufferAndWait_C(void* appPtr, VkCommandBuffer cb) __attribute__((weak));
+extern "C" VkResult ImGui_QueueWaitIdle_C(void* appPtr) __attribute__((weak));
+extern "C" VkResult ImGui_DeviceWaitIdle_C(void* appPtr) __attribute__((weak));
 #include <stdio.h>
 #ifndef IM_MAX
 #define IM_MAX(A, B)    (((A) >= (B)) ? (A) : (B))
@@ -622,7 +631,10 @@ bool ImGui_ImplVulkan_CreateFontsTexture()
     // Destroy existing texture (if any)
     if (bd->FontView || bd->FontImage || bd->FontMemory || bd->FontDescriptorSet)
     {
-        vkQueueWaitIdle(v->Queue);
+        void* appPtr = nullptr;
+        if (ImGui_GetApp_C) appPtr = ImGui_GetApp_C();
+        if (appPtr && ImGui_QueueWaitIdle_C) ImGui_QueueWaitIdle_C(appPtr);
+        else vkQueueWaitIdle(v->Queue);
         ImGui_ImplVulkan_DestroyFontsTexture();
     }
 
@@ -795,11 +807,16 @@ bool ImGui_ImplVulkan_CreateFontsTexture()
     end_info.pCommandBuffers = &bd->FontCommandBuffer;
     err = vkEndCommandBuffer(bd->FontCommandBuffer);
     check_vk_result(err);
-    err = vkQueueSubmit(v->Queue, 1, &end_info, VK_NULL_HANDLE);
-    check_vk_result(err);
-
-    err = vkQueueWaitIdle(v->Queue);
-    check_vk_result(err);
+    void* appPtr = nullptr;
+    if (ImGui_GetApp_C) appPtr = ImGui_GetApp_C();
+    if (appPtr && ImGui_SubmitCommandBufferAndWait_C) {
+        ImGui_SubmitCommandBufferAndWait_C(appPtr, bd->FontCommandBuffer);
+    } else {
+        err = vkQueueSubmit(v->Queue, 1, &end_info, VK_NULL_HANDLE);
+        check_vk_result(err);
+        err = vkQueueWaitIdle(v->Queue);
+        check_vk_result(err);
+    }
 
     vkDestroyBuffer(v->Device, upload_buffer, v->Allocator);
     vkFreeMemory(v->Device, upload_buffer_memory, v->Allocator);
@@ -1145,7 +1162,13 @@ void ImGui_ImplVulkan_SetMinImageCount(uint32_t min_image_count)
         return;
 
     ImGui_ImplVulkan_InitInfo* v = &bd->VulkanInitInfo;
-    VkResult err = vkDeviceWaitIdle(v->Device);
+    VkResult err;
+    {
+        void* appPtr = nullptr;
+        if (ImGui_GetApp_C) appPtr = ImGui_GetApp_C();
+        if (appPtr && ImGui_DeviceWaitIdle_C) err = ImGui_DeviceWaitIdle_C(appPtr);
+        else err = vkDeviceWaitIdle(v->Device);
+    }
     check_vk_result(err);
     ImGui_ImplVulkan_DestroyWindowRenderBuffers(v->Device, &bd->MainWindowRenderBuffers, v->Allocator);
     bd->VulkanInitInfo.MinImageCount = min_image_count;
@@ -1366,7 +1389,12 @@ void ImGui_ImplVulkanH_CreateWindowSwapChain(VkPhysicalDevice physical_device, V
     VkResult err;
     VkSwapchainKHR old_swapchain = wd->Swapchain;
     wd->Swapchain = VK_NULL_HANDLE;
-    err = vkDeviceWaitIdle(device);
+    {
+        void* appPtr = nullptr;
+        if (ImGui_GetApp_C) appPtr = ImGui_GetApp_C();
+        if (appPtr && ImGui_DeviceWaitIdle_C) err = ImGui_DeviceWaitIdle_C(appPtr);
+        else err = vkDeviceWaitIdle(device);
+    }
     check_vk_result(err);
 
     // We don't use ImGui_ImplVulkanH_DestroyWindow() because we want to preserve the old swapchain to create the new one.
@@ -1541,7 +1569,12 @@ void ImGui_ImplVulkanH_CreateOrResizeWindow(VkInstance instance, VkPhysicalDevic
 
 void ImGui_ImplVulkanH_DestroyWindow(VkInstance instance, VkDevice device, ImGui_ImplVulkanH_Window* wd, const VkAllocationCallbacks* allocator)
 {
-    vkDeviceWaitIdle(device); // FIXME: We could wait on the Queue if we had the queue in wd-> (otherwise VulkanH functions can't use globals)
+    {
+        void* appPtr = nullptr;
+        if (ImGui_GetApp_C) appPtr = ImGui_GetApp_C();
+        if (appPtr && ImGui_DeviceWaitIdle_C) ImGui_DeviceWaitIdle_C(appPtr);
+        else vkDeviceWaitIdle(device); // FIXME: We could wait on the Queue if we had the queue in wd->
+    }
     //vkQueueWaitIdle(bd->Queue);
 
     for (uint32_t i = 0; i < wd->ImageCount; i++)

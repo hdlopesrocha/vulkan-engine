@@ -13,6 +13,7 @@
 #include <cstring>
 
 #include <vulkan/vulkan.h>
+#include <mutex>
 
 #include "vulkan.hpp"
 #include "VulkanResourceManager.hpp"
@@ -54,7 +55,8 @@ class VulkanApp {
     VkRenderPass renderPass = VK_NULL_HANDLE;
     VkRenderPass continuationRenderPass = VK_NULL_HANDLE;  // Render pass that loads existing color/depth
     std::vector<VkFramebuffer> swapchainFramebuffers;
-    VkCommandPool commandPool = VK_NULL_HANDLE;
+    VkCommandPool commandPool = VK_NULL_HANDLE;            // primary pool for framebuffers and main-thread work
+    VkCommandPool transientCommandPool = VK_NULL_HANDLE;   // separate pool for asynchronous / short-lived operations
 
     std::vector<VkSemaphore> imageAvailableSemaphores;
     std::vector<VkSemaphore> renderFinishedSemaphores;
@@ -96,6 +98,9 @@ private:
     // Central resource manager for automatic cleanup
     VulkanResourceManager resources;
     
+    // mutex used by runSingleTimeCommands and other transient-pool users
+    std::mutex transientPoolMutex;
+    
 protected:
     // set when the framebuffer (GLFW window) is resized so we can recreate swapchain
     bool framebufferResized = false;
@@ -122,6 +127,11 @@ protected:
     // expose the GLFW window to derived classes for input polling
     GLFWwindow* getWindow();
 
+    // Mutex used to serialize `vkQueueSubmit` / `vkQueueWaitIdle` calls across threads
+    std::mutex queueSubmitMutex;
+    // Mutex used to serialize command pool operations (alloc/free/reset) across threads
+    std::mutex commandPoolMutex;
+
     private:
         static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
     protected:
@@ -134,7 +144,6 @@ protected:
         VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
         void createSwapchain();
         void createImageViews();
-        void createRenderPass();
         void createFramebuffers();
         void createCommandPool();
         void createDepthResources();
@@ -150,6 +159,23 @@ protected:
         // Submit a pre-recorded command buffer asynchronously and return a fence that will be signaled on completion.
         // If outSemaphore is non-null, the submission will signal that semaphore when finished (useful to make frame submit wait on generation).
         VkFence submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore = nullptr);
+        // Submit a pre-recorded command buffer and block until it completes.
+        void submitCommandBufferAndWait(VkCommandBuffer commandBuffer);
+        // Submit `VkSubmitInfo` array while serializing access to the `graphicsQueue` to avoid concurrent queue use from multiple threads.
+        void submitAndWait(const VkSubmitInfo* submits, uint32_t submitCount, VkFence fence = VK_NULL_HANDLE);
+        // Wait for the graphics queue to become idle (vkQueueWaitIdle) while holding
+        // `queueSubmitMutex` to avoid races with concurrent submissions.  This is
+        // usually sufficient for synchronizing most operations and avoids the
+        // cost of a full device-level idle.  Use `runSingleTimeCommands` for
+        // small transient waits that also need pipeline barriers.
+        VkResult queueWaitIdle();
+        // Call `vkDeviceWaitIdle` while holding `queueSubmitMutex` to avoid races
+        // with concurrent queue submissions.  This method is retained for
+        // compatibility but should be avoided in new code; prefer
+        // `queueWaitIdle` or `runSingleTimeCommands` instead.
+        VkResult deviceWaitIdle();
+        // Wait for all per-frame in-flight fences to signal (blocks).
+        void waitForFrameFences();
         void processPendingCommandBuffers();
         // Wait for all tracked pending command buffers to finish (blocks).
         void waitForAllPendingCommandBuffers();
@@ -160,6 +186,10 @@ protected:
         void deferDestroyUntilFence(VkFence fence, std::function<void()> destroyFn);
         bool hasPendingCommandBuffers();
         void createDescriptorSetLayout();
+
+    // ImGui integration glue: backend can call these to route submits through the
+    // application's synchronized submission helpers. `g_imguiVulkanApp` is defined
+    // in VulkanApp.cpp and set during `initImGui()`.
     void cleanupSwapchain();
     void recreateSwapchain();
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
@@ -270,8 +300,9 @@ protected:
         
         // Public utility methods for texture manipulation
         uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
-        VkCommandBuffer beginSingleTimeCommands();
-        void endSingleTimeCommands(VkCommandBuffer commandBuffer);
+        // Allocate, begin, call `fn` to record commands, end, submit and free the command buffer
+        // This function serializes the entire lifecycle so callers do not need to manage command-pool/thread-safety.
+        void runSingleTimeCommands(const std::function<void(VkCommandBuffer)>& fn);
 
         // Image helpers (moved from protected so external helpers can use them)
         void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory);
@@ -294,3 +325,10 @@ protected:
         virtual void postSubmit();
 
 };
+
+// ImGui integration glue: backend can call these to route submits through the
+// application's synchronized submission helpers. `g_imguiVulkanApp` is defined
+// in VulkanApp.cpp and set during `initImGui()`.
+extern VulkanApp* g_imguiVulkanApp;
+void setImGuiVulkanApp(VulkanApp* app);
+VulkanApp* getImGuiVulkanApp();
