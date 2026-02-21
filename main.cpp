@@ -246,31 +246,10 @@ public:
 
 
 
-        // Initialize and load the main scene so rendering has valid scene data
-        mainScene = new LocalScene();
+                // Initialize and load the main scene so rendering has valid scene data
+        setupScene();
 
-        // If you have vegetation: sceneRenderer->vegetationRenderer->rebuildBuffers(this);
-
-        SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler(mainScene, this);
-        LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler(mainScene, this);
-        UniqueOctreeChangeHandler uniqueSolidHandler = UniqueOctreeChangeHandler(solidHandler);
-        UniqueOctreeChangeHandler uniqueLiquidHandler = UniqueOctreeChangeHandler(liquidHandler);
-
-        
-        MainSceneLoader loader = MainSceneLoader();
-        mainScene->loadScene(loader, uniqueSolidHandler, uniqueLiquidHandler);
-        
-        uniqueSolidHandler.handleEvents();
-        uniqueLiquidHandler.handleEvents();
-
-
-        sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
-        sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
-
-        sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
-        sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
-      
-        // Subscribe event handlers
+// Subscribe event handlers
         eventManager.subscribe(&camera);  // Camera handles translate/rotate events
         eventManager.subscribe(this);     // MyApp handles close/fullscreen events
         
@@ -293,6 +272,8 @@ public:
 
     // Move vegetation texture setup into its own method for clarity
     void setupVegetationTextures();
+    // Move scene-loading into its own method for clarity
+    void setupScene();
 
 // (setup implementation defined out-of-line below)
 
@@ -612,6 +593,33 @@ int main(int argc, char** argv) {
         std::cerr << "Fatal error: " << e.what() << std::endl;
         return 1;
     }
+}
+
+
+// Implementation: setup scene
+void MyApp::setupScene() {
+    // Initialize and load the main scene so rendering has valid scene data
+    mainScene = new LocalScene();
+    octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
+
+    // If you have vegetation: sceneRenderer->vegetationRenderer->rebuildBuffers(this);
+
+    SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler(mainScene, this);
+    LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler(mainScene, this);
+    UniqueOctreeChangeHandler uniqueSolidHandler = UniqueOctreeChangeHandler(solidHandler);
+    UniqueOctreeChangeHandler uniqueLiquidHandler = UniqueOctreeChangeHandler(liquidHandler);
+
+    MainSceneLoader loader = MainSceneLoader();
+    mainScene->loadScene(loader, uniqueSolidHandler, uniqueLiquidHandler);
+
+    uniqueSolidHandler.handleEvents();
+    uniqueLiquidHandler.handleEvents();
+
+    sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
+    sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
+
+    sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
+    sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
 }
 
 // Implementation: setup vegetation textures
