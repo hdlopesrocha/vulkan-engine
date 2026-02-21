@@ -194,9 +194,13 @@ public:
     }
 
     void setup() override {
-  
-        setupVegetationTextures();
-        
+        std::thread([this]() {
+            setupVegetationTextures();
+        }).detach();
+
+        std::thread([this]() {
+            setupTextures();
+        }).detach();
 
         printf("[MyApp::setup] Created and initialized SceneRenderer\n");
         sceneRenderer = new SceneRenderer();
@@ -214,9 +218,7 @@ public:
         renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(sceneRenderer->waterRenderer.get() , sceneRenderer->solidRenderer.get());
         // Initialize widget frame info from MyApp (avoid storing VulkanApp* inside widget)
         if (renderPassDebugWidget) renderPassDebugWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
-        billboardWidget = std::make_shared<BillboardWidget>();
-        billboardWidgetManager = std::make_unique<BillboardWidgetManager>(billboardWidget, sceneRenderer->vegetationRenderer.get() , nullptr);
-        billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureArrayManager);
+
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
         debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &cubeCount);
@@ -225,7 +227,6 @@ public:
         vulkanResourcesManagerWidget = std::make_shared<VulkanResourcesManagerWidget>(&resources);
         vulkanResourcesManagerWidget->updateWithApp(this);
   // Create octree explorer widget bound to loaded scene
-        octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
 
         
         widgetManager.addWidget(textureMixerWidget);
@@ -244,12 +245,8 @@ public:
         widgetManager.addWidget(billboardCreator);
         widgetManager.addWidget(octreeExplorerWidget);
 
-
-
-                // Initialize and load the main scene so rendering has valid scene data
-        setupScene();
-
-// Subscribe event handlers
+      
+        // Subscribe event handlers
         eventManager.subscribe(&camera);  // Camera handles translate/rotate events
         eventManager.subscribe(this);     // MyApp handles close/fullscreen events
         
@@ -264,10 +261,10 @@ public:
         printf("[Camera Setup] Final Position: (%.1f, %.1f, %.1f)\n", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
         printf("[Camera Setup] Forward: (%.3f, %.3f, %.3f)\n", camera.getForward().x, camera.getForward().y, camera.getForward().z);
    
-              // Texture setup moved to helper — run asynchronously so setup doesn't block UI
-        std::thread([this]() {
-            setupTextures();
-        }).detach();
+//        std::thread([this]() {
+            setupScene();
+//        }).detach();
+
     }
 
     // Move vegetation texture setup into its own method for clarity
@@ -595,7 +592,6 @@ int main(int argc, char** argv) {
     }
 }
 
-
 // Implementation: setup scene
 void MyApp::setupScene() {
     // Initialize and load the main scene so rendering has valid scene data
@@ -627,7 +623,10 @@ void MyApp::setupVegetationTextures() {
     // Allocate 3-layer texture arrays for vegetation (foliage, grass, wild)
     vegetationTextureArrayManager.allocate(3, 512, 512, this);
     vegetationAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
-
+    billboardWidget = std::make_shared<BillboardWidget>();
+    billboardWidgetManager = std::make_unique<BillboardWidgetManager>(billboardWidget, sceneRenderer->vegetationRenderer.get() , nullptr);
+    billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureArrayManager);
+    
     // Load the vegetation atlas textures (albedo, normal, opacity) into the texture array
     std::vector<TextureTriple> vegTriples = {
         { "textures/vegetation/foliage_color.jpg", "textures/vegetation/foliage_normal.jpg", "textures/vegetation/foliage_opacity.jpg" },
