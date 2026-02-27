@@ -14,10 +14,15 @@ void TextureMixerWidget::render() {
         return;
     }
 
-    ImGuiComponents::RenderTexturePreviewTabs("TextureTabBar", textures, mixerParams, currentMixerIndex, previewSource, activeMap);
+    ImGuiComponents::RenderTexturePreviewTabs("TextureTabBar", textures, mixerParams, currentMixerIndex, previewSource, activeMap, showNoise);
 
     ImGui::Separator();
     ImGui::Text("Perlin Noise Generator");
+    if (ImGui::Checkbox("Show noise (alpha)", &showNoise)) {
+        // when toggling noise view, reset preview to target so user sees effect
+        previewSource = 0;
+        if (textures) textures->setDebugOutput(showNoise);
+    }
 
     if (textures) {
         size_t pending = textures->getPendingGenerationCount();
@@ -46,6 +51,7 @@ void TextureMixerWidget::render() {
 
         MixerParameters &mp = mixerParams[currentMixerIndex];
         if (previousIndex != currentMixerIndex) {
+            if (textures) textures->setDebugOutput(showNoise);
             if (maxLayers > 0) textures->enqueueGenerate(mp);
             else fprintf(stderr, "[TextureMixerWidget] Skipping Perlin generation: no texture arrays available (target layer=%zu)\n", mp.targetLayer);
         }
@@ -76,21 +82,34 @@ void TextureMixerWidget::render() {
 
             {
                 size_t primaryIdx = mp.primaryTextureIdx;
-                if (ImGuiComponents::ScrollableTexturePicker("MixerPrimary", maxLayers, primaryIdx, [this](size_t l){ return (ImTextureID)textures->getPreviewDescriptor(this->activeMap, static_cast<uint32_t>(l)); }, 48.0f, 2, true, true)) {
+                if (ImGuiComponents::ScrollableTexturePicker("MixerPrimary", maxLayers, primaryIdx,
+                        [this,&mp](size_t l) {
+                            if (l == static_cast<size_t>(mp.targetLayer)) return (ImTextureID)nullptr;
+                            return (ImTextureID)textures->getPreviewDescriptor(this->activeMap, static_cast<uint32_t>(l));
+                        }, 48.0f, 2, true, true)) {
                     mp.primaryTextureIdx = static_cast<uint32_t>(primaryIdx);
-                    previewSource = 1;
-                    // Trigger perlin generation for this map when primary selection changes
-                    if (textures) textures->enqueueGenerate(mp, activeMap);
+                    // show result when source changes
+                    previewSource = 0;
+                    if (textures) {
+                        textures->setDebugOutput(showNoise);
+                        textures->enqueueGenerate(mp, activeMap);
+                    }
                 }
             }
             ImGui::NextColumn();
             {
                 size_t secondaryIdx = mp.secondaryTextureIdx;
-                if (ImGuiComponents::ScrollableTexturePicker("MixerSecondary", maxLayers, secondaryIdx, [this](size_t l){ return (ImTextureID)textures->getPreviewDescriptor(this->activeMap, static_cast<uint32_t>(l)); }, 48.0f, 2, true, true)) {
+                if (ImGuiComponents::ScrollableTexturePicker("MixerSecondary", maxLayers, secondaryIdx,
+                        [this,&mp](size_t l) {
+                            if (l == static_cast<size_t>(mp.targetLayer)) return (ImTextureID)nullptr;
+                            return (ImTextureID)textures->getPreviewDescriptor(this->activeMap, static_cast<uint32_t>(l));
+                        }, 48.0f, 2, true, true)) {
                     mp.secondaryTextureIdx = static_cast<uint32_t>(secondaryIdx);
-                    previewSource = 2;
-                    // Trigger perlin generation for this map when secondary selection changes
-                    if (textures) textures->enqueueGenerate(mp, activeMap);
+                    previewSource = 0;
+                    if (textures) {
+                        textures->setDebugOutput(showNoise);
+                        textures->enqueueGenerate(mp, activeMap);
+                    }
                 }
             }
             ImGui::NextColumn();
@@ -115,8 +134,11 @@ void TextureMixerWidget::render() {
         if (ImGui::SliderFloat("Contrast", &mp.perlinContrast, 0.0f, 5.0f)) paramsChanged = true;
 
         if (paramsChanged) {
-            if (maxLayers > 0) textures->enqueueGenerate(mp, activeMap);
-            else fprintf(stderr, "[TextureMixerWidget] Params changed but no texture arrays allocated — generation skipped.\n");
+            if (maxLayers > 0) {
+                previewSource = 0; // show result when parameters update
+                if (textures) textures->setDebugOutput(showNoise);
+                textures->enqueueGenerate(mp, activeMap);
+            } else fprintf(stderr, "[TextureMixerWidget] Params changed but no texture arrays allocated — generation skipped.\n");
         }
     }
 

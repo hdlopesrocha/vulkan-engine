@@ -4,7 +4,7 @@
 namespace ImGuiComponents {
 
 void RenderTexturePreviewTabs(const char* id, std::shared_ptr<TextureMixer> textures, std::vector<MixerParameters>& mixerParams,
-                              size_t &currentMixerIndex, int &previewSource, int &activeMap) {
+                              size_t &currentMixerIndex, int &previewSource, int &activeMap, bool showNoise) {
     const float previewSize = 512.0f;
     if (ImGui::BeginTabBar(id)) {
         if (ImGui::BeginTabItem("Albedo")) {
@@ -16,7 +16,11 @@ void RenderTexturePreviewTabs(const char* id, std::shared_ptr<TextureMixer> text
                 uint32_t layer = static_cast<uint32_t>(mp.targetLayer);
                 if (previewSource == 1) layer = static_cast<uint32_t>(mp.primaryTextureIdx);
                 else if (previewSource == 2) layer = static_cast<uint32_t>(mp.secondaryTextureIdx);
-                texID = (ImTextureID)textures->getPreviewDescriptor(activeMap, layer);
+                if (showNoise && previewSource == 0) {
+                    texID = (ImTextureID)textures->getNoiseDescriptor(layer);
+                } else {
+                    texID = (ImTextureID)textures->getPreviewDescriptor(activeMap, layer);
+                }
             } else if (textures) {
                 texID = (ImTextureID)textures->getPreviewDescriptor(activeMap);
             }
@@ -33,7 +37,11 @@ void RenderTexturePreviewTabs(const char* id, std::shared_ptr<TextureMixer> text
                 uint32_t layer = static_cast<uint32_t>(mp.targetLayer);
                 if (previewSource == 1) layer = static_cast<uint32_t>(mp.primaryTextureIdx);
                 else if (previewSource == 2) layer = static_cast<uint32_t>(mp.secondaryTextureIdx);
-                texID = (ImTextureID)textures->getPreviewDescriptor(activeMap, layer);
+                if (showNoise && previewSource == 0) {
+                    texID = (ImTextureID)textures->getNoiseDescriptor(layer);
+                } else {
+                    texID = (ImTextureID)textures->getPreviewDescriptor(activeMap, layer);
+                }
             } else if (textures) {
                 texID = (ImTextureID)textures->getPreviewDescriptor(activeMap);
             }
@@ -50,7 +58,11 @@ void RenderTexturePreviewTabs(const char* id, std::shared_ptr<TextureMixer> text
                 uint32_t layer = static_cast<uint32_t>(mp.targetLayer);
                 if (previewSource == 1) layer = static_cast<uint32_t>(mp.primaryTextureIdx);
                 else if (previewSource == 2) layer = static_cast<uint32_t>(mp.secondaryTextureIdx);
-                texID = (ImTextureID)textures->getPreviewDescriptor(activeMap, layer);
+                if (showNoise && previewSource == 0) {
+                    texID = (ImTextureID)textures->getNoiseDescriptor(layer);
+                } else {
+                    texID = (ImTextureID)textures->getPreviewDescriptor(activeMap, layer);
+                }
             } else if (textures) {
                 texID = (ImTextureID)textures->getPreviewDescriptor(activeMap);
             }
