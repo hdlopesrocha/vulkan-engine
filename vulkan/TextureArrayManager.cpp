@@ -833,9 +833,11 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 					VkImageViewCreateInfo viewInfo{};
 					viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 					viewInfo.image = arrImg->image;
-					// Create a per-layer ARRAY view (layerCount = 1) so shader expecting
-					// arrayed image types (sampler2DArray/image2DArray) sees an arrayed view
-					viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+					// Create a per-layer 2D view (layerCount = 1) for ImGui previews.  The
+					// ImGui fragment shader uses a plain sampler2D (see glsl_shader.frag),
+					// so the view must not be arrayed.  A non-array view is sufficient
+					// since we only sample a single layer at a time.
+					viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
 				if (map == 0) viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
 					else viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
 					viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -901,9 +903,9 @@ ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
 		VkImageViewCreateInfo viewInfo{};
 		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 		viewInfo.image = src->image;
-			// Use a 2D_ARRAY view for per-layer views so they are arrayed (Arrayed=1)
-			// while limiting to a single layer via baseArrayLayer + layerCount=1.
-			viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+			// Create a simple 2D view for this layer. ImGui shaders sample via
+			// sampler2D, so the view must not be arrayed.
+			viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
 		// choose format consistent with array creation
 			viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
 		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
