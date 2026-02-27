@@ -24,7 +24,7 @@ struct MixerParameters {
     float perlinPersistence = 0.5f;
     float perlinLacunarity = 2.0f;
     float perlinBrightness = 0.0f;  // -1.0 to 1.0
-    float perlinContrast = 5.0f;    // 0.0 to 5.0
+    float perlinContrast = 1.0f;    // 0.0 to 5.0 (lower default gives smoother blends)
     uint32_t perlinSeed = 12345;    // Fixed seed for consistent generation
     float perlinTime = 0.0f;        // Time parameter for noise evolution
 };
@@ -66,6 +66,14 @@ public:
     // Generate Perlin noise for a texture using explicit parameters (used by UI widget)
     // map: -1 = all maps, 0 = albedo, 1 = normal, 2 = bump
     void generatePerlinNoise(VulkanApp* app, MixerParameters &params, int map = -1);
+
+    // Debug output mode: when enabled the compute shader writes the noise value to
+    // the RGB channels (instead of blending).  Useful for verifying the mask.
+    void setDebugOutput(bool v) { debugOutput = v; }
+    bool getDebugOutput() const { return debugOutput; }
+
+private:
+    bool debugOutput = false;
 
 private:
     // No stored VulkanApp*; callers pass `VulkanApp*` to methods that need it
@@ -123,6 +131,8 @@ public:
     VkDescriptorSet getPreviewDescriptor(int map);
     // Return an ImGui descriptor for previewing the requested map at a specific array layer
     VkDescriptorSet getPreviewDescriptor(int map, uint32_t layer);
+    // Return a descriptor which samples only the alpha channel of the specified layer
+    VkDescriptorSet getNoiseDescriptor(uint32_t layer);
     // Return number of layers in the attached TextureArrayManager (0 if none)
     uint32_t getArrayLayerCount() const;
 

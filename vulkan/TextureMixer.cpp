@@ -600,6 +600,18 @@ VkDescriptorSet TextureMixer::getPreviewDescriptor(int map, uint32_t layer) {
 	return getPreviewDescriptor(map);
 }
 
+VkDescriptorSet TextureMixer::getNoiseDescriptor(uint32_t layer) {
+	// noise is stored in the alpha channel of the generated texture; the mask is
+	// identical for albedo/normal/bump so we can just sample the albedo map's
+	// alpha component.  TextureArrayManager provides a helper that creates an
+	// alpha-swizzled image view suitable for this purpose.
+	if (textureArrayManager && layer < textureArrayManager->layerAmount) {
+		ImTextureID id = textureArrayManager->getImTextureAlpha(layer, 0);
+		return (VkDescriptorSet)id;
+	}
+	return VK_NULL_HANDLE;
+}
+
 void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet, VulkanApp* app) {
 	VkDescriptorSetAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -1027,13 +1039,43 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 				}
 			}
 
-			// defer destruction until after command buffer recording completes
-			if (tempDesc != VK_NULL_HANDLE && tempDesc != descSet) {
-				setToFree = tempDesc;
+				// ensure final layout is correct for sampling; this is particularly
+				// important when there are no mipmaps because the mip-prep barrier
+				// above leaves the layer in GENERAL and no further transition occurs.
+					// For layers with mipmaps we rely on recordGenerateMipmaps to leave
+					// everything in SHADER_READ_ONLY_OPTIMAL, so no extra barrier is
+					// required.
+					{
+					std::vector<VkImageMemoryBarrier> postBarriers;
+					auto mkPost = [&](VkImage img) {
+						// only called when mipLevels==1 below
+						VkImageMemoryBarrier b = mkBarrierLayer(img, targetLayer, 1, 1);
+						b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+						b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+						b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+						b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+						return b;
+					};
+					if (genA && textureArrayManager->albedoArray.mipLevels <= 1)
+						postBarriers.push_back(mkPost(textureArrayManager->albedoArray.image));
+					if (genN && textureArrayManager->normalArray.mipLevels <= 1)
+						postBarriers.push_back(mkPost(textureArrayManager->normalArray.image));
+if (genB && textureArrayManager->bumpArray.mipLevels <= 1) {
+					postBarriers.push_back(mkPost(textureArrayManager->bumpArray.image));
+				}
+				if (!postBarriers.empty()) {
+					vkCmdPipelineBarrier(
+						cmd,
+						VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+						VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+						0,
+						0, nullptr,
+						0, nullptr,
+						static_cast<uint32_t>(postBarriers.size()), postBarriers.data()
+					);
+				}
 			}
-
-		} // end useArrayLayer handling inside lambda
-
+				}
 	}); // runSingleTimeCommands: recorded and submitted synchronously
 
 	// Synchronous generation completed: mark layer initialized and update tracked layouts
