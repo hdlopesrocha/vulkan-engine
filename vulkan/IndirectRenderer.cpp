@@ -114,16 +114,16 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
     std::lock_guard<std::mutex> guard(mutex);
     auto it = meshes.find(meshId);
     if (it == meshes.end()) {
-        printf("[IndirectRenderer::uploadMeshVerticesAndIndices] meshId %u not found\n", meshId);
+        //printf("[IndirectRenderer::uploadMeshVerticesAndIndices] meshId %u not found\n", meshId);
         return false;
     }
     MeshInfo& info = it->second;
     if (!info.active) {
-        printf("[IndirectRenderer::uploadMeshVerticesAndIndices] meshId %u is inactive\n", meshId);
+        //printf("[IndirectRenderer::uploadMeshVerticesAndIndices] meshId %u is inactive\n", meshId);
         return false;
     }
     if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) {
-        printf("[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()\n");
+        //printf("[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()\n");
         return false;
     }
     uint32_t maxVertexIdx = 0;
@@ -132,11 +132,11 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
     }
     size_t meshVertexCount = maxVertexIdx + 1;
     if (info.baseVertex + meshVertexCount > vertexCapacity) {
-        printf("[IndirectRenderer::uploadMeshVerticesAndIndices] vertex capacity exceeded (%u + %zu > %zu)\n", info.baseVertex, meshVertexCount, vertexCapacity);
+        //printf("[IndirectRenderer::uploadMeshVerticesAndIndices] vertex capacity exceeded (%u + %zu > %zu)\n", info.baseVertex, meshVertexCount, vertexCapacity);
         return false;
     }
     if (info.firstIndex + info.indexCount > indexCapacity) {
-        printf("[IndirectRenderer::uploadMeshVerticesAndIndices] index capacity exceeded\n");
+        //printf("[IndirectRenderer::uploadMeshVerticesAndIndices] index capacity exceeded\n");
         return false;
     }
     VkDeviceSize vertexOffset = info.baseVertex * sizeof(Vertex);
@@ -713,26 +713,27 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
         //       (void*)indexBuffer.buffer, mergedIndices.size(), indirectCommands.size());
         size_t activeMeshCount = 0;
         for (const auto& kv : meshes) if (kv.second.active) ++activeMeshCount;
-        printf("[IndirectRenderer::drawPrepared] meshes.size()=%zu, activeMeshCount=%zu\n", meshes.size(), activeMeshCount);
+        //printf("[IndirectRenderer::drawPrepared] meshes.size()=%zu, activeMeshCount=%zu\n", meshes.size(), activeMeshCount);
         int meshPrint = 0;
         for (const auto& kv : meshes) {
             if (!kv.second.active) continue;
-            printf("  Mesh id=%u: baseVertex=%u, firstIndex=%u, indexCount=%u, boundsMin=(%.2f,%.2f,%.2f), boundsMax=(%.2f,%.2f,%.2f)\n",
-                kv.second.id, kv.second.baseVertex, kv.second.firstIndex, kv.second.indexCount,
-                kv.second.boundsMin.x, kv.second.boundsMin.y, kv.second.boundsMin.z,
-                kv.second.boundsMax.x, kv.second.boundsMax.y, kv.second.boundsMax.z);
+            // debugging info; keep call commented out to avoid build warnings
+            // printf("  Mesh id=%u: baseVertex=%u, firstIndex=%u, indexCount=%u, boundsMin=(%.2f,%.2f,%.2f), boundsMax=(%.2f,%.2f,%.2f)\n",
+            //     kv.second.id, kv.second.baseVertex, kv.second.firstIndex, kv.second.indexCount,
+            //     kv.second.boundsMin.x, kv.second.boundsMin.y, kv.second.boundsMin.z,
+            //     kv.second.boundsMax.x, kv.second.boundsMax.y, kv.second.boundsMax.z);
             if (++meshPrint >= 5) break;
         }
         // Print first few indirect commands
         for (size_t i = 0; i < std::min(size_t(3), indirectCommands.size()); ++i) {
             const auto& cmd = indirectCommands[i];
-            printf("  IndirectCmd[%zu]: indexCount=%u, instanceCount=%u, firstIndex=%u, vertexOffset=%d, firstInstance=%u\n",
-                i, cmd.indexCount, cmd.instanceCount, cmd.firstIndex, cmd.vertexOffset, cmd.firstInstance);
+            //printf("  IndirectCmd[%zu]: indexCount=%u, instanceCount=%u, firstIndex=%u, vertexOffset=%d, firstInstance=%u\n",
+            //    i, cmd.indexCount, cmd.instanceCount, cmd.firstIndex, cmd.vertexOffset, cmd.firstInstance);
         }
         // Check if using indirect count
         if (cmdDrawIndexedIndirectCount) {
-            printf("[IndirectRenderer::drawPrepared] Using GPU-driven count from visibleCountBuffer=%p\n",
-                   (void*)visibleCountBuffer.buffer);
+           //printf("[IndirectRenderer::drawPrepared] Using GPU-driven count from visibleCountBuffer=%p\n",
+           //       (void*)visibleCountBuffer.buffer);
         }
         frameCount++;
     }

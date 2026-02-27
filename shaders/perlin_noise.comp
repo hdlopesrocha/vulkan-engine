@@ -23,6 +23,7 @@ layout (push_constant) uniform PushConstants {
     uint primaryLayer;    // layer index into arrays
     uint secondaryLayer;  // layer index into arrays
     uint targetLayer;     // destination layer to write into
+    uint debugOutput;      // if non-zero, output noise value into rgb
 } params;
 
 // Hash function for random number generation
@@ -188,7 +189,16 @@ void main() {
 
     // Write results (albedo stored as linear UNORM)
     ivec3 outCoord = ivec3(texelCoord, int(params.targetLayer));
-    imageStore(albedoResultImage, outCoord, vec4(albedoBlended, 1.0));
-    imageStore(normalResultImage, outCoord, vec4(normalBlended, 1.0));
-    imageStore(bumpResultImage, outCoord, vec4(bumpBlended, 1.0));
+    // Write blended color (or noise if debugOutput) and include noise in alpha
+    if (params.debugOutput != 0u) {
+        // display noise as grayscale
+        vec4 d = vec4(noise, noise, noise, 1.0);
+        imageStore(albedoResultImage, outCoord, d);
+        imageStore(normalResultImage, outCoord, d);
+        imageStore(bumpResultImage, outCoord, d);
+    } else {
+        imageStore(albedoResultImage, outCoord, vec4(albedoBlended, noise));
+        imageStore(normalResultImage, outCoord, vec4(normalBlended, noise));
+        imageStore(bumpResultImage, outCoord, vec4(bumpBlended, noise));
+    }
 }

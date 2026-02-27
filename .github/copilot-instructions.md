@@ -1,56 +1,158 @@
-## Quick orientation
+# Vulkan Project – Copilot Instructions
 
-This is a minimal Vulkan starter project contained in a single source file `main.cpp` with a small `Makefile` that builds an executable called `app`.
+This project uses Vulkan 1.2 or newer.
+Vulkan validation layers are enabled and must remain silent at all times.
 
-- Entry point: `main.cpp` — defines `VulkanApp` and `main()` which constructs and runs the app.
-- Build: top-level `Makefile` (target `all`) uses `pkg-config` for `glfw3` and `vulkan` and outputs `./app`.
+All generated code must prioritize correctness, explicit synchronization,
+and predictable performance.
 
-## Big-picture architecture (what to know fast)
+---
 
-- Single-class structure: `VulkanApp` encapsulates lifecycle: `initWindow()`, `initVulkan()`, `mainLoop()`, `cleanup()`.
-- Core Vulkan flow present and discoverable in `main.cpp`: create VkInstance -> setup debug messenger -> create surface -> pick physical device -> create logical device.
-- Important helper functions to reference when making changes: `createInstance`, `setupDebugMessenger`, `createSurface`, `pickPhysicalDevice`, `createLogicalDevice`, `findQueueFamilies`, `checkValidationLayerSupport`.
-- Data flow: `VkInstance` -> `VkPhysicalDevice` -> `VkDevice` and queue families; `surface` is created from GLFW window and used for present support checks.
+## Vulkan Version & Features
 
-## Build / run / debug (developer workflows)
+- Target Vulkan 1.2+.
+- Prefer synchronization2:
+  - vkCmdPipelineBarrier2
+  - VkImageMemoryBarrier2
+- Prefer timeline semaphores when appropriate.
 
-- Build (linux): run `make`. This compiles `main.cpp` into `./app` using `g++` with `pkg-config --cflags/--libs glfw3 vulkan`.
-- Clean: `make clean` removes `./app`.
-- Validation layers: the binary enables validation layers by default unless `NDEBUG` is defined. That is controlled in `main.cpp`:
-  - If `NDEBUG` is defined -> validation disabled
-  - Otherwise -> validation enabled
-  To run with validation layers disabled, compile with `-DNDEBUG` added to `CFLAGS`.
-- System dependencies: `libglfw3` and Vulkan SDK/system driver are required. The `Makefile` also exposes an `install` target that runs `sudo apt install vulkan-validationlayers`, but you may also need GLFW dev packages and the Vulkan SDK (distribution dependent).
+---
 
-## Project-specific conventions & patterns
+## Threading Rules (Mandatory)
 
-- Small, single-file prototype: most changes will happen in `main.cpp`. Keep method-level helpers as private methods of `VulkanApp` to match the existing style.
-- Naming: camelCase for methods (`createInstance`, `pickPhysicalDevice`) and `PascalCase` for types/structs inside the file (`QueueFamilyIndices`).
-- Error handling: functions throw `std::runtime_error` on fatal errors and the `main()` prints exceptions to `stderr` and returns non-zero.
-- Debug: debug callback `debugCallback` prints validation messages to `stderr`. The debug messenger is created with `VK_EXT_debug_utils` when layers are enabled.
+- Vulkan objects are externally synchronized unless stated otherwise.
+- VkCommandPool must NEVER be accessed from multiple threads.
+- Each thread owns its own VkCommandPool and command buffers.
+- Command buffers must not be reset or reused while still in flight.
 
-## Integration points & external dependencies
+---
 
-- GLFW windowing: `glfwCreateWindow` + `glfwCreateWindowSurface(instance, ...)` — any change to windowing must preserve these calls.
-- Vulkan loader and layers: uses `vkCreateInstance` and optional `vkCreateDebugUtilsMessengerEXT` via `vkGetInstanceProcAddr`.
-- Packages used via `pkg-config`: `glfw3` and `vulkan` (Makefile relies on system pkg-config entries).
+## Synchronization Policy
 
-## Examples of concrete AI prompts (use these to implement features safely)
+- Pipeline barriers are used for:
+  - Memory visibility
+  - Image layout transitions
+- Semaphores are used ONLY for GPU-to-GPU execution order.
+- Fences are used ONLY for GPU-to-CPU synchronization
+  (uploads, resource lifetime, staging reuse).
+- Never use vkDeviceWaitIdle or vkQueueWaitIdle in the render loop.
 
-- "Add basic swapchain creation to this project: create a `createSwapchain()` private method in `VulkanApp`, call it from `initVulkan()` after `createSurface()`, and introduce member variables `VkSwapchainKHR swapchain` and `std::vector<VkImage> swapchainImages`. Keep existing error handling style and naming conventions."
+---
 
-- "Refactor `VulkanApp` into `src/engine.cpp` and `include/engine.h`: extract private methods as `protected`/`private` members and update `Makefile` to compile both files. Keep existing compile flags and pkg-config usage."
+## Texture Upload Rules
 
-- "Add a small unit-style smoke test that runs the app headless (no window) to verify `createInstance()` and `pickPhysicalDevice()` succeed — keep runtime checks and print minimal pass/fail messages to stdout."
+- All texture uploads use a staging buffer.
+- Uploads may occur on a transfer queue if available.
+- Image layout transitions must be explicit:
+  - UNDEFINED → TRANSFER_DST_OPTIMAL
+  - TRANSFER_DST_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+- Use VkImageMemoryBarrier2 for all transitions.
+- Signal a VkFence after upload so CPU resources can be safely reused.
 
-## Files to look at when changing behavior
+---
 
-- `main.cpp` — the single source of truth for current behavior.
-- `Makefile` — compile flags, pkg-config usage, `install` target.
+## Texture Arrays (Critical)
 
-## Known limitations & safe assumptions
+- Texture arrays use VK_IMAGE_VIEW_TYPE_2D_ARRAY.
+- Synchronization is per-subresource (mip level + array layer).
+- Image memory barriers MUST specify correct:
+  - baseArrayLayer
+  - layerCount
+- Never blindly barrier all layers unless required.
+- Descriptor image layouts must match the actual image layout.
 
-- This is a minimal starter. There is no swapchain, render pass, or command buffer code yet. Expect to add those pieces for any rendering changes.
-- The project assumes a Linux-like environment with `pkg-config` entries for `glfw3` and `vulkan`.
+---
 
-If any section is unclear or you'd like more detail (for example, a suggested file split, recommended tests, or a hardware-independent CI configuration), tell me which part to expand and I will iterate.
+## Compute “Mixer” Rules
+
+- Compute shaders may read from texture arrays.
+- Compute shaders may write to texture arrays using storage images.
+- Storage images must be in VK_IMAGE_LAYOUT_GENERAL while written.
+- Sampled images must be in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL.
+- Never read and write the same array layer in the same dispatch
+  unless explicitly intended and synchronized.
+
+---
+
+## Compute → Graphics Synchronization
+
+After a compute dispatch that writes a texture array layer:
+
+- Insert an image memory barrier with:
+  - srcStage  = COMPUTE_SHADER
+  - srcAccess = SHADER_WRITE
+  - dstStage  = FRAGMENT_SHADER
+  - dstAccess = SHADER_SAMPLED_READ
+- Transition layout:
+  - GENERAL → SHADER_READ_ONLY_OPTIMAL
+- The barrier must cover only the array layers and mip levels accessed.
+
+---
+
+## Queues
+
+- If compute and graphics use the same queue:
+  - Do NOT use semaphores.
+  - Use pipeline barriers only.
+- If compute and graphics use different queues:
+  - Use semaphores or timeline semaphores for execution order.
+  - Still use image memory barriers for memory visibility and layouts.
+
+---
+
+## Frames in Flight
+
+- Support multiple frames in flight (2–3).
+- Prevent read/write hazards across frames.
+- Use either:
+  - Per-frame resources (e.g. per-frame array layers), or
+  - Timeline semaphores indexed by frame number.
+- Never write to a texture that is still sampled by an earlier frame.
+
+---
+
+## Resource Lifetime
+
+- Resources must outlive any command buffer that references them.
+- Do not destroy or reuse buffers, images, or views until GPU completion
+  is guaranteed via fences or timeline semaphores.
+
+---
+
+## Performance Guidelines
+
+- Avoid unnecessary pipeline barriers.
+- Avoid full pipeline stalls.
+- Use fine-grained stage and access masks.
+- Prefer async compute where supported.
+
+
+--- 
+
+## Compilation
+
+make clean && make debug > /tmp/xxx.log 2>&1
+
+---
+
+## Running
+
+make run > /tmp/xxx.log 2>&1
+
+---
+
+## Debugging
+
+valgrind ./bin/app > /tmp/xxx.log 2>&1
+
+---
+
+## Validation Layers
+
+No validation layer warnings or errors are allowed. If you see any, fix them immediately. Validation layers are your best friend for catching synchronization and resource management issues early.
+
+---
+
+## Version Control
+
+Keep track of all changes in version control. Use descriptive commit messages that explain the reasoning behind changes, especially for synchronization and resource management code. 

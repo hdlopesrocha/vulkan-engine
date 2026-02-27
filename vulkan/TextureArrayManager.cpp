@@ -926,3 +926,58 @@ ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
 	(*texVec)[layer] = id;
 	return id;
 }
+
+// -----------------------------------------------------------------------------
+// alpha-only descriptor helpers
+// -----------------------------------------------------------------------------
+
+ImTextureID TextureArrayManager::getImTextureAlpha(size_t layer, int map) {
+    if (layer >= layerAmount) return nullptr;
+    VulkanApp* a = this->app;
+    if (!a) return nullptr;
+    VkDevice device = a->getDevice();
+
+    std::vector<VkImageView>* viewVec = nullptr;
+    std::vector<ImTextureID>* texVec = nullptr;
+    TextureImage* src = nullptr;
+    VkSampler sampler = VK_NULL_HANDLE;
+    switch (map) {
+        case 0: viewVec = &albedoLayerViews; texVec = &albedoImTextures; src = &albedoArray; sampler = albedoSampler; break;
+        case 1: viewVec = &normalLayerViews; texVec = &normalImTextures; src = &normalArray; sampler = normalSampler; break;
+        case 2: viewVec = &bumpLayerViews; texVec = &bumpImTextures; src = &bumpArray; sampler = bumpSampler; break;
+        default: return nullptr;
+    }
+
+    // ensure vectors are sized for new alpha views too (reuse same slots)
+    if (viewVec->size() != layerAmount) viewVec->resize(layerAmount, VK_NULL_HANDLE);
+    if (texVec->size() != layerAmount) texVec->resize(layerAmount, nullptr);
+
+    if ((*texVec)[layer]) return (*texVec)[layer];
+
+    // create swizzled view for alpha channel
+    if (!(*viewVec)[layer]) {
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = src->image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.components.r = VK_COMPONENT_SWIZZLE_A;
+        viewInfo.components.g = VK_COMPONENT_SWIZZLE_A;
+        viewInfo.components.b = VK_COMPONENT_SWIZZLE_A;
+        viewInfo.components.a = VK_COMPONENT_SWIZZLE_A;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = src->mipLevels;
+        viewInfo.subresourceRange.baseArrayLayer = static_cast<uint32_t>(layer);
+        viewInfo.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(device, &viewInfo, nullptr, &(*viewVec)[layer]) != VK_SUCCESS) {
+            return nullptr;
+        }
+        fprintf(stderr, "[TextureArrayManager] createAlphaLayerView: view=%p image=%p layer=%u map=%d\n", (void*)(*viewVec)[layer], (void*)src->image, (unsigned)layer, map);
+        if (a) a->resources.addImageView((*viewVec)[layer], "TextureArrayManager: alphaLayerView");
+    }
+
+    ImTextureID id2 = ImGui_ImplVulkan_AddTexture(sampler, (*viewVec)[layer], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    (*texVec)[layer] = id2;
+    return id2;
+}

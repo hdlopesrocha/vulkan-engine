@@ -86,6 +86,8 @@ public:
     std::shared_ptr<BillboardCreator> billboardCreator;
     std::unique_ptr<BillboardWidgetManager> billboardWidgetManager;
     std::shared_ptr<TextureMixerWidget> textureMixerWidget;
+    // flag set by background thread when mixer widget is ready; main thread will add it safely
+    bool mixerWidgetPendingAdd = false;
     std::shared_ptr<TextureViewer> textureViewer;
     std::shared_ptr<CameraWidget> cameraWidget;
     std::shared_ptr<DebugWidget> debugWidget;
@@ -180,8 +182,8 @@ public:
 
         // Generate textures for all configured mixer entries (async submissions tracked by TextureMixer)
         textureMixer->generateInitialTextures(mixerParams);
-
         textureMixerWidget = std::make_shared<TextureMixerWidget>(textureMixer, mixerParams, "Texture Mixer");
+        widgetManager.addWidget(textureMixerWidget);
 
         size_t materialCount = std::max<size_t>(static_cast<size_t>(loadedTextureLayers), static_cast<size_t>(loadedTextureLayers + 1));
         if (materialCount == 0) {
@@ -228,8 +230,7 @@ public:
         vulkanResourcesManagerWidget->updateWithApp(this);
   // Create octree explorer widget bound to loaded scene
 
-        
-        widgetManager.addWidget(textureMixerWidget);
+ 
         widgetManager.addWidget(textureViewer);
         widgetManager.addWidget(cameraWidget);
         widgetManager.addWidget(debugWidget);
@@ -286,10 +287,11 @@ public:
         if (waterEnabled && sceneRenderer && sceneRenderer->waterRenderer) {
             sceneRenderer->waterRenderer->advanceTime(deltaTime);
         }
-        // Flush any pending texture generation requests so they happen before command buffers are recorded
-        if (textureMixer) textureMixer->flushPendingRequests(this);
-        // Poll for completed async generations and process their fences
-        if (textureMixer) textureMixer->pollPendingGenerations(this);
+        // Texture generation will be flushed after the current frame is submitted
+        // to avoid transitioning array layers to GENERAL before the draw commands
+        // that sample them have been submitted.  see validation-layer issues.
+        // (pollPendingGenerations can still run here if desired but we defer it too)
+        // if (textureMixer) textureMixer->pollPendingGenerations(this);
 
     }
 

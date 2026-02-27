@@ -81,6 +81,9 @@ public:
 
     // Return an ImGui texture handle for a given array layer and map (0=albedo,1=normal,2=bump)
     ImTextureID getImTexture(size_t layer, int map);
+    // Variant that returns a descriptor sampling only the alpha channel of the
+    // requested layer/map.  Used for visualizing noise or masks (swizzled view).
+    ImTextureID getImTextureAlpha(size_t layer, int map);
 
     // Load a triple of images into the current layer and increment the layer counter
     uint load(const char* albedoFile, const char* normalFile, const char* bumpFile);
