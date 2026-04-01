@@ -281,9 +281,11 @@ void main() {
 
     if (debugMode == 18) {
         // Show per-projection triplanar heights for each corner packed into RGB
-        float th0x = texture(heightArray, vec3(fragPosWorld.yz * vec2(materials[fragTexIndices.x].triplanarParams.x, materials[fragTexIndices.x].triplanarParams.y), float(fragTexIndices.x))).r;
-        float th0y = texture(heightArray, vec3(fragPosWorld.xz * vec2(materials[fragTexIndices.x].triplanarParams.x, materials[fragTexIndices.x].triplanarParams.y), float(fragTexIndices.x))).r;
-        float th0z = texture(heightArray, vec3(fragPosWorld.xy * vec2(materials[fragTexIndices.x].triplanarParams.x, materials[fragTexIndices.x].triplanarParams.y), float(fragTexIndices.x))).r;
+        vec2 tScale = vec2(materials[fragTexIndices.x].triplanarParams.x, 
+                            materials[fragTexIndices.x].triplanarParams.y);
+        float th0x = texture(heightArray, vec3(fragPosWorld.yz * tScale, float(fragTexIndices.x))).r;
+        float th0y = texture(heightArray, vec3(fragPosWorld.xz * tScale, float(fragTexIndices.x))).r;
+        float th0z = texture(heightArray, vec3(fragPosWorld.xy * tScale, float(fragTexIndices.x))).r;
         // Pack the three projection samples as RGB for the first material (useful to see which projection contributes height)
         outColor = vec4(th0x, th0y, th0z, 1.0);
         return;
