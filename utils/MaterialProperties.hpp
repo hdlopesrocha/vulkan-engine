@@ -19,9 +19,9 @@ struct MaterialProperties {
     float padding2 = 0.0f;
 
     // Triplanar mapping toggle and per-material UV scales (disabled by default)
-    bool triplanar = false;
-    float triplanarScaleU = 1.0f;
-    float triplanarScaleV = 1.0f;
+    bool triplanar = true;
+    float triplanarScaleU = 0.01f;
+    float triplanarScaleV = 0.01f;
 
     // Normal map conventions (defaults keep existing behavior)
     bool normalFlipY = false;   // flip normal map Y (green) channel if true
