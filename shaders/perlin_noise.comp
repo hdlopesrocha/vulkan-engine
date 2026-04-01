@@ -187,18 +187,16 @@ void main() {
     vec3 bumpSecondary = textureLod(bumpArray, vec3(uv, float(params.secondaryLayer)), 0.0).rgb;
     vec3 bumpBlended = mix(bumpPrimary, bumpSecondary, noise);
 
-    // Write results (albedo stored as linear UNORM)
+    // Write results to each target image. When debugOutput is set, write noise
+    // to RGB for easy inspection; otherwise write the blended results.
     ivec3 outCoord = ivec3(texelCoord, int(params.targetLayer));
-    // Write blended color (or noise if debugOutput) and include noise in alpha
-    if (params.debugOutput != 0u) {
-        // display noise as grayscale
-        vec4 d = vec4(noise, noise, noise, 1.0);
-        imageStore(albedoResultImage, outCoord, d);
-        imageStore(normalResultImage, outCoord, d);
-        imageStore(bumpResultImage, outCoord, d);
-    } else {
-        imageStore(albedoResultImage, outCoord, vec4(albedoBlended, noise));
-        imageStore(normalResultImage, outCoord, vec4(normalBlended, noise));
-        imageStore(bumpResultImage, outCoord, vec4(bumpBlended, noise));
-    }
+
+    vec4 outA = vec4(albedoBlended, 1.0);
+    vec4 outN = vec4(normalBlended, 1.0);
+    vec4 outB = vec4(bumpBlended, 1.0);
+    imageStore(albedoResultImage, outCoord, outA);
+    imageStore(normalResultImage, outCoord, outN);
+    imageStore(bumpResultImage, outCoord, outB);
+
+
 }
