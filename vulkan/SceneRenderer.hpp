@@ -45,6 +45,7 @@ public:
     
     // Materials SSBO
     Buffer materialsBuffer;
+    MaterialManager* materialManagerPtr = nullptr;
 
     std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<ShadowRenderer> shadowMapper;

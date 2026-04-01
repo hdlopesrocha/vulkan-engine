@@ -239,6 +239,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 
     // Create and bind Materials SSBO at binding 5. Prefer external MaterialManager if provided.
     // Always create a valid materialsBuffer for descriptor binding 5
+    materialManagerPtr = materialManager;
     if (materialManager) {
         materialsBuffer = materialManager->getBuffer();
         // If the MaterialManager exists but hasn't allocated its GPU buffer yet,
@@ -329,7 +330,11 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
         addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
     }
 
-    // Materials SSBO (binding 5)
+    // Materials SSBO (binding 5) — refresh from MaterialManager in case the buffer
+    // was allocated after SceneRenderer::init (setupTextures runs on a separate thread)
+    if (materialManagerPtr && materialManagerPtr->getBuffer().buffer != VK_NULL_HANDLE) {
+        materialsBuffer = materialManagerPtr->getBuffer();
+    }
     VkDescriptorBufferInfo materialsInfo{};
     materialsInfo.buffer = materialsBuffer.buffer;
     materialsInfo.offset = 0;
