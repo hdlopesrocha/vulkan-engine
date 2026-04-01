@@ -94,6 +94,9 @@ private:
     VkDescriptorSet albedoComputeDescSet = VK_NULL_HANDLE;
     VkDescriptorSet normalComputeDescSet = VK_NULL_HANDLE;
     VkDescriptorSet bumpComputeDescSet = VK_NULL_HANDLE;
+    // Per-layer persistent descriptor sets (one descriptor set per array layer)
+    std::vector<VkDescriptorSet> perLayerDescSets;
+    bool hasPerLayerDescSets = false;
 
 
     // Callback function to notify when textures are generated
