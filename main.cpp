@@ -193,6 +193,14 @@ public:
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);
         for (size_t i = 0; i < materialCount; ++i) materialManager.update(i, materials[i], this);
+
+        // The descriptor set was bound to a dummy buffer at SceneRenderer::init() time
+        // because materialManager hadn't been allocated yet (runs on a background thread).
+        // Now that the real buffer exists, rebind descriptor set binding 5 so the GPU
+        // reads from the actual materials SSBO.
+        if (sceneRenderer) {
+            sceneRenderer->updateTextureDescriptorSet(this, &textureArrayManager);
+        }
     }
 
     void setup() override {
@@ -210,7 +218,9 @@ public:
 
         textureViewer = std::make_shared<TextureViewer>();
         textureViewer->init(&textureArrayManager, &materials);
-        textureViewer->setOnMaterialChanged([](size_t) {});
+        textureViewer->setOnMaterialChanged([this](size_t idx) {
+            materialManager.update(idx, materials[idx], this);
+        });
 
         skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
         // Create settings widget (was missing previously)
