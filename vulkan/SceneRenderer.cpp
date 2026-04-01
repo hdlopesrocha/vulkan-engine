@@ -267,6 +267,25 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     materialsWrite.pBufferInfo = &materialsInfo;
     writes.push_back(materialsWrite);
 
+    // Initialize WaterRenderer early so we can bind its params buffer to the descriptor set
+    waterParamsBuffer_ = app->createBuffer(sizeof(WaterUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    waterRenderer->init(app, waterParamsBuffer_);
+
+    // Bind water params UBO to binding 7 of main descriptor set
+    VkDescriptorBufferInfo waterParamsInfo{};
+    waterParamsInfo.buffer = waterParamsBuffer_.buffer;
+    waterParamsInfo.offset = 0;
+    waterParamsInfo.range = sizeof(WaterParamsGPU);
+    VkWriteDescriptorSet waterParamsWrite{};
+    waterParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    waterParamsWrite.dstSet = mainDs;
+    waterParamsWrite.dstBinding = 7;
+    waterParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    waterParamsWrite.descriptorCount = 1;
+    waterParamsWrite.pBufferInfo = &waterParamsInfo;
+    writes.push_back(waterParamsWrite);
+
     // Perform descriptor update (clean up temporary image infos afterwards)
     app->updateDescriptorSet(writes);
     for (auto &w : writes) {
@@ -279,11 +298,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             this->updateTextureDescriptorSet(app, textureArrayManager);
         });
     }
-
-    // Initialize WaterRenderer
-    Buffer waterParamsBuffer = app->createBuffer(sizeof(WaterUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    waterRenderer->init(app, waterParamsBuffer);
     waterRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     
     // Initialize sky renderer with sphere VBO now that descriptor sets are ready
@@ -347,6 +361,22 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     materialsWrite.descriptorCount = 1;
     materialsWrite.pBufferInfo = &materialsInfo;
     writes.push_back(materialsWrite);
+
+    // Rebind water params UBO at binding 7 (must stay valid after texture re-allocation)
+    if (waterParamsBuffer_.buffer != VK_NULL_HANDLE) {
+        VkDescriptorBufferInfo waterParamsInfo{};
+        waterParamsInfo.buffer = waterParamsBuffer_.buffer;
+        waterParamsInfo.offset = 0;
+        waterParamsInfo.range = sizeof(WaterParamsGPU);
+        VkWriteDescriptorSet waterParamsWrite{};
+        waterParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        waterParamsWrite.dstSet = mainDs;
+        waterParamsWrite.dstBinding = 7;
+        waterParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        waterParamsWrite.descriptorCount = 1;
+        waterParamsWrite.pBufferInfo = &waterParamsInfo;
+        writes.push_back(waterParamsWrite);
+    }
 
     // Apply descriptor updates
     app->updateDescriptorSet(writes);

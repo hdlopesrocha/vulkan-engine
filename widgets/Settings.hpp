@@ -13,7 +13,7 @@ public:
         wireframeMode = false;
         debugMode = 0;
         normalMappingEnabled = true;
-        waterEnabled = false;
+        waterEnabled = true;
         vegetationEnabled = false;
         triplanarThreshold = 0.12f;
         triplanarExponent = 1.0f;

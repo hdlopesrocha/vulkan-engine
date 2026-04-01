@@ -47,6 +47,9 @@ public:
     Buffer materialsBuffer;
     MaterialManager* materialManagerPtr = nullptr;
 
+    // Water params UBO (binding 7) — stored for descriptor rebinding
+    Buffer waterParamsBuffer_;
+
     std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<ShadowRenderer> shadowMapper;
     std::unique_ptr<WaterRenderer> waterRenderer;

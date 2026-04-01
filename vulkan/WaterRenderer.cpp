@@ -310,13 +310,15 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         app->resources.addImageView(view, "WaterRenderer: view");
     };
     
-    // Layout tracking for all render target images
-    static VkImageLayout sceneColorImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
-    static VkImageLayout sceneDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
-    static VkImageLayout waterDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    static VkImageLayout waterNormalImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    static VkImageLayout waterMaskImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    // waterGeomDepthImageLayout is already declared earlier, do not redeclare
+    // Reset layout tracking (use file-scope static variables)
+    sceneColorImageLayouts[0] = VK_IMAGE_LAYOUT_UNDEFINED;
+    sceneColorImageLayouts[1] = VK_IMAGE_LAYOUT_UNDEFINED;
+    sceneDepthImageLayouts[0] = VK_IMAGE_LAYOUT_UNDEFINED;
+    sceneDepthImageLayouts[1] = VK_IMAGE_LAYOUT_UNDEFINED;
+    waterDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    waterNormalImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    waterMaskImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     // Create per-frame scene offscreen render targets (2 sets for 2 frames in flight)
     for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
@@ -433,61 +435,6 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     transitionImageLayout(waterNormalImage, waterNormalImageLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
     transitionImageLayout(waterMaskImage, waterMaskImageLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
     transitionImageLayout(waterGeomDepthImage, waterGeomDepthImageLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
-
-    // Create water world position image (xyz=worldPos, w=linearDepth)
-    createImage(VK_FORMAT_R32G32B32A32_SFLOAT, 
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                waterDepthImage, waterDepthMemory, waterDepthImageView);
-    
-    // Create water normal image
-    createImage(VK_FORMAT_R16G16B16A16_SFLOAT,
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                waterNormalImage, waterNormalMemory, waterNormalImageView);
-    
-    // Create water mask image
-    createImage(VK_FORMAT_R8_UNORM,
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                waterMaskImage, waterMaskMemory, waterMaskImageView);
-    
-    // Create a dedicated depth buffer for the water geometry pass so we can safely sample
-    // the scene depth texture (sceneDepthImage) while still depth-testing against a local buffer.
-    createImage(VK_FORMAT_D32_SFLOAT,
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                VK_IMAGE_ASPECT_DEPTH_BIT,
-                waterGeomDepthImage, waterGeomDepthMemory, waterGeomDepthImageView);
-    fprintf(stderr, "[WaterRenderer] waterGeomDepthImage = %p\n", (void*)waterGeomDepthImage);
-
-    // Track and transition waterGeomDepthImage layout correctly
-    static VkImageLayout waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (waterGeomDepthImageLayout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-        VkImageMemoryBarrier barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = waterGeomDepthImageLayout;
-        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = waterGeomDepthImage;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
-        barrier.srcAccessMask = 0;
-        barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        vkCmdPipelineBarrier(
-            cmd,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &barrier
-        );
-        });
-        waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    }
 
     // Create per-frame water framebuffers using the dedicated water geometry depth buffer
     for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
@@ -735,19 +682,111 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     attrDescs[3] = {3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)};
     attrDescs[4] = {5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex)};
 
-    // Use new pipeline creation API
-    auto [pipeline, layout] = app->createGraphicsPipeline(
-        { shaderStages[0], shaderStages[1], shaderStages[2], shaderStages.size() > 3 ? shaderStages[3] : VkPipelineShaderStageCreateInfo{} },
-        std::vector<VkVertexInputBindingDescription>{ bindingDesc },
-        { attrDescs[0], attrDescs[1], attrDescs[2], attrDescs[3], attrDescs[4] },
-        std::vector<VkDescriptorSetLayout>(waterSetLayouts.begin(), waterSetLayouts.end()),
-        nullptr,
-        VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, false, true, VK_COMPARE_OP_LESS,
-        hasTessellation ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
-    );
-    waterGeometryPipeline = pipeline;
-    waterGeometryPipelineLayout = layout;
-    
+    // --- Create pipeline layout manually ---
+    VkPipelineLayoutCreateInfo waterLayoutInfo{};
+    waterLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    waterLayoutInfo.setLayoutCount = static_cast<uint32_t>(waterSetLayouts.size());
+    waterLayoutInfo.pSetLayouts = waterSetLayouts.data();
+    waterLayoutInfo.pushConstantRangeCount = 0;
+    waterLayoutInfo.pPushConstantRanges = nullptr;
+
+    if (vkCreatePipelineLayout(device, &waterLayoutInfo, nullptr, &waterGeometryPipelineLayout) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create water geometry pipeline layout!");
+    }
+    app->resources.addPipelineLayout(waterGeometryPipelineLayout, "WaterRenderer: waterGeometryPipelineLayout");
+
+    // --- Create pipeline manually (waterRenderPass has 3 color attachments) ---
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDesc;
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrDescs.size());
+    vertexInputInfo.pVertexAttributeDescriptions = attrDescs.data();
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = hasTessellation ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = 2;
+    dynamicState.pDynamicStates = dynamicStates;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_FALSE;  // Water doesn't write depth
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+
+    // Water render pass has 3 color attachments — need a blend state for each
+    std::array<VkPipelineColorBlendAttachmentState, 3> colorBlendAttachments{};
+    for (auto& att : colorBlendAttachments) {
+        att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        att.blendEnable = VK_FALSE;
+    }
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = static_cast<uint32_t>(colorBlendAttachments.size());
+    colorBlending.pAttachments = colorBlendAttachments.data();
+
+    VkPipelineTessellationStateCreateInfo tessState{};
+    if (hasTessellation) {
+        tessState.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
+        tessState.patchControlPoints = 3;
+    }
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
+    pipelineInfo.pStages = shaderStages.data();
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = waterGeometryPipelineLayout;
+    pipelineInfo.renderPass = waterRenderPass;  // MUST match the render pass used at draw time
+    pipelineInfo.subpass = 0;
+    if (hasTessellation) pipelineInfo.pTessellationState = &tessState;
+
+    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &waterGeometryPipeline) != VK_SUCCESS) {
+        std::cerr << "[WaterRenderer] Warning: Failed to create water geometry pipeline" << std::endl;
+        waterGeometryPipeline = VK_NULL_HANDLE;
+    } else {
+        app->resources.addPipeline(waterGeometryPipeline, "WaterRenderer: waterGeometryPipeline");
+        std::cout << "[WaterRenderer] Created water geometry pipeline for waterRenderPass (3 color attachments)" << std::endl;
+    }
+
     // Clear local shader module references; destruction handled by VulkanResourceManager
     vertModule = VK_NULL_HANDLE;
     fragModule = VK_NULL_HANDLE;
@@ -792,7 +831,6 @@ void WaterRenderer::createPostProcessPipeline(VulkanApp* app) {
     }
     // register descriptor set layout
     app->resources.addDescriptorSetLayout(postProcessDescriptorSetLayout, "WaterRenderer: postProcessDescriptorSetLayout");
-    app->resources.addDescriptorSetLayout(postProcessDescriptorSetLayout, "WaterRenderer: postProcessDescriptorSetLayout");
     
     // Create pipeline layout
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
@@ -804,7 +842,6 @@ void WaterRenderer::createPostProcessPipeline(VulkanApp* app) {
         throw std::runtime_error("Failed to create water post-process pipeline layout!");
     }
     // register pipeline layout
-    app->resources.addPipelineLayout(waterPostProcessPipelineLayout, "WaterRenderer: waterPostProcessPipelineLayout");
     app->resources.addPipelineLayout(waterPostProcessPipelineLayout, "WaterRenderer: waterPostProcessPipelineLayout");
     
     // Load shaders
@@ -906,7 +943,6 @@ void WaterRenderer::createPostProcessPipeline(VulkanApp* app) {
         waterPostProcessPipeline = VK_NULL_HANDLE;
     }
     if (waterPostProcessPipeline != VK_NULL_HANDLE) {
-        app->resources.addPipeline(waterPostProcessPipeline, "WaterRenderer: waterPostProcessPipeline");
         app->resources.addPipeline(waterPostProcessPipeline, "WaterRenderer: waterPostProcessPipeline");
     }
     
@@ -1175,6 +1211,39 @@ void WaterRenderer::render(VulkanApp* app, uint32_t frameIndex, VkImageView scen
     // Run water geometry pass offscreen on a temporary command buffer to avoid nested render passes
     app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
         beginWaterGeometryPass(cmd, frameIndex);
+
+        // Bind the water geometry pipeline and descriptor sets before issuing draw commands
+        if (waterGeometryPipeline != VK_NULL_HANDLE) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeometryPipeline);
+
+            // Water shaders use set 0 (UBO + samplers, binding 0 & 7) and set 2
+            // (scene textures).  Set 1 (materials SSBO) is in the pipeline layout
+            // for compatibility but is NOT referenced by the water shaders.
+            // Bind each set individually so a VK_NULL_HANDLE material set is
+            // never passed to vkCmdBindDescriptorSets (that causes a GPU hang).
+
+            // Set 0: main UBO + texture samplers + water params
+            VkDescriptorSet mainDs = app->getMainDescriptorSet();
+            if (mainDs != VK_NULL_HANDLE) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
+            }
+
+            // Set 1: materials SSBO — only bind if available (shader doesn't use it)
+            VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
+            if (materialDs != VK_NULL_HANDLE) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
+            }
+
+            // Set 2: scene depth textures (color + depth)
+            VkDescriptorSet sceneDs = waterDepthDescriptorSets[frameIndex];
+            if (sceneDs != VK_NULL_HANDLE) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
+            }
+        }
+
         // Indirect rendering for water geometry
         waterIndirectRenderer.drawPrepared(cmd);
         endWaterGeometryPass(cmd);
