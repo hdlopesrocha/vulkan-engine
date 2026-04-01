@@ -24,7 +24,7 @@ struct MixerParameters {
     float perlinPersistence = 0.5f;
     float perlinLacunarity = 2.0f;
     float perlinBrightness = 0.0f;  // -1.0 to 1.0
-    float perlinContrast = 1.0f;    // 0.0 to 5.0 (lower default gives smoother blends)
+    float perlinContrast = 5.0f;    // 0.0 to 5.0 (lower default gives smoother blends)
     uint32_t perlinSeed = 12345;    // Fixed seed for consistent generation
     float perlinTime = 0.0f;        // Time parameter for noise evolution
 };
