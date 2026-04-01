@@ -321,6 +321,10 @@ public:
         );
         // passParams: x = isShadowPass, y = tessEnabled (also gates displacement in TCS/TE)
         uboStatic.passParams = glm::vec4(0.0f, settings.tessellationEnabled ? 1.0f : 0.0f, 0.0f, 0.0f);
+        // materialFlags.w = global normal-mapping toggle (shader checks ubo.materialFlags.w > 0.5)
+        uboStatic.materialFlags.w = settings.normalMappingEnabled ? 1.0f : 0.0f;
+        // shadowEffects.w = global shadow toggle (shader checks ubo.shadowEffects.w > 0.5)
+        uboStatic.shadowEffects.w = settings.enableShadows ? 1.0f : 0.0f;
 
         // Upload UBO to GPU
         if (sceneRenderer) {
