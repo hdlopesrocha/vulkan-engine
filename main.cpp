@@ -579,6 +579,8 @@ public:
             toggleFullscreen();
         }
     }
+    // Called by VulkanApp after a frame has been submitted
+    void postSubmit() override;
 };
 
 
@@ -657,6 +659,15 @@ void MyApp::setupVegetationTextures() {
             size_t bidx = billboardManager.createBillboard(name);
             billboardManager.addLayer(bidx, atlasIndex, static_cast<int>(tileIndex));
         }
+    }
+}
+
+// Ensure pending texture generation requests are flushed after a frame is submitted
+// so array-layer transitions happen outside of active draw command buffers.
+void MyApp::postSubmit() {
+    if (textureMixer) {
+        textureMixer->flushPendingRequests(this);
+        textureMixer->pollPendingGenerations(this);
     }
 }
 
