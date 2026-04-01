@@ -355,18 +355,26 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 
 	VkDescriptorPoolSize poolSizes[2] = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	// triple set uses 3 storage images, plus one per-map storage image each (3)
-	poolSizes[0].descriptorCount = 20; // provide extra slack
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	// triple set uses 3 combined samplers, per-map sets use 2 each (6) => total 9
-	poolSizes[1].descriptorCount = 20; // provide extra slack for samplers
+	// Estimate descriptor counts based on available array layers (if present).
+	// Each per-layer set writes 3 storage images and 3 combined samplers.
+	uint32_t layerAmount = textureArrayManager ? textureArrayManager->layerAmount : 0;
+	uint32_t storageCountEstimate = 128u;
+	uint32_t samplerCountEstimate = 128u;
+	if (layerAmount > 0) {
+		storageCountEstimate = layerAmount * 3 + 16; // 3 storage descriptors per-layer + slack for triple/per-map sets
+		samplerCountEstimate = layerAmount * 3 + 16; // 3 sampler descriptors per-layer + slack
+	}
+	poolSizes[0].descriptorCount = storageCountEstimate;
+	poolSizes[1].descriptorCount = samplerCountEstimate;
 
 	VkDescriptorPoolCreateInfo poolInfo{};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = 2;
 	poolInfo.pPoolSizes = poolSizes;
 	// Provide generous capacity to avoid allocation failures (increased)
-	poolInfo.maxSets = 128;
+	// maxSets should cover per-layer sets plus a few extras
+	poolInfo.maxSets = layerAmount > 0 ? (layerAmount + 16) : 128;
 	// Allow freeing individual descriptor sets (TextureMixer frees temp sets)
 	poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
 
@@ -382,6 +390,68 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 	createComputeDescriptorSet(0, albedoComputeDescSet, app);
 	createComputeDescriptorSet(1, normalComputeDescSet, app);
 	createComputeDescriptorSet(2, bumpComputeDescSet, app);
+
+	// Pre-allocate per-layer persistent descriptor sets (one per array layer)
+	if (textureArrayManager && textureArrayManager->layerAmount > 0) {
+		uint32_t layers = textureArrayManager->layerAmount;
+		perLayerDescSets.clear();
+		perLayerDescSets.resize(layers, VK_NULL_HANDLE);
+		std::vector<VkDescriptorSetLayout> layouts(layers, computeDescriptorSetLayout);
+		VkDescriptorSetAllocateInfo ainfo{};
+		ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		ainfo.descriptorPool = computeDescriptorPool;
+		ainfo.descriptorSetCount = layers;
+		ainfo.pSetLayouts = layouts.data();
+		// Validate that the TextureArrayManager has layer views available
+		if (textureArrayManager->albedoLayerViews.size() < layers || textureArrayManager->normalLayerViews.size() < layers || textureArrayManager->bumpLayerViews.size() < layers) {
+			fprintf(stderr, "[TextureMixer] Warning: textureArrayManager layer view arrays are smaller than layerAmount (expected=%u albedo=%zu normal=%zu bump=%zu)\n",
+				layers, textureArrayManager->albedoLayerViews.size(), textureArrayManager->normalLayerViews.size(), textureArrayManager->bumpLayerViews.size());
+			// Avoid allocating per-layer sets if views are not ready
+			return;
+		}
+
+		VkResult allocRes = vkAllocateDescriptorSets(app->getDevice(), &ainfo, perLayerDescSets.data());
+		if (allocRes != VK_SUCCESS) {
+			fprintf(stderr, "[TextureMixer] Warning: failed to allocate per-layer descriptor sets (res=%d)\n", allocRes);
+			return;
+		}
+
+		// For each allocated descriptor set, build stable local image info structures and update.
+		for (uint32_t i = 0; i < layers; ++i) {
+			if (perLayerDescSets[i] == VK_NULL_HANDLE) {
+				fprintf(stderr, "[TextureMixer] Skipping per-layer descriptor update for layer %u: descSet is NULL\n", i);
+				continue;
+			}
+
+			VkDescriptorImageInfo albedoStorageInfo{}; albedoStorageInfo.imageView = textureArrayManager->albedoLayerViews[i]; albedoStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			VkDescriptorImageInfo normalStorageInfo{}; normalStorageInfo.imageView = textureArrayManager->normalLayerViews[i]; normalStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			VkDescriptorImageInfo bumpStorageInfo{}; bumpStorageInfo.imageView = textureArrayManager->bumpLayerViews[i]; bumpStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+			// For sampling in the shader (sampler2DArray) we must bind the ARRAY image view
+			// (VK_IMAGE_VIEW_TYPE_2D_ARRAY). Per-layer 2D views are only for storage writes
+			// and ImGui previews. Use the array view here so sampling by layer index works.
+			VkDescriptorImageInfo albedoSamplerInfo{}; albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view; albedoSamplerInfo.sampler = textureArrayManager->albedoSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			VkDescriptorImageInfo normalSamplerInfo{}; normalSamplerInfo.imageView = textureArrayManager->normalArray.view; normalSamplerInfo.sampler = textureArrayManager->normalSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			VkDescriptorImageInfo bumpSamplerInfo{}; bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view; bumpSamplerInfo.sampler = textureArrayManager->bumpSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+			std::vector<VkWriteDescriptorSet> writes;
+			auto mkStor = [&](uint32_t binding, VkDescriptorImageInfo &info){ if (info.imageView == VK_NULL_HANDLE) return; VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = perLayerDescSets[i]; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w.descriptorCount = 1; w.pImageInfo = &info; writes.push_back(w); };
+			auto mkSamp = [&](uint32_t binding, VkDescriptorImageInfo &info){ if (info.imageView == VK_NULL_HANDLE || info.sampler == VK_NULL_HANDLE) return; VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = perLayerDescSets[i]; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.descriptorCount = 1; w.pImageInfo = &info; writes.push_back(w); };
+
+			mkStor(0, albedoStorageInfo);
+			mkSamp(1, albedoSamplerInfo);
+			mkSamp(2, normalSamplerInfo);
+			mkSamp(3, bumpSamplerInfo);
+			mkStor(4, normalStorageInfo);
+			mkStor(5, bumpStorageInfo);
+
+			if (!writes.empty()) {
+				vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+			}
+			app->resources.addDescriptorSet(perLayerDescSets[i], "TextureMixer: perLayerDescSet");
+		}
+		hasPerLayerDescSets = true;
+	}
 }
 
 void TextureMixer::createTripleComputeDescriptorSet(VulkanApp* app) {
@@ -897,75 +967,10 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
     			);
     		}
 
-	// Allocate and write a temporary descriptor set for this dispatch so we
-	// don't update descriptor sets that may be in-use by pending command buffers.
-	VkDescriptorSet tempDesc = VK_NULL_HANDLE;
-	{
-		VkDescriptorSetAllocateInfo ainfo{};
-		ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		ainfo.descriptorPool = computeDescriptorPool;
-		ainfo.descriptorSetCount = 1;
-		ainfo.pSetLayouts = &computeDescriptorSetLayout;
-		VkResult allocRes = vkAllocateDescriptorSets(app->getDevice(), &ainfo, &tempDesc);
-		if (allocRes != VK_SUCCESS) {
-			fprintf(stderr, "[TextureMixer] Warning: failed to allocate temp compute descriptor set, falling back to existing set\n");
-			tempDesc = descSet;
-			if (textureArrayManager && tempDesc != VK_NULL_HANDLE && targetLayer < textureArrayManager->layerAmount) {
-				VkDescriptorImageInfo albedoUpd{}; albedoUpd.imageView = textureArrayManager->albedoLayerViews[targetLayer]; albedoUpd.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-				VkDescriptorImageInfo normalUpd{}; normalUpd.imageView = textureArrayManager->normalLayerViews[targetLayer]; normalUpd.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-				VkDescriptorImageInfo bumpUpd{}; bumpUpd.imageView = textureArrayManager->bumpLayerViews[targetLayer]; bumpUpd.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-				VkDescriptorImageInfo albedoSampUpd{}; albedoSampUpd.imageView = textureArrayManager->albedoLayerViews[targetLayer]; albedoSampUpd.sampler = textureArrayManager->albedoSampler; albedoSampUpd.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-				VkDescriptorImageInfo normalSampUpd{}; normalSampUpd.imageView = textureArrayManager->normalLayerViews[targetLayer]; normalSampUpd.sampler = textureArrayManager->normalSampler; normalSampUpd.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-				VkDescriptorImageInfo bumpSampUpd{}; bumpSampUpd.imageView = textureArrayManager->bumpLayerViews[targetLayer]; bumpSampUpd.sampler = textureArrayManager->bumpSampler; bumpSampUpd.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-				std::vector<VkWriteDescriptorSet> fallbackWrites;
-				auto mkStor = [&](uint32_t binding, VkDescriptorImageInfo &info){ VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = tempDesc; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w.descriptorCount = 1; w.pImageInfo = &info; fallbackWrites.push_back(w); };
-				auto mkSamp = [&](uint32_t binding, VkDescriptorImageInfo &info){ VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = tempDesc; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.descriptorCount = 1; w.pImageInfo = &info; fallbackWrites.push_back(w); };
-				mkStor(0, albedoUpd);
-				mkSamp(1, albedoSampUpd);
-				mkSamp(2, normalSampUpd);
-				mkSamp(3, bumpSampUpd);
-				mkStor(4, normalUpd);
-				mkStor(5, bumpUpd);
-				for (auto &w : fallbackWrites) {
-					if (w.pImageInfo) {
-						fprintf(stderr, "[TextureMixer] Fallback write dstBinding=%u imageView=%p imageLayout=%s\n", w.dstBinding, (void*)w.pImageInfo->imageView, layoutName(w.pImageInfo->imageLayout));
-					}
-				}
-				if (!fallbackWrites.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(fallbackWrites.size()), fallbackWrites.data(), 0, nullptr);
-			}
-		} else {
-			VkDescriptorImageInfo albedoStorageInfo{}; albedoStorageInfo.imageView = textureArrayManager->albedoLayerViews[targetLayer]; albedoStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-			VkDescriptorImageInfo normalStorageInfo{}; normalStorageInfo.imageView = textureArrayManager->normalLayerViews[targetLayer]; normalStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-			VkDescriptorImageInfo bumpStorageInfo{}; bumpStorageInfo.imageView = textureArrayManager->bumpLayerViews[targetLayer]; bumpStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-			VkDescriptorImageInfo albedoSamplerInfo{}; albedoSamplerInfo.imageView = textureArrayManager->albedoLayerViews[targetLayer]; albedoSamplerInfo.sampler = textureArrayManager->albedoSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-			VkDescriptorImageInfo normalSamplerInfo{}; normalSamplerInfo.imageView = textureArrayManager->normalLayerViews[targetLayer]; normalSamplerInfo.sampler = textureArrayManager->normalSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-			VkDescriptorImageInfo bumpSamplerInfo{}; bumpSamplerInfo.imageView = textureArrayManager->bumpLayerViews[targetLayer]; bumpSamplerInfo.sampler = textureArrayManager->bumpSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-			std::vector<VkWriteDescriptorSet> tempWrites;
-			auto addStor = [&](uint32_t binding, VkDescriptorImageInfo &info){
-				if (info.imageView == VK_NULL_HANDLE) return;
-				VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = tempDesc; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w.descriptorCount = 1; w.pImageInfo = &info; tempWrites.push_back(w);
-			};
-			auto addSamp = [&](uint32_t binding, VkDescriptorImageInfo &info){
-				if (info.imageView == VK_NULL_HANDLE || info.sampler == VK_NULL_HANDLE) return;
-				VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = tempDesc; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.descriptorCount = 1; w.pImageInfo = &info; tempWrites.push_back(w);
-			};
-
-			addStor(0, albedoStorageInfo);
-			addSamp(1, albedoSamplerInfo);
-			addSamp(2, normalSamplerInfo);
-			addSamp(3, bumpSamplerInfo);
-			addStor(4, normalStorageInfo);
-			addStor(5, bumpStorageInfo);
-
-			for (auto &w : tempWrites) {
-				if (w.pImageInfo) {
-					fprintf(stderr, "[TextureMixer] Temp write dstBinding=%u imageView=%p imageLayout=%s\n", w.dstBinding, (void*)w.pImageInfo->imageView, layoutName(w.pImageInfo->imageLayout));
-				}
-			}
-			if (!tempWrites.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(tempWrites.size()), tempWrites.data(), 0, nullptr);
-		}
+	// Use persistent per-layer descriptor set if available; otherwise use the chosen descSet
+	VkDescriptorSet tempDesc = descSet;
+	if (useArrayLayer && hasPerLayerDescSets && targetLayer < perLayerDescSets.size() && perLayerDescSets[targetLayer] != VK_NULL_HANDLE) {
+		tempDesc = perLayerDescSets[targetLayer];
 	}
 
     // record pipeline/descriptor binds and dispatch
