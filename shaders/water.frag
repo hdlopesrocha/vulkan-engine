@@ -31,14 +31,15 @@ layout(set = 2, binding = 0) uniform sampler2D sceneColorTex;
 layout(set = 2, binding = 1) uniform sampler2D sceneDepthTex;
 layout(set = 2, binding = 2) uniform sampler2D sceneSkyTex;
 
-// Near/far planes for linearizing depth (must match glm::perspective call in main.cpp)
-const float nearPlane = 0.1;
-const float farPlane = 10000.0;
+// Near/far planes for linearizing depth – read from UBO passParams (z = near, w = far)
+// so they always match the glm::perspective call on the CPU side.
 
 // Linearize depth from Vulkan [0,1] depth buffer to eye-space distance.
 // With GLM_FORCE_DEPTH_ZERO_TO_ONE the projection maps z_eye to [0,1]:
 //   d = f*(z - n) / (z*(f - n))   =>   z = n*f / (f - d*(f - n))
 float linearizeDepth(float depth) {
+    float nearPlane = ubo.passParams.z;
+    float farPlane  = ubo.passParams.w;
     return (nearPlane * farPlane) / (farPlane - depth * (farPlane - nearPlane));
 }
 
@@ -49,7 +50,6 @@ void main() {
     // Prefer time from water params UBO (reliable for this shader); fallback to global UBO
     float time = waterParams.params3.y;
     if (time == 0.0) time = ubo.passParams.x;
-    float waveScale = ubo.passParams.z;
     
     // Water rendering parameters from water UBO
     float refractionStrength = waterParams.params1.x;
@@ -89,7 +89,7 @@ void main() {
         // mode works even when tessellation is disabled.
         float timeDebug = waterParams.params3.y;
         if (timeDebug == 0.0) timeDebug = ubo.passParams.x;
-        float waveScaleDbg = ubo.passParams.z;
+        float waveScaleDbg = 1.0;  // No longer in passParams (z=nearPlane now)
 
         float foamNoiseScaleDbg = 1.0 / max(waterParams.foamParams.x, 0.0001);
         int foamNoiseOctavesDbg = int(max(waterParams.foamParams.y, 1.0));
@@ -163,15 +163,21 @@ void main() {
     float sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
 
     // === DEPTH-BASED EFFECTS ===
-    float sceneDepthLinear = linearizeDepth(sceneDepthRaw);
-    float waterDepthLinear = linearizeDepth(gl_FragCoord.z);
+    float waterDepthRaw = gl_FragCoord.z;
 
-    // Depth test against solid geometry: discard water fragments that are
-    // behind (farther than) solid objects.  Use linearized depth to avoid
-    // precision issues at far distances (raw 1/z values cluster near 1.0).
-    if (sceneDepthLinear < waterDepthLinear - 0.5) {
+    // Depth test against solid geometry: in Vulkan depth [0,1], smaller means
+    // closer to the camera. So if the solid depth is smaller than water depth,
+    // the solid is in front and water must be discarded.
+    //
+    // Compare in raw depth space (monotonic), with only a tiny epsilon to avoid
+    // z-fighting flicker at equal-depth boundaries.
+    const float depthEpsilonRaw = 1e-6;
+    if (sceneDepthRaw + depthEpsilonRaw < waterDepthRaw) {
         discard;
     }
+
+    float sceneDepthLinear = linearizeDepth(sceneDepthRaw);
+    float waterDepthLinear = linearizeDepth(waterDepthRaw);
 
     float depthDiff = max(sceneDepthLinear - waterDepthLinear, 0.0);
     
