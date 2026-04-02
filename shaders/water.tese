@@ -3,7 +3,7 @@
 // Water tessellation evaluation shader
 // Applies wave displacement using Perlin noise
 
-layout(triangles, equal_spacing, ccw) in;
+layout(triangles, equal_spacing, cw) in;
 
 layout(location = 0) in vec3 inPos[];
 layout(location = 1) in vec3 inNormal[];

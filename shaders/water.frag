@@ -29,15 +29,17 @@ layout(set = 0, binding = 7) uniform WaterParamsUBO {
 // Scene color and depth textures for refraction and edge foam (set 2)
 layout(set = 2, binding = 0) uniform sampler2D sceneColorTex;
 layout(set = 2, binding = 1) uniform sampler2D sceneDepthTex;
+layout(set = 2, binding = 2) uniform sampler2D sceneSkyTex;
 
-// Near/far planes for linearizing depth
+// Near/far planes for linearizing depth (must match glm::perspective call in main.cpp)
 const float nearPlane = 0.1;
-const float farPlane = 8192.0;
+const float farPlane = 10000.0;
 
-// Linearize depth from [0,1] NDC to view-space distance
+// Linearize depth from Vulkan [0,1] depth buffer to eye-space distance.
+// With GLM_FORCE_DEPTH_ZERO_TO_ONE the projection maps z_eye to [0,1]:
+//   d = f*(z - n) / (z*(f - n))   =>   z = n*f / (f - d*(f - n))
 float linearizeDepth(float depth) {
-    float z = depth * 2.0 - 1.0; // NDC
-    return (2.0 * nearPlane * farPlane) / (farPlane + nearPlane - z * (farPlane - nearPlane));
+    return (nearPlane * farPlane) / (farPlane - depth * (farPlane - nearPlane));
 }
 
 #include "includes/perlin.glsl"
@@ -109,6 +111,22 @@ void main() {
         return;
     }
 
+    // Debug mode 33: raw scene color — verifies whether the solid pass
+    // output actually reaches the water fragment shader.
+    if (int(ubo.debugParams.x) == 33) {
+        vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
+        vec3 sc = texture(sceneColorTex, uv).rgb*0.9;
+        outColor = vec4(sc, 1.0);
+        return;
+    }
+
+    // Debug mode 34: screen UV — verifies correct clip → UV conversion.
+    if (int(ubo.debugParams.x) == 34) {
+        vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
+        outColor = vec4(uv, 0.0, 1.0);
+        return;
+    }
+
     // === PERLIN NOISE-BASED REFRACTION ===
     // Generate multi-octave noise for natural-looking distortion (4D with time)
     vec2 noisePos1 = fragPos.xz * noiseScale * 0.15;
@@ -120,6 +138,12 @@ void main() {
     float noise2 = perlinNoise4D(vec4(noisePos2, 0.0, animTime * 0.25));
     float noise3 = perlinNoise4D(vec4(noisePos3, 0.0, animTime * 0.6)) * 0.5;
     
+   // Debug mode 35: water noise
+    if (int(ubo.debugParams.x) == 35) {
+        outColor = vec4(noise1, noise2, noise3, 1.0);
+        return;
+    }
+
     // Combine noise layers for complex refraction pattern
     vec2 refractionOffset = vec2(
         noise1 + noise2 * 0.5 + noise3 * 0.25,
@@ -137,20 +161,30 @@ void main() {
     
     vec3 sceneColor = texture(sceneColorTex, refractedUV).rgb;
     float sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
-    
+
     // === DEPTH-BASED EFFECTS ===
     float sceneDepthLinear = linearizeDepth(sceneDepthRaw);
     float waterDepthLinear = linearizeDepth(gl_FragCoord.z);
-    float depthDiff = sceneDepthLinear - waterDepthLinear;
+
+    // Depth test against solid geometry: discard water fragments that are
+    // behind (farther than) solid objects.  Use linearized depth to avoid
+    // precision issues at far distances (raw 1/z values cluster near 1.0).
+    if (sceneDepthLinear < waterDepthLinear - 0.5) {
+        discard;
+    }
+
+    float depthDiff = max(sceneDepthLinear - waterDepthLinear, 0.0);
     
     // Single Perlin-based foam noise (reused below)
     // Use XZ plane and time scaled for smooth animation; compute raw base in [-1,1] then remap to [0,1]
     float foamNoiseScale = max(waterParams.foamParams.x, 0.0001);
     float foamBaseRaw = perlinNoise4D(vec4(fragPos.xyz, animTime));
     float foamBase = foamBaseRaw * 0.5 + 0.5;
-    // edgeFoam is computed above from depth; we'll modulate it later using the shore-faded noise
     // Depth-based color fade (deeper = more tinted)
-    float depthFade = 1.0 - exp(-depthDiff * 0.1);
+    // Use controllable depth falloff from UBO (foamParams2.w); default to 0.02
+    float depthFalloff = waterParams.foamParams2.w;
+    if (depthFalloff <= 0.0) depthFalloff = 0.02;
+    float depthFade = 1.0 - exp(-depthDiff * depthFalloff);
     
     // === FRESNEL EFFECT ===
     float fresnel = pow(1.0 - max(dot(viewDir, normal), 0.0), fresnelPower);
@@ -173,7 +207,13 @@ void main() {
     
     // === REFLECTION ===
     vec3 reflectDir = reflect(-viewDir, normal);
-    vec3 skyColor = mix(vec3(0.5, 0.6, 0.8), vec3(0.8, 0.85, 0.95), max(reflectDir.y, 0.0));
+    // Sample sky from equirectangular map using reflection direction
+    // Convert 3D direction to equirect UV: x = atan(z,x)/2π+0.5, y = acos(y)/π
+    const float PI = 3.14159265358979;
+    vec2 skyUV;
+    skyUV.x = atan(reflectDir.z, reflectDir.x) / (2.0 * PI) + 0.5;
+    skyUV.y = acos(clamp(reflectDir.y, -1.0, 1.0)) / PI;
+    vec3 skyColor = texture(sceneSkyTex, skyUV).rgb;
     
     // === WATER COLOR COMPOSITION ===
     // Water tint colors from UBO
@@ -181,9 +221,12 @@ void main() {
     vec3 shallowTint = waterParams.shallowColor.rgb;
     vec3 waterTintColor = mix(shallowTint, deepTint, depthFade);
     
-    // Blend scene color with water tint based on depth
-    vec3 refractedColor = mix(sceneColor, sceneColor * waterTintColor + waterTintColor * 0.1, 
-                              min(waterTint + depthFade * 0.5, 0.8));
+    // Blend scene color with water tint based on depth.
+    // Use a lerp that preserves the scene at shallow depths and transitions
+    // to the water tint at greater depths.  The waterTint parameter controls
+    // how strongly the water color replaces the scene.
+    float tintBlend = clamp(depthFade * waterTint, 0.0, 0.85);
+    vec3 refractedColor = mix(sceneColor, waterTintColor, tintBlend);
     
     // Mix refracted color with reflection based on fresnel
     vec3 waterColor = mix(refractedColor, skyColor, fresnel * 0.6);
