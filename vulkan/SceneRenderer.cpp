@@ -55,6 +55,9 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
     if (waterRenderer) {
         waterRenderer->createRenderTargets(app, width, height);
     }
+    if (skyRenderer) {
+        skyRenderer->createOffscreenTargets(app, width, height);
+    }
 }
 
 SceneRenderer::SceneRenderer() :
@@ -119,16 +122,17 @@ void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDe
     skyRenderer->render(app, commandBuffer, perTextureDescriptorSet, mainUniformBuffer, uboStatic, viewProj, mode);
 }
 
-void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime) {
+void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime, VkImageView skyView) {
     if (commandBuffer == VK_NULL_HANDLE) {
         fprintf(stderr, "[SceneRenderer::waterPass] commandBuffer is VK_NULL_HANDLE, skipping.\n");
         return;
     }
 
-    // Delegate water offscreen work to WaterRenderer::draw
+    // Delegate water offscreen work to WaterRenderer — record on the same
+    // command buffer so the solid pass outputs are available for sampling.
     VkImageView sceneColorView = solidRenderer->getColorView(frameIdx);
     VkImageView sceneDepthView = solidRenderer->getDepthView(frameIdx);
-    waterRenderer->render(app, frameIdx, sceneColorView, sceneDepthView);
+    waterRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, waterParams, waterTime, skyView);
 
     // Post-processing should run inside the active main render pass; caller (e.g. MyApp::draw) should invoke
     // `waterRenderer->renderWaterPostProcess` with valid scene color/depth views when available. Keep this function focused
@@ -159,6 +163,8 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 
     // Create pipelines for all renderers (solid renderer now has its render pass ready)
     skyRenderer->init(app, solidRenderer->getRenderPass());
+    // Create offscreen sky targets so the sky can be sampled as a texture by water
+    skyRenderer->createOffscreenTargets(app, app->getWidth(), app->getHeight());
     shadowMapper->init(app);
     vegetationRenderer->init(app, solidRenderer->getRenderPass());
 

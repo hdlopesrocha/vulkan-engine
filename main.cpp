@@ -27,6 +27,7 @@
 #include "widgets/SkySettings.hpp"
 #include "widgets/WaterWidget.hpp"
 #include "widgets/RenderPassDebugWidget.hpp"
+#include "widgets/RenderTargetsWidget.hpp"
 #include "widgets/BillboardWidget.hpp"
 #include "widgets/BillboardCreator.hpp"
 #include "widgets/TextureMixerWidget.hpp"
@@ -82,6 +83,7 @@ public:
     std::shared_ptr<SkyWidget> skyWidget;
     std::shared_ptr<WaterWidget> waterWidget;
     std::shared_ptr<RenderPassDebugWidget> renderPassDebugWidget;
+    std::shared_ptr<RenderTargetsWidget> renderTargetsWidget;
     std::shared_ptr<BillboardWidget> billboardWidget;
     std::shared_ptr<BillboardCreator> billboardCreator;
     std::unique_ptr<BillboardWidgetManager> billboardWidgetManager;
@@ -231,6 +233,9 @@ public:
         // Initialize widget frame info from MyApp (avoid storing VulkanApp* inside widget)
         if (renderPassDebugWidget) renderPassDebugWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
+        renderTargetsWidget = std::make_shared<RenderTargetsWidget>(
+            sceneRenderer->waterRenderer.get(), sceneRenderer->solidRenderer.get(), sceneRenderer->skyRenderer.get());
+        if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
         debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &cubeCount);
@@ -250,6 +255,7 @@ public:
         widgetManager.addWidget(skyWidget);
         widgetManager.addWidget(waterWidget);
         widgetManager.addWidget(renderPassDebugWidget);
+        widgetManager.addWidget(renderTargetsWidget);
         widgetManager.addWidget(vulkanResourcesManagerWidget);
         widgetManager.addWidget(vegetationAtlasEditor);
         widgetManager.addWidget(billboardWidget);
@@ -354,6 +360,14 @@ public:
 
         // Render sky + solids/vegetation into the solid offscreen framebuffer (one per frame)
         uint32_t frameIdx = getCurrentFrame();
+
+        // Render sky to its own offscreen FBO so it can be sampled as a texture by the water shader
+        if (sceneRenderer->skyRenderer) {
+            SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
+            sceneRenderer->skyRenderer->renderOffscreen(this, commandBuffer, frameIdx,
+                getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, viewProj, skyMode);
+        }
+
         VkClearValue colorClear{};
         // Clear solid offscreen color to transparent so composite starts from empty scene
         colorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
@@ -362,7 +376,8 @@ public:
             sceneRenderer->solidRenderer->beginPass(commandBuffer, frameIdx, colorClear, depthClear);
 
         VkRenderPassBeginInfo unusedRpInfo{};
-        sceneRenderer->skyPass(this, commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, viewProj);
+        // Sky is now rendered to an equirectangular texture and composited in the final post-process.
+        // No longer rendered inside the solid pass.
         sceneRenderer->mainPass(this, commandBuffer, unusedRpInfo, frameIdx, waterEnabled, vegetationEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode, profilingEnabled, queryPool,
             viewProj, uboStatic, sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), true, false, true, 0, 0.0f, 0.0f);
 
@@ -417,8 +432,9 @@ public:
 
         // Run water geometry pass offscreen and bind scene textures for post-process
         if (waterEnabled) {
+            VkImageView skyView = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
             sceneRenderer->waterPass(this, commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), profilingEnabled, queryPool,
-                sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime());
+                sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), skyView);
         }
         
     }
@@ -504,6 +520,7 @@ public:
 
         // Update per-frame widget state (avoid storing VulkanApp* inside widgets)
         if (renderPassDebugWidget) renderPassDebugWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
+        if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
         if (vulkanResourcesManagerWidget) vulkanResourcesManagerWidget->updateWithApp(this);
 
         // Render all widgets
@@ -541,6 +558,7 @@ public:
 
         // Composite offscreen scene + water into the swapchain
         if (sceneRenderer && sceneRenderer->waterRenderer) {
+            VkImageView skyViewPP = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
             sceneRenderer->waterRenderer->renderWaterPostProcess(
                 this,
                 commandBuffer,
@@ -553,7 +571,8 @@ public:
                 invViewProj,
                 glm::vec3(uboStatic.viewPos),
                 sceneRenderer->waterRenderer->getTime(),
-                false);
+                false,
+                skyViewPP);
         }
         //fprintf(stderr, "[MyApp::draw] waterPass returned. Rendering ImGui...\n");
         // ImGui rendering
