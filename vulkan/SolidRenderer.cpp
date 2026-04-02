@@ -105,12 +105,25 @@ void SolidRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
 
     std::array<VkAttachmentDescription, 2> attachments{colorAttachment, depthAttachment};
 
+    // Subpass dependency: flush color + depth writes so that the layout
+    // transition (→ SHADER_READ_ONLY_OPTIMAL) carries visible data and
+    // external consumers (water pass, post-process) can sample the images.
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = 0;
+    dependency.dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependency.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
     VkRenderPassCreateInfo rpInfo{};
     rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
     rpInfo.pAttachments = attachments.data();
     rpInfo.subpassCount = 1;
     rpInfo.pSubpasses = &subpass;
+    rpInfo.dependencyCount = 1;
+    rpInfo.pDependencies = &dependency;
 
     if (vkCreateRenderPass(device, &rpInfo, nullptr, &solidRenderPass) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create solid render pass!");
