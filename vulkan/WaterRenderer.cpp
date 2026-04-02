@@ -215,13 +215,27 @@ void WaterRenderer::createWaterRenderPass(VulkanApp* app) {
     subpass.pColorAttachments = colorRefs.data();
     subpass.pDepthStencilAttachment = &depthRef;
     
-    VkSubpassDependency dependency{};
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;  // Scene wrote depth
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    // Two subpass dependencies:
+    // [0] EXTERNAL → 0: Ensure solid pass color/depth writes are visible
+    //     before the water subpass's fragment shader samples the scene textures
+    //     AND before color/depth attachment ops begin.
+    // [1] 0 → EXTERNAL: Flush water color attachment writes so the post-process
+    //     fragment shader (in the swapchain render pass) can read them.
+    std::array<VkSubpassDependency, 2> dependencies{};
+
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependencies[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+
+    dependencies[1].srcSubpass = 0;
+    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -229,8 +243,8 @@ void WaterRenderer::createWaterRenderPass(VulkanApp* app) {
     renderPassInfo.pAttachments = attachments.data();
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
-    renderPassInfo.dependencyCount = 1;
-    renderPassInfo.pDependencies = &dependency;
+    renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+    renderPassInfo.pDependencies = dependencies.data();
     
     if (vkCreateRenderPass(app->getDevice(), &renderPassInfo, nullptr, &waterRenderPass) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water render pass!");
@@ -480,7 +494,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         
         // Update both descriptor sets to bind their frame's scene images
         for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
-            updateSceneTexturesBinding(app, sceneColorImageViews[frameIdx], sceneDepthImageViews[frameIdx], frameIdx);
+            updateSceneTexturesBinding(app, sceneColorImageViews[frameIdx], sceneDepthImageViews[frameIdx], frameIdx, VK_NULL_HANDLE);
         }
     }
     
@@ -552,7 +566,8 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     // Create descriptor set layout for scene textures (set 2)
     // Binding 0: Scene color texture
     // Binding 1: Scene depth texture
-    std::array<VkDescriptorSetLayoutBinding, 2> sceneBindings{};
+    // Binding 2: Sky color texture
+    std::array<VkDescriptorSetLayoutBinding, 3> sceneBindings{};
     
     // Scene color (binding 0)
     sceneBindings[0].binding = 0;
@@ -567,6 +582,13 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     sceneBindings[1].descriptorCount = 1;
     sceneBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     sceneBindings[1].pImmutableSamplers = nullptr;
+
+    // Sky color (binding 2)
+    sceneBindings[2].binding = 2;
+    sceneBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sceneBindings[2].descriptorCount = 1;
+    sceneBindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[2].pImmutableSamplers = nullptr;
     
     VkDescriptorSetLayoutCreateInfo depthLayoutInfo{};
     depthLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -582,7 +604,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     // Create descriptor pool for scene textures (color + depth), 2 sets for 2 frames
     VkDescriptorPoolSize depthPoolSize{};
     depthPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    depthPoolSize.descriptorCount = 4;  // (color + depth) * 2 frames
+    depthPoolSize.descriptorCount = 6;  // (color + depth + sky) * 2 frames
     
     VkDescriptorPoolCreateInfo depthPoolInfo{};
     depthPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -806,8 +828,9 @@ void WaterRenderer::createPostProcessPipeline(VulkanApp* app) {
     // 3: Water normal (sampler2D)
     // 4: Water mask (sampler2D)
     // 5: Water UBO (uniform buffer)
+    // 6: Sky color (sampler2D)
     
-    std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
     
     for (int i = 0; i < 5; ++i) {
         bindings[i].binding = i;
@@ -820,6 +843,11 @@ void WaterRenderer::createPostProcessPipeline(VulkanApp* app) {
     bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[5].descriptorCount = 1;
     bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[6].binding = 6;
+    bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[6].descriptorCount = 1;
+    bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -963,7 +991,7 @@ void WaterRenderer::createDescriptorSets(VulkanApp* app) {
     // Create descriptor pool
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = 5;
+    poolSizes[0].descriptorCount = 6;  // scene color + scene depth + water depth + water normal + water mask + sky color
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[1].descriptorCount = 1;
     
@@ -1046,7 +1074,7 @@ void WaterRenderer::renderWaterPostProcess(VulkanApp* app, VkCommandBuffer cmd, 
                                             const WaterParams& params,
                                             const glm::mat4& viewProj, const glm::mat4& invViewProj,
                                             const glm::vec3& viewPos, float time,
-                                            bool beginRenderPass) {
+                                            bool beginRenderPass, VkImageView skyView) {
     if (waterPostProcessPipeline == VK_NULL_HANDLE) {
         fprintf(stderr, "[WaterRenderer::renderWaterPostProcess] waterPostProcessPipeline is VK_NULL_HANDLE, skipping.\n");
         return;
@@ -1089,6 +1117,12 @@ void WaterRenderer::renderWaterPostProcess(VulkanApp* app, VkCommandBuffer cmd, 
     imageInfos[4] = {linearSampler, waterMaskImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo bufferInfo{waterUniformBuffer.buffer, 0, sizeof(WaterUBO)};
 
+    // Sky color image info (binding 6)
+    VkDescriptorImageInfo skyImageInfo{};
+    skyImageInfo.sampler = linearSampler;
+    skyImageInfo.imageView = (skyView != VK_NULL_HANDLE) ? skyView : sceneColorView;  // fallback to scene color
+    skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
     std::vector<VkWriteDescriptorSet> writes;
     for (int i = 0; i < 5; ++i) {
         if (imageInfos[i].imageView == VK_NULL_HANDLE || imageInfos[i].sampler == VK_NULL_HANDLE) {
@@ -1115,6 +1149,18 @@ void WaterRenderer::renderWaterPostProcess(VulkanApp* app, VkCommandBuffer cmd, 
         writes.push_back(bufWrite);
     } else {
         fprintf(stderr, "[WaterRenderer] Skipping post-process UBO binding: buffer is VK_NULL_HANDLE\n");
+    }
+
+    // Sky color texture (binding 6)
+    if (skyImageInfo.imageView != VK_NULL_HANDLE && skyImageInfo.sampler != VK_NULL_HANDLE) {
+        VkWriteDescriptorSet skyWrite{};
+        skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        skyWrite.dstSet = postProcessDescriptorSet;
+        skyWrite.dstBinding = 6;
+        skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        skyWrite.descriptorCount = 1;
+        skyWrite.pImageInfo = &skyImageInfo;
+        writes.push_back(skyWrite);
     }
 
     if (!writes.empty()) vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
@@ -1157,7 +1203,7 @@ void WaterRenderer::renderWaterPostProcess(VulkanApp* app, VkCommandBuffer cmd, 
     // This allows ImGui or other overlays to be rendered in the same pass
 }
 
-void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex) {
+void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView) {
     if (waterDepthDescriptorSets[frameIndex] == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
         return;
     }
@@ -1166,7 +1212,7 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     VkImageView colorView = colorImageView;
     VkImageView depthView = depthImageView;
     
-    std::array<VkDescriptorImageInfo, 2> imageInfos{};
+    std::array<VkDescriptorImageInfo, 3> imageInfos{};
     
     // Scene color (binding 0)
     imageInfos[0].sampler = linearSampler;
@@ -1177,8 +1223,13 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     imageInfos[1].sampler = linearSampler;
     imageInfos[1].imageView = depthView;
     imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // Sky color (binding 2)
+    imageInfos[2].sampler = linearSampler;
+    imageInfos[2].imageView = (skyImageView != VK_NULL_HANDLE) ? skyImageView : colorView;  // fallback to scene color if no sky
+    imageInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     
-    std::array<VkWriteDescriptorSet, 2> writes{};
+    std::array<VkWriteDescriptorSet, 3> writes{};
     
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = waterDepthDescriptorSets[frameIndex];
@@ -1196,57 +1247,106 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     writes[1].descriptorCount = 1;
     writes[1].pImageInfo = &imageInfos[1];
 
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = waterDepthDescriptorSets[frameIndex];
+    writes[2].dstBinding = 2;
+    writes[2].dstArrayElement = 0;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].descriptorCount = 1;
+    writes[2].pImageInfo = &imageInfos[2];
+
     vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 
-// Execute water's offscreen geometry pass (bind scene textures + run indirect water draw)
-// This was previously performed inline in SceneRenderer::waterPass
-void WaterRenderer::render(VulkanApp* app, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView) {
-    if (!app) return;
+// Execute water's offscreen geometry pass on the provided command buffer.
+// The caller must ensure that the solid pass has already ended on this same
+// command buffer so that the scene color/depth images are available.
+void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView, const WaterParams& params, float waterTime, VkImageView skyView) {
+    if (!app || cmd == VK_NULL_HANDLE) return;
+
+    // Upload current water parameters to the GPU buffer (set 0, binding 7)
+    {
+        WaterParamsGPU gpu{};
+        gpu.params1 = glm::vec4(params.refractionStrength, params.fresnelPower, params.transparency, params.foamDepthThreshold);
+        gpu.params2 = glm::vec4(params.waterTint, params.noiseScale, static_cast<float>(params.noiseOctaves), params.noisePersistence);
+        gpu.params3 = glm::vec4(params.noiseTimeSpeed, waterTime, params.shoreStrength, params.shoreFalloff);
+        gpu.shallowColor = glm::vec4(params.shallowColor, 0.0f);
+        gpu.deepColor = glm::vec4(params.deepColor, params.foamIntensity);
+        gpu.foamParams = glm::vec4(params.foamNoiseScale, static_cast<float>(params.foamNoiseOctaves), params.foamNoisePersistence, params.foamTintIntensity);
+        gpu.foamParams2 = glm::vec4(params.foamBrightness, params.foamContrast, params.bumpAmplitude, params.depthFalloff);
+        gpu.foamTint = params.foamTint;
+
+        void* data;
+        vkMapMemory(app->getDevice(), waterParamsBuffer.memory, 0, sizeof(WaterParamsGPU), 0, &data);
+        memcpy(data, &gpu, sizeof(WaterParamsGPU));
+        vkUnmapMemory(app->getDevice(), waterParamsBuffer.memory);
+    }
 
     // Update per-frame scene descriptors
-    updateSceneTexturesBinding(app, sceneColorView, sceneDepthView, frameIndex);
+    updateSceneTexturesBinding(app, sceneColorView, sceneDepthView, frameIndex, skyView);
 
-    // Run water geometry pass offscreen on a temporary command buffer to avoid nested render passes
-    app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-        beginWaterGeometryPass(cmd, frameIndex);
+    // Record the water geometry pass directly on the main command buffer.
+    // The solid render pass already ended (finalLayout transitions images to
+    // SHADER_READ_ONLY_OPTIMAL) but we still need an execution+memory barrier
+    // so that COLOR_ATTACHMENT_OUTPUT writes from the solid pass are visible
+    // to FRAGMENT_SHADER reads in the water pass.
+    VkMemoryBarrier memBarrier{};
+    memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    memBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 1, &memBarrier, 0, nullptr, 0, nullptr);
 
-        // Bind the water geometry pipeline and descriptor sets before issuing draw commands
-        if (waterGeometryPipeline != VK_NULL_HANDLE) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeometryPipeline);
+    beginWaterGeometryPass(cmd, frameIndex);
 
-            // Water shaders use set 0 (UBO + samplers, binding 0 & 7) and set 2
-            // (scene textures).  Set 1 (materials SSBO) is in the pipeline layout
-            // for compatibility but is NOT referenced by the water shaders.
-            // Bind each set individually so a VK_NULL_HANDLE material set is
-            // never passed to vkCmdBindDescriptorSets (that causes a GPU hang).
+    // Bind the water geometry pipeline and descriptor sets before issuing draw commands
+    if (waterGeometryPipeline != VK_NULL_HANDLE) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeometryPipeline);
 
-            // Set 0: main UBO + texture samplers + water params
-            VkDescriptorSet mainDs = app->getMainDescriptorSet();
-            if (mainDs != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
-            }
+        // Bind each set individually so a VK_NULL_HANDLE material set is
+        // never passed to vkCmdBindDescriptorSets (that causes a GPU hang).
 
-            // Set 1: materials SSBO — only bind if available (shader doesn't use it)
-            VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
-            if (materialDs != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
-            }
-
-            // Set 2: scene depth textures (color + depth)
-            VkDescriptorSet sceneDs = waterDepthDescriptorSets[frameIndex];
-            if (sceneDs != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
-            }
+        // Set 0: main UBO + texture samplers + water params
+        VkDescriptorSet mainDs = app->getMainDescriptorSet();
+        if (mainDs != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
         }
 
-        // Indirect rendering for water geometry
-        waterIndirectRenderer.drawPrepared(cmd);
-        endWaterGeometryPass(cmd);
-    });
+        // Set 1: materials SSBO — only bind if available (shader doesn't use it)
+        VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
+        if (materialDs != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
+        }
+
+        // Set 2: scene depth textures (color + depth)
+        VkDescriptorSet sceneDs = waterDepthDescriptorSets[frameIndex];
+        if (sceneDs != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
+        }
+    }
+
+    // Indirect rendering for water geometry
+    waterIndirectRenderer.drawPrepared(cmd);
+    endWaterGeometryPass(cmd);
+
+    // The 0→EXTERNAL render pass dependency flushes color attachment writes,
+    // but the swapchain render pass's EXTERNAL→0 dependency only covers
+    // EARLY_FRAGMENT_TESTS — it does NOT synchronize FRAGMENT_SHADER reads.
+    // Add an explicit barrier so the post-process fragment shader can sample
+    // the water output images.
+    VkMemoryBarrier postBarrier{};
+    postBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    postBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    postBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 1, &postBarrier, 0, nullptr, 0, nullptr);
 }
 

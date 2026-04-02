@@ -20,7 +20,7 @@ struct WaterParams {
     float depthFalloff = 0.1f;
     int noiseOctaves = 4;
     float noisePersistence = 0.5f;
-    float noiseScale = 8.0f;
+    float noiseScale = 1.0f;
     float waterTint = 0.3f;
     float foamDepthThreshold = 2.0f;
     float noiseTimeSpeed = 1.0f;
@@ -97,15 +97,17 @@ public:
                                  const WaterParams& params,
                                  const glm::mat4& viewProj, const glm::mat4& invViewProj,
                                             const glm::vec3& viewPos, float time,
-                                            bool beginRenderPass = true);
+                                            bool beginRenderPass = true,
+                                            VkImageView skyView = VK_NULL_HANDLE);
 
-    // High-level helper: perform any per-frame water work required during the
-    // main render (offscreen geometry already executed via SceneRenderer::waterPass)
-    // and composite the offscreen results into the provided swapchain framebuffer.
-    void render(VulkanApp* app, VkCommandBuffer cmd, VkFramebuffer swapchainFramebuffer, VkRenderPass swapchainRenderPass,
-                     uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView,
-                     const WaterParams& params, const glm::mat4& viewProj, const glm::mat4& invViewProj,
-                     const glm::vec3& viewPos, float time, bool beginRenderPass = true);    // Get water depth/normal/mask images for post-process sampling
+    // Execute the water offscreen geometry pass on the provided command buffer.
+    // The solid render pass must have already ended on this same command buffer.
+    void render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
+                VkImageView sceneColorView, VkImageView sceneDepthView,
+                const WaterParams& params, float waterTime,
+                VkImageView skyView = VK_NULL_HANDLE);
+
+    // Get water depth/normal/mask images for post-process sampling
     VkImageView getWaterDepthView() const { return waterDepthImageView; }
     VkImageView getWaterNormalView() const { return waterNormalImageView; }
     VkImageView getWaterMaskView() const { return waterMaskImageView; }
@@ -150,12 +152,9 @@ public:
     VkImageView getSceneColorImageView(uint32_t frameIndex) const { return sceneColorImageViews[frameIndex]; }
     VkImageView getSceneDepthImageView(uint32_t frameIndex) const { return sceneDepthImageViews[frameIndex]; }
     
-    // Update the scene textures binding (color + depth) for refraction and edge foam
-    void updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex);
+    // Update the scene textures binding (color + depth + sky) for refraction and edge foam
+    void updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView = VK_NULL_HANDLE);
 
-    // Execute water's offscreen geometry pass (bind scene textures + run indirect water draw)
-    // - Performs the same work previously in SceneRenderer::waterPass (single-time command buffer)
-    void render(VulkanApp* app, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView);
     // Register model version for water meshes (stored here)
     void registerModelVersion(NodeID id, const Model3DVersion& ver) { waterNodeModelVersions[id] = ver; }
 
