@@ -1,6 +1,7 @@
 #include "SolidRenderer.hpp"
 #include "VegetationRenderer.hpp"
 #include "WaterRenderer.hpp"
+#include "PostProcessRenderer.hpp"
 #include "SkyRenderer.hpp"
 #include "ShadowRenderer.hpp"
 #include "DebugCubeRenderer.hpp"
@@ -54,6 +55,7 @@ public:
     std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<ShadowRenderer> shadowMapper;
     std::unique_ptr<WaterRenderer> waterRenderer;
+    std::unique_ptr<PostProcessRenderer> postProcessRenderer;
     std::unique_ptr<SolidRenderer> solidRenderer;
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
     std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;

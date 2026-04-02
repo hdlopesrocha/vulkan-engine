@@ -9,6 +9,9 @@
 
 void SceneRenderer::cleanup(VulkanApp* app) {
     // Cleanup all sub-renderers to properly destroy GPU resources (app may be null)
+    if (postProcessRenderer && app) {
+        postProcessRenderer->cleanup(app);
+    }
     if (waterRenderer && app) {
         waterRenderer->cleanup(app);
     }
@@ -55,6 +58,9 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
     if (waterRenderer) {
         waterRenderer->createRenderTargets(app, width, height);
     }
+    if (postProcessRenderer) {
+        postProcessRenderer->setRenderSize(width, height);
+    }
     if (skyRenderer) {
         skyRenderer->createOffscreenTargets(app, width, height);
     }
@@ -63,6 +69,7 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
 SceneRenderer::SceneRenderer() :
     shadowMapper(std::make_unique<ShadowRenderer>(8192)),
     waterRenderer(std::make_unique<WaterRenderer>()),
+    postProcessRenderer(std::make_unique<PostProcessRenderer>()),
     skyRenderer(std::make_unique<SkyRenderer>()),
     solidRenderer(std::make_unique<SolidRenderer>()),
     vegetationRenderer(std::make_unique<VegetationRenderer>()),
@@ -135,7 +142,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
     waterRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, waterParams, waterTime, skyView);
 
     // Post-processing should run inside the active main render pass; caller (e.g. MyApp::draw) should invoke
-    // `waterRenderer->renderWaterPostProcess` with valid scene color/depth views when available. Keep this function focused
+    // `postProcessRenderer->render` with valid scene/water views when available. Keep this function focused
     // on executing offscreen geometry and returning control to the main pass.
 }
 
@@ -300,6 +307,10 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         });
     }
     waterRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+
+    // Initialize post-process renderer (composites scene + water into swapchain)
+    postProcessRenderer->init(app);
+    postProcessRenderer->setRenderSize(app->getWidth(), app->getHeight());
     
     // Initialize sky renderer with sphere VBO now that descriptor sets are ready
     skyRenderer->init(app, *skySettings, mainDs);

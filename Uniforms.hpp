@@ -16,7 +16,7 @@ struct UniformObject {
     glm::vec4 debugParams;           // offset 208, size 16
     glm::vec4 triplanarSettings;     // offset 224, size 16
     glm::vec4 tessParams;            // offset 240, size 16
-    glm::vec4 passParams;            // offset 256, size 16  <-- THIS IS WHERE noiseScale IS
+    glm::vec4 passParams;            // offset 256, size 16  x=isShadowPass, y=tessEnabled, z=nearPlane, w=farPlane
     
     // Total size: 272 bytes
 

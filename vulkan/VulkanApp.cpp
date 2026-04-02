@@ -1925,7 +1925,8 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     bool colorWrite,
     VkCompareOp depthCompare,
     VkPrimitiveTopology topology,
-    VkRenderPass renderPassOverride) {
+    VkRenderPass renderPassOverride,
+    bool depthClampEnable) {
 
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages(stages);
     std::vector<VkVertexInputAttributeDescription> attributeDescriptions(descriptions);
@@ -1969,7 +1970,7 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
 
     VkPipelineRasterizationStateCreateInfo rasterizer{};
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.depthClampEnable = depthClampEnable ? VK_TRUE : VK_FALSE;
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = polygonMode;
     rasterizer.lineWidth = 1.0f;
@@ -2836,6 +2837,11 @@ void VulkanApp::createLogicalDevice() {
     }
     deviceFeatures.tessellationShader = VK_TRUE;
     deviceFeatures.samplerAnisotropy = VK_TRUE;
+    // Enable depth clamp so tessellation-displaced vertices beyond the far plane
+    // are clamped instead of clipped (prevents ragged edges at far distance)
+    if (supportedFeatures.depthClamp) {
+        deviceFeatures.depthClamp = VK_TRUE;
+    }
     // Enable multi-draw indirect for GPU-driven rendering
     if (supportedFeatures.multiDrawIndirect) {
         deviceFeatures.multiDrawIndirect = VK_TRUE;

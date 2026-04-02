@@ -265,7 +265,8 @@ protected:
         bool colorWrite = true,
         VkCompareOp depthCompare = VK_COMPARE_OP_LESS,
         VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        VkRenderPass renderPassOverride = VK_NULL_HANDLE);
+        VkRenderPass renderPassOverride = VK_NULL_HANDLE,
+        bool depthClampEnable = false);
         std::vector<VkCommandBuffer> createCommandBuffers();
 
         VkDevice getDevice() const;

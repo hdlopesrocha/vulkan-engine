@@ -272,7 +272,7 @@ public:
         
         // Set up camera projection matrix
         float aspectRatio = static_cast<float>(getWidth()) / static_cast<float>(getHeight());
-        glm::mat4 proj = glm::perspective(glm::radians(60.0f), aspectRatio, 0.1f, 10000.0f);
+        glm::mat4 proj = glm::perspective(glm::radians(60.0f), aspectRatio, settings.nearPlane, settings.farPlane);
         proj[1][1] *= -1; // Vulkan Y-flip
         camera.setProjection(proj);
         shadowParams.update(camera.getPosition(), light);
@@ -324,7 +324,15 @@ public:
             fprintf(stderr, "[MyApp::preRenderPass] sceneRenderer is null, skipping shadow pass\n");
         }
 
-        // Build per-frame UBO
+        // Rebuild projection matrix FIRST so viewProj below reflects current near/far settings
+        {
+            float aspectRatio = static_cast<float>(getWidth()) / static_cast<float>(getHeight());
+            glm::mat4 proj = glm::perspective(glm::radians(60.0f), aspectRatio, settings.nearPlane, settings.farPlane);
+            proj[1][1] *= -1; // Vulkan Y-flip
+            camera.setProjection(proj);
+        }
+
+        // Build per-frame UBO (viewProj now includes the updated projection)
         glm::mat4 viewProj = camera.getViewProjectionMatrix();
         uboStatic.viewProjection = viewProj;
         uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
@@ -340,8 +348,8 @@ public:
             settings.tessMinLevel,
             settings.tessMaxLevel
         );
-        // passParams: x = isShadowPass, y = tessEnabled (also gates displacement in TCS/TE)
-        uboStatic.passParams = glm::vec4(0.0f, settings.tessellationEnabled ? 1.0f : 0.0f, 0.0f, 0.0f);
+        // passParams: x = isShadowPass, y = tessEnabled, z = nearPlane, w = farPlane
+        uboStatic.passParams = glm::vec4(0.0f, settings.tessellationEnabled ? 1.0f : 0.0f, settings.nearPlane, settings.farPlane);
         // materialFlags.w = global normal-mapping toggle (shader checks ubo.materialFlags.w > 0.5)
         uboStatic.materialFlags.w = settings.normalMappingEnabled ? 1.0f : 0.0f;
         // shadowEffects.w = global shadow toggle (shader checks ubo.shadowEffects.w > 0.5)
@@ -437,6 +445,8 @@ public:
 
         // Run water geometry pass offscreen and bind scene textures for post-process
         if (waterEnabled) {
+            // GPU frustum cull water meshes (must run outside a render pass)
+            sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
             VkImageView skyView = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
             sceneRenderer->waterPass(this, commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), profilingEnabled, queryPool,
                 sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), skyView);
@@ -562,15 +572,18 @@ public:
         glm::mat4 invViewProj = glm::inverse(viewProj);
 
         // Composite offscreen scene + water into the swapchain
-        if (sceneRenderer && sceneRenderer->waterRenderer) {
+        if (sceneRenderer && sceneRenderer->postProcessRenderer) {
             VkImageView skyViewPP = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-            sceneRenderer->waterRenderer->renderWaterPostProcess(
+            sceneRenderer->postProcessRenderer->render(
                 this,
                 commandBuffer,
                 renderPassInfo.framebuffer,
                 renderPassInfo.renderPass,
                 sceneRenderer->solidRenderer->getColorView(frameIdx),
                 sceneRenderer->solidRenderer->getDepthView(frameIdx),
+                sceneRenderer->waterRenderer->getWaterDepthView(),
+                sceneRenderer->waterRenderer->getWaterNormalView(),
+                sceneRenderer->waterRenderer->getWaterMaskView(),
                 sceneRenderer->waterRenderer->getParams(),
                 viewProj,
                 invViewProj,

@@ -27,6 +27,8 @@ public:
         vsyncEnabled = true;
         showDebugCubes = false;
         showBoundingBoxes = false;
+        nearPlane = 0.1f;
+        farPlane = 8092.0f;
     }
 
     // Global toggles
@@ -64,4 +66,8 @@ public:
 
     // Present mode
     bool vsyncEnabled = true;
+
+    // Camera clip planes
+    float nearPlane = 0.1f;
+    float farPlane = 8092.0f;
 };

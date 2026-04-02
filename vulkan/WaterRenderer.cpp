@@ -24,8 +24,6 @@ void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer) {
     createWaterRenderPass(app);
     createSceneRenderPass(app);
     createWaterPipelines(app);
-    createPostProcessPipeline(app);
-    createDescriptorSets(app);
 }
 
 void WaterRenderer::cleanup(VulkanApp* app) {
@@ -36,17 +34,12 @@ void WaterRenderer::cleanup(VulkanApp* app) {
     // Clear local handles; VulkanResourceManager is responsible for actual destruction
     destroyRenderTargets(app);
     waterGeometryPipeline = VK_NULL_HANDLE;
-    waterPostProcessPipeline = VK_NULL_HANDLE;
-    waterPostProcessPipelineLayout = VK_NULL_HANDLE;
-    postProcessDescriptorPool = VK_NULL_HANDLE;
-    postProcessDescriptorSetLayout = VK_NULL_HANDLE;
     waterDepthDescriptorPool = VK_NULL_HANDLE;
     waterDepthDescriptorSetLayout = VK_NULL_HANDLE;
     waterGeometryPipelineLayout = VK_NULL_HANDLE;
     waterRenderPass = VK_NULL_HANDLE;
     sceneRenderPass = VK_NULL_HANDLE;
     linearSampler = VK_NULL_HANDLE;
-    waterUniformBuffer = {};
 }
 
 void WaterRenderer::createSamplers(VulkanApp* app) {
@@ -542,11 +535,6 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
 void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     VkDevice device = app->getDevice();
     
-    // Create uniform buffer for water params (for post-process pass)
-    waterUniformBuffer = app->createBuffer(sizeof(WaterUBO), 
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    
     // Water params buffer is already assigned in init
     
     // Initialize water params buffer with default values
@@ -816,211 +804,6 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     if (teseModule) teseModule = VK_NULL_HANDLE;
 }
 
-void WaterRenderer::createPostProcessPipeline(VulkanApp* app) {
-    // Post-process pipeline composites scene + water into the swapchain
-    VkDevice device = app->getDevice();
-    
-    // Create descriptor set layout for post-process
-    // Bindings:
-    // 0: Scene color (sampler2D)
-    // 1: Scene depth (sampler2D)
-    // 2: Water depth (sampler2D)
-    // 3: Water normal (sampler2D)
-    // 4: Water mask (sampler2D)
-    // 5: Water UBO (uniform buffer)
-    // 6: Sky color (sampler2D)
-    
-    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
-    
-    for (int i = 0; i < 5; ++i) {
-        bindings[i].binding = i;
-        bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[i].descriptorCount = 1;
-        bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    }
-    
-    bindings[5].binding = 5;
-    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    bindings[5].descriptorCount = 1;
-    bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    bindings[6].binding = 6;
-    bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[6].descriptorCount = 1;
-    bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-    layoutInfo.pBindings = bindings.data();
-    
-    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &postProcessDescriptorSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create water post-process descriptor set layout!");
-    }
-    // register descriptor set layout
-    app->resources.addDescriptorSetLayout(postProcessDescriptorSetLayout, "WaterRenderer: postProcessDescriptorSetLayout");
-    
-    // Create pipeline layout
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &postProcessDescriptorSetLayout;
-    
-    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &waterPostProcessPipelineLayout) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create water post-process pipeline layout!");
-    }
-    // register pipeline layout
-    app->resources.addPipelineLayout(waterPostProcessPipelineLayout, "WaterRenderer: waterPostProcessPipelineLayout");
-    
-    // Load shaders
-    auto vertCode = FileReader::readFile("shaders/fullscreen.vert.spv");
-    auto fragCode = FileReader::readFile("shaders/water_postprocess.frag.spv");
-    
-    if (vertCode.empty() || fragCode.empty()) {
-        std::cerr << "[WaterRenderer] Warning: Could not load post-process shaders, skipping pipeline creation" << std::endl;
-        return;
-    }
-    
-    VkShaderModule vertModule = app->createShaderModule(vertCode);
-    VkShaderModule fragModule = app->createShaderModule(fragCode);
-    
-    std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages{};
-    shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    shaderStages[0].module = vertModule;
-    shaderStages[0].pName = "main";
-    
-    shaderStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    shaderStages[1].module = fragModule;
-    shaderStages[1].pName = "main";
-    
-    // No vertex input (fullscreen triangle generated in shader)
-    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    inputAssembly.primitiveRestartEnable = VK_FALSE;
-    
-    VkPipelineViewportStateCreateInfo viewportState{};
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
-    
-    VkPipelineRasterizationStateCreateInfo rasterizer{};
-    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer.depthClampEnable = VK_FALSE;
-    rasterizer.rasterizerDiscardEnable = VK_FALSE;
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_NONE;
-    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rasterizer.depthBiasEnable = VK_FALSE;
-    
-    VkPipelineMultisampleStateCreateInfo multisampling{};
-    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.sampleShadingEnable = VK_FALSE;
-    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    
-    VkPipelineDepthStencilStateCreateInfo depthStencil{};
-    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = VK_FALSE;
-    depthStencil.depthWriteEnable = VK_FALSE;
-    
-    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | 
-                                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    colorBlendAttachment.blendEnable = VK_FALSE;
-    
-    VkPipelineColorBlendStateCreateInfo colorBlending{};
-    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.logicOpEnable = VK_FALSE;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
-    
-    std::array<VkDynamicState, 2> dynamicStates = {
-        VK_DYNAMIC_STATE_VIEWPORT,
-        VK_DYNAMIC_STATE_SCISSOR
-    };
-    
-    VkPipelineDynamicStateCreateInfo dynamicState{};
-    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
-    dynamicState.pDynamicStates = dynamicStates.data();
-    
-    VkGraphicsPipelineCreateInfo pipelineInfo{};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
-    pipelineInfo.pStages = shaderStages.data();
-    pipelineInfo.pVertexInputState = &vertexInputInfo;
-    pipelineInfo.pInputAssemblyState = &inputAssembly;
-    pipelineInfo.pViewportState = &viewportState;
-    pipelineInfo.pRasterizationState = &rasterizer;
-    pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = &depthStencil;
-    pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.layout = waterPostProcessPipelineLayout;
-    pipelineInfo.renderPass = app->getSwapchainRenderPass();  // Use swapchain render pass
-    pipelineInfo.subpass = 0;
-    
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &waterPostProcessPipeline) != VK_SUCCESS) {
-        std::cerr << "[WaterRenderer] Warning: Failed to create post-process pipeline" << std::endl;
-        waterPostProcessPipeline = VK_NULL_HANDLE;
-    }
-    if (waterPostProcessPipeline != VK_NULL_HANDLE) {
-        app->resources.addPipeline(waterPostProcessPipeline, "WaterRenderer: waterPostProcessPipeline");
-    }
-    
-    // Clear local shader module references; destruction handled by VulkanResourceManager
-    vertModule = VK_NULL_HANDLE;
-    fragModule = VK_NULL_HANDLE;
-    
-    if (waterPostProcessPipeline != VK_NULL_HANDLE) {
-        std::cout << "[WaterRenderer] Created post-process pipeline" << std::endl;
-    }
-}
-
-void WaterRenderer::createDescriptorSets(VulkanApp* app) {
-    if (postProcessDescriptorSetLayout == VK_NULL_HANDLE) return;
-    
-    VkDevice device = app->getDevice();
-    
-    // Create descriptor pool
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = 6;  // scene color + scene depth + water depth + water normal + water mask + sky color
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[1].descriptorCount = 1;
-    
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-    poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = 1;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &postProcessDescriptorPool) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create water post-process descriptor pool!");
-    }
-    // Register post-process descriptor pool with resource manager
-    app->resources.addDescriptorPool(postProcessDescriptorPool, "WaterRenderer: postProcessDescriptorPool");
-    
-    // Allocate descriptor set
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = postProcessDescriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &postProcessDescriptorSetLayout;
-    
-    if (vkAllocateDescriptorSets(device, &allocInfo, &postProcessDescriptorSet) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate water post-process descriptor set!");
-    }
-    app->resources.addDescriptorSet(postProcessDescriptorSet, "WaterRenderer: postProcessDescriptorSet");
-}
-
 void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex) {
     if (waterRenderPass == VK_NULL_HANDLE) {
         fprintf(stderr, "[WaterRenderer::beginWaterGeometryPass] waterRenderPass is VK_NULL_HANDLE, skipping.\n");
@@ -1066,141 +849,6 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
     }
     // Properly end the water geometry render pass recorded on the provided command buffer
     vkCmdEndRenderPass(cmd);
-}
-
-void WaterRenderer::renderWaterPostProcess(VulkanApp* app, VkCommandBuffer cmd, VkFramebuffer swapchainFramebuffer,
-                                            VkRenderPass swapchainRenderPass,
-                                            VkImageView sceneColorView, VkImageView sceneDepthView,
-                                            const WaterParams& params,
-                                            const glm::mat4& viewProj, const glm::mat4& invViewProj,
-                                            const glm::vec3& viewPos, float time,
-                                            bool beginRenderPass, VkImageView skyView) {
-    if (waterPostProcessPipeline == VK_NULL_HANDLE) {
-        fprintf(stderr, "[WaterRenderer::renderWaterPostProcess] waterPostProcessPipeline is VK_NULL_HANDLE, skipping.\n");
-        return;
-    }
-    if (cmd == VK_NULL_HANDLE) {
-        fprintf(stderr, "[WaterRenderer::renderWaterPostProcess] cmd is VK_NULL_HANDLE, skipping.\n");
-        return;
-    }
-    if (swapchainFramebuffer == VK_NULL_HANDLE) {
-        fprintf(stderr, "[WaterRenderer::renderWaterPostProcess] swapchainFramebuffer is VK_NULL_HANDLE, skipping.\n");
-        return;
-    }
-    if (swapchainRenderPass == VK_NULL_HANDLE) {
-        fprintf(stderr, "[WaterRenderer::renderWaterPostProcess] swapchainRenderPass is VK_NULL_HANDLE, skipping.\n");
-        return;
-    }
-    VkDevice device = app->getDevice();
-    // Update water UBO
-    WaterUBO ubo{};
-    ubo.viewProjection = viewProj;
-    ubo.invViewProjection = invViewProj;
-    ubo.viewPos = glm::vec4(viewPos, 1.0f);
-    ubo.waterParams1 = glm::vec4(time, params.waveSpeed, params.waveScale, params.refractionStrength);
-    ubo.waterParams2 = glm::vec4(params.fresnelPower, params.transparency, params.depthFalloff, params.noiseScale);
-    ubo.shallowColor = glm::vec4(params.shallowColor, 0.0f);
-    ubo.deepColor = glm::vec4(params.deepColor, static_cast<float>(params.noiseOctaves));
-    ubo.screenSize = glm::vec4(renderWidth, renderHeight, 1.0f / renderWidth, 1.0f / renderHeight);
-    ubo.noisePersistence = glm::vec4(params.noisePersistence, 0.0f, 0.0f, 0.0f);
-    void* data;
-    vkMapMemory(device, waterUniformBuffer.memory, 0, sizeof(WaterUBO), 0, &data);
-    memcpy(data, &ubo, sizeof(WaterUBO));
-    vkUnmapMemory(device, waterUniformBuffer.memory);
-    // Update descriptor set with current images
-    // Prepare image infos and only write descriptors for valid image views
-    std::array<VkDescriptorImageInfo, 5> imageInfos{};
-    imageInfos[0] = {linearSampler, sceneColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    imageInfos[1] = {linearSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    imageInfos[2] = {linearSampler, waterDepthImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    imageInfos[3] = {linearSampler, waterNormalImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    imageInfos[4] = {linearSampler, waterMaskImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorBufferInfo bufferInfo{waterUniformBuffer.buffer, 0, sizeof(WaterUBO)};
-
-    // Sky color image info (binding 6)
-    VkDescriptorImageInfo skyImageInfo{};
-    skyImageInfo.sampler = linearSampler;
-    skyImageInfo.imageView = (skyView != VK_NULL_HANDLE) ? skyView : sceneColorView;  // fallback to scene color
-    skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    std::vector<VkWriteDescriptorSet> writes;
-    for (int i = 0; i < 5; ++i) {
-        if (imageInfos[i].imageView == VK_NULL_HANDLE || imageInfos[i].sampler == VK_NULL_HANDLE) {
-            fprintf(stderr, "[WaterRenderer] Skipping post-process binding %d: imageView=%p sampler=%p\n", i, (void*)imageInfos[i].imageView, (void*)imageInfos[i].sampler);
-            continue;
-        }
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = postProcessDescriptorSet;
-        write.dstBinding = i;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.descriptorCount = 1;
-        write.pImageInfo = &imageInfos[i];
-        writes.push_back(write);
-    }
-    if (bufferInfo.buffer != VK_NULL_HANDLE) {
-        VkWriteDescriptorSet bufWrite{};
-        bufWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        bufWrite.dstSet = postProcessDescriptorSet;
-        bufWrite.dstBinding = 5;
-        bufWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        bufWrite.descriptorCount = 1;
-        bufWrite.pBufferInfo = &bufferInfo;
-        writes.push_back(bufWrite);
-    } else {
-        fprintf(stderr, "[WaterRenderer] Skipping post-process UBO binding: buffer is VK_NULL_HANDLE\n");
-    }
-
-    // Sky color texture (binding 6)
-    if (skyImageInfo.imageView != VK_NULL_HANDLE && skyImageInfo.sampler != VK_NULL_HANDLE) {
-        VkWriteDescriptorSet skyWrite{};
-        skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        skyWrite.dstSet = postProcessDescriptorSet;
-        skyWrite.dstBinding = 6;
-        skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        skyWrite.descriptorCount = 1;
-        skyWrite.pImageInfo = &skyImageInfo;
-        writes.push_back(skyWrite);
-    }
-
-    if (!writes.empty()) vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-    if (beginRenderPass) {
-        // Begin render pass (output to swapchain)
-        std::array<VkClearValue, 2> clearValues{};
-        clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        clearValues[1].depthStencil = {1.0f, 0};
-        VkRenderPassBeginInfo renderPassInfo{};
-        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        renderPassInfo.renderPass = swapchainRenderPass;
-        renderPassInfo.framebuffer = swapchainFramebuffer;
-        renderPassInfo.renderArea.offset = {0, 0};
-        renderPassInfo.renderArea.extent = {renderWidth, renderHeight};
-        renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-        renderPassInfo.pClearValues = clearValues.data();
-        vkCmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    }
-    // Set viewport and scissor (safe to call inside already-open render pass)
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = static_cast<float>(renderWidth);
-    viewport.height = static_cast<float>(renderHeight);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    VkRect2D scissor{};
-    scissor.offset = {0, 0};
-    scissor.extent = {renderWidth, renderHeight};
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
-    // Bind pipeline and descriptor set
-    //printf("[WaterRenderer] vkCmdBindPipeline: waterPostProcessPipeline=%p\n", (void*)waterPostProcessPipeline);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPostProcessPipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPostProcessPipelineLayout, 
-                            0, 1, &postProcessDescriptorSet, 0, nullptr);
-    // Draw fullscreen triangle (3 vertices, no vertex buffer needed)
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-    // NOTE: Render pass is NOT ended here - caller is responsible for ending it
-    // This allows ImGui or other overlays to be rendered in the same pass
 }
 
 void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView) {

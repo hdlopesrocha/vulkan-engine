@@ -89,17 +89,6 @@ public:
     void beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex);
     void endWaterGeometryPass(VkCommandBuffer cmd);
 
-    // Render water post-process to swapchain (apply refraction)
-    // This starts and ends its own render pass that outputs to the provided swapchain framebuffer
-    void renderWaterPostProcess(VulkanApp* app, VkCommandBuffer cmd, VkFramebuffer swapchainFramebuffer,
-                                 VkRenderPass swapchainRenderPass,
-                                 VkImageView sceneColorView, VkImageView sceneDepthView,
-                                 const WaterParams& params,
-                                 const glm::mat4& viewProj, const glm::mat4& invViewProj,
-                                            const glm::vec3& viewPos, float time,
-                                            bool beginRenderPass = true,
-                                            VkImageView skyView = VK_NULL_HANDLE);
-
     // Execute the water offscreen geometry pass on the provided command buffer.
     // The solid render pass must have already ended on this same command buffer.
     void render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
@@ -129,9 +118,6 @@ public:
     // Time management for water animation
     void advanceTime(float dt) { params.time += dt; }
     float getTime() const { return params.time; }
-    
-    // Check if post-process pipeline is ready
-    bool isPostProcessReady() const { return waterPostProcessPipeline != VK_NULL_HANDLE; }
     
     // Get the water geometry pipeline (for rendering water to G-buffer)
     VkPipeline getWaterGeometryPipeline() const { return waterGeometryPipeline; }
@@ -170,8 +156,6 @@ private:
     void createWaterRenderPass(VulkanApp* app);
     void createSceneRenderPass(VulkanApp* app);
     void createWaterPipelines(VulkanApp* app);
-    void createPostProcessPipeline(VulkanApp* app);
-    void createDescriptorSets(VulkanApp* app);
     void createSamplers(VulkanApp* app);
 
     
@@ -215,26 +199,16 @@ private:
 
     // Pipelines
     VkPipeline waterGeometryPipeline = VK_NULL_HANDLE;
-    VkPipeline waterPostProcessPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout waterPostProcessPipelineLayout = VK_NULL_HANDLE;
     
     // Water geometry pipeline layout (includes depth texture binding)
     VkPipelineLayout waterGeometryPipelineLayout = VK_NULL_HANDLE;
 
-    // Descriptor sets for post-process
-    VkDescriptorSetLayout postProcessDescriptorSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool postProcessDescriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSet postProcessDescriptorSet = VK_NULL_HANDLE;
-    
     // Descriptor set for water geometry (scene depth texture)
     VkDescriptorSetLayout waterDepthDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool waterDepthDescriptorPool = VK_NULL_HANDLE;
     // Per-frame descriptor sets for scene textures (2 frames in flight)
     std::array<VkDescriptorSet, 2> waterDepthDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
-    // Uniform buffer for water params (post-process)
-    Buffer waterUniformBuffer;
-    
     // Uniform buffer for water geometry shader params
     Buffer waterParamsBuffer;
 

@@ -34,6 +34,15 @@ void SettingsWidget::render() {
 
         ImGui::Separator();
 
+        ImGui::Text("Camera");
+        ImGui::Separator();
+        ImGui::DragFloat("Near Plane", &settings.nearPlane, 0.01f, 0.001f, 100.0f, "%.3f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Near clip plane distance (affects depth precision)");
+        ImGui::DragFloat("Far Plane", &settings.farPlane, 10.0f, 100.0f, 100000.0f, "%.1f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Far clip plane distance (view distance)");
+
+        ImGui::Separator();
+
         ImGui::Text("Input");
         ImGui::Separator();
             ImGui::Text("Rendering");

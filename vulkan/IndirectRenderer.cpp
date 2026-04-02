@@ -666,6 +666,26 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // Reset visible count to zero using a command (clear GPU-side counter)
     vkCmdFillBuffer(cmd, visibleCountBuffer.buffer, 0, sizeof(uint32_t), 0);
 
+    // Barrier: vkCmdFillBuffer is a TRANSFER write. The compute shader does
+    // atomicAdd on visibleCountBuffer, so we must ensure the fill is visible
+    // before the dispatch starts. Without this the atomicAdd can race the
+    // fill and read a stale value from the previous frame.
+    {
+        VkBufferMemoryBarrier fillBarrier{};
+        fillBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        fillBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        fillBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        fillBarrier.buffer = visibleCountBuffer.buffer;
+        fillBarrier.offset = 0;
+        fillBarrier.size = sizeof(uint32_t);
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, nullptr, 1, &fillBarrier, 0, nullptr);
+    }
+
     // Bind and dispatch compute cull
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeDescriptorSet, 0, nullptr);

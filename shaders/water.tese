@@ -26,7 +26,7 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     vec4 debugParams;
     vec4 triplanarSettings;
     vec4 tessParams;   // x=nearDist, y=farDist, z=minLevel, w=maxLevel
-    vec4 passParams;   // x=time, y=tessEnabled, z=waveScale, w=noiseScale
+    vec4 passParams;   // x=isShadowPass, y=tessEnabled, z=nearPlane, w=farPlane
 } ubo;
 
 // Water-specific parameters (set 0, binding = 7) - same layout as the post-process shader
@@ -62,8 +62,9 @@ void main() {
     // Get water and noise parameters
     float time = waterParams.params3.y;
     if (time == 0.0) time = ubo.passParams.x;
-    float waveScale = ubo.passParams.z;
-    float noiseScale = ubo.passParams.w;
+    // waveScale is no longer in passParams (z/w now carry nearPlane/farPlane).
+    // Displacement magnitude is fully controlled by bumpAmp from the widget.
+    float waveScale = 1.0;
     float noiseTimeSpeed = waterParams.params3.x;
 
     // foam/Noise params (shared with foam logic)
@@ -81,7 +82,7 @@ void main() {
     float waveDisplacement = (baseNoise + baseNoise2 * 0.5) * bumpAmp * waveScale;
 
     // Displace position along normal (Y-up for water surface)
-    pos.y += waveDisplacement;
+    pos += waveDisplacement * normal;
 
     // Calculate perturbed normal from wave gradient using small offsets in X/Z
     float eps = 0.1;

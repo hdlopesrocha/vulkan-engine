@@ -63,9 +63,12 @@ void main() {
     // 3. Composite water on top using water alpha
     vec3 baseColor = skyColor;
 
-    // Blend in solid geometry where depth < 1.0
-    // Use a tight threshold to avoid floating-point edge issues
-    float isSolid = (depth < 0.9999) ? 1.0 : 0.0;
+    // Blend in solid geometry where scene alpha > 0 (solid writes alpha=1, clear is alpha=0).
+    // Previous depth-based threshold (depth < 0.9999) incorrectly treated far
+    // solid fragments as sky because the non-linear depth buffer clusters
+    // values near 1.0 at large distances (e.g. at d=1000 with n=0.1/f=8092,
+    // depth ≈ 0.9999 already).
+    float isSolid = sceneColor.a;
     baseColor = mix(baseColor, sceneColor.rgb, isSolid);
 
     // Composite water on top

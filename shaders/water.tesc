@@ -23,7 +23,7 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     vec4 debugParams;
     vec4 triplanarSettings;
     vec4 tessParams;   // x=nearDist, y=farDist, z=minLevel, w=maxLevel
-    vec4 passParams;   // x=time, y=tessEnabled, z=waveScale, w=noiseScale
+    vec4 passParams;   // x=isShadowPass, y=tessEnabled, z=nearPlane, w=farPlane
 } ubo;
 
 void main() {
