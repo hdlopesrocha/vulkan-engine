@@ -131,9 +131,9 @@ $(OUT_DIR)/shaders/%.$(1).spv: shaders/%.$(1)
 	@echo "Compiling shader: $$< -> $$@"
 	@mkdir -p $$(dir $$@)
 	@if command -v glslc >/dev/null 2>&1; then \
-		glslc -I shaders/includes $$< -o $$@; \
+		glslc -Ishaders/includes $$< -o $$@; \
 	else \
-		glslangValidator -I shaders/includes -V --target-env vulkan1.1 $$< -o $$@; \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.1 $$< -o $$@; \
 	fi
 endef
 
@@ -171,8 +171,16 @@ install:
 	
 	# 1. Install dependencies
 	sudo apt update
-	sudo apt install -y build-essential git cmake pkg-config libglfw3-dev libvulkan-dev vulkan-validationlayers glslang-tools
-
+	sudo apt install -y build-essential \
+						git cmake pkg-config \
+						libglfw3-dev \
+						libvulkan-dev \
+						vulkan-validationlayers \
+						glslang-tools \
+						libglm-dev \
+						libshaderc-dev \
+						libstb-dev \
+						libgdal-dev
 	# 2. Clone Dear ImGui
 	mkdir -p third_party
 	cd third_party
