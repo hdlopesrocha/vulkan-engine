@@ -120,11 +120,6 @@ void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDe
 }
 
 void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime) {
-    static int frameCount = 0;
-    if (frameCount++ == 0) {
-        printf("[DEBUG] WaterRenderer::waterPass called for the first time\n");
-    }
-    
     if (commandBuffer == VK_NULL_HANDLE) {
         fprintf(stderr, "[SceneRenderer::waterPass] commandBuffer is VK_NULL_HANDLE, skipping.\n");
         return;
@@ -396,7 +391,6 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     OctreeNodeData nodeCopy = nodeData;
     // Capture nodeCopy by value so async callbacks receive a safe copy
     scene.requestModel3D(layer, nodeCopy, [this, layer, nid, nodeCopy, &onGeometry](const Geometry &geom) {
-        //std::cout << "[SceneRenderer::processNodeLayer] Received geometry for layer=" << static_cast<int>(layer) << " nid=" << nid << " with " << geom.vertices.size() << " vertices and " << geom.indices.size() << " indices.\n";
         onGeometry(layer, nid, nodeCopy, geom);
     });
     
