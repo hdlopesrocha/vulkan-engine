@@ -419,9 +419,9 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
     };
     
     solidNodeEraseCallback = [this, scene](const OctreeNodeData& nd) {
+        std::lock_guard<std::recursive_mutex> lock(chunksMutex);
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         std::cout << "[SceneRenderer] Solid node erase: nid=" << nid << "\n";
-        // Remove solid mesh for this node if it exists
         auto it = solidChunks.find(nid);
         if (it != solidChunks.end()) {
             if (it->second.meshId != UINT32_MAX) {
@@ -440,7 +440,6 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
     liquidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         std::cout << "[SceneRenderer] Liquid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
-        // Trigger water mesh update for this node if needed
         if (nd.containmentType != ContainmentType::Disjoint) {
             OctreeNodeData nodeCopy = nd;
             this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
@@ -452,9 +451,9 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
     };
 
     liquidNodeEraseCallback = [this, scene](const OctreeNodeData& nd) {
+        std::lock_guard<std::recursive_mutex> lock(chunksMutex);
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         std::cout << "[SceneRenderer] Liquid node erase: nid=" << nid << "\n";
-        // Remove water mesh for this node if it exists
         auto it = transparentChunks.find(nid);
         if (it != transparentChunks.end()) {
             if (it->second.meshId != UINT32_MAX) {
@@ -472,9 +471,10 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
 
 // Ensure mesh exists and is up-to-date for a node: insert or replace when needed
 void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
+    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
     IndirectRenderer &renderer = layer == LAYER_OPAQUE ? solidRenderer->getIndirectRenderer() : waterRenderer->getIndirectRenderer();
 
-    const auto &cur = layer == LAYER_OPAQUE ? solidChunks : transparentChunks;
+    auto &cur = layer == LAYER_OPAQUE ? solidChunks : transparentChunks;
     auto it = cur.find(nid);
     if (it != cur.end()) {
         if (it->second.version >= nd.node->version) {
@@ -488,7 +488,7 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
     }
     uint32_t meshId = renderer.addMesh(geom);
     Model3DVersion mv{meshId, nd.node->version};
-    registerModelVersion(nid, mv);
+    cur[nid] = mv;
     renderer.uploadMesh(app, meshId);
     // After all mesh uploads, force a buffer rebuild if dirty
     if (renderer.isDirty()) {
@@ -529,3 +529,105 @@ void SceneRenderer::addDebugCubeForGeometry(Layer layer, NodeID nid, const Octre
     addDebugCubeForNode(nid, c);
 }
 
+
+// --- Brush scene change handlers ---
+
+// Helper to update mesh for a brush node (uses brush chunk maps)
+static void updateBrushMeshForNode(SceneRenderer* sr, VulkanApp* app, Layer layer, NodeID nid,
+                                    const OctreeNodeData &nd, const Geometry &geom,
+                                    std::unordered_map<NodeID, Model3DVersion>& chunkMap) {
+    std::lock_guard<std::recursive_mutex> lock(sr->chunksMutex);
+    IndirectRenderer &renderer = layer == LAYER_OPAQUE
+        ? sr->solidRenderer->getIndirectRenderer()
+        : sr->waterRenderer->getIndirectRenderer();
+
+    auto it = chunkMap.find(nid);
+    if (it != chunkMap.end()) {
+        if (it->second.version >= nd.node->version) return;
+        if (it->second.meshId != UINT32_MAX) {
+            renderer.removeMesh(it->second.meshId);
+        }
+    }
+    uint32_t meshId = renderer.addMesh(geom);
+    Model3DVersion mv{meshId, nd.node->version};
+    chunkMap[nid] = mv;
+    renderer.uploadMesh(app, meshId);
+    if (renderer.isDirty()) {
+        renderer.rebuild(app);
+    }
+}
+
+SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
+    brushSolidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        if (nd.containmentType != ContainmentType::Disjoint) {
+            OctreeNodeData nodeCopy = nd;
+            this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
+                [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+                    updateBrushMeshForNode(this, app, layer, nid, nd, geom, this->brushSolidChunks);
+                }
+            );
+        }
+    };
+
+    brushSolidNodeEraseCallback = [this](const OctreeNodeData& nd) {
+        std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        auto it = brushSolidChunks.find(nid);
+        if (it != brushSolidChunks.end()) {
+            if (it->second.meshId != UINT32_MAX) {
+                solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+            }
+            brushSolidChunks.erase(it);
+        }
+    };
+
+    return SolidSpaceChangeHandler(brushSolidNodeEventCallback, brushSolidNodeEraseCallback);
+}
+
+LiquidSpaceChangeHandler SceneRenderer::makeBrushLiquidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
+    brushLiquidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        if (nd.containmentType != ContainmentType::Disjoint) {
+            OctreeNodeData nodeCopy = nd;
+            this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
+                [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+                    updateBrushMeshForNode(this, app, layer, nid, nd, geom, this->brushTransparentChunks);
+                }
+            );
+        }
+    };
+
+    brushLiquidNodeEraseCallback = [this](const OctreeNodeData& nd) {
+        std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+        NodeID nid = reinterpret_cast<NodeID>(nd.node);
+        auto it = brushTransparentChunks.find(nid);
+        if (it != brushTransparentChunks.end()) {
+            if (it->second.meshId != UINT32_MAX) {
+                waterRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+            }
+            brushTransparentChunks.erase(it);
+        }
+    };
+
+    return LiquidSpaceChangeHandler(brushLiquidNodeEventCallback, brushLiquidNodeEraseCallback);
+}
+
+void SceneRenderer::clearBrushMeshes() {
+    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+    // Remove all brush opaque meshes from solid renderer
+    for (auto &entry : brushSolidChunks) {
+        if (entry.second.meshId != UINT32_MAX) {
+            solidRenderer->getIndirectRenderer().removeMesh(entry.second.meshId);
+        }
+    }
+    brushSolidChunks.clear();
+
+    // Remove all brush transparent meshes from water renderer
+    for (auto &entry : brushTransparentChunks) {
+        if (entry.second.meshId != UINT32_MAX) {
+            waterRenderer->getIndirectRenderer().removeMesh(entry.second.meshId);
+        }
+    }
+    brushTransparentChunks.clear();
+}

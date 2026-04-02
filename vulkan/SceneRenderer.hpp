@@ -22,6 +22,7 @@ class LiquidSpaceChangeHandler;
 #include "../math/Vertex.hpp"
 #include <unordered_map>
 #include <memory>
+#include <mutex>
 #include "Model3DVersion.hpp"
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
@@ -77,11 +78,18 @@ public:
         OctreeNodeData node;
     };
 
+    // Mutex protecting all chunk maps (solid, transparent, brush) and mesh operations
+    std::recursive_mutex chunksMutex;
+
     // Track model ids for transparent/water meshes so we can remove them if erased/updated
     std::unordered_map<NodeID, Model3DVersion> transparentChunks;
 
     // Track model ids for opaque/solid meshes (moved from SolidRenderer)
     std::unordered_map<NodeID, Model3DVersion> solidChunks;
+
+    // Brush scene chunk tracking (separate from main scene)
+    std::unordered_map<NodeID, Model3DVersion> brushSolidChunks;
+    std::unordered_map<NodeID, Model3DVersion> brushTransparentChunks;
 
     // Debug cubes for nodes (populated by change handlers after geometry generation)
     std::unordered_map<NodeID, DebugCubeRenderer::CubeWithColor> nodeDebugCubes;
@@ -150,6 +158,13 @@ public:
     SolidSpaceChangeHandler makeSolidSpaceChangeHandler(Scene* scene, VulkanApp* app);
     LiquidSpaceChangeHandler makeLiquidSpaceChangeHandler(Scene* scene, VulkanApp* app);
 
+    // Create change handlers for brush scene (uses brush chunk maps)
+    SolidSpaceChangeHandler makeBrushSolidSpaceChangeHandler(Scene* scene, VulkanApp* app);
+    LiquidSpaceChangeHandler makeBrushLiquidSpaceChangeHandler(Scene* scene, VulkanApp* app);
+
+    // Remove all brush meshes from GPU and clear brush chunk maps
+    void clearBrushMeshes();
+
     // Resize offscreen resources when the swapchain changes
     void onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height);
 
@@ -159,6 +174,12 @@ private:
     NodeDataCallback solidNodeEraseCallback;
     NodeDataCallback liquidNodeEventCallback;
     NodeDataCallback liquidNodeEraseCallback;
+
+    // Brush scene callbacks (kept alive so handler references remain valid)
+    NodeDataCallback brushSolidNodeEventCallback;
+    NodeDataCallback brushSolidNodeEraseCallback;
+    NodeDataCallback brushLiquidNodeEventCallback;
+    NodeDataCallback brushLiquidNodeEraseCallback;
 };
 
 // ...existing code...

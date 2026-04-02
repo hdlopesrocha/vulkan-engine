@@ -39,6 +39,7 @@
 #include "widgets/VulkanResourcesManagerWidget.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
 #include "widgets/OctreeExplorerWidget.hpp"
+#include "widgets/Brush3dWidget.hpp"
 #include "utils/MainSceneLoader.hpp"
 #include "widgets/Settings.hpp"
 // ...existing includes...
@@ -62,6 +63,8 @@ public:
     Settings settings;
     SceneRenderer * sceneRenderer;
     LocalScene * mainScene;
+    LocalScene * brushScene = nullptr;
+    std::shared_ptr<Brush3dWidget> brush3dWidget;
     VkQueryPool queryPool = VK_NULL_HANDLE;
     static constexpr uint32_t QUERY_COUNT = 12;
     float timestampPeriod = 0.0f;
@@ -288,6 +291,8 @@ public:
     void setupVegetationTextures();
     // Move scene-loading into its own method for clarity
     void setupScene();
+    // Rebuild the brush preview scene from Brush3dWidget entries
+    void rebuildBrushScene();
 
 // (setup implementation defined out-of-line below)
 
@@ -653,6 +658,16 @@ void MyApp::setupScene() {
 
     sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
     sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
+
+    // --- Brush scene setup ---
+    brushScene = new LocalScene();
+
+    // Create Brush3dWidget and wire the rebuild callback
+    brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers);
+    brush3dWidget->setRebuildCallback([this]() {
+        rebuildBrushScene();
+    });
+    widgetManager.addWidget(brush3dWidget);
 }
 
 // Implementation: setup vegetation textures
@@ -693,6 +708,186 @@ void MyApp::setupVegetationTextures() {
             billboardManager.addLayer(bidx, atlasIndex, static_cast<int>(tileIndex));
         }
     }
+}
+
+// Implementation: rebuild the brush scene from Brush3dWidget entries
+void MyApp::rebuildBrushScene() {
+    if (!brushScene || !sceneRenderer || !brush3dWidget) return;
+
+    const auto& entries = brush3dWidget->getEntries();
+    fprintf(stderr, "[MyApp::rebuildBrushScene] Rebuilding with %zu entries\n", entries.size());
+
+    // 1. Remove all existing brush meshes from GPU
+    sceneRenderer->clearBrushMeshes();
+
+    // 2. Reset the brush octrees (clears spatial data without change events)
+    brushScene->getOpaqueOctree().reset();
+    brushScene->transparentOctree.reset();
+
+    if (entries.empty()) {
+        // Nothing to add — just rebuild to commit the removals
+        sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
+        sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
+        sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
+        sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
+        return;
+    }
+
+    // 3. Create brush change handlers (use separate brush chunk maps)
+    SolidSpaceChangeHandler brushSolidHandler = sceneRenderer->makeBrushSolidSpaceChangeHandler(brushScene, this);
+    LiquidSpaceChangeHandler brushLiquidHandler = sceneRenderer->makeBrushLiquidSpaceChangeHandler(brushScene, this);
+    UniqueOctreeChangeHandler uniqueBrushSolidHandler = UniqueOctreeChangeHandler(brushSolidHandler);
+    UniqueOctreeChangeHandler uniqueBrushLiquidHandler = UniqueOctreeChangeHandler(brushLiquidHandler);
+
+    Simplifier simplifier(0.99f, 0.1f, true);
+    glm::vec4 translate(0.0f);
+    glm::vec4 scale(1.0f);
+
+    // 4. Process each brush entry
+    for (const auto& entry : entries) {
+        // Select the target octree and handler based on targetLayer
+        Octree& octree = (entry.targetLayer == 0)
+            ? brushScene->getOpaqueOctree()
+            : brushScene->transparentOctree;
+        const OctreeChangeHandler& handler = (entry.targetLayer == 0)
+            ? static_cast<const OctreeChangeHandler&>(uniqueBrushSolidHandler)
+            : static_cast<const OctreeChangeHandler&>(uniqueBrushLiquidHandler);
+
+        Transformation model(entry.scale, entry.translate, entry.yaw, entry.pitch, entry.roll);
+        SimpleBrush brush(entry.materialIndex);
+
+        // Create the base SDF primitive (stack-allocated, octree copies during add)
+        // sdfType: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder
+        // We use a lambda to avoid massive switch duplication for add vs del with optional effects
+        auto applyEntry = [&](WrappedSignedDistanceFunction* wrappedFunc) {
+            // Optionally wrap in an effect
+            // effectType: 0=PerlinDistort, 1=PerlinCarve, 2=SineDistort, 3=VoronoiCarve
+            if (entry.useEffect) {
+                switch (entry.effectType) {
+                    case 0: {
+                        WrappedPerlinDistortDistanceEffect effect(wrappedFunc,
+                            entry.effectAmplitude, entry.effectFrequency,
+                            glm::vec3(0), entry.effectBrightness, entry.effectContrast);
+                        if (entry.brushMode == 0)
+                            octree.add(&effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        else
+                            octree.del(&effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        break;
+                    }
+                    case 1: {
+                        WrappedPerlinCarveDistanceEffect effect(wrappedFunc,
+                            entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
+                            glm::vec3(0), entry.effectBrightness, entry.effectContrast);
+                        if (entry.brushMode == 0)
+                            octree.add(&effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        else
+                            octree.del(&effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        break;
+                    }
+                    case 2: {
+                        WrappedSineDistortDistanceEffect effect(wrappedFunc,
+                            entry.effectAmplitude, entry.effectFrequency, glm::vec3(0));
+                        if (entry.brushMode == 0)
+                            octree.add(&effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        else
+                            octree.del(&effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        break;
+                    }
+                    case 3: {
+                        WrappedVoronoiCarveDistanceEffect effect(wrappedFunc,
+                            entry.effectAmplitude, entry.effectCellSize,
+                            glm::vec3(0), entry.effectBrightness, entry.effectContrast);
+                        if (entry.brushMode == 0)
+                            octree.add(&effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        else
+                            octree.del(&effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        break;
+                    }
+                    default: {
+                        // Fallback: no effect
+                        if (entry.brushMode == 0)
+                            octree.add(wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        else
+                            octree.del(wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        break;
+                    }
+                }
+            } else {
+                // No effect — use the primitive directly
+                if (entry.brushMode == 0)
+                    octree.add(wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                else
+                    octree.del(wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
+            }
+        };
+
+        switch (entry.sdfType) {
+            case 0: { // Sphere
+                SphereDistanceFunction fn;
+                WrappedSphere wrapped(&fn);
+                applyEntry(&wrapped);
+                break;
+            }
+            case 1: { // Box
+                BoxDistanceFunction fn;
+                WrappedBox wrapped(&fn);
+                applyEntry(&wrapped);
+                break;
+            }
+            case 2: { // Capsule
+                CapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.capsuleRadius);
+                WrappedCapsule wrapped(&fn);
+                applyEntry(&wrapped);
+                break;
+            }
+            case 3: { // Octahedron
+                OctahedronDistanceFunction fn;
+                WrappedOctahedron wrapped(&fn);
+                applyEntry(&wrapped);
+                break;
+            }
+            case 4: { // Pyramid
+                PyramidDistanceFunction fn;
+                WrappedPyramid wrapped(&fn);
+                applyEntry(&wrapped);
+                break;
+            }
+            case 5: { // Torus
+                TorusDistanceFunction fn(entry.torusRadii);
+                WrappedTorus wrapped(&fn);
+                applyEntry(&wrapped);
+                break;
+            }
+            case 6: { // Cone
+                ConeDistanceFunction fn;
+                WrappedCone wrapped(&fn);
+                applyEntry(&wrapped);
+                break;
+            }
+            case 7: { // Cylinder
+                CylinderDistanceFunction fn;
+                WrappedCylinder wrapped(&fn);
+                applyEntry(&wrapped);
+                break;
+            }
+            default:
+                fprintf(stderr, "[rebuildBrushScene] Unknown sdfType %d, skipping\n", entry.sdfType);
+                break;
+        }
+    }
+
+    // 5. Flush queued change events (triggers mesh creation via SceneRenderer)
+    uniqueBrushSolidHandler.handleEvents();
+    uniqueBrushLiquidHandler.handleEvents();
+
+    // 6. Rebuild indirect buffers so new brush meshes appear
+    sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
+    sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
+    sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
+    sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
+
+    fprintf(stderr, "[MyApp::rebuildBrushScene] Done — brush opaque chunks: %zu, brush transparent chunks: %zu\n",
+            sceneRenderer->brushSolidChunks.size(), sceneRenderer->brushTransparentChunks.size());
 }
 
 // Ensure pending texture generation requests are flushed after a frame is submitted
