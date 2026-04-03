@@ -69,19 +69,33 @@ void main() {
     float animTime = time * noiseTimeSpeed;
     
     // Normal used for lighting:
-    // Prefer displaced TES normal (`fragNormal`) so shading follows wave geometry.
     // Fall back to procedural normal only when tessellation path is inactive/invalid.
     vec3 normal = normalize(fragNormal);
-    bool useProceduralNormal = (ubo.passParams.y <= 0.5) || (length(normal) < 0.0001);
-    if (useProceduralNormal) {
-        float eps = 0.01;
-        vec3 xyz = fragPos.xyz;
-        int nOct = int(noiseOctaves);
-        float h  = waterFbmNoise(xyz, noiseScale * 0.5, animTime, 1.0, nOct, noisePersistence, vec3(0.0));
-        float hx = waterFbmNoise(xyz + vec3(eps, 0.0, 0.0), noiseScale * 0.5, animTime, 1.0, nOct, noisePersistence, vec3(0.0));
-        float hz = waterFbmNoise(xyz + vec3(0.0, eps, 0.0), noiseScale * 0.5, animTime, 1.0, nOct, noisePersistence, vec3(0.0));
-        normal = normalize(vec3(h - hx, eps, h - hz));
-    }
+
+    // Derive the normal from the exact same waterWaveDisplacement() used by the TES
+    // so the shading is continuous with the bump surface.
+    float eps = 0.5;
+
+    // Same parameters the TES feeds into waterWaveDisplacement
+    float fnScale = 1.0 / max(waterParams.foamParams.x, 0.0001);
+    int   fnOct   = int(max(waterParams.foamParams.y, 1.0));
+    float fnPers  = waterParams.foamParams.z;
+    float bAmp    = waterParams.foamParams2.z;
+
+    // Build tangent frame from the original mesh normal
+    vec3 N  = normal;
+    vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T  = normalize(cross(up, N));
+    vec3 B  = cross(N, T);
+
+    // Finite-difference the displacement along the tangent directions
+    float h0 = waterWaveDisplacement(fragPos, animTime, fnScale, fnOct, fnPers, bAmp, 1.0);
+    float ht = waterWaveDisplacement(fragPos + eps * T, animTime, fnScale, fnOct, fnPers, bAmp, 1.0);
+    float hb = waterWaveDisplacement(fragPos + eps * B, animTime, fnScale, fnOct, fnPers, bAmp, 1.0);
+
+    // Classic bump-map perturbation: N' = N - dh/dT * T - dh/dB * B
+    normal = normalize(N - ((ht - h0) / eps) * T - ((hb - h0) / eps) * B);
+
     
     // Normalize vectors
     vec3 viewDir = normalize(ubo.viewPos.xyz - fragPos);
@@ -124,7 +138,7 @@ void main() {
         // If tessellation wasn't producing a debug value (likely zero), prefer computed color
         if (length(debugCol) < 0.001) debugCol = vec3(normDisp);
         outColor = vec4(debugCol, 1.0);
-        outNormal = vec4(normalize(fragNormal), 0.0);
+        outNormal = vec4(normalize(normal), 0.0);
         outMask = vec4(1.0);
         return;
     }
@@ -135,7 +149,7 @@ void main() {
         vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
         vec3 sc = texture(sceneColorTex, uv).rgb*0.9;
         outColor = vec4(sc, 1.0);
-        outNormal = vec4(normalize(fragNormal), 0.0);
+        outNormal = vec4(normalize(normal), 0.0);
         outMask = vec4(1.0);
         return;
     }
@@ -144,7 +158,7 @@ void main() {
     if (int(ubo.debugParams.x) == 34) {
         vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
         outColor = vec4(uv, 0.0, 1.0);
-        outNormal = vec4(normalize(fragNormal), 0.0);
+        outNormal = vec4(normalize(normal), 0.0);
         outMask = vec4(1.0);
         return;
     }
@@ -313,7 +327,7 @@ void main() {
     float alpha = mix(transparency, 0.98, max(fresnel * 0.5, totalFoam));
     alpha = 1.0;
     outColor = vec4(waterColor, alpha);
-    outNormal = vec4(normalize(fragNormal), 0.0);
+    outNormal = vec4(normalize(normal), 0.0);
     outMask = vec4(1.0);
 
    // Debug mode 35: water noise
@@ -324,7 +338,7 @@ void main() {
 
     // Debug mode 36: final displaced normal used by shading.
     if (int(ubo.debugParams.x) == 36) {
-        vec3 n = normalize(fragNormal);
+        vec3 n = normalize(normal);
         outColor = vec4(n * 0.5 + 0.5, 1.0);
         return;
     }
