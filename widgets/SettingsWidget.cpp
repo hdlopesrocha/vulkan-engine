@@ -153,7 +153,8 @@ void SettingsWidget::render() {
             "Water Displacement (tess debug)",
             "Water Scene Color (raw sample)",
             "Water Screen UV",
-            "Water Noise"
+            "Water Noise",
+            "Water Displaced Normal"
         };
         int current = settings.debugMode;
         if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {

@@ -44,6 +44,7 @@ float linearizeDepth(float depth) {
 }
 
 #include "includes/perlin.glsl"
+#include "includes/water_noise.glsl"
 
 void main() {
     // Get water parameters from UBO
@@ -65,18 +66,25 @@ void main() {
     // Apply noise time speed
     float animTime = time * noiseTimeSpeed;
     
-    // Compute normal from Perlin noise
-    float eps = 0.01;
-    vec4 noisePos = vec4(fragPos.xyz * noiseScale * 0.5, animTime);
-    float h = fbm(noisePos, int(noiseOctaves), noisePersistence);
-    vec4 noisePosX = vec4((fragPos.xyz + vec3(eps, 0.0, 0.0)) * noiseScale * 0.5, animTime);
-    float hx = fbm(noisePosX, int(noiseOctaves), noisePersistence);
-    vec4 noisePosZ = vec4((fragPos.xyz + vec3(0.0, 0.0, eps)) * noiseScale * 0.5, animTime);
-    float hz = fbm(noisePosZ, int(noiseOctaves), noisePersistence);
-    vec3 normal = normalize(vec3(h - hx, eps, h - hz));
+    // Normal used for lighting:
+    // Prefer displaced TES normal (`fragNormal`) so shading follows wave geometry.
+    // Fall back to procedural normal only when tessellation path is inactive/invalid.
+    vec3 normal = normalize(fragNormal);
+    bool useProceduralNormal = (ubo.passParams.y <= 0.5) || (length(normal) < 0.0001);
+    if (useProceduralNormal) {
+        float eps = 0.01;
+        vec2 xz = fragPos.xz;
+        int nOct = int(noiseOctaves);
+        float h  = waterFbmNoise(xz, noiseScale * 0.5, animTime, 1.0, nOct, noisePersistence, vec2(0.0));
+        float hx = waterFbmNoise(xz + vec2(eps, 0.0), noiseScale * 0.5, animTime, 1.0, nOct, noisePersistence, vec2(0.0));
+        float hz = waterFbmNoise(xz + vec2(0.0, eps), noiseScale * 0.5, animTime, 1.0, nOct, noisePersistence, vec2(0.0));
+        normal = normalize(vec3(h - hx, eps, h - hz));
+    }
     
     // Normalize vectors
     vec3 viewDir = normalize(ubo.viewPos.xyz - fragPos);
+    // Keep the normal facing the visible side to avoid flat/dark lighting from flipped orientation.
+    if (dot(normal, viewDir) < 0.0) normal = -normal;
     vec3 lightDir = normalize(-ubo.lightDir.xyz);
     
     // Base screen UV from clip position
@@ -97,9 +105,15 @@ void main() {
         float bumpAmpDbg = waterParams.foamParams2.z;
 
         float animTimeDbg = timeDebug * waterParams.params3.x;
-        float baseNoiseDbg = fbm(vec4(fragPos.xz * foamNoiseScaleDbg * 0.15, 0.0, animTimeDbg * 0.15), foamNoiseOctavesDbg, foamNoisePersistenceDbg);
-        float baseNoise2Dbg = fbm(vec4((fragPos.xz + vec2(50.0)) * foamNoiseScaleDbg * 0.07, 0.0, animTimeDbg * 0.12), max(foamNoiseOctavesDbg - 1, 1), foamNoisePersistenceDbg);
-        float waveDisplacementDbg = (baseNoiseDbg + baseNoise2Dbg * 0.5) * bumpAmpDbg * waveScaleDbg;
+        float waveDisplacementDbg = waterWaveDisplacement(
+            fragPos.xz,
+            animTimeDbg,
+            foamNoiseScaleDbg,
+            foamNoiseOctavesDbg,
+            foamNoisePersistenceDbg,
+            bumpAmpDbg,
+            waveScaleDbg
+        );
 
         float maxExpected = bumpAmpDbg * waveScaleDbg * 1.5;
         float normDisp = clamp((waveDisplacementDbg / maxExpected) * 0.5 + 0.5, 0.0, 1.0);
@@ -128,27 +142,30 @@ void main() {
     }
 
     // === PERLIN NOISE-BASED REFRACTION ===
-    // Generate multi-octave noise for natural-looking distortion (4D with time)
-    vec2 noisePos1 = fragPos.xz * noiseScale * 0.15;
-    vec2 noisePos2 = fragPos.xz * noiseScale * 0.08 + 100.0;
-    vec2 noisePos3 = fragPos.xz * noiseScale * 0.3;
-    
-    // Compute refraction offset using 4D Perlin noise (time as 4th dimension)
-    float noise1 = perlinNoise4D(vec4(noisePos1, 0.0, animTime * 0.4));
-    float noise2 = perlinNoise4D(vec4(noisePos2, 0.0, animTime * 0.25));
-    float noise3 = perlinNoise4D(vec4(noisePos3, 0.0, animTime * 0.6)) * 0.5;
+    // Generate refraction distortion from shared FBM helper.
+    vec2 refractionNoise = waterRefractionNoise(
+        fragPos.xz,
+        noiseScale,
+        animTime,
+        int(noiseOctaves),
+        noisePersistence
+    );
     
    // Debug mode 35: water noise
     if (int(ubo.debugParams.x) == 35) {
-        outColor = vec4(noise1, noise2, noise3, 1.0);
+        outColor = vec4(refractionNoise, 0.5 + 0.5 * (refractionNoise.x - refractionNoise.y), 1.0);
+        return;
+    }
+
+    // Debug mode 36: final displaced normal used by shading.
+    if (int(ubo.debugParams.x) == 36) {
+        vec3 n = normalize(normal);
+        outColor = vec4(n * 0.5 + 0.5, 1.0);
         return;
     }
 
     // Combine noise layers for complex refraction pattern
-    vec2 refractionOffset = vec2(
-        noise1 + noise2 * 0.5 + noise3 * 0.25,
-        perlinNoise4D(vec4(noisePos1 + 50.0, 0.0, animTime * 0.4)) + noise2 * 0.5
-    ) * refractionStrength;
+    vec2 refractionOffset = refractionNoise * refractionStrength;
     
     // Reduce refraction at edges (to avoid sampling outside screen)
     float edgeFade = smoothstep(0.0, 0.1, screenUV.x) * smoothstep(1.0, 0.9, screenUV.x) *
@@ -184,7 +201,8 @@ void main() {
     // Single Perlin-based foam noise (reused below)
     // Use XZ plane and time scaled for smooth animation; compute raw base in [-1,1] then remap to [0,1]
     float foamNoiseScale = max(waterParams.foamParams.x, 0.0001);
-    float foamBaseRaw = perlinNoise4D(vec4(fragPos.xyz, animTime));
+    float foamBaseRaw = waterFbmNoise(fragPos.xz, 1.0, animTime, 1.0,
+                                      max(int(noiseOctaves), 1), noisePersistence, vec2(0.0));
     float foamBase = foamBaseRaw * 0.5 + 0.5;
     // Depth-based color fade (deeper = more tinted)
     // Use controllable depth falloff from UBO (foamParams2.w); default to 0.02
@@ -201,13 +219,16 @@ void main() {
     float specAngle = max(dot(normal, halfDir), 0.0);
     
     // Main specular highlight with noise perturbation
-    float specNoise = 0.8 + 0.4 * perlinNoise4D(vec4(fragPos.xz * noiseScale, 0.0, animTime));
+    float specNoise = 0.8 + 0.4 * waterFbmNoise(fragPos.xz, noiseScale, animTime, 1.0,
+                                                max(int(noiseOctaves), 1), noisePersistence, vec2(0.0));
     float specular = pow(specAngle, 128.0) * specNoise;
     vec3 specularColor = ubo.lightColor.xyz * specular * 2.0;
     
     // Sun glitter: high-frequency noise-based sparkles
-    float glitterNoise = fbm(vec4(fragPos.xz * noiseScale * 3.0, 0.0, animTime * 3.0), max(int(noiseOctaves) - 2, 1), noisePersistence);
-    float glitterThreshold = 0.7 + 0.2 * perlinNoise4D(vec4(fragPos.xz * noiseScale * 0.5, 0.0, animTime * 0.5));
+    float glitterNoise = waterFbmNoise(fragPos.xz, noiseScale * 3.0, animTime, 3.0,
+                                       max(int(noiseOctaves) - 2, 1), noisePersistence, vec2(0.0));
+    float glitterThreshold = 0.7 + 0.2 * waterFbmNoise(fragPos.xz, noiseScale * 0.5, animTime, 0.5,
+                                                       max(int(noiseOctaves), 1), noisePersistence, vec2(0.0));
     float glitter = smoothstep(glitterThreshold, 1.0, glitterNoise) * pow(specAngle, 32.0);
     specularColor += ubo.lightColor.xyz * glitter * 1.5;
     
