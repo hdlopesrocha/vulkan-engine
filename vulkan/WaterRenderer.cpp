@@ -221,7 +221,10 @@ void WaterRenderer::createWaterRenderPass(VulkanApp* app) {
     dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     dependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     dependencies[0].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependencies[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    dependencies[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
     dependencies[1].srcSubpass = 0;
     dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
@@ -747,7 +750,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = VK_FALSE;  // Water doesn't write depth
+    depthStencil.depthWriteEnable = VK_TRUE;   // Enable water-against-water occlusion in this pass
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
@@ -910,7 +913,8 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
 // Execute water's offscreen geometry pass on the provided command buffer.
 // The caller must ensure that the solid pass has already ended on this same
 // command buffer so that the scene color/depth images are available.
-void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView, const WaterParams& params, float waterTime, VkImageView skyView) {
+
+void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView, const WaterParams& params, float waterTime, VkImageView skyView) {
     if (!app || cmd == VK_NULL_HANDLE) return;
 
     // Upload current water parameters to the GPU buffer (set 0, binding 7)
@@ -947,6 +951,28 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+}
+
+void WaterRenderer::postRenderBarrier(VkCommandBuffer cmd) {
+    // The 0→EXTERNAL render pass dependency flushes color attachment writes,
+    // but the swapchain render pass's EXTERNAL→0 dependency only covers
+    // EARLY_FRAGMENT_TESTS — it does NOT synchronize FRAGMENT_SHADER reads.
+    // Add an explicit barrier so the post-process fragment shader can sample
+    // the water output images.
+    VkMemoryBarrier postBarrier{};
+    postBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    postBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    postBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 1, &postBarrier, 0, nullptr, 0, nullptr);
+}
+
+void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView, const WaterParams& params, float waterTime, VkImageView skyView) {
+    if (!app || cmd == VK_NULL_HANDLE) return;
+
+    prepareRender(app, cmd, frameIndex, sceneColorView, sceneDepthView, params, waterTime, skyView);
 
     beginWaterGeometryPass(cmd, frameIndex);
 
@@ -983,18 +1009,6 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
     waterIndirectRenderer.drawPrepared(cmd);
     endWaterGeometryPass(cmd);
 
-    // The 0→EXTERNAL render pass dependency flushes color attachment writes,
-    // but the swapchain render pass's EXTERNAL→0 dependency only covers
-    // EARLY_FRAGMENT_TESTS — it does NOT synchronize FRAGMENT_SHADER reads.
-    // Add an explicit barrier so the post-process fragment shader can sample
-    // the water output images.
-    VkMemoryBarrier postBarrier{};
-    postBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    postBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    postBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cmd,
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, 1, &postBarrier, 0, nullptr, 0, nullptr);
+    postRenderBarrier(cmd);
 }
 

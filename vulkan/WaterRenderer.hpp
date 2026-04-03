@@ -124,6 +124,22 @@ public:
     
     // Get the water geometry pipeline layout
     VkPipelineLayout getWaterGeometryPipelineLayout() const { return waterGeometryPipelineLayout; }
+
+    // Get the water geometry render pass (for creating compatible wireframe pipelines)
+    VkRenderPass getWaterRenderPass() const { return waterRenderPass; }
+
+    // Get the descriptor set layout for scene textures (set 2)
+    VkDescriptorSetLayout getWaterDepthDescriptorSetLayout() const { return waterDepthDescriptorSetLayout; }
+
+    // Prepare render state (UBO upload, descriptor update, pre-barrier).
+    // Call this before beginWaterGeometryPass when manually recording commands.
+    void prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
+                       VkImageView sceneColorView, VkImageView sceneDepthView,
+                       const WaterParams& params, float waterTime,
+                       VkImageView skyView = VK_NULL_HANDLE);
+
+    // Emit post-geometry-pass barrier for fragment shader sampling.
+    void postRenderBarrier(VkCommandBuffer cmd);
     
     // Get water depth descriptor set (for binding scene depth texture)
     VkDescriptorSet getWaterDepthDescriptorSet(uint32_t frameIndex) const { return waterDepthDescriptorSets[frameIndex]; }
