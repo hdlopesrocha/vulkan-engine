@@ -23,9 +23,9 @@ layout(set = 0, binding = 7) uniform WaterParamsUBO {
     vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=unused, w=unused
     vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
     vec4 deepColor; // xyz = deepColor, w = unused
-    vec4 waveParams; // x=waveNoiseScale, y=waveNoiseOctaves, z=waveNoisePersistence, w=unused
-    vec4 waveParams2; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
-    vec4 reserved;   // unused
+    vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
+    vec4 reserved1;  // unused
+    vec4 reserved2;  // unused
 } waterParams;
 
 // Scene color and depth textures for refraction and edge foam (set 2)
@@ -77,7 +77,7 @@ void main() {
     float eps = 0.5;
 
     // Same parameters the TES feeds into waterWaveDisplacement
-    float bAmp    = waterParams.waveParams2.z;
+    float bAmp    = waterParams.waveParams.z;
 
     // Depth-based wave attenuation (must match the TES depth ramp so
     // the procedural normal is consistent with the displaced geometry).
@@ -123,18 +123,15 @@ void main() {
         if (timeDebug == 0.0) timeDebug = ubo.passParams.x;
         float waveScaleDbg = 1.0;  // No longer in passParams (z=nearPlane now)
 
-        float waveNoiseScaleDbg = 1.0 / max(waterParams.waveParams.x, 0.0001);
-        int waveNoiseOctavesDbg = int(max(waterParams.waveParams.y, 1.0));
-        float waveNoisePersistenceDbg = waterParams.waveParams.z;
-        float bumpAmpDbg = waterParams.waveParams2.z;
+        float bumpAmpDbg = waterParams.waveParams.z;
 
         float animTimeDbg = timeDebug * waterParams.params3.x;
         float waveDisplacementDbg = waterWaveDisplacement(
             fragPos.xyz,
             animTimeDbg,
-            waveNoiseScaleDbg,
-            waveNoiseOctavesDbg,
-            waveNoisePersistenceDbg,
+            noiseScale,
+            noiseOctaves,
+            noisePersistence,
             bumpAmpDbg,
             waveScaleDbg
         );
@@ -216,7 +213,7 @@ void main() {
     float depthDiff = max(sceneDepthLinear - waterDepthLinear, 0.0);
     
     // Depth-based color fade (deeper = more tinted)
-    float depthFalloff = waterParams.waveParams2.w;
+    float depthFalloff = waterParams.waveParams.w;
     if (depthFalloff <= 0.0) depthFalloff = 0.02;
     float depthFade = 1.0 - exp(-depthDiff * depthFalloff);
     

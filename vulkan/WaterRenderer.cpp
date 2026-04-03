@@ -925,9 +925,9 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
         gpu.params3 = glm::vec4(params.noiseTimeSpeed, waterTime, 0.0f, 0.0f);
         gpu.shallowColor = glm::vec4(params.shallowColor, params.waveDepthTransition);
         gpu.deepColor = glm::vec4(params.deepColor, 0.0f);
-        gpu.waveParams = glm::vec4(params.waveNoiseScale, static_cast<float>(params.waveNoiseOctaves), params.waveNoisePersistence, 0.0f);
-        gpu.waveParams2 = glm::vec4(0.0f, 0.0f, params.bumpAmplitude, params.depthFalloff);
-        gpu.reserved = glm::vec4(0.0f);
+        gpu.waveParams = glm::vec4(0.0f, 0.0f, params.bumpAmplitude, params.depthFalloff);
+        gpu.reserved1 = glm::vec4(0.0f);
+        gpu.reserved2 = glm::vec4(0.0f);
 
         void* data;
         vkMapMemory(app->getDevice(), waterParamsBuffer.memory, 0, sizeof(WaterParamsGPU), 0, &data);

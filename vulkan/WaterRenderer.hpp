@@ -11,7 +11,7 @@
 struct WaterParams {
     float time = 0.0f;
     float waveSpeed = 0.5f;
-    float waveScale = 0.02f;
+    float waveScale = 0.03f;
     float refractionStrength = 0.03f;
     float fresnelPower = 5.0f;
     float transparency = 0.7f;
@@ -25,12 +25,7 @@ struct WaterParams {
     float noiseTimeSpeed = 1.0f;
 
     // Vertical bump amplitude for water geometry
-    float bumpAmplitude = 64.0f;
-
-    // Wave displacement noise controls (used by TES and procedural normal)
-    float waveNoiseScale = 4.0f;
-    int waveNoiseOctaves = 3;
-    float waveNoisePersistence = 0.5f;
+    float bumpAmplitude = 8.0f;
 
     // Depth-based wave attenuation: distance (world units) over which waves
     // transition from zero displacement (at solid surface) to full amplitude.
@@ -45,9 +40,9 @@ struct WaterParamsGPU {
     glm::vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=unused, w=unused
     glm::vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
     glm::vec4 deepColor; // xyz = deepColor, w = unused
-    glm::vec4 waveParams; // x=waveNoiseScale, y=waveNoiseOctaves, z=waveNoisePersistence, w=unused
-    glm::vec4 waveParams2; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
-    glm::vec4 reserved;   // unused (padding to preserve UBO layout)
+    glm::vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
+    glm::vec4 reserved1;  // unused (padding to preserve UBO layout)
+    glm::vec4 reserved2;  // unused (padding to preserve UBO layout)
 };
 
 // GPU-side water uniform buffer

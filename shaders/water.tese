@@ -36,9 +36,9 @@ layout(set = 0, binding = 7) uniform WaterParamsUBO {
     vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=shoreStrength, w=shoreFalloff
     vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
     vec4 deepColor; // xyz = deepColor, w = unused
-    vec4 waveParams; // x=waveNoiseScale, y=waveNoiseOctaves, z=waveNoisePersistence, w=unused
-    vec4 waveParams2; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
-    vec4 reserved;   // unused
+    vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
+    vec4 reserved1;  // unused
+    vec4 reserved2;  // unused
 } waterParams;
 
 // Scene depth texture for depth-dependent wave attenuation (set 2)
@@ -94,12 +94,12 @@ void main() {
     float waveScale = 1.0;
     float noiseTimeSpeed = waterParams.params3.x;
 
-    // foam/Noise params (shared with foam logic)
-    float waveNoiseScale = 1.0 / max(waterParams.waveParams.x, 0.0001);
-    int waveNoiseOctaves = int(max(waterParams.waveParams.y, 1.0));
-    float waveNoisePersistence = waterParams.waveParams.z;
+    // Noise params from params2 (same as fragment shader)
+    float noiseScale = waterParams.params2.y;
+    int noiseOctaves = int(max(waterParams.params2.z, 1.0));
+    float noisePersistence = waterParams.params2.w;
 
-    float bumpAmp = waterParams.waveParams2.z; // bump amplitude provided via Water widget
+    float bumpAmp = waterParams.waveParams.z; // bump amplitude provided via Water widget
 
     // --- Depth-based wave attenuation ---
     // Project the undisplaced water vertex to screen space and sample the solid
@@ -125,9 +125,9 @@ void main() {
         float waveDisplacement = waterWaveDisplacement(
             xyz,
             animTime,
-            waveNoiseScale,
-            waveNoiseOctaves,
-            waveNoisePersistence,
+            noiseScale,
+            noiseOctaves,
+            noisePersistence,
             bumpAmp,
             waveScale
         );
@@ -143,10 +143,10 @@ void main() {
     vec3 bVPlus  = clampAndNormalizeBary(bary + vec3(0.0,  epsBary, -epsBary));
     vec3 bVMinus = clampAndNormalizeBary(bary + vec3(0.0, -epsBary,  epsBary));
 
-    vec3 pUPlus = sampleDisplacedPos(bUPlus, animTime, waveNoiseScale, waveNoiseOctaves, waveNoisePersistence, bumpAmp, waveScale);
-    vec3 pUMinus = sampleDisplacedPos(bUMinus, animTime, waveNoiseScale, waveNoiseOctaves, waveNoisePersistence, bumpAmp, waveScale);
-    vec3 pVPlus = sampleDisplacedPos(bVPlus, animTime, waveNoiseScale, waveNoiseOctaves, waveNoisePersistence, bumpAmp, waveScale);
-    vec3 pVMinus = sampleDisplacedPos(bVMinus, animTime, waveNoiseScale, waveNoiseOctaves, waveNoisePersistence, bumpAmp, waveScale);
+    vec3 pUPlus = sampleDisplacedPos(bUPlus, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
+    vec3 pUMinus = sampleDisplacedPos(bUMinus, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
+    vec3 pVPlus = sampleDisplacedPos(bVPlus, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
+    vec3 pVMinus = sampleDisplacedPos(bVMinus, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
 
     vec3 tangentU = pUPlus - pUMinus;
     vec3 tangentV = pVPlus - pVMinus;
