@@ -468,7 +468,7 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
 SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
     solidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        std::cout << "[SceneRenderer] Solid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
+        //std::cout << "[SceneRenderer] Solid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
         // Trigger solid mesh update for this node if needed
         if (nd.containmentType != ContainmentType::Disjoint) {
             OctreeNodeData nodeCopy = nd;
@@ -483,7 +483,7 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
     solidNodeEraseCallback = [this, scene](const OctreeNodeData& nd) {
         std::lock_guard<std::recursive_mutex> lock(chunksMutex);
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        std::cout << "[SceneRenderer] Solid node erase: nid=" << nid << "\n";
+        //std::cout << "[SceneRenderer] Solid node erase: nid=" << nid << "\n";
         auto it = solidChunks.find(nid);
         if (it != solidChunks.end()) {
             if (it->second.meshId != UINT32_MAX) {
@@ -501,7 +501,7 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
 
     liquidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        std::cout << "[SceneRenderer] Liquid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
+        //std::cout << "[SceneRenderer] Liquid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
         if (nd.containmentType != ContainmentType::Disjoint) {
             OctreeNodeData nodeCopy = nd;
             this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
@@ -515,7 +515,7 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
     liquidNodeEraseCallback = [this, scene](const OctreeNodeData& nd) {
         std::lock_guard<std::recursive_mutex> lock(chunksMutex);
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        std::cout << "[SceneRenderer] Liquid node erase: nid=" << nid << "\n";
+        //std::cout << "[SceneRenderer] Liquid node erase: nid=" << nid << "\n";
         auto it = transparentChunks.find(nid);
         if (it != transparentChunks.end()) {
             if (it->second.meshId != UINT32_MAX) {
