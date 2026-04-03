@@ -430,9 +430,11 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 			// For sampling in the shader (sampler2DArray) we must bind the ARRAY image view
 			// (VK_IMAGE_VIEW_TYPE_2D_ARRAY). Per-layer 2D views are only for storage writes
 			// and ImGui previews. Use the array view here so sampling by layer index works.
-			VkDescriptorImageInfo albedoSamplerInfo{}; albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view; albedoSamplerInfo.sampler = textureArrayManager->albedoSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			VkDescriptorImageInfo normalSamplerInfo{}; normalSamplerInfo.imageView = textureArrayManager->normalArray.view; normalSamplerInfo.sampler = textureArrayManager->normalSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			VkDescriptorImageInfo bumpSamplerInfo{}; bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view; bumpSamplerInfo.sampler = textureArrayManager->bumpSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			// Layout is GENERAL because during compute dispatch ALL layers of the array are
+			// transitioned to GENERAL (the target for storage writes, the rest for consistency).
+			VkDescriptorImageInfo albedoSamplerInfo{}; albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view; albedoSamplerInfo.sampler = textureArrayManager->albedoSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			VkDescriptorImageInfo normalSamplerInfo{}; normalSamplerInfo.imageView = textureArrayManager->normalArray.view; normalSamplerInfo.sampler = textureArrayManager->normalSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			VkDescriptorImageInfo bumpSamplerInfo{}; bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view; bumpSamplerInfo.sampler = textureArrayManager->bumpSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 			std::vector<VkWriteDescriptorSet> writes;
 			auto mkStor = [&](uint32_t binding, VkDescriptorImageInfo &info){ if (info.imageView == VK_NULL_HANDLE) return; VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = perLayerDescSets[i]; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w.descriptorCount = 1; w.pImageInfo = &info; writes.push_back(w); };
@@ -499,18 +501,19 @@ void TextureMixer::createTripleComputeDescriptorSet(VulkanApp* app) {
 	VkDescriptorImageInfo bumpSamplerInfo{};
 
 	if (textureArrayManager) {
-		// Samplers are read-only sources for the compute shader: use SHADER_READ_ONLY_OPTIMAL
+		// Samplers are read-only sources for the compute shader: use GENERAL because
+		// the array view covers ALL layers and the target layer will be in GENERAL.
 		albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view;
 		albedoSamplerInfo.sampler = textureArrayManager->albedoSampler;
-		albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 		normalSamplerInfo.imageView = textureArrayManager->normalArray.view;
 		normalSamplerInfo.sampler = textureArrayManager->normalSampler;
-		normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 		bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view;
 		bumpSamplerInfo.sampler = textureArrayManager->bumpSampler;
-		bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 	} else {
 		// No TextureArrayManager: leave sampler imageViews null (not supported)
 		albedoSamplerInfo.imageView = VK_NULL_HANDLE; albedoSamplerInfo.sampler = VK_NULL_HANDLE; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -952,6 +955,38 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
 		preBarriers.push_back(b);
 	}
+
+	// Also transition all NON-target layers to GENERAL so that the sampler
+	// descriptors (which bind the full array view with imageLayout=GENERAL)
+	// are valid at dispatch time.  This is an infrequent operation that only
+	// happens during texture generation.
+	{
+		uint32_t totalLayers = textureArrayManager->layerAmount;
+		auto addNonTargetBarriers = [&](VkImage img, uint32_t mipLevels) {
+			// Range before target layer [0, targetLayer)
+			if (targetLayer > 0) {
+				VkImageMemoryBarrier b = mkBarrierLayer(img, 0, targetLayer, mipLevels);
+				b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+				b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				preBarriers.push_back(b);
+			}
+			// Range after target layer [targetLayer+1, totalLayers)
+			if (targetLayer + 1 < totalLayers) {
+				VkImageMemoryBarrier b = mkBarrierLayer(img, targetLayer + 1, totalLayers - targetLayer - 1, mipLevels);
+				b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+				b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				preBarriers.push_back(b);
+			}
+		};
+		if (genA) addNonTargetBarriers(textureArrayManager->albedoArray.image, textureArrayManager->albedoArray.mipLevels);
+		if (genN) addNonTargetBarriers(textureArrayManager->normalArray.image, textureArrayManager->normalArray.mipLevels);
+		if (genB) addNonTargetBarriers(textureArrayManager->bumpArray.image, textureArrayManager->bumpArray.mipLevels);
+	}
+
     		if (!preBarriers.empty()) {
     			for (auto &b : preBarriers) {
     				fprintf(stderr, "[TextureMixer] Pre-barrier: image=%p layer=%u old=%s new=%s\n", (void*)b.image, b.subresourceRange.baseArrayLayer, layoutName(b.oldLayout), layoutName(b.newLayout));
@@ -1081,6 +1116,47 @@ if (genB && textureArrayManager->bumpArray.mipLevels <= 1) {
 				}
 			}
 				}
+
+	// Restore all NON-target layers from GENERAL back to SHADER_READ_ONLY_OPTIMAL.
+	// The target layer is already in SHADER_READ_ONLY_OPTIMAL after mipmap generation
+	// (or the post-barrier above for mipLevels==1).
+	{
+		uint32_t totalLayers = textureArrayManager->layerAmount;
+		std::vector<VkImageMemoryBarrier> restoreBarriers;
+		auto addRestoreBarriers = [&](VkImage img, uint32_t mipLevels) {
+			if (targetLayer > 0) {
+				VkImageMemoryBarrier b = mkBarrierLayer(img, 0, targetLayer, mipLevels);
+				b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+				b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				restoreBarriers.push_back(b);
+			}
+			if (targetLayer + 1 < totalLayers) {
+				VkImageMemoryBarrier b = mkBarrierLayer(img, targetLayer + 1, totalLayers - targetLayer - 1, mipLevels);
+				b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+				b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				restoreBarriers.push_back(b);
+			}
+		};
+		if (genA) addRestoreBarriers(textureArrayManager->albedoArray.image, textureArrayManager->albedoArray.mipLevels);
+		if (genN) addRestoreBarriers(textureArrayManager->normalArray.image, textureArrayManager->normalArray.mipLevels);
+		if (genB) addRestoreBarriers(textureArrayManager->bumpArray.image, textureArrayManager->bumpArray.mipLevels);
+		if (!restoreBarriers.empty()) {
+			vkCmdPipelineBarrier(
+				cmd,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				0,
+				0, nullptr,
+				0, nullptr,
+				static_cast<uint32_t>(restoreBarriers.size()), restoreBarriers.data()
+			);
+		}
+	}
+
 	}); // runSingleTimeCommands: recorded and submitted synchronously
 
 	// Synchronous generation completed: mark layer initialized and update tracked layouts
