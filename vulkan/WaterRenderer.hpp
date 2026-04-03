@@ -22,27 +22,15 @@ struct WaterParams {
     float noisePersistence = 0.5f;
     float noiseScale = 1.0f;
     float waterTint = 0.3f;
-    float foamDepthThreshold = 2.0f;
     float noiseTimeSpeed = 1.0f;
-
-    // Shore/foam tuning
-    float shoreStrength = 1.0f;   // multiplies shore foam contribution
-    float shoreFalloff = 20.0f;    // meters over which shore foam fades
-    float foamIntensity = 0.25f;  // intensity for procedural foam
-
-    // Foam Perlin controls
-    float foamNoiseScale = 4.0f;         // larger = coarser foam patterns
-    int foamNoiseOctaves = 3;
-    float foamNoisePersistence = 0.5f;
-    glm::vec4 foamTint = glm::vec4(0.9f, 0.95f, 1.0f, 0.5f); // rgb + opacity
-    float foamTintIntensity = 1.0f; // full control from widget by default
-
-    // Foam brightness/contrast controls
-    float foamBrightness = 1.0f;
-    float foamContrast = 3.0f;
 
     // Vertical bump amplitude for water geometry
     float bumpAmplitude = 64.0f;
+
+    // Wave displacement noise controls (used by TES and procedural normal)
+    float waveNoiseScale = 4.0f;
+    int waveNoiseOctaves = 3;
+    float waveNoisePersistence = 0.5f;
 
     // Depth-based wave attenuation: distance (world units) over which waves
     // transition from zero displacement (at solid surface) to full amplitude.
@@ -52,14 +40,14 @@ struct WaterParams {
 
 // GPU-side water params UBO (matches shader WaterParamsUBO layout)
 struct WaterParamsGPU {
-    glm::vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=foamDepthThreshold
+    glm::vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=unused
     glm::vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
-    glm::vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=shoreStrength, w=shoreFalloff
+    glm::vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=unused, w=unused
     glm::vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
-    glm::vec4 deepColor; // w = foamIntensity
-    glm::vec4 foamParams; // x=foamNoiseScale, y=foamNoiseOctaves, z=foamNoisePersistence, w=foamTintIntensity
-    glm::vec4 foamParams2; // x=foamBrightness, y=foamContrast
-    glm::vec4 foamTint;   // rgb foam tint, w unused
+    glm::vec4 deepColor; // xyz = deepColor, w = unused
+    glm::vec4 waveParams; // x=waveNoiseScale, y=waveNoiseOctaves, z=waveNoisePersistence, w=unused
+    glm::vec4 waveParams2; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
+    glm::vec4 reserved;   // unused (padding to preserve UBO layout)
 };
 
 // GPU-side water uniform buffer

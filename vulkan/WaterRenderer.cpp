@@ -542,7 +542,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     
     // Initialize water params buffer with default values
     WaterParamsGPU defaultWaterParams{};
-    defaultWaterParams.params1 = glm::vec4(0.03f, 5.0f, 0.7f, 2.0f); // refractionStrength, fresnelPower, transparency, foamDepthThreshold
+    defaultWaterParams.params1 = glm::vec4(0.03f, 5.0f, 0.7f, 0.0f); // refractionStrength, fresnelPower, transparency, unused
     defaultWaterParams.params2 = glm::vec4(0.3f, 0.0f, 0.0f, 0.0f);  // waterTint, unused, unused, unused
     defaultWaterParams.shallowColor = glm::vec4(0.1f, 0.4f, 0.5f, 0.0f);
     defaultWaterParams.deepColor = glm::vec4(0.0f, 0.15f, 0.25f, 0.0f);
@@ -920,14 +920,14 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     // Upload current water parameters to the GPU buffer (set 0, binding 7)
     {
         WaterParamsGPU gpu{};
-        gpu.params1 = glm::vec4(params.refractionStrength, params.fresnelPower, params.transparency, params.foamDepthThreshold);
+        gpu.params1 = glm::vec4(params.refractionStrength, params.fresnelPower, params.transparency, 0.0f);
         gpu.params2 = glm::vec4(params.waterTint, params.noiseScale, static_cast<float>(params.noiseOctaves), params.noisePersistence);
-        gpu.params3 = glm::vec4(params.noiseTimeSpeed, waterTime, params.shoreStrength, params.shoreFalloff);
+        gpu.params3 = glm::vec4(params.noiseTimeSpeed, waterTime, 0.0f, 0.0f);
         gpu.shallowColor = glm::vec4(params.shallowColor, params.waveDepthTransition);
-        gpu.deepColor = glm::vec4(params.deepColor, params.foamIntensity);
-        gpu.foamParams = glm::vec4(params.foamNoiseScale, static_cast<float>(params.foamNoiseOctaves), params.foamNoisePersistence, params.foamTintIntensity);
-        gpu.foamParams2 = glm::vec4(params.foamBrightness, params.foamContrast, params.bumpAmplitude, params.depthFalloff);
-        gpu.foamTint = params.foamTint;
+        gpu.deepColor = glm::vec4(params.deepColor, 0.0f);
+        gpu.waveParams = glm::vec4(params.waveNoiseScale, static_cast<float>(params.waveNoiseOctaves), params.waveNoisePersistence, 0.0f);
+        gpu.waveParams2 = glm::vec4(0.0f, 0.0f, params.bumpAmplitude, params.depthFalloff);
+        gpu.reserved = glm::vec4(0.0f);
 
         void* data;
         vkMapMemory(app->getDevice(), waterParamsBuffer.memory, 0, sizeof(WaterParamsGPU), 0, &data);

@@ -1,7 +1,7 @@
 #version 450
 
 // Water fragment shader
-// Samples scene color with Perlin noise-based refraction, specular lighting, and depth-based edge foam
+// Samples scene color with Perlin noise-based refraction, specular lighting, and depth-based effects
 
 layout(location = 0) in vec3 fragPos;
 layout(location = 1) in vec3 fragNormal;
@@ -18,14 +18,14 @@ layout(location = 2) out vec4 outMask;
 
 // Water-specific parameters (set 0, binding 7)
 layout(set = 0, binding = 7) uniform WaterParamsUBO {
-    vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=foamDepthThreshold
+    vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=unused
     vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
-    vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=shoreStrength, w=shoreFalloff
+    vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=unused, w=unused
     vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
-    vec4 deepColor; // w = foamIntensity
-    vec4 foamParams; // x=foamNoiseScale, y=foamNoiseOctaves, z=foamNoisePersistence, w=foamTintIntensity
-    vec4 foamParams2; // x=foamBrightness, y=foamContrast
-    vec4 foamTint;   // rgba foam tint
+    vec4 deepColor; // xyz = deepColor, w = unused
+    vec4 waveParams; // x=waveNoiseScale, y=waveNoiseOctaves, z=waveNoisePersistence, w=unused
+    vec4 waveParams2; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
+    vec4 reserved;   // unused
 } waterParams;
 
 // Scene color and depth textures for refraction and edge foam (set 2)
@@ -58,7 +58,6 @@ void main() {
     float refractionStrength = waterParams.params1.x;
     float fresnelPower = waterParams.params1.y;
     float transparency = waterParams.params1.z;
-    float foamDepthThreshold = waterParams.params1.w;
     float waterTint = waterParams.params2.x;
     float noiseScale = waterParams.params2.y;
     int noiseOctaves = int(max(waterParams.params2.z, 1.0));
@@ -78,7 +77,7 @@ void main() {
     float eps = 0.5;
 
     // Same parameters the TES feeds into waterWaveDisplacement
-    float bAmp    = waterParams.foamParams2.z;
+    float bAmp    = waterParams.waveParams2.z;
 
     // Depth-based wave attenuation (must match the TES depth ramp so
     // the procedural normal is consistent with the displaced geometry).
@@ -124,18 +123,18 @@ void main() {
         if (timeDebug == 0.0) timeDebug = ubo.passParams.x;
         float waveScaleDbg = 1.0;  // No longer in passParams (z=nearPlane now)
 
-        float foamNoiseScaleDbg = 1.0 / max(waterParams.foamParams.x, 0.0001);
-        int foamNoiseOctavesDbg = int(max(waterParams.foamParams.y, 1.0));
-        float foamNoisePersistenceDbg = waterParams.foamParams.z;
-        float bumpAmpDbg = waterParams.foamParams2.z;
+        float waveNoiseScaleDbg = 1.0 / max(waterParams.waveParams.x, 0.0001);
+        int waveNoiseOctavesDbg = int(max(waterParams.waveParams.y, 1.0));
+        float waveNoisePersistenceDbg = waterParams.waveParams.z;
+        float bumpAmpDbg = waterParams.waveParams2.z;
 
         float animTimeDbg = timeDebug * waterParams.params3.x;
         float waveDisplacementDbg = waterWaveDisplacement(
             fragPos.xyz,
             animTimeDbg,
-            foamNoiseScaleDbg,
-            foamNoiseOctavesDbg,
-            foamNoisePersistenceDbg,
+            waveNoiseScaleDbg,
+            waveNoiseOctavesDbg,
+            waveNoisePersistenceDbg,
             bumpAmpDbg,
             waveScaleDbg
         );
@@ -216,15 +215,8 @@ void main() {
 
     float depthDiff = max(sceneDepthLinear - waterDepthLinear, 0.0);
     
-    // Single Perlin-based foam noise (reused below)
-    // Use XZ plane and time scaled for smooth animation; compute raw base in [-1,1] then remap to [0,1]
-    float foamNoiseScale = max(waterParams.foamParams.x, 0.0001);
-    float foamBaseRaw = waterFbmNoise(fragPos.xyz, 1.0, animTime, 1.0,
-                                      max(int(noiseOctaves), 1), noisePersistence, vec3(0.0));
-    float foamBase = foamBaseRaw * 0.5 + 0.5;
     // Depth-based color fade (deeper = more tinted)
-    // Use controllable depth falloff from UBO (foamParams2.w); default to 0.02
-    float depthFalloff = waterParams.foamParams2.w;
+    float depthFalloff = waterParams.waveParams2.w;
     if (depthFalloff <= 0.0) depthFalloff = 0.02;
     float depthFade = 1.0 - exp(-depthDiff * depthFalloff);
     
@@ -279,62 +271,8 @@ void main() {
     // Add specular highlights
     waterColor += specularColor;
     
-    // === FOAM ===
-    // Fade the noise toward deep water: when far from shore, blend noise toward neutral 0.5
-    float foamIntensity = waterParams.deepColor.w;
-    if (foamIntensity <= 0.0) foamIntensity = 0.25;
-
-    float shoreFalloff = waterParams.params3.w;
-    if (shoreFalloff <= 0.0) shoreFalloff = foamDepthThreshold * 2.0;
-    float shoreProximity = clamp(1.0 - depthDiff / shoreFalloff, 0.0, 1.0);
-
-    // fade factor can be adjusted (linear here); higher exponent would localize noise nearer the shore
-    float fade = shoreProximity;
-    float foamNoise = mix(0.0, foamBase, fade);
-
-    // Apply contrast/brightness to the noise (controls how punchy / bright foam appears)
-    float foamBrightness = waterParams.foamParams2.x;
-    float foamContrast = waterParams.foamParams2.y;
-    float foamOpacity = waterParams.foamTint.a; // widget-controlled opacity
-    // effective brightness = brightness scaled by opacity so lowering alpha dims foam brightness as well
-    float effBrightness = foamBrightness * foamOpacity;
-    // contrast on [0,inf) around 0.5 center
-    foamNoise = clamp((foamNoise - 0.5) * max(foamContrast, 0.0001) + 0.5, 0.0, 1.0);
-
-    float proceduralFoam = smoothstep(0.65, 0.85, foamNoise) * foamIntensity;
-
-    // Use the same faded+contrasted noise for shore mask and color
-    float shoreMask = foamNoise;
-
-    // shoreStrength can be set in waterParams.params3.z (defaults to 1.0)
-    float shoreStrength = waterParams.params3.z;
-    if (shoreStrength <= 0.0) shoreStrength = 1.0;
-    float shoreFoam = shoreProximity * shoreMask * shoreStrength * foamIntensity * 0.6;
-
-    // Modulate edge foam with faded+contrasted noise so it reduces away from shore
-    float edgeFoam = foamNoise;
-
-    // Combine edge foam, procedural foam, and shore foam
-    float totalFoam = max(proceduralFoam, edgeFoam);
-    // Slight boost for visibility near shore, but only where shore mask indicates
-    totalFoam = clamp(totalFoam + shoreProximity * shoreMask * 0.15, 0.0, 1.0);
-
-    // Ensure foam is modulated by the effective brightness to avoid a flat blanket in shallow areas
-    totalFoam *= effBrightness;
-    totalFoam = clamp((totalFoam - 0.5) * max(foamContrast, 0.0001) + 0.5, 0.0, 1.0);
-
-    // Foam color: base from widget (rgba), modulated by noise and effective brightness
-    float foamColorNoise = foamNoise;
-    vec3 baseColor = waterParams.foamTint.rgb;
-    vec3 foamColor = baseColor * foamColorNoise * effBrightness;
-
-    // Apply opacity from widget (alpha channel) to the final foam blend
-    waterColor = mix(waterColor, foamColor, totalFoam * foamOpacity);
-    
     // === FINAL OUTPUT ===
-    // Alpha: more opaque with foam or at grazing angles
-    float alpha = mix(transparency, 0.98, max(fresnel * 0.5, totalFoam));
-    alpha = 1.0;
+    float alpha = 1.0;
     outColor = vec4(waterColor, alpha);
     outNormal = vec4(normal, 0.0);
     outMask = vec4(1.0);
