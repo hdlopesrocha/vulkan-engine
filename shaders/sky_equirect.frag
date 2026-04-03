@@ -23,9 +23,13 @@ void main() {
 
     // Convert UV to spherical direction
     // theta: polar angle from zenith (0 at top, PI at bottom)
-    // phi: azimuthal angle (0 to 2*PI)
+    // phi: azimuthal angle (-PI to PI)
+    // The inverse mapping (direction → UV) used by water.frag and postprocess.frag is:
+    //   uv.x = atan(z, x) / (2*PI) + 0.5
+    // So the matching forward mapping must be:
+    //   phi = (uv.x - 0.5) * 2*PI
     float theta = uv.y * PI;
-    float phi   = uv.x * 2.0 * PI;
+    float phi   = (uv.x - 0.5) * 2.0 * PI;
 
     // Spherical to Cartesian (Y-up)
     vec3 dir;
