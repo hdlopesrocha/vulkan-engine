@@ -33,6 +33,12 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (boundingBoxRenderer) {
         boundingBoxRenderer->cleanup();
     }
+    if (solidWireframe) {
+        solidWireframe->cleanup();
+    }
+    if (waterWireframe) {
+        waterWireframe->cleanup();
+    }
 
     // Clear local CPU-side handles; Vulkan objects are destroyed via VulkanResourceManager
     if (mainUniformBuffer.buffer != VK_NULL_HANDLE) {
@@ -75,6 +81,8 @@ SceneRenderer::SceneRenderer() :
     vegetationRenderer(std::make_unique<VegetationRenderer>()),
     debugCubeRenderer(std::make_unique<DebugCubeRenderer>()),
     boundingBoxRenderer(std::make_unique<DebugCubeRenderer>()),
+    solidWireframe(std::make_unique<WireframeRenderer>()),
+    waterWireframe(std::make_unique<WireframeRenderer>()),
       skySettings(std::make_unique<SkySettings>())
 {
 
@@ -116,7 +124,11 @@ void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkR
         fprintf(stderr, "[SceneRenderer::mainPass] Entered. solidRenderer=%p skyRenderer=%p\n", (void*)solidRenderer.get(), (void*)skyRenderer.get());
         printedOnce = true;
     }
-    solidRenderer->render(commandBuffer, app, perTextureDescriptorSet, wireframeEnabled);
+    if (wireframeEnabled && solidWireframe) {
+        solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, solidRenderer->getIndirectRenderer());
+    }else {
+        solidRenderer->render(commandBuffer, app, perTextureDescriptorSet);
+    }
     vegetationRenderer->draw(app, commandBuffer, perTextureDescriptorSet, viewProj);
 }
 
@@ -129,7 +141,7 @@ void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDe
     skyRenderer->render(app, commandBuffer, perTextureDescriptorSet, mainUniformBuffer, uboStatic, viewProj, mode);
 }
 
-void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime, VkImageView skyView) {
+void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime, VkImageView skyView) {
     if (commandBuffer == VK_NULL_HANDLE) {
         fprintf(stderr, "[SceneRenderer::waterPass] commandBuffer is VK_NULL_HANDLE, skipping.\n");
         return;
@@ -139,7 +151,24 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
     // command buffer so the solid pass outputs are available for sampling.
     VkImageView sceneColorView = solidRenderer->getColorView(frameIdx);
     VkImageView sceneDepthView = solidRenderer->getDepthView(frameIdx);
-    waterRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, waterParams, waterTime, skyView);
+
+    if (wireframeEnabled && waterWireframe && waterWireframe->getPipeline() != VK_NULL_HANDLE) {
+        // Wireframe path: use WaterRenderer for setup/pass management,
+        // but bind the wireframe pipeline instead of the normal one.
+        waterRenderer->prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, waterParams, waterTime, skyView);
+        waterRenderer->beginWaterGeometryPass(commandBuffer, frameIdx);
+
+        waterWireframe->draw(commandBuffer, app,
+            {app->getMainDescriptorSet(),
+             app->getMaterialDescriptorSet(),
+             waterRenderer->getWaterDepthDescriptorSet(frameIdx)},
+            waterRenderer->getIndirectRenderer());
+
+        waterRenderer->endWaterGeometryPass(commandBuffer);
+        waterRenderer->postRenderBarrier(commandBuffer);
+    } else {
+        waterRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, waterParams, waterTime, skyView);
+    }
 
     // Post-processing should run inside the active main render pass; caller (e.g. MyApp::draw) should invoke
     // `postProcessRenderer->render` with valid scene/water views when available. Keep this function focused
@@ -307,6 +336,28 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         });
     }
     waterRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+
+    // Create wireframe pipelines for solid and water passes
+    if (solidWireframe) {
+        std::vector<VkDescriptorSetLayout> solidSetLayouts = { app->getDescriptorSetLayout() };
+        solidWireframe->createPipeline(app, solidRenderer->getRenderPass(), 1,
+            solidSetLayouts,
+            "shaders/main.vert.spv", "shaders/main.frag.spv",
+            "shaders/main.tesc.spv", "shaders/main.tese.spv",
+            "solid wireframe");
+    }
+    if (waterWireframe) {
+        std::vector<VkDescriptorSetLayout> waterSetLayouts = {
+            app->getDescriptorSetLayout(),
+            app->getMaterialDescriptorSetLayout(),
+            waterRenderer->getWaterDepthDescriptorSetLayout()
+        };
+        waterWireframe->createPipeline(app, waterRenderer->getWaterRenderPass(), 3,
+            waterSetLayouts,
+            "shaders/water.vert.spv", "shaders/water.frag.spv",
+            "shaders/water.tesc.spv", "shaders/water.tese.spv",
+            "water wireframe");
+    }
 
     // Initialize post-process renderer (composites scene + water into swapchain)
     postProcessRenderer->init(app);

@@ -247,27 +247,6 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         app->setAppGraphicsPipeline(graphicsPipeline);
     }
 
-    auto [wirePipeline, wireLayout] = app->createGraphicsPipeline(
-        {
-            vertexShader.info,
-            tescShader.info,
-            teseShader.info,
-            fragmentShader.info
-        },
-        std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
-        {
-            VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-            VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-            VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
-            VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-            VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex) }
-        },
-        setLayouts,
-        nullptr,
-        VK_POLYGON_MODE_LINE, VK_CULL_MODE_BACK_BIT, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, solidRenderPass
-    );
-    graphicsPipelineWire = wirePipeline;
-    graphicsPipelineWireLayout = wireLayout;
 
     auto [depthPipeline, depthLayout] = app->createGraphicsPipeline(
         {
@@ -322,7 +301,7 @@ void SolidRenderer::depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool que
     }
 }
 
-void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled) {
+void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet) {
     static int frameCount = 0;
     if (frameCount++ == 0) {
         printf("[DEBUG] SolidRenderer::render called for the first time\n");
@@ -335,23 +314,15 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
     
     static bool printedOnce = false;
     
-    VkPipelineLayout usedLayout = wireframeEnabled ? graphicsPipelineWireLayout : graphicsPipelineLayout;
-    if (wireframeEnabled) {
-        if (graphicsPipelineWire == VK_NULL_HANDLE) {
-            fprintf(stderr, "[SolidRenderer::draw] graphicsPipelineWire is VK_NULL_HANDLE, skipping.\n");
-            return;
-        }
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineWire);
-    } else {
-        if (graphicsPipeline == VK_NULL_HANDLE) {
-            fprintf(stderr, "[SolidRenderer::draw] graphicsPipeline is VK_NULL_HANDLE, skipping.\n");
-            return;
-        }
-        if (!printedOnce) {
-            printf("[SolidRenderer::draw] binding pipeline=%p, layout=%p\n", (void*)graphicsPipeline, (void*)usedLayout);
-        }
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+    VkPipelineLayout usedLayout = graphicsPipelineLayout;
+    if (graphicsPipeline == VK_NULL_HANDLE) {
+        fprintf(stderr, "[SolidRenderer::draw] graphicsPipeline is VK_NULL_HANDLE, skipping.\n");
+        return;
     }
+    if (!printedOnce) {
+        printf("[SolidRenderer::draw] binding pipeline=%p, layout=%p\n", (void*)graphicsPipeline, (void*)usedLayout);
+    }
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
     // Set dynamic viewport and scissor (required since pipeline uses dynamic state)
     VkViewport viewport{};
@@ -405,8 +376,6 @@ void SolidRenderer::cleanup(VulkanApp* app) {
     destroyRenderTargets(app);
     graphicsPipeline = VK_NULL_HANDLE;
     graphicsPipelineLayout = VK_NULL_HANDLE;
-    graphicsPipelineWire = VK_NULL_HANDLE;
-    graphicsPipelineWireLayout = VK_NULL_HANDLE;
     depthPrePassPipeline = VK_NULL_HANDLE;
     depthPrePassPipelineLayout = VK_NULL_HANDLE;
 

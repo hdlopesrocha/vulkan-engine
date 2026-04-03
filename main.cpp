@@ -448,7 +448,7 @@ public:
             // GPU frustum cull water meshes (must run outside a render pass)
             sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
             VkImageView skyView = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-            sceneRenderer->waterPass(this, commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), profilingEnabled, queryPool,
+            sceneRenderer->waterPass(this, commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), settings.wireframeMode, profilingEnabled, queryPool,
                 sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), skyView);
         }
         

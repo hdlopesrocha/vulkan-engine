@@ -26,8 +26,8 @@ public:
     // Depth pre-pass that binds depthPrePassPipeline and draws indirect only
     void depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VulkanApp* app);
 
-    // Draw main solid geometry: bind pipeline (wireframe or normal) and draw
-    void render(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled);
+    // Draw main solid geometry: bind pipeline and draw
+    void render(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet);
 
     // Access for adding meshes
     IndirectRenderer& getIndirectRenderer() { return indirectRenderer; }
@@ -48,8 +48,6 @@ private:
     IndirectRenderer indirectRenderer;
     VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     VkPipelineLayout graphicsPipelineLayout = VK_NULL_HANDLE;
-    VkPipeline graphicsPipelineWire = VK_NULL_HANDLE;
-    VkPipelineLayout graphicsPipelineWireLayout = VK_NULL_HANDLE;
     VkPipeline depthPrePassPipeline = VK_NULL_HANDLE;
     VkPipelineLayout depthPrePassPipelineLayout = VK_NULL_HANDLE;
 

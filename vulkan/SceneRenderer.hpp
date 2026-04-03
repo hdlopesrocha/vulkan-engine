@@ -5,6 +5,7 @@
 #include "SkyRenderer.hpp"
 #include "ShadowRenderer.hpp"
 #include "DebugCubeRenderer.hpp"
+#include "WireframeRenderer.hpp"
 #pragma once
 
 // Forward declarations for change handler types
@@ -60,6 +61,8 @@ public:
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
     std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;
     std::unique_ptr<DebugCubeRenderer> boundingBoxRenderer;
+    std::unique_ptr<WireframeRenderer> solidWireframe;
+    std::unique_ptr<WireframeRenderer> waterWireframe;
     // Sky settings owned by this renderer
     std::unique_ptr<SkySettings> skySettings;
     SkySettings& getSkySettings() { return *skySettings; }
@@ -123,7 +126,7 @@ public:
     void skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj);
     void mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
                   const UniformObject &uboStatic, const WaterParams &waterParams, float waterTime, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent);
-    void waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime, VkImageView skyView = VK_NULL_HANDLE);
+    void waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime, VkImageView skyView = VK_NULL_HANDLE);
     void init(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager);
     // Re-update main descriptor set when texture arrays are (re)allocated
     void updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager);
