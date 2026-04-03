@@ -42,22 +42,39 @@ layout(set = 0, binding = 7) uniform WaterParamsUBO {
 } waterParams;
 
 #include "includes/perlin.glsl"
+#include "includes/water_noise.glsl"
 
+vec3 clampAndNormalizeBary(vec3 b) {
+    b = max(b, vec3(0.0001));
+    return b / (b.x + b.y + b.z);
+}
+
+vec3 sampleDisplacedPos(vec3 bary, float animTime,
+                        float foamNoiseScale, int foamNoiseOctaves, float foamNoisePersistence,
+                        float bumpAmp, float waveScale) {
+    vec3 p = bary.x * inPos[0] + bary.y * inPos[1] + bary.z * inPos[2];
+    vec3 n = normalize(bary.x * inNormal[0] + bary.y * inNormal[1] + bary.z * inNormal[2]);
+    float h = waterWaveDisplacement(p.xz, animTime, foamNoiseScale, foamNoiseOctaves, foamNoisePersistence, bumpAmp, waveScale);
+    return p + n * h;
+}
 void main() {
     // Interpolate position
-    vec3 pos = gl_TessCoord.x * inPos[0] + 
-               gl_TessCoord.y * inPos[1] + 
-               gl_TessCoord.z * inPos[2];
+        vec3 bary = gl_TessCoord;
+
+        // Interpolate position
+        vec3 pos = bary.x * inPos[0] +
+                   bary.y * inPos[1] +
+                   bary.z * inPos[2];
     
     // Interpolate normal
-    vec3 normal = normalize(gl_TessCoord.x * inNormal[0] + 
-                           gl_TessCoord.y * inNormal[1] + 
-                           gl_TessCoord.z * inNormal[2]);
+        vec3 normal = normalize(bary.x * inNormal[0] +
+                                bary.y * inNormal[1] +
+                                bary.z * inNormal[2]);
     
     // Interpolate texture coordinates
-    fragTexCoord = gl_TessCoord.x * inTexCoord[0] + 
-                   gl_TessCoord.y * inTexCoord[1] + 
-                   gl_TessCoord.z * inTexCoord[2];
+        fragTexCoord = bary.x * inTexCoord[0] +
+                       bary.y * inTexCoord[1] +
+                       bary.z * inTexCoord[2];
     
     // Get water and noise parameters
     float time = waterParams.params3.y;
@@ -76,24 +93,38 @@ void main() {
 
     // Calculate wave displacement using 4D Perlin FBM (pos.xz, time)
     float animTime = time * noiseTimeSpeed;
-    float baseNoise = fbm(vec4(pos.xz * foamNoiseScale * 0.15, 0.0, animTime * 0.15), foamNoiseOctaves, foamNoisePersistence);
-    float baseNoise2 = fbm(vec4((pos.xz + vec2(50.0)) * foamNoiseScale * 0.07, 0.0, animTime * 0.12), max(foamNoiseOctaves - 1, 1), foamNoisePersistence);
+    vec2 xz = pos.xz;
+        float waveDisplacement = waterWaveDisplacement(
+            xz,
+            animTime,
+            foamNoiseScale,
+            foamNoiseOctaves,
+            foamNoisePersistence,
+            bumpAmp,
+            waveScale
+        );
 
-    float waveDisplacement = (baseNoise + baseNoise2 * 0.5) * bumpAmp * waveScale;
-
-    // Displace position along normal (Y-up for water surface)
+    // Displace along the interpolated surface normal so bump follows mesh orientation.
     pos += waveDisplacement * normal;
 
-    // Calculate perturbed normal from wave gradient using small offsets in X/Z
-    float eps = 0.1;
-    float nX = fbm(vec4(vec2(pos.x + eps, pos.z) * foamNoiseScale * 0.15, 0.0, animTime * 0.15), foamNoiseOctaves, foamNoisePersistence);
-    float nZ = fbm(vec4(vec2(pos.x, pos.z + eps) * foamNoiseScale * 0.15, 0.0, animTime * 0.15), foamNoiseOctaves, foamNoisePersistence);
+    // Calculate perturbed normal from neighboring displaced points in barycentric space.
+    // This is robust on curved meshes and avoids axis-aligned artifacts.
+    float epsBary = 0.005;
+    vec3 bUPlus  = clampAndNormalizeBary(bary + vec3( epsBary, -epsBary, 0.0));
+    vec3 bUMinus = clampAndNormalizeBary(bary + vec3(-epsBary,  epsBary, 0.0));
+    vec3 bVPlus  = clampAndNormalizeBary(bary + vec3(0.0,  epsBary, -epsBary));
+    vec3 bVMinus = clampAndNormalizeBary(bary + vec3(0.0, -epsBary,  epsBary));
 
-    float dX = (nX - baseNoise) / eps * bumpAmp * waveScale;
-    float dZ = (nZ - baseNoise) / eps * bumpAmp * waveScale;
+    vec3 pUPlus = sampleDisplacedPos(bUPlus, animTime, foamNoiseScale, foamNoiseOctaves, foamNoisePersistence, bumpAmp, waveScale);
+    vec3 pUMinus = sampleDisplacedPos(bUMinus, animTime, foamNoiseScale, foamNoiseOctaves, foamNoisePersistence, bumpAmp, waveScale);
+    vec3 pVPlus = sampleDisplacedPos(bVPlus, animTime, foamNoiseScale, foamNoiseOctaves, foamNoisePersistence, bumpAmp, waveScale);
+    vec3 pVMinus = sampleDisplacedPos(bVMinus, animTime, foamNoiseScale, foamNoiseOctaves, foamNoisePersistence, bumpAmp, waveScale);
 
-    // Perturbed normal
-    fragNormal = normalize(vec3(-dX, 1.0, -dZ));
+    vec3 tangentU = pUPlus - pUMinus;
+    vec3 tangentV = pVPlus - pVMinus;
+
+    fragNormal = normalize(cross(tangentU, tangentV));
+    if (dot(fragNormal, normal) < 0.0) fragNormal = -fragNormal;
 
     // Debug: encode displacement as color (normalized)
     float maxExpected = bumpAmp * waveScale * 1.5; // heuristic normalization factor
