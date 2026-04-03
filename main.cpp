@@ -388,9 +388,23 @@ public:
         depthClear.depthStencil = {1.0f, 0};
             sceneRenderer->solidRenderer->beginPass(commandBuffer, frameIdx, colorClear, depthClear);
 
+        // Render sky first inside the solid pass so water composites on top of (sky + solid).
+        // skyRenderer->render() temporarily overwrites the UBO with sky-specific values,
+        // so we must re-upload the main UBO afterward.
+        if (sceneRenderer->skyRenderer) {
+            SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
+            sceneRenderer->skyRenderer->render(this, commandBuffer, getMainDescriptorSet(),
+                sceneRenderer->mainUniformBuffer, uboStatic, viewProj, skyMode);
+
+            // Restore the main UBO that sky rendering overwrote
+            void* data;
+            vkMapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory, 0, sizeof(UniformObject), 0, &data);
+            memcpy(data, &uboStatic, sizeof(UniformObject));
+            vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory);
+        }
+
         VkRenderPassBeginInfo unusedRpInfo{};
-        // Sky is now rendered to an equirectangular texture and composited in the final post-process.
-        // No longer rendered inside the solid pass.
+        // Sky is now rendered inside the solid pass above, before solid geometry.
         sceneRenderer->mainPass(this, commandBuffer, unusedRpInfo, frameIdx, waterEnabled, vegetationEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode, profilingEnabled, queryPool,
             viewProj, uboStatic, sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), true, false, true, 0, 0.0f, 0.0f);
 
