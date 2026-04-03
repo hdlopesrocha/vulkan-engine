@@ -24,6 +24,8 @@ public:
                 ImGui::SliderFloat("Wave Speed", &params.waveSpeed, 0.0f, 2.0f);
                 ImGui::SliderFloat("Wave Scale", &params.waveScale, 0.001f, 0.1f);
                 ImGui::SliderFloat("Wave Height", &params.bumpAmplitude, 0.0f, 256.0f);
+                ImGui::SliderFloat("Wave Depth Transition", &params.waveDepthTransition, 0.0f, 100.0f, "%.1f");
+                ImGui::SetItemTooltip("Distance (world units) over which waves ramp from zero to full height.\n0 = disabled (no depth-based attenuation).");
                 ImGui::SliderFloat("Noise Scale", &params.noiseScale, 1.0f, 256.0f);
                 ImGui::SliderInt("Noise Octaves", &params.noiseOctaves, 1, 8);
                 ImGui::SliderFloat("Noise Persistence", &params.noisePersistence, 0.1f, 0.9f);

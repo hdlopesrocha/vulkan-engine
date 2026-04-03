@@ -21,7 +21,7 @@ layout(set = 0, binding = 7) uniform WaterParamsUBO {
     vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=foamDepthThreshold
     vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
     vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=shoreStrength, w=shoreFalloff
-    vec4 shallowColor;
+    vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
     vec4 deepColor; // w = foamIntensity
     vec4 foamParams; // x=foamNoiseScale, y=foamNoiseOctaves, z=foamNoisePersistence, w=foamTintIntensity
     vec4 foamParams2; // x=foamBrightness, y=foamContrast
@@ -61,10 +61,11 @@ void main() {
     float foamDepthThreshold = waterParams.params1.w;
     float waterTint = waterParams.params2.x;
     float noiseScale = waterParams.params2.y;
-    float noiseOctaves = waterParams.params2.z;
+    int noiseOctaves = int(max(waterParams.params2.z, 1.0));
     float noisePersistence = waterParams.params2.w;
     float noiseTimeSpeed = waterParams.params3.x;
-    
+
+
     // Apply noise time speed
     float animTime = time * noiseTimeSpeed;
     
@@ -77,10 +78,18 @@ void main() {
     float eps = 0.5;
 
     // Same parameters the TES feeds into waterWaveDisplacement
-    float fnScale = 1.0 / max(waterParams.foamParams.x, 0.0001);
-    int   fnOct   = int(max(waterParams.foamParams.y, 1.0));
-    float fnPers  = waterParams.foamParams.z;
     float bAmp    = waterParams.foamParams2.z;
+
+    // Depth-based wave attenuation (must match the TES depth ramp so
+    // the procedural normal is consistent with the displaced geometry).
+    float waveDepthTransition = waterParams.shallowColor.w;
+    if (waveDepthTransition > 0.0) {
+        vec2 earlyScreenUV = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
+        float earlySceneDepth = texture(sceneDepthTex, earlyScreenUV).r;
+        float earlyWaterDepth = gl_FragCoord.z;
+        float earlyDepthDiff = max(linearizeDepth(earlySceneDepth) - linearizeDepth(earlyWaterDepth), 0.0);
+        bAmp *= smoothstep(0.0, waveDepthTransition, earlyDepthDiff);
+    }
 
     // Build tangent frame from the original mesh normal
     vec3 N  = normal;
@@ -89,9 +98,9 @@ void main() {
     vec3 B  = cross(N, T);
 
     // Finite-difference the displacement along the tangent directions
-    float h0 = waterWaveDisplacement(fragPos, animTime, fnScale, fnOct, fnPers, bAmp, 1.0);
-    float ht = waterWaveDisplacement(fragPos + eps * T, animTime, fnScale, fnOct, fnPers, bAmp, 1.0);
-    float hb = waterWaveDisplacement(fragPos + eps * B, animTime, fnScale, fnOct, fnPers, bAmp, 1.0);
+    float h0 = waterWaveDisplacement(fragPos, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
+    float ht = waterWaveDisplacement(fragPos + eps * T, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
+    float hb = waterWaveDisplacement(fragPos + eps * B, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
 
     // Classic bump-map perturbation: N' = N - dh/dT * T - dh/dB * B
     normal = normalize(N - ((ht - h0) / eps) * T - ((hb - h0) / eps) * B);
@@ -138,7 +147,7 @@ void main() {
         // If tessellation wasn't producing a debug value (likely zero), prefer computed color
         if (length(debugCol) < 0.001) debugCol = vec3(normDisp);
         outColor = vec4(debugCol, 1.0);
-        outNormal = vec4(normalize(normal), 0.0);
+        outNormal = vec4(normal, 0.0);
         outMask = vec4(1.0);
         return;
     }
@@ -149,7 +158,7 @@ void main() {
         vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
         vec3 sc = texture(sceneColorTex, uv).rgb*0.9;
         outColor = vec4(sc, 1.0);
-        outNormal = vec4(normalize(normal), 0.0);
+        outNormal = vec4(normal, 0.0);
         outMask = vec4(1.0);
         return;
     }
@@ -158,7 +167,7 @@ void main() {
     if (int(ubo.debugParams.x) == 34) {
         vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
         outColor = vec4(uv, 0.0, 1.0);
-        outNormal = vec4(normalize(normal), 0.0);
+        outNormal = vec4(normal, 0.0);
         outMask = vec4(1.0);
         return;
     }
@@ -327,7 +336,7 @@ void main() {
     float alpha = mix(transparency, 0.98, max(fresnel * 0.5, totalFoam));
     alpha = 1.0;
     outColor = vec4(waterColor, alpha);
-    outNormal = vec4(normalize(normal), 0.0);
+    outNormal = vec4(normal, 0.0);
     outMask = vec4(1.0);
 
    // Debug mode 35: water noise

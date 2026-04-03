@@ -567,11 +567,11 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     sceneBindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     sceneBindings[0].pImmutableSamplers = nullptr;
     
-    // Scene depth (binding 1)
+    // Scene depth (binding 1) — also accessed by TES for depth-based wave attenuation
     sceneBindings[1].binding = 1;
     sceneBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     sceneBindings[1].descriptorCount = 1;
-    sceneBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
     sceneBindings[1].pImmutableSamplers = nullptr;
 
     // Sky color (binding 2)
@@ -923,7 +923,7 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
         gpu.params1 = glm::vec4(params.refractionStrength, params.fresnelPower, params.transparency, params.foamDepthThreshold);
         gpu.params2 = glm::vec4(params.waterTint, params.noiseScale, static_cast<float>(params.noiseOctaves), params.noisePersistence);
         gpu.params3 = glm::vec4(params.noiseTimeSpeed, waterTime, params.shoreStrength, params.shoreFalloff);
-        gpu.shallowColor = glm::vec4(params.shallowColor, 0.0f);
+        gpu.shallowColor = glm::vec4(params.shallowColor, params.waveDepthTransition);
         gpu.deepColor = glm::vec4(params.deepColor, params.foamIntensity);
         gpu.foamParams = glm::vec4(params.foamNoiseScale, static_cast<float>(params.foamNoiseOctaves), params.foamNoisePersistence, params.foamTintIntensity);
         gpu.foamParams2 = glm::vec4(params.foamBrightness, params.foamContrast, params.bumpAmplitude, params.depthFalloff);

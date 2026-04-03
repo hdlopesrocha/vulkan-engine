@@ -43,6 +43,11 @@ struct WaterParams {
 
     // Vertical bump amplitude for water geometry
     float bumpAmplitude = 64.0f;
+
+    // Depth-based wave attenuation: distance (world units) over which waves
+    // transition from zero displacement (at solid surface) to full amplitude.
+    // 0 = disabled (no depth-based attenuation).
+    float waveDepthTransition = 20.0f;
 };
 
 // GPU-side water params UBO (matches shader WaterParamsUBO layout)
@@ -50,7 +55,7 @@ struct WaterParamsGPU {
     glm::vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=foamDepthThreshold
     glm::vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
     glm::vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=shoreStrength, w=shoreFalloff
-    glm::vec4 shallowColor;
+    glm::vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
     glm::vec4 deepColor; // w = foamIntensity
     glm::vec4 foamParams; // x=foamNoiseScale, y=foamNoiseOctaves, z=foamNoisePersistence, w=foamTintIntensity
     glm::vec4 foamParams2; // x=foamBrightness, y=foamContrast

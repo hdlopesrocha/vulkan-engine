@@ -34,15 +34,25 @@ layout(set = 0, binding = 7) uniform WaterParamsUBO {
     vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=foamDepthThreshold
     vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
     vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=shoreStrength, w=shoreFalloff
-    vec4 shallowColor;
+    vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
     vec4 deepColor; // w = foamIntensity
     vec4 foamParams; // x=foamNoiseScale, y=foamNoiseOctaves, z=foamNoisePersistence, w=foamTintIntensity
     vec4 foamParams2; // x=foamBrightness, y=foamContrast, z=bumpAmplitude
     vec4 foamTint;   // rgb foam tint
 } waterParams;
 
+// Scene depth texture for depth-dependent wave attenuation (set 2)
+layout(set = 2, binding = 1) uniform sampler2D sceneDepthTex;
+
 #include "includes/perlin.glsl"
 #include "includes/water_noise.glsl"
+
+// Linearize depth from Vulkan [0,1] depth buffer to eye-space distance.
+float linearizeDepth(float depth) {
+    float nearPlane = ubo.passParams.z;
+    float farPlane  = ubo.passParams.w;
+    return (nearPlane * farPlane) / (farPlane - depth * (farPlane - nearPlane));
+}
 
 vec3 clampAndNormalizeBary(vec3 b) {
     b = max(b, vec3(0.0001));
@@ -90,6 +100,24 @@ void main() {
     float foamNoisePersistence = waterParams.foamParams.z;
 
     float bumpAmp = waterParams.foamParams2.z; // bump amplitude provided via Water widget
+
+    // --- Depth-based wave attenuation ---
+    // Project the undisplaced water vertex to screen space and sample the solid
+    // depth buffer.  Where the water surface is close to solid geometry (shallow),
+    // waves are suppressed.  waveDepthTransition controls the ramp distance.
+    float waveDepthTransition = waterParams.shallowColor.w;
+    if (waveDepthTransition > 0.0) {
+        vec4 preClip = ubo.viewProjection * vec4(pos, 1.0);
+        if (preClip.w > 0.001) {
+            vec2 screenUV = clamp(preClip.xy / preClip.w * 0.5 + 0.5, 0.001, 0.999);
+            float solidDepthRaw = texture(sceneDepthTex, screenUV).r;
+            float waterDepthRaw = preClip.z / preClip.w;
+            float solidDepthLin = linearizeDepth(solidDepthRaw);
+            float waterDepthLin = linearizeDepth(waterDepthRaw);
+            float depthDiff = max(solidDepthLin - waterDepthLin, 0.0);
+            bumpAmp *= smoothstep(0.0, waveDepthTransition, depthDiff);
+        }
+    }
 
     // Calculate wave displacement using 4D Perlin FBM (pos.xyz, time)
     float animTime = time * noiseTimeSpeed;
