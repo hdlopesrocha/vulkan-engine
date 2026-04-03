@@ -54,7 +54,7 @@ vec3 sampleDisplacedPos(vec3 bary, float animTime,
                         float bumpAmp, float waveScale) {
     vec3 p = bary.x * inPos[0] + bary.y * inPos[1] + bary.z * inPos[2];
     vec3 n = normalize(bary.x * inNormal[0] + bary.y * inNormal[1] + bary.z * inNormal[2]);
-    float h = waterWaveDisplacement(p.xz, animTime, foamNoiseScale, foamNoiseOctaves, foamNoisePersistence, bumpAmp, waveScale);
+    float h = waterWaveDisplacement(p.xyz, animTime, foamNoiseScale, foamNoiseOctaves, foamNoisePersistence, bumpAmp, waveScale);
     return p + n * h;
 }
 void main() {
@@ -91,11 +91,11 @@ void main() {
 
     float bumpAmp = waterParams.foamParams2.z; // bump amplitude provided via Water widget
 
-    // Calculate wave displacement using 4D Perlin FBM (pos.xz, time)
+    // Calculate wave displacement using 4D Perlin FBM (pos.xyz, time)
     float animTime = time * noiseTimeSpeed;
-    vec2 xz = pos.xz;
+    vec3 xyz = pos.xyz;
         float waveDisplacement = waterWaveDisplacement(
-            xz,
+            xyz,
             animTime,
             foamNoiseScale,
             foamNoiseOctaves,

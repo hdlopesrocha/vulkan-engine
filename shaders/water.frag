@@ -10,6 +10,8 @@ layout(location = 3) in vec4 fragPosClip;  // clip-space position for scene samp
 layout(location = 4) in vec3 fragDebug;   // debug visual (displacement)
 
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outNormal;
+layout(location = 2) out vec4 outMask;
 
 // Use the same UBO as main shader
 #include "includes/ubo.glsl"
@@ -73,11 +75,11 @@ void main() {
     bool useProceduralNormal = (ubo.passParams.y <= 0.5) || (length(normal) < 0.0001);
     if (useProceduralNormal) {
         float eps = 0.01;
-        vec2 xz = fragPos.xz;
+        vec3 xyz = fragPos.xyz;
         int nOct = int(noiseOctaves);
-        float h  = waterFbmNoise(xz, noiseScale * 0.5, animTime, 1.0, nOct, noisePersistence, vec2(0.0));
-        float hx = waterFbmNoise(xz + vec2(eps, 0.0), noiseScale * 0.5, animTime, 1.0, nOct, noisePersistence, vec2(0.0));
-        float hz = waterFbmNoise(xz + vec2(0.0, eps), noiseScale * 0.5, animTime, 1.0, nOct, noisePersistence, vec2(0.0));
+        float h  = waterFbmNoise(xyz, noiseScale * 0.5, animTime, 1.0, nOct, noisePersistence, vec3(0.0));
+        float hx = waterFbmNoise(xyz + vec3(eps, 0.0, 0.0), noiseScale * 0.5, animTime, 1.0, nOct, noisePersistence, vec3(0.0));
+        float hz = waterFbmNoise(xyz + vec3(0.0, eps, 0.0), noiseScale * 0.5, animTime, 1.0, nOct, noisePersistence, vec3(0.0));
         normal = normalize(vec3(h - hx, eps, h - hz));
     }
     
@@ -106,7 +108,7 @@ void main() {
 
         float animTimeDbg = timeDebug * waterParams.params3.x;
         float waveDisplacementDbg = waterWaveDisplacement(
-            fragPos.xz,
+            fragPos.xyz,
             animTimeDbg,
             foamNoiseScaleDbg,
             foamNoiseOctavesDbg,
@@ -122,6 +124,8 @@ void main() {
         // If tessellation wasn't producing a debug value (likely zero), prefer computed color
         if (length(debugCol) < 0.001) debugCol = vec3(normDisp);
         outColor = vec4(debugCol, 1.0);
+        outNormal = vec4(normalize(fragNormal), 0.0);
+        outMask = vec4(1.0);
         return;
     }
 
@@ -131,6 +135,8 @@ void main() {
         vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
         vec3 sc = texture(sceneColorTex, uv).rgb*0.9;
         outColor = vec4(sc, 1.0);
+        outNormal = vec4(normalize(fragNormal), 0.0);
+        outMask = vec4(1.0);
         return;
     }
 
@@ -138,32 +144,21 @@ void main() {
     if (int(ubo.debugParams.x) == 34) {
         vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
         outColor = vec4(uv, 0.0, 1.0);
+        outNormal = vec4(normalize(fragNormal), 0.0);
+        outMask = vec4(1.0);
         return;
     }
 
     // === PERLIN NOISE-BASED REFRACTION ===
     // Generate refraction distortion from shared FBM helper.
     vec2 refractionNoise = waterRefractionNoise(
-        fragPos.xz,
+        fragPos.xyz,
         noiseScale,
         animTime,
         int(noiseOctaves),
         noisePersistence
     );
     
-   // Debug mode 35: water noise
-    if (int(ubo.debugParams.x) == 35) {
-        outColor = vec4(refractionNoise, 0.5 + 0.5 * (refractionNoise.x - refractionNoise.y), 1.0);
-        return;
-    }
-
-    // Debug mode 36: final displaced normal used by shading.
-    if (int(ubo.debugParams.x) == 36) {
-        vec3 n = normalize(normal);
-        outColor = vec4(n * 0.5 + 0.5, 1.0);
-        return;
-    }
-
     // Combine noise layers for complex refraction pattern
     vec2 refractionOffset = refractionNoise * refractionStrength;
     
@@ -201,8 +196,8 @@ void main() {
     // Single Perlin-based foam noise (reused below)
     // Use XZ plane and time scaled for smooth animation; compute raw base in [-1,1] then remap to [0,1]
     float foamNoiseScale = max(waterParams.foamParams.x, 0.0001);
-    float foamBaseRaw = waterFbmNoise(fragPos.xz, 1.0, animTime, 1.0,
-                                      max(int(noiseOctaves), 1), noisePersistence, vec2(0.0));
+    float foamBaseRaw = waterFbmNoise(fragPos.xyz, 1.0, animTime, 1.0,
+                                      max(int(noiseOctaves), 1), noisePersistence, vec3(0.0));
     float foamBase = foamBaseRaw * 0.5 + 0.5;
     // Depth-based color fade (deeper = more tinted)
     // Use controllable depth falloff from UBO (foamParams2.w); default to 0.02
@@ -219,16 +214,16 @@ void main() {
     float specAngle = max(dot(normal, halfDir), 0.0);
     
     // Main specular highlight with noise perturbation
-    float specNoise = 0.8 + 0.4 * waterFbmNoise(fragPos.xz, noiseScale, animTime, 1.0,
-                                                max(int(noiseOctaves), 1), noisePersistence, vec2(0.0));
+    float specNoise = 0.8 + 0.4 * waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
+                                                max(int(noiseOctaves), 1), noisePersistence, vec3(0.0));
     float specular = pow(specAngle, 128.0) * specNoise;
     vec3 specularColor = ubo.lightColor.xyz * specular * 2.0;
     
     // Sun glitter: high-frequency noise-based sparkles
-    float glitterNoise = waterFbmNoise(fragPos.xz, noiseScale * 3.0, animTime, 3.0,
-                                       max(int(noiseOctaves) - 2, 1), noisePersistence, vec2(0.0));
-    float glitterThreshold = 0.7 + 0.2 * waterFbmNoise(fragPos.xz, noiseScale * 0.5, animTime, 0.5,
-                                                       max(int(noiseOctaves), 1), noisePersistence, vec2(0.0));
+    float glitterNoise = waterFbmNoise(fragPos.xyz, noiseScale * 3.0, animTime, 3.0,
+                                       max(int(noiseOctaves) - 2, 1), noisePersistence, vec3(0.0));
+    float glitterThreshold = 0.7 + 0.2 * waterFbmNoise(fragPos.xyz, noiseScale * 0.5, animTime, 0.5,
+                                                       max(int(noiseOctaves), 1), noisePersistence, vec3(0.0));
     float glitter = smoothstep(glitterThreshold, 1.0, glitterNoise) * pow(specAngle, 32.0);
     specularColor += ubo.lightColor.xyz * glitter * 1.5;
     
@@ -318,5 +313,20 @@ void main() {
     float alpha = mix(transparency, 0.98, max(fresnel * 0.5, totalFoam));
     alpha = 1.0;
     outColor = vec4(waterColor, alpha);
+    outNormal = vec4(normalize(fragNormal), 0.0);
+    outMask = vec4(1.0);
+
+   // Debug mode 35: water noise
+    if (int(ubo.debugParams.x) == 35) {
+        outColor = vec4(refractionNoise, 0.5 + 0.5 * (refractionNoise.x - refractionNoise.y), 1.0);
+        return;
+    }
+
+    // Debug mode 36: final displaced normal used by shading.
+    if (int(ubo.debugParams.x) == 36) {
+        vec3 n = normalize(fragNormal);
+        outColor = vec4(n * 0.5 + 0.5, 1.0);
+        return;
+    }
 
 }
