@@ -17,6 +17,7 @@ private:
 
     // ImGui texture descriptors
     VkDescriptorSet skyDescriptor = VK_NULL_HANDLE;
+    VkDescriptorSet solid360Descriptor = VK_NULL_HANDLE;
     VkDescriptorSet solidColorDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterColorDescriptor = VK_NULL_HANDLE;
 

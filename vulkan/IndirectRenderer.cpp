@@ -784,6 +784,21 @@ void IndirectRenderer::bindBuffers(VkCommandBuffer cmd) {
     vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 }
 
+void IndirectRenderer::drawAll(VkCommandBuffer cmd) {
+    if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) return;
+    if (indirectBuffer.buffer == VK_NULL_HANDLE || indirectCommands.empty()) return;
+
+    // Bind merged geometry
+    VkBuffer vbs[] = { vertexBuffer.buffer };
+    VkDeviceSize offsets[] = { 0 };
+    vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
+    vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+    // Draw ALL meshes from the original (non-culled) indirect buffer
+    uint32_t drawCount = static_cast<uint32_t>(indirectCommands.size());
+    vkCmdDrawIndexedIndirect(cmd, indirectBuffer.buffer, 0, drawCount, sizeof(VkDrawIndexedIndirectCommand));
+}
+
 void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws) {
     drawIndirectOnly(cmd, app->getPipelineLayout(), maxDraws);
 }

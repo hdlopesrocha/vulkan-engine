@@ -2,8 +2,12 @@
 
 #include "VulkanApp.hpp"
 #include "IndirectRenderer.hpp"
+#include "SkyRenderer.hpp"
+#include "SolidRenderer.hpp"
 #include <glm/glm.hpp>
 #include "../utils/Scene.hpp"
+#include "../Uniforms.hpp"
+#include "../widgets/SkySettings.hpp"
 #include <unordered_map>
 #include "Model3DVersion.hpp"
 
@@ -145,6 +149,25 @@ public:
     // Update the scene textures binding (color + depth + sky) for refraction and edge foam
     void updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView = VK_NULL_HANDLE);
 
+    // --- Solid 360° cubemap reflection ---
+    // Create offscreen cubemap + equirect conversion resources.
+    // solidRenderPass must be a render pass compatible with the solid and sky pipelines.
+    void createSolid360Targets(VulkanApp* app, VkRenderPass solidRenderPass);
+    void destroySolid360Targets(VulkanApp* app);
+
+    // Render the solid scene (sky + terrain) into a cubemap from the camera position,
+    // then convert to equirectangular. The result can be sampled via getSolid360View().
+    // Must be called outside any active render pass.
+    void renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
+                        VkRenderPass solidRenderPass,
+                        SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
+                        SolidRenderer* solidRenderer,
+                        VkDescriptorSet mainDescriptorSet,
+                        Buffer& uniformBuffer, const UniformObject& ubo);
+
+    // Access the 360° solid equirectangular view for water reflection sampling
+    VkImageView getSolid360View() const { return equirect360View; }
+
     // Register model version for water meshes (stored here)
     void registerModelVersion(NodeID id, const Model3DVersion& ver) { waterNodeModelVersions[id] = ver; }
 
@@ -224,4 +247,41 @@ private:
 
     // Map of node -> model version for water geometry managed here
     std::unordered_map<NodeID, Model3DVersion> waterNodeModelVersions;
+
+    // --- Solid 360° cubemap reflection resources ---
+    static constexpr uint32_t CUBE360_FACE_SIZE = 512;
+    static constexpr uint32_t EQUIRECT360_WIDTH = 1024;
+    static constexpr uint32_t EQUIRECT360_HEIGHT = 512;
+
+    // Cubemap color image (6 layers, CUBE_COMPATIBLE)
+    VkImage cube360ColorImage = VK_NULL_HANDLE;
+    VkDeviceMemory cube360ColorMemory = VK_NULL_HANDLE;
+    std::array<VkImageView, 6> cube360FaceViews = {};   // per-face 2D views for FBO
+    VkImageView cube360CubeView = VK_NULL_HANDLE;       // cubemap view for sampling
+
+    // Shared depth image for cubemap face rendering
+    VkImage cube360DepthImage = VK_NULL_HANDLE;
+    VkDeviceMemory cube360DepthMemory = VK_NULL_HANDLE;
+    VkImageView cube360DepthView = VK_NULL_HANDLE;
+
+    // Per-face framebuffers (reuse solidRenderPass)
+    std::array<VkFramebuffer, 6> cube360Framebuffers = {};
+
+    // Equirectangular output (2D texture, same format as swapchain)
+    VkImage equirect360Image = VK_NULL_HANDLE;
+    VkDeviceMemory equirect360Memory = VK_NULL_HANDLE;
+    VkImageView equirect360View = VK_NULL_HANDLE;
+    VkFramebuffer equirect360Framebuffer = VK_NULL_HANDLE;
+
+    // Cubemap→equirect conversion pipeline
+    VkRenderPass equirect360RenderPass = VK_NULL_HANDLE;
+    VkPipeline equirect360Pipeline = VK_NULL_HANDLE;
+    VkPipelineLayout equirect360PipelineLayout = VK_NULL_HANDLE;
+    VkShaderModule equirect360VertModule = VK_NULL_HANDLE;
+    VkShaderModule equirect360FragModule = VK_NULL_HANDLE;
+
+    // Descriptor set for cubemap sampling in the conversion pass
+    VkDescriptorSetLayout cube360DescSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool cube360DescPool = VK_NULL_HANDLE;
+    VkDescriptorSet cube360DescSet = VK_NULL_HANDLE;
 };

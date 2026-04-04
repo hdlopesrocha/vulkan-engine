@@ -33,6 +33,10 @@ void RenderTargetsWidget::cleanup() {
         ImGui_ImplVulkan_RemoveTexture(waterColorDescriptor);
         waterColorDescriptor = VK_NULL_HANDLE;
     }
+    if (solid360Descriptor != VK_NULL_HANDLE) {
+        ImGui_ImplVulkan_RemoveTexture(solid360Descriptor);
+        solid360Descriptor = VK_NULL_HANDLE;
+    }
 }
 
 void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
@@ -59,6 +63,13 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             solidColorDescriptor = ImGui_ImplVulkan_AddTexture(
                 sampler, solidView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
+    }
+
+    // Solid 360° equirectangular reflection
+    VkImageView solid360View = waterRenderer->getSolid360View();
+    if (solid360View != VK_NULL_HANDLE) {
+        solid360Descriptor = ImGui_ImplVulkan_AddTexture(
+            sampler, solid360View, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
     // Water color (first attachment of water geometry pass)
@@ -89,6 +100,15 @@ void RenderTargetsWidget::render() {
         float skyH = 512.0f * previewScale;
         ImGui::Text("Sky (Equirectangular)");
         ImGui::Image((ImTextureID)skyDescriptor, ImVec2(skyW, skyH));
+        ImGui::Separator();
+    }
+
+    // Solid 360° reflection (equirect: 2:1 aspect)
+    if (solid360Descriptor != VK_NULL_HANDLE) {
+        float s360W = 512.0f * previewScale * 2.0f;
+        float s360H = 512.0f * previewScale;
+        ImGui::Text("Solid 360 (Reflection)");
+        ImGui::Image((ImTextureID)solid360Descriptor, ImVec2(s360W, s360H));
         ImGui::Separator();
     }
 

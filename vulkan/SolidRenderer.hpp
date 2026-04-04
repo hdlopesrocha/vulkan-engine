@@ -42,6 +42,7 @@ public:
     // Public accessor for nodeModelVersions (read-only)
     const std::unordered_map<NodeID, Model3DVersion>& getNodeModelVersions() const { return solidChunks; }
 public:
+    VkPipeline getGraphicsPipeline() const { return graphicsPipeline; }
     VkPipelineLayout getGraphicsPipelineLayout() const { return graphicsPipelineLayout; }
 private:
     

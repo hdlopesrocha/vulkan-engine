@@ -75,6 +75,9 @@ public:
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws = 0);
     // Issue indirect draw using the compacted indirect buffer (call inside render pass).
     void drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws = 0);
+    // Draw ALL meshes without GPU frustum culling (uses original indirect buffer).
+    // Useful for omnidirectional renders (cubemap faces, shadow maps, etc.).
+    void drawAll(VkCommandBuffer cmd);
     // Bind vertex/index buffers (call once before multiple drawIndirectOnly calls)
     void bindBuffers(VkCommandBuffer cmd);
     // Issue indirect draw only (buffers must already be bound via bindBuffers)

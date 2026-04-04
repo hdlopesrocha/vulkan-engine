@@ -63,6 +63,9 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
     }
     if (waterRenderer) {
         waterRenderer->createRenderTargets(app, width, height);
+        // Recreate 360 reflection targets (format may change on resize)
+        waterRenderer->destroySolid360Targets(app);
+        waterRenderer->createSolid360Targets(app, solidRenderer->getRenderPass());
     }
     if (postProcessRenderer) {
         postProcessRenderer->setRenderSize(width, height);
@@ -213,8 +216,8 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         boundingBoxRenderer->init(app, solidRenderer->getRenderPass());
     }
     
-    // Create main uniform buffer
-    mainUniformBuffer = app->createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
+    // Create main uniform buffer (TRANSFER_DST for vkCmdUpdateBuffer in cubemap 360 render)
+    mainUniformBuffer = app->createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, 
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     
     VkDescriptorSet mainDs = app->getMainDescriptorSet();
@@ -336,6 +339,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         });
     }
     waterRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+
+    // Create cubemap → equirect 360° reflection targets for water
+    waterRenderer->createSolid360Targets(app, solidRenderer->getRenderPass());
 
     // Create wireframe pipelines for solid and water passes
     if (solidWireframe) {

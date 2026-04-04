@@ -44,6 +44,13 @@ public:
     VkImageView getSkyView(uint32_t frameIndex) const { return skyColorImageViews[frameIndex]; }
     VkRenderPass getSkyRenderPass() const { return skyOffscreenRenderPass; }
 
+    // Accessors for external renderers (cubemap 360 uses sky VBO + pipeline)
+    VkPipeline getSkyPipeline() const { return skyPipeline; }
+    VkPipelineLayout getSkyPipelineLayout() const { return skyPipelineLayout; }
+    VkPipeline getSkyGridPipeline() const { return skyGridPipeline; }
+    VkPipelineLayout getSkyGridPipelineLayout() const { return skyGridPipelineLayout; }
+    const VertexBufferObject& getSkyVBO() const { return skyVBO; }
+
 private:
     VkPipeline skyPipeline = VK_NULL_HANDLE;        // Gradient sky pipeline
     VkPipelineLayout skyPipelineLayout = VK_NULL_HANDLE;

@@ -457,13 +457,31 @@ public:
 
             sceneRenderer->solidRenderer->endPass(commandBuffer);
 
+        // Render 360° cubemap reflection (sky + solid) from camera position
+        // Must run outside any active render pass; writes equirect texture for water sampling
+        if (waterEnabled && sceneRenderer->waterRenderer) {
+            SkySettings::Mode skyMode360 = sceneRenderer->getSkySettings().mode;
+            sceneRenderer->waterRenderer->renderSolid360(
+                this, commandBuffer,
+                sceneRenderer->solidRenderer->getRenderPass(),
+                sceneRenderer->skyRenderer.get(), skyMode360,
+                sceneRenderer->solidRenderer.get(),
+                getMainDescriptorSet(),
+                sceneRenderer->mainUniformBuffer, uboStatic);
+        }
+
         // Run water geometry pass offscreen and bind scene textures for post-process
         if (waterEnabled) {
             // GPU frustum cull water meshes (must run outside a render pass)
             sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
-            VkImageView skyView = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
+            // Use 360° solid+sky reflection instead of the sky-only equirect view
+            VkImageView reflectionView = sceneRenderer->waterRenderer->getSolid360View();
+            if (reflectionView == VK_NULL_HANDLE) {
+                // Fallback to sky-only view if 360 targets not ready
+                reflectionView = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
+            }
             sceneRenderer->waterPass(this, commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), settings.wireframeMode, profilingEnabled, queryPool,
-                sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), skyView);
+                sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), reflectionView);
         }
         
     }
