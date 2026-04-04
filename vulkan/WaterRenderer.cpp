@@ -922,11 +922,11 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     // Upload current water parameters to the GPU buffer (set 0, binding 7)
     {
         WaterParamsGPU gpu{};
-        gpu.params1 = glm::vec4(params.refractionStrength, params.fresnelPower, params.transparency, 0.0f);
+        gpu.params1 = glm::vec4(params.refractionStrength, params.fresnelPower, params.transparency, params.reflectionStrength);
         gpu.params2 = glm::vec4(params.waterTint, params.noiseScale, static_cast<float>(params.noiseOctaves), params.noisePersistence);
-        gpu.params3 = glm::vec4(params.noiseTimeSpeed, waterTime, 0.0f, 0.0f);
+        gpu.params3 = glm::vec4(params.noiseTimeSpeed, waterTime, params.specularIntensity, params.specularPower);
         gpu.shallowColor = glm::vec4(params.shallowColor, params.waveDepthTransition);
-        gpu.deepColor = glm::vec4(params.deepColor, 0.0f);
+        gpu.deepColor = glm::vec4(params.deepColor, params.glitterIntensity);
         gpu.waveParams = glm::vec4(0.0f, 0.0f, params.bumpAmplitude, params.depthFalloff);
         gpu.reserved1 = glm::vec4(0.0f);
         gpu.reserved2 = glm::vec4(0.0f);

@@ -28,6 +28,12 @@ struct WaterParams {
     float waterTint = 0.3f;
     float noiseTimeSpeed = 1.0f;
 
+    // Reflection / specular controls
+    float reflectionStrength = 0.6f;  // How much reflection mixes into the surface [0..1]
+    float specularIntensity = 2.0f;   // Brightness of specular highlight
+    float specularPower = 128.0f;     // Sharpness of specular highlight
+    float glitterIntensity = 1.5f;    // Brightness of sun glitter sparkles
+
     // Vertical bump amplitude for water geometry
     float bumpAmplitude = 8.0f;
 
@@ -39,11 +45,11 @@ struct WaterParams {
 
 // GPU-side water params UBO (matches shader WaterParamsUBO layout)
 struct WaterParamsGPU {
-    glm::vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=unused
+    glm::vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=reflectionStrength
     glm::vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
-    glm::vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=unused, w=unused
+    glm::vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=specularIntensity, w=specularPower
     glm::vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
-    glm::vec4 deepColor; // xyz = deepColor, w = unused
+    glm::vec4 deepColor; // xyz = deepColor, w = glitterIntensity
     glm::vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
     glm::vec4 reserved1;  // unused (padding to preserve UBO layout)
     glm::vec4 reserved2;  // unused (padding to preserve UBO layout)

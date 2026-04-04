@@ -46,9 +46,18 @@ public:
                 ImGui::SliderFloat("Depth Falloff", &params.depthFalloff, 0.001f, 1.0f);
             }
 
-            // Fresnel settings
-            if (ImGui::CollapsingHeader("Surface Reflection")) {
+            // Reflection settings
+            if (ImGui::CollapsingHeader("Surface Reflection", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::SliderFloat("Reflection Strength", &params.reflectionStrength, 0.0f, 1.0f);
+                ImGui::SetItemTooltip("How much environment reflection mixes into the surface.\n0 = no reflection, 1 = full mirror.");
                 ImGui::SliderFloat("Fresnel Power", &params.fresnelPower, 1.0f, 10.0f);
+                ImGui::SetItemTooltip("Controls angle-dependence of reflection.\nHigher = reflection only at grazing angles.");
+                ImGui::SliderFloat("Specular Intensity", &params.specularIntensity, 0.0f, 10.0f);
+                ImGui::SetItemTooltip("Brightness of the sun's specular highlight on the water.");
+                ImGui::SliderFloat("Specular Power", &params.specularPower, 8.0f, 512.0f, "%.0f");
+                ImGui::SetItemTooltip("Sharpness of the specular highlight.\nHigher = tighter, smaller hotspot.");
+                ImGui::SliderFloat("Glitter Intensity", &params.glitterIntensity, 0.0f, 5.0f);
+                ImGui::SetItemTooltip("Brightness of sun glitter sparkles on the water surface.");
             }
 
             ImGui::Separator();

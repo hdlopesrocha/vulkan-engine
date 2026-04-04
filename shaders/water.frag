@@ -18,11 +18,11 @@ layout(location = 2) out vec4 outMask;
 
 // Water-specific parameters (set 0, binding 7)
 layout(set = 0, binding = 7) uniform WaterParamsUBO {
-    vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=unused
+    vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=reflectionStrength
     vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
-    vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=unused, w=unused
+    vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=specularIntensity, w=specularPower
     vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
-    vec4 deepColor; // xyz = deepColor, w = unused
+    vec4 deepColor; // xyz = deepColor, w = glitterIntensity
     vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
     vec4 reserved1;  // unused
     vec4 reserved2;  // unused
@@ -63,7 +63,10 @@ void main() {
     int noiseOctaves = int(max(waterParams.params2.z, 1.0));
     float noisePersistence = waterParams.params2.w;
     float noiseTimeSpeed = waterParams.params3.x;
-
+    float reflectionStrength = waterParams.params1.w;
+    float specularIntensity = waterParams.params3.z;
+    float specularPowerParam = waterParams.params3.w;
+    float glitterIntensity = waterParams.deepColor.w;
 
     // Apply noise time speed
     float animTime = time * noiseTimeSpeed;
@@ -228,8 +231,8 @@ void main() {
     // Main specular highlight with noise perturbation
     float specNoise = 0.8 + 0.4 * waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
                                                 max(int(noiseOctaves), 1), noisePersistence, vec3(0.0));
-    float specular = pow(specAngle, 128.0) * specNoise;
-    vec3 specularColor = ubo.lightColor.xyz * specular * 2.0;
+    float specular = pow(specAngle, specularPowerParam) * specNoise;
+    vec3 specularColor = ubo.lightColor.xyz * specular * specularIntensity;
     
     // Sun glitter: high-frequency noise-based sparkles
     float glitterNoise = waterFbmNoise(fragPos.xyz, noiseScale * 3.0, animTime, 3.0,
@@ -237,7 +240,7 @@ void main() {
     float glitterThreshold = 0.7 + 0.2 * waterFbmNoise(fragPos.xyz, noiseScale * 0.5, animTime, 0.5,
                                                        max(int(noiseOctaves), 1), noisePersistence, vec3(0.0));
     float glitter = smoothstep(glitterThreshold, 1.0, glitterNoise) * pow(specAngle, 32.0);
-    specularColor += ubo.lightColor.xyz * glitter * 1.5;
+    specularColor += ubo.lightColor.xyz * glitter * glitterIntensity;
     
     // === REFLECTION ===
     vec3 reflectDir = reflect(-viewDir, normal);
@@ -263,7 +266,7 @@ void main() {
     vec3 refractedColor = mix(sceneColor, waterTintColor, tintBlend);
     
     // Mix refracted color with reflection based on fresnel
-    vec3 waterColor = mix(refractedColor, skyColor, fresnel * 0.6);
+    vec3 waterColor = mix(refractedColor, skyColor, fresnel * reflectionStrength);
     
     // Add specular highlights
     waterColor += specularColor;
