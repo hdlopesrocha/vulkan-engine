@@ -21,9 +21,9 @@ VkDescriptorSetLayout ShadowRenderer::getShadowDescriptorSetLayout(VulkanApp* ap
 }
 
 void ShadowRenderer::init(VulkanApp* app) {
-    createShadowMap(app);
+    createShadowMaps(app);
     createShadowRenderPass(app);
-    createShadowFramebuffer(app);
+    createShadowFramebuffers(app);
     createShadowPipeline(app);
 }
 
@@ -33,27 +33,29 @@ void ShadowRenderer::cleanup(VulkanApp* app) {
     // If asynchronous submissions are active, defer destruction of resources
     bool pending = app->hasPendingCommandBuffers();
 
-    if (shadowMapImGuiDescSet != VK_NULL_HANDLE) {
-        VkDescriptorSet ds = shadowMapImGuiDescSet;
-        if (pending) {
-            app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-        } else {
-            ImGui_ImplVulkan_RemoveTexture(ds);
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
+        if (cascades[i].imguiDescSet != VK_NULL_HANDLE) {
+            VkDescriptorSet ds = cascades[i].imguiDescSet;
+            if (pending) {
+                app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+            } else {
+                ImGui_ImplVulkan_RemoveTexture(ds);
+            }
+            cascades[i].imguiDescSet = VK_NULL_HANDLE;
         }
-        shadowMapImGuiDescSet = VK_NULL_HANDLE;
+        cascades[i].framebuffer = VK_NULL_HANDLE;
+        cascades[i].depthView = VK_NULL_HANDLE;
+        cascades[i].colorView = VK_NULL_HANDLE;
+        cascades[i].depthImage = VK_NULL_HANDLE;
+        cascades[i].colorImage = VK_NULL_HANDLE;
+        cascades[i].depthMemory = VK_NULL_HANDLE;
+        cascades[i].colorMemory = VK_NULL_HANDLE;
     }
 
     // Do not destroy Vulkan objects here; the VulkanResourceManager owns
     // destruction. Clear local handles to avoid accidental use.
-    shadowFramebuffer = VK_NULL_HANDLE;
     shadowRenderPass = VK_NULL_HANDLE;
     shadowMapSampler = VK_NULL_HANDLE;
-    shadowMapView = VK_NULL_HANDLE;
-    shadowColorImageView = VK_NULL_HANDLE;
-    shadowMapImage = VK_NULL_HANDLE;
-    shadowColorImage = VK_NULL_HANDLE;
-    shadowMapMemory = VK_NULL_HANDLE;
-    shadowColorImageMemory = VK_NULL_HANDLE;
     dummyDepthView = VK_NULL_HANDLE;
     dummyDepthImage = VK_NULL_HANDLE;
     dummyDepthMemory = VK_NULL_HANDLE;
@@ -64,73 +66,11 @@ void ShadowRenderer::cleanup(VulkanApp* app) {
 
 }
 
-void ShadowRenderer::createShadowMap(VulkanApp* app) {
+void ShadowRenderer::createShadowMaps(VulkanApp* app) {
     VkDevice device = app->getDevice();
-    VkImageCreateInfo imageInfo{};
-    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent.width = shadowMapSize;
-    imageInfo.extent.height = shadowMapSize;
-    imageInfo.extent.depth = 1;
-    imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = 1;
-    imageInfo.format = VK_FORMAT_D32_SFLOAT;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    
-    if (vkCreateImage(device, &imageInfo, nullptr, &shadowMapImage) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create shadow map image!");
-    }
-    
-    fprintf(stderr, "[ShadowRenderer] shadowMapImage = %p\n", (void*)shadowMapImage);
-    // Register shadow map image
-    app->resources.addImage(shadowMapImage, "ShadowRenderer: shadowMapImage");
-    
-    VkMemoryRequirements memRequirements;
-    vkGetImageMemoryRequirements(device, shadowMapImage, &memRequirements);
+    VkFormat colorFormat = app->getSwapchainImageFormat();
 
-    if (memRequirements.size == 0) {
-        throw std::runtime_error("failed to get valid memory requirements for shadow map image (size == 0)");
-    }
-    
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = app->findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &shadowMapMemory) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate shadow map memory!");
-    }
-    
-    vkBindImageMemory(device, shadowMapImage, shadowMapMemory, 0);
-    // Register shadow map device memory
-    app->resources.addDeviceMemory(shadowMapMemory, "ShadowRenderer: shadowMapMemory");
-    app->resources.addDeviceMemory(shadowMapMemory, "ShadowRenderer: shadowMapMemory");
-    
-    // Create image view
-    VkImageViewCreateInfo viewInfo{};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = shadowMapImage;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = VK_FORMAT_D32_SFLOAT;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = 1;
-    
-    if (vkCreateImageView(device, &viewInfo, nullptr, &shadowMapView) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create shadow map image view!");
-    }
-    fprintf(stderr, "[ShadowRenderer] createImageView: shadowMapView=%p image=%p\n", (void*)shadowMapView, (void*)shadowMapImage);
-    // Register shadow map image view
-    app->resources.addImageView(shadowMapView, "ShadowRenderer: shadowMapView");
-    app->resources.addImageView(shadowMapView, "ShadowRenderer: shadowMapView");
-    
-    // Create sampler for shadow map
+    // Create a single sampler shared by all cascades
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = VK_FILTER_NEAREST;
@@ -144,95 +84,111 @@ void ShadowRenderer::createShadowMap(VulkanApp* app) {
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.compareOp = VK_COMPARE_OP_LESS;
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    
     if (vkCreateSampler(device, &samplerInfo, nullptr, &shadowMapSampler) != VK_SUCCESS) {
         throw std::runtime_error("failed to create shadow map sampler!");
     }
-    fprintf(stderr, "[ShadowRenderer] createSampler: shadowMapSampler=%p\n", (void*)shadowMapSampler);
-    // Register sampler
     app->resources.addSampler(shadowMapSampler, "ShadowRenderer: shadowMapSampler");
-    app->resources.addSampler(shadowMapSampler, "ShadowRenderer: shadowMapSampler");
-    
-    // Transition shadow map from UNDEFINED to READ_ONLY_OPTIMAL so the render pass
-    // can start from a valid layout on the first frame
-    {
+
+    for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {
+        auto& cas = cascades[c];
+        std::string tag = "ShadowRenderer cascade " + std::to_string(c);
+
+        // --- Depth image ---
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent = { shadowMapSize, shadowMapSize, 1 };
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.format = VK_FORMAT_D32_SFLOAT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateImage(device, &imageInfo, nullptr, &cas.depthImage) != VK_SUCCESS)
+            throw std::runtime_error("failed to create shadow map depth image cascade " + std::to_string(c));
+        app->resources.addImage(cas.depthImage, (tag + " depthImage").c_str());
+
+        VkMemoryRequirements memReq;
+        vkGetImageMemoryRequirements(device, cas.depthImage, &memReq);
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memReq.size;
+        allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &cas.depthMemory) != VK_SUCCESS)
+            throw std::runtime_error("failed to allocate shadow map memory cascade " + std::to_string(c));
+        vkBindImageMemory(device, cas.depthImage, cas.depthMemory, 0);
+        app->resources.addDeviceMemory(cas.depthMemory, (tag + " depthMemory").c_str());
+
+        // Depth image view
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = cas.depthImage;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_D32_SFLOAT;
+        viewInfo.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(device, &viewInfo, nullptr, &cas.depthView) != VK_SUCCESS)
+            throw std::runtime_error("failed to create shadow map depth view cascade " + std::to_string(c));
+        app->resources.addImageView(cas.depthView, (tag + " depthView").c_str());
+
+        // Transition depth to READ_ONLY so the render pass starts from a valid layout
         app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-        VkImageMemoryBarrier barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = shadowMapImage;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
-        barrier.srcAccessMask = 0;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+            VkImageMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = cas.depthImage;
+            barrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
         });
-    }
-    
-    // Create ImGui descriptor set for shadow map visualization
-    shadowMapImGuiDescSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
-        shadowMapSampler, 
-        shadowMapView, 
-        VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-    );
 
-    // Create a transient color image so the shadow renderpass has a color attachment
-    VkFormat colorFormat = app->getSwapchainImageFormat();
-    VkImageCreateInfo colorInfo{};
-    colorInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    colorInfo.imageType = VK_IMAGE_TYPE_2D;
-    colorInfo.extent.width = shadowMapSize;
-    colorInfo.extent.height = shadowMapSize;
-    colorInfo.extent.depth = 1;
-    colorInfo.mipLevels = 1;
-    colorInfo.arrayLayers = 1;
-    colorInfo.format = colorFormat;
-    colorInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    colorInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    colorInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        // ImGui descriptor for shadow map visualisation
+        cas.imguiDescSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
+            shadowMapSampler, cas.depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
-    if (vkCreateImage(device, &colorInfo, nullptr, &shadowColorImage) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create shadow color image!");
-    }
-    fprintf(stderr, "[ShadowRenderer] createImage: shadowColorImage=%p\n", (void*)shadowColorImage);
-    // Register color image
-    app->resources.addImage(shadowColorImage, "ShadowRenderer: shadowColorImage");
+        // --- Color image (transient, unused but keeps renderpass attachment count compatible) ---
+        VkImageCreateInfo colorInfo{};
+        colorInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        colorInfo.imageType = VK_IMAGE_TYPE_2D;
+        colorInfo.extent = { shadowMapSize, shadowMapSize, 1 };
+        colorInfo.mipLevels = 1;
+        colorInfo.arrayLayers = 1;
+        colorInfo.format = colorFormat;
+        colorInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        colorInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        colorInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        colorInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        colorInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateImage(device, &colorInfo, nullptr, &cas.colorImage) != VK_SUCCESS)
+            throw std::runtime_error("failed to create shadow color image cascade " + std::to_string(c));
+        app->resources.addImage(cas.colorImage, (tag + " colorImage").c_str());
 
-    vkGetImageMemoryRequirements(device, shadowColorImage, &memRequirements);
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = app->findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &shadowColorImageMemory) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate shadow color image memory!");
-    }
-    vkBindImageMemory(device, shadowColorImage, shadowColorImageMemory, 0);
-    // Register color image memory
-    app->resources.addDeviceMemory(shadowColorImageMemory, "ShadowRenderer: shadowColorImageMemory");
+        vkGetImageMemoryRequirements(device, cas.colorImage, &memReq);
+        allocInfo.allocationSize = memReq.size;
+        allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &cas.colorMemory) != VK_SUCCESS)
+            throw std::runtime_error("failed to allocate shadow color memory cascade " + std::to_string(c));
+        vkBindImageMemory(device, cas.colorImage, cas.colorMemory, 0);
+        app->resources.addDeviceMemory(cas.colorMemory, (tag + " colorMemory").c_str());
 
-    // color image view
-    VkImageViewCreateInfo colorViewInfo{};
-    colorViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    colorViewInfo.image = shadowColorImage;
-    colorViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    colorViewInfo.format = colorFormat;
-    colorViewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    colorViewInfo.subresourceRange.baseMipLevel = 0;
-    colorViewInfo.subresourceRange.levelCount = 1;
-    colorViewInfo.subresourceRange.baseArrayLayer = 0;
-    colorViewInfo.subresourceRange.layerCount = 1;
-    if (vkCreateImageView(device, &colorViewInfo, nullptr, &shadowColorImageView) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create shadow color image view!");
+        VkImageViewCreateInfo colorViewInfo{};
+        colorViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        colorViewInfo.image = cas.colorImage;
+        colorViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        colorViewInfo.format = colorFormat;
+        colorViewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(device, &colorViewInfo, nullptr, &cas.colorView) != VK_SUCCESS)
+            throw std::runtime_error("failed to create shadow color view cascade " + std::to_string(c));
+        app->resources.addImageView(cas.colorView, (tag + " colorView").c_str());
     }
-    fprintf(stderr, "[ShadowRenderer] createImageView: shadowColorImageView=%p image=%p\n", (void*)shadowColorImageView, (void*)shadowColorImage);
-    // Register color image view
-    app->resources.addImageView(shadowColorImageView, "ShadowRenderer: shadowColorImageView");
+
+    fprintf(stderr, "[ShadowRenderer] Created %d cascade shadow maps (%ux%u each)\n",
+            SHADOW_CASCADE_COUNT, shadowMapSize, shadowMapSize);
 }
 
 void ShadowRenderer::createShadowRenderPass(VulkanApp* app) {
@@ -302,24 +258,25 @@ void ShadowRenderer::createShadowRenderPass(VulkanApp* app) {
     app->resources.addRenderPass(shadowRenderPass, "ShadowRenderer: shadowRenderPass");
 }
 
-void ShadowRenderer::createShadowFramebuffer(VulkanApp* app) {
+void ShadowRenderer::createShadowFramebuffers(VulkanApp* app) {
     VkDevice device = app->getDevice();
-    VkImageView attachments[] = { shadowColorImageView, shadowMapView };
+    for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {
+        VkImageView attachments[] = { cascades[c].colorView, cascades[c].depthView };
 
-    VkFramebufferCreateInfo framebufferInfo{};
-    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    framebufferInfo.renderPass = shadowRenderPass;
-    framebufferInfo.attachmentCount = 2;
-    framebufferInfo.pAttachments = attachments;
-    framebufferInfo.width = shadowMapSize;
-    framebufferInfo.height = shadowMapSize;
-    framebufferInfo.layers = 1;
+        VkFramebufferCreateInfo framebufferInfo{};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferInfo.renderPass = shadowRenderPass;
+        framebufferInfo.attachmentCount = 2;
+        framebufferInfo.pAttachments = attachments;
+        framebufferInfo.width = shadowMapSize;
+        framebufferInfo.height = shadowMapSize;
+        framebufferInfo.layers = 1;
 
-    if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &shadowFramebuffer) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create shadow framebuffer!");
+        if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &cascades[c].framebuffer) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create shadow framebuffer cascade " + std::to_string(c));
+        }
+        app->resources.addFramebuffer(cascades[c].framebuffer, ("ShadowRenderer: framebuffer cascade " + std::to_string(c)).c_str());
     }
-    // Register shadow framebuffer with resource manager
-    app->resources.addFramebuffer(shadowFramebuffer, "ShadowRenderer: shadowFramebuffer");
 }
 
 void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
@@ -440,49 +397,37 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
     }
 }
 
-void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, const glm::mat4& lightSpaceMatrix) {
+void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex, const glm::mat4& lightSpaceMatrix) {
     currentLightSpaceMatrix = lightSpaceMatrix;
-    
+    auto& cas = cascades[cascadeIndex];
+
     // Transition shadow map from READ_ONLY to DEPTH_STENCIL_ATTACHMENT_OPTIMAL before shadow pass
-    // Use the SAME command buffer to record the barrier so it executes in sequence with the render pass
-    if (shadowMapImage != VK_NULL_HANDLE) {
+    if (cas.depthImage != VK_NULL_HANDLE) {
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = shadowMapImage;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
+        barrier.image = cas.depthImage;
+        barrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
         barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
         barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        vkCmdPipelineBarrier(
-            commandBuffer,
+        vkCmdPipelineBarrier(commandBuffer,
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-            0,
-            0, nullptr,
-            0, nullptr,
-            1, &barrier
-        );
-    } else {
-        fprintf(stderr, "[ShadowRenderer] Warning: shadowMapImage is VK_NULL_HANDLE in beginShadowPass, skipping barrier.\n");
+            0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
-    
-    // Begin shadow render pass only if both renderPass and framebuffer are valid
-    if (shadowRenderPass == VK_NULL_HANDLE || shadowFramebuffer == VK_NULL_HANDLE) {
-        fprintf(stderr, "[ShadowRenderer] Error: shadowRenderPass or shadowFramebuffer is VK_NULL_HANDLE in beginShadowPass, skipping render pass.\n");
+
+    if (shadowRenderPass == VK_NULL_HANDLE || cas.framebuffer == VK_NULL_HANDLE) {
+        fprintf(stderr, "[ShadowRenderer] Error: shadowRenderPass or framebuffer is VK_NULL_HANDLE for cascade %u\n", cascadeIndex);
         return;
     }
 
     VkRenderPassBeginInfo shadowRenderPassInfo{};
     shadowRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     shadowRenderPassInfo.renderPass = shadowRenderPass;
-    shadowRenderPassInfo.framebuffer = shadowFramebuffer;
+    shadowRenderPassInfo.framebuffer = cas.framebuffer;
     shadowRenderPassInfo.renderArea.offset = {0, 0};
     shadowRenderPassInfo.renderArea.extent = {shadowMapSize, shadowMapSize};
 
@@ -494,7 +439,6 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
 
     vkCmdBeginRenderPass(commandBuffer, &shadowRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-    // Set viewport and scissor for shadow map
     VkViewport shadowViewport{};
     shadowViewport.x = 0.0f;
     shadowViewport.y = 0.0f;
@@ -509,14 +453,10 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     shadowScissor.extent = {shadowMapSize, shadowMapSize};
     vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
 
-    // Use negative depth bias to pull shadow map closer, filling gaps at edges
     vkCmdSetDepthBias(commandBuffer, -1.5f, 0.0f, -2.0f);
 
-    // Bind the dedicated shadow pipeline (built against shadowRenderPass)
     if (shadowPipeline != VK_NULL_HANDLE) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
-    } else {
-        fprintf(stderr, "[ShadowRenderer] Warning: shadowPipeline is VK_NULL_HANDLE in beginShadowPass\n");
     }
 }
 
@@ -545,16 +485,15 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer,
     vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
 }
 
-void ShadowRenderer::endShadowPass(VulkanApp* /*app*/, VkCommandBuffer commandBuffer) {
-    // End the shadow render pass recorded on the provided command buffer
+void ShadowRenderer::endShadowPass(VulkanApp* /*app*/, VkCommandBuffer commandBuffer, uint32_t /*cascadeIndex*/) {
     // The render pass finalLayout (DEPTH_STENCIL_READ_ONLY_OPTIMAL) automatically
-    // transitions the shadow map to the correct layout for shader sampling.
-    // No additional barrier is needed here.
+    // transitions the cascade's shadow map to the correct layout for shader sampling.
     vkCmdEndRenderPass(commandBuffer);
 }
 
-void ShadowRenderer::readbackShadowDepth(VulkanApp* app) {
-    // Readback the shadow depth image to a host-visible buffer and write a PGM for debugging
+void ShadowRenderer::readbackShadowDepth(VulkanApp* app, uint32_t cascade) {
+    VkImage targetImage = cascades[cascade].depthImage;
+    if (targetImage == VK_NULL_HANDLE) return;
     VkDevice device = app->getDevice();
     VkDeviceSize imageSize = static_cast<VkDeviceSize>(shadowMapSize) * shadowMapSize * sizeof(float);
 
@@ -569,53 +508,26 @@ void ShadowRenderer::readbackShadowDepth(VulkanApp* app) {
     barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = shadowMapImage;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
+    barrier.image = targetImage;
+    barrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
     barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 
-    vkCmdPipelineBarrier(
-        cmd,
-        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0,
-        0, nullptr,
-        0, nullptr,
-        1, &barrier
-    );
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &barrier);
 
     VkBufferImageCopy region{};
-    region.bufferOffset = 0;
-    region.bufferRowLength = 0;
-    region.bufferImageHeight = 0;
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    region.imageSubresource.mipLevel = 0;
-    region.imageSubresource.baseArrayLayer = 0;
-    region.imageSubresource.layerCount = 1;
-    region.imageOffset = {0,0,0};
+    region.imageSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
     region.imageExtent = { shadowMapSize, shadowMapSize, 1 };
 
-    vkCmdCopyImageToBuffer(cmd, shadowMapImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer.buffer, 1, &region);
+    vkCmdCopyImageToBuffer(cmd, targetImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer.buffer, 1, &region);
 
-    // transition back to read-only optimal for shader sampling
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-    vkCmdPipelineBarrier(
-        cmd,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0,
-        0, nullptr,
-        0, nullptr,
-        1, &barrier
-    );
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &barrier);
     });
 
     // Map and write PGM
@@ -644,7 +556,8 @@ void ShadowRenderer::readbackShadowDepth(VulkanApp* app) {
     }
 
     // ensure bin directory exists and write PGM
-    std::ofstream ofs("shadow_depth.pgm", std::ios::binary);
+    std::string filename = "shadow_depth_" + std::to_string(cascade) + ".pgm";
+    std::ofstream ofs(filename, std::ios::binary);
     if (ofs) {
         ofs << "P5\n" << shadowMapSize << " " << shadowMapSize << "\n255\n";
         ofs.write(reinterpret_cast<const char*>(image.data()), image.size());
