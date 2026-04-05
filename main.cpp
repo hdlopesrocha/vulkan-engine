@@ -209,17 +209,17 @@ public:
     }
 
     void setup() override {
-        std::thread([this]() {
-            setupVegetationTextures();
-        }).detach();
-
-        std::thread([this]() {
-            setupTextures();
-        }).detach();
-
-        printf("[MyApp::setup] Created and initialized SceneRenderer\n");
         sceneRenderer = new SceneRenderer();
         sceneRenderer->init(this, &textureArrayManager, &materialManager);
+
+        // IMPORTANT: run texture setup on the main thread.
+        // Detached startup threads were racing with SceneRenderer initialization
+        // and app lifetime, causing undefined behavior and intermittent
+        // std::system_error("Invalid argument") during mesh rebuild.
+        setupVegetationTextures();
+        setupTextures();
+
+        printf("[MyApp::setup] Created and initialized SceneRenderer\n");
 
         textureViewer = std::make_shared<TextureViewer>();
         textureViewer->init(&textureArrayManager, &materials);
@@ -317,13 +317,6 @@ public:
     }
 
     void preRenderPass(VkCommandBuffer &commandBuffer) override {
-        // Shadow pass (uses separate command buffer internally)
-        if (sceneRenderer) {
-            sceneRenderer->shadowPass(this, commandBuffer, queryPool, shadowPassDescriptorSet, uboStatic, true, false);
-        } else {
-            fprintf(stderr, "[MyApp::preRenderPass] sceneRenderer is null, skipping shadow pass\n");
-        }
-
         // Rebuild projection matrix FIRST so viewProj below reflects current near/far settings
         {
             float aspectRatio = static_cast<float>(getWidth()) / static_cast<float>(getHeight());
@@ -354,6 +347,14 @@ public:
         uboStatic.materialFlags.w = settings.normalMappingEnabled ? 1.0f : 0.0f;
         // shadowEffects.w = global shadow toggle (shader checks ubo.shadowEffects.w > 0.5)
         uboStatic.shadowEffects.w = settings.enableShadows ? 1.0f : 0.0f;
+
+        // Shadow pass: renders solid geometry into shadow map from light's perspective
+        // Must run AFTER UBO is built (needs lightSpaceMatrix, passParams, etc.)
+        if (sceneRenderer) {
+            sceneRenderer->shadowPass(this, commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, settings.enableShadows);
+        } else {
+            fprintf(stderr, "[MyApp::preRenderPass] sceneRenderer is null, skipping shadow pass\n");
+        }
 
         // Upload UBO to GPU
         if (sceneRenderer) {
