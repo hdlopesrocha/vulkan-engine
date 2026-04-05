@@ -1,5 +1,10 @@
 #pragma once
 
+// Must be defined before GLM to use Vulkan's [0,1] depth range in projection matrices
+#ifndef GLM_FORCE_DEPTH_ZERO_TO_ONE
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#endif
+
 #include <glm/glm.hpp>
 
 class Light {
@@ -27,14 +32,14 @@ public:
     
     // Light matrix computation for shadow mapping
     glm::vec3 computeLightPosition(const glm::vec3& camPos, float distance) const;
-    glm::mat4 computeLightViewMatrix(const glm::vec3& targetPos) const;
+    glm::mat4 computeLightViewMatrix(const glm::vec3& targetPos, float orthoSize = 1024.0f) const;
     glm::mat4 computeLightProjectionMatrix(float orthoSize) const;
     glm::mat4 computeLightSpaceMatrix(const glm::vec3& camPos, float orthoSize) const;
     
     // Projection and view-projection matrix (for shadow mapping)
     void setProjection(const glm::mat4 &proj) { projection = proj; }
     glm::mat4 getProjection() const { return projection; }
-    void setTarget(const glm::vec3& target);
+    void setTarget(const glm::vec3& target, float orthoSize = 1024.0f);
     glm::mat4 getViewMatrix() const { return viewMatrix; }
     glm::mat4 getViewProjectionMatrix() const { return projection * viewMatrix; }
 

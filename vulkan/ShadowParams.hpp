@@ -10,7 +10,7 @@ struct ShadowParams {
     // Update shadow matrices based on camera position and light
     void update(const glm::vec3& camPos, Light& light) {
         // Update light's view and projection matrices
-        light.setTarget(camPos);
+        light.setTarget(camPos, orthoSize);
         light.setProjection(light.computeLightProjectionMatrix(orthoSize));
         
         // Cache light space matrix

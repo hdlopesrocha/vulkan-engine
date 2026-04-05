@@ -56,9 +56,11 @@ glm::vec3 Light::computeLightPosition(const glm::vec3& camPos, float distance) c
     return camPos - dir * distance;
 }
 
-glm::mat4 Light::computeLightViewMatrix(const glm::vec3& targetPos) const {
+glm::mat4 Light::computeLightViewMatrix(const glm::vec3& targetPos, float orthoSize) const {
     glm::vec3 dir = glm::normalize(direction);
-    glm::vec3 lightPos = targetPos - dir * 100.0f; // arbitrary distance for view matrix
+    // Position the light orthoSize units behind the target so the frustum
+    // (near=1, far=orthoSize*2) fully covers the region around the target.
+    glm::vec3 lightPos = targetPos - dir * orthoSize;
     
     glm::vec3 worldUp = glm::vec3(0.0f, 1.0f, 0.0f);
     // Avoid gimbal lock when light is pointing straight up/down
@@ -87,7 +89,7 @@ glm::mat4 Light::computeLightSpaceMatrix(const glm::vec3& camPos, float orthoSiz
     return lightProjection * lightView;
 }
 
-void Light::setTarget(const glm::vec3& target) {
+void Light::setTarget(const glm::vec3& target, float orthoSize) {
     targetPosition = target;
-    viewMatrix = computeLightViewMatrix(targetPosition);
+    viewMatrix = computeLightViewMatrix(targetPosition, orthoSize);
 }
