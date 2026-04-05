@@ -24,6 +24,8 @@ private:
     VkDescriptorSet solidColorDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet solidDepthDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterColorDescriptor = VK_NULL_HANDLE;
+    VkDescriptorSet waterNormalDescriptor = VK_NULL_HANDLE;
+    VkDescriptorSet backFaceDepthDescriptor = VK_NULL_HANDLE;
 
     float previewScale = 0.25f;
     int currentFrame = 0;

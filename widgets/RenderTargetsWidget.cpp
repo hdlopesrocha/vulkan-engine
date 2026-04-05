@@ -36,6 +36,10 @@ void RenderTargetsWidget::cleanup() {
         ImGui_ImplVulkan_RemoveTexture(waterColorDescriptor);
         waterColorDescriptor = VK_NULL_HANDLE;
     }
+    if (waterNormalDescriptor != VK_NULL_HANDLE) {
+        ImGui_ImplVulkan_RemoveTexture(waterNormalDescriptor);
+        waterNormalDescriptor = VK_NULL_HANDLE;
+    }
     if (solidDepthDescriptor != VK_NULL_HANDLE) {
         ImGui_ImplVulkan_RemoveTexture(solidDepthDescriptor);
         solidDepthDescriptor = VK_NULL_HANDLE;
@@ -43,6 +47,10 @@ void RenderTargetsWidget::cleanup() {
     if (solid360Descriptor != VK_NULL_HANDLE) {
         ImGui_ImplVulkan_RemoveTexture(solid360Descriptor);
         solid360Descriptor = VK_NULL_HANDLE;
+    }
+    if (backFaceDepthDescriptor != VK_NULL_HANDLE) {
+        ImGui_ImplVulkan_RemoveTexture(backFaceDepthDescriptor);
+        backFaceDepthDescriptor = VK_NULL_HANDLE;
     }
 }
 
@@ -89,11 +97,28 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             sampler, solid360View, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
-    // Water color (first attachment of water geometry pass)
+    // Water color (first attachment of water geometry pass — R32G32B32A32_SFLOAT worldPos)
     VkImageView waterView = waterRenderer->getWaterDepthView();
     if (waterView != VK_NULL_HANDLE) {
         waterColorDescriptor = ImGui_ImplVulkan_AddTexture(
             sampler, waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+
+    // Water normals (second attachment — R16G16B16A16_SFLOAT)
+    VkImageView waterNormView = waterRenderer->getWaterNormalView();
+    if (waterNormView != VK_NULL_HANDLE) {
+        waterNormalDescriptor = ImGui_ImplVulkan_AddTexture(
+            sampler, waterNormView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+
+    // Water back-face depth (volume thickness pre-pass — D32_SFLOAT)
+    if (shadowMapper) {
+        VkImageView bfView = waterRenderer->getBackFaceDepthView();
+        if (bfView != VK_NULL_HANDLE) {
+            backFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(
+                shadowMapper->getShadowMapSampler(), bfView,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
     }
 }
 
@@ -148,8 +173,22 @@ void RenderTargetsWidget::render() {
 
     // Water depth
     if (waterColorDescriptor != VK_NULL_HANDLE) {
-        ImGui::Text("Water (Depth Buffer)");
+        ImGui::Text("Water (World Pos / Depth)");
         ImGui::Image((ImTextureID)waterColorDescriptor, previewSize);
+        ImGui::Separator();
+    }
+
+    // Water normals
+    if (waterNormalDescriptor != VK_NULL_HANDLE) {
+        ImGui::Text("Water (Normals)");
+        ImGui::Image((ImTextureID)waterNormalDescriptor, previewSize);
+        ImGui::Separator();
+    }
+
+    // Water back-face depth (volume thickness pre-pass)
+    if (backFaceDepthDescriptor != VK_NULL_HANDLE) {
+        ImGui::Text("Water (Back-Face Depth)");
+        ImGui::Image((ImTextureID)backFaceDepthDescriptor, previewSize);
         ImGui::Separator();
     }
 
