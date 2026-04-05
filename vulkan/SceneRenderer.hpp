@@ -53,6 +53,10 @@ public:
     // Water params UBO (binding 7) — stored for descriptor rebinding
     Buffer waterParamsBuffer_;
 
+    // Shadow-specific descriptor set: same as main but binding 4 points to a
+    // dummy 1×1 depth image (avoids layout mismatch when shadow map is being written)
+    VkDescriptorSet shadowDescriptorSet = VK_NULL_HANDLE;
+
     std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<ShadowRenderer> shadowMapper;
     std::unique_ptr<WaterRenderer> waterRenderer;
@@ -121,7 +125,7 @@ public:
         solidChunks.clear();
     }
 
-    void shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VkDescriptorSet shadowPassDescriptorSet, const UniformObject &uboStatic, bool shadowsEnabled, bool shadowTessellationEnabled);
+    void shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled);
     void depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool);
     void skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj);
     void mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,

@@ -97,23 +97,98 @@ SceneRenderer::~SceneRenderer() {
     // VulkanApp instance.
 }
 
-void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VkDescriptorSet shadowPassDescriptorSet, const UniformObject &uboStatic, bool shadowsEnabled, bool shadowTessellationEnabled) {
+void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled) {
+    static bool firstCall = true;
+    if (firstCall) {
+        firstCall = false;
+        fprintf(stderr, "[SceneRenderer::shadowPass] FIRST CALL! shadowsEnabled=%d commandBuffer=%p\n",
+                (int)shadowsEnabled, (void*)commandBuffer);
+    }
     if (commandBuffer == VK_NULL_HANDLE) {
         fprintf(stderr, "[SceneRenderer::shadowPass] commandBuffer is VK_NULL_HANDLE, skipping.\n");
         return;
     }
-    //fprintf(stderr, "[SceneRenderer::shadowPass] Entered.\n");
-    glm::mat4 lightSpaceMatrix = glm::mat4(1.0f); // TODO: Replace with actual light space matrix
-    // Record shadow pass on a temporary command buffer to avoid nested render passes
-    if (!shadowsEnabled) return;
+    if (!shadowsEnabled) {
+        static bool warnedDisabled = false;
+        if (!warnedDisabled) {
+            warnedDisabled = true;
+            fprintf(stderr, "[SceneRenderer::shadowPass] shadowsEnabled=false, skipping.\n");
+        }
+        return;
+    }
 
-    app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-    shadowMapper->beginShadowPass(app, cmd, lightSpaceMatrix);
-    // TODO: Render objects to shadow map using shadowMapper->renderObject(...)
-    // End and transition
-    shadowMapper->endShadowPass(app, cmd);
-    });
+    // Use the light space matrix computed by ShadowParams each frame
+    glm::mat4 lightSpaceMatrix = uboStatic.lightSpaceMatrix;
 
+    // Debug: print light space matrix on first call
+    static bool debugPrinted = false;
+    if (!debugPrinted) {
+        debugPrinted = true;
+        fprintf(stderr, "[SceneRenderer::shadowPass] lightSpaceMatrix:\n");
+        for (int i = 0; i < 4; ++i)
+            fprintf(stderr, "  [%.4f, %.4f, %.4f, %.4f]\n",
+                    lightSpaceMatrix[0][i], lightSpaceMatrix[1][i],
+                    lightSpaceMatrix[2][i], lightSpaceMatrix[3][i]);
+        fprintf(stderr, "[SceneRenderer::shadowPass] viewPos = (%.1f, %.1f, %.1f)\n",
+                uboStatic.viewPos.x, uboStatic.viewPos.y, uboStatic.viewPos.z);
+        fprintf(stderr, "[SceneRenderer::shadowPass] lightDir = (%.3f, %.3f, %.3f)\n",
+                uboStatic.lightDir.x, uboStatic.lightDir.y, uboStatic.lightDir.z);
+    }
+
+    // Upload a shadow-specific UBO: viewProjection = lightSpaceMatrix, passParams.x = 1.0 (isShadowPass)
+    UniformObject shadowUBO = uboStatic;
+    shadowUBO.viewProjection = lightSpaceMatrix;
+    shadowUBO.passParams.x = 1.0f; // signal shadow pass to fragment shader
+
+    vkCmdUpdateBuffer(commandBuffer, mainUniformBuffer.buffer, 0, sizeof(UniformObject), &shadowUBO);
+    {
+        VkMemoryBarrier memBarrier{};
+        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+    }
+
+    // Begin shadow render pass on the main command buffer
+    shadowMapper->beginShadowPass(app, commandBuffer, lightSpaceMatrix);
+
+    // Bind shadow descriptor set (uses dummy depth at binding 4 to avoid layout
+    // mismatch while the real shadow map is being written).
+    VkPipelineLayout layout = shadowMapper->getShadowPipelineLayout();
+    VkDescriptorSet ds = shadowDescriptorSet;
+    if (layout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
+    } else {
+        // Fallback: use solid pipeline layout + main descriptor set (may trigger validation warnings)
+        layout = solidRenderer->getGraphicsPipelineLayout();
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &mainDescriptorSet, 0, nullptr);
+    }
+
+    solidRenderer->getIndirectRenderer().drawAll(commandBuffer);
+
+    shadowMapper->endShadowPass(app, commandBuffer);
+
+    static bool shadowRecorded = false;
+    if (!shadowRecorded) {
+        shadowRecorded = true;
+        fprintf(stderr, "[SceneRenderer::shadowPass] Shadow draw commands recorded to command buffer.\n");
+    }
+
+    // Restore the main UBO so subsequent passes see the original data
+    vkCmdUpdateBuffer(commandBuffer, mainUniformBuffer.buffer, 0, sizeof(UniformObject), &uboStatic);
+    {
+        VkMemoryBarrier memBarrier{};
+        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+    }
 }
 
 void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
@@ -332,6 +407,83 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         if (w.pImageInfo) delete w.pImageInfo;
     }
 
+    // ── Allocate a shadow-specific descriptor set.
+    //    It mirrors the main descriptor set but binding 4 (shadow map sampler)
+    //    points to a tiny dummy depth image that stays in READ_ONLY layout.
+    //    This avoids layout-mismatch validation errors because the real shadow
+    //    map is in DEPTH_STENCIL_ATTACHMENT_OPTIMAL while the shadow pass renders.
+    {
+        shadowDescriptorSet = app->createDescriptorSet(app->getDescriptorSetLayout());
+
+        // UBO (binding 0) — same buffer
+        VkDescriptorBufferInfo shadowBufInfo{ mainUniformBuffer.buffer, 0, sizeof(UniformObject) };
+        VkWriteDescriptorSet shadowUboWrite{};
+        shadowUboWrite.sType          = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        shadowUboWrite.dstSet         = shadowDescriptorSet;
+        shadowUboWrite.dstBinding     = 0;
+        shadowUboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        shadowUboWrite.descriptorCount = 1;
+        shadowUboWrite.pBufferInfo    = &shadowBufInfo;
+
+        std::vector<VkWriteDescriptorSet> shadowWrites;
+        shadowWrites.push_back(shadowUboWrite);
+
+        auto addShadowImageWrite = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
+            if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
+            VkDescriptorImageInfo* info = new VkDescriptorImageInfo();
+            info->sampler     = sampler;
+            info->imageView   = view;
+            info->imageLayout = layout;
+            VkWriteDescriptorSet w{};
+            w.sType          = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet         = shadowDescriptorSet;
+            w.dstBinding     = binding;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            w.descriptorCount = 1;
+            w.pImageInfo     = info;
+            shadowWrites.push_back(w);
+        };
+
+        // Texture arrays (bindings 1, 2, 3) — same as main
+        if (textureArrayManager) {
+            addShadowImageWrite(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addShadowImageWrite(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addShadowImageWrite(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+
+        // Binding 4: dummy depth image instead of real shadow map
+        addShadowImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(),
+                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+
+        // Materials SSBO (binding 5)
+        VkDescriptorBufferInfo shadowMatInfo{ materialsBuffer.buffer, 0, VK_WHOLE_SIZE };
+        VkWriteDescriptorSet shadowMatWrite{};
+        shadowMatWrite.sType          = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        shadowMatWrite.dstSet         = shadowDescriptorSet;
+        shadowMatWrite.dstBinding     = 5;
+        shadowMatWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        shadowMatWrite.descriptorCount = 1;
+        shadowMatWrite.pBufferInfo    = &shadowMatInfo;
+        shadowWrites.push_back(shadowMatWrite);
+
+        // Water params UBO (binding 7)
+        VkDescriptorBufferInfo shadowWaterInfo{ waterParamsBuffer_.buffer, 0, sizeof(WaterParamsGPU) };
+        VkWriteDescriptorSet shadowWaterWrite{};
+        shadowWaterWrite.sType          = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        shadowWaterWrite.dstSet         = shadowDescriptorSet;
+        shadowWaterWrite.dstBinding     = 7;
+        shadowWaterWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        shadowWaterWrite.descriptorCount = 1;
+        shadowWaterWrite.pBufferInfo    = &shadowWaterInfo;
+        shadowWrites.push_back(shadowWaterWrite);
+
+        app->updateDescriptorSet(shadowWrites);
+        for (auto &w : shadowWrites) {
+            if (w.pImageInfo) delete w.pImageInfo;
+        }
+        fprintf(stderr, "[SceneRenderer::init] shadowDescriptorSet = %p\n", (void*)shadowDescriptorSet);
+    }
+
     // Register listener so we update the main descriptor set when texture arrays are allocated later
     if (textureArrayManager) {
         textureArrayManager->addAllocationListener([this, app, textureArrayManager]() {
@@ -454,6 +606,42 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     for (auto &w : writes) {
         if (w.pImageInfo) delete w.pImageInfo;
     }
+
+    // ── Also update shadow descriptor set (bindings 1-3, 5, 7) with new textures/materials.
+    //    Binding 4 stays as the dummy depth image (never changes).
+    if (shadowDescriptorSet != VK_NULL_HANDLE) {
+        std::vector<VkWriteDescriptorSet> shadowWrites;
+        auto addShadowImageWrite = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
+            if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
+            VkDescriptorImageInfo* info = new VkDescriptorImageInfo();
+            info->sampler = sampler; info->imageView = view; info->imageLayout = layout;
+            VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = shadowDescriptorSet; w.dstBinding = binding;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.descriptorCount = 1;
+            w.pImageInfo = info;
+            shadowWrites.push_back(w);
+        };
+        addShadowImageWrite(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addShadowImageWrite(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addShadowImageWrite(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        VkDescriptorBufferInfo sMatInfo{ materialsBuffer.buffer, 0, VK_WHOLE_SIZE };
+        VkWriteDescriptorSet sMatWrite{}; sMatWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        sMatWrite.dstSet = shadowDescriptorSet; sMatWrite.dstBinding = 5;
+        sMatWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; sMatWrite.descriptorCount = 1;
+        sMatWrite.pBufferInfo = &sMatInfo;
+        shadowWrites.push_back(sMatWrite);
+        if (waterParamsBuffer_.buffer != VK_NULL_HANDLE) {
+            VkDescriptorBufferInfo sWaterInfo{ waterParamsBuffer_.buffer, 0, sizeof(WaterParamsGPU) };
+            VkWriteDescriptorSet sWaterWrite{}; sWaterWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            sWaterWrite.dstSet = shadowDescriptorSet; sWaterWrite.dstBinding = 7;
+            sWaterWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; sWaterWrite.descriptorCount = 1;
+            sWaterWrite.pBufferInfo = &sWaterInfo;
+            shadowWrites.push_back(sWaterWrite);
+        }
+        app->updateDescriptorSet(shadowWrites);
+        for (auto &w : shadowWrites) { if (w.pImageInfo) delete w.pImageInfo; }
+    }
+
     fprintf(stderr, "[SceneRenderer] updateTextureDescriptorSet: updated main descriptor set with texture bindings\n");
 }
 
