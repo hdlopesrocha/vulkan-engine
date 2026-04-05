@@ -1,6 +1,8 @@
 #include "ShadowRenderer.hpp"
 #include "VulkanApp.hpp"
+#include "ShaderStage.hpp"
 #include "../utils/FileReader.hpp"
+#include "../math/Vertex.hpp"
 #include <backends/imgui_impl_vulkan.h>
 #include <stdexcept>
 #include <fstream>
@@ -52,6 +54,11 @@ void ShadowRenderer::cleanup(VulkanApp* app) {
     shadowColorImage = VK_NULL_HANDLE;
     shadowMapMemory = VK_NULL_HANDLE;
     shadowColorImageMemory = VK_NULL_HANDLE;
+    dummyDepthView = VK_NULL_HANDLE;
+    dummyDepthImage = VK_NULL_HANDLE;
+    dummyDepthMemory = VK_NULL_HANDLE;
+    shadowPipeline = VK_NULL_HANDLE;
+    shadowPipelineLayout = VK_NULL_HANDLE;
 
     // staging resources handled by centralized cleanup
 
@@ -315,10 +322,122 @@ void ShadowRenderer::createShadowFramebuffer(VulkanApp* app) {
     app->resources.addFramebuffer(shadowFramebuffer, "ShadowRenderer: shadowFramebuffer");
 }
 
-void ShadowRenderer::createShadowPipeline(VulkanApp* /*app*/) {
-    // ShadowRenderer should reuse the application's main graphics pipeline created by the app
-    // (main.cpp creates the pipeline and registers it via setAppGraphicsPipeline()).
-    // This function is a no-op placeholder; the pipeline is retrieved from the app in beginShadowPass.
+void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
+    // Create a dedicated pipeline against the shadow render pass using the same
+    // shaders as the solid pass.  This avoids render-pass incompatibility errors
+    // that occur when the solid pipeline (created against solidRenderPass) is
+    // used inside the shadow render pass.
+    ShaderStage vertexShader(
+        app->createShaderModule(FileReader::readFile("shaders/main.vert.spv")),
+        VK_SHADER_STAGE_VERTEX_BIT);
+    ShaderStage tescShader(
+        app->createShaderModule(FileReader::readFile("shaders/main.tesc.spv")),
+        VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
+    ShaderStage teseShader(
+        app->createShaderModule(FileReader::readFile("shaders/main.tese.spv")),
+        VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
+    ShaderStage fragmentShader(
+        app->createShaderModule(FileReader::readFile("shaders/main.frag.spv")),
+        VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    std::vector<VkDescriptorSetLayout> setLayouts;
+    if (app->getDescriptorSetLayout() != VK_NULL_HANDLE)
+        setLayouts.push_back(app->getDescriptorSetLayout());
+
+    auto [pipeline, layout] = app->createGraphicsPipeline(
+        { vertexShader.info, tescShader.info, teseShader.info, fragmentShader.info },
+        std::vector<VkVertexInputBindingDescription>{
+            VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX }
+        },
+        {
+            VkVertexInputAttributeDescription{ 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+            VkVertexInputAttributeDescription{ 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
+            VkVertexInputAttributeDescription{ 2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(Vertex, texCoord) },
+            VkVertexInputAttributeDescription{ 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+            VkVertexInputAttributeDescription{ 5, 0, VK_FORMAT_R32_SINT,         offsetof(Vertex, texIndex) }
+        },
+        setLayouts,
+        nullptr,
+        VK_POLYGON_MODE_FILL,
+        VK_CULL_MODE_BACK_BIT,
+        true,   // depthWrite
+        false,  // colorWrite (shadow pass only needs depth)
+        VK_COMPARE_OP_LESS_OR_EQUAL,
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        shadowRenderPass  // <-- use the shadow render pass
+    );
+    shadowPipeline = pipeline;
+    shadowPipelineLayout = layout;
+    fprintf(stderr, "[ShadowRenderer] createShadowPipeline: pipeline=%p layout=%p\n",
+            (void*)shadowPipeline, (void*)shadowPipelineLayout);
+
+    // Clean up local shader module references (VulkanResourceManager owns them)
+    vertexShader.info.module  = VK_NULL_HANDLE;
+    tescShader.info.module    = VK_NULL_HANDLE;
+    teseShader.info.module    = VK_NULL_HANDLE;
+    fragmentShader.info.module = VK_NULL_HANDLE;
+
+    // ── Create a tiny 1×1 D32_SFLOAT image that stays in READ_ONLY layout
+    //    so the shadow descriptor set can bind it at binding 4 without a layout
+    //    mismatch during the shadow pass (the real shadow map is being written).
+    {
+        VkDevice device = app->getDevice();
+
+        VkImageCreateInfo imgInfo{};
+        imgInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imgInfo.imageType     = VK_IMAGE_TYPE_2D;
+        imgInfo.extent        = { 1, 1, 1 };
+        imgInfo.mipLevels     = 1;
+        imgInfo.arrayLayers   = 1;
+        imgInfo.format        = VK_FORMAT_D32_SFLOAT;
+        imgInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imgInfo.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imgInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        imgInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateImage(device, &imgInfo, nullptr, &dummyDepthImage) != VK_SUCCESS)
+            throw std::runtime_error("failed to create dummy depth image");
+        app->resources.addImage(dummyDepthImage, "ShadowRenderer: dummyDepthImage");
+
+        VkMemoryRequirements memReq;
+        vkGetImageMemoryRequirements(device, dummyDepthImage, &memReq);
+        VkMemoryAllocateInfo alloc{};
+        alloc.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc.allocationSize  = memReq.size;
+        alloc.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(device, &alloc, nullptr, &dummyDepthMemory) != VK_SUCCESS)
+            throw std::runtime_error("failed to allocate dummy depth memory");
+        vkBindImageMemory(device, dummyDepthImage, dummyDepthMemory, 0);
+        app->resources.addDeviceMemory(dummyDepthMemory, "ShadowRenderer: dummyDepthMemory");
+
+        VkImageViewCreateInfo vwInfo{};
+        vwInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vwInfo.image    = dummyDepthImage;
+        vwInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vwInfo.format   = VK_FORMAT_D32_SFLOAT;
+        vwInfo.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(device, &vwInfo, nullptr, &dummyDepthView) != VK_SUCCESS)
+            throw std::runtime_error("failed to create dummy depth view");
+        app->resources.addImageView(dummyDepthView, "ShadowRenderer: dummyDepthView");
+
+        // Transition to DEPTH_STENCIL_READ_ONLY_OPTIMAL once at init
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+            VkImageMemoryBarrier b{};
+            b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            b.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+            b.newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.image               = dummyDepthImage;
+            b.subresourceRange    = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+            b.srcAccessMask       = 0;
+            b.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &b);
+        });
+    }
 }
 
 void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, const glm::mat4& lightSpaceMatrix) {
@@ -393,13 +512,12 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     // Use negative depth bias to pull shadow map closer, filling gaps at edges
     vkCmdSetDepthBias(commandBuffer, -1.5f, 0.0f, -2.0f);
 
-    // Bind the shadow pipeline
-    // Bind the app's main graphics pipeline (preferred) or fall back to any
-    // locally stored pipeline handle.
-    VkPipeline p = app->getAppGraphicsPipeline();
-    if (p == VK_NULL_HANDLE) p = shadowPipeline;
-    //printf("[ShadowRenderer] beginShadowPass: getAppGraphicsPipeline()=%p, shadowPipeline=%p, binding p=%p\n", (void*)app->getAppGraphicsPipeline(), (void*)shadowPipeline, (void*)p);
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    // Bind the dedicated shadow pipeline (built against shadowRenderPass)
+    if (shadowPipeline != VK_NULL_HANDLE) {
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
+    } else {
+        fprintf(stderr, "[ShadowRenderer] Warning: shadowPipeline is VK_NULL_HANDLE in beginShadowPass\n");
+    }
 }
 
 void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, 

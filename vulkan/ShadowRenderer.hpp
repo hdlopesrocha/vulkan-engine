@@ -24,7 +24,11 @@ public:
     // Public getters for internal Vulkan handles
     VkRenderPass getShadowRenderPass() const { return shadowRenderPass; }
     VkFramebuffer getShadowFramebuffer() const { return shadowFramebuffer; }
-    // Public getters for internal Vulkan handles
+    VkPipeline getShadowPipeline() const { return shadowPipeline; }
+    VkPipelineLayout getShadowPipelineLayout() const { return shadowPipelineLayout; }
+    VkImageView getDummyDepthView() const { return dummyDepthView; }
+    // Debug: read back depth image to host and write shadow_depth.pgm
+    void readbackShadowDepth(VulkanApp* app);
 private:
     uint32_t shadowMapSize;
     // Shadow map resources
@@ -36,6 +40,10 @@ private:
     VkDeviceMemory shadowColorImageMemory = VK_NULL_HANDLE;
     VkImageView shadowColorImageView = VK_NULL_HANDLE;
     VkSampler shadowMapSampler = VK_NULL_HANDLE;
+    // Dummy 1x1 depth image kept in READ_ONLY layout for shadow descriptor set binding 4
+    VkImage dummyDepthImage = VK_NULL_HANDLE;
+    VkDeviceMemory dummyDepthMemory = VK_NULL_HANDLE;
+    VkImageView dummyDepthView = VK_NULL_HANDLE;
     VkFramebuffer shadowFramebuffer = VK_NULL_HANDLE;
     VkRenderPass shadowRenderPass = VK_NULL_HANDLE;
     VkPipeline shadowPipeline = VK_NULL_HANDLE;
@@ -58,5 +66,4 @@ private:
     // Debug helpers
     void render(VulkanApp* app, VkCommandBuffer commandBuffer, 
                       const VertexBufferObject& vbo, VkDescriptorSet descriptorSet);
-    void readbackShadowDepth(VulkanApp* app);
 };
