@@ -1673,17 +1673,37 @@ void VulkanApp::createDescriptorSetLayout() {
     // Make the water params visible to both fragment and tessellation evaluation shaders
     waterParamsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
-    // Per-instance / per-draw descriptor set uses bindings: 0 (UBO), 1..3 (samplers), 4 (shadow), 5 (Materials SSBO), 6 (Sky UBO), 7 (water params)
+    // Per-instance / per-draw descriptor set uses bindings: 0 (UBO), 1..3 (samplers), 4 (shadow cascade 0),
+    // 5 (Materials SSBO), 6 (Sky UBO), 7 (water params), 8 (shadow cascade 1), 9 (shadow cascade 2)
     // Note: Materials (binding 5) is declared in shaders as set=0 binding=5, so include it in the main layout.
-    std::array<VkDescriptorSetLayoutBinding, 8> bindings = {uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding, shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding, waterParamsBinding};
+
+    // binding 8: shadow map cascade 1
+    VkDescriptorSetLayoutBinding shadowCascade1Binding{};
+    shadowCascade1Binding.binding = 8;
+    shadowCascade1Binding.descriptorCount = 1;
+    shadowCascade1Binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    shadowCascade1Binding.pImmutableSamplers = nullptr;
+    shadowCascade1Binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // binding 9: shadow map cascade 2
+    VkDescriptorSetLayoutBinding shadowCascade2Binding{};
+    shadowCascade2Binding.binding = 9;
+    shadowCascade2Binding.descriptorCount = 1;
+    shadowCascade2Binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    shadowCascade2Binding.pImmutableSamplers = nullptr;
+    shadowCascade2Binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 10> bindings = {
+        uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
+        shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
+        waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding
+    };
     // Fill the material binding at position 5
     bindings[5].binding = 5;
     bindings[5].descriptorCount = 1;
     bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[5].pImmutableSamplers = nullptr;
     bindings[5].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-    
-    // No models SSBO binding (models removed) - main descriptor set has no binding 8
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;

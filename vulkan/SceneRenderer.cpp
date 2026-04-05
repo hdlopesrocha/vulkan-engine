@@ -101,80 +101,51 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
     static bool firstCall = true;
     if (firstCall) {
         firstCall = false;
-        fprintf(stderr, "[SceneRenderer::shadowPass] FIRST CALL! shadowsEnabled=%d commandBuffer=%p\n",
-                (int)shadowsEnabled, (void*)commandBuffer);
+        fprintf(stderr, "[SceneRenderer::shadowPass] FIRST CALL! shadowsEnabled=%d commandBuffer=%p cascades=%d\n",
+                (int)shadowsEnabled, (void*)commandBuffer, SHADOW_CASCADE_COUNT);
     }
-    if (commandBuffer == VK_NULL_HANDLE) {
-        fprintf(stderr, "[SceneRenderer::shadowPass] commandBuffer is VK_NULL_HANDLE, skipping.\n");
-        return;
-    }
-    if (!shadowsEnabled) {
-        static bool warnedDisabled = false;
-        if (!warnedDisabled) {
-            warnedDisabled = true;
-            fprintf(stderr, "[SceneRenderer::shadowPass] shadowsEnabled=false, skipping.\n");
+    if (commandBuffer == VK_NULL_HANDLE) return;
+    if (!shadowsEnabled) return;
+
+    // Render each cascade: upload light-space UBO, draw scene, restore UBO
+    const glm::mat4 cascadeMatrices[SHADOW_CASCADE_COUNT] = {
+        uboStatic.lightSpaceMatrix,
+        uboStatic.lightSpaceMatrix1,
+        uboStatic.lightSpaceMatrix2
+    };
+
+    for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {
+        glm::mat4 lsMatrix = cascadeMatrices[c];
+
+        // Upload a shadow-specific UBO: viewProjection = cascade lightSpaceMatrix, passParams.x = 1.0
+        UniformObject shadowUBO = uboStatic;
+        shadowUBO.viewProjection = lsMatrix;
+        shadowUBO.passParams.x = 1.0f;
+
+        vkCmdUpdateBuffer(commandBuffer, mainUniformBuffer.buffer, 0, sizeof(UniformObject), &shadowUBO);
+        {
+            VkMemoryBarrier memBarrier{};
+            memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            memBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+            vkCmdPipelineBarrier(commandBuffer,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 1, &memBarrier, 0, nullptr, 0, nullptr);
         }
-        return;
-    }
 
-    // Use the light space matrix computed by ShadowParams each frame
-    glm::mat4 lightSpaceMatrix = uboStatic.lightSpaceMatrix;
+        shadowMapper->beginShadowPass(app, commandBuffer, c, lsMatrix);
 
-    // Debug: print light space matrix on first call
-    static bool debugPrinted = false;
-    if (!debugPrinted) {
-        debugPrinted = true;
-        fprintf(stderr, "[SceneRenderer::shadowPass] lightSpaceMatrix:\n");
-        for (int i = 0; i < 4; ++i)
-            fprintf(stderr, "  [%.4f, %.4f, %.4f, %.4f]\n",
-                    lightSpaceMatrix[0][i], lightSpaceMatrix[1][i],
-                    lightSpaceMatrix[2][i], lightSpaceMatrix[3][i]);
-        fprintf(stderr, "[SceneRenderer::shadowPass] viewPos = (%.1f, %.1f, %.1f)\n",
-                uboStatic.viewPos.x, uboStatic.viewPos.y, uboStatic.viewPos.z);
-        fprintf(stderr, "[SceneRenderer::shadowPass] lightDir = (%.3f, %.3f, %.3f)\n",
-                uboStatic.lightDir.x, uboStatic.lightDir.y, uboStatic.lightDir.z);
-    }
+        // Bind shadow descriptor set (uses dummy depth at bindings 4,8,9)
+        VkPipelineLayout layout = shadowMapper->getShadowPipelineLayout();
+        VkDescriptorSet ds = shadowDescriptorSet;
+        if (layout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
+        }
 
-    // Upload a shadow-specific UBO: viewProjection = lightSpaceMatrix, passParams.x = 1.0 (isShadowPass)
-    UniformObject shadowUBO = uboStatic;
-    shadowUBO.viewProjection = lightSpaceMatrix;
-    shadowUBO.passParams.x = 1.0f; // signal shadow pass to fragment shader
+        solidRenderer->getIndirectRenderer().drawAll(commandBuffer);
 
-    vkCmdUpdateBuffer(commandBuffer, mainUniformBuffer.buffer, 0, sizeof(UniformObject), &shadowUBO);
-    {
-        VkMemoryBarrier memBarrier{};
-        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        memBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-        vkCmdPipelineBarrier(commandBuffer,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 1, &memBarrier, 0, nullptr, 0, nullptr);
-    }
-
-    // Begin shadow render pass on the main command buffer
-    shadowMapper->beginShadowPass(app, commandBuffer, lightSpaceMatrix);
-
-    // Bind shadow descriptor set (uses dummy depth at binding 4 to avoid layout
-    // mismatch while the real shadow map is being written).
-    VkPipelineLayout layout = shadowMapper->getShadowPipelineLayout();
-    VkDescriptorSet ds = shadowDescriptorSet;
-    if (layout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
-    } else {
-        // Fallback: use solid pipeline layout + main descriptor set (may trigger validation warnings)
-        layout = solidRenderer->getGraphicsPipelineLayout();
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &mainDescriptorSet, 0, nullptr);
-    }
-
-    solidRenderer->getIndirectRenderer().drawAll(commandBuffer);
-
-    shadowMapper->endShadowPass(app, commandBuffer);
-
-    static bool shadowRecorded = false;
-    if (!shadowRecorded) {
-        shadowRecorded = true;
-        fprintf(stderr, "[SceneRenderer::shadowPass] Shadow draw commands recorded to command buffer.\n");
+        shadowMapper->endShadowPass(app, commandBuffer, c);
     }
 
     // Restore the main UBO so subsequent passes see the original data
@@ -350,7 +321,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     } else {
         fprintf(stderr, "[SceneRenderer::init] No TextureArrayManager set — skipping texture array descriptor writes\n");
     }
-    addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    addImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    addImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
     // Create and bind Materials SSBO at binding 5. Prefer external MaterialManager if provided.
     // Always create a valid materialsBuffer for descriptor binding 5
@@ -451,8 +424,12 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             addShadowImageWrite(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
 
-        // Binding 4: dummy depth image instead of real shadow map
+        // Binding 4, 8, 9: dummy depth image instead of real shadow maps (all cascades)
         addShadowImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(),
+                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        addShadowImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(),
+                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        addShadowImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(),
                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
         // Materials SSBO (binding 5)
@@ -560,9 +537,11 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     addImageWrite(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 
-    // Shadow map sampler (binding 4) may be present
+    // Shadow map samplers (bindings 4, 8, 9) for all cascades
     if (shadowMapper) {
-        addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        addImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        addImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
     }
 
     // Materials SSBO (binding 5) — refresh from MaterialManager in case the buffer
@@ -608,7 +587,7 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     }
 
     // ── Also update shadow descriptor set (bindings 1-3, 5, 7) with new textures/materials.
-    //    Binding 4 stays as the dummy depth image (never changes).
+    //    Bindings 4, 8, 9 stay as the dummy depth image (never changes).
     if (shadowDescriptorSet != VK_NULL_HANDLE) {
         std::vector<VkWriteDescriptorSet> shadowWrites;
         auto addShadowImageWrite = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
