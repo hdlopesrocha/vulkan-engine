@@ -1,4 +1,5 @@
 #include "ShadowMapWidget.hpp"
+#include "../Uniforms.hpp"
 
 ShadowMapWidget::ShadowMapWidget(ShadowRenderer* shadowMapper, ShadowParams* shadowParams)
     : Widget("Shadow Map"), shadowMapper(shadowMapper), shadowParams(shadowParams) {
@@ -16,21 +17,32 @@ void ShadowMapWidget::render() {
     if (shadowParams) {
         ImGui::Separator();
         ImGui::Text("Shadow Parameters:");
-        ImGui::Text("Ortho Size: %.1f", shadowParams->orthoSize);
+        ImGui::Text("Base Ortho Size: %.1f", shadowParams->orthoSize);
+        for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
+            ImGui::Text("  Cascade %d: ortho = %.1f (x%.0f)", i,
+                shadowParams->orthoSize * shadowParams->cascadeMultipliers[i],
+                shadowParams->cascadeMultipliers[i]);
+        }
         
         // Allow editing ortho size
         ImGui::Separator();
-        ImGui::SliderFloat("Ortho Size", &shadowParams->orthoSize, 10.0f, 2048.0f, "%.0f");
+        ImGui::SliderFloat("Base Ortho Size", &shadowParams->orthoSize, 10.0f, 2048.0f, "%.0f");
     }
 
     // Size slider for shadow map display
-    ImGui::SliderFloat("Display Size", &displaySize, 256.0f, 2048.0f, "%.0f");
+    ImGui::SliderFloat("Display Size", &displaySize, 128.0f, 1024.0f, "%.0f");
 
-    // Display shadow map as a texture at adjustable size
-    if (shadowMapper->getImGuiDescriptorSet() != VK_NULL_HANDLE) {
-        ImGui::Image((ImTextureID)shadowMapper->getImGuiDescriptorSet(), ImVec2(displaySize, displaySize));
-    } else {
-        ImGui::Text("Shadow map not available");
+    // Display all cascade shadow maps
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
+        ImGui::Separator();
+        float ortho = shadowParams ? shadowParams->orthoSize * shadowParams->cascadeMultipliers[i] : 0.0f;
+        ImGui::Text("Cascade %d (ortho=%.0f)", i, ortho);
+        VkDescriptorSet ds = shadowMapper->getImGuiDescriptorSet(i);
+        if (ds != VK_NULL_HANDLE) {
+            ImGui::Image((ImTextureID)ds, ImVec2(displaySize, displaySize));
+        } else {
+            ImGui::Text("Shadow map not available");
+        }
     }
 
     ImGui::End();

@@ -237,7 +237,8 @@ public:
         if (renderPassDebugWidget) renderPassDebugWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
         renderTargetsWidget = std::make_shared<RenderTargetsWidget>(
-            sceneRenderer->waterRenderer.get(), sceneRenderer->solidRenderer.get(), sceneRenderer->skyRenderer.get());
+            sceneRenderer->waterRenderer.get(), sceneRenderer->solidRenderer.get(), sceneRenderer->skyRenderer.get(),
+            sceneRenderer->shadowMapper.get());
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
@@ -331,7 +332,9 @@ public:
         uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
         uboStatic.lightDir = glm::vec4(light.getDirection(), 0.0f);
         uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 0.9f, 1.0f);
-        uboStatic.lightSpaceMatrix = shadowParams.lightSpaceMatrix;
+        uboStatic.lightSpaceMatrix  = shadowParams.lightSpaceMatrix[0];
+        uboStatic.lightSpaceMatrix1 = shadowParams.lightSpaceMatrix[1];
+        uboStatic.lightSpaceMatrix2 = shadowParams.lightSpaceMatrix[2];
         // Encode debug/triplanar/tess parameters into the shared UBO
         uboStatic.debugParams = glm::vec4(static_cast<float>(settings.debugMode), 0.0f, 0.0f, 0.0f);
         uboStatic.triplanarSettings = glm::vec4(settings.triplanarThreshold, settings.triplanarExponent, 0.0f, 0.0f);

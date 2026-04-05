@@ -3,11 +3,14 @@
 #include "../vulkan/WaterRenderer.hpp"
 #include "../vulkan/SolidRenderer.hpp"
 #include "../vulkan/SkyRenderer.hpp"
+#include "../vulkan/ShadowRenderer.hpp"
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
 
-RenderTargetsWidget::RenderTargetsWidget(WaterRenderer* water, SolidRenderer* solid, SkyRenderer* sky)
-    : Widget("Render Targets"), waterRenderer(water), solidRenderer(solid), skyRenderer(sky) {
+RenderTargetsWidget::RenderTargetsWidget(WaterRenderer* water, SolidRenderer* solid, SkyRenderer* sky,
+                                         ShadowRenderer* shadow)
+    : Widget("Render Targets"), waterRenderer(water), solidRenderer(solid), skyRenderer(sky),
+      shadowMapper(shadow) {
 }
 
 RenderTargetsWidget::~RenderTargetsWidget() {
@@ -32,6 +35,10 @@ void RenderTargetsWidget::cleanup() {
     if (waterColorDescriptor != VK_NULL_HANDLE) {
         ImGui_ImplVulkan_RemoveTexture(waterColorDescriptor);
         waterColorDescriptor = VK_NULL_HANDLE;
+    }
+    if (solidDepthDescriptor != VK_NULL_HANDLE) {
+        ImGui_ImplVulkan_RemoveTexture(solidDepthDescriptor);
+        solidDepthDescriptor = VK_NULL_HANDLE;
     }
     if (solid360Descriptor != VK_NULL_HANDLE) {
         ImGui_ImplVulkan_RemoveTexture(solid360Descriptor);
@@ -62,6 +69,16 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         if (solidView != VK_NULL_HANDLE) {
             solidColorDescriptor = ImGui_ImplVulkan_AddTexture(
                 sampler, solidView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+    }
+
+    // Solid depth (D32_SFLOAT – use shadow sampler which has compareEnable=VK_FALSE)
+    if (solidRenderer && shadowMapper) {
+        VkImageView depthView = solidRenderer->getDepthView(frameIndex);
+        if (depthView != VK_NULL_HANDLE) {
+            solidDepthDescriptor = ImGui_ImplVulkan_AddTexture(
+                shadowMapper->getShadowMapSampler(), depthView,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
     }
 
@@ -122,10 +139,31 @@ void RenderTargetsWidget::render() {
         ImGui::Separator();
     }
 
-    // Water color
+    // Solid depth
+    if (solidDepthDescriptor != VK_NULL_HANDLE) {
+        ImGui::Text("Solid (Depth Buffer)");
+        ImGui::Image((ImTextureID)solidDepthDescriptor, previewSize);
+        ImGui::Separator();
+    }
+
+    // Water depth
     if (waterColorDescriptor != VK_NULL_HANDLE) {
-        ImGui::Text("Water (Geometry Pass)");
+        ImGui::Text("Water (Depth Buffer)");
         ImGui::Image((ImTextureID)waterColorDescriptor, previewSize);
+        ImGui::Separator();
+    }
+
+    // Shadow cascades (reuse ShadowRenderer's own ImGui descriptor sets)
+    if (shadowMapper) {
+        float shadowSize = static_cast<float>(shadowMapper->getShadowMapSize()) * previewScale;
+        for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
+            VkDescriptorSet ds = shadowMapper->getImGuiDescriptorSet(i);
+            if (ds != VK_NULL_HANDLE) {
+                ImGui::Text("Shadow Cascade %d", i);
+                ImGui::Image((ImTextureID)ds, ImVec2(shadowSize, shadowSize));
+                ImGui::Separator();
+            }
+        }
     }
 
     ImGui::End();
