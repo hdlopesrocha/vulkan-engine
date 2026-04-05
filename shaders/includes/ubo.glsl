@@ -12,6 +12,8 @@ layout(set = 0, binding = 0) uniform UBO {
     vec4 triplanarSettings;
     vec4 tessParams; // x = tessNearDist, y = tessFarDist, z = tessMinLevel, w = tessMaxLevel
     vec4 passParams;   // x = isShadowPass, y = tessEnabled, z = nearPlane, w = farPlane
+    mat4 lightSpaceMatrix1; // cascade 1 (4x ortho0)
+    mat4 lightSpaceMatrix2; // cascade 2 (16x ortho0)
 } ubo;
 
 // Packed material data uploaded once to GPU. Matches the CPU-side MaterialGPU (4 vec4s).
