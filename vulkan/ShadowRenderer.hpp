@@ -24,8 +24,6 @@ public:
     VkPipeline getShadowPipeline() const { return shadowPipeline; }
     VkPipelineLayout getShadowPipelineLayout() const { return shadowPipelineLayout; }
     VkImageView getDummyDepthView() const { return dummyDepthView; }
-    // Debug: read back depth image to host and write shadow_depth.pgm
-    void readbackShadowDepth(VulkanApp* app, uint32_t cascade = 0);
     // Expose raw depth image for readback/debugging
     VkImage getDepthImage(uint32_t cascade = 0) const;
 private:
