@@ -16,13 +16,11 @@ private:
     VkDescriptorSet sceneColorDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet sceneDepthDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterDepthDescriptor = VK_NULL_HANDLE;
-    VkDescriptorSet waterNormalDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterMaskDescriptor = VK_NULL_HANDLE;
 
     bool showSceneColor = true;
     bool showSceneDepth = true;
     bool showWaterDepth = false;
-    bool showWaterNormal = false;
     bool showWaterMask = false;
     float previewScale = 0.3f;
     int currentFrame = 0;

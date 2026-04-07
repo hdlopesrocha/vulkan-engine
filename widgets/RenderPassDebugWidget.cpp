@@ -31,10 +31,6 @@ void RenderPassDebugWidget::cleanup() {
         ImGui_ImplVulkan_RemoveTexture(waterDepthDescriptor);
         waterDepthDescriptor = VK_NULL_HANDLE;
     }
-    if (waterNormalDescriptor != VK_NULL_HANDLE) {
-        ImGui_ImplVulkan_RemoveTexture(waterNormalDescriptor);
-        waterNormalDescriptor = VK_NULL_HANDLE;
-    }
     if (waterMaskDescriptor != VK_NULL_HANDLE) {
         ImGui_ImplVulkan_RemoveTexture(waterMaskDescriptor);
         waterMaskDescriptor = VK_NULL_HANDLE;
@@ -52,7 +48,6 @@ void RenderPassDebugWidget::updateDescriptors(uint32_t frameIndex) {
     VkImageView sceneColorView = solidRenderer->getColorView(frameIndex);
     VkImageView sceneDepthView = solidRenderer->getDepthView(frameIndex);
     VkImageView waterDepthView = waterRenderer->getWaterDepthView();
-    VkImageView waterNormalView = waterRenderer->getWaterNormalView();
     VkImageView waterMaskView = waterRenderer->getWaterMaskView();
     
     if (sceneColorView != VK_NULL_HANDLE) {
@@ -79,13 +74,7 @@ void RenderPassDebugWidget::updateDescriptors(uint32_t frameIndex) {
         );
     }
 
-    if (waterNormalView != VK_NULL_HANDLE) {
-        waterNormalDescriptor = ImGui_ImplVulkan_AddTexture(
-            waterRenderer->getLinearSampler(),
-            waterNormalView,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-        );
-    }
+// water normal preview removed
 
     if (waterMaskView != VK_NULL_HANDLE) {
         waterMaskDescriptor = ImGui_ImplVulkan_AddTexture(
@@ -137,11 +126,7 @@ void RenderPassDebugWidget::render() {
         ImGui::Image((ImTextureID)waterDepthDescriptor, previewSize);
     }
 
-    ImGui::Checkbox("Show Water Normal", &showWaterNormal);
-    if (showWaterNormal && waterNormalDescriptor != VK_NULL_HANDLE) {
-        ImGui::Text("Water Normal:");
-        ImGui::Image((ImTextureID)waterNormalDescriptor, previewSize);
-    }
+    // Water normal preview removed
 
     ImGui::Checkbox("Show Water Mask", &showWaterMask);
     if (showWaterMask && waterMaskDescriptor != VK_NULL_HANDLE) {
