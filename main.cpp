@@ -67,7 +67,7 @@ public:
     LocalScene * brushScene = nullptr;
     std::shared_ptr<Brush3dWidget> brush3dWidget;
     // Shared brush entries edited by Brush3dWidget (owned by MyApp)
-    std::vector<BrushEntry> brushEntries;
+    Brush3dManager brushManager;
     VkQueryPool queryPool = VK_NULL_HANDLE;
     static constexpr uint32_t QUERY_COUNT = 12;
     float timestampPeriod = 0.0f;
@@ -125,7 +125,7 @@ public:
     // until after the current frame is submitted to avoid waiting on fences
     // while the frame is being recorded (causes deadlock). Set by UI,
     // consumed in `postSubmit()`.
-    bool brushRebuildPending = false;
+    bool brushRebuildPending = true;
     size_t cubeCount = 0;
 
     // Camera and input
@@ -215,6 +215,7 @@ public:
         if (sceneRenderer) {
             sceneRenderer->updateTextureDescriptorSet(this, &textureArrayManager);
         }
+
     }
 
     void setup() override {
@@ -749,21 +750,24 @@ void MyApp::setupScene() {
     // --- Brush scene setup ---
     brushScene = new LocalScene();
 
-    // Initialize shared brush entries and create Brush3dWidget wired to them
-    brushEntries.clear();
-    brushEntries.resize(3);
+    // Initialize manager-owned brush entries and create Brush3dWidget wired to the manager
+    brushManager.getEntries().clear();
+    brushManager.getEntries().resize(3);
     // Provide distinct defaults for quick testing
-    brushEntries[0].sdfType = 0; // Sphere
-    brushEntries[0].materialIndex = 0;
-    brushEntries[0].translate = glm::vec3(0.0f, 1024.0f, 0.0f);
-    brushEntries[1].sdfType = 1; // Box
-    brushEntries[1].materialIndex = 1;
-    brushEntries[1].translate = glm::vec3(512.0f, 1024.0f, 0.0f);
-    brushEntries[2].sdfType = 3; // Octahedron
-    brushEntries[2].materialIndex = 2;
-    brushEntries[2].translate = glm::vec3(-512.0f, 1024.0f, 0.0f);
+    brushManager.getEntries()[0].sdfType = 0; // Sphere
+    brushManager.getEntries()[0].materialIndex = 0;
+    brushManager.getEntries()[0].translate = glm::vec3(0.0f, 1024.0f, 0.0f);
+    brushManager.getEntries()[0].scale = glm::vec3(256.0f);
+    brushManager.getEntries()[1].sdfType = 1; // Box
+    brushManager.getEntries()[1].materialIndex = 1;
+    brushManager.getEntries()[1].translate = glm::vec3(512.0f, 1024.0f, 0.0f);
+    brushManager.getEntries()[1].scale = glm::vec3(256.0f);
+    brushManager.getEntries()[2].sdfType = 3; // Octahedron
+    brushManager.getEntries()[2].materialIndex = 2;
+    brushManager.getEntries()[2].translate = glm::vec3(-512.0f, 1024.0f, 0.0f);
+    brushManager.getEntries()[2].scale = glm::vec3(256.0f);
 
-    brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushEntries);
+    brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager);
     // Defer the actual heavy rebuild until after the current frame is submitted
     // to avoid blocking the frame record path (which can deadlock on fences).
     brush3dWidget->setRebuildCallback([this]() {
@@ -816,8 +820,10 @@ void MyApp::setupVegetationTextures() {
 void MyApp::rebuildBrushScene() {
     if (!brushScene || !sceneRenderer || !brush3dWidget) return;
 
-    const auto& entries = brush3dWidget->getEntries();
-    fprintf(stderr, "[MyApp::rebuildBrushScene] Rebuilding with %zu entries\n", entries.size());
+    // Process only the currently-selected brush entry from the manager
+    const BrushEntry* selectedEntry = brushManager.getSelectedEntry();
+    size_t selCount = selectedEntry ? 1 : 0;
+    fprintf(stderr, "[MyApp::rebuildBrushScene] Rebuilding with %zu selected entries\n", selCount);
 
     // 1. Remove all existing brush meshes from GPU
     sceneRenderer->clearBrushMeshes();
@@ -826,7 +832,7 @@ void MyApp::rebuildBrushScene() {
     brushScene->getOpaqueOctree().reset();
     brushScene->transparentOctree.reset();
 
-    if (entries.empty()) {
+    if (!selectedEntry) {
         // Nothing to add — just rebuild to commit the removals
         sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
         sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
@@ -845,8 +851,8 @@ void MyApp::rebuildBrushScene() {
     glm::vec4 translate(0.0f);
     glm::vec4 scale(1.0f);
 
-    // 4. Process each brush entry
-    for (const auto& entry : entries) {
+    // 4. Process the selected brush entry only
+    const auto& entry = *selectedEntry;
         // Select the target octree and handler based on targetLayer
         Octree& octree = (entry.targetLayer == 0)
             ? brushScene->getOpaqueOctree()
@@ -975,8 +981,7 @@ void MyApp::rebuildBrushScene() {
             default:
                 fprintf(stderr, "[rebuildBrushScene] Unknown sdfType %d, skipping\n", entry.sdfType);
                 break;
-        }
-    }
+            }
 
     // 5. Flush queued change events (triggers mesh creation via SceneRenderer)
     uniqueBrushSolidHandler.handleEvents();

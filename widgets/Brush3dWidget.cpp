@@ -52,9 +52,10 @@ void Brush3dWidget::render() {
         int currentIndex = manager.getSelectedIndex();
         ImGui::Text("Entry %d / %zu", currentIndex + 1, entriesRef.size());
         ImGui::SameLine();
-        if (ImGui::Button("Prev")) { manager.prev(); currentIndex = manager.getSelectedIndex(); }
+        if (ImGui::Button("Prev")) { manager.prev(); currentIndex = manager.getSelectedIndex(); dirty = true;
+}
         ImGui::SameLine();
-        if (ImGui::Button("Next")) { manager.next(); currentIndex = manager.getSelectedIndex(); }
+        if (ImGui::Button("Next")) { manager.next(); currentIndex = manager.getSelectedIndex(); dirty = true;}
         ImGui::SameLine();
         int idx = currentIndex;
         if (ImGui::InputInt("##entryIdx", &idx)) {
