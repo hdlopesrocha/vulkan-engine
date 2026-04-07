@@ -1,8 +1,11 @@
 #include "ControllerParametersWidget.hpp"
 #include <glm/gtc/type_ptr.hpp>
 
-ControllerParametersWidget::ControllerParametersWidget(ControllerParameters* params)
-    : Widget("Controller Parameters"), params(params) {}
+#include "../utils/Brush3dManager.hpp"
+#include "../utils/Brush3dEntry.hpp"
+
+ControllerParametersWidget::ControllerParametersWidget(ControllerParameters* params, Brush3dManager* brushManager)
+    : Widget("Controller Parameters"), params(params), brushManager(brushManager) {}
 
 void ControllerParametersWidget::render() {
     if (!ImGui::Begin(title.c_str(), &isOpen)) {
@@ -29,21 +32,46 @@ void ControllerParametersWidget::render() {
             ImGui::DragFloat("Angular Speed (deg/s)", &params->cameraAngularSpeedDeg, 1.0f, 0.0f, 360.0f);
             break;
 
-        case ControllerParameters::BRUSH_POSITION:
-            ImGui::DragFloat3("Position", glm::value_ptr(params->brushPosition), 0.1f);
+        case ControllerParameters::BRUSH_POSITION: {
+            if (!brushManager) {
+                ImGui::Text("No Brush Manager available");
+                break;
+            }
+            BrushEntry* be = brushManager->getSelectedEntry();
+            if (!be) {
+                ImGui::Text("No brush selected");
+                break;
+            }
+            ImGui::DragFloat3("Position", glm::value_ptr(be->translate), 0.1f);
             break;
+        }
 
-        case ControllerParameters::BRUSH_SCALE:
-            ImGui::DragFloat3("Scale", glm::value_ptr(params->brushScale), 0.01f, 0.0f, 1024.0f);
+        case ControllerParameters::BRUSH_SCALE: {
+            if (!brushManager) { ImGui::Text("No Brush Manager available"); break; }
+            BrushEntry* be = brushManager->getSelectedEntry();
+            if (!be) { ImGui::Text("No brush selected"); break; }
+            ImGui::DragFloat3("Scale", glm::value_ptr(be->scale), 0.01f, 0.0f, 1024.0f);
             break;
+        }
 
-        case ControllerParameters::BRUSH_ROTATION:
-            ImGui::DragFloat3("Rotation (deg)", glm::value_ptr(params->brushRotation), 1.0f, -360.0f, 360.0f);
+        case ControllerParameters::BRUSH_ROTATION: {
+            if (!brushManager) { ImGui::Text("No Brush Manager available"); break; }
+            BrushEntry* be = brushManager->getSelectedEntry();
+            if (!be) { ImGui::Text("No brush selected"); break; }
+            float rot[3] = { be->yaw, be->pitch, be->roll };
+            if (ImGui::DragFloat3("Rotation (deg)", rot, 1.0f, -360.0f, 360.0f)) {
+                be->yaw = rot[0]; be->pitch = rot[1]; be->roll = rot[2];
+            }
             break;
+        }
 
-        case ControllerParameters::BRUSH_PROPERTIES:
-            ImGui::Checkbox("Example Property", &params->brushPropertyExample);
+        case ControllerParameters::BRUSH_PROPERTIES: {
+            if (!brushManager) { ImGui::Text("No Brush Manager available"); break; }
+            BrushEntry* be = brushManager->getSelectedEntry();
+            if (!be) { ImGui::Text("No brush selected"); break; }
+            ImGui::Checkbox("Use Effect", &be->useEffect);
             break;
+        }
     }
 
     ImGui::End();
