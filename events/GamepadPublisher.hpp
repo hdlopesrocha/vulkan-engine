@@ -13,6 +13,7 @@ class Camera;
 // - Left bumper (L1) -> translate backward
 // - Right bumper (R1) -> translate forward
 class ControllerManager;
+class Brush3dManager;
 
 class GamepadPublisher {
 public:
@@ -22,7 +23,7 @@ public:
     // - em: EventManager to publish to
     // - cam: reference to Camera for axis vectors
     // - deltaTime: frame delta seconds
-    void update(EventManager* em, const Camera& cam, float deltaTime, ControllerManager* controllerManager, bool flipRotation);
+    void update(EventManager* em, const Camera& cam, float deltaTime, ControllerManager* controllerManager, Brush3dManager* brushManager, bool flipRotation);
     void setMoveSpeed(float v) { moveSpeed = v; }
     void setAngularSpeed(float deg) { angularSpeedDeg = deg; }
 
