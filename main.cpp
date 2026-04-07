@@ -254,7 +254,7 @@ public:
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
-        controllerParametersWidget = std::make_shared<ControllerParametersWidget>(controllerManager.getParameters());
+        controllerParametersWidget = std::make_shared<ControllerParametersWidget>(controllerManager.getParameters(), &brushManager);
         gamepadWidget = std::make_shared<GamepadWidget>();
         debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &cubeCount);
         shadowWidget = std::make_shared<ShadowMapWidget>(sceneRenderer->shadowMapper.get(), &shadowParams);
@@ -314,9 +314,9 @@ public:
 
     void update(float deltaTime) override {
         // Poll keyboard input and publish events
-        keyboardPublisher.update(getWindow(), &eventManager, camera, deltaTime, &controllerManager, false);
+        keyboardPublisher.update(getWindow(), &eventManager, camera, deltaTime, &controllerManager, &brushManager, false);
         // Poll gamepad input and publish events (if a controller is connected)
-        gamepadPublisher.update(&eventManager, camera, deltaTime, &controllerManager, false);
+        gamepadPublisher.update(&eventManager, camera, deltaTime, &controllerManager, &brushManager, false);
         eventManager.processQueued();
 
         shadowParams.update(camera.getPosition(), light);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "utils/Brush3dEntry.hpp"
+#include "Brush3dEntry.hpp"
 #include <vector>
 #include <algorithm>
 
