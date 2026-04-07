@@ -15,6 +15,7 @@ class TextureArrayManager;
 class SceneRenderer;
 class VulkanApp;
 class LocalScene;
+class EventManager;
 
 
 class Brush3dWidget : public Widget {
