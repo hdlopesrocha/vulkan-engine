@@ -14,14 +14,6 @@ public:
     float cameraMoveSpeed = 8.0f;
     float cameraAngularSpeedDeg = 90.0f;
 
-    // Brush transform parameters
-    glm::vec3 brushPosition = glm::vec3(0.0f);
-    glm::vec3 brushScale = glm::vec3(1.0f);
-    glm::vec3 brushRotation = glm::vec3(0.0f);
-
-    // Example brush property
-    bool brushPropertyExample = false;
-
     static inline const char* pageTypeName(pageType p) {
         switch (p) {
             case CAMERA: return "Camera";
