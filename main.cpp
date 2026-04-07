@@ -54,6 +54,7 @@
 #include "events/GamepadPublisher.hpp"
 #include "events/CloseWindowEvent.hpp"
 #include "events/ToggleFullscreenEvent.hpp"
+#include "events/RebuildBrushEvent.hpp"
 #include "vulkan/TextureArrayManager.hpp"
 #include "vulkan/MaterialManager.hpp"
 #include "vulkan/BillboardManager.hpp"
@@ -734,8 +735,17 @@ public:
     void onEvent(const EventPtr &event) override {
         if (auto closeEvent = std::dynamic_pointer_cast<CloseWindowEvent>(event)) {
             requestClose();
-        } else if (auto fullscreenEvent = std::dynamic_pointer_cast<ToggleFullscreenEvent>(event)) {
+            return;
+        }
+        if (auto fullscreenEvent = std::dynamic_pointer_cast<ToggleFullscreenEvent>(event)) {
             toggleFullscreen();
+            return;
+        }
+        if (auto rebuildEvent = std::dynamic_pointer_cast<RebuildBrushEvent>(event)) {
+            // Defer heavy rebuild to postSubmit() to avoid interfering with
+            // command buffer recording and GPU fences.
+            brushRebuildPending = true;
+            return;
         }
     }
     // Called by VulkanApp after a frame has been submitted
@@ -803,8 +813,10 @@ void MyApp::setupScene() {
     brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager);
     // Defer the actual heavy rebuild until after the current frame is submitted
     // to avoid blocking the frame record path (which can deadlock on fences).
+    // Instead of directly toggling a callback, publish a RebuildBrushEvent so
+    // the application's event handler can decide how to schedule the rebuild.
     brush3dWidget->setRebuildCallback([this]() {
-        this->brushRebuildPending = true;
+        this->eventManager.queue(std::make_shared<RebuildBrushEvent>());
     });
     widgetManager.addWidget(brush3dWidget);
 }
