@@ -36,6 +36,7 @@ public:
     // Offscreen solid pass outputs
     VkImageView getColorView(uint32_t frameIndex) const { return solidColorImageViews[frameIndex]; }
     VkImageView getDepthView(uint32_t frameIndex) const { return solidDepthImageViews[frameIndex]; }
+    VkImage getDepthImage(uint32_t frameIndex) const { return solidDepthImages[frameIndex]; }
     VkRenderPass getRenderPass() const { return solidRenderPass; }
 
 public:

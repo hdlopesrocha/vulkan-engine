@@ -1,6 +1,6 @@
 #pragma once
 
-#include "vulkan.hpp"
+#include <vulkan/vulkan.h>
 
 // Small helper types used across the Vulkan module
 struct Buffer {

@@ -41,6 +41,19 @@ struct WaterParams {
     // transition from zero displacement (at solid surface) to full amplitude.
     // 0 = disabled (no depth-based attenuation).
     float waveDepthTransition = 20.0f;
+
+    // Feature toggles
+    bool enableReflection = true;
+    bool enableRefraction = true;
+    bool enableBlur = true;
+
+    // PCF-style scene-color blur
+    float blurRadius = 8.0f;    // texel radius of blur kernel
+    int   blurSamples = 4;      // number of blur taps per axis (NxN kernel)
+
+    // Volume depth-based effect transitions
+    float volumeBlurRate = 0.004f;   // exponential rate: blur ramps with water thickness
+    float volumeBumpRate = 0.05f;  // exponential rate: bump ramps with water thickness
 };
 
 // GPU-side water params UBO (matches shader WaterParamsUBO layout)
@@ -51,8 +64,8 @@ struct WaterParamsGPU {
     glm::vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
     glm::vec4 deepColor; // xyz = deepColor, w = glitterIntensity
     glm::vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
-    glm::vec4 reserved1;  // unused (padding to preserve UBO layout)
-    glm::vec4 reserved2;  // unused (padding to preserve UBO layout)
+    glm::vec4 reserved1;  // x=enableReflection, y=enableRefraction, z=enableBlur, w=blurRadius
+    glm::vec4 reserved2;  // x=blurSamples, y=volumeBlurRate, z=volumeBumpRate, w=unused
 };
 
 // GPU-side water uniform buffer
@@ -87,6 +100,11 @@ public:
     void beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex);
     void endWaterGeometryPass(VkCommandBuffer cmd);
 
+    // Back-face depth pre-pass (reversed winding for water volume thickness)
+    void renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex);
+    VkImageView getBackFaceDepthView() const { return backFaceDepthImageView; }
+    VkImage getBackFaceDepthImage() const { return backFaceDepthImage; }
+
     // Execute the water offscreen geometry pass on the provided command buffer.
     // The solid render pass must have already ended on this same command buffer.
     void render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
@@ -96,6 +114,8 @@ public:
 
     // Get water depth/normal/mask images for post-process sampling
     VkImageView getWaterDepthView() const { return waterDepthImageView; }
+    // View that swizzles alpha into RGB so linear depth can be displayed easily
+    VkImageView getWaterDepthAlphaView() const { return waterDepthAlphaImageView; }
     VkImageView getWaterNormalView() const { return waterNormalImageView; }
     VkImageView getWaterMaskView() const { return waterMaskImageView; }
     
@@ -212,6 +232,8 @@ private:
     VkImage waterDepthImage = VK_NULL_HANDLE;
     VkDeviceMemory waterDepthMemory = VK_NULL_HANDLE;
     VkImageView waterDepthImageView = VK_NULL_HANDLE;
+    // Alternate view that swizzles alpha (linear depth) into RGB for debug display
+    VkImageView waterDepthAlphaImageView = VK_NULL_HANDLE;
 
     VkImage waterNormalImage = VK_NULL_HANDLE;
     VkDeviceMemory waterNormalMemory = VK_NULL_HANDLE;
@@ -229,6 +251,14 @@ private:
 
     std::array<VkFramebuffer, 2> waterFramebuffers = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkRenderPass waterRenderPass = VK_NULL_HANDLE;
+
+    // Back-face depth pass (reversed winding for water volume thickness)
+    VkRenderPass backFaceRenderPass = VK_NULL_HANDLE;
+    VkPipeline backFacePipeline = VK_NULL_HANDLE;
+    VkImage backFaceDepthImage = VK_NULL_HANDLE;
+    VkDeviceMemory backFaceDepthMemory = VK_NULL_HANDLE;
+    VkImageView backFaceDepthImageView = VK_NULL_HANDLE;
+    std::array<VkFramebuffer, 2> backFaceFramebuffers = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
     // Pipelines
     VkPipeline waterGeometryPipeline = VK_NULL_HANDLE;

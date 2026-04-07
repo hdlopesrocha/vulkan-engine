@@ -13,6 +13,7 @@ static VkImageLayout waterDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 static VkImageLayout waterNormalImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 static VkImageLayout waterMaskImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 static VkImageLayout waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+static VkImageLayout backFaceDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 WaterRenderer::WaterRenderer() {}
 
@@ -249,6 +250,59 @@ void WaterRenderer::createWaterRenderPass(VulkanApp* app) {
     }
     // Register water render pass
     app->resources.addRenderPass(waterRenderPass, "WaterRenderer: waterRenderPass");
+
+    // --- Back-face depth-only render pass ---
+    // Single D32_SFLOAT depth attachment, no color outputs.
+    // Used to render water geometry with front-face culling to capture the
+    // back-face depth for water volume thickness calculation.
+    {
+        VkAttachmentDescription bfDepthAtt{};
+        bfDepthAtt.format = VK_FORMAT_D32_SFLOAT;
+        bfDepthAtt.samples = VK_SAMPLE_COUNT_1_BIT;
+        bfDepthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        bfDepthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        bfDepthAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        bfDepthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        bfDepthAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        bfDepthAtt.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference bfDepthRef{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+        VkSubpassDescription bfSubpass{};
+        bfSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        bfSubpass.colorAttachmentCount = 0;
+        bfSubpass.pColorAttachments = nullptr;
+        bfSubpass.pDepthStencilAttachment = &bfDepthRef;
+
+        std::array<VkSubpassDependency, 2> bfDeps{};
+        bfDeps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        bfDeps[0].dstSubpass = 0;
+        bfDeps[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        bfDeps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        bfDeps[0].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        bfDeps[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+        bfDeps[1].srcSubpass = 0;
+        bfDeps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        bfDeps[1].srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        bfDeps[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        bfDeps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        bfDeps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        VkRenderPassCreateInfo bfRPInfo{};
+        bfRPInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        bfRPInfo.attachmentCount = 1;
+        bfRPInfo.pAttachments = &bfDepthAtt;
+        bfRPInfo.subpassCount = 1;
+        bfRPInfo.pSubpasses = &bfSubpass;
+        bfRPInfo.dependencyCount = static_cast<uint32_t>(bfDeps.size());
+        bfRPInfo.pDependencies = bfDeps.data();
+
+        if (vkCreateRenderPass(app->getDevice(), &bfRPInfo, nullptr, &backFaceRenderPass) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create back-face depth render pass!");
+        }
+        app->resources.addRenderPass(backFaceRenderPass, "WaterRenderer: backFaceRenderPass");
+    }
 }
 
 void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
@@ -331,6 +385,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     waterNormalImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     waterMaskImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    backFaceDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     // Create per-frame scene offscreen render targets (2 sets for 2 frames in flight)
     for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
@@ -374,6 +429,29 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
                 waterDepthImage, waterDepthMemory, waterDepthImageView);
     waterDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
+    // Create an alternate image view that swizzles the alpha (linear depth)
+    // into RGB channels so ImGui can display depth as a grayscale image.
+    {
+        VkImageViewCreateInfo vw{};
+        vw.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vw.image = waterDepthImage;
+        vw.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vw.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        vw.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vw.subresourceRange.baseMipLevel = 0;
+        vw.subresourceRange.levelCount = 1;
+        vw.subresourceRange.baseArrayLayer = 0;
+        vw.subresourceRange.layerCount = 1;
+        vw.components.r = VK_COMPONENT_SWIZZLE_A;
+        vw.components.g = VK_COMPONENT_SWIZZLE_A;
+        vw.components.b = VK_COMPONENT_SWIZZLE_A;
+        vw.components.a = VK_COMPONENT_SWIZZLE_A;
+        if (vkCreateImageView(app->getDevice(), &vw, nullptr, &waterDepthAlphaImageView) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create waterDepthAlphaImageView");
+        }
+        app->resources.addImageView(waterDepthAlphaImageView, "WaterRenderer: waterDepthAlphaImageView");
+    }
+
     createImage(VK_FORMAT_R16G16B16A16_SFLOAT,
                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT,
@@ -387,11 +465,18 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     waterMaskImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     createImage(VK_FORMAT_D32_SFLOAT,
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                 VK_IMAGE_ASPECT_DEPTH_BIT,
                 waterGeomDepthImage, waterGeomDepthMemory, waterGeomDepthImageView);
     waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     fprintf(stderr, "[WaterRenderer] waterGeomDepthImage = %p\n", (void*)waterGeomDepthImage);
+
+    // Back-face depth image (samplable depth for water volume thickness)
+    createImage(VK_FORMAT_D32_SFLOAT,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT,
+                backFaceDepthImage, backFaceDepthMemory, backFaceDepthImageView);
+    backFaceDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     // Transition all images to their required layouts
     auto transitionImageLayout = [&](VkImage image, VkImageLayout& currentLayout, VkImageLayout newLayout, VkImageAspectFlags aspect) {
@@ -447,6 +532,25 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     transitionImageLayout(waterNormalImage, waterNormalImageLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
     transitionImageLayout(waterMaskImage, waterMaskImageLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
     transitionImageLayout(waterGeomDepthImage, waterGeomDepthImageLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+    transitionImageLayout(backFaceDepthImage, backFaceDepthImageLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    // Create per-frame back-face depth framebuffers
+    for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
+        VkImageView bfAttachments[1] = { backFaceDepthImageView };
+        VkFramebufferCreateInfo bfFbInfo{};
+        bfFbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        bfFbInfo.renderPass = backFaceRenderPass;
+        bfFbInfo.attachmentCount = 1;
+        bfFbInfo.pAttachments = bfAttachments;
+        bfFbInfo.width = width;
+        bfFbInfo.height = height;
+        bfFbInfo.layers = 1;
+
+        if (vkCreateFramebuffer(device, &bfFbInfo, nullptr, &backFaceFramebuffers[frameIdx]) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create back-face depth framebuffer!");
+        }
+        app->resources.addFramebuffer(backFaceFramebuffers[frameIdx], "WaterRenderer: backFaceFramebuffer");
+    }
 
     // Create per-frame water framebuffers using the dedicated water geometry depth buffer
     for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
@@ -531,6 +635,11 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
     waterGeomDepthMemory = VK_NULL_HANDLE;
     waterGeomDepthImageView = VK_NULL_HANDLE;
 
+    backFaceDepthImage = VK_NULL_HANDLE;
+    backFaceDepthMemory = VK_NULL_HANDLE;
+    backFaceDepthImageView = VK_NULL_HANDLE;
+    for (int i = 0; i < 2; ++i) { backFaceFramebuffers[i] = VK_NULL_HANDLE; }
+
     // Reset descriptor pool to free descriptor sets (safe to reset even if pending)
     if (waterDepthDescriptorPool != VK_NULL_HANDLE) {
         vkResetDescriptorPool(device, waterDepthDescriptorPool, 0);
@@ -560,7 +669,8 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     // Binding 0: Scene color texture
     // Binding 1: Scene depth texture
     // Binding 2: Sky color texture
-    std::array<VkDescriptorSetLayoutBinding, 3> sceneBindings{};
+    // Binding 3: Water back-face depth texture (for volume thickness)
+    std::array<VkDescriptorSetLayoutBinding, 4> sceneBindings{};
     
     // Scene color (binding 0)
     sceneBindings[0].binding = 0;
@@ -582,6 +692,13 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     sceneBindings[2].descriptorCount = 1;
     sceneBindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     sceneBindings[2].pImmutableSamplers = nullptr;
+
+    // Water back-face depth (binding 3) — for water volume thickness
+    sceneBindings[3].binding = 3;
+    sceneBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sceneBindings[3].descriptorCount = 1;
+    sceneBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[3].pImmutableSamplers = nullptr;
     
     VkDescriptorSetLayoutCreateInfo depthLayoutInfo{};
     depthLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -597,7 +714,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     // Create descriptor pool for scene textures (color + depth), 2 sets for 2 frames
     VkDescriptorPoolSize depthPoolSize{};
     depthPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    depthPoolSize.descriptorCount = 6;  // (color + depth + sky) * 2 frames
+    depthPoolSize.descriptorCount = 8;  // (color + depth + sky + backfaceDepth) * 2 frames
     
     VkDescriptorPoolCreateInfo depthPoolInfo{};
     depthPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -807,6 +924,98 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     fragModule = VK_NULL_HANDLE;
     if (tescModule) tescModule = VK_NULL_HANDLE;
     if (teseModule) teseModule = VK_NULL_HANDLE;
+
+    // --- Create back-face depth-only pipeline ---
+    // Same vertex + tessellation shaders, minimal fragment shader, front-face culling.
+    if (backFaceRenderPass != VK_NULL_HANDLE && waterGeometryPipelineLayout != VK_NULL_HANDLE) {
+        auto bfVertCode = FileReader::readFile("shaders/water.vert.spv");
+        auto bfTescCode = FileReader::readFile("shaders/water.tesc.spv");
+        auto bfTeseCode = FileReader::readFile("shaders/water.tese.spv");
+        auto bfFragCode = FileReader::readFile("shaders/water_backface.frag.spv");
+
+        if (!bfVertCode.empty() && !bfFragCode.empty()) {
+            VkShaderModule bfVert = app->createShaderModule(bfVertCode);
+            VkShaderModule bfFrag = app->createShaderModule(bfFragCode);
+            VkShaderModule bfTesc = VK_NULL_HANDLE;
+            VkShaderModule bfTese = VK_NULL_HANDLE;
+
+            bool bfHasTess = !bfTescCode.empty() && !bfTeseCode.empty();
+            if (bfHasTess) {
+                bfTesc = app->createShaderModule(bfTescCode);
+                bfTese = app->createShaderModule(bfTeseCode);
+            }
+
+            std::vector<VkPipelineShaderStageCreateInfo> bfStages;
+            VkPipelineShaderStageCreateInfo vs{};
+            vs.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            vs.stage = VK_SHADER_STAGE_VERTEX_BIT;
+            vs.module = bfVert;
+            vs.pName = "main";
+            bfStages.push_back(vs);
+
+            if (bfHasTess) {
+                VkPipelineShaderStageCreateInfo tc{};
+                tc.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                tc.stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+                tc.module = bfTesc;
+                tc.pName = "main";
+                bfStages.push_back(tc);
+
+                VkPipelineShaderStageCreateInfo te{};
+                te.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                te.stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+                te.module = bfTese;
+                te.pName = "main";
+                bfStages.push_back(te);
+            }
+
+            VkPipelineShaderStageCreateInfo fs{};
+            fs.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            fs.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+            fs.module = bfFrag;
+            fs.pName = "main";
+            bfStages.push_back(fs);
+
+            // Reuse vertex input, input assembly, viewport, dynamic state from above
+            VkPipelineRasterizationStateCreateInfo bfRasterizer{};
+            bfRasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+            bfRasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+            bfRasterizer.lineWidth = 1.0f;
+            bfRasterizer.cullMode = VK_CULL_MODE_FRONT_BIT;  // cull front faces → render back faces
+            bfRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+
+            // No color attachments in back-face render pass
+            VkPipelineColorBlendStateCreateInfo bfBlend{};
+            bfBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+            bfBlend.attachmentCount = 0;
+            bfBlend.pAttachments = nullptr;
+
+            VkGraphicsPipelineCreateInfo bfPipeInfo{};
+            bfPipeInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+            bfPipeInfo.stageCount = static_cast<uint32_t>(bfStages.size());
+            bfPipeInfo.pStages = bfStages.data();
+            bfPipeInfo.pVertexInputState = &vertexInputInfo;
+            bfPipeInfo.pInputAssemblyState = &inputAssembly;
+            bfPipeInfo.pViewportState = &viewportState;
+            bfPipeInfo.pDynamicState = &dynamicState;
+            bfPipeInfo.pRasterizationState = &bfRasterizer;
+            bfPipeInfo.pMultisampleState = &multisampling;
+            bfPipeInfo.pDepthStencilState = &depthStencil;
+            bfPipeInfo.pColorBlendState = &bfBlend;
+            bfPipeInfo.layout = waterGeometryPipelineLayout;
+            bfPipeInfo.renderPass = backFaceRenderPass;
+            bfPipeInfo.subpass = 0;
+            if (bfHasTess) bfPipeInfo.pTessellationState = &tessState;
+
+            if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &bfPipeInfo, nullptr, &backFacePipeline) != VK_SUCCESS) {
+                std::cerr << "[WaterRenderer] Warning: Failed to create back-face depth pipeline" << std::endl;
+                backFacePipeline = VK_NULL_HANDLE;
+            } else {
+                app->resources.addPipeline(backFacePipeline, "WaterRenderer: backFacePipeline");
+                std::cout << "[WaterRenderer] Created back-face depth pipeline" << std::endl;
+            }
+        }
+    }
 }
 
 void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex) {
@@ -865,7 +1074,7 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     VkImageView colorView = colorImageView;
     VkImageView depthView = depthImageView;
     
-    std::array<VkDescriptorImageInfo, 3> imageInfos{};
+    std::array<VkDescriptorImageInfo, 4> imageInfos{};
     
     // Scene color (binding 0)
     imageInfos[0].sampler = linearSampler;
@@ -881,8 +1090,13 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     imageInfos[2].sampler = linearSampler;
     imageInfos[2].imageView = (skyImageView != VK_NULL_HANDLE) ? skyImageView : colorView;  // fallback to scene color if no sky
     imageInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // Water back-face depth (binding 3) — will be in SHADER_READ_ONLY after back-face pass
+    imageInfos[3].sampler = linearSampler;
+    imageInfos[3].imageView = (backFaceDepthImageView != VK_NULL_HANDLE) ? backFaceDepthImageView : depthView;
+    imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     
-    std::array<VkWriteDescriptorSet, 3> writes{};
+    std::array<VkWriteDescriptorSet, 4> writes{};
     
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = waterDepthDescriptorSets[frameIndex];
@@ -908,6 +1122,14 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     writes[2].descriptorCount = 1;
     writes[2].pImageInfo = &imageInfos[2];
 
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = waterDepthDescriptorSets[frameIndex];
+    writes[3].dstBinding = 3;
+    writes[3].dstArrayElement = 0;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].descriptorCount = 1;
+    writes[3].pImageInfo = &imageInfos[3];
+
     vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
@@ -928,8 +1150,18 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
         gpu.shallowColor = glm::vec4(params.shallowColor, params.waveDepthTransition);
         gpu.deepColor = glm::vec4(params.deepColor, params.glitterIntensity);
         gpu.waveParams = glm::vec4(0.0f, 0.0f, params.bumpAmplitude, params.depthFalloff);
-        gpu.reserved1 = glm::vec4(0.0f);
-        gpu.reserved2 = glm::vec4(0.0f);
+        gpu.reserved1 = glm::vec4(
+            params.enableReflection ? 1.0f : 0.0f,
+            params.enableRefraction ? 1.0f : 0.0f,
+            params.enableBlur       ? 1.0f : 0.0f,
+            params.blurRadius
+        );
+        gpu.reserved2 = glm::vec4(
+            static_cast<float>(params.blurSamples),
+            params.volumeBlurRate,
+            params.volumeBumpRate,
+            0.0f
+        );
 
         void* data;
         vkMapMemory(app->getDevice(), waterParamsBuffer.memory, 0, sizeof(WaterParamsGPU), 0, &data);
@@ -955,6 +1187,64 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
         0, 1, &memBarrier, 0, nullptr, 0, nullptr);
 }
 
+void WaterRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex) {
+    if (!app || cmd == VK_NULL_HANDLE) return;
+    if (backFaceRenderPass == VK_NULL_HANDLE || backFacePipeline == VK_NULL_HANDLE) return;
+    if (backFaceFramebuffers[frameIndex] == VK_NULL_HANDLE) return;
+
+    // Begin back-face depth-only render pass
+    VkClearValue bfClear{};
+    bfClear.depthStencil = {1.0f, 0};
+
+    VkRenderPassBeginInfo bfRPInfo{};
+    bfRPInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    bfRPInfo.renderPass = backFaceRenderPass;
+    bfRPInfo.framebuffer = backFaceFramebuffers[frameIndex];
+    bfRPInfo.renderArea.offset = {0, 0};
+    bfRPInfo.renderArea.extent = {renderWidth, renderHeight};
+    bfRPInfo.clearValueCount = 1;
+    bfRPInfo.pClearValues = &bfClear;
+    vkCmdBeginRenderPass(cmd, &bfRPInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(renderWidth);
+    viewport.height = static_cast<float>(renderHeight);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = {renderWidth, renderHeight};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, backFacePipeline);
+
+    // Bind the same descriptor sets as the main water pass
+    VkDescriptorSet mainDs = app->getMainDescriptorSet();
+    if (mainDs != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
+    }
+    VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
+    if (materialDs != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
+    }
+    VkDescriptorSet sceneDs = waterDepthDescriptorSets[frameIndex];
+    if (sceneDs != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
+    }
+
+    // Draw the same water geometry (back faces only due to front-face culling)
+    waterIndirectRenderer.drawPrepared(cmd);
+
+    vkCmdEndRenderPass(cmd);
+    // Render pass finalLayout transitions back-face depth to SHADER_READ_ONLY_OPTIMAL
+}
+
 void WaterRenderer::postRenderBarrier(VkCommandBuffer cmd) {
     // The 0→EXTERNAL render pass dependency flushes color attachment writes,
     // but the swapchain render pass's EXTERNAL→0 dependency only covers
@@ -975,6 +1265,9 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
     if (!app || cmd == VK_NULL_HANDLE) return;
 
     prepareRender(app, cmd, frameIndex, sceneColorView, sceneDepthView, params, waterTime, skyView);
+
+    // Back-face depth pre-pass (reversed winding for water volume thickness)
+    renderBackFacePass(app, cmd, frameIndex);
 
     beginWaterGeometryPass(cmd, frameIndex);
 

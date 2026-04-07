@@ -134,7 +134,7 @@ void SolidRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     for (int i = 0; i < 2; ++i) {
         createImage(app->getSwapchainImageFormat(), VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
                     solidColorImages[i], solidColorMemories[i], solidColorImageViews[i]);
-        createImage(VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
+        createImage(VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
                     solidDepthImages[i], solidDepthMemories[i], solidDepthImageViews[i]);
 
         std::array<VkImageView, 2> attachmentsViews = {solidColorImageViews[i], solidDepthImageViews[i]};

@@ -205,6 +205,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
         // Wireframe path: use WaterRenderer for setup/pass management,
         // but bind the wireframe pipeline instead of the normal one.
         waterRenderer->prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, waterParams, waterTime, skyView);
+        waterRenderer->renderBackFacePass(app, commandBuffer, frameIdx);
         waterRenderer->beginWaterGeometryPass(commandBuffer, frameIdx);
 
         waterWireframe->draw(commandBuffer, app,

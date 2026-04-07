@@ -2130,6 +2130,9 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     // Register buffer and its memory so the VulkanResourceManager tracks them
     resources.addBuffer(buffer.buffer, "VulkanApp: buffer.buffer");
     resources.addDeviceMemory(buffer.memory, "VulkanApp: buffer.memory");
+    fprintf(stderr, "[VulkanApp::createBuffer] buffer=%p size=%zu usage=0x%08x mem=%p buffers=%zu memories=%zu\n",
+            (void*)buffer.buffer, (size_t)size, (unsigned)usage, (void*)buffer.memory,
+            resources.getBufferMap().size(), resources.getDeviceMemoryMap().size());
     return buffer;
 }
 
