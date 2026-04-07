@@ -57,6 +57,16 @@ struct WaterParams {
     // Volume depth-based effect transitions
     float volumeBlurRate = 0.004f;   // exponential rate: blur ramps with water thickness
     float volumeBumpRate = 0.05f;  // exponential rate: bump ramps with water thickness
+    // Caustics / light focusing parameters
+    glm::vec3 causticColor = glm::vec3(1.0f, 0.98f, 0.8f);
+    float causticIntensity = 1.5f;    // multiplier for caustic brightness
+    float causticScale = 0.5f;       // scale factor applied to Jacobian determinant
+    float causticPower = 1.0f;        // exponent to sharpen caustic contrast
+    // Depth scale (world units) controlling blend from surface->bottom caustic
+    float causticDepthScale = 4.0f;
+    // Line-shaped caustic tuning
+    float causticLineScale = 1.0f;    // multiplier for anisotropy -> line strength
+    float causticLineMix = 1.0f;      // 0=cloudy, 1=lines
 };
 
 // GPU-side water params UBO (matches shader WaterParamsUBO layout)
@@ -70,6 +80,9 @@ struct WaterParamsGPU {
     glm::vec4 reserved1;  // x=enableReflection, y=enableRefraction, z=enableBlur, w=blurRadius
     glm::vec4 reserved2;  // x=blurSamples, y=volumeBlurRate, z=volumeBumpRate, w=unused
     glm::vec4 reserved3;  // x=cube360Available(0/1), y=unused, z=unused, w=unused
+    glm::vec4 causticColor; // xyz = color, w = unused
+    glm::vec4 causticParams; // x=scale, y=intensity, z=power, w=unused
+    glm::vec4 causticExtraParams; // x=lineScale, y=lineMix, z/w = unused
 };
 
 // GPU-side water uniform buffer

@@ -671,6 +671,10 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     defaultWaterParams.reserved1 = glm::vec4(1.0f, 1.0f, 1.0f, 8.0f);
     defaultWaterParams.reserved2 = glm::vec4(4.0f, 0.004f, 0.05f, 0.0f);
     defaultWaterParams.reserved3 = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+    // Caustic defaults: subtle warm caustics
+    defaultWaterParams.causticColor = glm::vec4(1.0f, 0.98f, 0.8f, 0.0f);
+    defaultWaterParams.causticParams = glm::vec4(40.0f, 1.5f, 1.0f, 4.0f); // w = causticDepthScale
+    defaultWaterParams.causticExtraParams = glm::vec4(1.0f, 1.0f, 0.0f, 0.0f); // lineScale=1, lineMix=1 (lines)
     
     void* data;
     vkMapMemory(device, waterParamsBuffer.memory, 0, sizeof(WaterParamsGPU), 0, &data);
@@ -1195,6 +1199,9 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
             params.volumeBumpRate,
             params.uniformReflection ? 1.0f : 0.0f
         );
+        gpu.causticColor = glm::vec4(params.causticColor, 0.0f);
+        gpu.causticParams = glm::vec4(params.causticScale, params.causticIntensity, params.causticPower, params.causticDepthScale);
+        gpu.causticExtraParams = glm::vec4(params.causticLineScale, params.causticLineMix, 0.0f, 0.0f);
         // Indicate whether the solid 360 cubemap is available for sampling
         gpu.reserved3 = glm::vec4((cube360CubeView != VK_NULL_HANDLE) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 

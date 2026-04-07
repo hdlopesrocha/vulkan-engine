@@ -85,6 +85,24 @@ void WaterWidget::render() {
             ImGui::SetItemTooltip("Exponential rate for bump/wave amplitude increase with water thickness.\n"
                                   "0 = no depth-based bump modulation (full bump everywhere).\n"
                                   "Higher = bump reaches max faster with depth.");
+            // volume light accumulation removed; caustics preserved below
+        }
+
+        // Caustics (light focusing) settings
+        if (ImGui::CollapsingHeader("Caustics", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::ColorEdit3("Caustic Color", &params.causticColor.x);
+            ImGui::SliderFloat("Caustic Intensity", &params.causticIntensity, 0.0f, 10.0f);
+            ImGui::SetItemTooltip("Overall brightness multiplier for caustic highlights.");
+            ImGui::SliderFloat("Caustic Scale", &params.causticScale, 0.01f, 200.0f, "%.2f");
+            ImGui::SetItemTooltip("Scale factor applied to the computed Jacobian determinant when forming caustic brightness.");
+            ImGui::SliderFloat("Caustic Power", &params.causticPower, 0.1f, 4.0f, "%.2f");
+            ImGui::SetItemTooltip("Exponent to sharpen or soften caustic contrast.");
+            ImGui::SliderFloat("Caustic Depth Scale", &params.causticDepthScale, 0.1f, 50.0f, "%.2f");
+            ImGui::SetItemTooltip("World-space depth (units) over which caustic blending transitions\nfrom surface-focused to bottom-focused. Lower values make bottom-based caustics appear\nfor shallower water.");
+            ImGui::SliderFloat("Caustic Line Scale", &params.causticLineScale, 0.01f, 10.0f, "%.2f");
+            ImGui::SetItemTooltip("Multiplier applied to anisotropy to form thin caustic lines.\nHigher = thinner/more pronounced lines.");
+            ImGui::SliderFloat("Caustic Line Mix", &params.causticLineMix, 0.0f, 1.0f, "%.2f");
+            ImGui::SetItemTooltip("Blend between cloudy caustics (0.0) and line-shaped caustics (1.0).");
         }
 
         ImGui::Separator();

@@ -31,6 +31,9 @@ layout(set = 0, binding = 7) uniform WaterParamsUBO {
     vec4 reserved1;  // unused
     vec4 reserved2;  // unused
     vec4 reserved3;  // unused (x = cube360Available)
+    vec4 causticColor; // rgb = caustic tint, w = unused
+    vec4 causticParams; // x = scale, y = intensity, z = power, w = depthScale
+    vec4 causticExtraParams; // x = lineScale, y = lineMix, z/w = unused
 } waterParams;
 
 // Scene color and depth textures for refraction and edge foam (set 2)
@@ -105,6 +108,12 @@ void main() {
 
     // Modulate blur radius by volume thickness
     blurRadius *= volumeBlurFactor;
+    
+    // Caustic parameters
+    vec3 causticColor = waterParams.causticColor.rgb;
+    float causticScale = waterParams.causticParams.x;
+    float causticIntensity = waterParams.causticParams.y;
+    float causticPower = waterParams.causticParams.z;
     
     // Normal used for lighting:
     // Fall back to procedural normal only when tessellation path is inactive/invalid.
@@ -505,6 +514,107 @@ void main() {
 
     // Darken diffuse water color in shadow
     waterColor *= mix(1.0, 0.55, shadow);
+
+    // (Volume light accumulation removed — caustics only)
+
+    // === CAUSTICS / LIGHT FOCUSING ===
+    // Estimate local Jacobian of the refraction offset field by finite-difference
+    // along the surface tangent frame (T,B). Negative determinant indicates
+    // local focusing (area contraction) which produces brighter caustics.
+    // Compute incidence/angle and a simple depth-based ramp for caustic strength
+    // Incidence term for caustic modulation
+    float lightIncidenceCaust = max(dot(normal, lightDir), 0.0);
+    float angularCaust = (causticPower > 0.0) ? pow(lightIncidenceCaust, causticPower) : 1.0;
+
+    // Depth-based ramps: keep a small exponential ramp as an additional softening
+    float depthRampCaust = 1.0 - exp(-waterThickness * 0.02);
+
+    // Volume-aware caustics: evaluate the refraction noise Jacobian at both
+    // the front surface and at the back-face (bottom) and blend according
+    // to water thickness. This approximates how focusing changes through the
+    // water column and lets caustics appear where the volume causes stronger
+    // focusing on the bottom.
+    float causticDepthScale = waterParams.causticParams.w; // w = depth-scale (world units)
+    float depthInfluence = (causticDepthScale > 0.0) ? clamp(waterThickness / causticDepthScale, 0.0, 1.0) : 1.0;
+
+    // Front-surface Jacobian (same as before)
+    vec2 ref0 = waterRefractionNoise(fragPos.xyz, noiseScale, animTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+    vec2 refT = waterRefractionNoise(fragPos + eps * T, noiseScale, animTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+    vec2 refB = waterRefractionNoise(fragPos + eps * B, noiseScale, animTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+    vec2 ddT = (refT - ref0) / eps;
+    vec2 ddB = (refB - ref0) / eps;
+    float detJFront = ddT.x * ddB.y - ddT.y * ddB.x;
+    float trFront = ddT.x + ddB.y;
+    float anisFront = sqrt(max(trFront * trFront - 4.0 * detJFront, 0.0));
+
+    // Back-face (bottom) sampling: march along the view ray from the front
+    // position by the measured water thickness to approximate the bottom
+    // world position, then compute the Jacobian there.
+    vec3 rayDirWorld = normalize(fragPos - ubo.viewPos.xyz); // camera->fragment ray
+    vec3 backPos = fragPos + rayDirWorld * waterThickness;
+
+    vec2 ref0b = waterRefractionNoise(backPos.xyz, noiseScale, animTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+    vec2 refTb = waterRefractionNoise(backPos + eps * T, noiseScale, animTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+    vec2 refBb = waterRefractionNoise(backPos + eps * B, noiseScale, animTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+    vec2 ddTb = (refTb - ref0b) / eps;
+    vec2 ddBb = (refBb - ref0b) / eps;
+    float detJBack = ddTb.x * ddBb.y - ddTb.y * ddBb.x;
+    float trBack = ddTb.x + ddBb.y;
+    float anisBack = sqrt(max(trBack * trBack - 4.0 * detJBack, 0.0));
+
+    // Cloudy caustic measure (area contraction)
+    float caustFront = max(-detJFront * causticScale, 0.0);
+    float caustBack  = max(-detJBack  * causticScale, 0.0);
+    float cloudCombined = mix(caustFront, caustBack, depthInfluence);
+    float cloudFinal = pow(max(cloudCombined, 1e-6), causticPower);
+
+    // Line-shaped measure from anisotropy (difference of eigenvalues)
+    float lineScale = waterParams.causticExtraParams.x;
+    float lineMix = clamp(waterParams.causticExtraParams.y, 0.0, 1.0);
+    float lineFrontRaw = max(anisFront * causticScale * lineScale, 0.0);
+    float lineBackRaw  = max(anisBack  * causticScale * lineScale, 0.0);
+    float lineCombined = mix(lineFrontRaw, lineBackRaw, depthInfluence);
+    float lineFinal = pow(max(lineCombined, 1e-6), causticPower);
+
+    // Blend cloud vs line patterns, then apply intensity and modulations
+    float caustRaw = mix(cloudFinal, lineFinal, lineMix);
+    float caustic = caustRaw * causticIntensity * depthRampCaust * angularCaust * edgeFade * (1.0 - shadow);
+
+    // --- Debug visualizations for caustics ---
+    // 49: Area-contraction maps (R=front, G=back, B=blended)
+    // 50: Anisotropy maps (R=front, G=back, B=blended)
+    // 51: Cloud/Line components (R=cloud, G=line, B=pre-mix caustRaw)
+    // 52: Final caustic mask (post-modulation, clamped)
+    int dbgModeCaust = int(ubo.debugParams.x + 0.5);
+    if (dbgModeCaust == 49) {
+        vec3 maps = vec3(clamp(caustFront, 0.0, 1.0), clamp(caustBack, 0.0, 1.0), clamp(mix(caustFront, caustBack, depthInfluence), 0.0, 1.0));
+        outColor = vec4(maps, 1.0);
+        outNormal = vec4(normal, 0.0);
+        outMask = vec4(1.0);
+        return;
+    }
+    if (dbgModeCaust == 50) {
+        vec3 maps = vec3(clamp(lineFrontRaw, 0.0, 1.0), clamp(lineBackRaw, 0.0, 1.0), clamp(lineCombined, 0.0, 1.0));
+        outColor = vec4(maps, 1.0);
+        outNormal = vec4(normal, 0.0);
+        outMask = vec4(1.0);
+        return;
+    }
+    if (dbgModeCaust == 51) {
+        vec3 maps = vec3(clamp(cloudFinal, 0.0, 1.0), clamp(lineFinal, 0.0, 1.0), clamp(caustRaw, 0.0, 1.0));
+        outColor = vec4(maps, 1.0);
+        outNormal = vec4(normal, 0.0);
+        outMask = vec4(1.0);
+        return;
+    }
+    if (dbgModeCaust == 52) {
+        outColor = vec4(vec3(clamp(caustic, 0.0, 1.0)), 1.0);
+        outNormal = vec4(normal, 0.0);
+        outMask = vec4(1.0);
+        return;
+    }
+
+    waterColor += causticColor * caustic;
 
     // === FINAL OUTPUT ===
     float alpha = 1.0;
