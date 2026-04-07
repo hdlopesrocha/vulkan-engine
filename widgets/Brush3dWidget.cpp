@@ -57,19 +57,14 @@ void Brush3dWidget::render() {
 
     ImGui::Separator();
 
-    // Apply button triggers rebuild only when dirty
-    bool canApply = dirty;
-    if (!canApply) {
-        ImGui::BeginDisabled();
-    }
-    if (ImGui::Button("Apply Brush", ImVec2(-1, 30))) {
+    // Auto-rebuild when any brush parameter changes.
+    // Rebuild is triggered once per frame when `dirty` is set by
+    // individual controls (ImGui returns true on user interaction).
+    if (dirty) {
         if (rebuildCallback) {
             rebuildCallback();
         }
         dirty = false;
-    }
-    if (!canApply) {
-        ImGui::EndDisabled();
     }
 
     ImGui::End();
