@@ -11,7 +11,7 @@ class BillboardWidgetManager {
 public:
     BillboardWidgetManager(std::shared_ptr<BillboardWidget> widget,
                           VegetationRenderer* vegetationRenderer,
-                          std::vector<glm::vec3>* allCandidatePositions)
+                          const std::vector<glm::vec3>* allCandidatePositions)
         : widget(widget), vegetationRenderer(vegetationRenderer), allCandidatePositions(allCandidatePositions) {}
 
     void sync() {
@@ -29,5 +29,5 @@ public:
 private:
     std::shared_ptr<BillboardWidget> widget;
     VegetationRenderer* vegetationRenderer;
-    std::vector<glm::vec3>* allCandidatePositions;
+    const std::vector<glm::vec3>* allCandidatePositions;
 };
