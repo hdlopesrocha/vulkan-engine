@@ -820,8 +820,10 @@ void MyApp::setupVegetationTextures() {
     vegetationTextureArrayManager.allocate(3, 512, 512, this);
     vegetationAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
     billboardWidget = std::make_shared<BillboardWidget>();
-    billboardWidgetManager = std::make_unique<BillboardWidgetManager>(billboardWidget, sceneRenderer->vegetationRenderer.get() , nullptr);
+    billboardWidgetManager = std::make_unique<BillboardWidgetManager>(billboardWidget, sceneRenderer->vegetationRenderer.get() , &billboardManager.getBillboardPositions());
     billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureArrayManager);
+    // Provide VulkanApp to the creator so it can initialize GPU-backed preview textures
+    billboardCreator->setVulkanApp(this);
     
     // Load the vegetation atlas textures (albedo, normal, opacity) into the texture array
     std::vector<TextureTriple> vegTriples = {
