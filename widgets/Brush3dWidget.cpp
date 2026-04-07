@@ -1,7 +1,10 @@
 #include "Brush3dWidget.hpp"
 #include "../vulkan/TextureArrayManager.hpp"
+#include "../events/EventManager.hpp"
+#include "../events/RebuildBrushEvent.hpp"
 #include <imgui.h>
 #include <cstring>
+#include <memory>
 
 // Static label arrays for combo boxes
 const char* Brush3dWidget::sdfTypeNames[] = {
@@ -13,11 +16,12 @@ const char* Brush3dWidget::effectTypeNames[] = {
     "Perlin Distort", "Perlin Carve", "Sine Distort", "Voronoi Carve"
 };
 
-Brush3dWidget::Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, Brush3dManager& manager)
+Brush3dWidget::Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, Brush3dManager& manager, EventManager* eventManager)
         : Widget("Brush 3D"),
             manager(manager),
             textureArrayManager(texMgr),
-            loadedTextureLayers(loadedLayers)
+            loadedTextureLayers(loadedLayers),
+            eventManager(eventManager)
 {
 }
 
@@ -84,8 +88,8 @@ void Brush3dWidget::render() {
     // Rebuild is triggered once per frame when `dirty` is set by
     // individual controls (ImGui returns true on user interaction).
     if (dirty) {
-        if (rebuildCallback) {
-            rebuildCallback();
+        if (eventManager) {
+            eventManager->queue(std::make_shared<RebuildBrushEvent>());
         }
         dirty = false;
     }

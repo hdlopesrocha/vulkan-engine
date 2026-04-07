@@ -19,14 +19,13 @@ class LocalScene;
 
 class Brush3dWidget : public Widget {
 public:
-    using RebuildCallback = std::function<void()>;
 
     // Construct with a reference to a shared Brush3dManager (owned by caller)
-    Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, Brush3dManager& manager);
+    Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, Brush3dManager& manager, EventManager* eventManager);
 
     void render() override;
 
-    void setRebuildCallback(RebuildCallback cb) { rebuildCallback = cb; }
+    // Note: widget now publishes a `RebuildBrushEvent` via the provided EventManager
 
     const std::vector<BrushEntry>& getEntries() const { return manager.getEntries(); }
     bool isDirty() const { return dirty; }
@@ -41,7 +40,7 @@ private:
     TextureArrayManager* textureArrayManager;
     uint32_t loadedTextureLayers;
     bool dirty = false;
-    RebuildCallback rebuildCallback;
+    EventManager* eventManager = nullptr;
     // selected index is owned by the manager
 
     static const char* sdfTypeNames[];

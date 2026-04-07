@@ -810,14 +810,7 @@ void MyApp::setupScene() {
     brushManager.getEntries()[2].translate = glm::vec3(-512.0f, 1024.0f, 0.0f);
     brushManager.getEntries()[2].scale = glm::vec3(256.0f);
 
-    brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager);
-    // Defer the actual heavy rebuild until after the current frame is submitted
-    // to avoid blocking the frame record path (which can deadlock on fences).
-    // Instead of directly toggling a callback, publish a RebuildBrushEvent so
-    // the application's event handler can decide how to schedule the rebuild.
-    brush3dWidget->setRebuildCallback([this]() {
-        this->eventManager.queue(std::make_shared<RebuildBrushEvent>());
-    });
+    brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager, &eventManager);
     widgetManager.addWidget(brush3dWidget);
 }
 
