@@ -118,6 +118,11 @@ public:
     std::vector<MixerParameters> mixerParams;
     std::vector<MaterialProperties> materials;
     ShadowParams shadowParams;
+    // When user clicks "Apply Brush" from ImGui we defer the heavy rebuild
+    // until after the current frame is submitted to avoid waiting on fences
+    // while the frame is being recorded (causes deadlock). Set by UI,
+    // consumed in `postSubmit()`.
+    bool brushRebuildPending = false;
     size_t cubeCount = 0;
 
     // Camera and input
@@ -714,8 +719,10 @@ void MyApp::setupScene() {
 
     // Create Brush3dWidget and wire the rebuild callback
     brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers);
+    // Defer the actual heavy rebuild until after the current frame is submitted
+    // to avoid blocking the frame record path (which can deadlock on fences).
     brush3dWidget->setRebuildCallback([this]() {
-        rebuildBrushScene();
+        this->brushRebuildPending = true;
     });
     widgetManager.addWidget(brush3dWidget);
 }
@@ -946,6 +953,14 @@ void MyApp::postSubmit() {
     if (textureMixer) {
         textureMixer->flushPendingRequests(this);
         textureMixer->pollPendingGenerations(this);
+    }
+
+    // If a rebuild was requested from the UI (Apply Brush), perform it now
+    // after the frame was submitted so GPU fences can be waited on safely.
+    if (brushRebuildPending) {
+        brushRebuildPending = false;
+        fprintf(stderr, "[MyApp::postSubmit] Performing deferred brush rebuild\n");
+        rebuildBrushScene();
     }
 }
 
