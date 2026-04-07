@@ -237,8 +237,9 @@ public:
         if (renderPassDebugWidget) renderPassDebugWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
         renderTargetsWidget = std::make_shared<RenderTargetsWidget>(
+            this,
             sceneRenderer->waterRenderer.get(), sceneRenderer->solidRenderer.get(), sceneRenderer->skyRenderer.get(),
-            sceneRenderer->shadowMapper.get());
+            sceneRenderer->shadowMapper.get(), &shadowParams);
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
