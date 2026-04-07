@@ -154,7 +154,20 @@ void SettingsWidget::render() {
             "Water Scene Color (raw sample)",
             "Water Screen UV",
             "Water Noise",
-            "Water Displaced Normal"
+            "Water Displaced Normal",
+            // Water reflection sampling debug modes (37..42)
+            "Reflection Vector (visualize)",
+            "Water Reflection UV",
+            "Water Sky Sample (equirect)",
+            "Water Sky Sample (flip X)",
+            "Water Sky Sample (flip Y)",
+            "Water Sky Sample (alt mapping)",
+            "Water Sky Sample (swap X/Z - 1)",
+            "Water Sky Sample (swap X/Z - 2)",
+            "Water Sky Sample (negate Z)",
+            "Water Sky Sample (UV rotate CW)",
+            "Water Sky Sample (UV rotate CCW)",
+            "Water Sky Sample (invert UV)"
         };
         int current = settings.debugMode;
         if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {

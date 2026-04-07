@@ -45,6 +45,8 @@ RenderTargetsWidget::~RenderTargetsWidget() {
     removeOwnedDesc(waterColorDescriptor, waterColorDescriptorOwned);
     removeOwnedDesc(solidDepthDescriptor, solidDepthDescriptorOwned);
     removeOwnedDesc(solid360Descriptor, solid360DescriptorOwned);
+    removeOwnedDesc(cube360Descriptor, cube360DescriptorOwned);
+    for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
     removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
 }
@@ -76,6 +78,8 @@ void RenderTargetsWidget::cleanup() {
     removeOwnedDesc(waterColorDescriptor, waterColorDescriptorOwned);
     removeOwnedDesc(solidDepthDescriptor, solidDepthDescriptorOwned);
     removeOwnedDesc(solid360Descriptor, solid360DescriptorOwned);
+    removeOwnedDesc(cube360Descriptor, cube360DescriptorOwned);
+    for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
     removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
     removeOwnedDesc(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
@@ -395,6 +399,23 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         solid360Descriptor = ImGui_ImplVulkan_AddTexture(
             sampler, solid360View, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         solid360DescriptorOwned = true;
+    }
+
+    // Solid 360° cubemap reflection (cube view) - for orientation debugging
+    VkImageView cube360View = waterRenderer->getCube360View();
+    if (cube360View != VK_NULL_HANDLE && cube360Descriptor == VK_NULL_HANDLE) {
+        cube360Descriptor = ImGui_ImplVulkan_AddTexture(
+            sampler, cube360View, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        cube360DescriptorOwned = true;
+    }
+
+    // Per-face cube descriptors for detailed orientation inspection
+    for (uint32_t f = 0; f < 6; ++f) {
+        VkImageView faceView = waterRenderer->getCube360FaceView(f);
+        if (faceView != VK_NULL_HANDLE && cube360FaceDescriptor[f] == VK_NULL_HANDLE) {
+            cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(sampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            cube360FaceDescriptorOwned[f] = true;
+        }
     }
 
     // Water color (first attachment of water geometry pass — R32G32B32A32_SFLOAT worldPos)
@@ -810,6 +831,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     switch (selectedPreview) {
         case PreviewTarget::Sky: previewDescriptor = skyDescriptor; break;
         case PreviewTarget::Solid360: previewDescriptor = solid360Descriptor; break;
+        case PreviewTarget::Solid360Cube: previewDescriptor = cube360Descriptor; break;
         case PreviewTarget::SolidColor: previewDescriptor = solidColorDescriptor; break;
         // Prefer the GPU-linearized scene depth if available, otherwise fall back to raw depth view
         case PreviewTarget::SolidDepth:
@@ -881,6 +903,7 @@ void RenderTargetsWidget::render() {
     };
     rb("Sky", PreviewTarget::Sky); ImGui::NextColumn();
     rb("Solid 360", PreviewTarget::Solid360); ImGui::NextColumn();
+    rb("Solid 360 Cube", PreviewTarget::Solid360Cube); ImGui::NextColumn();
     rb("Solid Color", PreviewTarget::SolidColor); ImGui::NextColumn();
     rb("Solid Depth", PreviewTarget::SolidDepth); ImGui::NextColumn();
     rb("Water WorldPos", PreviewTarget::WaterWorldPos); ImGui::NextColumn();
@@ -922,6 +945,7 @@ void RenderTargetsWidget::render() {
     switch (selectedPreview) {
         case PreviewTarget::Sky: label = "Sky (Equirectangular)"; imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); break;
         case PreviewTarget::Solid360: label = "Solid 360 (Reflection)"; imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); break;
+        case PreviewTarget::Solid360Cube: label = "Solid 360 (Cube)"; imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); break;
         case PreviewTarget::SolidColor: label = "Solid (Scene Color)"; break;
         case PreviewTarget::SolidDepth: label = "Solid (Depth Buffer)"; break;
         case PreviewTarget::WaterWorldPos: label = "Water (World Pos)"; break;
@@ -938,6 +962,25 @@ void RenderTargetsWidget::render() {
     ImGui::TextUnformatted(label);
     if (available) ImGui::Image((ImTextureID)ds, imgSize); else ImGui::Text("Preview unavailable");
     ImGui::Separator();
+
+    // When showing the cubemap preview, also show individual faces for debugging
+    if (selectedPreview == PreviewTarget::Solid360Cube) {
+        ImGui::Text("Cube faces (+X -X +Y -Y +Z -Z)");
+        ImGui::Columns(3, "cube_faces_cols", false);
+        const char* faceLabels[6] = {"+X", "-X", "+Y", "-Y", "+Z", "-Z"};
+        float thumbSize = PREVIEW_WIDTH / 3.0f;
+        for (int i = 0; i < 6; ++i) {
+            if (cube360FaceDescriptor[i] != VK_NULL_HANDLE) {
+                ImGui::Image((ImTextureID)cube360FaceDescriptor[i], ImVec2(thumbSize, thumbSize));
+            } else {
+                ImGui::Text("(missing)");
+            }
+            ImGui::TextUnformatted(faceLabels[i]);
+            ImGui::NextColumn();
+        }
+        ImGui::Columns(1);
+        ImGui::Separator();
+    }
 
     // Optionally show all cascades (in selected shadow view mode)
     // Only show the full cascade grid when the shadow cascade preview is selected.

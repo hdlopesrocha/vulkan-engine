@@ -198,7 +198,7 @@ void TextureViewer::render() {
             if (mat.mappingMode) {
                 int tess = static_cast<int>(mat.tessLevel + 0.5f);
                 if (ImGui::SliderInt("Tessellation Level", &tess, 1, 64)) { mat.tessLevel = static_cast<float>(tess); dirty = true; }
-                if (ImGui::SliderFloat("Tess Height Scale", &mat.tessHeightScale, 0.0f, 1.0f, "%.3f")) dirty = true;
+                if (ImGui::SliderFloat("Tess Height Scale", &mat.tessHeightScale, 0.0f, 64.0f, "%.3f")) dirty = true;
             }
 
             if (dirty && onMaterialChanged) onMaterialChanged(currentIndex);
