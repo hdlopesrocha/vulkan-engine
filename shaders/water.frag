@@ -8,6 +8,8 @@ layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec2 fragTexCoord;
 layout(location = 3) in vec4 fragPosClip;  // clip-space position for scene sampling
 layout(location = 4) in vec3 fragDebug;   // debug visual (displacement)
+layout(location = 5) in vec3 fragPosWorld;  // world-space position for shadow cascades
+layout(location = 6) in vec4 fragPosLightSpace; // light-space pos (cascade 0)
 
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal;
@@ -15,6 +17,8 @@ layout(location = 2) out vec4 outMask;
 
 // Use the same UBO as main shader
 #include "includes/ubo.glsl"
+#include "includes/textures.glsl"
+#include "includes/shadows.glsl"
 
 // Water-specific parameters (set 0, binding 7)
 layout(set = 0, binding = 7) uniform WaterParamsUBO {
@@ -32,6 +36,7 @@ layout(set = 0, binding = 7) uniform WaterParamsUBO {
 layout(set = 2, binding = 0) uniform sampler2D sceneColorTex;
 layout(set = 2, binding = 1) uniform sampler2D sceneDepthTex;
 layout(set = 2, binding = 2) uniform sampler2D sceneSkyTex;
+layout(set = 2, binding = 3) uniform sampler2D waterBackDepthTex;  // back-face depth for volume thickness
 
 // Near/far planes for linearizing depth – read from UBO passParams (z = near, w = far)
 // so they always match the glm::perspective call on the CPU side.
@@ -68,8 +73,36 @@ void main() {
     float specularPowerParam = waterParams.params3.w;
     float glitterIntensity = waterParams.deepColor.w;
 
+    // Feature toggles and blur parameters
+    bool enableReflection = waterParams.reserved1.x > 0.5;
+    bool enableRefraction = waterParams.reserved1.y > 0.5;
+    bool enableBlur       = waterParams.reserved1.z > 0.5;
+    float blurRadius      = waterParams.reserved1.w;
+    int   blurSamples     = max(int(waterParams.reserved2.x), 1);
+    float volumeBlurRate  = waterParams.reserved2.y;
+    float volumeBumpRate  = waterParams.reserved2.z;
+
     // Apply noise time speed
     float animTime = time * noiseTimeSpeed;
+
+    // === WATER VOLUME THICKNESS ===
+    // Compute volume thickness from back-face depth (rendered with reversed winding)
+    // before the normal computation, so we can modulate bump amplitude.
+    vec2 earlyScreenUV0 = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
+    float backFaceDepthRaw = texture(waterBackDepthTex, earlyScreenUV0).r;
+    float frontFaceLinear  = linearizeDepth(gl_FragCoord.z);
+    float backFaceLinear   = linearizeDepth(backFaceDepthRaw);
+    // Clamp to scene depth so thickness doesn't extend beyond solid ground
+    float sceneDepthEarly  = linearizeDepth(texture(sceneDepthTex, earlyScreenUV0).r);
+    float effectiveBack    = min(backFaceLinear, sceneDepthEarly);
+    float waterThickness   = max(effectiveBack - frontFaceLinear, 0.0);
+
+    // Depth-based modulation factors (exponential ramp)
+    float volumeBlurFactor = (volumeBlurRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBlurRate)) : 1.0;
+    float volumeBumpFactor = (volumeBumpRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBumpRate)) : 1.0;
+
+    // Modulate blur radius by volume thickness
+    blurRadius *= volumeBlurFactor;
     
     // Normal used for lighting:
     // Fall back to procedural normal only when tessellation path is inactive/invalid.
@@ -80,7 +113,8 @@ void main() {
     float eps = 0.5;
 
     // Same parameters the TES feeds into waterWaveDisplacement
-    float bAmp    = waterParams.waveParams.z;
+    // Modulate bump amplitude by volume thickness
+    float bAmp    = waterParams.waveParams.z * volumeBumpFactor;
 
     // Depth-based wave attenuation (must match the TES depth ramp so
     // the procedural normal is consistent with the displaced geometry).
@@ -182,7 +216,9 @@ void main() {
     );
     
     // Combine noise layers for complex refraction pattern
-    vec2 refractionOffset = refractionNoise * refractionStrength;
+    vec2 refractionOffset = enableRefraction
+        ? refractionNoise * refractionStrength
+        : vec2(0.0);
     
     // Reduce refraction at edges (to avoid sampling outside screen)
     float edgeFade = smoothstep(0.0, 0.1, screenUV.x) * smoothstep(1.0, 0.9, screenUV.x) *
@@ -193,7 +229,26 @@ void main() {
     vec2 refractedUV = screenUV + refractionOffset;
     refractedUV = clamp(refractedUV, 0.001, 0.999);  // Prevent edge artifacts
     
-    vec3 sceneColor = texture(sceneColorTex, refractedUV).rgb;
+    // === SCENE COLOR SAMPLING (optional PCF blur) ===
+    vec3 sceneColor;
+    if (enableBlur && blurSamples > 1) {
+        // PCF-style NxN box blur on the refracted scene color
+        vec2 texelSize = 1.0 / textureSize(sceneColorTex, 0);
+        vec3 colorAccum = vec3(0.0);
+        int halfK = blurSamples / 2;
+        float totalWeight = 0.0;
+        for (int bx = -halfK; bx <= halfK; ++bx) {
+            for (int by = -halfK; by <= halfK; ++by) {
+                vec2 offset = vec2(float(bx), float(by)) * texelSize * blurRadius;
+                vec2 sampleUV = clamp(refractedUV + offset, 0.001, 0.999);
+                colorAccum += texture(sceneColorTex, sampleUV).rgb;
+                totalWeight += 1.0;
+            }
+        }
+        sceneColor = colorAccum / totalWeight;
+    } else {
+        sceneColor = texture(sceneColorTex, refractedUV).rgb;
+    }
     float sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
 
     // === DEPTH-BASED EFFECTS ===
@@ -251,6 +306,18 @@ void main() {
     skyUV.x = atan(reflectDir.z, reflectDir.x) / (2.0 * PI) + 0.5;
     skyUV.y = acos(clamp(reflectDir.y, -1.0, 1.0)) / PI;
     vec3 skyColor = texture(sceneSkyTex, skyUV).rgb;
+
+    // === SHADOW ON WATER ===
+    float shadow = 0.0;
+    if (ubo.shadowEffects.w > 0.5) {
+        float NdotL = max(dot(normal, lightDir), 0.0);
+        if (NdotL > 0.01) {
+            float bias = max(0.002 * (1.0 - NdotL), 0.0005);
+            shadow = ShadowCalculation(fragPosLightSpace, bias);
+        } else {
+            shadow = 1.0;
+        }
+    }
     
     // === WATER COLOR COMPOSITION ===
     // Water tint colors from UBO
@@ -266,11 +333,19 @@ void main() {
     vec3 refractedColor = mix(sceneColor, waterTintColor, tintBlend);
     
     // Mix refracted color with reflection based on fresnel
-    vec3 waterColor = mix(refractedColor, skyColor, fresnel * reflectionStrength);
+    vec3 waterColor;
+    if (enableReflection) {
+        waterColor = mix(refractedColor, skyColor, fresnel * reflectionStrength);
+    } else {
+        waterColor = refractedColor;
+    }
     
-    // Add specular highlights
-    waterColor += specularColor;
-    
+    // Add specular highlights (suppressed in shadow)
+    waterColor += specularColor * (1.0 - shadow);
+
+    // Darken diffuse water color in shadow
+    waterColor *= mix(1.0, 0.55, shadow);
+
     // === FINAL OUTPUT ===
     float alpha = 1.0;
     outColor = vec4(waterColor, alpha);

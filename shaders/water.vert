@@ -12,6 +12,8 @@ layout(location = 0) out vec3 fragPos;
 layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec2 fragTexCoord;
 layout(location = 3) out vec4 fragPosClip;  // clip-space position for depth lookup
+layout(location = 5) out vec3 fragPosWorld;  // world-space position for shadow cascades
+layout(location = 6) out vec4 fragPosLightSpace; // light-space pos (cascade 0)
 
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 viewProjection;
@@ -25,12 +27,16 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     vec4 triplanarSettings;
     vec4 tessParams;   // x=nearDist, y=farDist, z=minLevel, w=maxLevel
     vec4 passParams;   // x=isShadowPass, y=tessEnabled, z=nearPlane, w=farPlane
+    mat4 lightSpaceMatrix1; // cascade 1
+    mat4 lightSpaceMatrix2; // cascade 2
 } ubo;
 
 void main() {
     fragPos = inPosition;
+    fragPosWorld = inPosition;
     fragNormal = inNormal;
     fragTexCoord = inTexCoord;
+    fragPosLightSpace = ubo.lightSpaceMatrix * vec4(inPosition, 1.0);
     
     vec4 clipPos = ubo.viewProjection * vec4(inPosition, 1.0);
     fragPosClip = clipPos;

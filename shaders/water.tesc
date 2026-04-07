@@ -24,6 +24,8 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     vec4 triplanarSettings;
     vec4 tessParams;   // x=nearDist, y=farDist, z=minLevel, w=maxLevel
     vec4 passParams;   // x=isShadowPass, y=tessEnabled, z=nearPlane, w=farPlane
+    mat4 lightSpaceMatrix1; // cascade 1
+    mat4 lightSpaceMatrix2; // cascade 2
 } ubo;
 
 void main() {

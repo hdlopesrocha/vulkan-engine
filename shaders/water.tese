@@ -14,6 +14,8 @@ layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec2 fragTexCoord;
 layout(location = 3) out vec4 fragPosClip;  // clip-space position for depth lookup
 layout(location = 4) out vec3 fragDebug;   // debug visual (displacement)
+layout(location = 5) out vec3 fragPosWorld;  // world-space position for shadow cascades
+layout(location = 6) out vec4 fragPosLightSpace; // light-space pos (cascade 0)
 
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 viewProjection;
@@ -27,6 +29,8 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     vec4 triplanarSettings;
     vec4 tessParams;   // x=nearDist, y=farDist, z=minLevel, w=maxLevel
     vec4 passParams;   // x=isShadowPass, y=tessEnabled, z=nearPlane, w=farPlane
+    mat4 lightSpaceMatrix1; // cascade 1
+    mat4 lightSpaceMatrix2; // cascade 2
 } ubo;
 
 // Water-specific parameters (set 0, binding = 7) - same layout as the post-process shader
@@ -160,6 +164,8 @@ void main() {
     fragDebug = vec3(normDisp);
     
     fragPos = pos;
+    fragPosWorld = pos;
+    fragPosLightSpace = ubo.lightSpaceMatrix * vec4(pos, 1.0);
     vec4 clipPos = ubo.viewProjection * vec4(pos, 1.0);
     fragPosClip = clipPos;
     gl_Position = clipPos;
