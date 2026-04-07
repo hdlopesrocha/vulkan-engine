@@ -3,9 +3,12 @@
 #include "../math/Camera.hpp"
 #include "TranslateCameraEvent.hpp"
 #include "RotateCameraEvent.hpp"
+#include "ToggleFullscreenEvent.hpp"
+#include "CloseWindowEvent.hpp"
 
 #include <GLFW/glfw3.h>
 #include <algorithm>
+#include <glm/gtc/constants.hpp>
 
 GamepadPublisher::GamepadPublisher(float moveSpeed_, float angularSpeedDeg_)
     : moveSpeed(moveSpeed_), angularSpeedDeg(angularSpeedDeg_) {}
@@ -13,11 +16,19 @@ GamepadPublisher::GamepadPublisher(float moveSpeed_, float angularSpeedDeg_)
 void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTime, bool flipRotation) {
     if (!em) return;
 
-    // Use GLFW gamepad API on joystick 1
-    if (!glfwJoystickIsGamepad(GLFW_JOYSTICK_1)) return;
+    // Ensure we have a valid gamepad to poll. If the configured joystickId
+    // isn't a gamepad, scan for the first available gamepad and use it.
+    if (!glfwJoystickIsGamepad(joystickId)) {
+        int found = -1;
+        for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST; ++jid) {
+            if (glfwJoystickIsGamepad(jid)) { found = jid; break; }
+        }
+        if (found == -1) return; // no gamepad connected
+        joystickId = found;
+    }
 
     GLFWgamepadstate state;
-    if (!glfwGetGamepadState(GLFW_JOYSTICK_1, &state)) return;
+    if (!glfwGetGamepadState(joystickId, &state)) return;
 
     // Read left stick (axes in [-1,1])
     float lx = state.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
@@ -27,7 +38,22 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     if (std::abs(lx) < deadzone) lx = 0.0f;
     if (std::abs(ly) < deadzone) ly = 0.0f;
 
-    float velocity = moveSpeed * deltaTime;
+    // Button-down toggles: START -> toggle fullscreen, BACK -> close window
+    bool startNow = (state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS);
+    if (startNow && !startPrev) {
+        em->publish(std::make_shared<ToggleFullscreenEvent>());
+    }
+    startPrev = startNow;
+
+    bool backNow = (state.buttons[GLFW_GAMEPAD_BUTTON_BACK] == GLFW_PRESS);
+    if (backNow && !backPrev) {
+        em->publish(std::make_shared<CloseWindowEvent>());
+    }
+    backPrev = backNow;
+
+    // Use Camera's configured speeds so gamepad feels like keyboard movement
+    float velocity = cam.speed * deltaTime;
+    float angDeg = glm::degrees(cam.angularSpeedRad) * deltaTime;
     float rotSign = flipRotation ? -1.0f : 1.0f;
 
     glm::vec3 right = cam.getRight();
@@ -38,7 +64,7 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     if (lx != 0.0f) {
         em->publish(std::make_shared<TranslateCameraEvent>(right * (lx * velocity)));
     }
-    // Left stick Y -> up/down. GLFW axis: up is -1, down is +1, so invert to make up positive
+    // Left stick Y -> up/down (up when stick up). GLFW axis: up is -1, down is +1 so invert to make up positive
     if (ly != 0.0f) {
         em->publish(std::make_shared<TranslateCameraEvent>(up * ((-ly) * velocity)));
     }
@@ -46,12 +72,12 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     // --- Bumpers: now used for roll rotation (swap with triggers) ---
     if (state.buttons[GLFW_GAMEPAD_BUTTON_LEFT_BUMPER] == GLFW_PRESS) {
         // roll left
-        float rollDeg = rotSign * (-angularSpeedDeg * deltaTime);
+        float rollDeg = rotSign * (-angDeg);
         em->publish(std::make_shared<RotateCameraEvent>(forward, rollDeg));
     }
     if (state.buttons[GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER] == GLFW_PRESS) {
         // roll right
-        float rollDeg = rotSign * (angularSpeedDeg * deltaTime);
+        float rollDeg = rotSign * (angDeg);
         em->publish(std::make_shared<RotateCameraEvent>(forward, rollDeg));
     }
 
@@ -63,9 +89,9 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
 
     // angular movement in degrees for this frame
     // Flip the right-stick mapping: invert both axes so the analog feels reversed
-    float yawDeg = rotSign * (-rx * angularSpeedDeg * deltaTime);
+    float yawDeg = rotSign * (-rx * angDeg);
     // invert vertical axis so pushing the stick up results in positive pitch change
-    float pitchDeg = rotSign * (-ry * angularSpeedDeg * deltaTime);
+    float pitchDeg = rotSign * (-ry * angDeg);
     if (yawDeg != 0.0f || pitchDeg != 0.0f) {
         em->publish(std::make_shared<RotateCameraEvent>(yawDeg, pitchDeg, 0.0f));
     }

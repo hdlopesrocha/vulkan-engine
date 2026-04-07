@@ -1,5 +1,6 @@
 #pragma once
 
+#include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 
 class EventManager;
@@ -26,8 +27,12 @@ public:
 private:
     float moveSpeed;
     float angularSpeedDeg; // degrees per second for right stick / triggers
-    int joystickId = 0; // GLFW_JOYSTICK_1 by default
+    int joystickId = GLFW_JOYSTICK_1; // current joystick id to poll (defaults to GLFW_JOYSTICK_1)
 
     // deadzone for thumbstick
     const float deadzone = 0.15f;
+
+    // track toggled buttons to detect button-down events for single-action buttons
+    bool startPrev = false;
+    bool backPrev = false;
 };

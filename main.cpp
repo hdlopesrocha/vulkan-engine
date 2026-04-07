@@ -26,7 +26,6 @@
 #include "widgets/SkyWidget.hpp"
 #include "widgets/SkySettings.hpp"
 #include "widgets/WaterWidget.hpp"
-#include "widgets/RenderPassDebugWidget.hpp"
 #include "widgets/RenderTargetsWidget.hpp"
 #include "widgets/BillboardWidget.hpp"
 #include "widgets/BillboardCreator.hpp"
@@ -34,6 +33,7 @@
 #include "widgets/TextureViewerWidget.hpp"
 #include "widgets/CameraWidget.hpp"
 #include "widgets/DebugWidget.hpp"
+#include "widgets/GamepadWidget.hpp"
 #include "widgets/ShadowMapWidget.hpp"
 #include "widgets/LightWidget.hpp"
 #include "widgets/VulkanResourcesManagerWidget.hpp"
@@ -49,6 +49,7 @@
 #include "math/Light.hpp"
 #include "events/EventManager.hpp"
 #include "events/KeyboardPublisher.hpp"
+#include "events/GamepadPublisher.hpp"
 #include "events/CloseWindowEvent.hpp"
 #include "events/ToggleFullscreenEvent.hpp"
 #include "vulkan/TextureArrayManager.hpp"
@@ -85,7 +86,6 @@ public:
     std::shared_ptr<SettingsWidget> settingsWidget;
     std::shared_ptr<SkyWidget> skyWidget;
     std::shared_ptr<WaterWidget> waterWidget;
-    std::shared_ptr<RenderPassDebugWidget> renderPassDebugWidget;
     std::shared_ptr<RenderTargetsWidget> renderTargetsWidget;
     std::shared_ptr<BillboardWidget> billboardWidget;
     std::shared_ptr<BillboardCreator> billboardCreator;
@@ -95,6 +95,7 @@ public:
     bool mixerWidgetPendingAdd = false;
     std::shared_ptr<TextureViewer> textureViewer;
     std::shared_ptr<CameraWidget> cameraWidget;
+    std::shared_ptr<GamepadWidget> gamepadWidget;
     std::shared_ptr<DebugWidget> debugWidget;
     std::shared_ptr<ShadowMapWidget> shadowWidget;
     std::shared_ptr<LightWidget> lightWidget;
@@ -130,6 +131,7 @@ public:
     Light light = Light(glm::vec3(0.0f, -1.0f, 0.0f));
     EventManager eventManager;
     KeyboardPublisher keyboardPublisher;
+    GamepadPublisher gamepadPublisher;
     bool sceneLoading = false;
 
     // setupTextures (defined out-of-line to avoid inline/member-definition issues)
@@ -237,9 +239,6 @@ public:
         settingsWidget = std::make_shared<SettingsWidget>(settings);
         // Inform SceneRenderer about the MaterialManager
         waterWidget = std::make_shared<WaterWidget>(sceneRenderer->waterRenderer.get());
-        renderPassDebugWidget = std::make_shared<RenderPassDebugWidget>(sceneRenderer->waterRenderer.get() , sceneRenderer->solidRenderer.get());
-        // Initialize widget frame info from MyApp (avoid storing VulkanApp* inside widget)
-        if (renderPassDebugWidget) renderPassDebugWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
         renderTargetsWidget = std::make_shared<RenderTargetsWidget>(
             this,
@@ -248,6 +247,7 @@ public:
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
+        gamepadWidget = std::make_shared<GamepadWidget>();
         debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &cubeCount);
         shadowWidget = std::make_shared<ShadowMapWidget>(sceneRenderer->shadowMapper.get(), &shadowParams);
         lightWidget = std::make_shared<LightWidget>(&light);
@@ -258,13 +258,13 @@ public:
  
         widgetManager.addWidget(textureViewer);
         widgetManager.addWidget(cameraWidget);
+        widgetManager.addWidget(gamepadWidget);
         widgetManager.addWidget(debugWidget);
         widgetManager.addWidget(shadowWidget);
         widgetManager.addWidget(settingsWidget);
         widgetManager.addWidget(lightWidget);
         widgetManager.addWidget(skyWidget);
         widgetManager.addWidget(waterWidget);
-        widgetManager.addWidget(renderPassDebugWidget);
         widgetManager.addWidget(renderTargetsWidget);
         widgetManager.addWidget(vulkanResourcesManagerWidget);
         widgetManager.addWidget(vegetationAtlasEditor);
@@ -306,6 +306,8 @@ public:
     void update(float deltaTime) override {
         // Poll keyboard input and publish events
         keyboardPublisher.update(getWindow(), &eventManager, camera, deltaTime, false);
+        // Poll gamepad input and publish events (if a controller is connected)
+        gamepadPublisher.update(&eventManager, camera, deltaTime, false);
         eventManager.processQueued();
 
         shadowParams.update(camera.getPosition(), light);
@@ -569,6 +571,35 @@ public:
 
                 ImGui::End();
             }
+
+            // Small top-right overlay under the main menu bar showing gamepad connection
+            {
+                ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+                ImGui::SetNextWindowBgAlpha(0.35f);
+                float padding = 10.0f;
+                float y = ImGui::GetFrameHeight() + 6.0f; // position just under the main menu bar
+                ImVec2 disp = ImGui::GetIO().DisplaySize;
+                // anchor by top-right using pivot (1,0)
+                ImGui::SetNextWindowPos(ImVec2(disp.x - padding, y), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+
+                ImGui::Begin("GamepadOverlay", nullptr, flags);
+                bool gamepadConnected = false;
+                for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST; ++jid) {
+                    if (glfwJoystickIsGamepad(jid)) { gamepadConnected = true; break; }
+                }
+
+                ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                ImVec2 cursor = ImGui::GetCursorScreenPos();
+                float iconSize = ImGui::GetFrameHeight() * 0.6f;
+                ImVec2 center = ImVec2(cursor.x + iconSize * 0.5f, cursor.y + iconSize * 0.5f);
+                ImU32 color = gamepadConnected ? IM_COL32(40,200,40,255) : IM_COL32(200,40,40,255);
+                draw_list->AddCircleFilled(center, iconSize * 0.4f, color);
+                ImGui::Dummy(ImVec2(iconSize, iconSize));
+                ImGui::SameLine();
+                ImGui::Text("%s", gamepadConnected ? "Gamepad" : "No Gamepad");
+                if (ImGui::IsItemHovered() || ImGui::IsWindowHovered()) ImGui::SetTooltip("Gamepad %s", gamepadConnected ? "connected" : "not connected");
+                ImGui::End();
+            }
         }
 
         if (imguiShowDemo) ImGui::ShowDemoWindow(&imguiShowDemo);
@@ -576,7 +607,6 @@ public:
         cubeCount = sceneRenderer ? sceneRenderer->getRegisteredModelCount() : 0;
 
         // Update per-frame widget state (avoid storing VulkanApp* inside widgets)
-        if (renderPassDebugWidget) renderPassDebugWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
         if (vulkanResourcesManagerWidget) vulkanResourcesManagerWidget->updateWithApp(this);
 
