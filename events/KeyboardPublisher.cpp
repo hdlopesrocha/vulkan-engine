@@ -74,7 +74,7 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) be->yaw -= (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime;
             }
-        } else if (cp) {
+        } else if (cp && cp->currentPage != ControllerParameters::CAMERA) {
             if (brushManager) {
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) be->translate -= right * (cp->cameraMoveSpeed * deltaTime);
@@ -94,7 +94,7 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) be->yaw += (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime;
             }
-        } else if (cp) {
+        } else if (cp && cp->currentPage != ControllerParameters::CAMERA) {
             if (brushManager) {
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) be->translate += right * (cp->cameraMoveSpeed * deltaTime);
@@ -114,7 +114,7 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) be->roll += (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime;
             }
-        } else if (cp) {
+        } else if (cp && cp->currentPage != ControllerParameters::CAMERA) {
             if (brushManager) {
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) be->translate += up * (cp->cameraMoveSpeed * deltaTime);
@@ -134,7 +134,7 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) be->roll -= (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime;
             }
-        } else if (cp) {
+        } else if (cp && cp->currentPage != ControllerParameters::CAMERA) {
             if (brushManager) {
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) be->translate -= up * (cp->cameraMoveSpeed * deltaTime);
