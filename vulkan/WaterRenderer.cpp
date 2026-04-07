@@ -9,11 +9,11 @@
 // Global image layout tracking for WaterRenderer render targets
 static VkImageLayout sceneColorImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
 static VkImageLayout sceneDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
-static VkImageLayout waterDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-static VkImageLayout waterNormalImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-static VkImageLayout waterMaskImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-static VkImageLayout waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-static VkImageLayout backFaceDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+static VkImageLayout waterDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+static VkImageLayout waterNormalImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+static VkImageLayout waterMaskImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+static VkImageLayout waterGeomDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+static VkImageLayout backFaceDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
 
 WaterRenderer::WaterRenderer() {}
 
@@ -381,11 +381,13 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     sceneColorImageLayouts[1] = VK_IMAGE_LAYOUT_UNDEFINED;
     sceneDepthImageLayouts[0] = VK_IMAGE_LAYOUT_UNDEFINED;
     sceneDepthImageLayouts[1] = VK_IMAGE_LAYOUT_UNDEFINED;
-    waterDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    waterNormalImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    waterMaskImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    backFaceDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    for (int i = 0; i < 2; ++i) {
+        waterDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        waterNormalImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        waterMaskImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        waterGeomDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
 
     // Create per-frame scene offscreen render targets (2 sets for 2 frames in flight)
     for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
@@ -423,18 +425,18 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         app->resources.addFramebuffer(sceneFramebuffers[frameIdx], "WaterRenderer: sceneFramebuffer");
     }
 
-    createImage(VK_FORMAT_R32G32B32A32_SFLOAT, 
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                waterDepthImage, waterDepthMemory, waterDepthImageView);
-    waterDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
+        createImage(VK_FORMAT_R32G32B32A32_SFLOAT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    waterDepthImages[frameIdx], waterDepthMemories[frameIdx], waterDepthImageViews[frameIdx]);
+        waterDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    // Create an alternate image view that swizzles the alpha (linear depth)
-    // into RGB channels so ImGui can display depth as a grayscale image.
-    {
+        // Create an alternate image view that swizzles the alpha (linear depth)
+        // into RGB channels so ImGui can display depth as a grayscale image.
         VkImageViewCreateInfo vw{};
         vw.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        vw.image = waterDepthImage;
+        vw.image = waterDepthImages[frameIdx];
         vw.viewType = VK_IMAGE_VIEW_TYPE_2D;
         vw.format = VK_FORMAT_R32G32B32A32_SFLOAT;
         vw.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -446,37 +448,37 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         vw.components.g = VK_COMPONENT_SWIZZLE_A;
         vw.components.b = VK_COMPONENT_SWIZZLE_A;
         vw.components.a = VK_COMPONENT_SWIZZLE_A;
-        if (vkCreateImageView(app->getDevice(), &vw, nullptr, &waterDepthAlphaImageView) != VK_SUCCESS) {
+        if (vkCreateImageView(app->getDevice(), &vw, nullptr, &waterDepthAlphaImageViews[frameIdx]) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create waterDepthAlphaImageView");
         }
-        app->resources.addImageView(waterDepthAlphaImageView, "WaterRenderer: waterDepthAlphaImageView");
+        app->resources.addImageView(waterDepthAlphaImageViews[frameIdx], "WaterRenderer: waterDepthAlphaImageView");
+
+        createImage(VK_FORMAT_R16G16B16A16_SFLOAT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    waterNormalImages[frameIdx], waterNormalMemories[frameIdx], waterNormalImageViews[frameIdx]);
+        waterNormalImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        createImage(VK_FORMAT_R8_UNORM,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    waterMaskImages[frameIdx], waterMaskMemories[frameIdx], waterMaskImageViews[frameIdx]);
+        waterMaskImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        createImage(VK_FORMAT_D32_SFLOAT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT,
+                    waterGeomDepthImages[frameIdx], waterGeomDepthMemories[frameIdx], waterGeomDepthImageViews[frameIdx]);
+        waterGeomDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
+        fprintf(stderr, "[WaterRenderer] waterGeomDepthImage[%d] = %p\n", frameIdx, (void*)waterGeomDepthImages[frameIdx]);
+
+        // Back-face depth image (samplable depth for water volume thickness)
+        createImage(VK_FORMAT_D32_SFLOAT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT,
+                    backFaceDepthImages[frameIdx], backFaceDepthMemories[frameIdx], backFaceDepthImageViews[frameIdx]);
+        backFaceDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
-
-    createImage(VK_FORMAT_R16G16B16A16_SFLOAT,
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                waterNormalImage, waterNormalMemory, waterNormalImageView);
-    waterNormalImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    createImage(VK_FORMAT_R8_UNORM,
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                waterMaskImage, waterMaskMemory, waterMaskImageView);
-    waterMaskImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    createImage(VK_FORMAT_D32_SFLOAT,
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                VK_IMAGE_ASPECT_DEPTH_BIT,
-                waterGeomDepthImage, waterGeomDepthMemory, waterGeomDepthImageView);
-    waterGeomDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    fprintf(stderr, "[WaterRenderer] waterGeomDepthImage = %p\n", (void*)waterGeomDepthImage);
-
-    // Back-face depth image (samplable depth for water volume thickness)
-    createImage(VK_FORMAT_D32_SFLOAT,
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                VK_IMAGE_ASPECT_DEPTH_BIT,
-                backFaceDepthImage, backFaceDepthMemory, backFaceDepthImageView);
-    backFaceDepthImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     // Transition all images to their required layouts
     auto transitionImageLayout = [&](VkImage image, VkImageLayout& currentLayout, VkImageLayout newLayout, VkImageAspectFlags aspect) {
@@ -528,15 +530,17 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         transitionImageLayout(sceneColorImages[frameIdx], sceneColorImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
         transitionImageLayout(sceneDepthImages[frameIdx], sceneDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
     }
-    transitionImageLayout(waterDepthImage, waterDepthImageLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
-    transitionImageLayout(waterNormalImage, waterNormalImageLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
-    transitionImageLayout(waterMaskImage, waterMaskImageLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
-    transitionImageLayout(waterGeomDepthImage, waterGeomDepthImageLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
-    transitionImageLayout(backFaceDepthImage, backFaceDepthImageLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+    for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
+        transitionImageLayout(waterDepthImages[frameIdx], waterDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+        transitionImageLayout(waterNormalImages[frameIdx], waterNormalImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+        transitionImageLayout(waterMaskImages[frameIdx], waterMaskImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+        transitionImageLayout(waterGeomDepthImages[frameIdx], waterGeomDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+        transitionImageLayout(backFaceDepthImages[frameIdx], backFaceDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+    }
 
     // Create per-frame back-face depth framebuffers
     for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
-        VkImageView bfAttachments[1] = { backFaceDepthImageView };
+        VkImageView bfAttachments[1] = { backFaceDepthImageViews[frameIdx] };
         VkFramebufferCreateInfo bfFbInfo{};
         bfFbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         bfFbInfo.renderPass = backFaceRenderPass;
@@ -555,10 +559,10 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     // Create per-frame water framebuffers using the dedicated water geometry depth buffer
     for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
         std::array<VkImageView, 4> waterAttachments = {
-            waterDepthImageView,
-            waterNormalImageView,
-            waterMaskImageView,
-            waterGeomDepthImageView  // Use dedicated water geometry depth buffer
+            waterDepthImageViews[frameIdx],
+            waterNormalImageViews[frameIdx],
+            waterMaskImageViews[frameIdx],
+            waterGeomDepthImageViews[frameIdx]  // Use dedicated water geometry depth buffer
         };
         
         VkFramebufferCreateInfo fbInfo{};
@@ -622,22 +626,28 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
         sceneDepthMemories[i] = VK_NULL_HANDLE;
         sceneDepthImageViews[i] = VK_NULL_HANDLE;
     }
-    waterDepthImage = VK_NULL_HANDLE;
-    waterDepthMemory = VK_NULL_HANDLE;
-    waterDepthImageView = VK_NULL_HANDLE;
-    waterNormalImage = VK_NULL_HANDLE;
-    waterNormalMemory = VK_NULL_HANDLE;
-    waterNormalImageView = VK_NULL_HANDLE;
-    waterMaskImage = VK_NULL_HANDLE;
-    waterMaskMemory = VK_NULL_HANDLE;
-    waterMaskImageView = VK_NULL_HANDLE;
-    waterGeomDepthImage = VK_NULL_HANDLE;
-    waterGeomDepthMemory = VK_NULL_HANDLE;
-    waterGeomDepthImageView = VK_NULL_HANDLE;
+    for (int i = 0; i < 2; ++i) {
+        waterDepthImages[i] = VK_NULL_HANDLE;
+        waterDepthMemories[i] = VK_NULL_HANDLE;
+        waterDepthImageViews[i] = VK_NULL_HANDLE;
+        waterDepthAlphaImageViews[i] = VK_NULL_HANDLE;
 
-    backFaceDepthImage = VK_NULL_HANDLE;
-    backFaceDepthMemory = VK_NULL_HANDLE;
-    backFaceDepthImageView = VK_NULL_HANDLE;
+        waterNormalImages[i] = VK_NULL_HANDLE;
+        waterNormalMemories[i] = VK_NULL_HANDLE;
+        waterNormalImageViews[i] = VK_NULL_HANDLE;
+
+        waterMaskImages[i] = VK_NULL_HANDLE;
+        waterMaskMemories[i] = VK_NULL_HANDLE;
+        waterMaskImageViews[i] = VK_NULL_HANDLE;
+
+        waterGeomDepthImages[i] = VK_NULL_HANDLE;
+        waterGeomDepthMemories[i] = VK_NULL_HANDLE;
+        waterGeomDepthImageViews[i] = VK_NULL_HANDLE;
+
+        backFaceDepthImages[i] = VK_NULL_HANDLE;
+        backFaceDepthMemories[i] = VK_NULL_HANDLE;
+        backFaceDepthImageViews[i] = VK_NULL_HANDLE;
+    }
     for (int i = 0; i < 2; ++i) { backFaceFramebuffers[i] = VK_NULL_HANDLE; }
 
     // Reset descriptor pool to free descriptor sets (safe to reset even if pending)
@@ -1104,7 +1114,7 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
 
     // Water back-face depth (binding 3) — will be in SHADER_READ_ONLY after back-face pass
     imageInfos[3].sampler = linearSampler;
-    imageInfos[3].imageView = (backFaceDepthImageView != VK_NULL_HANDLE) ? backFaceDepthImageView : depthView;
+    imageInfos[3].imageView = (backFaceDepthImageViews[frameIndex] != VK_NULL_HANDLE) ? backFaceDepthImageViews[frameIndex] : depthView;
     imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     // Cubemap (binding 4) — if available, bind cube360CubeView, otherwise leave as fallback to scene color
@@ -1268,22 +1278,89 @@ void WaterRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint
 
     vkCmdEndRenderPass(cmd);
     // Render pass finalLayout transitions back-face depth to SHADER_READ_ONLY_OPTIMAL
-}
+    // Emit an explicit image memory barrier for the back-face depth image so
+    // subsequent fragment shader reads are properly synchronized across the
+    // render pass boundary. Use a no-layout-change barrier since the render
+    // pass already performs the layout transition to SHADER_READ_ONLY_OPTIMAL.
+    if (backFaceDepthImages[frameIndex] != VK_NULL_HANDLE) {
+        VkImageMemoryBarrier bfBarrier{};
+        bfBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        bfBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        bfBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        bfBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        bfBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        bfBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bfBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bfBarrier.image = backFaceDepthImages[frameIndex];
+        bfBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        bfBarrier.subresourceRange.baseMipLevel = 0;
+        bfBarrier.subresourceRange.levelCount = 1;
+        bfBarrier.subresourceRange.baseArrayLayer = 0;
+        bfBarrier.subresourceRange.layerCount = 1;
 
-void WaterRenderer::postRenderBarrier(VkCommandBuffer cmd) {
-    // The 0→EXTERNAL render pass dependency flushes color attachment writes,
-    // but the swapchain render pass's EXTERNAL→0 dependency only covers
-    // EARLY_FRAGMENT_TESTS — it does NOT synchronize FRAGMENT_SHADER reads.
-    // Add an explicit barrier so the post-process fragment shader can sample
-    // the water output images.
-    VkMemoryBarrier postBarrier{};
-    postBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    postBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    postBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cmd,
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, 1, &postBarrier, 0, nullptr, 0, nullptr);
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &bfBarrier);
+    }
+}
+void WaterRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex) {
+    if (cmd == VK_NULL_HANDLE) return;
+
+    // Build image barriers for per-frame water outputs so fragment shader
+    // sampling in the swapchain render pass sees completed color writes.
+    std::vector<VkImageMemoryBarrier> barriers;
+
+    auto pushColorBarrier = [&](VkImage img) {
+        if (img == VK_NULL_HANDLE) return;
+        VkImageMemoryBarrier b{};
+        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = img;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.baseMipLevel = 0;
+        b.subresourceRange.levelCount = 1;
+        b.subresourceRange.baseArrayLayer = 0;
+        b.subresourceRange.layerCount = 1;
+        barriers.push_back(b);
+    };
+
+    // color outputs
+    pushColorBarrier(waterDepthImages[frameIndex]);
+    pushColorBarrier(waterNormalImages[frameIndex]);
+    pushColorBarrier(waterMaskImages[frameIndex]);
+
+    // Depth-based back-face image (ensure depth writes are visible to shader reads)
+    if (backFaceDepthImages[frameIndex] != VK_NULL_HANDLE) {
+        VkImageMemoryBarrier db{};
+        db.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        db.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        db.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        db.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        db.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        db.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        db.image = backFaceDepthImages[frameIndex];
+        db.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        db.subresourceRange.baseMipLevel = 0;
+        db.subresourceRange.levelCount = 1;
+        db.subresourceRange.baseArrayLayer = 0;
+        db.subresourceRange.layerCount = 1;
+        barriers.push_back(db);
+    }
+
+    if (!barriers.empty()) {
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr,
+            static_cast<uint32_t>(barriers.size()), barriers.data());
+    }
 }
 
 void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView, const WaterParams& params, float waterTime, VkImageView skyView) {
@@ -1329,7 +1406,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
     waterIndirectRenderer.drawPrepared(cmd);
     endWaterGeometryPass(cmd);
 
-    postRenderBarrier(cmd);
+    postRenderBarrier(cmd, frameIndex);
 }
 
 // ============================================================================

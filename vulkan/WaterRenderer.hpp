@@ -106,8 +106,8 @@ public:
 
     // Back-face depth pre-pass (reversed winding for water volume thickness)
     void renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex);
-    VkImageView getBackFaceDepthView() const { return backFaceDepthImageView; }
-    VkImage getBackFaceDepthImage() const { return backFaceDepthImage; }
+    VkImageView getBackFaceDepthView(uint32_t frameIndex) const { return backFaceDepthImageViews[frameIndex]; }
+    VkImage getBackFaceDepthImage(uint32_t frameIndex) const { return backFaceDepthImages[frameIndex]; }
 
     // Execute the water offscreen geometry pass on the provided command buffer.
     // The solid render pass must have already ended on this same command buffer.
@@ -117,11 +117,11 @@ public:
                 VkImageView skyView = VK_NULL_HANDLE);
 
     // Get water depth/normal/mask images for post-process sampling
-    VkImageView getWaterDepthView() const { return waterDepthImageView; }
+    VkImageView getWaterDepthView(uint32_t frameIndex) const { return waterDepthImageViews[frameIndex]; }
     // View that swizzles alpha into RGB so linear depth can be displayed easily
-    VkImageView getWaterDepthAlphaView() const { return waterDepthAlphaImageView; }
-    VkImageView getWaterNormalView() const { return waterNormalImageView; }
-    VkImageView getWaterMaskView() const { return waterMaskImageView; }
+    VkImageView getWaterDepthAlphaView(uint32_t frameIndex) const { return waterDepthAlphaImageViews[frameIndex]; }
+    VkImageView getWaterNormalView(uint32_t frameIndex) const { return waterNormalImageViews[frameIndex]; }
+    VkImageView getWaterMaskView(uint32_t frameIndex) const { return waterMaskImageViews[frameIndex]; }
     
     // Get scene offscreen target views (for rendering scene before water)
     VkImage getSceneColorImage(uint32_t frameIndex) const { return sceneColorImages[frameIndex]; }
@@ -161,7 +161,8 @@ public:
                        VkImageView skyView = VK_NULL_HANDLE);
 
     // Emit post-geometry-pass barrier for fragment shader sampling.
-    void postRenderBarrier(VkCommandBuffer cmd);
+    // Ensures per-frame water images are available to fragment shaders.
+    void postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex);
     
     // Get water depth descriptor set (for binding scene depth texture)
     VkDescriptorSet getWaterDepthDescriptorSet(uint32_t frameIndex) const { return waterDepthDescriptorSets[frameIndex]; }
@@ -237,25 +238,25 @@ private:
     VkRenderPass sceneRenderPass = VK_NULL_HANDLE;
 
     // Offscreen render targets for water geometry pass
-    VkImage waterDepthImage = VK_NULL_HANDLE;
-    VkDeviceMemory waterDepthMemory = VK_NULL_HANDLE;
-    VkImageView waterDepthImageView = VK_NULL_HANDLE;
+    std::array<VkImage, 2> waterDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkDeviceMemory, 2> waterDepthMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkImageView, 2> waterDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     // Alternate view that swizzles alpha (linear depth) into RGB for debug display
-    VkImageView waterDepthAlphaImageView = VK_NULL_HANDLE;
+    std::array<VkImageView, 2> waterDepthAlphaImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
-    VkImage waterNormalImage = VK_NULL_HANDLE;
-    VkDeviceMemory waterNormalMemory = VK_NULL_HANDLE;
-    VkImageView waterNormalImageView = VK_NULL_HANDLE;
+    std::array<VkImage, 2> waterNormalImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkDeviceMemory, 2> waterNormalMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkImageView, 2> waterNormalImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
     // Water mask (where water exists)
-    VkImage waterMaskImage = VK_NULL_HANDLE;
-    VkDeviceMemory waterMaskMemory = VK_NULL_HANDLE;
-    VkImageView waterMaskImageView = VK_NULL_HANDLE;
+    std::array<VkImage, 2> waterMaskImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkDeviceMemory, 2> waterMaskMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkImageView, 2> waterMaskImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     
-    // Water geometry pass depth buffer
-    VkImage waterGeomDepthImage = VK_NULL_HANDLE;
-    VkDeviceMemory waterGeomDepthMemory = VK_NULL_HANDLE;
-    VkImageView waterGeomDepthImageView = VK_NULL_HANDLE;
+    // Water geometry pass depth buffer (per-frame)
+    std::array<VkImage, 2> waterGeomDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkDeviceMemory, 2> waterGeomDepthMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkImageView, 2> waterGeomDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
     std::array<VkFramebuffer, 2> waterFramebuffers = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkRenderPass waterRenderPass = VK_NULL_HANDLE;
@@ -263,9 +264,9 @@ private:
     // Back-face depth pass (reversed winding for water volume thickness)
     VkRenderPass backFaceRenderPass = VK_NULL_HANDLE;
     VkPipeline backFacePipeline = VK_NULL_HANDLE;
-    VkImage backFaceDepthImage = VK_NULL_HANDLE;
-    VkDeviceMemory backFaceDepthMemory = VK_NULL_HANDLE;
-    VkImageView backFaceDepthImageView = VK_NULL_HANDLE;
+    std::array<VkImage, 2> backFaceDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkDeviceMemory, 2> backFaceDepthMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkImageView, 2> backFaceDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkFramebuffer, 2> backFaceFramebuffers = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
     // Pipelines

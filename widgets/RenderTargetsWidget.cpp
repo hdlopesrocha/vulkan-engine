@@ -419,7 +419,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     }
 
     // Water color (first attachment of water geometry pass — R32G32B32A32_SFLOAT worldPos)
-    VkImageView waterView = waterRenderer->getWaterDepthView();
+    VkImageView waterView = waterRenderer->getWaterDepthView(frameIndex);
     if (waterView != VK_NULL_HANDLE && waterColorDescriptor == VK_NULL_HANDLE) {
         waterColorDescriptor = ImGui_ImplVulkan_AddTexture(
             sampler, waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -429,7 +429,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     // (Water normals preview removed)
 
     // Water linear depth (alpha channel of the world-pos attachment swizzled into RGB)
-    VkImageView waterDepthLinearView = waterRenderer->getWaterDepthAlphaView();
+    VkImageView waterDepthLinearView = waterRenderer->getWaterDepthAlphaView(frameIndex);
     if (waterDepthLinearView != VK_NULL_HANDLE && waterDepthLinearDescriptor == VK_NULL_HANDLE) {
         waterDepthLinearDescriptor = ImGui_ImplVulkan_AddTexture(
             sampler, waterDepthLinearView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -742,7 +742,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         // Back-face depth pass
         if (waterRenderer && linearizePipeline != VK_NULL_HANDLE && linearBackFaceFramebuffer != VK_NULL_HANDLE) {
-            VkImageView src = waterRenderer->getBackFaceDepthView();
+            VkImageView src = waterRenderer->getBackFaceDepthView(frameIndex);
             fprintf(stderr, "[RenderTargetsWidget] Backface linearize check: pipeline=%p descSet=%p fb=%p view=%p src=%p\n",
                     (void*)linearizePipeline, (void*)linearizeDescriptorSet, (void*)linearBackFaceFramebuffer, (void*)linearBackFaceDepthView, (void*)src);
             if (src != VK_NULL_HANDLE) {
@@ -797,7 +797,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     }
     // Water back-face depth (volume thickness pre-pass — D32_SFLOAT)
     if (shadowMapper) {
-        VkImageView bfView = waterRenderer->getBackFaceDepthView();
+        VkImageView bfView = waterRenderer->getBackFaceDepthView(frameIndex);
         if (bfView != VK_NULL_HANDLE && backFaceDepthDescriptor == VK_NULL_HANDLE) {
             backFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(
                 shadowMapper->getShadowMapSampler(), bfView,
@@ -819,7 +819,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         }
     }
     // Back-face depth (water): alias to water back-face depth view
-    VkImageView bfView2 = waterRenderer->getBackFaceDepthView();
+    VkImageView bfView2 = waterRenderer->getBackFaceDepthView(frameIndex);
     if (linearBackFaceDepthDescriptor == VK_NULL_HANDLE && bfView2 != VK_NULL_HANDLE) {
         VkSampler depthSampler = shadowMapper ? shadowMapper->getShadowMapSampler() : sampler;
         linearBackFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, bfView2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);

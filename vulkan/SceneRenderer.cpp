@@ -215,7 +215,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
             waterRenderer->getIndirectRenderer());
 
         waterRenderer->endWaterGeometryPass(commandBuffer);
-        waterRenderer->postRenderBarrier(commandBuffer);
+        waterRenderer->postRenderBarrier(commandBuffer, frameIdx);
     } else {
         waterRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, waterParams, waterTime, skyView);
     }
