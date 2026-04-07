@@ -53,6 +53,15 @@ private:
     VkDescriptorSet linearBackFaceDepthDescriptor = VK_NULL_HANDLE;
     bool linearBackFaceDepthDescriptorOwned = false;
 
+    // GPU linearization pass resources
+    VkRenderPass linearizeRenderPass = VK_NULL_HANDLE;
+    VkPipeline linearizePipeline = VK_NULL_HANDLE;
+    VkPipelineLayout linearizePipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout linearizeDescriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet linearizeDescriptorSet = VK_NULL_HANDLE;
+    VkFramebuffer linearSceneFramebuffer = VK_NULL_HANDLE;
+    VkFramebuffer linearBackFaceFramebuffer = VK_NULL_HANDLE;
+
     // Single preview descriptor (widget displays one texture at a time)
     VkDescriptorSet previewDescriptor = VK_NULL_HANDLE;
 
@@ -66,7 +75,8 @@ private:
     ShadowParams* shadowParams = nullptr;
     Settings* settings = nullptr; // pointer to app settings for near/far
 
-    float previewScale = 0.25f;
+    // Fixed preview width in pixels (all previews will be displayed at this width)
+    // Preview scale removed — previews are fixed-size thumbnails now.
     int currentFrame = 0;
     int cachedWidth = 0;
     int cachedHeight = 0;
