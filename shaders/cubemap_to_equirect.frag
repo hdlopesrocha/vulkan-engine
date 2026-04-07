@@ -17,6 +17,7 @@ layout(location = 0) out vec4 outColor;
 const float PI = 3.14159265358979323846;
 
 void main() {
+    // Normalize fragment coords to [0,1].
     vec2 uv = gl_FragCoord.xy / pc.resolution;
 
     // theta: polar angle from zenith (0 at top, PI at bottom)
@@ -30,5 +31,25 @@ void main() {
     dir.y = cos(theta);
     dir.z = sin(theta) * sin(phi);
 
+    // Correct orientation for specific cubemap faces by mirroring
+    float ax = abs(dir.x);
+    float ay = abs(dir.y);
+    float az = abs(dir.z);
+    // +Y face: mirror horizontally by flipping X
+    if (ay >= ax && ay >= az && dir.y > 0.0) {
+        dir.x = -dir.x;
+    }
+    // -X face: mirror horizontally by flipping Z
+    else if (ax >= ay && ax >= az && dir.x < 0.0) {
+        dir.z = -dir.z;
+    }
+    // +Z face: mirror horizontally by flipping X
+    else if (az >= ax && az >= ay && dir.z > 0.0) {
+        dir.x = -dir.x;
+    }
+    // -Z face: mirror horizontally by flipping X
+    else if (az >= ax && az >= ay && dir.z < 0.0) {
+        dir.x = -dir.x;
+    }
     outColor = texture(cubemapTex, dir);
 }

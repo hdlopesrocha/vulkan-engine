@@ -657,6 +657,10 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     defaultWaterParams.params2 = glm::vec4(0.3f, 0.0f, 0.0f, 0.0f);  // waterTint, unused, unused, unused
     defaultWaterParams.shallowColor = glm::vec4(0.1f, 0.4f, 0.5f, 0.0f);
     defaultWaterParams.deepColor = glm::vec4(0.0f, 0.15f, 0.25f, 0.0f);
+    defaultWaterParams.waveParams = glm::vec4(0.0f, 0.0f, 8.0f, 0.1f);
+    defaultWaterParams.reserved1 = glm::vec4(1.0f, 1.0f, 1.0f, 8.0f);
+    defaultWaterParams.reserved2 = glm::vec4(4.0f, 0.004f, 0.05f, 0.0f);
+    defaultWaterParams.reserved3 = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
     
     void* data;
     vkMapMemory(device, waterParamsBuffer.memory, 0, sizeof(WaterParamsGPU), 0, &data);
@@ -670,7 +674,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     // Binding 1: Scene depth texture
     // Binding 2: Sky color texture
     // Binding 3: Water back-face depth texture (for volume thickness)
-    std::array<VkDescriptorSetLayoutBinding, 4> sceneBindings{};
+    std::array<VkDescriptorSetLayoutBinding, 5> sceneBindings{};
     
     // Scene color (binding 0)
     sceneBindings[0].binding = 0;
@@ -699,6 +703,13 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     sceneBindings[3].descriptorCount = 1;
     sceneBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     sceneBindings[3].pImmutableSamplers = nullptr;
+
+    // Optional cubemap sampler (binding 4) — used by water shader when solid 360 is available
+    sceneBindings[4].binding = 4;
+    sceneBindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sceneBindings[4].descriptorCount = 1;
+    sceneBindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[4].pImmutableSamplers = nullptr;
     
     VkDescriptorSetLayoutCreateInfo depthLayoutInfo{};
     depthLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -714,7 +725,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     // Create descriptor pool for scene textures (color + depth), 2 sets for 2 frames
     VkDescriptorPoolSize depthPoolSize{};
     depthPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    depthPoolSize.descriptorCount = 8;  // (color + depth + sky + backfaceDepth) * 2 frames
+    depthPoolSize.descriptorCount = 10;  // Now including cubemap sampler (binding 4) per frame: (color + depth + sky + backfaceDepth + cube) * 2
     
     VkDescriptorPoolCreateInfo depthPoolInfo{};
     depthPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1074,7 +1085,7 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     VkImageView colorView = colorImageView;
     VkImageView depthView = depthImageView;
     
-    std::array<VkDescriptorImageInfo, 4> imageInfos{};
+    std::array<VkDescriptorImageInfo, 5> imageInfos{};
     
     // Scene color (binding 0)
     imageInfos[0].sampler = linearSampler;
@@ -1095,8 +1106,13 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     imageInfos[3].sampler = linearSampler;
     imageInfos[3].imageView = (backFaceDepthImageView != VK_NULL_HANDLE) ? backFaceDepthImageView : depthView;
     imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // Cubemap (binding 4) — if available, bind cube360CubeView, otherwise leave as fallback to scene color
+    imageInfos[4].sampler = linearSampler;
+    imageInfos[4].imageView = (cube360CubeView != VK_NULL_HANDLE) ? cube360CubeView : colorView;
+    imageInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     
-    std::array<VkWriteDescriptorSet, 4> writes{};
+    std::array<VkWriteDescriptorSet, 5> writes{};
     
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = waterDepthDescriptorSets[frameIndex];
@@ -1130,6 +1146,13 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     writes[3].descriptorCount = 1;
     writes[3].pImageInfo = &imageInfos[3];
 
+    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[4].dstSet = waterDepthDescriptorSets[frameIndex];
+    writes[4].dstBinding = 4;
+    writes[4].dstArrayElement = 0;
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[4].descriptorCount = 1;
+    writes[4].pImageInfo = &imageInfos[4];
     vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
@@ -1160,8 +1183,10 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
             static_cast<float>(params.blurSamples),
             params.volumeBlurRate,
             params.volumeBumpRate,
-            0.0f
+            params.uniformReflection ? 1.0f : 0.0f
         );
+        // Indicate whether the solid 360 cubemap is available for sampling
+        gpu.reserved3 = glm::vec4((cube360CubeView != VK_NULL_HANDLE) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 
         void* data;
         vkMapMemory(app->getDevice(), waterParamsBuffer.memory, 0, sizeof(WaterParamsGPU), 0, &data);
@@ -1677,12 +1702,15 @@ void WaterRenderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
 
     struct FaceInfo { glm::vec3 target; glm::vec3 up; };
     const FaceInfo faces[6] = {
-        { glm::vec3( 1, 0, 0), glm::vec3(0,-1, 0) }, // +X
-        { glm::vec3(-1, 0, 0), glm::vec3(0,-1, 0) }, // -X
-        { glm::vec3( 0, 1, 0), glm::vec3(0, 0, 1) }, // +Y
-        { glm::vec3( 0,-1, 0), glm::vec3(0, 0,-1) }, // -Y
-        { glm::vec3( 0, 0, 1), glm::vec3(0,-1, 0) }, // +Z
-        { glm::vec3( 0, 0,-1), glm::vec3(0,-1, 0) }, // -Z
+        { glm::vec3( 1, 0, 0), glm::vec3(0, 1, 0) }, // +X (flipped vertically)
+        // Invert -X up to correct roll
+        { glm::vec3(-1, 0, 0), glm::vec3(0, 1, 0) }, // -X (flipped up)
+        // +Y/-Y up vectors (kept flipped from earlier change)
+        { glm::vec3( 0, 1, 0), glm::vec3(0, 0,-1) }, // +Y
+        { glm::vec3( 0,-1, 0), glm::vec3(0, 0, 1) }, // -Y
+        { glm::vec3( 0, 0, 1), glm::vec3(0, 1, 0) }, // +Z (flipped)
+        // Invert -Z up to correct roll
+        { glm::vec3( 0, 0,-1), glm::vec3(0, 1, 0) }, // -Z (flipped up)
     };
 
     // 90° FOV projection (square faces)

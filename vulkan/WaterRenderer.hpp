@@ -24,7 +24,7 @@ struct WaterParams {
     float depthFalloff = 0.1f;
     int noiseOctaves = 4;
     float noisePersistence = 0.5f;
-    float noiseScale = 1.0f;
+    float noiseScale = 0.4f;
     float waterTint = 0.3f;
     float noiseTimeSpeed = 1.0f;
 
@@ -46,6 +46,9 @@ struct WaterParams {
     bool enableReflection = true;
     bool enableRefraction = true;
     bool enableBlur = true;
+    // If true, apply `reflectionStrength` uniformly across the surface
+    // instead of modulating by Fresnel. Useful for debugging or stylized looks.
+    bool uniformReflection = false;
 
     // PCF-style scene-color blur
     float blurRadius = 8.0f;    // texel radius of blur kernel
@@ -66,6 +69,7 @@ struct WaterParamsGPU {
     glm::vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
     glm::vec4 reserved1;  // x=enableReflection, y=enableRefraction, z=enableBlur, w=blurRadius
     glm::vec4 reserved2;  // x=blurSamples, y=volumeBlurRate, z=volumeBumpRate, w=unused
+    glm::vec4 reserved3;  // x=cube360Available(0/1), y=unused, z=unused, w=unused
 };
 
 // GPU-side water uniform buffer
@@ -193,6 +197,10 @@ public:
 
     // Access the 360° solid equirectangular view for water reflection sampling
     VkImageView getSolid360View() const { return equirect360View; }
+    // Access the cubemap view for the 360° solid reflection (cube)
+    VkImageView getCube360View() const { return cube360CubeView; }
+    // Access per-face 2D image views for debugging (order: +X, -X, +Y, -Y, +Z, -Z)
+    VkImageView getCube360FaceView(uint32_t face) const { return (face < 6) ? cube360FaceViews[face] : VK_NULL_HANDLE; }
 
     // Register model version for water meshes (stored here)
     void registerModelVersion(NodeID id, const Model3DVersion& ver) { waterNodeModelVersions[id] = ver; }

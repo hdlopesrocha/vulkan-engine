@@ -26,7 +26,7 @@ public:
                 ImGui::SliderFloat("Wave Height", &params.bumpAmplitude, 0.0f, 256.0f);
                 ImGui::SliderFloat("Wave Depth Transition", &params.waveDepthTransition, 0.0f, 100.0f, "%.1f");
                 ImGui::SetItemTooltip("Distance (world units) over which waves ramp from zero to full height.\n0 = disabled (no depth-based attenuation).");
-                ImGui::SliderFloat("Noise Scale", &params.noiseScale, 1.0f, 256.0f);
+                ImGui::SliderFloat("Noise Scale", &params.noiseScale, 0.01f, 256.0f, "%.2f");
                 ImGui::SliderInt("Noise Octaves", &params.noiseOctaves, 1, 8);
                 ImGui::SliderFloat("Noise Persistence", &params.noisePersistence, 0.1f, 0.9f);
                 ImGui::SliderFloat("Noise Time Speed", &params.noiseTimeSpeed, 0.0f, 5.0f);
@@ -56,6 +56,8 @@ public:
                 ImGui::SetItemTooltip("How much environment reflection mixes into the surface.\n0 = no reflection, 1 = full mirror.");
                 ImGui::SliderFloat("Fresnel Power", &params.fresnelPower, 1.0f, 10.0f);
                 ImGui::SetItemTooltip("Controls angle-dependence of reflection.\nHigher = reflection only at grazing angles.");
+                ImGui::Checkbox("Uniform Reflection (no Fresnel)", &params.uniformReflection);
+                ImGui::SetItemTooltip("When enabled, reflection is applied uniformly by `Reflection Strength`\ninstead of being modulated by Fresnel.");
                 ImGui::SliderFloat("Specular Intensity", &params.specularIntensity, 0.0f, 10.0f);
                 ImGui::SetItemTooltip("Brightness of the sun's specular highlight on the water.");
                 ImGui::SliderFloat("Specular Power", &params.specularPower, 8.0f, 512.0f, "%.0f");
