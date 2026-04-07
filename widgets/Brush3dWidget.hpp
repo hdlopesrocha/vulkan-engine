@@ -16,7 +16,7 @@ class LocalScene;
 // Represents one SDF brush entry with all parameters needed to populate the scene
 struct BrushEntry {
     // SDF primitive: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder
-    int sdfType = 0;
+    int sdfType = 3;
     // Operation: 0=ADD, 1=REMOVE
     int brushMode = 0;
     // Target layer: 0=OPAQUE, 1=TRANSPARENT
@@ -24,8 +24,8 @@ struct BrushEntry {
     // Material (texture index for SimpleBrush)
     int materialIndex = 0;
     // Transform
-    glm::vec3 scale = glm::vec3(128.0f);
-    glm::vec3 translate = glm::vec3(0.0f);
+    glm::vec3 scale = glm::vec3(512.0f);
+    glm::vec3 translate = glm::vec3(0.0f, 1024.0f, 0.0f);
     float yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
     // Octree min size
     float minSize = 30.0f;
@@ -51,7 +51,8 @@ class Brush3dWidget : public Widget {
 public:
     using RebuildCallback = std::function<void()>;
 
-    Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers);
+    // Construct with a reference to a shared BrushEntry list (owned by caller)
+    Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, std::vector<BrushEntry>& sharedEntries);
 
     void render() override;
 
@@ -65,11 +66,13 @@ private:
     void renderEntry(int index);
     void renderMaterialPicker(BrushEntry& entry);
 
-    std::vector<BrushEntry> entries;
+    // Reference to caller-owned list of brush entries
+    std::vector<BrushEntry>& entries;
     TextureArrayManager* textureArrayManager;
     uint32_t loadedTextureLayers;
     bool dirty = false;
     RebuildCallback rebuildCallback;
+    int currentIndex = 0; // currently-selected entry for editing/navigation
 
     static const char* sdfTypeNames[];
     static const char* brushModeNames[];

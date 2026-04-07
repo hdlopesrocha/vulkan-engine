@@ -13,10 +13,11 @@ const char* Brush3dWidget::effectTypeNames[] = {
     "Perlin Distort", "Perlin Carve", "Sine Distort", "Voronoi Carve"
 };
 
-Brush3dWidget::Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers)
-    : Widget("Brush 3D"),
-      textureArrayManager(texMgr),
-      loadedTextureLayers(loadedLayers)
+Brush3dWidget::Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, std::vector<BrushEntry>& sharedEntries)
+        : Widget("Brush 3D"),
+            entries(sharedEntries),
+            textureArrayManager(texMgr),
+            loadedTextureLayers(loadedLayers)
 {
 }
 
@@ -29,28 +30,50 @@ void Brush3dWidget::render() {
         return;
     }
 
-    // Add / remove entry buttons
+    // Add / remove entry buttons (modify caller-owned vector)
     if (ImGui::Button("+ Add Brush Entry")) {
         entries.emplace_back();
+        // When adding, move selection to the new entry
+        currentIndex = static_cast<int>(entries.size()) - 1;
         dirty = true;
     }
     ImGui::SameLine();
     if (!entries.empty() && ImGui::Button("- Remove Last")) {
         entries.pop_back();
+        if (currentIndex >= static_cast<int>(entries.size())) currentIndex = static_cast<int>(entries.size()) - 1;
+        if (currentIndex < 0) currentIndex = 0;
         dirty = true;
     }
 
     ImGui::Separator();
 
-    // Render each entry in a collapsible header
-    for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
-        ImGui::PushID(i);
+    // Navigation controls for the shared entries list
+    if (entries.empty()) {
+        ImGui::Text("No brush entries");
+    } else {
+        ImGui::Text("Entry %d / %zu", currentIndex + 1, entries.size());
+        ImGui::SameLine();
+        if (ImGui::Button("Prev") && currentIndex > 0) { currentIndex--; }
+        ImGui::SameLine();
+        if (ImGui::Button("Next") && (currentIndex + 1) < static_cast<int>(entries.size())) { currentIndex++; }
+        ImGui::SameLine();
+        int idx = currentIndex;
+        if (ImGui::InputInt("##entryIdx", &idx)) {
+            if (idx < 0) idx = 0;
+            if (idx >= static_cast<int>(entries.size())) idx = static_cast<int>(entries.size()) - 1;
+            currentIndex = idx;
+        }
+
+        ImGui::Separator();
+
+        // Render only the selected entry
+        ImGui::PushID(currentIndex);
         char label[64];
-        snprintf(label, sizeof(label), "Entry %d: %s (%s)", i,
-                 sdfTypeNames[entries[i].sdfType],
-                 layerNames[entries[i].targetLayer]);
+        snprintf(label, sizeof(label), "Entry %d: %s (%s)", currentIndex,
+                 sdfTypeNames[entries[currentIndex].sdfType],
+                 layerNames[entries[currentIndex].targetLayer]);
         if (ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen)) {
-            renderEntry(i);
+            renderEntry(currentIndex);
         }
         ImGui::PopID();
     }
@@ -152,7 +175,14 @@ void Brush3dWidget::renderEntry(int index) {
     snprintf(delLabel, sizeof(delLabel), "Delete##%d", index);
     if (ImGui::Button(delLabel)) {
         entries.erase(entries.begin() + index);
+        if (entries.empty()) {
+            currentIndex = 0;
+        } else if (currentIndex >= static_cast<int>(entries.size())) {
+            currentIndex = static_cast<int>(entries.size()) - 1;
+        }
         dirty = true;
+        ImGui::PopStyleColor();
+        return; // early return since indices changed
     }
     ImGui::PopStyleColor();
 }

@@ -66,6 +66,8 @@ public:
     LocalScene * mainScene;
     LocalScene * brushScene = nullptr;
     std::shared_ptr<Brush3dWidget> brush3dWidget;
+    // Shared brush entries edited by Brush3dWidget (owned by MyApp)
+    std::vector<BrushEntry> brushEntries;
     VkQueryPool queryPool = VK_NULL_HANDLE;
     static constexpr uint32_t QUERY_COUNT = 12;
     float timestampPeriod = 0.0f;
@@ -747,8 +749,21 @@ void MyApp::setupScene() {
     // --- Brush scene setup ---
     brushScene = new LocalScene();
 
-    // Create Brush3dWidget and wire the rebuild callback
-    brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers);
+    // Initialize shared brush entries and create Brush3dWidget wired to them
+    brushEntries.clear();
+    brushEntries.resize(3);
+    // Provide distinct defaults for quick testing
+    brushEntries[0].sdfType = 0; // Sphere
+    brushEntries[0].materialIndex = 0;
+    brushEntries[0].translate = glm::vec3(0.0f, 1024.0f, 0.0f);
+    brushEntries[1].sdfType = 1; // Box
+    brushEntries[1].materialIndex = 1;
+    brushEntries[1].translate = glm::vec3(512.0f, 1024.0f, 0.0f);
+    brushEntries[2].sdfType = 3; // Octahedron
+    brushEntries[2].materialIndex = 2;
+    brushEntries[2].translate = glm::vec3(-512.0f, 1024.0f, 0.0f);
+
+    brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushEntries);
     // Defer the actual heavy rebuild until after the current frame is submitted
     // to avoid blocking the frame record path (which can deadlock on fences).
     brush3dWidget->setRebuildCallback([this]() {
