@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "ControllerParameters.hpp"
+#include "../events/ControllerParameters.hpp"
 #include <imgui.h>
 
 class ControllerParametersWidget : public Widget {
