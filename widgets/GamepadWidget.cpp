@@ -3,6 +3,28 @@
 #include <vector>
 #include <cmath>
 #include <cstdio>
+#include "../events/ControllerParameters.hpp"
+#include <imgui.h>
+
+static void drawPageIcon(ControllerParameters::pageType p) {
+    const char* label = "?";
+    ImVec4 col = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+    switch (p) {
+        case ControllerParameters::CAMERA: label = "CAM"; col = ImVec4(0.2f,0.5f,0.9f,1.0f); break;
+        case ControllerParameters::BRUSH_POSITION: label = "POS"; col = ImVec4(0.2f,0.9f,0.3f,1.0f); break;
+        case ControllerParameters::BRUSH_SCALE: label = "SCL"; col = ImVec4(0.95f,0.6f,0.1f,1.0f); break;
+        case ControllerParameters::BRUSH_ROTATION: label = "ROT"; col = ImVec4(0.7f,0.3f,0.9f,1.0f); break;
+        case ControllerParameters::BRUSH_PROPERTIES: label = "PRP"; col = ImVec4(0.6f,0.6f,0.6f,1.0f); break;
+    }
+
+    // Reserve space and draw a small colored circle then the label
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(36, 0));
+    ImVec2 center = ImVec2(pos.x + 10.0f, pos.y + 10.0f);
+    dl->AddCircleFilled(center, 8.0f, ImGui::ColorConvertFloat4ToU32(col));
+    dl->AddText(ImVec2(pos.x + 22.0f, pos.y), ImGui::ColorConvertFloat4ToU32(ImVec4(1,1,1,1)), label);
+}
 
 static const char* buttonName(int b) {
     switch (b) {
@@ -25,7 +47,7 @@ static const char* buttonName(int b) {
     }
 }
 
-GamepadWidget::GamepadWidget() : Widget("Gamepad") {}
+GamepadWidget::GamepadWidget(ControllerParameters* params) : Widget("Gamepad"), ctrlParams(params) {}
 
 void GamepadWidget::render() {
     if (!ImGui::Begin(title.c_str(), &isOpen)) {
@@ -107,6 +129,12 @@ void GamepadWidget::render() {
         }
     } else {
         ImGui::TextWrapped("This joystick is not recognized as a mapped gamepad. If you expect it to be a gamepad, ensure mappings are available (glfwUpdateGamepadMappings) or connect a supported controller.");
+    }
+
+    // Show controller page indicator after the gamepad state (axes/buttons)
+    if (ctrlParams) {
+        ImGui::Separator();
+        drawPageIcon(ctrlParams->currentPage);
     }
 
     ImGui::End();
