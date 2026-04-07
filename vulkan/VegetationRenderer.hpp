@@ -3,6 +3,7 @@
 #include "TextureArrayManager.hpp"
 #include "../math/Vertex.hpp"
 #include "BillboardManager.hpp"
+#include "VertexBufferObject.hpp"
 #include "../utils/Scene.hpp" // for NodeID
 #include <vector>
 #include <unordered_map>
@@ -61,4 +62,13 @@ private:
     std::unordered_map<NodeID, std::vector<glm::vec3>> pendingChunkPositions;
     void createInstanceBuffer(NodeID chunkId, const std::vector<glm::vec3>& positions, VulkanApp* app);
     void destroyInstanceBuffer(NodeID chunkId);
+    // If the renderer was initialized with an app, this will be set and
+    // allows immediate GPU uploads from setChunkInstances(). Otherwise
+    // positions are stored in `pendingChunkPositions` until `init(app,...)`
+    // runs and performs the uploads.
+    VulkanApp* appPtr = nullptr;
+    // Simple VBO that provides the per-vertex 'base' used by the vegetation
+    // pipeline. We use a single base vertex and expand in the shader via
+    // the instance data.
+    VertexBufferObject billboardVBO;
 };

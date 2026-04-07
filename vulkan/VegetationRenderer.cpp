@@ -1,6 +1,7 @@
 #include "VegetationRenderer.hpp"
 #include <vulkan/vulkan.h>
 #include <cstdint>
+#include <cstddef>
 #include "../math/Common.hpp" // for NodeID
 #include "VegetationRenderer.hpp"
 #include "../utils/FileReader.hpp"
@@ -50,6 +51,13 @@ void VegetationRenderer::cleanup() {
         vegetationTextureArrayManager->removeAllocationListener(vegTextureListenerId);
         vegTextureListenerId = -1;
     }
+    // Clear stored app pointer and billboard VBO handles
+    billboardVBO.vertexBuffer.buffer = VK_NULL_HANDLE;
+    billboardVBO.vertexBuffer.memory = VK_NULL_HANDLE;
+    billboardVBO.indexBuffer.buffer = VK_NULL_HANDLE;
+    billboardVBO.indexBuffer.memory = VK_NULL_HANDLE;
+    billboardVBO.indexCount = 0;
+    appPtr = nullptr;
 }
 
 void VegetationRenderer::setTextureArrayManager(TextureArrayManager* mgr, VulkanApp* app) {
@@ -139,6 +147,8 @@ bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
 
 void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
     if (!app || !vegetationTextureArrayManager) return;
+    // Store the app pointer for later immediate uploads from setChunkInstances()
+    this->appPtr = app;
     VkDevice device = app->getDevice();
 
     // Descriptor set layout for vegetation textures (set=1, binding=0)
@@ -201,10 +211,7 @@ void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
     // binding 0: per-vertex, binding 1: per-instance
     VkVertexInputBindingDescription bindingDescs[2] = {};
     bindingDescs[0].binding = 0;
-    bindingDescs[0].stride = sizeof(float) * 3   // inPosition
-                                 + sizeof(float) * 3   // inNormal
-                                 + sizeof(float) * 2   // inTexCoord
-                                 + sizeof(int);        // inTexIndex
+    bindingDescs[0].stride = sizeof(Vertex);
     bindingDescs[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
     bindingDescs[1].binding = 1;
     bindingDescs[1].stride = sizeof(float) * 3; // instancePosition
@@ -215,11 +222,11 @@ void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
         { stages[0], stages[1], stages[2] },
         std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
         {
-            {0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0},   // inPosition
-            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, sizeof(float)*3}, // inNormal
-            {2, 0, VK_FORMAT_R32G32_SFLOAT, sizeof(float)*6},    // inTexCoord
-            {3, 0, VK_FORMAT_R32_SINT, sizeof(float)*8},         // inTexIndex
-            {4, 1, VK_FORMAT_R32G32B32_SFLOAT, 0}                // instancePosition
+            {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},   // inPosition
+            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},     // inNormal
+            {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)},      // inTexCoord
+            {3, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex)},           // inTexIndex
+            {4, 1, VK_FORMAT_R32G32B32_SFLOAT, 0}                             // instancePosition
         },
         setLayouts,
         &pushConstantRange,
@@ -244,6 +251,20 @@ void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
     geomShader = VK_NULL_HANDLE;
     fragShader = VK_NULL_HANDLE;
     // shader modules are tracked by the central manager for final cleanup
+    // Ensure we have a minimal base vertex buffer to feed the pipeline. The
+    // pipeline draws a single base-vertex with multiple instances; the
+    // instance buffer supplies world-space positions.
+    if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) {
+        Vertex baseVertex;
+        baseVertex.position = glm::vec3(0.0f, 0.0f, 0.0f);
+        baseVertex.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+        baseVertex.texCoord = glm::vec2(0.5f, 0.5f);
+        baseVertex.texIndex = 0;
+        std::vector<Vertex> baseVerts = { baseVertex };
+        billboardVBO.vertexBuffer = app->createVertexBuffer(baseVerts);
+        billboardVBO.indexCount = 0;
+    }
+
     // If there are pending CPU-side instance positions, upload them now that `app` is available
     if (!pendingChunkPositions.empty()) {
         for (auto &kv : pendingChunkPositions) {
@@ -254,9 +275,21 @@ void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
 }
 
 void VegetationRenderer::setChunkInstances(NodeID chunkId, const std::vector<glm::vec3>& positions) {
-    // Defer GPU upload until pipelines are created (app available). Store CPU-side positions.
-    pendingChunkPositions[chunkId] = positions;
-    chunkInstanceCounts[chunkId] = positions.size();
+    // If the renderer has been initialized with an app and pipelines are created,
+    // upload the instance buffer immediately. Otherwise store positions to be
+    // uploaded later in init(app, ...).
+    if (appPtr && vegetationPipeline != VK_NULL_HANDLE) {
+        // Replace any existing GPU buffer
+        destroyInstanceBuffer(chunkId);
+        createInstanceBuffer(chunkId, positions, appPtr);
+        chunkInstanceCounts[chunkId] = positions.size();
+        // Remove any pending CPU copy
+        pendingChunkPositions.erase(chunkId);
+    } else {
+        // Defer GPU upload until pipelines are created (app available). Store CPU-side positions.
+        pendingChunkPositions[chunkId] = positions;
+        chunkInstanceCounts[chunkId] = positions.size();
+    }
 }
 
 void VegetationRenderer::clearAllInstances() {
@@ -305,11 +338,14 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
     // Push billboard scale as push constant
     vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &billboardScale);
 
-    // For each chunk, bind instance buffer and draw indirect
+    // For each chunk, bind base vertex buffer + instance buffer and draw indirect
     for (const auto& [chunkId, buf] : chunkBuffers) {
         if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
-        VkDeviceSize offsets[] = { 0 };
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, &buf.buffer, offsets);
+        if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
+        VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
+        VkDeviceSize offsets[2] = { 0, 0 };
+        // Bind base vertex buffer at binding 0 and instance buffer at binding 1
+        vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
         vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
     }
 }
@@ -470,3 +506,6 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId) {
         chunkBuffers.erase(it);
     }
 }
+
+// Ensure we clear the stored app pointer on cleanup
+// (cleanup() already clears handles; set appPtr to nullptr here)
