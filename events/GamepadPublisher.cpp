@@ -5,6 +5,7 @@
 #include "RotateCameraEvent.hpp"
 #include "ToggleFullscreenEvent.hpp"
 #include "CloseWindowEvent.hpp"
+#include "RebuildBrushEvent.hpp"
 
 #include "ControllerManager.hpp"
 
@@ -20,6 +21,8 @@ GamepadPublisher::GamepadPublisher(float moveSpeed_, float angularSpeedDeg_)
 
 void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTime, ControllerManager* controllerManager, Brush3dManager* brushManager, bool flipRotation) {
     if (!em) return;
+
+    bool brushChanged = false;
 
     // Ensure we have a valid gamepad to poll. If the configured joystickId
     // isn't a gamepad, scan for the first available gamepad and use it.
@@ -79,7 +82,7 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     // Left stick X -> sideways (right is positive)
     if (lx != 0.0f) {
         if (cp && cp->currentPage != ControllerParameters::CAMERA) {
-            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) be->translate += right * (lx * (cp->cameraMoveSpeed * deltaTime)); }
+            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) { be->translate += right * (lx * (cp->cameraMoveSpeed * deltaTime)); brushChanged = true; } }
         } else {
             em->publish(std::make_shared<TranslateCameraEvent>(right * (lx * velocity)));
         }
@@ -87,7 +90,7 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     // Left stick Y -> up/down (up when stick up). GLFW axis: up is -1, down is +1 so invert to make up positive
     if (ly != 0.0f) {
         if (cp && cp->currentPage != ControllerParameters::CAMERA) {
-            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) be->translate += up * ((-ly) * (cp->cameraMoveSpeed * deltaTime)); }
+            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) { be->translate += up * ((-ly) * (cp->cameraMoveSpeed * deltaTime)); brushChanged = true; } }
         } else {
             em->publish(std::make_shared<TranslateCameraEvent>(up * ((-ly) * velocity)));
         }
@@ -96,7 +99,7 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     // --- Bumpers: now used for roll rotation (swap with triggers) ---
     if (state.buttons[GLFW_GAMEPAD_BUTTON_LEFT_BUMPER] == GLFW_PRESS) {
         if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
-            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) be->roll -= rotSign * angDeg; }
+            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) { be->roll -= rotSign * angDeg; brushChanged = true; } }
         } else {
             // roll left
             float rollDeg = rotSign * (-angDeg);
@@ -105,7 +108,7 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     }
     if (state.buttons[GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER] == GLFW_PRESS) {
         if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
-            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) be->roll += rotSign * angDeg; }
+            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) { be->roll += rotSign * angDeg; brushChanged = true; } }
         } else {
             // roll right
             float rollDeg = rotSign * (angDeg);
@@ -126,7 +129,7 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     float pitchDeg = rotSign * (-ry * angDeg);
     if (yawDeg != 0.0f || pitchDeg != 0.0f) {
         if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
-            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) { be->yaw += yawDeg; be->pitch += pitchDeg; } }
+            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) { be->yaw += yawDeg; be->pitch += pitchDeg; brushChanged = true; } }
         } else {
             em->publish(std::make_shared<RotateCameraEvent>(yawDeg, pitchDeg, 0.0f));
         }
@@ -143,9 +146,13 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     float net = (rval - lval); // in [-1,1]
     if (std::abs(net) > 1e-4f) {
         if (cp && cp->currentPage != ControllerParameters::CAMERA) {
-            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) be->translate += forward * (net * (cp->cameraMoveSpeed * deltaTime)); }
+            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) { be->translate += forward * (net * (cp->cameraMoveSpeed * deltaTime)); brushChanged = true; } }
         } else {
             em->publish(std::make_shared<TranslateCameraEvent>(forward * (net * velocity)));
         }
+    }
+
+    if (brushChanged) {
+        em->queue(std::make_shared<RebuildBrushEvent>());
     }
 }
