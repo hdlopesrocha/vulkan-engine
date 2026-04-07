@@ -13,9 +13,9 @@ const char* Brush3dWidget::effectTypeNames[] = {
     "Perlin Distort", "Perlin Carve", "Sine Distort", "Voronoi Carve"
 };
 
-Brush3dWidget::Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, std::vector<BrushEntry>& sharedEntries)
+Brush3dWidget::Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, Brush3dManager& manager)
         : Widget("Brush 3D"),
-            entries(sharedEntries),
+            manager(manager),
             textureArrayManager(texMgr),
             loadedTextureLayers(loadedLayers)
 {
@@ -30,50 +30,49 @@ void Brush3dWidget::render() {
         return;
     }
 
-    // Add / remove entry buttons (modify caller-owned vector)
+    // Add / remove entry buttons (mutate the manager)
     if (ImGui::Button("+ Add Brush Entry")) {
-        entries.emplace_back();
-        // When adding, move selection to the new entry
-        currentIndex = static_cast<int>(entries.size()) - 1;
+        manager.addEntry();
         dirty = true;
     }
     ImGui::SameLine();
-    if (!entries.empty() && ImGui::Button("- Remove Last")) {
-        entries.pop_back();
-        if (currentIndex >= static_cast<int>(entries.size())) currentIndex = static_cast<int>(entries.size()) - 1;
-        if (currentIndex < 0) currentIndex = 0;
+    if (!manager.getEntries().empty() && ImGui::Button("- Remove Last")) {
+        manager.removeLast();
         dirty = true;
     }
 
     ImGui::Separator();
 
-    // Navigation controls for the shared entries list
-    if (entries.empty()) {
+    // Navigation controls for the manager-owned entries list
+    auto &entriesRef = manager.getEntries();
+    if (entriesRef.empty()) {
         ImGui::Text("No brush entries");
     } else {
-        ImGui::Text("Entry %d / %zu", currentIndex + 1, entries.size());
+        // Query current index from manager so UI and manager always agree
+        int currentIndex = manager.getSelectedIndex();
+        ImGui::Text("Entry %d / %zu", currentIndex + 1, entriesRef.size());
         ImGui::SameLine();
-        if (ImGui::Button("Prev") && currentIndex > 0) { currentIndex--; }
+        if (ImGui::Button("Prev")) { manager.prev(); currentIndex = manager.getSelectedIndex(); }
         ImGui::SameLine();
-        if (ImGui::Button("Next") && (currentIndex + 1) < static_cast<int>(entries.size())) { currentIndex++; }
+        if (ImGui::Button("Next")) { manager.next(); currentIndex = manager.getSelectedIndex(); }
         ImGui::SameLine();
         int idx = currentIndex;
         if (ImGui::InputInt("##entryIdx", &idx)) {
-            if (idx < 0) idx = 0;
-            if (idx >= static_cast<int>(entries.size())) idx = static_cast<int>(entries.size()) - 1;
-            currentIndex = idx;
+            manager.setSelectedIndex(idx);
+            currentIndex = manager.getSelectedIndex();
         }
 
         ImGui::Separator();
 
-        // Render only the selected entry
-        ImGui::PushID(currentIndex);
+        // Render only the selected entry (use the updated currentIndex)
+        int sel = currentIndex;
+        ImGui::PushID(sel);
         char label[64];
-        snprintf(label, sizeof(label), "Entry %d: %s (%s)", currentIndex,
-                 sdfTypeNames[entries[currentIndex].sdfType],
-                 layerNames[entries[currentIndex].targetLayer]);
+        snprintf(label, sizeof(label), "Entry %d: %s (%s)", sel,
+                 sdfTypeNames[entriesRef[sel].sdfType],
+                 layerNames[entriesRef[sel].targetLayer]);
         if (ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen)) {
-            renderEntry(currentIndex);
+            renderEntry(sel);
         }
         ImGui::PopID();
     }
@@ -94,7 +93,8 @@ void Brush3dWidget::render() {
 }
 
 void Brush3dWidget::renderEntry(int index) {
-    BrushEntry& e = entries[index];
+    auto &entriesRef = manager.getEntries();
+    BrushEntry& e = entriesRef[index];
 
     // SDF Type
     if (ImGui::Combo("SDF Type", &e.sdfType, sdfTypeNames, IM_ARRAYSIZE(sdfTypeNames))) {
@@ -174,12 +174,7 @@ void Brush3dWidget::renderEntry(int index) {
     char delLabel[32];
     snprintf(delLabel, sizeof(delLabel), "Delete##%d", index);
     if (ImGui::Button(delLabel)) {
-        entries.erase(entries.begin() + index);
-        if (entries.empty()) {
-            currentIndex = 0;
-        } else if (currentIndex >= static_cast<int>(entries.size())) {
-            currentIndex = static_cast<int>(entries.size()) - 1;
-        }
+        manager.removeAt(index);
         dirty = true;
         ImGui::PopStyleColor();
         return; // early return since indices changed
