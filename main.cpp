@@ -32,6 +32,8 @@
 #include "widgets/TextureMixerWidget.hpp"
 #include "widgets/TextureViewerWidget.hpp"
 #include "widgets/CameraWidget.hpp"
+#include "events/ControllerManager.hpp"
+#include "widgets/ControllerParametersWidget.hpp"
 #include "widgets/DebugWidget.hpp"
 #include "widgets/GamepadWidget.hpp"
 #include "widgets/ShadowMapWidget.hpp"
@@ -97,6 +99,8 @@ public:
     bool mixerWidgetPendingAdd = false;
     std::shared_ptr<TextureViewer> textureViewer;
     std::shared_ptr<CameraWidget> cameraWidget;
+    ControllerManager controllerManager;
+    std::shared_ptr<ControllerParametersWidget> controllerParametersWidget;
     std::shared_ptr<GamepadWidget> gamepadWidget;
     std::shared_ptr<DebugWidget> debugWidget;
     std::shared_ptr<ShadowMapWidget> shadowWidget;
@@ -250,6 +254,7 @@ public:
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
+        controllerParametersWidget = std::make_shared<ControllerParametersWidget>(controllerManager.getParameters());
         gamepadWidget = std::make_shared<GamepadWidget>();
         debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &cubeCount);
         shadowWidget = std::make_shared<ShadowMapWidget>(sceneRenderer->shadowMapper.get(), &shadowParams);
@@ -261,6 +266,7 @@ public:
  
         widgetManager.addWidget(textureViewer);
         widgetManager.addWidget(cameraWidget);
+        widgetManager.addWidget(controllerParametersWidget);
         widgetManager.addWidget(gamepadWidget);
         widgetManager.addWidget(debugWidget);
         widgetManager.addWidget(shadowWidget);
@@ -308,9 +314,9 @@ public:
 
     void update(float deltaTime) override {
         // Poll keyboard input and publish events
-        keyboardPublisher.update(getWindow(), &eventManager, camera, deltaTime, false);
+        keyboardPublisher.update(getWindow(), &eventManager, camera, deltaTime, &controllerManager, false);
         // Poll gamepad input and publish events (if a controller is connected)
-        gamepadPublisher.update(&eventManager, camera, deltaTime, false);
+        gamepadPublisher.update(&eventManager, camera, deltaTime, &controllerManager, false);
         eventManager.processQueued();
 
         shadowParams.update(camera.getPosition(), light);

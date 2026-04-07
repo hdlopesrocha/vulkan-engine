@@ -12,6 +12,8 @@ class Camera;
 // - Left stick Y -> translate up/down (up when stick up)
 // - Left bumper (L1) -> translate backward
 // - Right bumper (R1) -> translate forward
+class ControllerManager;
+
 class GamepadPublisher {
 public:
     GamepadPublisher(float moveSpeed = 2.5f, float angularSpeedDeg = 45.0f);
@@ -20,7 +22,7 @@ public:
     // - em: EventManager to publish to
     // - cam: reference to Camera for axis vectors
     // - deltaTime: frame delta seconds
-    void update(EventManager* em, const Camera& cam, float deltaTime, bool flipRotation);
+    void update(EventManager* em, const Camera& cam, float deltaTime, ControllerManager* controllerManager, bool flipRotation);
     void setMoveSpeed(float v) { moveSpeed = v; }
     void setAngularSpeed(float deg) { angularSpeedDeg = deg; }
 

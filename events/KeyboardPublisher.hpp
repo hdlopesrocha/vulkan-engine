@@ -10,6 +10,8 @@ class Camera;
 // publishes TranslateCameraEvent / RotateCameraEvent / ToggleFullscreenEvent
 // / CloseWindowEvent to the provided EventManager. It uses the supplied
 // Camera to compute forward/right/up axes for camera-relative motion.
+class ControllerManager;
+
 class KeyboardPublisher {
 public:
     KeyboardPublisher(float moveSpeed = 2.5f, float angularSpeedDeg = 45.0f);
@@ -19,7 +21,7 @@ public:
     // - em: EventManager to publish to (must be valid)
     // - cam: reference to Camera (used only to read forward/right/up)
     // - deltaTime: frame delta in seconds
-    void update(GLFWwindow* window, EventManager* em, const Camera& cam, float deltaTime, bool flipRotation);
+    void update(GLFWwindow* window, EventManager* em, const Camera& cam, float deltaTime, ControllerManager* controllerManager, bool flipRotation);
     void setMoveSpeed(float v) { moveSpeed = v; }
     void setAngularSpeed(float deg) { angularSpeedDeg = deg; }
 

@@ -8,11 +8,12 @@
 #include "RotateCameraEvent.hpp"
 #include "CloseWindowEvent.hpp"
 #include "ToggleFullscreenEvent.hpp"
+#include "ControllerManager.hpp"
 
 KeyboardPublisher::KeyboardPublisher(float moveSpeed_, float angularSpeedDeg_)
     : moveSpeed(moveSpeed_), angularSpeedDeg(angularSpeedDeg_) {}
 
-void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camera& cam, float deltaTime, bool flipRotation) {
+void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camera& cam, float deltaTime, ControllerManager* controllerManager, bool flipRotation) {
     if (!window || !em) return;
 
     // compute camera axes (camera provides normalized vectors)
@@ -25,47 +26,127 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
     float angDeg = glm::degrees(cam.angularSpeedRad) * deltaTime;
     float rotSign = flipRotation ? -1.0f : 1.0f;
 
+    // Controller override (if present)
+    ControllerParameters* cp = nullptr;
+    if (controllerManager) cp = controllerManager->getParameters();
+    if (cp) {
+        // If numeric keys pressed, switch pages (1..5)
+        if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) cp->currentPage = ControllerParameters::CAMERA;
+        if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) cp->currentPage = ControllerParameters::BRUSH_POSITION;
+        if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) cp->currentPage = ControllerParameters::BRUSH_SCALE;
+        if (glfwGetKey(window, GLFW_KEY_4) == GLFW_PRESS) cp->currentPage = ControllerParameters::BRUSH_ROTATION;
+        if (glfwGetKey(window, GLFW_KEY_5) == GLFW_PRESS) cp->currentPage = ControllerParameters::BRUSH_PROPERTIES;
+    }
+
+    // Translation keys (continuous while held)
     // Translation keys (continuous while held)
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
-        em->publish(std::make_shared<TranslateCameraEvent>(forward * velocity));
+        if (cp && cp->currentPage != ControllerParameters::CAMERA) {
+            // brush position: forward
+            cp->brushPosition += forward * (cp->cameraMoveSpeed * deltaTime);
+        } else {
+            em->publish(std::make_shared<TranslateCameraEvent>(forward * velocity));
+        }
     }
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
-        em->publish(std::make_shared<TranslateCameraEvent>(-forward * velocity));
+        if (cp && cp->currentPage != ControllerParameters::CAMERA) {
+            cp->brushPosition -= forward * (cp->cameraMoveSpeed * deltaTime);
+        } else {
+            em->publish(std::make_shared<TranslateCameraEvent>(-forward * velocity));
+        }
     }
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
-        em->publish(std::make_shared<TranslateCameraEvent>(-right * velocity));
+        if (cp && cp->currentPage == ControllerParameters::BRUSH_SCALE) {
+            cp->brushScale.x = std::max(0.001f, cp->brushScale.x - 0.5f * deltaTime);
+        } else if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
+            cp->brushRotation.y -= (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime;
+        } else if (cp) {
+            cp->brushPosition -= right * (cp->cameraMoveSpeed * deltaTime);
+        } else {
+            em->publish(std::make_shared<TranslateCameraEvent>(-right * velocity));
+        }
     }
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
-        em->publish(std::make_shared<TranslateCameraEvent>(right * velocity));
+        if (cp && cp->currentPage == ControllerParameters::BRUSH_SCALE) {
+            cp->brushScale.x += 0.5f * deltaTime;
+        } else if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
+            cp->brushRotation.y += (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime;
+        } else if (cp) {
+            cp->brushPosition += right * (cp->cameraMoveSpeed * deltaTime);
+        } else {
+            em->publish(std::make_shared<TranslateCameraEvent>(right * velocity));
+        }
     }
     if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
-        em->publish(std::make_shared<TranslateCameraEvent>(up * velocity));
+        if (cp && cp->currentPage == ControllerParameters::BRUSH_SCALE) {
+            cp->brushScale.y += 0.5f * deltaTime;
+        } else if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
+            cp->brushRotation.z += (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime;
+        } else if (cp) {
+            cp->brushPosition += up * (cp->cameraMoveSpeed * deltaTime);
+        } else {
+            em->publish(std::make_shared<TranslateCameraEvent>(up * velocity));
+        }
     }
     if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
-        em->publish(std::make_shared<TranslateCameraEvent>(-up * velocity));
+        if (cp && cp->currentPage == ControllerParameters::BRUSH_SCALE) {
+            cp->brushScale.y = std::max(0.001f, cp->brushScale.y - 0.5f * deltaTime);
+        } else if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
+            cp->brushRotation.z -= (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime;
+        } else if (cp) {
+            cp->brushPosition -= up * (cp->cameraMoveSpeed * deltaTime);
+        } else {
+            em->publish(std::make_shared<TranslateCameraEvent>(-up * velocity));
+        }
     }
 
     // Rotation keys (continuous while held)
     // yaw: H (left), F (right) around world up
+    // Rotation keys (continuous while held)
+    // H/F -> yaw, G/T -> pitch, R/Y -> roll
     if (glfwGetKey(window, GLFW_KEY_H) == GLFW_PRESS) {
-        em->publish(std::make_shared<RotateCameraEvent>(rotSign * -angDeg, 0.0f, 0.0f));
+        if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
+            cp->brushRotation.y -= (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime * rotSign;
+        } else {
+            em->publish(std::make_shared<RotateCameraEvent>(rotSign * -angDeg, 0.0f, 0.0f));
+        }
     }
     if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS) {
-        em->publish(std::make_shared<RotateCameraEvent>(rotSign * angDeg, 0.0f, 0.0f));
+        if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
+            cp->brushRotation.y += (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime * rotSign;
+        } else {
+            em->publish(std::make_shared<RotateCameraEvent>(rotSign * angDeg, 0.0f, 0.0f));
+        }
     }
     // pitch: G (down), T (up) around camera right
     if (glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS) {
-        em->publish(std::make_shared<RotateCameraEvent>(0.0f, rotSign * -angDeg, 0.0f));
+        if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
+            cp->brushRotation.x -= (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime * rotSign;
+        } else {
+            em->publish(std::make_shared<RotateCameraEvent>(0.0f, rotSign * -angDeg, 0.0f));
+        }
     }
     if (glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS) {
-        em->publish(std::make_shared<RotateCameraEvent>(0.0f, rotSign * angDeg, 0.0f));
+        if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
+            cp->brushRotation.x += (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime * rotSign;
+        } else {
+            em->publish(std::make_shared<RotateCameraEvent>(0.0f, rotSign * angDeg, 0.0f));
+        }
     }
     // roll: R (left), Y (right) around forward
     if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) {
-        em->publish(std::make_shared<RotateCameraEvent>(0.0f, 0.0f, rotSign * -angDeg));
+        if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
+            cp->brushRotation.z -= (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime * rotSign;
+        } else {
+            em->publish(std::make_shared<RotateCameraEvent>(0.0f, 0.0f, rotSign * -angDeg));
+        }
     }
     if (glfwGetKey(window, GLFW_KEY_Y) == GLFW_PRESS) {
-        em->publish(std::make_shared<RotateCameraEvent>(0.0f, 0.0f, rotSign * angDeg));
+        if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
+            cp->brushRotation.z += (cp ? cp->cameraAngularSpeedDeg : glm::degrees(cam.angularSpeedRad)) * deltaTime * rotSign;
+        } else {
+            em->publish(std::make_shared<RotateCameraEvent>(0.0f, 0.0f, rotSign * angDeg));
+        }
     }
 
     // Toggle fullscreen: F11 on key-down
