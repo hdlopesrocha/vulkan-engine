@@ -28,12 +28,14 @@ void Processor::before(const Octree &tree, OctreeNodeData &params) {
 //std::mutex processorMutex;
 void Processor::after(const Octree &tree, OctreeNodeData &params) {
     if(params.context != NULL) {
-        bool nodeIterated = false;
-        tree.iterateBorder(params.node, params.cube, params.node->sdf, params.level, tree.root, tree, tree.root->sdf, 0, nodeIterated,
-            [this, &tree, params](const BoundingCube &cube, const float sdf[8], uint level){
-                tree.handleQuadNodes(cube, level, sdf, handlers, true, context);
-            }, context
+        auto func = [this, &tree, params](const BoundingCube &cube, const float sdf[8], uint level){
+            tree.handleQuadNodes(cube, level, sdf, handlers, true, context);
+        };
+
+        tree.iterateBorder(params.node, params.cube, params.node->sdf, params.level, tree.root, tree, tree.root->sdf, 0,
+            func, context
         );
+        func(params.cube, params.node->sdf, params.level);
     }
 }
 
