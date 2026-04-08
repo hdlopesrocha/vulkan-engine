@@ -21,11 +21,13 @@ public:
     void init();
     void cleanup();
     void init(VulkanApp* app, VkRenderPass renderPassOverride = VK_NULL_HANDLE);
-
-    // Register per-chunk vegetation instances
-    void setChunkInstances(NodeID chunkId, const std::vector<glm::vec3>& positions);
-    // New: Set chunk instance buffer directly from GPU buffer (compute shader output)
-    void setChunkInstanceBuffer(NodeID chunkId, VkBuffer buffer, uint32_t count);
+    // Generate per-chunk vegetation instances from mesh geometry using the
+    // compute shader. This is the only supported instancing path now.
+    void generateChunkInstances(NodeID chunkId,
+                                VkBuffer vertexBuffer, uint32_t vertexCount,
+                                VkBuffer indexBuffer, uint32_t indexCount,
+                                uint32_t instancesPerTriangle, VulkanApp* app,
+                                uint32_t seed = 1337);
     void clearAllInstances();
 
     // Draw all visible vegetation chunks (frustum culling is per-chunk, matching geometry)
@@ -58,14 +60,10 @@ private:
     };
     std::unordered_map<NodeID, InstanceBuffer> chunkBuffers;
     std::unordered_map<NodeID, size_t> chunkInstanceCounts;
-    // Pending CPU-side positions that will be uploaded when `createPipelines(app, ...)` is called
-    std::unordered_map<NodeID, std::vector<glm::vec3>> pendingChunkPositions;
-    void createInstanceBuffer(NodeID chunkId, const std::vector<glm::vec3>& positions, VulkanApp* app);
     void destroyInstanceBuffer(NodeID chunkId);
     // If the renderer was initialized with an app, this will be set and
-    // allows immediate GPU uploads from setChunkInstances(). Otherwise
-    // positions are stored in `pendingChunkPositions` until `init(app,...)`
-    // runs and performs the uploads.
+    // allows immediate compute-based generation calls to run against the
+    // provided `VulkanApp` instance.
     VulkanApp* appPtr = nullptr;
     // Simple VBO that provides the per-vertex 'base' used by the vegetation
     // pipeline. We use a single base vertex and expand in the shader via
