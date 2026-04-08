@@ -58,9 +58,9 @@ struct WaterParams {
     float volumeBlurRate = 0.004f;   // exponential rate: blur ramps with water thickness
     float volumeBumpRate = 0.05f;  // exponential rate: bump ramps with water thickness
     // Caustics / light focusing parameters
-    glm::vec3 causticColor = glm::vec3(1.0f, 0.98f, 0.8f);
-    float causticIntensity = 1.5f;    // multiplier for caustic brightness
-    float causticScale = 0.5f;       // scale factor applied to Jacobian determinant
+    glm::vec3 causticColor = glm::vec3(0.0f, 0.58f, 1.0f);
+    float causticIntensity = 10.0f;    // multiplier for caustic brightness
+    float causticScale = 5.0f;       // scale factor applied to Jacobian determinant
     float causticPower = 1.0f;        // exponent to sharpen caustic contrast
     // Depth scale (world units) controlling blend from surface->bottom caustic
     float causticDepthScale = 4.0f;
