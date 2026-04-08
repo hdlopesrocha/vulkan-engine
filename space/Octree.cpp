@@ -149,11 +149,11 @@ void Octree::iterateBorder(
         
             int axis = -1;
 
-            if (toCube.getMinX() <= fromCube.getMaxX() && toCube.getMaxX() > fromCube.getMaxX())
+            if (toCube.getMinX() == fromCube.getMaxX())
                 axis = 0;
-            else if (toCube.getMinY() <= fromCube.getMaxY() && toCube.getMaxY() > fromCube.getMaxY())
+            else if (toCube.getMinY() == fromCube.getMaxY())
                 axis = 1;
-            else if (toCube.getMinZ() <= fromCube.getMaxZ() && toCube.getMaxZ() > fromCube.getMaxZ())
+            else if (toCube.getMinZ() == fromCube.getMaxZ())
                 axis = 2;
             
 
