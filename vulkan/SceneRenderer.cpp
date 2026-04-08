@@ -738,27 +738,33 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
     if (layer == LAYER_OPAQUE && vegetationRenderer) {
         if (geom.indices.size() >= 3 && !geom.vertices.empty()) {
             try {
-                Buffer vb = app->createVertexBuffer(geom.vertices);
-                Buffer ib = app->createIndexBuffer(geom.indices);
-                uint32_t vertexCount = static_cast<uint32_t>(geom.vertices.size());
+                // Create tightly-packed position buffer (vec3[]) for the compute shader
+                std::vector<glm::vec3> positions;
+                positions.reserve(geom.vertices.size());
+                for (const auto &v : geom.vertices) positions.push_back(v.position);
+
+                VkDevice device = app->getDevice();
+
+                Buffer posBuf = app->createDeviceLocalBuffer(positions.data(), positions.size() * sizeof(glm::vec3), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                Buffer idxBuf = app->createDeviceLocalBuffer(geom.indices.data(), geom.indices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+                uint32_t vertexCount = static_cast<uint32_t>(positions.size());
                 uint32_t indexCount = static_cast<uint32_t>(geom.indices.size());
-                // Default density: instances per triangle. Can be exposed as a setting later.
                 uint32_t instancesPerTriangle = 2u;
                 uint32_t seed = static_cast<uint32_t>(nid & 0xffffffffull);
-                vegetationRenderer->generateChunkInstances(nid, vb.buffer, vertexCount, ib.buffer, indexCount, instancesPerTriangle, app, seed);
 
-                // Clean up temporary buffers (runSingleTimeCommands used inside generateChunkInstances
-                // ensures compute work is finished before returning).
-                VkDevice device = app->getDevice();
-                app->resources.removeBuffer(vb.buffer);
-                vkDestroyBuffer(device, vb.buffer, nullptr);
-                app->resources.removeDeviceMemory(vb.memory);
-                vkFreeMemory(device, vb.memory, nullptr);
+                vegetationRenderer->generateChunkInstances(nid, posBuf.buffer, vertexCount, idxBuf.buffer, indexCount, instancesPerTriangle, app, seed);
 
-                app->resources.removeBuffer(ib.buffer);
-                vkDestroyBuffer(device, ib.buffer, nullptr);
-                app->resources.removeDeviceMemory(ib.memory);
-                vkFreeMemory(device, ib.memory, nullptr);
+                // Free temporary GPU buffers immediately - resource manager tracked them, so remove then destroy
+                app->resources.removeBuffer(posBuf.buffer);
+                vkDestroyBuffer(device, posBuf.buffer, nullptr);
+                app->resources.removeDeviceMemory(posBuf.memory);
+                vkFreeMemory(device, posBuf.memory, nullptr);
+
+                app->resources.removeBuffer(idxBuf.buffer);
+                vkDestroyBuffer(device, idxBuf.buffer, nullptr);
+                app->resources.removeDeviceMemory(idxBuf.memory);
+                vkFreeMemory(device, idxBuf.memory, nullptr);
             } catch (const std::exception &e) {
                 fprintf(stderr, "[SceneRenderer] Vegetation generation failed for node %llu: %s\n", (unsigned long long)nid, e.what());
             }
