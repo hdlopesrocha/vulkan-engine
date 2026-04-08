@@ -140,39 +140,38 @@ void Octree::iterateBorder(
             const IterateBorderHandler &func,
             ThreadContext * context) const
 {
-    if (!nodeIterated) {
-        // ----------------------
-        // LEAF / SIMPLIFIED CASE
-        // ----------------------
-        if (to->isSimplified()) {
-            context->nodeCache[glm::vec4(toCube.getMin(), toLevel)] = OctreeNodeLevel((OctreeNode*)to, toLevel);
+    // ----------------------
+    // LEAF / SIMPLIFIED CASE
+    // ----------------------
+    if (to->isSimplified()) {
+        context->nodeCache[glm::vec4(toCube.getMin(), toLevel)] = OctreeNodeLevel((OctreeNode*)to, toLevel);
+        
+        if (toCube.getLengthX() < fromCube.getLengthX()) {
+        
+            int axis = -1;
+
+            if (toCube.getMinX() <= fromCube.getMaxX() && toCube.getMaxX() > fromCube.getMaxX())
+                axis = 0;
+            else if (toCube.getMinY() <= fromCube.getMaxY() && toCube.getMaxY() > fromCube.getMaxY())
+                axis = 1;
+            else if (toCube.getMinZ() <= fromCube.getMaxZ() && toCube.getMaxZ() > fromCube.getMaxZ())
+                axis = 2;
             
-            // CASE B: toCube is coarser/larger than fromCube
-            // -> build pseudo as a clipped subregion of fromCube (use fromSDF)
-            if (toCube.getLengthX() >= fromCube.getLengthX()) {
-                nodeIterated = true;
-                func(fromCube, fromSDF, fromLevel);
-            }
-            // CASE A: toCube is same size or finer than fromCube
-            // -> build pseudo as a clipped subregion of toCube (use toSDF)
-            else {
+
+            if (axis != -1) {
                 BoundingCube toCubeShifted = toCube;
-                int axis = -1;
+                if (axis == 0) toCubeShifted.setMaxX(fromCube.getMaxX());
+                if (axis == 1) toCubeShifted.setMaxY(fromCube.getMaxY());
+                if (axis == 2) toCubeShifted.setMaxZ(fromCube.getMaxZ());
 
-                if (toCube.getMinX() <= fromCube.getMaxX() && toCube.getMaxX() > fromCube.getMaxX())
-                    axis = 0;
-                else if (toCube.getMinY() <= fromCube.getMaxY() && toCube.getMaxY() > fromCube.getMaxY())
-                    axis = 1;
-                else if (toCube.getMinZ() <= fromCube.getMaxZ() && toCube.getMaxZ() > fromCube.getMaxZ())
-                    axis = 2;
-
-                if (axis != -1) {
-                    BoundingCube toCubeShifted = toCube;
-                    if (axis == 0) toCubeShifted.setMaxX(fromCube.getMaxX());
-                    if (axis == 1) toCubeShifted.setMaxY(fromCube.getMaxY());
-                    if (axis == 2) toCubeShifted.setMaxZ(fromCube.getMaxZ());
-
-                    if (fromCube.intersects(toCubeShifted)) {
+                if (fromCube.intersects(toCubeShifted)) {
+                    // Use the shifted cube min + level as a stable key to prevent
+                    // calling the border handler twice for the exact same region.
+                    glm::vec4 invokedKey = glm::vec4(toCubeShifted.getMin(), toLevel);                        
+                    auto res = context->invokedCubeCalls.emplace(invokedKey);
+                    bool shouldInvoke = res.second; // true if inserted (wasn't present)
+                    
+                    if (shouldInvoke) {
                         float toSdfShifted[8];
                         for (uint i = 0; i < 8; ++i) {
                             toSdfShifted[i] = SDF::interpolate(toSDF, toCubeShifted.getCorner(i), toCube);
@@ -181,47 +180,48 @@ void Octree::iterateBorder(
                     }
                 }
             }
+        }
 
 
-        } else {
+    } else {
 
-            // ----------------------
-            // INTERNAL NODE: recurse into children of `to`
-            // ----------------------
-            OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-            to->getChildren(*allocator, children);
+        // ----------------------
+        // INTERNAL NODE: recurse into children of `to`
+        // ----------------------
+        OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+        to->getChildren(*allocator, children);
 
-            // decide a threshold for treating `to` as "similar size" to `from`
-            // (kept your original heuristic, but you can tune or replace it)
+        // decide a threshold for treating `to` as "similar size" to `from`
+        // (kept your original heuristic, but you can tune or replace it)
 
-            for (uint i = 0; i < 8; ++i) {
-                OctreeNode * to = children[i];
-                if (to != NULL 
-                    && to->getType() == SpaceType::Surface
-                    && (toCube.contains(fromCube) || toCube.getChild(i).intersects(fromCube))) {
-                    BoundingCube childCube = toCube.getChild(i);
-                    int axis = -1;
+        for (uint i = 0; i < 8; ++i) {
+            OctreeNode * to = children[i];
+            if (to != NULL 
+                && to->getType() == SpaceType::Surface
+                && (toCube.contains(fromCube) || toCube.getChild(i).intersects(fromCube))) {
+                BoundingCube childCube = toCube.getChild(i);
+                int axis = -1;
 
-                    if (childCube.getMinX() <= fromCube.getMaxX() && childCube.getMaxX() > fromCube.getMaxX())
-                        axis = 0;
-                    else if (childCube.getMinY() <= fromCube.getMaxY() && childCube.getMaxY() > fromCube.getMaxY())
-                        axis = 1;
-                    else if (childCube.getMinZ() <= fromCube.getMaxZ() && childCube.getMaxZ() > fromCube.getMaxZ())
-                        axis = 2;
+                if (childCube.getMinX() <= fromCube.getMaxX() && childCube.getMaxX() > fromCube.getMaxX())
+                    axis = 0;
+                else if (childCube.getMinY() <= fromCube.getMaxY() && childCube.getMaxY() > fromCube.getMaxY())
+                    axis = 1;
+                else if (childCube.getMinZ() <= fromCube.getMaxZ() && childCube.getMaxZ() > fromCube.getMaxZ())
+                    axis = 2;
 
-                    if(fromCube.getMinX() == childCube.getMaxX()
-                    || fromCube.getMinY() == childCube.getMaxY()
-                    || fromCube.getMinZ() == childCube.getMaxZ()) {
-                        axis = -1; // if cubes touch at the border but do not overlap, do not treat as intersecting
-                    }
+                if(fromCube.getMinX() == childCube.getMaxX()
+                || fromCube.getMinY() == childCube.getMaxY()
+                || fromCube.getMinZ() == childCube.getMaxZ()) {
+                    axis = -1; // if cubes touch at the border but do not overlap, do not treat as intersecting
+                }
 
-                    if (axis != -1 && fromCube.intersects(childCube)) {
-                        iterateBorder(from, fromCube, fromSDF, fromLevel, to, childCube, to->sdf, toLevel + 1, nodeIterated, func, context);
-                    }
+                if (axis != -1 && fromCube.intersects(childCube)) {
+                    iterateBorder(from, fromCube, fromSDF, fromLevel, to, childCube, to->sdf, toLevel + 1, nodeIterated, func, context);
                 }
             }
         }
     }
+    
 }
 
 
