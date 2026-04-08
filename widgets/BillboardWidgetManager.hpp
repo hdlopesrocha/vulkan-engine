@@ -23,7 +23,9 @@ public:
             std::vector<glm::vec3> visible;
             visible.reserve(count);
             for (int i = 0; i < count; ++i) visible.push_back((*allCandidatePositions)[i]);
-            vegetationRenderer->setChunkInstances(0, visible);
+            // Injection of CPU instance lists is disabled. Instances are
+            // generated exclusively via the vegetation compute shader.
+            (void)visible;
         }
     }
 private:

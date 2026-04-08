@@ -14,7 +14,7 @@ public:
         debugMode = 0;
         normalMappingEnabled = true;
         waterEnabled = true;
-        vegetationEnabled = false;
+        vegetationEnabled = true;
         triplanarThreshold = 0.12f;
         triplanarExponent = 1.0f;
         tessellationEnabled = true;
