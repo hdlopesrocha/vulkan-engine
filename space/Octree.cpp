@@ -136,7 +136,6 @@ void Octree::iterateBorder(
             const BoundingCube &toCube,
             const float toSDF[8],
             const uint toLevel,
-            bool &nodeIterated, 
             const IterateBorderHandler &func,
             ThreadContext * context) const
 {
@@ -216,7 +215,7 @@ void Octree::iterateBorder(
                 }
 
                 if (axis != -1 && fromCube.intersects(childCube)) {
-                    iterateBorder(from, fromCube, fromSDF, fromLevel, to, childCube, to->sdf, toLevel + 1, nodeIterated, func, context);
+                    iterateBorder(from, fromCube, fromSDF, fromLevel, to, childCube, to->sdf, toLevel + 1, func, context);
                 }
             }
         }

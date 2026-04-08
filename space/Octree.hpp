@@ -60,7 +60,6 @@ public:
         const BoundingCube &toCube,
         const float toSDF[8],
         const uint toLevel,
-        bool &nodeIterated,
         const IterateBorderHandler &func,
         ThreadContext * context) const;
     bool isChunkNode(float length) const;
