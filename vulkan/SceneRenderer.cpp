@@ -732,6 +732,39 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
         renderer.rebuild(app);
     }
 
+    // Generate vegetation instances for this node using the compute shader.
+    // We create temporary device-local vertex/index buffers for the mesh geometry,
+    // dispatch the compute shader to write instances, then free the temporary buffers.
+    if (layer == LAYER_OPAQUE && vegetationRenderer) {
+        if (geom.indices.size() >= 3 && !geom.vertices.empty()) {
+            try {
+                Buffer vb = app->createVertexBuffer(geom.vertices);
+                Buffer ib = app->createIndexBuffer(geom.indices);
+                uint32_t vertexCount = static_cast<uint32_t>(geom.vertices.size());
+                uint32_t indexCount = static_cast<uint32_t>(geom.indices.size());
+                // Default density: instances per triangle. Can be exposed as a setting later.
+                uint32_t instancesPerTriangle = 2u;
+                uint32_t seed = static_cast<uint32_t>(nid & 0xffffffffull);
+                vegetationRenderer->generateChunkInstances(nid, vb.buffer, vertexCount, ib.buffer, indexCount, instancesPerTriangle, app, seed);
+
+                // Clean up temporary buffers (runSingleTimeCommands used inside generateChunkInstances
+                // ensures compute work is finished before returning).
+                VkDevice device = app->getDevice();
+                app->resources.removeBuffer(vb.buffer);
+                vkDestroyBuffer(device, vb.buffer, nullptr);
+                app->resources.removeDeviceMemory(vb.memory);
+                vkFreeMemory(device, vb.memory, nullptr);
+
+                app->resources.removeBuffer(ib.buffer);
+                vkDestroyBuffer(device, ib.buffer, nullptr);
+                app->resources.removeDeviceMemory(ib.memory);
+                vkFreeMemory(device, ib.memory, nullptr);
+            } catch (const std::exception &e) {
+                fprintf(stderr, "[SceneRenderer] Vegetation generation failed for node %llu: %s\n", (unsigned long long)nid, e.what());
+            }
+        }
+    }
+
 }
 
 size_t SceneRenderer::getTransparentModelCount() {
