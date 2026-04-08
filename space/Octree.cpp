@@ -196,7 +196,9 @@ void Octree::iterateBorder(
 
             for (uint i = 0; i < 8; ++i) {
                 OctreeNode * to = children[i];
-                if (to != NULL && to->getType() == SpaceType::Surface) {
+                if (to != NULL 
+                    && to->getType() == SpaceType::Surface
+                    && (toCube.contains(fromCube) || toCube.getChild(i).intersects(fromCube))) {
                     BoundingCube childCube = toCube.getChild(i);
                     int axis = -1;
 
@@ -206,6 +208,12 @@ void Octree::iterateBorder(
                         axis = 1;
                     else if (childCube.getMinZ() <= fromCube.getMaxZ() && childCube.getMaxZ() > fromCube.getMaxZ())
                         axis = 2;
+
+                    if(fromCube.getMinX() == childCube.getMaxX()
+                    || fromCube.getMinY() == childCube.getMaxY()
+                    || fromCube.getMinZ() == childCube.getMaxZ()) {
+                        axis = -1; // if cubes touch at the border but do not overlap, do not treat as intersecting
+                    }
 
                     if (axis != -1 && fromCube.intersects(childCube)) {
                         iterateBorder(from, fromCube, fromSDF, fromLevel, to, childCube, to->sdf, toLevel + 1, nodeIterated, func, context);
