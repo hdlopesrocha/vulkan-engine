@@ -140,20 +140,18 @@ void Octree::iterateBorder(
             const IterateBorderHandler &func,
             ThreadContext * context) const
 {
-    if (to && !nodeIterated) {
+    if (!nodeIterated) {
         // ----------------------
         // LEAF / SIMPLIFIED CASE
         // ----------------------
         if (to->isSimplified()) {
-            context->nodeCache[glm::vec4(toCube.getCenter(), toLevel)] = OctreeNodeLevel((OctreeNode*)to, toLevel);
+            context->nodeCache[glm::vec4(toCube.getMin(), toLevel)] = OctreeNodeLevel((OctreeNode*)to, toLevel);
             
             // CASE B: toCube is coarser/larger than fromCube
             // -> build pseudo as a clipped subregion of fromCube (use fromSDF)
             if (toCube.getLengthX() >= fromCube.getLengthX()) {
-                if(to->getType() == SpaceType::Surface) {
-                    nodeIterated = true;
-                    func(fromCube, fromSDF, fromLevel);
-                }
+                nodeIterated = true;
+                func(fromCube, fromSDF, fromLevel);
             }
             // CASE A: toCube is same size or finer than fromCube
             // -> build pseudo as a clipped subregion of toCube (use toSDF)
