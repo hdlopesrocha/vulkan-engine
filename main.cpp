@@ -280,7 +280,6 @@ public:
         widgetManager.addWidget(vegetationAtlasEditor);
         widgetManager.addWidget(billboardWidget);
         widgetManager.addWidget(billboardCreator);
-        widgetManager.addWidget(octreeExplorerWidget);
 
       
         // Subscribe event handlers
@@ -770,6 +769,9 @@ void MyApp::setupScene() {
     // Initialize and load the main scene so rendering has valid scene data
     mainScene = new LocalScene();
     octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
+    // Register the explorer widget after construction so the WidgetManager
+    // receives a valid shared_ptr (previously it was added while null).
+    widgetManager.addWidget(octreeExplorerWidget);
 
     // If you have vegetation: sceneRenderer->vegetationRenderer->rebuildBuffers(this);
 
