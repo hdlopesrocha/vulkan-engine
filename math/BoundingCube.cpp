@@ -137,6 +137,10 @@ void BoundingCube::setMinZ(float v){
     this->min.z = v;
 }
 
+void BoundingCube::setMax(glm::vec3 v) {
+    this->min = v - glm::vec3(length);
+}
+
 void BoundingCube::setMaxX(float v){
     this->min.x = v-length;
 }

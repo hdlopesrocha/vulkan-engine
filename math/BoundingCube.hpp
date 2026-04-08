@@ -17,6 +17,8 @@ public:
     void setMaxX(float v);
     void setMaxY(float v);
     void setMaxZ(float v);
+    void setMax(glm::vec3 v);
+
     glm::vec3 getLength() const override;
     float getLengthX() const override;
     float getLengthY() const override;
