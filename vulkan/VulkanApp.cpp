@@ -28,6 +28,7 @@ std::mutex buffersPendingMutex;
 std::vector<std::pair<VkBuffer, VkDeviceMemory>> buffersPendingAutoDestroy;
 #include "VulkanApp.hpp"
 #include "TextureArrayManager.hpp"
+#include "../utils/FileReader.hpp"
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_vulkan.h"
@@ -100,8 +101,199 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     VkBuffer indexBuffer, uint32_t indexCount,
     uint32_t instancesPerTriangle,
     VkBuffer outputBuffer, uint32_t outputBufferSize, uint32_t seed) {
-    // ...existing implementation (restore as needed)...
-    return 0; // TODO: restore correct return value and implementation
+    if (vertexBuffer == VK_NULL_HANDLE || indexBuffer == VK_NULL_HANDLE || outputBuffer == VK_NULL_HANDLE) return 0;
+    if (indexCount < 3 || instancesPerTriangle == 0) return 0;
+
+    uint32_t triCount = indexCount / 3;
+    uint32_t expectedInstances = triCount * instancesPerTriangle;
+    uint32_t expectedBytes = expectedInstances * sizeof(float) * 4; // shader writes vec4
+    if (outputBufferSize < expectedBytes) {
+        fprintf(stderr, "[VulkanApp] generateVegetationInstancesCompute: outputBufferSize too small (%u < %u)\n", outputBufferSize, expectedBytes);
+        return 0;
+    }
+
+    VkDevice device = getDevice();
+
+    // Descriptor set layout: three storage buffers (vertices, indices, output instances)
+    VkDescriptorSetLayoutBinding bindings[3] = {};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 3;
+    layoutInfo.pBindings = bindings;
+
+    VkDescriptorSetLayout descLayout = VK_NULL_HANDLE;
+    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descLayout) != VK_SUCCESS) {
+        fprintf(stderr, "[VulkanApp] Failed to create vegetation compute descriptor set layout\n");
+        return 0;
+    }
+
+    // Push constant range matches shader Push struct (5 uints)
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(uint32_t) * 5;
+
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts = &descLayout;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges = &pushRange;
+    if (vkCreatePipelineLayout(device, &plInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+        fprintf(stderr, "[VulkanApp] Failed to create vegetation compute pipeline layout\n");
+        return 0;
+    }
+
+    // Load compute shader
+    auto compCode = FileReader::readFile("shaders/vegetation_instance_gen.comp.spv");
+    if (compCode.empty()) {
+        fprintf(stderr, "[VulkanApp] vegetation_instance_gen.comp.spv not found or empty\n");
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+        return 0;
+    }
+    VkShaderModule compModule = createShaderModule(compCode);
+
+    VkPipelineShaderStageCreateInfo stageInfo{};
+    stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stageInfo.module = compModule;
+    stageInfo.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage = stageInfo;
+    pipelineInfo.layout = pipelineLayout;
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
+        fprintf(stderr, "[VulkanApp] Failed to create vegetation compute pipeline\n");
+        vkDestroyShaderModule(device, compModule, nullptr);
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+        return 0;
+    }
+
+    // Descriptor pool and set
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = 3;
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = 1;
+    VkDescriptorPool descPool = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool) != VK_SUCCESS) {
+        fprintf(stderr, "[VulkanApp] Failed to create descriptor pool for vegetation compute\n");
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyShaderModule(device, compModule, nullptr);
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+        return 0;
+    }
+
+    VkDescriptorSetAllocateInfo ainfo{};
+    ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ainfo.descriptorPool = descPool;
+    ainfo.descriptorSetCount = 1;
+    ainfo.pSetLayouts = &descLayout;
+    VkDescriptorSet descSet = VK_NULL_HANDLE;
+    if (vkAllocateDescriptorSets(device, &ainfo, &descSet) != VK_SUCCESS) {
+        fprintf(stderr, "[VulkanApp] Failed to allocate descriptor set for vegetation compute\n");
+        vkDestroyDescriptorPool(device, descPool, nullptr);
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyShaderModule(device, compModule, nullptr);
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+        return 0;
+    }
+
+    VkDescriptorBufferInfo vbInfo{ vertexBuffer, 0, VK_WHOLE_SIZE };
+    VkDescriptorBufferInfo ibInfo{ indexBuffer, 0, VK_WHOLE_SIZE };
+    VkDescriptorBufferInfo outInfo{ outputBuffer, 0, VK_WHOLE_SIZE };
+
+    VkWriteDescriptorSet writes[3]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = descSet;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[0].descriptorCount = 1;
+    writes[0].pBufferInfo = &vbInfo;
+
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = descSet;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[1].descriptorCount = 1;
+    writes[1].pBufferInfo = &ibInfo;
+
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = descSet;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[2].descriptorCount = 1;
+    writes[2].pBufferInfo = &outInfo;
+
+    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+
+    // Record and submit a single-time command buffer for compute dispatch
+    runSingleTimeCommands([&](VkCommandBuffer cmd) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
+
+        // Push constants: instancesPerTriangle, vertexCount, indexCount, seed, pad
+        uint32_t push[5];
+        push[0] = instancesPerTriangle;
+        push[1] = vertexCount;
+        push[2] = indexCount;
+        push[3] = seed;
+        push[4] = 0u;
+        vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
+
+        if (triCount > 0) {
+            // Dispatch one workgroup per triangle (local_size_x == 1)
+            vkCmdDispatch(cmd, triCount, 1, 1);
+            // Ensure shader writes are visible to subsequent vertex input
+            VkBufferMemoryBarrier bufBarrier{};
+            bufBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            bufBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            bufBarrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+            bufBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            bufBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            bufBarrier.buffer = outputBuffer;
+            bufBarrier.offset = 0;
+            bufBarrier.size = VK_WHOLE_SIZE;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, nullptr, 1, &bufBarrier, 0, nullptr);
+        }
+    });
+
+    // Cleanup temporary Vulkan objects
+    vkFreeDescriptorSets(device, descPool, 1, &descSet);
+    vkDestroyDescriptorPool(device, descPool, nullptr);
+    vkDestroyPipeline(device, pipeline, nullptr);
+    vkDestroyShaderModule(device, compModule, nullptr);
+    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+    vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+
+    return expectedInstances;
 }
 
 void VulkanApp::createImageViews() {
