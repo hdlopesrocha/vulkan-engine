@@ -419,7 +419,7 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
         indirectMemory = VK_NULL_HANDLE;
         return;
     }
-
+    std::cout << "[VegetationRenderer::generateChunkInstances] written = " << written << std::endl; 
     InstanceBuffer ibuf;
     ibuf.buffer = instanceBuffer;
     ibuf.memory = instanceMemory;
