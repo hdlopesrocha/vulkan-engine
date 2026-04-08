@@ -35,7 +35,14 @@ void Processor::after(const Octree &tree, OctreeNodeData &params) {
         tree.iterateBorder(params.node, params.cube, params.node->sdf, params.level, tree.root, tree, tree.root->sdf, 0,
             func, context
         );
-        func(params.cube, params.node->sdf, params.level);
+
+        glm::vec4 invokedKey = glm::vec4(params.cube.getMin(), params.level);                        
+        auto res = context->invokedCubeCalls.emplace(invokedKey);
+        bool shouldInvoke = res.second; // true if inserted (wasn't present)
+                    
+        if (shouldInvoke) {
+            func(params.cube, params.node->sdf, params.level);
+        }
     }
 }
 
