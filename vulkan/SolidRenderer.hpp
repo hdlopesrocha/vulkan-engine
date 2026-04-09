@@ -2,7 +2,7 @@
 
 #include "VulkanApp.hpp"
 #include "IndirectRenderer.hpp"
-#include "Model3DVersion.hpp"
+#include "../utils/Model3DVersion.hpp"
 #include "ShaderStage.hpp"
 #include "../math/Vertex.hpp"
 #include "../utils/Scene.hpp"

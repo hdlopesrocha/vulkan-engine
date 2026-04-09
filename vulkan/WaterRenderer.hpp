@@ -9,94 +9,9 @@
 #include "../Uniforms.hpp"
 #include "../widgets/SkySettings.hpp"
 #include <unordered_map>
-#include "Model3DVersion.hpp"
+#include "../utils/Model3DVersion.hpp"
 
-// Water rendering parameters (CPU-side)
-struct WaterParams {
-    float time = 0.0f;
-    float waveSpeed = 0.5f;
-    float waveScale = 0.03f;
-    float refractionStrength = 0.03f;
-    float fresnelPower = 5.0f;
-    float transparency = 0.7f;
-    glm::vec3 shallowColor = glm::vec3(0.1f, 0.4f, 0.5f);
-    glm::vec3 deepColor = glm::vec3(0.0f, 0.15f, 0.25f);
-    float depthFalloff = 0.1f;
-    int noiseOctaves = 4;
-    float noisePersistence = 0.5f;
-    float noiseScale = 0.4f;
-    float waterTint = 0.3f;
-    float noiseTimeSpeed = 1.0f;
-
-    // Reflection / specular controls
-    float reflectionStrength = 0.6f;  // How much reflection mixes into the surface [0..1]
-    float specularIntensity = 2.0f;   // Brightness of specular highlight
-    float specularPower = 128.0f;     // Sharpness of specular highlight
-    float glitterIntensity = 1.5f;    // Brightness of sun glitter sparkles
-
-    // Vertical bump amplitude for water geometry
-    float bumpAmplitude = 8.0f;
-
-    // Depth-based wave attenuation: distance (world units) over which waves
-    // transition from zero displacement (at solid surface) to full amplitude.
-    // 0 = disabled (no depth-based attenuation).
-    float waveDepthTransition = 20.0f;
-
-    // Feature toggles
-    bool enableReflection = true;
-    bool enableRefraction = true;
-    bool enableBlur = true;
-    // If true, apply `reflectionStrength` uniformly across the surface
-    // instead of modulating by Fresnel. Useful for debugging or stylized looks.
-    bool uniformReflection = false;
-
-    // PCF-style scene-color blur
-    float blurRadius = 8.0f;    // texel radius of blur kernel
-    int   blurSamples = 4;      // number of blur taps per axis (NxN kernel)
-
-    // Volume depth-based effect transitions
-    float volumeBlurRate = 0.004f;   // exponential rate: blur ramps with water thickness
-    float volumeBumpRate = 0.05f;  // exponential rate: bump ramps with water thickness
-    // Caustics / light focusing parameters
-    glm::vec3 causticColor = glm::vec3(0.0f, 0.58f, 1.0f);
-    float causticIntensity = 10.0f;    // multiplier for caustic brightness
-    float causticScale = 5.0f;       // scale factor applied to Jacobian determinant
-    float causticPower = 1.0f;        // exponent to sharpen caustic contrast
-    // Depth scale (world units) controlling blend from surface->bottom caustic
-    float causticDepthScale = 4.0f;
-    // Line-shaped caustic tuning
-    float causticLineScale = 1.0f;    // multiplier for anisotropy -> line strength
-    float causticLineMix = 1.0f;      // 0=cloudy, 1=lines
-};
-
-// GPU-side water params UBO (matches shader WaterParamsUBO layout)
-struct WaterParamsGPU {
-    glm::vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=reflectionStrength
-    glm::vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
-    glm::vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=specularIntensity, w=specularPower
-    glm::vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
-    glm::vec4 deepColor; // xyz = deepColor, w = glitterIntensity
-    glm::vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
-    glm::vec4 reserved1;  // x=enableReflection, y=enableRefraction, z=enableBlur, w=blurRadius
-    glm::vec4 reserved2;  // x=blurSamples, y=volumeBlurRate, z=volumeBumpRate, w=unused
-    glm::vec4 reserved3;  // x=cube360Available(0/1), y=unused, z=unused, w=unused
-    glm::vec4 causticColor; // xyz = color, w = unused
-    glm::vec4 causticParams; // x=scale, y=intensity, z=power, w=unused
-    glm::vec4 causticExtraParams; // x=lineScale, y=lineMix, z/w = unused
-};
-
-// GPU-side water uniform buffer
-struct WaterUBO {
-    glm::mat4 viewProjection;
-    glm::mat4 invViewProjection;
-    glm::vec4 viewPos;
-    glm::vec4 waterParams1;  // time, waveSpeed, waveScale, refractionStrength
-    glm::vec4 waterParams2;  // fresnelPower, transparency, depthFalloff, noiseScale
-    glm::vec4 shallowColor;  // rgb + padding
-    glm::vec4 deepColor;     // rgb + noiseOctaves
-    glm::vec4 screenSize;    // width, height, 1/width, 1/height
-    glm::vec4 noisePersistence; // noisePersistence, padding...
-};
+#include "../utils/WaterParams.hpp"
 
 class WaterRenderer {
 public:
@@ -146,13 +61,55 @@ public:
         void beginScenePass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear);
         void endScenePass(VkCommandBuffer cmd);
 
-    // Update parameters
-    void setParams(const WaterParams& params) { this->params = params; }
-    WaterParams& getParams() { return params; }
+    // Update parameters (per-layer). `getParams()` returns the active layer params.
+    void setParams(const WaterParams& params) {
+        if (externalParams) {
+            if (activeParamsIndex < externalParams->size()) (*externalParams)[activeParamsIndex] = params;
+        } else {
+            if (activeParamsIndex < paramsList.size()) paramsList[activeParamsIndex] = params;
+        }
+    }
+    WaterParams& getParams() {
+        if (externalParams) {
+            if (!externalParams->empty() && activeParamsIndex < externalParams->size()) return (*externalParams)[activeParamsIndex];
+            return paramsFallback;
+        }
+        return paramsList.size() ? paramsList[activeParamsIndex] : paramsFallback;
+    }
+    // Per-layer access
+    uint32_t getParamsCount() const { return static_cast<uint32_t>((externalParams) ? externalParams->size() : paramsList.size()); }
+    WaterParams& getParamsForLayer(uint32_t layer) { return (externalParams) ? externalParams->at(layer) : paramsList.at(layer); }
+    void setActiveLayer(uint32_t layer) { if (externalParams) { if (layer < externalParams->size()) activeParamsIndex = layer; } else { if (layer < paramsList.size()) activeParamsIndex = layer; } }
+    uint32_t getActiveLayer() const { return activeParamsIndex; }
+    // Associate an allocated SSBO buffer (storage buffer) for water params. `count` = number of array slots.
+    void setParamsBuffer(Buffer& buf, uint32_t count);
+    // Upload a single layer's params to the GPU SSBO
+    void updateGPUParamsForLayer(uint32_t layer);
 
-    // Time management for water animation
-    void advanceTime(float dt) { params.time += dt; }
-    float getTime() const { return params.time; }
+    // Let the application (main.cpp) provide an external params vector owned by the app.
+    void setExternalParamsList(std::vector<WaterParams>* list) { externalParams = list; }
+
+    // Time management for water animation (advance per-layer times)
+    void advanceTime(float dt) {
+        if (externalParams) {
+            for (auto &p : *externalParams) p.time += dt;
+        } else {
+            for (auto &p : paramsList) p.time += dt;
+        }
+        paramsFallback.time += dt;
+    }
+    float getTime() const {
+        if (externalParams) {
+            if (externalParams->empty()) return paramsFallback.time;
+            uint32_t idx = activeParamsIndex;
+            if (idx >= externalParams->size()) idx = 0;
+            return (*externalParams)[idx].time;
+        }
+        if (paramsList.empty()) return paramsFallback.time;
+        uint32_t idx = activeParamsIndex;
+        if (idx >= paramsList.size()) idx = 0;
+        return paramsList[idx].time;
+    }
     
     // Get the water geometry pipeline (for rendering water to G-buffer)
     VkPipeline getWaterGeometryPipeline() const { return waterGeometryPipeline; }
@@ -212,7 +169,6 @@ public:
     // Access the 360° solid equirectangular view for water reflection sampling
     VkImageView getSolid360View() const { return equirect360View; }
     // Access the cubemap view for the 360° solid reflection (cube)
-    VkImageView getCube360View() const { return cube360CubeView; }
     // Access per-face 2D image views for debugging (order: +X, -X, +Y, -Y, +Z, -Z)
     VkImageView getCube360FaceView(uint32_t face) const { return (face < 6) ? cube360FaceViews[face] : VK_NULL_HANDLE; }
 
@@ -234,7 +190,14 @@ private:
     void createSamplers(VulkanApp* app);
 
     
-    WaterParams params;
+    // CPU-side per-layer water params; indexed by texture layer / texIndex
+    std::vector<WaterParams> paramsList;
+    // Optional external pointer to an application-owned params vector (main.cpp)
+    std::vector<WaterParams>* externalParams = nullptr;
+    // Fallback single params used if paramsList is empty
+    WaterParams paramsFallback;
+    // Currently active layer index used by `getParams()` and the UI
+    uint32_t activeParamsIndex = 0;
 
     // Indirect renderer for water geometry
     IndirectRenderer waterIndirectRenderer;
@@ -294,8 +257,12 @@ private:
     // Per-frame descriptor sets for scene textures (2 frames in flight)
     std::array<VkDescriptorSet, 2> waterDepthDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
-    // Uniform buffer for water geometry shader params
+    // Storage buffer (SSBO) for per-layer WaterParamsGPU entries
     Buffer waterParamsBuffer;
+    // Number of entries allocated in `waterParamsBuffer`
+    uint32_t waterParamsCount = 0;
+    // Back-pointer to app for mapping/unmapping buffer when updating GPU data
+    VulkanApp* appPtr = nullptr;
 
     // Samplers
     VkSampler linearSampler = VK_NULL_HANDLE;

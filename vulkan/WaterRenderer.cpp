@@ -21,11 +21,92 @@ WaterRenderer::~WaterRenderer() {}
 
 void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer) {
     this->waterParamsBuffer = waterParamsBuffer;
+    this->appPtr = app;
     waterIndirectRenderer.init();
     createSamplers(app);
     createWaterRenderPass(app);
     createSceneRenderPass(app);
     createWaterPipelines(app);
+}
+
+void WaterRenderer::setParamsBuffer(Buffer& buf, uint32_t count) {
+    this->waterParamsBuffer = buf;
+    this->waterParamsCount = count;
+    // Reserve CPU-side params list and initialize with defaults (or use external vector if provided)
+    if (externalParams) {
+        externalParams->resize(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            (*externalParams)[i].time = 0.0f;
+            // keep other defaults from WaterParams constructor
+        }
+    } else {
+        paramsList.clear();
+        paramsList.resize(count);
+        // Initialize each entry with reasonable defaults (match previous single-default behavior)
+        for (uint32_t i = 0; i < count; ++i) {
+            paramsList[i].time = 0.0f;
+            // keep other defaults from WaterParams constructor
+        }
+    }
+    // Upload initial GPU data (default entries)
+    if (appPtr && waterParamsBuffer.buffer != VK_NULL_HANDLE) {
+        WaterParamsGPU defaultGpu{};
+        defaultGpu.params1 = glm::vec4(0.03f, 5.0f, 0.7f, 0.0f);
+        defaultGpu.params2 = glm::vec4(0.3f, 0.0f, 0.0f, 0.0f);
+        defaultGpu.shallowColor = glm::vec4(0.1f, 0.4f, 0.5f, 0.0f);
+        defaultGpu.deepColor = glm::vec4(0.0f, 0.15f, 0.25f, 0.0f);
+        defaultGpu.waveParams = glm::vec4(0.0f, 0.0f, 8.0f, 0.1f);
+        defaultGpu.reserved1 = glm::vec4(1.0f, 1.0f, 1.0f, 8.0f);
+        defaultGpu.reserved2 = glm::vec4(4.0f, 0.004f, 0.05f, 0.0f);
+        defaultGpu.reserved3 = glm::vec4(0.0f);
+        defaultGpu.causticColor = glm::vec4(1.0f, 0.98f, 0.8f, 0.0f);
+        defaultGpu.causticParams = glm::vec4(40.0f, 1.5f, 1.0f, 4.0f);
+        defaultGpu.causticExtraParams = glm::vec4(1.0f, 1.0f, 0.0f, 0.0f);
+
+        // Map entire buffer and fill with defaultGpu
+        void* data = nullptr;
+        vkMapMemory(appPtr->getDevice(), waterParamsBuffer.memory, 0, sizeof(WaterParamsGPU) * waterParamsCount, 0, &data);
+        for (uint32_t i = 0; i < waterParamsCount; ++i) {
+            memcpy(static_cast<char*>(data) + i * sizeof(WaterParamsGPU), &defaultGpu, sizeof(WaterParamsGPU));
+        }
+        vkUnmapMemory(appPtr->getDevice(), waterParamsBuffer.memory);
+    }
+}
+
+void WaterRenderer::updateGPUParamsForLayer(uint32_t layer) {
+    if (!appPtr) return;
+    if (layer >= waterParamsCount) return;
+    // Pack CPU params into GPU struct
+    WaterParamsGPU gpu{};
+    WaterParams *p = nullptr;
+    if (externalParams) {
+        if (layer >= externalParams->size()) return;
+        p = &(*externalParams)[layer];
+    } else {
+        if (layer >= paramsList.size()) return;
+        p = &paramsList[layer];
+    }
+    gpu.params1 = glm::vec4(p->refractionStrength, p->fresnelPower, p->transparency, p->reflectionStrength);
+    gpu.params2 = glm::vec4(p->waterTint, p->noiseScale, static_cast<float>(p->noiseOctaves), p->noisePersistence);
+    gpu.params3 = glm::vec4(p->noiseTimeSpeed, p->time, p->specularIntensity, p->specularPower);
+    gpu.shallowColor = glm::vec4(p->shallowColor, p->waveDepthTransition);
+    gpu.deepColor = glm::vec4(p->deepColor, p->glitterIntensity);
+    gpu.waveParams = glm::vec4(0.0f, 0.0f, p->bumpAmplitude, p->depthFalloff);
+    gpu.reserved1 = glm::vec4(p->enableReflection ? 1.0f : 0.0f,
+                              p->enableRefraction ? 1.0f : 0.0f,
+                              p->enableBlur ? 1.0f : 0.0f,
+                              p->blurRadius);
+    gpu.reserved2 = glm::vec4(static_cast<float>(p->blurSamples), p->volumeBlurRate, p->volumeBumpRate, p->uniformReflection ? 1.0f : 0.0f);
+    gpu.causticColor = glm::vec4(p->causticColor, 0.0f);
+    gpu.causticParams = glm::vec4(p->causticScale, p->causticIntensity, p->causticPower, p->causticDepthScale);
+    gpu.causticExtraParams = glm::vec4(p->causticLineScale, p->causticLineMix, 0.0f, 0.0f);
+    gpu.reserved3 = glm::vec4((cube360CubeView != VK_NULL_HANDLE) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+
+    size_t offset = static_cast<size_t>(layer) * sizeof(WaterParamsGPU);
+    void* data = nullptr;
+    vkMapMemory(appPtr->getDevice(), waterParamsBuffer.memory, offset, sizeof(WaterParamsGPU), 0, &data);
+    memcpy(data, &gpu, sizeof(WaterParamsGPU));
+    vkUnmapMemory(appPtr->getDevice(), waterParamsBuffer.memory);
 }
 
 void WaterRenderer::cleanup(VulkanApp* app) {
@@ -1178,36 +1259,39 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
 void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView, const WaterParams& params, float waterTime, VkImageView skyView) {
     if (!app || cmd == VK_NULL_HANDLE) return;
 
-    // Upload current water parameters to the GPU buffer (set 0, binding 7)
-    {
-        WaterParamsGPU gpu{};
-        gpu.params1 = glm::vec4(params.refractionStrength, params.fresnelPower, params.transparency, params.reflectionStrength);
-        gpu.params2 = glm::vec4(params.waterTint, params.noiseScale, static_cast<float>(params.noiseOctaves), params.noisePersistence);
-        gpu.params3 = glm::vec4(params.noiseTimeSpeed, waterTime, params.specularIntensity, params.specularPower);
-        gpu.shallowColor = glm::vec4(params.shallowColor, params.waveDepthTransition);
-        gpu.deepColor = glm::vec4(params.deepColor, params.glitterIntensity);
-        gpu.waveParams = glm::vec4(0.0f, 0.0f, params.bumpAmplitude, params.depthFalloff);
-        gpu.reserved1 = glm::vec4(
-            params.enableReflection ? 1.0f : 0.0f,
-            params.enableRefraction ? 1.0f : 0.0f,
-            params.enableBlur       ? 1.0f : 0.0f,
-            params.blurRadius
-        );
-        gpu.reserved2 = glm::vec4(
-            static_cast<float>(params.blurSamples),
-            params.volumeBlurRate,
-            params.volumeBumpRate,
-            params.uniformReflection ? 1.0f : 0.0f
-        );
-        gpu.causticColor = glm::vec4(params.causticColor, 0.0f);
-        gpu.causticParams = glm::vec4(params.causticScale, params.causticIntensity, params.causticPower, params.causticDepthScale);
-        gpu.causticExtraParams = glm::vec4(params.causticLineScale, params.causticLineMix, 0.0f, 0.0f);
-        // Indicate whether the solid 360 cubemap is available for sampling
-        gpu.reserved3 = glm::vec4((cube360CubeView != VK_NULL_HANDLE) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+    // Update per-layer dynamic fields (time and cube availability) in the GPU SSBO
+    if (app && waterParamsBuffer.buffer != VK_NULL_HANDLE && waterParamsCount > 0) {
+        // Map entire SSBO and update time/reserved3.x for every entry
+        void* mapped = nullptr;
+        size_t totalSize = sizeof(WaterParamsGPU) * static_cast<size_t>(waterParamsCount);
+        vkMapMemory(app->getDevice(), waterParamsBuffer.memory, 0, totalSize, 0, &mapped);
+        for (uint32_t i = 0; i < waterParamsCount; ++i) {
+            WaterParamsGPU gpu{};
+            // Pack CPU-side paramsList[i] into gpu struct but only update dynamic fields when necessary
+                    WaterParams *p = nullptr;
+                    if (externalParams) {
+                        p = &(*externalParams)[i];
+                    } else {
+                        p = &paramsList[i];
+                    }
+                    gpu.params1 = glm::vec4(p->refractionStrength, p->fresnelPower, p->transparency, p->reflectionStrength);
+                    gpu.params2 = glm::vec4(p->waterTint, p->noiseScale, static_cast<float>(p->noiseOctaves), p->noisePersistence);
+                    gpu.params3 = glm::vec4(p->noiseTimeSpeed, p->time, p->specularIntensity, p->specularPower);
+                    gpu.shallowColor = glm::vec4(p->shallowColor, p->waveDepthTransition);
+                    gpu.deepColor = glm::vec4(p->deepColor, p->glitterIntensity);
+                    gpu.waveParams = glm::vec4(0.0f, 0.0f, p->bumpAmplitude, p->depthFalloff);
+                    gpu.reserved1 = glm::vec4(p->enableReflection ? 1.0f : 0.0f,
+                                              p->enableRefraction ? 1.0f : 0.0f,
+                                              p->enableBlur ? 1.0f : 0.0f,
+                                              p->blurRadius);
+                    gpu.reserved2 = glm::vec4(static_cast<float>(p->blurSamples), p->volumeBlurRate, p->volumeBumpRate, p->uniformReflection ? 1.0f : 0.0f);
+                    gpu.causticColor = glm::vec4(p->causticColor, 0.0f);
+                    gpu.causticParams = glm::vec4(p->causticScale, p->causticIntensity, p->causticPower, p->causticDepthScale);
+                    gpu.causticExtraParams = glm::vec4(p->causticLineScale, p->causticLineMix, 0.0f, 0.0f);
+                    gpu.reserved3 = glm::vec4((cube360CubeView != VK_NULL_HANDLE) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 
-        void* data;
-        vkMapMemory(app->getDevice(), waterParamsBuffer.memory, 0, sizeof(WaterParamsGPU), 0, &data);
-        memcpy(data, &gpu, sizeof(WaterParamsGPU));
+            memcpy(static_cast<char*>(mapped) + i * sizeof(WaterParamsGPU), &gpu, sizeof(WaterParamsGPU));
+        }
         vkUnmapMemory(app->getDevice(), waterParamsBuffer.memory);
     }
 

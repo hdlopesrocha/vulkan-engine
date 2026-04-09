@@ -2,7 +2,7 @@
 #include "VulkanApp.hpp"
 #include "TextureArrayManager.hpp"
 #include "../math/Vertex.hpp"
-#include "BillboardManager.hpp"
+#include "../utils/BillboardManager.hpp"
 #include "VertexBufferObject.hpp"
 #include "../utils/Scene.hpp" // for NodeID
 #include <vector>
