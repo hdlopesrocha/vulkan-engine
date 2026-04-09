@@ -6,6 +6,7 @@
 #include "../utils/LocalScene.hpp"
 #include "../math/ContainmentType.hpp"
 #include <mutex>
+#include <unordered_set>
 
 void SceneRenderer::cleanup(VulkanApp* app) {
     // Cleanup all sub-renderers to properly destroy GPU resources (app may be null)
@@ -356,21 +357,27 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     materialsWrite.pBufferInfo = &materialsInfo;
     writes.push_back(materialsWrite);
 
-    // Initialize WaterRenderer early so we can bind its params buffer to the descriptor set
-    waterParamsBuffer_ = app->createBuffer(sizeof(WaterUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+    // Initialize WaterRenderer early and allocate a params SSBO sized to texture layers
+    // Default to two water param slots to allow UI pagination even with no texture arrays
+    uint32_t layerCount = 2;
+    if (textureArrayManager && textureArrayManager->layerAmount > 0) layerCount = textureArrayManager->layerAmount;
+    size_t paramsBufferSize = sizeof(WaterParamsGPU) * static_cast<size_t>(layerCount);
+    waterParamsBuffer_ = app->createBuffer(paramsBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     waterRenderer->init(app, waterParamsBuffer_);
+    // Inform WaterRenderer about the SSBO size (number of entries)
+    waterRenderer->setParamsBuffer(waterParamsBuffer_, layerCount);
 
-    // Bind water params UBO to binding 7 of main descriptor set
+    // Bind water params SSBO to binding 7 of main descriptor set
     VkDescriptorBufferInfo waterParamsInfo{};
     waterParamsInfo.buffer = waterParamsBuffer_.buffer;
     waterParamsInfo.offset = 0;
-    waterParamsInfo.range = sizeof(WaterParamsGPU);
+    waterParamsInfo.range = VK_WHOLE_SIZE;
     VkWriteDescriptorSet waterParamsWrite{};
     waterParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     waterParamsWrite.dstSet = mainDs;
     waterParamsWrite.dstBinding = 7;
-    waterParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    waterParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     waterParamsWrite.descriptorCount = 1;
     waterParamsWrite.pBufferInfo = &waterParamsInfo;
     writes.push_back(waterParamsWrite);
@@ -444,13 +451,13 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         shadowMatWrite.pBufferInfo    = &shadowMatInfo;
         shadowWrites.push_back(shadowMatWrite);
 
-        // Water params UBO (binding 7)
-        VkDescriptorBufferInfo shadowWaterInfo{ waterParamsBuffer_.buffer, 0, sizeof(WaterParamsGPU) };
+        // Water params SSBO (binding 7)
+        VkDescriptorBufferInfo shadowWaterInfo{ waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE };
         VkWriteDescriptorSet shadowWaterWrite{};
         shadowWaterWrite.sType          = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         shadowWaterWrite.dstSet         = shadowDescriptorSet;
         shadowWaterWrite.dstBinding     = 7;
-        shadowWaterWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        shadowWaterWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         shadowWaterWrite.descriptorCount = 1;
         shadowWaterWrite.pBufferInfo    = &shadowWaterInfo;
         shadowWrites.push_back(shadowWaterWrite);
@@ -568,12 +575,12 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
         VkDescriptorBufferInfo waterParamsInfo{};
         waterParamsInfo.buffer = waterParamsBuffer_.buffer;
         waterParamsInfo.offset = 0;
-        waterParamsInfo.range = sizeof(WaterParamsGPU);
+        waterParamsInfo.range = VK_WHOLE_SIZE;
         VkWriteDescriptorSet waterParamsWrite{};
         waterParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         waterParamsWrite.dstSet = mainDs;
         waterParamsWrite.dstBinding = 7;
-        waterParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        waterParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         waterParamsWrite.descriptorCount = 1;
         waterParamsWrite.pBufferInfo = &waterParamsInfo;
         writes.push_back(waterParamsWrite);
@@ -611,10 +618,10 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
         sMatWrite.pBufferInfo = &sMatInfo;
         shadowWrites.push_back(sMatWrite);
         if (waterParamsBuffer_.buffer != VK_NULL_HANDLE) {
-            VkDescriptorBufferInfo sWaterInfo{ waterParamsBuffer_.buffer, 0, sizeof(WaterParamsGPU) };
+            VkDescriptorBufferInfo sWaterInfo{ waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE };
             VkWriteDescriptorSet sWaterWrite{}; sWaterWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             sWaterWrite.dstSet = shadowDescriptorSet; sWaterWrite.dstBinding = 7;
-            sWaterWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; sWaterWrite.descriptorCount = 1;
+            sWaterWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; sWaterWrite.descriptorCount = 1;
             sWaterWrite.pBufferInfo = &sWaterInfo;
             shadowWrites.push_back(sWaterWrite);
         }
