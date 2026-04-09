@@ -2,7 +2,7 @@
 
 #include "Widget.hpp"
 #include "../vulkan/TextureArrayManager.hpp"
-#include "../vulkan/AtlasManager.hpp"
+#include "../utils/AtlasManager.hpp"
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
 #include <vector>

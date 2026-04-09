@@ -2,7 +2,7 @@
 
 #include "Widget.hpp"
 #include "../vulkan/ShadowRenderer.hpp"
-#include "../vulkan/ShadowParams.hpp"
+#include "../utils/ShadowParams.hpp"
 #include <imgui.h>
 #include <glm/glm.hpp>
 

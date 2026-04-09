@@ -5,7 +5,7 @@
 #include "../vulkan/SolidRenderer.hpp"
 #include "../vulkan/SkyRenderer.hpp"
 #include "../vulkan/ShadowRenderer.hpp"
-#include "../vulkan/ShadowParams.hpp"
+#include "../utils/ShadowParams.hpp"
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
 #include <string>
@@ -399,14 +399,6 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         solid360Descriptor = ImGui_ImplVulkan_AddTexture(
             sampler, solid360View, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         solid360DescriptorOwned = true;
-    }
-
-    // Solid 360° cubemap reflection (cube view) - for orientation debugging
-    VkImageView cube360View = waterRenderer->getCube360View();
-    if (cube360View != VK_NULL_HANDLE && cube360Descriptor == VK_NULL_HANDLE) {
-        cube360Descriptor = ImGui_ImplVulkan_AddTexture(
-            sampler, cube360View, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        cube360DescriptorOwned = true;
     }
 
     // Per-face cube descriptors for detailed orientation inspection

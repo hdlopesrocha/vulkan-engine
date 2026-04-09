@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../vulkan/BillboardManager.hpp"
-#include "../vulkan/AtlasManager.hpp"
+#include "../utils/BillboardManager.hpp"
+#include "../utils/AtlasManager.hpp"
 #include "../vulkan/TextureArrayManager.hpp"
 #include "../vulkan/EditableTexture.hpp"
 #include "../utils/AtlasTextureData.hpp"
