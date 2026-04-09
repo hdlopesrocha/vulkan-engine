@@ -8,10 +8,30 @@ WaterWidget::WaterWidget(WaterRenderer* renderer) : Widget("Water Settings"), re
 void WaterWidget::render() {
     if (!isOpen || !renderer) return;
 
+    // Clamp current layer to valid range
+    uint32_t count = renderer->getParamsCount();
+    if (count == 0) count = 1;
+    if (currentLayer < 0) currentLayer = 0;
+    if ((uint32_t)currentLayer >= count) currentLayer = static_cast<int>(count - 1);
+
+    // Select active layer in renderer
+    renderer->setActiveLayer(static_cast<uint32_t>(currentLayer));
     WaterParams &params = renderer->getParams();
 
     if (ImGui::Begin(title.c_str(), &isOpen)) {
         ImGui::Text("Water Rendering Parameters");
+        // Pagination controls for multiple water param layers
+        if (renderer->getParamsCount() > 1) {
+            ImGui::Text("Layer: %d / %d", currentLayer, renderer->getParamsCount() - 1);
+            ImGui::SameLine();
+            if (ImGui::Button("Prev") && currentLayer > 0) { currentLayer--; renderer->setActiveLayer(static_cast<uint32_t>(currentLayer)); }
+            ImGui::SameLine();
+            if (ImGui::Button("Next") && currentLayer + 1 < (int)renderer->getParamsCount()) { currentLayer++; renderer->setActiveLayer(static_cast<uint32_t>(currentLayer)); }
+            ImGui::SameLine();
+            ImGui::SliderInt("Layer Index", &currentLayer, 0, static_cast<int>(renderer->getParamsCount() - 1));
+            renderer->setActiveLayer(static_cast<uint32_t>(currentLayer));
+            ImGui::Separator();
+        }
         ImGui::Separator();
 
         // Wave settings
@@ -107,6 +127,8 @@ void WaterWidget::render() {
 
         ImGui::Separator();
         ImGui::Text("Time: %.2f", params.time);
+        // Push updated params to GPU for the current layer
+        renderer->updateGPUParamsForLayer(static_cast<uint32_t>(currentLayer));
     }
     ImGui::End();
 }

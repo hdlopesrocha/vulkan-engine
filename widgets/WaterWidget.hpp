@@ -10,4 +10,5 @@ public:
 
 private:
     WaterRenderer* renderer;
+    int currentLayer = 0;
 };
