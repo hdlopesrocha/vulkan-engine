@@ -13,55 +13,51 @@ Simplifier::Simplifier(float angle, float distance, bool texturing) {
 
 std::pair<bool,int> Simplifier::simplify(const BoundingCube chunkCube, const BoundingCube cube, const float * sdf, NodeOperationResult * children){	
 	int brushIndex = DISCARD_BRUSH_INDEX;
-	bool hasSimplifiedChildren = false;
+	if(!chunkCube.contains(BoundingCube(cube.getMin() - cube.getLength(), cube.getLengthX()))) {
+		return {false, brushIndex};
+	}
+
+	//uint mask = 0xff;
+	int nodeCount=0;
 	for(uint i=0; i < 8 ; ++i) {
 		NodeOperationResult * child = &children[i];
-		if(!child->process)	 continue;
-		if(child->isSimplified && child->resultType == SpaceType::Surface) {
-			hasSimplifiedChildren = true;
+		if(child && child->resultType == SpaceType::Surface) {
+			if(!child->isSimplified) {
+				return {false, brushIndex};	
+			}
+			if(texturing && brushIndex != DISCARD_BRUSH_INDEX && child->brushIndex != brushIndex) {
+				return {false, brushIndex};	
+			}
 			brushIndex = child->brushIndex;
 			break;
 		}
 	}
 
-	if(hasSimplifiedChildren) {
-		if(!chunkCube.contains(BoundingCube(cube.getMin() - cube.getLength(), cube.getLengthX()))) {
-			return {false, brushIndex};
-		}
 
-		//uint mask = 0xff;
-		int nodeCount=0;
+	// for leaf nodes shouldn't loop
+	for(uint i=0; i < 8 ; ++i) {
+		NodeOperationResult * child = &children[i];
+		if(child->resultType == SpaceType::Surface) {
+			BoundingCube childCube = cube.getChild(i);
 
-		// for leaf nodes shouldn't loop
-		for(uint i=0; i < 8 ; ++i) {
-			NodeOperationResult * child = &children[i];
-			if(child->resultType == SpaceType::Surface) {
-				if(!child->isSimplified) {
-					return {false, brushIndex};	
+			for(int j = 0 ; j < 8 ; ++j) {
+				glm::vec3 corner = childCube.getCorner(j);
+				float d = SDF::interpolate(sdf, corner , cube);
+				float dif = glm::abs(d - child->resultSDF[j]);
+
+				if(dif > cube.getLengthX() * 0.05) {
+					return {false, brushIndex};
 				}
-				if(texturing && child->brushIndex != brushIndex) {
-					return {false, brushIndex};	
-				}
-				BoundingCube childCube = cube.getChild(i);
-
-				for(int j = 0 ; j < 8 ; ++j) {
-					glm::vec3 corner = childCube.getCorner(j);
-					float d = SDF::interpolate(sdf, corner , cube);
-					float dif = glm::abs(d - child->resultSDF[j]);
-
-					if(dif > cube.getLengthX() * 0.05) {
-						return {false, brushIndex};
-					}
-				}
-
-				++nodeCount;
-				
 			}
-		}
-		
-		if(nodeCount > 0) {	
-			return {true, brushIndex};
+
+			++nodeCount;
+			
 		}
 	}
+	
+	if(nodeCount > 0) {	
+		return {true, brushIndex};
+	}
+	
 	return {false, brushIndex};
 }

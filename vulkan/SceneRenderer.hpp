@@ -25,7 +25,7 @@ class LiquidSpaceChangeHandler;
 #include <unordered_map>
 #include <memory>
 #include <mutex>
-#include "Model3DVersion.hpp"
+#include "../utils/Model3DVersion.hpp"
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
 #include "IndirectRenderer.hpp"

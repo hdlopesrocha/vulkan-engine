@@ -57,10 +57,10 @@
 #include "events/RebuildBrushEvent.hpp"
 #include "vulkan/TextureArrayManager.hpp"
 #include "vulkan/MaterialManager.hpp"
-#include "vulkan/BillboardManager.hpp"
-#include "vulkan/AtlasManager.hpp"
+#include "utils/BillboardManager.hpp"
+#include "utils/AtlasManager.hpp"
 #include "vulkan/TextureMixer.hpp"
-#include "vulkan/ShadowParams.hpp"
+#include "utils/ShadowParams.hpp"
 
 class MyApp : public VulkanApp, public IEventHandler {
 public:
@@ -125,6 +125,8 @@ public:
     std::shared_ptr<TextureMixer> textureMixer;
     std::vector<MixerParameters> mixerParams;
     std::vector<MaterialProperties> materials;
+    // Application-owned per-layer water parameters (initialized in setup)
+    std::vector<WaterParams> waterParams;
     ShadowParams shadowParams;
     // When user clicks "Apply Brush" from ImGui we defer the heavy rebuild
     // until after the current frame is submitted to avoid waiting on fences
@@ -225,6 +227,22 @@ public:
 
     void setup() override {
         sceneRenderer = new SceneRenderer();
+        // Initialize application-owned water params with two default elements
+        waterParams.push_back(WaterParams{}); // Add a third layer to demonstrate pagination in UI even without texture arrays
+        
+        WaterParams wp = WaterParams();
+        wp.noiseOctaves = 1;
+        wp.waveScale = 8.0f;
+        wp.deepColor = glm::vec3(0.0f, 0.1f, 0.0f);
+        wp.causticColor = glm::vec3(0.5f, 1.0f, 0.0f);
+        wp.shallowColor = glm::vec3(0.1f, 0.5f, 0.1f);
+        wp.waterTint = 0.6f;
+        waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
+
+
+
+        // Let the WaterRenderer reference our application-owned vector
+        sceneRenderer->waterRenderer->setExternalParamsList(&waterParams);
         sceneRenderer->init(this, &textureArrayManager, &materialManager);
 
         // IMPORTANT: run texture setup on the main thread.
