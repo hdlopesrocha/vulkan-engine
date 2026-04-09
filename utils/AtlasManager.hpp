@@ -7,7 +7,6 @@
 #include <map>
 #include <algorithm>
 #include <set>
-// implementation-heavy functions are defined in AtlasManager.cpp
 
 #include "AtlasTile.hpp"
 
