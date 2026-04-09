@@ -8,6 +8,8 @@ layout(triangles, equal_spacing, cw) in;
 layout(location = 0) in vec3 inPos[];
 layout(location = 1) in vec3 inNormal[];
 layout(location = 2) in vec2 inTexCoord[];
+layout(location = 5) in ivec3 tc_fragTexIndex[];
+layout(location = 11) in vec3 tc_fragTexWeights[];
 
 layout(location = 0) out vec3 fragPos;
 layout(location = 1) out vec3 fragNormal;
@@ -16,6 +18,7 @@ layout(location = 3) out vec4 fragPosClip;  // clip-space position for depth loo
 layout(location = 4) out vec3 fragDebug;   // debug visual (displacement)
 layout(location = 5) out vec3 fragPosWorld;  // world-space position for shadow cascades
 layout(location = 6) out vec4 fragPosLightSpace; // light-space pos (cascade 0)
+layout(location = 7) flat out int fragTexIndex;
 
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 viewProjection;
@@ -34,16 +37,25 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
 } ubo;
 
 // Water-specific parameters (set 0, binding = 7) - same layout as the post-process shader
-layout(set = 0, binding = 7) uniform WaterParamsUBO {
+// Per-layer water params SSBO (std430) - indexed by texture layer / texIndex
+struct WaterParamsGPU {
     vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=foamDepthThreshold
     vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
-    vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=shoreStrength, w=shoreFalloff
+    vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=specularIntensity, w=specularPower
     vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
-    vec4 deepColor; // xyz = deepColor, w = unused
+    vec4 deepColor; // xyz = deepColor, w = glitterIntensity
     vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
-    vec4 reserved1;  // unused
-    vec4 reserved2;  // unused
-} waterParams;
+    vec4 reserved1;  // x=enableReflection, y=enableRefraction, z=enableBlur, w=blurRadius
+    vec4 reserved2;  // x=blurSamples, y=volumeBlurRate, z=volumeBumpRate, w=uniformReflection
+    vec4 reserved3;  // x=cube360Available(0/1)
+    vec4 causticColor;
+    vec4 causticParams;
+    vec4 causticExtraParams;
+};
+
+layout(std430, set = 0, binding = 7) readonly buffer WaterParamsBlock {
+    WaterParamsGPU waterParams[];
+};
 
 // Scene depth texture for depth-dependent wave attenuation (set 2)
 layout(set = 2, binding = 1) uniform sampler2D sceneDepthTex;
@@ -90,26 +102,39 @@ void main() {
                        bary.y * inTexCoord[1] +
                        bary.z * inTexCoord[2];
     
-    // Get water and noise parameters
-    float time = waterParams.params3.y;
+    // Select per-patch texIndex from compressed TCS outputs (tc_fragTexIndex / tc_fragTexWeights)
+    ivec3 texIndices = tc_fragTexIndex[0];
+    vec3 weights = tc_fragTexWeights[0] * bary.x + tc_fragTexWeights[1] * bary.y + tc_fragTexWeights[2] * bary.z;
+    int chosenIdx = texIndices.x;
+    if (texIndices.y >= 0 && weights.y > weights.x) chosenIdx = texIndices.y;
+    if (texIndices.z >= 0 && weights.z > max(weights.x, weights.y)) chosenIdx = texIndices.z;
+    if (chosenIdx < 0) chosenIdx = 0;
+    // Expose the chosen texIndex to the fragment stage
+    fragTexIndex = chosenIdx;
+
+    // Load selected WaterParams from SSBO
+    WaterParamsGPU wp = waterParams[chosenIdx];
+
+    // Get water and noise parameters from selected params
+    float time = wp.params3.y;
     if (time == 0.0) time = ubo.passParams.x;
     // waveScale is no longer in passParams (z/w now carry nearPlane/farPlane).
     // Displacement magnitude is fully controlled by bumpAmp from the widget.
     float waveScale = 1.0;
-    float noiseTimeSpeed = waterParams.params3.x;
+    float noiseTimeSpeed = wp.params3.x;
 
     // Noise params from params2 (same as fragment shader)
-    float noiseScale = waterParams.params2.y;
-    int noiseOctaves = int(max(waterParams.params2.z, 1.0));
-    float noisePersistence = waterParams.params2.w;
+    float noiseScale = wp.params2.y;
+    int noiseOctaves = int(max(wp.params2.z, 1.0));
+    float noisePersistence = wp.params2.w;
 
-    float bumpAmp = waterParams.waveParams.z; // bump amplitude provided via Water widget
+    float bumpAmp = wp.waveParams.z; // bump amplitude provided via Water widget
 
     // --- Depth-based wave attenuation ---
     // Project the undisplaced water vertex to screen space and sample the solid
     // depth buffer.  Where the water surface is close to solid geometry (shallow),
     // waves are suppressed.  waveDepthTransition controls the ramp distance.
-    float waveDepthTransition = waterParams.shallowColor.w;
+    float waveDepthTransition = wp.shallowColor.w;
     if (waveDepthTransition > 0.0) {
         vec4 preClip = ubo.viewProjection * vec4(pos, 1.0);
         if (preClip.w > 0.001) {

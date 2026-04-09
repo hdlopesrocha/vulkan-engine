@@ -10,6 +10,7 @@ layout(location = 3) in vec4 fragPosClip;  // clip-space position for scene samp
 layout(location = 4) in vec3 fragDebug;   // debug visual (displacement)
 layout(location = 5) in vec3 fragPosWorld;  // world-space position for shadow cascades
 layout(location = 6) in vec4 fragPosLightSpace; // light-space pos (cascade 0)
+layout(location = 7) flat in int fragTexIndex;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal;
@@ -21,7 +22,8 @@ layout(location = 2) out vec4 outMask;
 #include "includes/shadows.glsl"
 
 // Water-specific parameters (set 0, binding 7)
-layout(set = 0, binding = 7) uniform WaterParamsUBO {
+// Per-layer water params SSBO (set 0, binding = 7) - indexed by texture layer / texIndex
+struct WaterParamsGPU {
     vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=reflectionStrength
     vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
     vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=specularIntensity, w=specularPower
@@ -34,7 +36,11 @@ layout(set = 0, binding = 7) uniform WaterParamsUBO {
     vec4 causticColor; // rgb = caustic tint, w = unused
     vec4 causticParams; // x = scale, y = intensity, z = power, w = depthScale
     vec4 causticExtraParams; // x = lineScale, y = lineMix, z/w = unused
-} waterParams;
+};
+
+layout(std430, set = 0, binding = 7) readonly buffer WaterParamsBlock {
+    WaterParamsGPU waterParams[];
+};
 
 // Scene color and depth textures for refraction and edge foam (set 2)
 layout(set = 2, binding = 0) uniform sampler2D sceneColorTex;
@@ -59,33 +65,34 @@ float linearizeDepth(float depth) {
 #include "includes/water_noise.glsl"
 
 void main() {
-    // Get water parameters from UBO
-    // Prefer time from water params UBO (reliable for this shader); fallback to global UBO
-    float time = waterParams.params3.y;
+    // Get water parameters from SSBO indexed by fragment texIndex
+    // Prefer time from water params; fallback to global UBO
+    WaterParamsGPU wp = waterParams[fragTexIndex];
+    float time = wp.params3.y;
     if (time == 0.0) time = ubo.passParams.x;
-    
-    // Water rendering parameters from water UBO
-    float refractionStrength = waterParams.params1.x;
-    float fresnelPower = waterParams.params1.y;
-    float transparency = waterParams.params1.z;
-    float waterTint = waterParams.params2.x;
-    float noiseScale = waterParams.params2.y;
-    int noiseOctaves = int(max(waterParams.params2.z, 1.0));
-    float noisePersistence = waterParams.params2.w;
-    float noiseTimeSpeed = waterParams.params3.x;
-    float reflectionStrength = waterParams.params1.w;
-    float specularIntensity = waterParams.params3.z;
-    float specularPowerParam = waterParams.params3.w;
-    float glitterIntensity = waterParams.deepColor.w;
+
+    // Water rendering parameters from selected water params
+    float refractionStrength = wp.params1.x;
+    float fresnelPower = wp.params1.y;
+    float transparency = wp.params1.z;
+    float waterTint = wp.params2.x;
+    float noiseScale = wp.params2.y;
+    int noiseOctaves = int(max(wp.params2.z, 1.0));
+    float noisePersistence = wp.params2.w;
+    float noiseTimeSpeed = wp.params3.x;
+    float reflectionStrength = wp.params1.w;
+    float specularIntensity = wp.params3.z;
+    float specularPowerParam = wp.params3.w;
+    float glitterIntensity = wp.deepColor.w;
 
     // Feature toggles and blur parameters
-    bool enableReflection = waterParams.reserved1.x > 0.5;
-    bool enableRefraction = waterParams.reserved1.y > 0.5;
-    bool enableBlur       = waterParams.reserved1.z > 0.5;
-    float blurRadius      = waterParams.reserved1.w;
-    int   blurSamples     = max(int(waterParams.reserved2.x), 1);
-    float volumeBlurRate  = waterParams.reserved2.y;
-    float volumeBumpRate  = waterParams.reserved2.z;
+    bool enableReflection = wp.reserved1.x > 0.5;
+    bool enableRefraction = wp.reserved1.y > 0.5;
+    bool enableBlur       = wp.reserved1.z > 0.5;
+    float blurRadius      = wp.reserved1.w;
+    int   blurSamples     = max(int(wp.reserved2.x), 1);
+    float volumeBlurRate  = wp.reserved2.y;
+    float volumeBumpRate  = wp.reserved2.z;
 
     // Apply noise time speed
     float animTime = time * noiseTimeSpeed;
@@ -110,10 +117,10 @@ void main() {
     blurRadius *= volumeBlurFactor;
     
     // Caustic parameters
-    vec3 causticColor = waterParams.causticColor.rgb;
-    float causticScale = waterParams.causticParams.x;
-    float causticIntensity = waterParams.causticParams.y;
-    float causticPower = waterParams.causticParams.z;
+    vec3 causticColor = wp.causticColor.rgb;
+    float causticScale = wp.causticParams.x;
+    float causticIntensity = wp.causticParams.y;
+    float causticPower = wp.causticParams.z;
     
     // Normal used for lighting:
     // Fall back to procedural normal only when tessellation path is inactive/invalid.
@@ -125,11 +132,11 @@ void main() {
 
     // Same parameters the TES feeds into waterWaveDisplacement
     // Modulate bump amplitude by volume thickness
-    float bAmp    = waterParams.waveParams.z * volumeBumpFactor;
+    float bAmp    = wp.waveParams.z * volumeBumpFactor;
 
     // Depth-based wave attenuation (must match the TES depth ramp so
     // the procedural normal is consistent with the displaced geometry).
-    float waveDepthTransition = waterParams.shallowColor.w;
+    float waveDepthTransition = wp.shallowColor.w;
     if (waveDepthTransition > 0.0) {
         vec2 earlyScreenUV = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
         float earlySceneDepth = texture(sceneDepthTex, earlyScreenUV).r;
@@ -167,13 +174,13 @@ void main() {
         // Prefer tessellation-provided debug value when available (fragDebug).
         // But also compute a per-fragment approximation of the bump displacement so the debug
         // mode works even when tessellation is disabled.
-        float timeDebug = waterParams.params3.y;
+        float timeDebug = wp.params3.y;
         if (timeDebug == 0.0) timeDebug = ubo.passParams.x;
         float waveScaleDbg = 1.0;  // No longer in passParams (z=nearPlane now)
 
-        float bumpAmpDbg = waterParams.waveParams.z;
+        float bumpAmpDbg = wp.waveParams.z;
 
-        float animTimeDbg = timeDebug * waterParams.params3.x;
+        float animTimeDbg = timeDebug * wp.params3.x;
         float waveDisplacementDbg = waterWaveDisplacement(
             fragPos.xyz,
             animTimeDbg,
@@ -282,7 +289,7 @@ void main() {
     float depthDiff = max(sceneDepthLinear - waterDepthLinear, 0.0);
     
     // Depth-based color fade (deeper = more tinted)
-    float depthFalloff = waterParams.waveParams.w;
+    float depthFalloff = wp.waveParams.w;
     if (depthFalloff <= 0.0) depthFalloff = 0.02;
     float depthFade = 1.0 - exp(-depthDiff * depthFalloff);
     
@@ -317,7 +324,7 @@ void main() {
     skyUV.x = atan(reflectDir.z, reflectDir.x) / (2.0 * PI) + 0.5;
     skyUV.y = acos(clamp(reflectDir.y, -1.0, 1.0)) / PI;
     // Prefer cubemap sampling when available (set via WaterParamsGPU.reserved3.x)
-    bool cubeAvailable = waterParams.reserved3.x > 0.5;
+    bool cubeAvailable = wp.reserved3.x > 0.5;
     vec3 skyColor;
         if (cubeAvailable) { 
         // Mirror the -X cubemap region horizontally to match cube face orientation
@@ -353,7 +360,7 @@ void main() {
     // Uniform reflection toggle: when set, apply reflectionStrength uniformly
     // instead of modulating by Fresnel. This flag is stored in reserved2.w
     // (see WaterParamsGPU.reserved2.w).
-    bool uniformReflection = waterParams.reserved2.w > 0.5;
+    bool uniformReflection = wp.reserved2.w > 0.5;
 
     // --- Reflection sampling debug helpers ---
     // Use the global debug mode (ubo.debugParams.x) to visualize reflection
@@ -486,15 +493,25 @@ void main() {
     
     // === WATER COLOR COMPOSITION ===
     // Water tint colors from UBO
-    vec3 deepTint = waterParams.deepColor.rgb;
-    vec3 shallowTint = waterParams.shallowColor.rgb;
-    vec3 waterTintColor = mix(shallowTint, deepTint, depthFade);
-    
-    // Blend scene color with water tint based on depth.
-    // Use a lerp that preserves the scene at shallow depths and transitions
-    // to the water tint at greater depths.  The waterTint parameter controls
-    // how strongly the water color replaces the scene.
-    float tintBlend = clamp(depthFade * waterTint, 0.0, 0.85);
+    vec3 deepTint = wp.deepColor.rgb;
+    vec3 shallowTint = wp.shallowColor.rgb;
+
+    // Compute a volume-based factor from measured water thickness.
+    // Use causticParams.w (depth-scale) as a per-layer reference distance; if unset,
+    // fall back to a small stable value so division is safe.
+    float tintDepthScale = max(wp.causticParams.w, 0.0001);
+    float volumeFactor = clamp(waterThickness / tintDepthScale, 0.0, 1.0);
+
+    // Water tint color transitions from shallow → deep depending on volume.
+    vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
+
+    // Attenuate tint effect when the measured thickness is very small (near zero).
+    // This reduces color influence when the front and back faces are nearly coincident.
+    float thicknessAttenuation = smoothstep(0.0, max(0.005, tintDepthScale * 0.25), waterThickness);
+
+    // Blend scene color with water tint based on both the depth-based fade (depthFade)
+    // and the measured volume. The `waterTint` parameter scales overall tint strength.
+    float tintBlend = clamp(depthFade * waterTint * volumeFactor * thicknessAttenuation, 0.0, 0.85);
     vec3 refractedColor = mix(sceneColor, waterTintColor, tintBlend);
     
     // Mix refracted color with reflection. By default, use Fresnel weighting
@@ -534,7 +551,7 @@ void main() {
     // to water thickness. This approximates how focusing changes through the
     // water column and lets caustics appear where the volume causes stronger
     // focusing on the bottom.
-    float causticDepthScale = waterParams.causticParams.w; // w = depth-scale (world units)
+    float causticDepthScale = wp.causticParams.w; // w = depth-scale (world units)
     float depthInfluence = (causticDepthScale > 0.0) ? clamp(waterThickness / causticDepthScale, 0.0, 1.0) : 1.0;
 
     // Front-surface Jacobian (same as before)
@@ -569,8 +586,8 @@ void main() {
     float cloudFinal = pow(max(cloudCombined, 1e-6), causticPower);
 
     // Line-shaped measure from anisotropy (difference of eigenvalues)
-    float lineScale = waterParams.causticExtraParams.x;
-    float lineMix = clamp(waterParams.causticExtraParams.y, 0.0, 1.0);
+    float lineScale = wp.causticExtraParams.x;
+    float lineMix = clamp(wp.causticExtraParams.y, 0.0, 1.0);
     float lineFrontRaw = max(anisFront * causticScale * lineScale, 0.0);
     float lineBackRaw  = max(anisBack  * causticScale * lineScale, 0.0);
     float lineCombined = mix(lineFrontRaw, lineBackRaw, depthInfluence);

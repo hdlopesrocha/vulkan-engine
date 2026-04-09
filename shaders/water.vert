@@ -14,6 +14,7 @@ layout(location = 2) out vec2 fragTexCoord;
 layout(location = 3) out vec4 fragPosClip;  // clip-space position for depth lookup
 layout(location = 5) out vec3 fragPosWorld;  // world-space position for shadow cascades
 layout(location = 6) out vec4 fragPosLightSpace; // light-space pos (cascade 0)
+layout(location = 7) flat out int fragTexIndex;
 
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 viewProjection;
@@ -40,5 +41,6 @@ void main() {
     
     vec4 clipPos = ubo.viewProjection * vec4(inPosition, 1.0);
     fragPosClip = clipPos;
+    fragTexIndex = inTexIndex;
     gl_Position = clipPos;
 }
