@@ -262,9 +262,8 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                   VkRenderPass swapchainRenderPass,
                                   VkImageView sceneColorView, VkImageView sceneDepthView,
                                   VkImageView waterDepthView, VkImageView waterNormalView, VkImageView waterMaskView,
-                                  const WaterParams& params,
                                   const glm::mat4& viewProj, const glm::mat4& invViewProj,
-                                  const glm::vec3& viewPos, float time,
+                                  const glm::vec3& viewPos,
                                   bool beginRenderPass, VkImageView skyView) {
     if (pipeline == VK_NULL_HANDLE) {
         fprintf(stderr, "[PostProcessRenderer::render] pipeline is VK_NULL_HANDLE, skipping.\n");
@@ -290,12 +289,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     ubo.viewProjection = viewProj;
     ubo.invViewProjection = invViewProj;
     ubo.viewPos = glm::vec4(viewPos, 1.0f);
-    ubo.waterParams1 = glm::vec4(time, params.waveSpeed, params.waveScale, params.refractionStrength);
-    ubo.waterParams2 = glm::vec4(params.fresnelPower, params.transparency, params.depthFalloff, params.noiseScale);
-    ubo.shallowColor = glm::vec4(params.shallowColor, 0.0f);
-    ubo.deepColor = glm::vec4(params.deepColor, static_cast<float>(params.noiseOctaves));
     ubo.screenSize = glm::vec4(renderWidth, renderHeight, 1.0f / renderWidth, 1.0f / renderHeight);
-    ubo.noisePersistence = glm::vec4(params.noisePersistence, 0.0f, 0.0f, 0.0f);
 
     void* data;
     vkMapMemory(device, uniformBuffer.memory, 0, sizeof(WaterUBO), 0, &data);

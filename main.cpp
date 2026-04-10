@@ -127,6 +127,7 @@ public:
     std::vector<MaterialProperties> materials;
     // Application-owned per-layer water parameters (initialized in setup)
     std::vector<WaterParams> waterParams;
+    float mainTime = 0.0f;
     ShadowParams shadowParams;
     // When user clicks "Apply Brush" from ImGui we defer the heavy rebuild
     // until after the current frame is submitted to avoid waiting on fences
@@ -229,27 +230,46 @@ public:
         sceneRenderer = new SceneRenderer();
         // Initialize application-owned water params with two default elements
         waterParams.push_back(WaterParams{}); // Add a third layer to demonstrate pagination in UI even without texture arrays
-        
-        WaterParams wp = WaterParams();
-        wp.noiseOctaves = 1;
-        wp.waveScale = 8.0f;
-        wp.deepColor = glm::vec3(0.0f, 0.1f, 0.0f);
-        wp.causticColor = glm::vec3(0.5f, 1.0f, 0.0f);
-        wp.shallowColor = glm::vec3(0.1f, 0.5f, 0.1f);
-        wp.waterTint = 0.6f;
-        wp.causticType = 1; // line-shaped caustics
-        wp.causticIntensity = 0.2f;
-        wp.causticScale = 0.01f;
-        wp.causticDepthScale = 128.0f;
-        wp.causticPower = 4.0f;
-        wp.causticLineScale = 3.0f;
-        waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
+        {
+            WaterParams wp = WaterParams();
+            wp.noiseOctaves = 1;
+            wp.waveScale = 8.0f;
+            wp.deepColor = glm::vec3(0.0f, 0.1f, 0.0f);
+            wp.causticColor = glm::vec3(0.5f, 1.0f, 0.0f);
+            wp.shallowColor = glm::vec3(0.1f, 0.5f, 0.1f);
+            wp.waterTint = 0.6f;
+            wp.causticType = 1; // line-shaped caustics
+            wp.causticIntensity = 0.2f;
+            wp.causticScale = 0.01f;
+            wp.causticDepthScale = 128.0f;
+            wp.causticPower = 4.0f;
+            wp.causticLineScale = 3.0f;
+            waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
+        }
+        {
+            WaterParams wp = WaterParams();
+            wp.enableRefraction = false;
+            wp.noiseOctaves = 0;
+            wp.waveScale = 0.0f;
+            wp.noiseScale = 0.0f;
+            wp.waterTint = 1.0f;
+            wp.deepColor = glm::vec3(0.0f, 0.0f, 0.0f);
+            wp.causticColor = glm::vec3(1.0f, 1.0f, 1.0f);
+            wp.shallowColor = glm::vec3(1.0f, 1.0f, 1.0f);
+            wp.waterTint = 0.6f;
+            wp.causticType = 1; // line-shaped caustics
+            wp.causticIntensity = 0.2f;
+            wp.causticDepthScale = 128.0f;
+            wp.causticPower = 4.0f;
+            wp.causticLineScale = 3.0f;
+            wp.bumpAmplitude = 0.0f;
+            wp.blurRadius = 4.0f;
+            wp.enableBlur = true;
+            waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
+        }
 
 
-
-        // Let the WaterRenderer reference our application-owned vector
-        sceneRenderer->waterRenderer->setExternalParamsList(&waterParams);
-        sceneRenderer->init(this, &textureArrayManager, &materialManager);
+        sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
 
         // IMPORTANT: run texture setup on the main thread.
         // Detached startup threads were racing with SceneRenderer initialization
@@ -269,8 +289,8 @@ public:
         skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
         // Create settings widget (was missing previously)
         settingsWidget = std::make_shared<SettingsWidget>(settings);
-        // Inform SceneRenderer about the MaterialManager
-        waterWidget = std::make_shared<WaterWidget>(sceneRenderer->waterRenderer.get());
+        // Water UI uses the application-owned water params vector and updates GPU state explicitly.
+        waterWidget = std::make_shared<WaterWidget>(sceneRenderer->waterRenderer.get(), &waterParams);
 
         renderTargetsWidget = std::make_shared<RenderTargetsWidget>(
             this,
@@ -345,17 +365,7 @@ public:
 
         shadowParams.update(camera.getPosition(), light);
         
-        // Advance water animation time (owned by WaterRenderer) when enabled
-        const bool waterEnabled = settings.waterEnabled;
-        if (waterEnabled && sceneRenderer && sceneRenderer->waterRenderer) {
-            sceneRenderer->waterRenderer->advanceTime(deltaTime);
-        }
-        // Texture generation will be flushed after the current frame is submitted
-        // to avoid transitioning array layers to GENERAL before the draw commands
-        // that sample them have been submitted.  see validation-layer issues.
-        // (pollPendingGenerations can still run here if desired but we defer it too)
-        // if (textureMixer) textureMixer->pollPendingGenerations(this);
-
+        mainTime += deltaTime;
     }
 
     void preRenderPass(VkCommandBuffer &commandBuffer) override {
@@ -451,7 +461,7 @@ public:
         VkRenderPassBeginInfo unusedRpInfo{};
         // Sky is now rendered inside the solid pass above, before solid geometry.
         sceneRenderer->mainPass(this, commandBuffer, unusedRpInfo, frameIdx, waterEnabled, vegetationEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode, profilingEnabled, queryPool,
-            viewProj, uboStatic, sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), true, false, true, 0, 0.0f, 0.0f);
+            viewProj, uboStatic, true, false, true, 0, 0.0f, 0.0f);
 
         // Render debug cubes for expanded octree nodes + node instances from change handlers
         if (settings.showDebugCubes) {
@@ -524,7 +534,7 @@ public:
             if (sceneRenderer && sceneRenderer->solid360Renderer) cubeReflectionView = sceneRenderer->solid360Renderer->getSolid360View();
             VkImageView skyView = (sceneRenderer && sceneRenderer->skyRenderer) ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
             sceneRenderer->waterPass(this, commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), settings.wireframeMode, profilingEnabled, queryPool,
-                sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), skyView, cubeReflectionView);
+                mainTime, skyView, cubeReflectionView);
         }
         
     }
@@ -714,11 +724,9 @@ public:
                 sceneRenderer->waterRenderer->getWaterDepthView(frameIdx),
                 sceneRenderer->waterRenderer->getWaterNormalView(frameIdx),
                 sceneRenderer->waterRenderer->getWaterMaskView(frameIdx),
-                sceneRenderer->waterRenderer->getParams(),
                 viewProj,
                 invViewProj,
                 glm::vec3(uboStatic.viewPos),
-                sceneRenderer->waterRenderer->getTime(),
                 false,
                 skyViewPP);
         }

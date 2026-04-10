@@ -21,26 +21,6 @@ layout(location = 2) out vec4 outMask;
 #include "includes/textures.glsl"
 #include "includes/shadows.glsl"
 
-// Water-specific parameters (set 0, binding 7)
-// Per-layer water params SSBO (set 0, binding = 7) - indexed by texture layer / texIndex
-struct WaterParamsGPU {
-    vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=reflectionStrength
-    vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
-    vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=specularIntensity, w=specularPower
-    vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
-    vec4 deepColor; // xyz = deepColor, w = glitterIntensity
-    vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
-    vec4 reserved1;  // unused
-    vec4 reserved2;  // unused
-    vec4 reserved3;  // unused (x = cube360Available)
-    vec4 causticColor; // rgb = caustic tint, w = unused
-    vec4 causticParams; // x = scale, y = intensity, z = power, w = depthScale
-    vec4 causticExtraParams; // x = lineScale, y = lineMix, z = causticType (0=perlin,1=voronoi), w = causticVelocity
-};
-
-layout(std430, set = 0, binding = 7) readonly buffer WaterParamsBlock {
-    WaterParamsGPU waterParams[];
-};
 
 // Scene color and depth textures for refraction and edge foam (set 2)
 layout(set = 2, binding = 0) uniform sampler2D sceneColorTex;
@@ -66,10 +46,8 @@ float linearizeDepth(float depth) {
 
 void main() {
     // Get water parameters from SSBO indexed by fragment texIndex
-    // Prefer time from water params; fallback to global UBO
     WaterParamsGPU wp = waterParams[fragTexIndex];
-    float time = wp.params3.y;
-    if (time == 0.0) time = ubo.passParams.x;
+    float time = waterRenderUBO.timeParams.x;
 
     // Water rendering parameters from selected water params
     float refractionStrength = wp.params1.x;
@@ -489,8 +467,7 @@ void main() {
         // Prefer tessellation-provided debug value when available (fragDebug).
         // But also compute a per-fragment approximation of the bump displacement so the debug
         // mode works even when tessellation is disabled.
-        float timeDebug = wp.params3.y;
-        if (timeDebug == 0.0) timeDebug = ubo.passParams.x;
+        float timeDebug = waterRenderUBO.timeParams.x;
         float waveScaleDbg = 1.0;  // No longer in passParams (z=nearPlane now)
 
         float bumpAmpDbg = wp.waveParams.z;

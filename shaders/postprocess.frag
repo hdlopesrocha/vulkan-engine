@@ -15,12 +15,7 @@ layout(set = 0, binding = 5) uniform WaterUBO {
     mat4 viewProjection;
     mat4 invViewProjection;
     vec4 viewPos;
-    vec4 waterParams1;
-    vec4 waterParams2;
-    vec4 shallowColor;
-    vec4 deepColor;
     vec4 screenSize;     // xy = width,height
-    vec4 noisePersistence;
 } ubo;
 
 layout(set = 0, binding = 6) uniform sampler2D sceneSkyTex;

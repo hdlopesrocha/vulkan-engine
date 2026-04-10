@@ -1887,10 +1887,18 @@ void VulkanApp::createDescriptorSetLayout() {
     shadowCascade2Binding.pImmutableSamplers = nullptr;
     shadowCascade2Binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 10> bindings = {
+    // binding 10: Water render UBO (time parameter for water shaders)
+    VkDescriptorSetLayoutBinding waterRenderUBOBinding{};
+    waterRenderUBOBinding.binding = 10;
+    waterRenderUBOBinding.descriptorCount = 1;
+    waterRenderUBOBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    waterRenderUBOBinding.pImmutableSamplers = nullptr;
+    waterRenderUBOBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 11> bindings = {
         uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
         shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
-        waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding
+        waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding
     };
     // Fill the material binding at position 5
     bindings[5].binding = 5;

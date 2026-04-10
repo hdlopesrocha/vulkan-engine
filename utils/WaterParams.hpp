@@ -3,7 +3,6 @@
 
 // Water rendering parameters (CPU-side)
 struct WaterParams {
-    float time = 0.0f;
     float waveSpeed = 0.5f;
     float waveScale = 0.03f;
     float refractionStrength = 0.03f;
@@ -67,7 +66,7 @@ struct WaterParams {
 struct WaterParamsGPU {
     glm::vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=reflectionStrength
     glm::vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
-    glm::vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=specularIntensity, w=specularPower
+    glm::vec4 params3;  // x=noiseTimeSpeed, y=unused, z=specularIntensity, w=specularPower
     glm::vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
     glm::vec4 deepColor; // xyz = deepColor, w = glitterIntensity
     glm::vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
@@ -79,15 +78,15 @@ struct WaterParamsGPU {
     glm::vec4 causticExtraParams; // x=lineScale, y=lineMix, z = causticType (0=perlin,1=voronoi), w = causticVelocity
 };
 
+// GPU-side water render UBO
+struct WaterRenderUBO {
+    glm::vec4 timeParams; // x = waterTime, yzw = unused
+};
+
 // GPU-side water uniform buffer
 struct WaterUBO {
     glm::mat4 viewProjection;
     glm::mat4 invViewProjection;
     glm::vec4 viewPos;
-    glm::vec4 waterParams1;  // time, waveSpeed, waveScale, refractionStrength
-    glm::vec4 waterParams2;  // fresnelPower, transparency, depthFalloff, noiseScale
-    glm::vec4 shallowColor;  // rgb + padding
-    glm::vec4 deepColor;     // rgb + noiseOctaves
     glm::vec4 screenSize;    // width, height, 1/width, 1/height
-    glm::vec4 noisePersistence; // noisePersistence, padding...
 };

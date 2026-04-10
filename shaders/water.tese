@@ -20,42 +20,7 @@ layout(location = 5) out vec3 fragPosWorld;  // world-space position for shadow 
 layout(location = 6) out vec4 fragPosLightSpace; // light-space pos (cascade 0)
 layout(location = 7) flat out int fragTexIndex;
 
-layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 viewProjection;
-    vec4 viewPos;
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 materialFlags;
-    mat4 lightSpaceMatrix;
-    vec4 shadowEffects;
-    vec4 debugParams;
-    vec4 triplanarSettings;
-    vec4 tessParams;   // x=nearDist, y=farDist, z=minLevel, w=maxLevel
-    vec4 passParams;   // x=isShadowPass, y=tessEnabled, z=nearPlane, w=farPlane
-    mat4 lightSpaceMatrix1; // cascade 1
-    mat4 lightSpaceMatrix2; // cascade 2
-} ubo;
-
-// Water-specific parameters (set 0, binding = 7) - same layout as the post-process shader
-// Per-layer water params SSBO (std430) - indexed by texture layer / texIndex
-struct WaterParamsGPU {
-    vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=foamDepthThreshold
-    vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
-    vec4 params3;  // x=noiseTimeSpeed, y=waterTime, z=specularIntensity, w=specularPower
-    vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
-    vec4 deepColor; // xyz = deepColor, w = glitterIntensity
-    vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
-    vec4 reserved1;  // x=enableReflection, y=enableRefraction, z=enableBlur, w=blurRadius
-    vec4 reserved2;  // x=blurSamples, y=volumeBlurRate, z=volumeBumpRate, w=uniformReflection
-    vec4 reserved3;  // x=cube360Available(0/1)
-    vec4 causticColor;
-    vec4 causticParams;
-    vec4 causticExtraParams;
-};
-
-layout(std430, set = 0, binding = 7) readonly buffer WaterParamsBlock {
-    WaterParamsGPU waterParams[];
-};
+#include "includes/ubo.glsl"
 
 // Scene depth texture for depth-dependent wave attenuation (set 2)
 layout(set = 2, binding = 1) uniform sampler2D sceneDepthTex;
@@ -116,8 +81,7 @@ void main() {
     WaterParamsGPU wp = waterParams[chosenIdx];
 
     // Get water and noise parameters from selected params
-    float time = wp.params3.y;
-    if (time == 0.0) time = ubo.passParams.x;
+    float time = waterRenderUBO.timeParams.x;
     // waveScale is no longer in passParams (z/w now carry nearPlane/farPlane).
     // Displacement magnitude is fully controlled by bumpAmp from the widget.
     float waveScale = 1.0;

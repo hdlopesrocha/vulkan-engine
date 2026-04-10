@@ -5,6 +5,7 @@
 #include "../utils/LiquidSpaceChangeHandler.hpp"
 #include "../utils/LocalScene.hpp"
 #include "../math/ContainmentType.hpp"
+#include <algorithm>
 #include <mutex>
 #include <unordered_set>
 
@@ -174,7 +175,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
 }
 
 void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
-                  const UniformObject &uboStatic, const WaterParams &waterParams, float waterTime, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent) {
+                  const UniformObject &uboStatic, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent) {
     if (commandBuffer == VK_NULL_HANDLE) {
         fprintf(stderr, "[SceneRenderer::mainPass] commandBuffer is VK_NULL_HANDLE, skipping.\n");
         return;
@@ -201,10 +202,20 @@ void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDe
     skyRenderer->render(app, commandBuffer, perTextureDescriptorSet, mainUniformBuffer, uboStatic, viewProj, mode);
 }
 
-void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime, VkImageView skyView, VkImageView cubeReflectionView) {
+void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, float waterTime, VkImageView skyView, VkImageView cubeReflectionView) {
     if (commandBuffer == VK_NULL_HANDLE) {
         fprintf(stderr, "[SceneRenderer::waterPass] commandBuffer is VK_NULL_HANDLE, skipping.\n");
         return;
+    }
+
+    // Update the water render UBO with the active layer time value.
+    if (waterRenderUBOBuffer_.buffer != VK_NULL_HANDLE) {
+        WaterRenderUBO renderUbo{};
+        renderUbo.timeParams = glm::vec4(waterTime, 0.0f, 0.0f, 0.0f);
+        void* data = nullptr;
+        vkMapMemory(app->getDevice(), waterRenderUBOBuffer_.memory, 0, sizeof(WaterRenderUBO), 0, &data);
+        memcpy(data, &renderUbo, sizeof(WaterRenderUBO));
+        vkUnmapMemory(app->getDevice(), waterRenderUBOBuffer_.memory);
     }
 
     // Delegate water offscreen work to WaterRenderer — record on the same
@@ -221,7 +232,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
     if (wireframeEnabled && waterWireframe && waterWireframe->getPipeline() != VK_NULL_HANDLE) {
         // Wireframe path: use WaterRenderer for setup/pass management,
         // but bind the wireframe pipeline instead of the normal one.
-        waterRenderer->prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, waterParams, waterTime, skyView);
+        waterRenderer->prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
         if (backFaceRenderer) {
             backFaceRenderer->renderBackFacePass(app, commandBuffer, frameIdx,
                                                 waterRenderer->getIndirectRenderer(),
@@ -251,7 +262,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
                                                 waterRenderer->getWaterDepthDescriptorSet(frameIdx),
                                                 solidRenderer->getDepthImage(frameIdx));
         }
-        waterRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, waterParams, waterTime, skyView);
+        waterRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
     }
 
     // Post-processing should run inside the active main render pass; caller (e.g. MyApp::draw) should invoke
@@ -259,13 +270,14 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
     // on executing offscreen geometry and returning control to the main pass.
 }
 
-void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager) {
+void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterParams>& waterParams) {
     if (!app) {
         fprintf(stderr, "[SceneRenderer::init] app is nullptr!\n");
         return;
     }
     // skySettingsRef was initialized at construction and must be valid
     
+
     // Bind external texture arrays if provided; allocation/initialization should be done by the application
     if (vegetationRenderer) {
         if (textureArrayManager) {
@@ -390,10 +402,11 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     materialsWrite.pBufferInfo = &materialsInfo;
     writes.push_back(materialsWrite);
 
-    // Initialize WaterRenderer early and allocate a params SSBO sized to texture layers
-    // Default to two water param slots to allow UI pagination even with no texture arrays
-    uint32_t layerCount = 2;
-    if (textureArrayManager && textureArrayManager->layerAmount > 0) layerCount = textureArrayManager->layerAmount;
+    // Initialize WaterRenderer early and allocate a params SSBO sized to texture layers.
+    // Use the passed vector of WaterParams as the source of truth for layer count.
+    // Fallback to texture array layer amount or a minimum of two slots if no params exist.
+    uint32_t layerCount = waterParams.size();
+    
     size_t paramsBufferSize = sizeof(WaterParamsGPU) * static_cast<size_t>(layerCount);
     waterParamsBuffer_ = app->createBuffer(paramsBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -403,16 +416,13 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     solid360Renderer = std::make_unique<Solid360Renderer>();
     if (backFaceRenderer) backFaceRenderer->createRenderPass(app);
 
-    // Initialize WaterRenderer (creates its pipeline layout)
-    waterRenderer->init(app, waterParamsBuffer_);
+    // Initialize WaterRenderer (creates its pipeline layout and initializes the param SSBO)
+    waterRenderer->init(app, waterParamsBuffer_, waterParams, layerCount);
 
     // Now that WaterRenderer has created its pipeline layout, allow the
     // back-face renderer to create pipelines that depend on it.
     if (backFaceRenderer) backFaceRenderer->createPipelines(app, waterRenderer->getWaterGeometryPipelineLayout());
     if (solid360Renderer) solid360Renderer->init(app);
-
-    // Inform WaterRenderer about the SSBO size (number of entries)
-    waterRenderer->setParamsBuffer(waterParamsBuffer_, layerCount);
 
     // Bind water params SSBO to binding 7 of main descriptor set
     VkDescriptorBufferInfo waterParamsInfo{};
@@ -427,6 +437,22 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     waterParamsWrite.descriptorCount = 1;
     waterParamsWrite.pBufferInfo = &waterParamsInfo;
     writes.push_back(waterParamsWrite);
+
+    // Bind water render UBO to binding 10 of main descriptor set
+    waterRenderUBOBuffer_ = app->createBuffer(sizeof(WaterRenderUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkDescriptorBufferInfo waterRenderUBOInfo{};
+    waterRenderUBOInfo.buffer = waterRenderUBOBuffer_.buffer;
+    waterRenderUBOInfo.offset = 0;
+    waterRenderUBOInfo.range = sizeof(WaterRenderUBO);
+    VkWriteDescriptorSet waterRenderUBOWrite{};
+    waterRenderUBOWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    waterRenderUBOWrite.dstSet = mainDs;
+    waterRenderUBOWrite.dstBinding = 10;
+    waterRenderUBOWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    waterRenderUBOWrite.descriptorCount = 1;
+    waterRenderUBOWrite.pBufferInfo = &waterRenderUBOInfo;
+    writes.push_back(waterRenderUBOWrite);
 
     // Perform descriptor update (clean up temporary image infos afterwards)
     app->updateDescriptorSet(writes);
@@ -507,6 +533,17 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         shadowWaterWrite.descriptorCount = 1;
         shadowWaterWrite.pBufferInfo    = &shadowWaterInfo;
         shadowWrites.push_back(shadowWaterWrite);
+
+        // Water render UBO (binding 10)
+        VkDescriptorBufferInfo shadowWaterRenderInfo{ waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO) };
+        VkWriteDescriptorSet shadowWaterRenderWrite{};
+        shadowWaterRenderWrite.sType          = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        shadowWaterRenderWrite.dstSet         = shadowDescriptorSet;
+        shadowWaterRenderWrite.dstBinding     = 10;
+        shadowWaterRenderWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        shadowWaterRenderWrite.descriptorCount = 1;
+        shadowWaterRenderWrite.pBufferInfo    = &shadowWaterRenderInfo;
+        shadowWrites.push_back(shadowWaterRenderWrite);
 
         app->updateDescriptorSet(shadowWrites);
         for (auto &w : shadowWrites) {
