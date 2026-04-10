@@ -168,6 +168,16 @@ void SettingsWidget::render() {
             "Water Sky Sample (UV rotate CW)",
             "Water Sky Sample (UV rotate CCW)",
             "Water Sky Sample (invert UV)"
+            , "Caustics: Area Contraction (front/back/blend)",
+            "Caustics: Anisotropy (front/back/blend)",
+            "Caustics: Cloud/Line Components (cloud,line,raw)",
+            "Caustics: Final Caustic Mask"
+            , "Back-face Depth (raw)",
+            "Front-face Depth (linearized)",
+            "Back-face Depth (linearized)",
+            "Scene Depth (early UV, linearized)",
+            "Effective Back Depth (min, linearized)",
+            "Water Thickness (normalized)"
         };
         int current = settings.debugMode;
         if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {

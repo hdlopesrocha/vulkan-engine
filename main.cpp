@@ -237,6 +237,12 @@ public:
         wp.causticColor = glm::vec3(0.5f, 1.0f, 0.0f);
         wp.shallowColor = glm::vec3(0.1f, 0.5f, 0.1f);
         wp.waterTint = 0.6f;
+        wp.causticType = 1; // line-shaped caustics
+        wp.causticIntensity = 0.2f;
+        wp.causticScale = 0.01f;
+        wp.causticDepthScale = 128.0f;
+        wp.causticPower = 4.0f;
+        wp.causticLineScale = 3.0f;
         waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
 
 
