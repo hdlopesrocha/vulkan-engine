@@ -45,9 +45,8 @@ layout(std430, set = 0, binding = 7) readonly buffer WaterParamsBlock {
 // Scene color and depth textures for refraction and edge foam (set 2)
 layout(set = 2, binding = 0) uniform sampler2D sceneColorTex;
 layout(set = 2, binding = 1) uniform sampler2D sceneDepthTex;
-layout(set = 2, binding = 2) uniform sampler2D sceneSkyTex;
 layout(set = 2, binding = 3) uniform sampler2D waterBackDepthTex;  // back-face depth for volume thickness
-layout(set = 2, binding = 4) uniform samplerCube sceneSkyCube;    // optional solid 360 cubemap
+layout(set = 2, binding = 4) uniform samplerCube sceneSkyCube;    // solid 360 cubemap (used directly)
 
 // Near/far planes for linearizing depth – read from UBO passParams (z = near, w = far)
 // so they always match the glm::perspective call on the CPU side.
@@ -317,45 +316,25 @@ void main() {
     
     // === REFLECTION ===
     vec3 reflectDir = reflect(-viewDir, normal);
-    // Sample sky from equirectangular map using reflection direction
-    // Convert 3D direction to equirect UV: x = atan(z,x)/2π+0.5, y = acos(y)/π
-    const float PI = 3.14159265358979;
-    vec2 skyUV;
-    skyUV.x = atan(reflectDir.z, reflectDir.x) / (2.0 * PI) + 0.5;
-    skyUV.y = acos(clamp(reflectDir.y, -1.0, 1.0)) / PI;
-    // Prefer cubemap sampling when available (set via WaterParamsGPU.reserved3.x)
-    bool cubeAvailable = wp.reserved3.x > 0.5;
-    vec3 skyColor;
-        if (cubeAvailable) { 
-        // Mirror the -X cubemap region horizontally to match cube face orientation
-        vec3 rd = reflectDir;
-        float axc = abs(rd.x);
-        float ayc = abs(rd.y);
-        float azc = abs(rd.z);
-        // +Y face: mirror horizontally by flipping X
-        if (ayc >= axc && ayc >= azc && rd.y > 0.0) {
-            rd.x = -rd.x;
-        }
-        // +X face: mirror horizontally by flipping Z
-        else if (axc >= ayc && axc >= azc && rd.x > 0.0) {
-            rd.z = -rd.z;
-        }
-        // -X face: mirror horizontally by flipping Z
-        else if (axc >= ayc && axc >= azc && rd.x < 0.0) {
-            rd.z = -rd.z;
-        }
-        // +Z face: mirror horizontally by flipping X
-        else if (azc >= axc && azc >= ayc && rd.z > 0.0) {
-            rd.x = -rd.x;
-        }
-        // -Z face: mirror horizontally by flipping X
-        else if (azc >= axc && azc >= ayc && rd.z < 0.0) {
-            rd.x = -rd.x;
-        }
-        skyColor = texture(sceneSkyCube, rd).rgb;
-    } else {
-        skyColor = texture(sceneSkyTex, skyUV).rgb;
+
+    // Sample the solid 360 cubemap directly.
+    // Apply per-face horizontal mirroring to match cube face orientation.
+    vec3 rd = reflectDir;
+    float axc = abs(rd.x);
+    float ayc = abs(rd.y);
+    float azc = abs(rd.z);
+    if (ayc >= axc && ayc >= azc && rd.y > 0.0) {
+        rd.x = -rd.x;
+    } else if (axc >= ayc && axc >= azc && rd.x > 0.0) {
+        rd.z = -rd.z;
+    } else if (axc >= ayc && axc >= azc && rd.x < 0.0) {
+        rd.z = -rd.z;
+    } else if (azc >= axc && azc >= ayc && rd.z > 0.0) {
+        rd.x = -rd.x;
+    } else if (azc >= axc && azc >= ayc && rd.z < 0.0) {
+        rd.x = -rd.x;
     }
+    vec3 skyColor = texture(sceneSkyCube, rd).rgb;
 
     // Uniform reflection toggle: when set, apply reflectionStrength uniformly
     // instead of modulating by Fresnel. This flag is stored in reserved2.w
@@ -364,8 +343,7 @@ void main() {
 
     // --- Reflection sampling debug helpers ---
     // Use the global debug mode (ubo.debugParams.x) to visualize reflection
-    // computation steps and alternate sampling conventions without recompiling
-    // shaders. Helpful to diagnose equirect/cubemap orientation issues.
+    // computation steps and cubemap sampling. Helpful to diagnose orientation.
     int dbgMode = int(ubo.debugParams.x + 0.5);
     if (dbgMode == 37) {
         // Visualize reflection vector (packed to [0,1])
@@ -376,104 +354,8 @@ void main() {
         return;
     }
     if (dbgMode == 38) {
-        // Visualize computed equirect UV
-        outColor = vec4(skyUV, 0.0, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    if (dbgMode == 39) {
-        // Show direct sample from the equirect texture (current behavior)
-        vec3 sc = texture(sceneSkyTex, skyUV).rgb;
-        outColor = vec4(sc, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    if (dbgMode == 40) {
-        // Sample with flipped X
-        vec2 uvx = vec2(1.0 - skyUV.x, skyUV.y);
-        vec3 sc = texture(sceneSkyTex, uvx).rgb;
-        outColor = vec4(sc, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    if (dbgMode == 41) {
-        // Sample with flipped Y
-        vec2 uvy = vec2(skyUV.x, 1.0 - skyUV.y);
-        vec3 sc = texture(sceneSkyTex, uvy).rgb;
-        outColor = vec4(sc, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    if (dbgMode == 42) {
-        // Alternate mapping: swap X/Z in atan() (useful for diagnosing axis swaps)
-        vec2 altUV;
-        altUV.x = atan(reflectDir.x, reflectDir.z) / (2.0 * PI) + 0.5;
-        altUV.y = acos(clamp(reflectDir.y, -1.0, 1.0)) / PI;
-        vec3 sc = texture(sceneSkyTex, altUV).rgb;
-        outColor = vec4(sc, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-
-    // Additional alternate mappings for further diagnosis (43..48)
-    if (dbgMode == 43) {
-        // Swap X/Z (dir = [z, y, x])
-        vec3 d = vec3(reflectDir.z, reflectDir.y, reflectDir.x);
-        vec2 uv = vec2(atan(d.z, d.x) / (2.0 * PI) + 0.5, acos(clamp(d.y, -1.0, 1.0)) / PI);
-        vec3 sc = texture(sceneSkyTex, uv).rgb;
-        outColor = vec4(sc, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    if (dbgMode == 44) {
-        // Swap X/Z and negate Z (dir = [-z, y, x])
-        vec3 d = vec3(-reflectDir.z, reflectDir.y, reflectDir.x);
-        vec2 uv = vec2(atan(d.z, d.x) / (2.0 * PI) + 0.5, acos(clamp(d.y, -1.0, 1.0)) / PI);
-        vec3 sc = texture(sceneSkyTex, uv).rgb;
-        outColor = vec4(sc, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    if (dbgMode == 45) {
-        // Negate Z component
-        vec3 d = vec3(reflectDir.x, reflectDir.y, -reflectDir.z);
-        vec2 uv = vec2(atan(d.z, d.x) / (2.0 * PI) + 0.5, acos(clamp(d.y, -1.0, 1.0)) / PI);
-        vec3 sc = texture(sceneSkyTex, uv).rgb;
-        outColor = vec4(sc, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    if (dbgMode == 46) {
-        // Rotate UV (clockwise 90 deg)
-        vec2 uvrot = vec2(1.0 - skyUV.y, skyUV.x);
-        vec3 sc = texture(sceneSkyTex, uvrot).rgb;
-        outColor = vec4(sc, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    if (dbgMode == 47) {
-        // Rotate UV (counter-clockwise 90 deg)
-        vec2 uvrot2 = vec2(skyUV.y, 1.0 - skyUV.x);
-        vec3 sc = texture(sceneSkyTex, uvrot2).rgb;
-        outColor = vec4(sc, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    if (dbgMode == 48) {
-        // Invert both UV axes
-        vec2 uvinv = vec2(1.0 - skyUV.x, 1.0 - skyUV.y);
-        vec3 sc = texture(sceneSkyTex, uvinv).rgb;
-        outColor = vec4(sc, 1.0);
+        // Show direct cubemap sample
+        outColor = vec4(skyColor, 1.0);
         outNormal = vec4(normal, 0.0);
         outMask = vec4(1.0);
         return;
