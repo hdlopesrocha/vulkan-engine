@@ -8,6 +8,32 @@
 #include "WaterBackFaceRenderer.hpp"
 #include "Solid360Renderer.hpp"
 
+// Getter implementations that require complete type definitions
+VkImageView WaterRenderer::getBackFaceDepthView(uint32_t frameIndex) const {
+    return (backFaceRenderer) ? backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
+}
+
+VkImage WaterRenderer::getBackFaceDepthImage(uint32_t frameIndex) const {
+    return (backFaceRenderer) ? backFaceRenderer->getBackFaceDepthImage(frameIndex) : VK_NULL_HANDLE;
+}
+
+VkImageView WaterRenderer::getSolid360View() const {
+    return (solid360Renderer) ? solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
+}
+
+VkImageView WaterRenderer::getCube360FaceView(uint32_t face) const {
+    return (solid360Renderer) ? solid360Renderer->getCube360FaceView(face) : VK_NULL_HANDLE;
+}
+
+VkImageView WaterRenderer::getCube360CubeView() const {
+    return (solid360Renderer) ? solid360Renderer->getCube360CubeView() : VK_NULL_HANDLE;
+}
+
+void WaterRenderer::setSubRenderers(WaterBackFaceRenderer* backFace, Solid360Renderer* solid360) {
+    backFaceRenderer = backFace;
+    solid360Renderer = solid360;
+}
+
 // Global image layout tracking for WaterRenderer render targets
 static VkImageLayout sceneColorImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
 static VkImageLayout sceneDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };

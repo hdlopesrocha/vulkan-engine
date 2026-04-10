@@ -376,8 +376,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     solid360Renderer = std::make_unique<Solid360Renderer>();
     // Provide WaterRenderer with non-owning pointers to the sub-renderers
     if (waterRenderer) {
-        waterRenderer->backFaceRenderer = backFaceRenderer.get();
-        waterRenderer->solid360Renderer = solid360Renderer.get();
+        waterRenderer->setSubRenderers(backFaceRenderer.get(), solid360Renderer.get());
     }
     waterRenderer->init(app, waterParamsBuffer_);
     // Inform WaterRenderer about the SSBO size (number of entries)

@@ -35,8 +35,8 @@ public:
 
     // Back-face depth pre-pass (reversed winding for water volume thickness)
     void renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex);
-    VkImageView getBackFaceDepthView(uint32_t frameIndex) const { return (backFaceRenderer) ? backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE; }
-    VkImage getBackFaceDepthImage(uint32_t frameIndex) const { return (backFaceRenderer) ? backFaceRenderer->getBackFaceDepthImage(frameIndex) : VK_NULL_HANDLE; }
+    VkImageView getBackFaceDepthView(uint32_t frameIndex) const;
+    VkImage getBackFaceDepthImage(uint32_t frameIndex) const;
 
     // Execute the water offscreen geometry pass on the provided command buffer.
     // The solid render pass must have already ended on this same command buffer.
@@ -168,11 +168,14 @@ public:
                         Buffer& uniformBuffer, const UniformObject& ubo);
 
     // Access the 360° solid equirectangular view for water reflection sampling
-    VkImageView getSolid360View() const { return (solid360Renderer) ? solid360Renderer->getSolid360View() : VK_NULL_HANDLE; }
+    VkImageView getSolid360View() const;
     // Access the cubemap view for the 360° solid reflection (cube)
     // Access per-face 2D image views for debugging (order: +X, -X, +Y, -Y, +Z, -Z)
-    VkImageView getCube360FaceView(uint32_t face) const { return (solid360Renderer) ? solid360Renderer->getCube360FaceView(face) : VK_NULL_HANDLE; }
-    VkImageView getCube360CubeView() const { return (solid360Renderer) ? solid360Renderer->getCube360CubeView() : VK_NULL_HANDLE; }
+    VkImageView getCube360FaceView(uint32_t face) const;
+    VkImageView getCube360CubeView() const;
+
+    // Set non-owning pointers to sub-renderers (owned by SceneRenderer)
+    void setSubRenderers(class WaterBackFaceRenderer* backFace, class Solid360Renderer* solid360);
 
     // Register model version for water meshes (stored here)
     void registerModelVersion(NodeID id, const Model3DVersion& ver) { waterNodeModelVersions[id] = ver; }
