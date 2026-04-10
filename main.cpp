@@ -268,7 +268,7 @@ public:
 
         renderTargetsWidget = std::make_shared<RenderTargetsWidget>(
             this,
-            sceneRenderer->waterRenderer.get(), sceneRenderer->solidRenderer.get(), sceneRenderer->skyRenderer.get(),
+            sceneRenderer, sceneRenderer->solidRenderer.get(), sceneRenderer->skyRenderer.get(),
             sceneRenderer->shadowMapper.get(), &shadowParams);
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
@@ -498,9 +498,9 @@ public:
 
         // Render 360° cubemap reflection (sky + solid) from camera position
         // Must run outside any active render pass; writes equirect texture for water sampling
-        if (waterEnabled && sceneRenderer->waterRenderer) {
+        if (waterEnabled && sceneRenderer && sceneRenderer->solid360Renderer) {
             SkySettings::Mode skyMode360 = sceneRenderer->getSkySettings().mode;
-            sceneRenderer->waterRenderer->renderSolid360(
+            sceneRenderer->solid360Renderer->renderSolid360(
                 this, commandBuffer,
                 sceneRenderer->solidRenderer->getRenderPass(),
                 sceneRenderer->skyRenderer.get(), skyMode360,
@@ -514,7 +514,8 @@ public:
             // GPU frustum cull water meshes (must run outside a render pass)
             sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
             // Use 360° solid+sky reflection instead of the sky-only equirect view
-            VkImageView reflectionView = sceneRenderer->waterRenderer->getSolid360View();
+            VkImageView reflectionView = VK_NULL_HANDLE;
+            if (sceneRenderer && sceneRenderer->solid360Renderer) reflectionView = sceneRenderer->solid360Renderer->getSolid360View();
             if (reflectionView == VK_NULL_HANDLE) {
                 // Fallback to sky-only view if 360 targets not ready
                 reflectionView = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;

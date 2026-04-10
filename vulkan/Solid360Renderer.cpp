@@ -96,9 +96,7 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidR
                    cube360FaceViews[face], "Solid360Renderer: cube360 face view");
     }
 
-    createView(cube360ColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT,
-               VK_IMAGE_VIEW_TYPE_CUBE, 0, 6,
-               cube360CubeView, "Solid360Renderer: cube360 cube view");
+
 
     // --- 2. Shared depth image ---
     {
@@ -201,6 +199,8 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidR
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = &poolSize;
     poolInfo.maxSets = 1;
+    // Allow freeing individual descriptor sets if the renderer frees them later
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &cube360DescPool) != VK_SUCCESS)
         throw std::runtime_error("Failed to create cube360 descriptor pool!");
     app->resources.addDescriptorPool(cube360DescPool, "Solid360Renderer: cube360DescPool");

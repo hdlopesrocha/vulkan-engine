@@ -5,34 +5,8 @@
 #include <iostream>
 #include <array>
 #include <glm/gtc/matrix_transform.hpp>
-#include "WaterBackFaceRenderer.hpp"
-#include "Solid360Renderer.hpp"
 
-// Getter implementations that require complete type definitions
-VkImageView WaterRenderer::getBackFaceDepthView(uint32_t frameIndex) const {
-    return (backFaceRenderer) ? backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
-}
-
-VkImage WaterRenderer::getBackFaceDepthImage(uint32_t frameIndex) const {
-    return (backFaceRenderer) ? backFaceRenderer->getBackFaceDepthImage(frameIndex) : VK_NULL_HANDLE;
-}
-
-VkImageView WaterRenderer::getSolid360View() const {
-    return (solid360Renderer) ? solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
-}
-
-VkImageView WaterRenderer::getCube360FaceView(uint32_t face) const {
-    return (solid360Renderer) ? solid360Renderer->getCube360FaceView(face) : VK_NULL_HANDLE;
-}
-
-VkImageView WaterRenderer::getCube360CubeView() const {
-    return (solid360Renderer) ? solid360Renderer->getCube360CubeView() : VK_NULL_HANDLE;
-}
-
-void WaterRenderer::setSubRenderers(WaterBackFaceRenderer* backFace, Solid360Renderer* solid360) {
-    backFaceRenderer = backFace;
-    solid360Renderer = solid360;
-}
+// Sub-renderer accessors removed: SceneRenderer now owns back-face and 360 renderers.
 
 // Global image layout tracking for WaterRenderer render targets
 static VkImageLayout sceneColorImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
@@ -41,7 +15,6 @@ static VkImageLayout waterDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK
 static VkImageLayout waterNormalImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
 static VkImageLayout waterMaskImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
 static VkImageLayout waterGeomDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
-// back-face image layout tracking moved to WaterBackFaceRenderer
 
 WaterRenderer::WaterRenderer() {}
 
@@ -55,15 +28,10 @@ void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer) {
     createWaterRenderPass(app);
     createSceneRenderPass(app);
 
-    // Back-face renderpass must exist before creating its pipeline (created/owned by SceneRenderer)
-    if (backFaceRenderer) backFaceRenderer->createRenderPass(app);
-
     // Create water pipelines (produces waterGeometryPipelineLayout)
     createWaterPipelines(app);
 
-    // Let back-face renderer create its pipeline using the water pipeline layout
-    if (backFaceRenderer) backFaceRenderer->createPipelines(app, waterGeometryPipelineLayout);
-    if (solid360Renderer) solid360Renderer->init(app);
+    // Sub-renderer initialization is owned by SceneRenderer
 }
 
 void WaterRenderer::setParamsBuffer(Buffer& buf, uint32_t count) {
@@ -137,7 +105,7 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer) {
     gpu.causticColor = glm::vec4(p->causticColor, 0.0f);
     gpu.causticParams = glm::vec4(p->causticScale, p->causticIntensity, p->causticPower, p->causticDepthScale);
     gpu.causticExtraParams = glm::vec4(p->causticLineScale, p->causticLineMix, 0.0f, 0.0f);
-    gpu.reserved3 = glm::vec4((solid360Renderer && solid360Renderer->getCube360CubeView() != VK_NULL_HANDLE) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+    gpu.reserved3 = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
 
     size_t offset = static_cast<size_t>(layer) * sizeof(WaterParamsGPU);
     void* data = nullptr;
@@ -153,7 +121,6 @@ void WaterRenderer::cleanup(VulkanApp* app) {
     waterIndirectRenderer.cleanup();
     // Clear local handles; VulkanResourceManager is responsible for actual destruction
     destroyRenderTargets(app);
-    destroySolid360Targets(app);
     waterGeometryPipeline = VK_NULL_HANDLE;
     waterDepthDescriptorPool = VK_NULL_HANDLE;
     waterDepthDescriptorSetLayout = VK_NULL_HANDLE;
@@ -537,11 +504,10 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         waterGeomDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
         fprintf(stderr, "[WaterRenderer] waterGeomDepthImage[%d] = %p\n", frameIdx, (void*)waterGeomDepthImages[frameIdx]);
 
-        // Back-face depth image will be created by WaterBackFaceRenderer
+        // Back-face depth image will be created by SceneRenderer-owned WaterBackFaceRenderer
     }
 
-    // Create back-face depth targets (owned by WaterBackFaceRenderer)
-    if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, width, height);
+    // Back-face depth targets are owned/created by SceneRenderer
 
     // Transition all images to their required layouts
     auto transitionImageLayout = [&](VkImage image, VkImageLayout& currentLayout, VkImageLayout newLayout, VkImageAspectFlags aspect) {
@@ -644,7 +610,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         
         // Update both descriptor sets to bind their frame's scene images
         for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
-            updateSceneTexturesBinding(app, sceneColorImageViews[frameIdx], sceneDepthImageViews[frameIdx], frameIdx, VK_NULL_HANDLE);
+            updateSceneTexturesBinding(app, sceneColorImageViews[frameIdx], sceneDepthImageViews[frameIdx], frameIdx, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
         }
     }
     
@@ -688,7 +654,7 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
         waterGeomDepthMemories[i] = VK_NULL_HANDLE;
         waterGeomDepthImageViews[i] = VK_NULL_HANDLE;
     }
-    if (backFaceRenderer) backFaceRenderer->destroyRenderTargets(app);
+    // Back-face depth targets are destroyed by SceneRenderer
 
     // Reset descriptor pool to free descriptor sets (safe to reset even if pending)
     if (waterDepthDescriptorPool != VK_NULL_HANDLE) {
@@ -786,6 +752,8 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     depthPoolInfo.poolSizeCount = 1;
     depthPoolInfo.pPoolSizes = &depthPoolSize;
     depthPoolInfo.maxSets = 2;  // 2 frames in flight
+    // Allow freeing individual descriptor sets if code frees them explicitly
+    depthPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     
     if (vkCreateDescriptorPool(device, &depthPoolInfo, nullptr, &waterDepthDescriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water depth descriptor pool!");
@@ -1040,34 +1008,24 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
     vkCmdEndRenderPass(cmd);
 }
 
-void WaterRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex) {
-    if (!app || cmd == VK_NULL_HANDLE) return;
-    if (!backFaceRenderer) return;
-    // Forward to the back-face renderer, providing necessary pipeline layout and descriptor sets
-    backFaceRenderer->renderBackFacePass(app, cmd, frameIndex,
-                                         waterIndirectRenderer,
-                                         waterGeometryPipelineLayout,
-                                         app->getMainDescriptorSet(),
-                                         app->getMaterialDescriptorSet(),
-                                         waterDepthDescriptorSets[frameIndex]);
-}
+// Back-face pass is owned and executed by SceneRenderer via its WaterBackFaceRenderer.
 
-void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView) {
+void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView, VkImageView backFaceDepthView, VkImageView cube360View) {
     if (waterDepthDescriptorSets[frameIndex] == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
         return;
     }
-    
+
     // Use the provided image views directly
     VkImageView colorView = colorImageView;
     VkImageView depthView = depthImageView;
-    
+
     std::array<VkDescriptorImageInfo, 5> imageInfos{};
-    
+
     // Scene color (binding 0)
     imageInfos[0].sampler = linearSampler;
     imageInfos[0].imageView = colorView;
     imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    
+
     // Scene depth (binding 1)
     imageInfos[1].sampler = linearSampler;
     imageInfos[1].imageView = depthView;
@@ -1078,18 +1036,18 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     imageInfos[2].imageView = (skyImageView != VK_NULL_HANDLE) ? skyImageView : colorView;  // fallback to scene color if no sky
     imageInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Water back-face depth (binding 3) — will be in SHADER_READ_ONLY after back-face pass
+    // Water back-face depth (binding 3) — prefer explicit `backFaceDepthView` if provided
     imageInfos[3].sampler = linearSampler;
-    imageInfos[3].imageView = (backFaceRenderer && backFaceRenderer->getBackFaceDepthView(frameIndex) != VK_NULL_HANDLE) ? backFaceRenderer->getBackFaceDepthView(frameIndex) : depthView;
+    imageInfos[3].imageView = (backFaceDepthView != VK_NULL_HANDLE) ? backFaceDepthView : depthView;
     imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Cubemap (binding 4) — if available, bind cube360CubeView, otherwise leave as fallback to scene color
+    // Cubemap (binding 4) — prefer explicit `cube360View` if provided
     imageInfos[4].sampler = linearSampler;
-    imageInfos[4].imageView = (solid360Renderer && solid360Renderer->getCube360CubeView() != VK_NULL_HANDLE) ? solid360Renderer->getCube360CubeView() : colorView;
+    imageInfos[4].imageView = (cube360View != VK_NULL_HANDLE) ? cube360View : colorView;
     imageInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    
+
     std::array<VkWriteDescriptorSet, 5> writes{};
-    
+
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = waterDepthDescriptorSets[frameIndex];
     writes[0].dstBinding = 0;
@@ -1097,7 +1055,7 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[0].descriptorCount = 1;
     writes[0].pImageInfo = &imageInfos[0];
-    
+
     writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[1].dstSet = waterDepthDescriptorSets[frameIndex];
     writes[1].dstBinding = 1;
@@ -1169,7 +1127,7 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
                     gpu.causticColor = glm::vec4(p->causticColor, 0.0f);
                     gpu.causticParams = glm::vec4(p->causticScale, p->causticIntensity, p->causticPower, p->causticDepthScale);
                     gpu.causticExtraParams = glm::vec4(p->causticLineScale, p->causticLineMix, 0.0f, 0.0f);
-                    gpu.reserved3 = glm::vec4((solid360Renderer && solid360Renderer->getCube360CubeView() != VK_NULL_HANDLE) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+                    gpu.reserved3 = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
 
             memcpy(static_cast<char*>(mapped) + i * sizeof(WaterParamsGPU), &gpu, sizeof(WaterParamsGPU));
         }
@@ -1177,7 +1135,7 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     }
 
     // Update per-frame scene descriptors
-    updateSceneTexturesBinding(app, sceneColorView, sceneDepthView, frameIndex, skyView);
+    updateSceneTexturesBinding(app, sceneColorView, sceneDepthView, frameIndex, skyView, VK_NULL_HANDLE, VK_NULL_HANDLE);
 
     // Record the water geometry pass directly on the main command buffer.
     // The solid render pass already ended (finalLayout transitions images to
@@ -1226,10 +1184,7 @@ void WaterRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex) 
     pushColorBarrier(waterNormalImages[frameIndex]);
     pushColorBarrier(waterMaskImages[frameIndex]);
 
-    // Depth-based back-face image (ensure depth writes are visible to shader reads)
-    if (backFaceRenderer) {
-        backFaceRenderer->postRenderBarrier(cmd, frameIndex);
-    }
+    // Depth-based back-face image barriers are handled by SceneRenderer-owned back-face renderer.
 
     if (!barriers.empty()) {
         vkCmdPipelineBarrier(cmd,
@@ -1245,15 +1200,8 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
 
     prepareRender(app, cmd, frameIndex, sceneColorView, sceneDepthView, params, waterTime, skyView);
 
-    // Back-face depth pre-pass (reversed winding for water volume thickness)
-    if (backFaceRenderer) {
-        backFaceRenderer->renderBackFacePass(app, cmd, frameIndex,
-                                             waterIndirectRenderer,
-                                             waterGeometryPipelineLayout,
-                                             app->getMainDescriptorSet(),
-                                             app->getMaterialDescriptorSet(),
-                                             waterDepthDescriptorSets[frameIndex]);
-    }
+    // Back-face pre-pass is executed by SceneRenderer's WaterBackFaceRenderer
+    // before calling WaterRenderer::render. No-op here.
 
     beginWaterGeometryPass(cmd, frameIndex);
 
@@ -1293,23 +1241,4 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
     postRenderBarrier(cmd, frameIndex);
 }
 
-// ============================================================================
-// Solid 360° cubemap reflection
-// ============================================================================
-
-void WaterRenderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidRenderPass) {
-    if (solid360Renderer) solid360Renderer->createSolid360Targets(app, solidRenderPass, linearSampler);
-}
-
-void WaterRenderer::destroySolid360Targets(VulkanApp* app) {
-    if (solid360Renderer) solid360Renderer->destroySolid360Targets(app);
-}
-
-void WaterRenderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
-                                    VkRenderPass solidRenderPass,
-                                    SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
-                                    SolidRenderer* solidRenderer,
-                                    VkDescriptorSet mainDescriptorSet,
-                                    Buffer& uniformBuffer, const UniformObject& ubo) {
-    if (solid360Renderer) solid360Renderer->renderSolid360(app, cmd, solidRenderPass, skyRenderer, skyMode, solidRenderer, mainDescriptorSet, uniformBuffer, ubo);
-}
+// Solid 360° cubemap reflection is owned and executed by SceneRenderer.

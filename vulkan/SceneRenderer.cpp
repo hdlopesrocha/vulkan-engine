@@ -71,9 +71,12 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
     }
     if (waterRenderer) {
         waterRenderer->createRenderTargets(app, width, height);
-        // Recreate 360 reflection targets (format may change on resize)
-        waterRenderer->destroySolid360Targets(app);
-        waterRenderer->createSolid360Targets(app, solidRenderer->getRenderPass());
+        // Recreate back-face and 360 reflection targets owned by SceneRenderer
+        if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, width, height);
+        if (solid360Renderer) {
+            solid360Renderer->destroySolid360Targets(app);
+            solid360Renderer->createSolid360Targets(app, solidRenderer->getRenderPass(), waterRenderer->getLinearSampler());
+        }
     }
     if (postProcessRenderer) {
         postProcessRenderer->setRenderSize(width, height);
@@ -213,7 +216,14 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
         // Wireframe path: use WaterRenderer for setup/pass management,
         // but bind the wireframe pipeline instead of the normal one.
         waterRenderer->prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, waterParams, waterTime, skyView);
-        waterRenderer->renderBackFacePass(app, commandBuffer, frameIdx);
+        if (backFaceRenderer) {
+            backFaceRenderer->renderBackFacePass(app, commandBuffer, frameIdx,
+                                                waterRenderer->getIndirectRenderer(),
+                                                waterRenderer->getWaterGeometryPipelineLayout(),
+                                                app->getMainDescriptorSet(),
+                                                app->getMaterialDescriptorSet(),
+                                                waterRenderer->getWaterDepthDescriptorSet(frameIdx));
+        }
         waterRenderer->beginWaterGeometryPass(commandBuffer, frameIdx);
 
         waterWireframe->draw(commandBuffer, app,
@@ -225,6 +235,14 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
         waterRenderer->endWaterGeometryPass(commandBuffer);
         waterRenderer->postRenderBarrier(commandBuffer, frameIdx);
     } else {
+        if (backFaceRenderer) {
+            backFaceRenderer->renderBackFacePass(app, commandBuffer, frameIdx,
+                                                waterRenderer->getIndirectRenderer(),
+                                                waterRenderer->getWaterGeometryPipelineLayout(),
+                                                app->getMainDescriptorSet(),
+                                                app->getMaterialDescriptorSet(),
+                                                waterRenderer->getWaterDepthDescriptorSet(frameIdx));
+        }
         waterRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, waterParams, waterTime, skyView);
     }
 
@@ -371,14 +389,20 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     size_t paramsBufferSize = sizeof(WaterParamsGPU) * static_cast<size_t>(layerCount);
     waterParamsBuffer_ = app->createBuffer(paramsBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    // Create scene-owned water sub-renderers and inform WaterRenderer of non-owning pointers
+    // Create scene-owned water sub-renderers. Back-face renderpass must exist
+    // before water pipelines are created, so create it first.
     backFaceRenderer = std::make_unique<WaterBackFaceRenderer>();
     solid360Renderer = std::make_unique<Solid360Renderer>();
-    // Provide WaterRenderer with non-owning pointers to the sub-renderers
-    if (waterRenderer) {
-        waterRenderer->setSubRenderers(backFaceRenderer.get(), solid360Renderer.get());
-    }
+    if (backFaceRenderer) backFaceRenderer->createRenderPass(app);
+
+    // Initialize WaterRenderer (creates its pipeline layout)
     waterRenderer->init(app, waterParamsBuffer_);
+
+    // Now that WaterRenderer has created its pipeline layout, allow the
+    // back-face renderer to create pipelines that depend on it.
+    if (backFaceRenderer) backFaceRenderer->createPipelines(app, waterRenderer->getWaterGeometryPipelineLayout());
+    if (solid360Renderer) solid360Renderer->init(app);
+
     // Inform WaterRenderer about the SSBO size (number of entries)
     waterRenderer->setParamsBuffer(waterParamsBuffer_, layerCount);
 
@@ -491,8 +515,8 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     }
     waterRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
 
-    // Create cubemap → equirect 360° reflection targets for water
-    waterRenderer->createSolid360Targets(app, solidRenderer->getRenderPass());
+    // Create cubemap → equirect 360° reflection targets for water (owned by SceneRenderer)
+    if (solid360Renderer) solid360Renderer->createSolid360Targets(app, solidRenderer->getRenderPass(), waterRenderer->getLinearSampler());
 
     // Create wireframe pipelines for solid and water passes
     if (solidWireframe) {

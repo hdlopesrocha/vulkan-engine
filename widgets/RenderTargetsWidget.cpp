@@ -1,7 +1,7 @@
 #include "RenderTargetsWidget.hpp"
 #include "Settings.hpp"
 #include "../vulkan/VulkanApp.hpp"
-#include "../vulkan/WaterRenderer.hpp"
+#include "../vulkan/SceneRenderer.hpp"
 #include "../vulkan/SolidRenderer.hpp"
 #include "../vulkan/SkyRenderer.hpp"
 #include "../vulkan/ShadowRenderer.hpp"
@@ -14,9 +14,9 @@
 #include <vector>
 #include <array>
 
-RenderTargetsWidget::RenderTargetsWidget(VulkanApp* app, WaterRenderer* water, SolidRenderer* solid, SkyRenderer* sky,
+RenderTargetsWidget::RenderTargetsWidget(VulkanApp* app, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
                                                                                  ShadowRenderer* shadow, ShadowParams* shadowParams, Settings* settings)
-        : Widget("Render Targets"), app(app), waterRenderer(water), solidRenderer(solid), skyRenderer(sky),
+        : Widget("Render Targets"), app(app), sceneRenderer(scene), solidRenderer(solid), skyRenderer(sky),
             shadowMapper(shadow), shadowParams(shadowParams), settings(settings) {
 }
 
@@ -340,7 +340,7 @@ void RenderTargetsWidget::cleanup() {
 }
 
 void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
-    if (!waterRenderer) return;
+    if (!sceneRenderer || !sceneRenderer->waterRenderer) return;
 
     // Debug: print resource counts before cleanup (helps track leaks)
     if (app) {
@@ -359,7 +359,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     // allocating a new descriptor every frame (which was causing the growth
     // seen in the logs).
 
-    VkSampler sampler = waterRenderer->getLinearSampler();
+    VkSampler sampler = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getLinearSampler() : VK_NULL_HANDLE;
     if (sampler == VK_NULL_HANDLE) return;
 
     // Sky equirectangular texture
@@ -394,7 +394,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     }
 
     // Solid 360° equirectangular reflection
-    VkImageView solid360View = waterRenderer->getSolid360View();
+    VkImageView solid360View = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
     if (solid360View != VK_NULL_HANDLE && solid360Descriptor == VK_NULL_HANDLE) {
         solid360Descriptor = ImGui_ImplVulkan_AddTexture(
             sampler, solid360View, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -403,7 +403,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
     // Per-face cube descriptors for detailed orientation inspection
     for (uint32_t f = 0; f < 6; ++f) {
-        VkImageView faceView = waterRenderer->getCube360FaceView(f);
+        VkImageView faceView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360FaceView(f) : VK_NULL_HANDLE;
         if (faceView != VK_NULL_HANDLE && cube360FaceDescriptor[f] == VK_NULL_HANDLE) {
             cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(sampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             cube360FaceDescriptorOwned[f] = true;
@@ -411,7 +411,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     }
 
     // Water color (first attachment of water geometry pass — R32G32B32A32_SFLOAT worldPos)
-    VkImageView waterView = waterRenderer->getWaterDepthView(frameIndex);
+    VkImageView waterView = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getWaterDepthView(frameIndex) : VK_NULL_HANDLE;
     if (waterView != VK_NULL_HANDLE && waterColorDescriptor == VK_NULL_HANDLE) {
         waterColorDescriptor = ImGui_ImplVulkan_AddTexture(
             sampler, waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -421,7 +421,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     // (Water normals preview removed)
 
     // Water linear depth (alpha channel of the world-pos attachment swizzled into RGB)
-    VkImageView waterDepthLinearView = waterRenderer->getWaterDepthAlphaView(frameIndex);
+    VkImageView waterDepthLinearView = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getWaterDepthAlphaView(frameIndex) : VK_NULL_HANDLE;
     if (waterDepthLinearView != VK_NULL_HANDLE && waterDepthLinearDescriptor == VK_NULL_HANDLE) {
         waterDepthLinearDescriptor = ImGui_ImplVulkan_AddTexture(
             sampler, waterDepthLinearView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -733,8 +733,8 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         }
 
         // Back-face depth pass
-        if (waterRenderer && linearizePipeline != VK_NULL_HANDLE && linearBackFaceFramebuffer != VK_NULL_HANDLE) {
-            VkImageView src = waterRenderer->getBackFaceDepthView(frameIndex);
+        if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE && linearBackFaceFramebuffer != VK_NULL_HANDLE) {
+            VkImageView src = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
             fprintf(stderr, "[RenderTargetsWidget] Backface linearize check: pipeline=%p descSet=%p fb=%p view=%p src=%p\n",
                     (void*)linearizePipeline, (void*)linearizeDescriptorSet, (void*)linearBackFaceFramebuffer, (void*)linearBackFaceDepthView, (void*)src);
             if (src != VK_NULL_HANDLE) {
@@ -789,7 +789,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     }
     // Water back-face depth (volume thickness pre-pass — D32_SFLOAT)
     if (shadowMapper) {
-        VkImageView bfView = waterRenderer->getBackFaceDepthView(frameIndex);
+        VkImageView bfView = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
         if (bfView != VK_NULL_HANDLE && backFaceDepthDescriptor == VK_NULL_HANDLE) {
             backFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(
                 shadowMapper->getShadowMapSampler(), bfView,
@@ -811,7 +811,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         }
     }
     // Back-face depth (water): alias to water back-face depth view
-    VkImageView bfView2 = waterRenderer->getBackFaceDepthView(frameIndex);
+    VkImageView bfView2 = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
     if (linearBackFaceDepthDescriptor == VK_NULL_HANDLE && bfView2 != VK_NULL_HANDLE) {
         VkSampler depthSampler = shadowMapper ? shadowMapper->getShadowMapSampler() : sampler;
         linearBackFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, bfView2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -822,7 +822,6 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     previewDescriptor = VK_NULL_HANDLE;
     switch (selectedPreview) {
         case PreviewTarget::Sky: previewDescriptor = skyDescriptor; break;
-        case PreviewTarget::Solid360: previewDescriptor = solid360Descriptor; break;
         case PreviewTarget::Solid360Cube: previewDescriptor = cube360Descriptor; break;
         case PreviewTarget::SolidColor: previewDescriptor = solidColorDescriptor; break;
         // Prefer the GPU-linearized scene depth if available, otherwise fall back to raw depth view
@@ -868,7 +867,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 void RenderTargetsWidget::render() {
     ImGui::Begin("Render Targets", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
-    if (!waterRenderer || !solidRenderer) {
+    if (!sceneRenderer || !sceneRenderer->waterRenderer || !solidRenderer) {
         ImGui::TextUnformatted("Renderers not available.");
         ImGui::End();
         return;
@@ -894,7 +893,6 @@ void RenderTargetsWidget::render() {
         if (ImGui::RadioButton(label, active)) selectedPreview = v;
     };
     rb("Sky", PreviewTarget::Sky); ImGui::NextColumn();
-    rb("Solid 360", PreviewTarget::Solid360); ImGui::NextColumn();
     rb("Solid 360 Cube", PreviewTarget::Solid360Cube); ImGui::NextColumn();
     rb("Solid Color", PreviewTarget::SolidColor); ImGui::NextColumn();
     rb("Solid Depth", PreviewTarget::SolidDepth); ImGui::NextColumn();
@@ -936,7 +934,6 @@ void RenderTargetsWidget::render() {
     bool available = (ds != VK_NULL_HANDLE);
     switch (selectedPreview) {
         case PreviewTarget::Sky: label = "Sky (Equirectangular)"; imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); break;
-        case PreviewTarget::Solid360: label = "Solid 360 (Reflection)"; imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); break;
         case PreviewTarget::Solid360Cube: label = "Solid 360 (Cube)"; imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); break;
         case PreviewTarget::SolidColor: label = "Solid (Scene Color)"; break;
         case PreviewTarget::SolidDepth: label = "Solid (Depth Buffer)"; break;

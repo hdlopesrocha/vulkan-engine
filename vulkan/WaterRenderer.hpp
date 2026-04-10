@@ -34,9 +34,9 @@ public:
     void endWaterGeometryPass(VkCommandBuffer cmd);
 
     // Back-face depth pre-pass (reversed winding for water volume thickness)
-    void renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex);
-    VkImageView getBackFaceDepthView(uint32_t frameIndex) const;
-    VkImage getBackFaceDepthImage(uint32_t frameIndex) const;
+    // NOTE: back-face depth pre-pass is now owned by SceneRenderer. SceneRenderer
+    // should provide the back-face depth view to WaterRenderer via
+    // `updateSceneTexturesBinding` when available.
 
     // Execute the water offscreen geometry pass on the provided command buffer.
     // The solid render pass must have already ended on this same command buffer.
@@ -148,34 +148,14 @@ public:
     VkImageView getSceneColorImageView(uint32_t frameIndex) const { return sceneColorImageViews[frameIndex]; }
     VkImageView getSceneDepthImageView(uint32_t frameIndex) const { return sceneDepthImageViews[frameIndex]; }
     
-    // Update the scene textures binding (color + depth + sky) for refraction and edge foam
-    void updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView = VK_NULL_HANDLE);
+    // Update the scene textures binding (color + depth + sky) for refraction and edge foam.
+    // `backFaceDepthView` and `cube360View` may be VK_NULL_HANDLE if those targets
+    // are not present; SceneRenderer should pass them when available.
+    void updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView = VK_NULL_HANDLE, VkImageView backFaceDepthView = VK_NULL_HANDLE, VkImageView cube360View = VK_NULL_HANDLE);
 
-    // --- Solid 360° cubemap reflection ---
-    // Create offscreen cubemap + equirect conversion resources.
-    // solidRenderPass must be a render pass compatible with the solid and sky pipelines.
-    void createSolid360Targets(VulkanApp* app, VkRenderPass solidRenderPass);
-    void destroySolid360Targets(VulkanApp* app);
-
-    // Render the solid scene (sky + terrain) into a cubemap from the camera position,
-    // then convert to equirectangular. The result can be sampled via getSolid360View().
-    // Must be called outside any active render pass.
-    void renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
-                        VkRenderPass solidRenderPass,
-                        SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
-                        SolidRenderer* solidRenderer,
-                        VkDescriptorSet mainDescriptorSet,
-                        Buffer& uniformBuffer, const UniformObject& ubo);
-
-    // Access the 360° solid equirectangular view for water reflection sampling
-    VkImageView getSolid360View() const;
-    // Access the cubemap view for the 360° solid reflection (cube)
-    // Access per-face 2D image views for debugging (order: +X, -X, +Y, -Y, +Z, -Z)
-    VkImageView getCube360FaceView(uint32_t face) const;
-    VkImageView getCube360CubeView() const;
-
-    // Set non-owning pointers to sub-renderers (owned by SceneRenderer)
-    void setSubRenderers(class WaterBackFaceRenderer* backFace, class Solid360Renderer* solid360);
+    // Solid 360° cubemap reflection and back-face rendering are owned by SceneRenderer.
+    // SceneRenderer must call `updateSceneTexturesBinding` to provide any required
+    // views (back-face depth, cubemap/equirect) to WaterRenderer.
 
     // Register model version for water meshes (stored here)
     void registerModelVersion(NodeID id, const Model3DVersion& ver) { waterNodeModelVersions[id] = ver; }
@@ -270,7 +250,4 @@ private:
     // Map of node -> model version for water geometry managed here
     std::unordered_map<NodeID, Model3DVersion> waterNodeModelVersions;
 
-    // Non-owning pointers to sub-renderers (owned by SceneRenderer)
-    class Solid360Renderer* solid360Renderer = nullptr;
-    class WaterBackFaceRenderer* backFaceRenderer = nullptr;
 };

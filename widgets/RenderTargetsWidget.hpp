@@ -6,6 +6,7 @@
 
 class VulkanApp;
 class WaterRenderer;
+class SceneRenderer;
 class SolidRenderer;
 class SkyRenderer;
 class ShadowRenderer;
@@ -18,7 +19,7 @@ class Settings;
 class RenderTargetsWidget : public Widget {
 private:
     VulkanApp*      app;
-    WaterRenderer*  waterRenderer;
+    SceneRenderer*  sceneRenderer;
     SolidRenderer*  solidRenderer;
     SkyRenderer*    skyRenderer;
     ShadowRenderer* shadowMapper;
@@ -105,7 +106,6 @@ private:
     // UI: which preview to show (only one at a time)
     enum class PreviewTarget {
         Sky = 0,
-        Solid360,
         Solid360Cube,
         SolidColor,
         SolidDepth,
@@ -123,7 +123,7 @@ private:
     enum class ShadowViewMode { Raw = 0, Linearized = 1 } shadowViewMode = ShadowViewMode::Linearized;
 
 public:
-    RenderTargetsWidget(VulkanApp* app, WaterRenderer* water, SolidRenderer* solid, SkyRenderer* sky,
+    RenderTargetsWidget(VulkanApp* app, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
                         ShadowRenderer* shadow = nullptr, ShadowParams* shadowParams = nullptr, Settings* settings = nullptr);
     ~RenderTargetsWidget();
 
