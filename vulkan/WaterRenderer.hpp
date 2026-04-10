@@ -4,8 +4,6 @@
 #include "IndirectRenderer.hpp"
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
-#include "WaterBackFaceRenderer.hpp"
-#include "Solid360Renderer.hpp"
 #include <glm/glm.hpp>
 #include <memory>
 #include "../utils/Scene.hpp"
