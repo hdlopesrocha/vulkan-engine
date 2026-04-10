@@ -29,12 +29,8 @@ void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer) {
     createWaterRenderPass(app);
     createSceneRenderPass(app);
 
-    // Create sub-renderers for back-face and solid-360 responsibilities
-    backFaceRenderer = std::make_unique<WaterBackFaceRenderer>();
-    solid360Renderer = std::make_unique<Solid360Renderer>();
-
-    // Back-face renderpass must exist before creating its pipeline
-    backFaceRenderer->createRenderPass(app);
+    // Back-face renderpass must exist before creating its pipeline (created/owned by SceneRenderer)
+    if (backFaceRenderer) backFaceRenderer->createRenderPass(app);
 
     // Create water pipelines (produces waterGeometryPipelineLayout)
     createWaterPipelines(app);

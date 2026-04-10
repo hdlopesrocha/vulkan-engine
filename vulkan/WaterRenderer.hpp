@@ -14,10 +14,6 @@
 
 #include "../utils/WaterParams.hpp"
 
-// Forward declarations for sub-renderers (move inline forward `class` specifiers
-// outside of the `WaterRenderer` class definition for clarity).
-class Solid360Renderer;
-class WaterBackFaceRenderer;
 class WaterRenderer {
 public:
     WaterRenderer();
@@ -271,10 +267,7 @@ private:
     // Map of node -> model version for water geometry managed here
     std::unordered_map<NodeID, Model3DVersion> waterNodeModelVersions;
 
-    // Solid 360° renderer (separated)
-    std::unique_ptr<Solid360Renderer> solid360Renderer;
-
-    // Back-face depth pass (reversed winding for water volume thickness)
-    // Back-face renderer (separated)
-    std::unique_ptr<WaterBackFaceRenderer> backFaceRenderer;
+    // Non-owning pointers to sub-renderers (owned by SceneRenderer)
+    class Solid360Renderer* solid360Renderer = nullptr;
+    class WaterBackFaceRenderer* backFaceRenderer = nullptr;
 };

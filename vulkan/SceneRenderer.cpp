@@ -16,6 +16,13 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (waterRenderer && app) {
         waterRenderer->cleanup(app);
     }
+    // Cleanup scene-owned water sub-renderers
+    if (backFaceRenderer && app) {
+        backFaceRenderer->cleanup(app);
+    }
+    if (solid360Renderer && app) {
+        solid360Renderer->cleanup(app);
+    }
     if (solidRenderer && app) {
         solidRenderer->cleanup(app);
     }
@@ -364,6 +371,14 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     size_t paramsBufferSize = sizeof(WaterParamsGPU) * static_cast<size_t>(layerCount);
     waterParamsBuffer_ = app->createBuffer(paramsBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    // Create scene-owned water sub-renderers and inform WaterRenderer of non-owning pointers
+    backFaceRenderer = std::make_unique<WaterBackFaceRenderer>();
+    solid360Renderer = std::make_unique<Solid360Renderer>();
+    // Provide WaterRenderer with non-owning pointers to the sub-renderers
+    if (waterRenderer) {
+        waterRenderer->backFaceRenderer = backFaceRenderer.get();
+        waterRenderer->solid360Renderer = solid360Renderer.get();
+    }
     waterRenderer->init(app, waterParamsBuffer_);
     // Inform WaterRenderer about the SSBO size (number of entries)
     waterRenderer->setParamsBuffer(waterParamsBuffer_, layerCount);

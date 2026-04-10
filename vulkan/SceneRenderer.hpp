@@ -6,6 +6,8 @@
 #include "ShadowRenderer.hpp"
 #include "DebugCubeRenderer.hpp"
 #include "WireframeRenderer.hpp"
+#include "WaterBackFaceRenderer.hpp"
+#include "Solid360Renderer.hpp"
 #pragma once
 
 // Forward declarations for change handler types
@@ -60,6 +62,9 @@ public:
     std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<ShadowRenderer> shadowMapper;
     std::unique_ptr<WaterRenderer> waterRenderer;
+    // Scene-owned sub-renderers for water (moved from WaterRenderer)
+    std::unique_ptr<WaterBackFaceRenderer> backFaceRenderer;
+    std::unique_ptr<Solid360Renderer> solid360Renderer;
     std::unique_ptr<PostProcessRenderer> postProcessRenderer;
     std::unique_ptr<SolidRenderer> solidRenderer;
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
