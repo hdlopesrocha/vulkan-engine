@@ -79,12 +79,8 @@ public:
     SceneRenderer();
     ~SceneRenderer();
 
-    void createPipelines(VulkanApp* app);
-    void createDescriptorSets(MaterialManager &materialManager, TextureArrayManager &textureArrayManager, VkDescriptorSet &outDescriptorSet, VkDescriptorSet &outShadowPassDescriptorSet, size_t tripleCount);
-
     // Cleanup and resource destruction (accepts app for Vulkan operations)
     void cleanup(VulkanApp* app);
-
    
     // Pending change queues (thread-safe)
     struct PendingNode {
@@ -131,20 +127,14 @@ public:
     }
 
     void shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled);
-    void depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool);
     void skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj);
     void mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
                   const UniformObject &uboStatic, const WaterParams &waterParams, float waterTime, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent);
-    void waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime, VkImageView skyView = VK_NULL_HANDLE);
+    void waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const WaterParams &waterParams, float waterTime, VkImageView skyView = VK_NULL_HANDLE, VkImageView cubeReflectionView = VK_NULL_HANDLE);
     void init(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager);
     // Re-update main descriptor set when texture arrays are (re)allocated
     void updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager);
     // cleanup declared above (accepts VulkanApp*)
-
-    // Incremental change handling (called from SolidSpaceChangeHandler callbacks)
-    void onNodeCreated(Layer layer, const OctreeNodeData &node);
-    void onNodeUpdated(Layer layer, const OctreeNodeData &node);
-    void onNodeErased(Layer layer, const OctreeNodeData &node);
 
     // Process pending node change queues on the main thread
     void updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom);
@@ -152,15 +142,6 @@ public:
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
     // Process nodes for a single Layer (nodeMap maps NodeID->OctreeNodeData)
     void processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry);
-
-    // Overload: accept raw pending node vector and coalesce inside (per-layer dispatch)
-    void processNodes(Scene& scene, const std::vector<PendingNode>& pendingNodes, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry);
-
-    // Process erased node id set for a single Layer
-    void processErasedNodeSet(Layer layer, const std::unordered_set<NodeID>& nodeSet, const std::function<void(Layer, NodeID)>& onErased);
-
-    // Overload: accept raw pending erased vector and coalesce inside (per-layer dispatch)
-    void processErasedNodeSet(const std::vector<PendingNode>& pendingNodes, const std::function<void(Layer, NodeID)>& onErased);
 
     // Runtime introspection helpers for UI/debug
     size_t getTransparentModelCount();

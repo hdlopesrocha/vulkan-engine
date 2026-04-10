@@ -514,14 +514,11 @@ public:
             // GPU frustum cull water meshes (must run outside a render pass)
             sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
             // Use 360° solid+sky reflection instead of the sky-only equirect view
-            VkImageView reflectionView = VK_NULL_HANDLE;
-            if (sceneRenderer && sceneRenderer->solid360Renderer) reflectionView = sceneRenderer->solid360Renderer->getSolid360View();
-            if (reflectionView == VK_NULL_HANDLE) {
-                // Fallback to sky-only view if 360 targets not ready
-                reflectionView = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-            }
+            VkImageView cubeReflectionView = VK_NULL_HANDLE;
+            if (sceneRenderer && sceneRenderer->solid360Renderer) cubeReflectionView = sceneRenderer->solid360Renderer->getSolid360View();
+            VkImageView skyView = (sceneRenderer && sceneRenderer->skyRenderer) ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
             sceneRenderer->waterPass(this, commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), settings.wireframeMode, profilingEnabled, queryPool,
-                sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), reflectionView);
+                sceneRenderer->waterRenderer->getParams(), sceneRenderer->waterRenderer->getTime(), skyView, cubeReflectionView);
         }
         
     }

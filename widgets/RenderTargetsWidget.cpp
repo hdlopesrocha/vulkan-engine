@@ -955,9 +955,8 @@ void RenderTargetsWidget::render() {
     // When showing the cubemap preview, also show individual faces for debugging
     if (selectedPreview == PreviewTarget::Solid360Cube) {
         ImGui::Text("Cube faces (+X -X +Y -Y +Z -Z)");
-        ImGui::Columns(3, "cube_faces_cols", false);
         const char* faceLabels[6] = {"+X", "-X", "+Y", "-Y", "+Z", "-Z"};
-        float thumbSize = PREVIEW_WIDTH / 3.0f;
+        float thumbSize = PREVIEW_WIDTH / 2.0f;
         for (int i = 0; i < 6; ++i) {
             if (cube360FaceDescriptor[i] != VK_NULL_HANDLE) {
                 ImGui::Image((ImTextureID)cube360FaceDescriptor[i], ImVec2(thumbSize, thumbSize));
@@ -965,10 +964,8 @@ void RenderTargetsWidget::render() {
                 ImGui::Text("(missing)");
             }
             ImGui::TextUnformatted(faceLabels[i]);
-            ImGui::NextColumn();
+            ImGui::Separator();
         }
-        ImGui::Columns(1);
-        ImGui::Separator();
     }
 
     // Optionally show all cascades (in selected shadow view mode)
