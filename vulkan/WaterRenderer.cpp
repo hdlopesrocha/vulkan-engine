@@ -105,7 +105,7 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer) {
     gpu.causticColor = glm::vec4(p->causticColor, 0.0f);
     gpu.causticParams = glm::vec4(p->causticScale, p->causticIntensity, p->causticPower, p->causticDepthScale);
     gpu.causticExtraParams = glm::vec4(p->causticLineScale, p->causticLineMix, 0.0f, 0.0f);
-    gpu.reserved3 = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+    gpu.reserved3 = glm::vec4(cube360Available ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 
     size_t offset = static_cast<size_t>(layer) * sizeof(WaterParamsGPU);
     void* data = nullptr;
@@ -1015,6 +1015,24 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
         return;
     }
 
+    // Determine the effective cubemap to bind:
+    // - If a new explicit `cube360View` is provided, use it and remember it.
+    // - If `cube360View` is VK_NULL_HANDLE, prefer the previously remembered view
+    //   (so callers that update only color/depth won't accidentally clear the cube).
+    VkImageView finalCubeView = cube360View;
+    if (finalCubeView == VK_NULL_HANDLE) finalCubeView = currentCube360View;
+
+    // If an explicit cube view was provided, remember it for future updates.
+    if (cube360View != VK_NULL_HANDLE) currentCube360View = cube360View;
+
+    // Track cubemap availability and update per-layer GPU params when it changes
+    bool cubeAvail = (finalCubeView != VK_NULL_HANDLE);
+    if (cube360Available != cubeAvail) {
+        cube360Available = cubeAvail;
+        // Refresh all GPU params layers so shaders know whether cubemap sampling is available
+        for (uint32_t l = 0; l < waterParamsCount; ++l) updateGPUParamsForLayer(l);
+    }
+
     // Use the provided image views directly
     VkImageView colorView = colorImageView;
     VkImageView depthView = depthImageView;
@@ -1041,9 +1059,9 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     imageInfos[3].imageView = (backFaceDepthView != VK_NULL_HANDLE) ? backFaceDepthView : depthView;
     imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Cubemap (binding 4) — prefer explicit `cube360View` if provided
+    // Cubemap (binding 4) — prefer `finalCubeView` if available, otherwise fall back to scene color
     imageInfos[4].sampler = linearSampler;
-    imageInfos[4].imageView = (cube360View != VK_NULL_HANDLE) ? cube360View : colorView;
+    imageInfos[4].imageView = (finalCubeView != VK_NULL_HANDLE) ? finalCubeView : colorView;
     imageInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     std::array<VkWriteDescriptorSet, 5> writes{};

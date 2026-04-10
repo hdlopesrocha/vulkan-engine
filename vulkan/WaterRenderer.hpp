@@ -244,6 +244,11 @@ private:
     // Samplers
     VkSampler linearSampler = VK_NULL_HANDLE;
 
+    // Whether a cubemap reflection is currently available (set by SceneRenderer)
+    bool cube360Available = false;
+    // Last cubemap image view provided by SceneRenderer (preserve across updates)
+    VkImageView currentCube360View = VK_NULL_HANDLE;
+
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
 
