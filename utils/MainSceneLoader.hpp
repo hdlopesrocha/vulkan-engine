@@ -160,6 +160,16 @@ public:
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             transparentLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*0.1f, simplifier, transparentHandler);
         }
+        {
+            std::cout << "\ttransparentLayer.add(sphere)"<< std::endl;
+            glm::vec3 min = glm::vec3(1500,0,1500);
+            glm::vec3 len = glm::vec3(1024.0f);
+            BoundingSphere sphere = BoundingSphere(min+len, 256);
+            SphereDistanceFunction function = SphereDistanceFunction();
+            Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
+            WrappedSphere wrappedFunction = WrappedSphere(&function);
+            transparentLayer.add(&wrappedFunction, model, translate, scale, SimpleBrush(2), minSize*0.1f, simplifier, transparentHandler);
+        }
 
         {
             std::cout << "\topaqueLayer.add(octahedron)"<< std::endl;
