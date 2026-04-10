@@ -252,19 +252,20 @@ public:
             wp.noiseOctaves = 0;
             wp.waveScale = 0.0f;
             wp.noiseScale = 0.0f;
-            wp.waterTint = 1.0f;
             wp.deepColor = glm::vec3(0.0f, 0.0f, 0.0f);
             wp.causticColor = glm::vec3(1.0f, 1.0f, 1.0f);
             wp.shallowColor = glm::vec3(1.0f, 1.0f, 1.0f);
-            wp.waterTint = 0.6f;
+            wp.waterTint = 1.0f;
             wp.causticType = 1; // line-shaped caustics
-            wp.causticIntensity = 0.2f;
+            wp.causticIntensity = 0.0f;
             wp.causticDepthScale = 128.0f;
             wp.causticPower = 4.0f;
             wp.causticLineScale = 3.0f;
             wp.bumpAmplitude = 0.0f;
             wp.blurRadius = 4.0f;
             wp.enableBlur = true;
+            wp.reflectionStrength = 1.0f;
+            wp.fresnelPower = 1.0f;
             waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
         }
 
