@@ -35,7 +35,7 @@ struct WaterParamsGPU {
     vec4 reserved3;  // unused (x = cube360Available)
     vec4 causticColor; // rgb = caustic tint, w = unused
     vec4 causticParams; // x = scale, y = intensity, z = power, w = depthScale
-    vec4 causticExtraParams; // x = lineScale, y = lineMix, z/w = unused
+    vec4 causticExtraParams; // x = lineScale, y = lineMix, z = causticType (0=perlin,1=voronoi), w = causticVelocity
 };
 
 layout(std430, set = 0, binding = 7) readonly buffer WaterParamsBlock {
@@ -62,6 +62,7 @@ float linearizeDepth(float depth) {
 
 #include "includes/perlin.glsl"
 #include "includes/water_noise.glsl"
+#include "includes/voronoi.glsl"
 
 void main() {
     // Get water parameters from SSBO indexed by fragment texIndex
@@ -103,23 +104,31 @@ void main() {
     float backFaceDepthRaw = texture(waterBackDepthTex, earlyScreenUV0).r;
     float frontFaceLinear  = linearizeDepth(gl_FragCoord.z);
     float backFaceLinear   = linearizeDepth(backFaceDepthRaw);
-    // Clamp to scene depth so thickness doesn't extend beyond solid ground
-    float sceneDepthEarly  = linearizeDepth(texture(sceneDepthTex, earlyScreenUV0).r);
+    float sceneDepthRaw    = texture(sceneDepthTex, earlyScreenUV0).r;
+    float sceneDepthEarly  = linearizeDepth(sceneDepthRaw);
+
+    // Clamp to scene depth so thickness doesn't extend beyond solid ground.
+    // Use the nearer surface along the view ray, not the farther one.
     float effectiveBack    = min(backFaceLinear, sceneDepthEarly);
-    float waterThickness   = max(effectiveBack - frontFaceLinear, 0.0);
+
+    // Reconstruct world-space positions for a true view-ray thickness measurement.
+    mat4 invViewProj = inverse(ubo.viewProjection);
+    vec4 backFaceWorldH = invViewProj * vec4(earlyScreenUV0 * 2.0 - 1.0, backFaceDepthRaw, 1.0);
+    vec3 backFaceWorld = backFaceWorldH.xyz / backFaceWorldH.w;
+    vec4 sceneWorldH = invViewProj * vec4(earlyScreenUV0 * 2.0 - 1.0, sceneDepthRaw, 1.0);
+    vec3 sceneWorldPos = sceneWorldH.xyz / sceneWorldH.w;
+
+    vec3 worldFrontPos = fragPosWorld;
+    vec3 worldRayDir = normalize(worldFrontPos - ubo.viewPos.xyz);
+    float backFaceThickness = max(dot(backFaceWorld - worldFrontPos, worldRayDir), 0.0);
+    float sceneThickness    = max(dot(sceneWorldPos - worldFrontPos, worldRayDir), 0.0);
+    float waterThickness    = min(backFaceThickness, sceneThickness);
 
     // Depth-based modulation factors (exponential ramp)
-    float volumeBlurFactor = (volumeBlurRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBlurRate)) : 1.0;
-    float volumeBumpFactor = (volumeBumpRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBumpRate)) : 1.0;
-
-    // Modulate blur radius by volume thickness
-    blurRadius *= volumeBlurFactor;
+        float volumeBlurFactor = (volumeBlurRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBlurRate)) : 1.0;
+        float volumeBumpFactor = (volumeBumpRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBumpRate)) : 1.0;
+        blurRadius *= volumeBlurFactor;
     
-    // Caustic parameters
-    vec3 causticColor = wp.causticColor.rgb;
-    float causticScale = wp.causticParams.x;
-    float causticIntensity = wp.causticParams.y;
-    float causticPower = wp.causticParams.z;
     
     // Normal used for lighting:
     // Fall back to procedural normal only when tessellation path is inactive/invalid.
@@ -160,7 +169,7 @@ void main() {
 
     
     // Normalize vectors
-    vec3 viewDir = normalize(ubo.viewPos.xyz - fragPos);
+    vec3 viewDir = normalize(ubo.viewPos.xyz - fragPosWorld);
     // Keep the normal facing the visible side to avoid flat/dark lighting from flipped orientation.
     if (dot(normal, viewDir) < 0.0) normal = -normal;
     vec3 lightDir = normalize(-ubo.lightDir.xyz);
@@ -168,59 +177,7 @@ void main() {
     // Base screen UV from clip position
     vec2 screenUV = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
     
-    // Debug: visual displacement color when debug mode set to 32 ("Water Displacement")
-    if (int(ubo.debugParams.x) == 32) {
-        // Prefer tessellation-provided debug value when available (fragDebug).
-        // But also compute a per-fragment approximation of the bump displacement so the debug
-        // mode works even when tessellation is disabled.
-        float timeDebug = wp.params3.y;
-        if (timeDebug == 0.0) timeDebug = ubo.passParams.x;
-        float waveScaleDbg = 1.0;  // No longer in passParams (z=nearPlane now)
-
-        float bumpAmpDbg = wp.waveParams.z;
-
-        float animTimeDbg = timeDebug * wp.params3.x;
-        float waveDisplacementDbg = waterWaveDisplacement(
-            fragPos.xyz,
-            animTimeDbg,
-            noiseScale,
-            noiseOctaves,
-            noisePersistence,
-            bumpAmpDbg,
-            waveScaleDbg
-        );
-
-        float maxExpected = bumpAmpDbg * waveScaleDbg * 1.5;
-        float normDisp = clamp((waveDisplacementDbg / maxExpected) * 0.5 + 0.5, 0.0, 1.0);
-
-        vec3 debugCol = fragDebug;
-        // If tessellation wasn't producing a debug value (likely zero), prefer computed color
-        if (length(debugCol) < 0.001) debugCol = vec3(normDisp);
-        outColor = vec4(debugCol, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-
-    // Debug mode 33: raw scene color — verifies whether the solid pass
-    // output actually reaches the water fragment shader.
-    if (int(ubo.debugParams.x) == 33) {
-        vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
-        vec3 sc = texture(sceneColorTex, uv).rgb*0.9;
-        outColor = vec4(sc, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-
-    // Debug mode 34: screen UV — verifies correct clip → UV conversion.
-    if (int(ubo.debugParams.x) == 34) {
-        vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
-        outColor = vec4(uv, 0.0, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
+    int dbgMode = int(ubo.debugParams.x + 0.5);
 
     // === PERLIN NOISE-BASED REFRACTION ===
     // Generate refraction distortion from shared FBM helper.
@@ -266,7 +223,7 @@ void main() {
     } else {
         sceneColor = texture(sceneColorTex, refractedUV).rgb;
     }
-    float sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
+    sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
 
     // === DEPTH-BASED EFFECTS ===
     float waterDepthRaw = gl_FragCoord.z;
@@ -285,7 +242,15 @@ void main() {
     float sceneDepthLinear = linearizeDepth(sceneDepthRaw);
     float waterDepthLinear = linearizeDepth(waterDepthRaw);
 
-    float depthDiff = max(sceneDepthLinear - waterDepthLinear, 0.0);
+    // Depth difference: use the smaller of
+    //  - back-face distance to the front water face, and
+    //  - solid scene depth distance to the water fragment depth.
+    // This prevents the depth-based fades from exceeding the actual
+    // available water column determined by either the back-face or
+    // occluding solid geometry.
+    float backFaceDiff = max(backFaceLinear - frontFaceLinear, 0.0);
+    float solidDiff = max(sceneDepthLinear - waterDepthLinear, 0.0);
+    float depthDiff = min(backFaceDiff, solidDiff);
     
     // Depth-based color fade (deeper = more tinted)
     float depthFalloff = wp.waveParams.w;
@@ -344,7 +309,6 @@ void main() {
     // --- Reflection sampling debug helpers ---
     // Use the global debug mode (ubo.debugParams.x) to visualize reflection
     // computation steps and cubemap sampling. Helpful to diagnose orientation.
-    int dbgMode = int(ubo.debugParams.x + 0.5);
     if (dbgMode == 37) {
         // Visualize reflection vector (packed to [0,1])
         vec3 vis = reflectDir * 0.5 + 0.5;
@@ -377,6 +341,16 @@ void main() {
     // Water tint colors from UBO
     vec3 deepTint = wp.deepColor.rgb;
     vec3 shallowTint = wp.shallowColor.rgb;
+
+
+    // Caustic parameters
+    vec3 causticColor = wp.causticColor.rgb;
+    float causticScale = wp.causticParams.x;
+    float causticIntensity = wp.causticParams.y;
+    float causticPower = wp.causticParams.z;
+    int causticType = int(round(clamp(wp.causticExtraParams.z, 0.0, 1.0)));
+    float causticVelocity = wp.causticExtraParams.w;
+    float causticAnimTime = animTime * causticVelocity;
 
     // Compute a volume-based factor from measured water thickness.
     // Use causticParams.w (depth-scale) as a per-layer reference distance; if unset,
@@ -436,78 +410,215 @@ void main() {
     float causticDepthScale = wp.causticParams.w; // w = depth-scale (world units)
     float depthInfluence = (causticDepthScale > 0.0) ? clamp(waterThickness / causticDepthScale, 0.0, 1.0) : 1.0;
 
-    // Front-surface Jacobian (same as before)
-    vec2 ref0 = waterRefractionNoise(fragPos.xyz, noiseScale, animTime, int(noiseOctaves), noisePersistence) * refractionStrength;
-    vec2 refT = waterRefractionNoise(fragPos + eps * T, noiseScale, animTime, int(noiseOctaves), noisePersistence) * refractionStrength;
-    vec2 refB = waterRefractionNoise(fragPos + eps * B, noiseScale, animTime, int(noiseOctaves), noisePersistence) * refractionStrength;
-    vec2 ddT = (refT - ref0) / eps;
-    vec2 ddB = (refB - ref0) / eps;
-    float detJFront = ddT.x * ddB.y - ddT.y * ddB.x;
-    float trFront = ddT.x + ddB.y;
-    float anisFront = sqrt(max(trFront * trFront - 4.0 * detJFront, 0.0));
-
     // Back-face (bottom) sampling: march along the view ray from the front
     // position by the measured water thickness to approximate the bottom
-    // world position, then compute the Jacobian there.
-    vec3 rayDirWorld = normalize(fragPos - ubo.viewPos.xyz); // camera->fragment ray
-    vec3 backPos = fragPos + rayDirWorld * waterThickness;
+    // world position — used by both caustic modes.
+    vec3 backPos = fragPosWorld + worldRayDir * waterThickness;
 
-    vec2 ref0b = waterRefractionNoise(backPos.xyz, noiseScale, animTime, int(noiseOctaves), noisePersistence) * refractionStrength;
-    vec2 refTb = waterRefractionNoise(backPos + eps * T, noiseScale, animTime, int(noiseOctaves), noisePersistence) * refractionStrength;
-    vec2 refBb = waterRefractionNoise(backPos + eps * B, noiseScale, animTime, int(noiseOctaves), noisePersistence) * refractionStrength;
-    vec2 ddTb = (refTb - ref0b) / eps;
-    vec2 ddBb = (refBb - ref0b) / eps;
-    float detJBack = ddTb.x * ddBb.y - ddTb.y * ddBb.x;
-    float trBack = ddTb.x + ddBb.y;
-    float anisBack = sqrt(max(trBack * trBack - 4.0 * detJBack, 0.0));
-
-    // Cloudy caustic measure (area contraction)
-    float caustFront = max(-detJFront * causticScale, 0.0);
-    float caustBack  = max(-detJBack  * causticScale, 0.0);
-    float cloudCombined = mix(caustFront, caustBack, depthInfluence);
-    float cloudFinal = pow(max(cloudCombined, 1e-6), causticPower);
-
-    // Line-shaped measure from anisotropy (difference of eigenvalues)
+    // Line-shaped measure parameters
     float lineScale = wp.causticExtraParams.x;
     float lineMix = clamp(wp.causticExtraParams.y, 0.0, 1.0);
-    float lineFrontRaw = max(anisFront * causticScale * lineScale, 0.0);
-    float lineBackRaw  = max(anisBack  * causticScale * lineScale, 0.0);
-    float lineCombined = mix(lineFrontRaw, lineBackRaw, depthInfluence);
-    float lineFinal = pow(max(lineCombined, 1e-6), causticPower);
+
+    // Prepare outputs that debug and later code expect
+    float caustFront = 0.0;
+    float caustBack = 0.0;
+    float lineFrontRaw = 0.0;
+    float lineBackRaw = 0.0;
+    float cloudFinal = 0.0;
+    float lineFinal = 0.0;
+    float lineCombined = 0.0;
+
+    // Compute only the selected caustic noise per-fragment
+    if (causticType == 1) {
+        // VORONOI-based measures (Worley noise) — jitter feature points using FBM
+        vec2 vorFront = voronoi3d(fragPos * causticScale, causticAnimTime, noiseScale, 0.5, noiseOctaves, noisePersistence);
+        vec2 vorBack  = voronoi3d(backPos * causticScale, causticAnimTime, noiseScale, 0.5, noiseOctaves, noisePersistence);
+        float f1f = vorFront.x;
+        float f2f = vorFront.y;
+        float f1b = vorBack.x;
+        float f2b = vorBack.y;
+
+        caustFront = max(1.0 - f1f, 0.0);
+        caustBack  = max(1.0 - f1b, 0.0);
+        lineFrontRaw = max(1.0 - (f2f - f1f) * lineScale, 0.0);
+        lineBackRaw  = max(1.0 - (f2b - f1b) * lineScale, 0.0);
+
+        // Compose final cloud/line measures and apply power/intensity
+        float cloudCombined = mix(caustFront, caustBack, depthInfluence);
+        cloudFinal = pow(max(cloudCombined, 1e-6), causticPower);
+        lineCombined = mix(lineFrontRaw, lineBackRaw, depthInfluence);
+        lineFinal = pow(max(lineCombined, 1e-6), causticPower);
+    } else {
+        // PERLIN-based measures (existing Jacobian method)
+        vec2 ref0 = waterRefractionNoise(fragPos.xyz, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+        vec2 refT = waterRefractionNoise(fragPos + eps * T, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+        vec2 refB = waterRefractionNoise(fragPos + eps * B, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+        vec2 ddT = (refT - ref0) / eps;
+        vec2 ddB = (refB - ref0) / eps;
+        float detJFront = ddT.x * ddB.y - ddT.y * ddB.x;
+        float trFront = ddT.x + ddB.y;
+        float anisFront = sqrt(max(trFront * trFront - 4.0 * detJFront, 0.0));
+
+        vec2 ref0b = waterRefractionNoise(backPos.xyz, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+        vec2 refTb = waterRefractionNoise(backPos + eps * T, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+        vec2 refBb = waterRefractionNoise(backPos + eps * B, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+        vec2 ddTb = (refTb - ref0b) / eps;
+        vec2 ddBb = (refBb - ref0b) / eps;
+        float detJBack = ddTb.x * ddBb.y - ddTb.y * ddBb.x;
+        float trBack = ddTb.x + ddBb.y;
+        float anisBack = sqrt(max(trBack * trBack - 4.0 * detJBack, 0.0));
+
+        caustFront = max(-detJFront * causticScale, 0.0);
+        caustBack  = max(-detJBack  * causticScale, 0.0);
+        lineFrontRaw  = max(anisFront * causticScale * lineScale, 0.0);
+        lineBackRaw   = max(anisBack  * causticScale * lineScale, 0.0);
+
+        // Compose final cloud/line measures and apply power/intensity
+        float cloudCombined = mix(caustFront, caustBack, depthInfluence);
+        cloudFinal = pow(max(cloudCombined, 1e-6), causticPower);
+        lineCombined = mix(lineFrontRaw, lineBackRaw, depthInfluence);
+        lineFinal = pow(max(lineCombined, 1e-6), causticPower);
+    }
 
     // Blend cloud vs line patterns, then apply intensity and modulations
     float caustRaw = mix(cloudFinal, lineFinal, lineMix);
     float caustic = caustRaw * causticIntensity * depthRampCaust * angularCaust * edgeFade * (1.0 - shadow);
 
-    // --- Debug visualizations for caustics ---
-    // 49: Area-contraction maps (R=front, G=back, B=blended)
-    // 50: Anisotropy maps (R=front, G=back, B=blended)
-    // 51: Cloud/Line components (R=cloud, G=line, B=pre-mix caustRaw)
-    // 52: Final caustic mask (post-modulation, clamped)
-    int dbgModeCaust = int(ubo.debugParams.x + 0.5);
-    if (dbgModeCaust == 49) {
+    // Debug: visual displacement color when debug mode set to 32 ("Water Displacement")
+    if (dbgMode == 32) {
+        // Prefer tessellation-provided debug value when available (fragDebug).
+        // But also compute a per-fragment approximation of the bump displacement so the debug
+        // mode works even when tessellation is disabled.
+        float timeDebug = wp.params3.y;
+        if (timeDebug == 0.0) timeDebug = ubo.passParams.x;
+        float waveScaleDbg = 1.0;  // No longer in passParams (z=nearPlane now)
+
+        float bumpAmpDbg = wp.waveParams.z;
+
+        float animTimeDbg = timeDebug * wp.params3.x;
+        float waveDisplacementDbg = waterWaveDisplacement(
+            fragPos.xyz,
+            animTimeDbg,
+            noiseScale,
+            noiseOctaves,
+            noisePersistence,
+            bumpAmpDbg,
+            waveScaleDbg
+        );
+
+        float maxExpected = bumpAmpDbg * waveScaleDbg * 1.5;
+        float normDisp = clamp((waveDisplacementDbg / maxExpected) * 0.5 + 0.5, 0.0, 1.0);
+
+        vec3 debugCol = fragDebug;
+        // If tessellation wasn't producing a debug value (likely zero), prefer computed color
+        if (length(debugCol) < 0.001) debugCol = vec3(normDisp);
+        outColor = vec4(debugCol, 1.0);
+        outNormal = vec4(normal, 0.0);
+        outMask = vec4(1.0);
+        return;
+    }
+
+    // Debug mode 33: raw scene color — verifies whether the solid pass
+    // output actually reaches the water fragment shader.
+    if (dbgMode == 33) {
+        vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
+        vec3 sc = texture(sceneColorTex, uv).rgb*0.9;
+        outColor = vec4(sc, 1.0);
+        outNormal = vec4(normal, 0.0);
+        outMask = vec4(1.0);
+        return;
+    }
+
+    // Debug mode 34: screen UV — verifies correct clip → UV conversion.
+    if (dbgMode == 34) {
+        vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
+        outColor = vec4(uv, 0.0, 1.0);
+        outNormal = vec4(normal, 0.0);
+        outMask = vec4(1.0);
+        return;
+    }
+
+    if (dbgMode == 49) {
         vec3 maps = vec3(clamp(caustFront, 0.0, 1.0), clamp(caustBack, 0.0, 1.0), clamp(mix(caustFront, caustBack, depthInfluence), 0.0, 1.0));
         outColor = vec4(maps, 1.0);
         outNormal = vec4(normal, 0.0);
         outMask = vec4(1.0);
         return;
     }
-    if (dbgModeCaust == 50) {
+    if (dbgMode == 50) {
         vec3 maps = vec3(clamp(lineFrontRaw, 0.0, 1.0), clamp(lineBackRaw, 0.0, 1.0), clamp(lineCombined, 0.0, 1.0));
         outColor = vec4(maps, 1.0);
         outNormal = vec4(normal, 0.0);
         outMask = vec4(1.0);
         return;
     }
-    if (dbgModeCaust == 51) {
+    if (dbgMode == 51) {
         vec3 maps = vec3(clamp(cloudFinal, 0.0, 1.0), clamp(lineFinal, 0.0, 1.0), clamp(caustRaw, 0.0, 1.0));
         outColor = vec4(maps, 1.0);
         outNormal = vec4(normal, 0.0);
         outMask = vec4(1.0);
         return;
     }
-    if (dbgModeCaust == 52) {
+    if (dbgMode == 52) {
         outColor = vec4(vec3(clamp(caustic, 0.0, 1.0)), 1.0);
+        outNormal = vec4(normal, 0.0);
+        outMask = vec4(1.0);
+        return;
+    }
+
+    // --- Water thickness / depth debug modes (53..58) ---
+    // 53: Back-face raw depth (texture sample)
+    if (dbgMode == 53) {
+        outColor = vec4(vec3(backFaceDepthRaw), 1.0);
+        outNormal = vec4(normal, 0.0);
+        outMask = vec4(1.0);
+        return;
+    }
+    // 54: Front-face linear depth (normalized to [0,1])
+    if (dbgMode == 54) {
+        float nearP = ubo.passParams.z;
+        float farP = ubo.passParams.w;
+        float v = clamp((frontFaceLinear - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
+        outColor = vec4(vec3(v), 1.0);
+        outNormal = vec4(normal, 0.0);
+        outMask = vec4(1.0);
+        return;
+    }
+    // 55: Back-face linear depth (normalized to [0,1])
+    if (dbgMode == 55) {
+        float nearP = ubo.passParams.z;
+        float farP = ubo.passParams.w;
+        float v = clamp((backFaceLinear - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
+        outColor = vec4(vec3(v), 1.0);
+        outNormal = vec4(normal, 0.0);
+        outMask = vec4(1.0);
+        return;
+    }
+    // 56: Scene depth at early-screen UV (linearized, normalized)
+    if (dbgMode == 56) {
+        float nearP = ubo.passParams.z;
+        float farP = ubo.passParams.w;
+        float v = clamp((sceneDepthEarly - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
+        outColor = vec4(vec3(v), 1.0);
+        outNormal = vec4(normal, 0.0);
+        outMask = vec4(1.0);
+        return;
+    }
+    // 57: Effective back depth (min(backFaceLinear, sceneDepthEarly))
+    if (dbgMode == 57) {
+        float nearP = ubo.passParams.z;
+        float farP = ubo.passParams.w;
+        float v = clamp((effectiveBack - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
+        outColor = vec4(vec3(v), 1.0);
+        outNormal = vec4(normal, 0.0);
+        outMask = vec4(1.0);
+        return;
+    }
+    // 58: Water thickness (normalized by per-layer caustic depth scale or 1.0)
+    if (dbgMode == 58) {
+        float denom = max(wp.causticParams.w, 1.0);
+        float v = clamp(waterThickness / denom, 0.0, 1.0);
+        outColor = vec4(vec3(v), 1.0);
         outNormal = vec4(normal, 0.0);
         outMask = vec4(1.0);
         return;

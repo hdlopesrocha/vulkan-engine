@@ -243,6 +243,7 @@ private:
 
     // Samplers
     VkSampler linearSampler = VK_NULL_HANDLE;
+    VkSampler nearestSampler = VK_NULL_HANDLE;
 
     // Whether a cubemap reflection is currently available (set by SceneRenderer)
     bool cube360Available = false;

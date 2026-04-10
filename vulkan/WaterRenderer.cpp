@@ -66,7 +66,7 @@ void WaterRenderer::setParamsBuffer(Buffer& buf, uint32_t count) {
         defaultGpu.reserved3 = glm::vec4(0.0f);
         defaultGpu.causticColor = glm::vec4(1.0f, 0.98f, 0.8f, 0.0f);
         defaultGpu.causticParams = glm::vec4(40.0f, 1.5f, 1.0f, 4.0f);
-        defaultGpu.causticExtraParams = glm::vec4(1.0f, 1.0f, 0.0f, 0.0f);
+        defaultGpu.causticExtraParams = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
 
         // Map entire buffer and fill with defaultGpu
         void* data = nullptr;
@@ -104,7 +104,7 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer) {
     gpu.reserved2 = glm::vec4(static_cast<float>(p->blurSamples), p->volumeBlurRate, p->volumeBumpRate, p->uniformReflection ? 1.0f : 0.0f);
     gpu.causticColor = glm::vec4(p->causticColor, 0.0f);
     gpu.causticParams = glm::vec4(p->causticScale, p->causticIntensity, p->causticPower, p->causticDepthScale);
-    gpu.causticExtraParams = glm::vec4(p->causticLineScale, p->causticLineMix, 0.0f, 0.0f);
+    gpu.causticExtraParams = glm::vec4(p->causticLineScale, p->causticLineMix, static_cast<float>(p->causticType), p->causticVelocity);
     gpu.reserved3 = glm::vec4(cube360Available ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 
     size_t offset = static_cast<size_t>(layer) * sizeof(WaterParamsGPU);
@@ -128,6 +128,7 @@ void WaterRenderer::cleanup(VulkanApp* app) {
     waterRenderPass = VK_NULL_HANDLE;
     sceneRenderPass = VK_NULL_HANDLE;
     linearSampler = VK_NULL_HANDLE;
+    nearestSampler = VK_NULL_HANDLE;
 }
 
 void WaterRenderer::createSamplers(VulkanApp* app) {
@@ -149,8 +150,16 @@ void WaterRenderer::createSamplers(VulkanApp* app) {
         throw std::runtime_error("Failed to create water linear sampler!");
     }
     fprintf(stderr, "[WaterRenderer] createSampler: linearSampler=%p\n", (void*)linearSampler);
-    // Register water sampler
     app->resources.addSampler(linearSampler, "WaterRenderer: linearSampler");
+
+    samplerInfo.magFilter = VK_FILTER_NEAREST;
+    samplerInfo.minFilter = VK_FILTER_NEAREST;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &nearestSampler) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create water nearest sampler!");
+    }
+    fprintf(stderr, "[WaterRenderer] createSampler: nearestSampler=%p\n", (void*)nearestSampler);
+    app->resources.addSampler(nearestSampler, "WaterRenderer: nearestSampler");
 }
 
 void WaterRenderer::createSceneRenderPass(VulkanApp* app) {
@@ -680,7 +689,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     // Caustic defaults: subtle warm caustics
     defaultWaterParams.causticColor = glm::vec4(1.0f, 0.98f, 0.8f, 0.0f);
     defaultWaterParams.causticParams = glm::vec4(40.0f, 1.5f, 1.0f, 4.0f); // w = causticDepthScale
-    defaultWaterParams.causticExtraParams = glm::vec4(1.0f, 1.0f, 0.0f, 0.0f); // lineScale=1, lineMix=1 (lines)
+    defaultWaterParams.causticExtraParams = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f); // lineScale=1, lineMix=1 (lines), w=causticVelocity
     
     void* data;
     vkMapMemory(device, waterParamsBuffer.memory, 0, sizeof(WaterParamsGPU), 0, &data);
@@ -1044,8 +1053,8 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     imageInfos[0].imageView = colorView;
     imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Scene depth (binding 1)
-    imageInfos[1].sampler = linearSampler;
+    // Scene depth (binding 1) - sample depth with nearest filtering to avoid invalid interpolated depths
+    imageInfos[1].sampler = nearestSampler;
     imageInfos[1].imageView = depthView;
     imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -1054,8 +1063,9 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     imageInfos[2].imageView = (skyImageView != VK_NULL_HANDLE) ? skyImageView : colorView;  // fallback to scene color if no sky
     imageInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Water back-face depth (binding 3) — prefer explicit `backFaceDepthView` if provided
-    imageInfos[3].sampler = linearSampler;
+    // Water back-face depth (binding 3) — prefer explicit `backFaceDepthView` if provided.
+    // Use nearest filtering so depth values are not interpolated across geometry edges.
+    imageInfos[3].sampler = nearestSampler;
     imageInfos[3].imageView = (backFaceDepthView != VK_NULL_HANDLE) ? backFaceDepthView : depthView;
     imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -1144,7 +1154,7 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
                     gpu.reserved2 = glm::vec4(static_cast<float>(p->blurSamples), p->volumeBlurRate, p->volumeBumpRate, p->uniformReflection ? 1.0f : 0.0f);
                     gpu.causticColor = glm::vec4(p->causticColor, 0.0f);
                     gpu.causticParams = glm::vec4(p->causticScale, p->causticIntensity, p->causticPower, p->causticDepthScale);
-                    gpu.causticExtraParams = glm::vec4(p->causticLineScale, p->causticLineMix, 0.0f, 0.0f);
+                    gpu.causticExtraParams = glm::vec4(p->causticLineScale, p->causticLineMix, static_cast<float>(p->causticType), p->causticVelocity);
                     gpu.reserved3 = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
 
             memcpy(static_cast<char*>(mapped) + i * sizeof(WaterParamsGPU), &gpu, sizeof(WaterParamsGPU));

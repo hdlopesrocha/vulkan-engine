@@ -228,7 +228,8 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
                                                 waterRenderer->getWaterGeometryPipelineLayout(),
                                                 app->getMainDescriptorSet(),
                                                 app->getMaterialDescriptorSet(),
-                                                waterRenderer->getWaterDepthDescriptorSet(frameIdx));
+                                                waterRenderer->getWaterDepthDescriptorSet(frameIdx),
+                                                solidRenderer->getDepthImage(frameIdx));
         }
         waterRenderer->beginWaterGeometryPass(commandBuffer, frameIdx);
 
@@ -247,7 +248,8 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
                                                 waterRenderer->getWaterGeometryPipelineLayout(),
                                                 app->getMainDescriptorSet(),
                                                 app->getMaterialDescriptorSet(),
-                                                waterRenderer->getWaterDepthDescriptorSet(frameIdx));
+                                                waterRenderer->getWaterDepthDescriptorSet(frameIdx),
+                                                solidRenderer->getDepthImage(frameIdx));
         }
         waterRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, waterParams, waterTime, skyView);
     }

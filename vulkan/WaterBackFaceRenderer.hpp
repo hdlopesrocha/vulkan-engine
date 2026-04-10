@@ -22,10 +22,10 @@ public:
     // that actually draws the water geometry.
     void renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                             IndirectRenderer& indirect, VkPipelineLayout pipelineLayout,
-                            VkDescriptorSet mainDs, VkDescriptorSet materialDs, VkDescriptorSet sceneDs);
-
-    VkImageView getBackFaceDepthView(uint32_t frameIndex) const { return (frameIndex < 2) ? backFaceDepthImageViews[frameIndex] : VK_NULL_HANDLE; }
+                                              VkDescriptorSet mainDs, VkDescriptorSet materialDs, VkDescriptorSet sceneDs,
+                                              VkImage sceneDepthImage);
     VkImage getBackFaceDepthImage(uint32_t frameIndex) const { return (frameIndex < 2) ? backFaceDepthImages[frameIndex] : VK_NULL_HANDLE; }
+    VkImageView getBackFaceDepthView(uint32_t frameIndex) const { return (frameIndex < 2) ? backFaceDepthImageViews[frameIndex] : VK_NULL_HANDLE; }
 
     // Add post-render barriers for the back-face depth image
     void postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex);
