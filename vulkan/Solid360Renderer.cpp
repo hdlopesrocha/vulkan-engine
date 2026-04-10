@@ -20,18 +20,6 @@ void Solid360Renderer::cleanup(VulkanApp* app) {
     cube360DepthMemory = VK_NULL_HANDLE;
     cube360DepthView = VK_NULL_HANDLE;
     for (auto& fb : cube360Framebuffers) fb = VK_NULL_HANDLE;
-    equirect360Image = VK_NULL_HANDLE;
-    equirect360Memory = VK_NULL_HANDLE;
-    equirect360View = VK_NULL_HANDLE;
-    equirect360Framebuffer = VK_NULL_HANDLE;
-    equirect360RenderPass = VK_NULL_HANDLE;
-    equirect360Pipeline = VK_NULL_HANDLE;
-    equirect360PipelineLayout = VK_NULL_HANDLE;
-    equirect360VertModule = VK_NULL_HANDLE;
-    equirect360FragModule = VK_NULL_HANDLE;
-    cube360DescSetLayout = VK_NULL_HANDLE;
-    cube360DescPool = VK_NULL_HANDLE;
-    cube360DescSet = VK_NULL_HANDLE;
 }
 
 void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidRenderPass, VkSampler linearSampler) {
@@ -96,6 +84,11 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidR
                    cube360FaceViews[face], "Solid360Renderer: cube360 face view");
     }
 
+    // Create a cube-type view so shaders can sample the entire cubemap directly
+    createView(cube360ColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT,
+               VK_IMAGE_VIEW_TYPE_CUBE, 0, 6,
+               cube360CubeView, "Solid360Renderer: cube360 cube view");
+
 
 
     // --- 2. Shared depth image ---
@@ -133,249 +126,8 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidR
         app->resources.addFramebuffer(cube360Framebuffers[face], "Solid360Renderer: cube360 framebuffer");
     }
 
-    // --- Equirectangular output ---
-    {
-        VkImageCreateInfo imgInfo{};
-        imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imgInfo.imageType = VK_IMAGE_TYPE_2D;
-        imgInfo.extent = {EQUIRECT360_WIDTH, EQUIRECT360_HEIGHT, 1};
-        imgInfo.mipLevels = 1;
-        imgInfo.arrayLayers = 1;
-        imgInfo.format = colorFormat;
-        imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imgInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        allocImage(imgInfo, equirect360Image, equirect360Memory);
-    }
-
-    // equirect view
-    {
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = equirect360Image;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = colorFormat;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-        if (vkCreateImageView(device, &viewInfo, nullptr, &equirect360View) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create equirect image view!");
-        app->resources.addImageView(equirect360View, "Solid360Renderer: equirect view");
-    }
-
-    // equirect framebuffer + renderpass + pipeline setup will be recreated below
-    VkFramebufferCreateInfo fbInfo{};
-    fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fbInfo.renderPass = equirect360RenderPass; // created later
-    fbInfo.attachmentCount = 1;
-    fbInfo.pAttachments = nullptr;
-    fbInfo.width = EQUIRECT360_WIDTH;
-    fbInfo.height = EQUIRECT360_HEIGHT;
-    fbInfo.layers = 1;
-
-    // Create descriptor set layout & pool for cubemap → equirect conversion
-    VkDescriptorSetLayoutBinding b{};
-    b.binding = 0;
-    b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    b.descriptorCount = 1;
-    b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &b;
-    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &cube360DescSetLayout) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create cube360 descriptor set layout!");
-    app->resources.addDescriptorSetLayout(cube360DescSetLayout, "Solid360Renderer: cube360DescSetLayout");
-
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 1;
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-    poolInfo.maxSets = 1;
-    // Allow freeing individual descriptor sets if the renderer frees them later
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &cube360DescPool) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create cube360 descriptor pool!");
-    app->resources.addDescriptorPool(cube360DescPool, "Solid360Renderer: cube360DescPool");
-
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = cube360DescPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &cube360DescSetLayout;
-    if (vkAllocateDescriptorSets(device, &allocInfo, &cube360DescSet) != VK_SUCCESS)
-        throw std::runtime_error("Failed to allocate cube360 descriptor set!");
-
-    VkDescriptorImageInfo imgInfo{};
-    imgInfo.sampler = linearSampler;
-    imgInfo.imageView = cube360CubeView;
-    imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = cube360DescSet;
-    write.dstBinding = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.descriptorCount = 1;
-    write.pImageInfo = &imgInfo;
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-
-    // Create simple equirect renderpass and pipeline
-    // Render pass
-    VkAttachmentDescription att{};
-    att.format = colorFormat;
-    att.samples = VK_SAMPLE_COUNT_1_BIT;
-    att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    att.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorRef;
-
-    VkSubpassDependency dep{};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dep.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-    VkRenderPassCreateInfo rpInfo{};
-    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpInfo.attachmentCount = 1;
-    rpInfo.pAttachments = &att;
-    rpInfo.subpassCount = 1;
-    rpInfo.pSubpasses = &subpass;
-    rpInfo.dependencyCount = 1;
-    rpInfo.pDependencies = &dep;
-    if (vkCreateRenderPass(device, &rpInfo, nullptr, &equirect360RenderPass) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create equirect render pass!");
-    app->resources.addRenderPass(equirect360RenderPass, "Solid360Renderer: equirectRenderPass");
-
-    // equirect framebuffer
-    VkImageView attv = equirect360View;
-    fbInfo.pAttachments = &attv;
-    fbInfo.renderPass = equirect360RenderPass;
-    if (vkCreateFramebuffer(device, &fbInfo, nullptr, &equirect360Framebuffer) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create equirect framebuffer!");
-    app->resources.addFramebuffer(equirect360Framebuffer, "Solid360Renderer: equirectFramebuffer");
-
-    // Load shaders for conversion
-    // Use the fullscreen vertex shader and the cubemap->equirect fragment shader
-    auto vertCode = FileReader::readFile("shaders/fullscreen.vert.spv");
-    auto fragCode = FileReader::readFile("shaders/cubemap_to_equirect.frag.spv");
-    if (vertCode.empty() || fragCode.empty()) {
-        std::cerr << "[Solid360Renderer] Missing cube->equirect shaders" << std::endl;
-        return;
-    }
-    equirect360VertModule = app->createShaderModule(vertCode);
-    equirect360FragModule = app->createShaderModule(fragCode);
-
-    VkPipelineShaderStageCreateInfo vs{};
-    vs.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vs.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vs.module = equirect360VertModule;
-    vs.pName = "main";
-    VkPipelineShaderStageCreateInfo fs{};
-    fs.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fs.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fs.module = equirect360FragModule;
-    fs.pName = "main";
-
-    VkPipelineShaderStageCreateInfo stages[] = { vs, fs };
-
-    VkPipelineVertexInputStateCreateInfo vi{};
-    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-    VkPipelineInputAssemblyStateCreateInfo ia{};
-    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-    VkViewport viewport{0.0f, 0.0f, (float)EQUIRECT360_WIDTH, (float)EQUIRECT360_HEIGHT, 0.0f, 1.0f};
-    VkRect2D scissor{{0,0},{EQUIRECT360_WIDTH, EQUIRECT360_HEIGHT}};
-
-    VkPipelineViewportStateCreateInfo vp{};
-    vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    vp.viewportCount = 1;
-    vp.scissorCount = 1;
-
-    VkPipelineRasterizationStateCreateInfo rs{};
-    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode = VK_CULL_MODE_BACK_BIT;
-    rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
-    rs.lineWidth = 1.0f;
-
-    VkPipelineMultisampleStateCreateInfo ms{};
-    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-    VkPipelineColorBlendAttachmentState attState{};
-    attState.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    attState.blendEnable = VK_FALSE;
-
-    VkPipelineColorBlendStateCreateInfo cb{};
-    cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    cb.attachmentCount = 1;
-    cb.pAttachments = &attState;
-
-    VkPushConstantRange pushRange{};
-    pushRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    pushRange.offset = 0;
-    pushRange.size = sizeof(float) * 2;
-
-    VkPipelineLayoutCreateInfo layoutInfoPipe{};
-    layoutInfoPipe.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layoutInfoPipe.setLayoutCount = 1;
-    layoutInfoPipe.pSetLayouts = &cube360DescSetLayout;
-    layoutInfoPipe.pushConstantRangeCount = 1;
-    layoutInfoPipe.pPushConstantRanges = &pushRange;
-
-    if (vkCreatePipelineLayout(device, &layoutInfoPipe, nullptr, &equirect360PipelineLayout) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create equirect pipeline layout!");
-    app->resources.addPipelineLayout(equirect360PipelineLayout, "Solid360Renderer: equirectPipelineLayout");
-
-    // Enable dynamic viewport/scissor so we can set them at render time
-    std::array<VkDynamicState, 2> dynStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-    VkPipelineDynamicStateCreateInfo dynState{};
-    dynState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynState.dynamicStateCount = static_cast<uint32_t>(dynStates.size());
-    dynState.pDynamicStates = dynStates.data();
-
-    VkGraphicsPipelineCreateInfo pipeInfo{};
-    pipeInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipeInfo.stageCount = 2;
-    pipeInfo.pStages = stages;
-    pipeInfo.pVertexInputState = &vi;
-    pipeInfo.pInputAssemblyState = &ia;
-    pipeInfo.pViewportState = &vp;
-    pipeInfo.pRasterizationState = &rs;
-    pipeInfo.pMultisampleState = &ms;
-    pipeInfo.pColorBlendState = &cb;
-    pipeInfo.layout = equirect360PipelineLayout;
-    pipeInfo.renderPass = equirect360RenderPass;
-    pipeInfo.subpass = 0;
-    pipeInfo.pDynamicState = &dynState;
-
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeInfo, nullptr, &equirect360Pipeline) != VK_SUCCESS) {
-        std::cerr << "[Solid360Renderer] Warning: failed to create equirect pipeline" << std::endl;
-        equirect360Pipeline = VK_NULL_HANDLE;
-    } else {
-        app->resources.addPipeline(equirect360Pipeline, "Solid360Renderer: equirectPipeline");
-    }
+    // NOTE: equirectangular conversion removed. Use the cubemap directly as the
+    // reflection target (sample with samplerCube in shaders).
 }
 
 void Solid360Renderer::destroySolid360Targets(VulkanApp* app) {
@@ -388,18 +140,6 @@ void Solid360Renderer::destroySolid360Targets(VulkanApp* app) {
     cube360DepthMemory = VK_NULL_HANDLE;
     cube360DepthView = VK_NULL_HANDLE;
     for (auto& fb : cube360Framebuffers) fb = VK_NULL_HANDLE;
-    equirect360Image = VK_NULL_HANDLE;
-    equirect360Memory = VK_NULL_HANDLE;
-    equirect360View = VK_NULL_HANDLE;
-    equirect360Framebuffer = VK_NULL_HANDLE;
-    equirect360RenderPass = VK_NULL_HANDLE;
-    equirect360Pipeline = VK_NULL_HANDLE;
-    equirect360PipelineLayout = VK_NULL_HANDLE;
-    equirect360VertModule = VK_NULL_HANDLE;
-    equirect360FragModule = VK_NULL_HANDLE;
-    cube360DescSetLayout = VK_NULL_HANDLE;
-    cube360DescPool = VK_NULL_HANDLE;
-    cube360DescSet = VK_NULL_HANDLE;
 }
 
 void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
@@ -409,7 +149,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                                      VkDescriptorSet mainDescriptorSet,
                                      Buffer& uniformBuffer, const UniformObject& ubo) {
     if (!app || cmd == VK_NULL_HANDLE) return;
-    if (cube360Framebuffers[0] == VK_NULL_HANDLE || equirect360Pipeline == VK_NULL_HANDLE) return;
+    if (cube360Framebuffers[0] == VK_NULL_HANDLE) return;
 
     glm::vec3 camPos = glm::vec3(ubo.viewPos);
     struct FaceInfo { glm::vec3 target; glm::vec3 up; };
@@ -492,36 +232,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         vkCmdEndRenderPass(cmd);
     }
 
-    // --- Convert cubemap → equirectangular ---
-    {
-        VkClearValue clear{};
-        clear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        VkRenderPassBeginInfo rpInfo{};
-        rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rpInfo.renderPass = equirect360RenderPass;
-        rpInfo.framebuffer = equirect360Framebuffer;
-        rpInfo.renderArea.offset = {0, 0};
-        rpInfo.renderArea.extent = {EQUIRECT360_WIDTH, EQUIRECT360_HEIGHT};
-        rpInfo.clearValueCount = 1;
-        rpInfo.pClearValues = &clear;
-        vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, equirect360Pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, equirect360PipelineLayout,
-                                0, 1, &cube360DescSet, 0, nullptr);
-
-        float resolution[2] = {(float)EQUIRECT360_WIDTH, (float)EQUIRECT360_HEIGHT};
-        vkCmdPushConstants(cmd, equirect360PipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(resolution), resolution);
-
-        VkViewport viewport{0.0f, 0.0f, (float)EQUIRECT360_WIDTH, (float)EQUIRECT360_HEIGHT, 0.0f, 1.0f};
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        VkRect2D scissor{{0, 0}, {EQUIRECT360_WIDTH, EQUIRECT360_HEIGHT}};
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-        vkCmdDraw(cmd, 3, 1, 0, 0);
-        vkCmdEndRenderPass(cmd);
-    }
-
+    // Cubemap rendering complete; cubemap image view is available for sampling.
     vkCmdUpdateBuffer(cmd, uniformBuffer.buffer, 0, sizeof(UniformObject), &ubo);
     {
         VkMemoryBarrier memBarrier{};
