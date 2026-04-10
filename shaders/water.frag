@@ -108,17 +108,9 @@ void main() {
         blurRadius *= volumeBlurFactor;
     
     
-    // Normal used for lighting:
-    // Fall back to procedural normal only when tessellation path is inactive/invalid.
-    vec3 normal = normalize(fragNormal);
-
-    // Derive the normal from the exact same waterWaveDisplacement() used by the TES
-    // so the shading is continuous with the bump surface.
+    // Common bump parameters.
     float eps = 0.5;
-
-    // Same parameters the TES feeds into waterWaveDisplacement
-    // Modulate bump amplitude by volume thickness
-    float bAmp    = wp.waveParams.z * volumeBumpFactor;
+    float bAmp = wp.waveParams.z * volumeBumpFactor;
 
     // Depth-based wave attenuation (must match the TES depth ramp so
     // the procedural normal is consistent with the displaced geometry).
@@ -131,19 +123,23 @@ void main() {
         bAmp *= smoothstep(0.0, waveDepthTransition, earlyDepthDiff);
     }
 
-    // Build tangent frame from the original mesh normal
-    vec3 N  = normal;
+    vec3 N  = normalize(fragNormal);
     vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 T  = normalize(cross(up, N));
     vec3 B  = cross(N, T);
 
-    // Finite-difference the displacement along the tangent directions
-    float h0 = waterWaveDisplacement(fragPos, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
-    float ht = waterWaveDisplacement(fragPos + eps * T, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
-    float hb = waterWaveDisplacement(fragPos + eps * B, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
+    vec3 normal;
+    if (ubo.passParams.y > 0.5) {
+        normal = N;
+    } else {
+        // When tessellation is inactive, approximate the bumped normal from
+        // the procedural displacement on the flat base mesh.
+        float h0 = waterWaveDisplacement(fragPos, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
+        float ht = waterWaveDisplacement(fragPos + eps * T, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
+        float hb = waterWaveDisplacement(fragPos + eps * B, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
 
-    // Classic bump-map perturbation: N' = N - dh/dT * T - dh/dB * B
-    normal = normalize(N - ((ht - h0) / eps) * T - ((hb - h0) / eps) * B);
+        normal = normalize(N - ((ht - h0) / eps) * T - ((hb - h0) / eps) * B);
+    }
 
     
     // Normalize vectors
@@ -284,24 +280,6 @@ void main() {
     // (see WaterParamsGPU.reserved2.w).
     bool uniformReflection = wp.reserved2.w > 0.5;
 
-    // --- Reflection sampling debug helpers ---
-    // Use the global debug mode (ubo.debugParams.x) to visualize reflection
-    // computation steps and cubemap sampling. Helpful to diagnose orientation.
-    if (dbgMode == 37) {
-        // Visualize reflection vector (packed to [0,1])
-        vec3 vis = reflectDir * 0.5 + 0.5;
-        outColor = vec4(vis, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    if (dbgMode == 38) {
-        // Show direct cubemap sample
-        outColor = vec4(skyColor, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
 
     // === SHADOW ON WATER ===
     float shadow = 0.0;
@@ -462,6 +440,12 @@ void main() {
     float caustRaw = mix(cloudFinal, lineFinal, lineMix);
     float caustic = caustRaw * causticIntensity * depthRampCaust * angularCaust * edgeFade * (1.0 - shadow);
 
+    waterColor += causticColor * caustic;
+
+    // === FINAL OUTPUT ===
+    float alpha = 1.0;
+    outColor = vec4(waterColor, alpha);
+
     // Debug: visual displacement color when debug mode set to 32 ("Water Displacement")
     if (dbgMode == 32) {
         // Prefer tessellation-provided debug value when available (fragDebug).
@@ -490,9 +474,6 @@ void main() {
         // If tessellation wasn't producing a debug value (likely zero), prefer computed color
         if (length(debugCol) < 0.001) debugCol = vec3(normDisp);
         outColor = vec4(debugCol, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
     }
 
     // Debug mode 33: raw scene color — verifies whether the solid pass
@@ -501,125 +482,98 @@ void main() {
         vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
         vec3 sc = texture(sceneColorTex, uv).rgb*0.9;
         outColor = vec4(sc, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
     }
 
     // Debug mode 34: screen UV — verifies correct clip → UV conversion.
     if (dbgMode == 34) {
         vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
         outColor = vec4(uv, 0.0, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
     }
 
-    if (dbgMode == 49) {
-        vec3 maps = vec3(clamp(caustFront, 0.0, 1.0), clamp(caustBack, 0.0, 1.0), clamp(mix(caustFront, caustBack, depthInfluence), 0.0, 1.0));
-        outColor = vec4(maps, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    if (dbgMode == 50) {
-        vec3 maps = vec3(clamp(lineFrontRaw, 0.0, 1.0), clamp(lineBackRaw, 0.0, 1.0), clamp(lineCombined, 0.0, 1.0));
-        outColor = vec4(maps, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    if (dbgMode == 51) {
-        vec3 maps = vec3(clamp(cloudFinal, 0.0, 1.0), clamp(lineFinal, 0.0, 1.0), clamp(caustRaw, 0.0, 1.0));
-        outColor = vec4(maps, 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    if (dbgMode == 52) {
-        outColor = vec4(vec3(clamp(caustic, 0.0, 1.0)), 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-
-    // --- Water thickness / depth debug modes (53..58) ---
-    // 53: Back-face raw depth (texture sample)
-    if (dbgMode == 53) {
-        outColor = vec4(vec3(backFaceDepthRaw), 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    // 54: Front-face linear depth (normalized to [0,1])
-    if (dbgMode == 54) {
-        float nearP = ubo.passParams.z;
-        float farP = ubo.passParams.w;
-        float v = clamp((frontFaceLinear - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
-        outColor = vec4(vec3(v), 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    // 55: Back-face linear depth (normalized to [0,1])
-    if (dbgMode == 55) {
-        float nearP = ubo.passParams.z;
-        float farP = ubo.passParams.w;
-        float v = clamp((backFaceLinear - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
-        outColor = vec4(vec3(v), 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    // 56: Scene depth at early-screen UV (linearized, normalized)
-    if (dbgMode == 56) {
-        float nearP = ubo.passParams.z;
-        float farP = ubo.passParams.w;
-        float v = clamp((sceneDepthEarly - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
-        outColor = vec4(vec3(v), 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    // 57: Effective back depth (min(backFaceLinear, sceneDepthEarly))
-    if (dbgMode == 57) {
-        float nearP = ubo.passParams.z;
-        float farP = ubo.passParams.w;
-        float v = clamp((effectiveBack - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
-        outColor = vec4(vec3(v), 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-    // 58: Water thickness (normalized by per-layer caustic depth scale or 1.0)
-    if (dbgMode == 58) {
-        float denom = max(wp.causticParams.w, 1.0);
-        float v = clamp(waterThickness / denom, 0.0, 1.0);
-        outColor = vec4(vec3(v), 1.0);
-        outNormal = vec4(normal, 0.0);
-        outMask = vec4(1.0);
-        return;
-    }
-
-    waterColor += causticColor * caustic;
-
-    // === FINAL OUTPUT ===
-    float alpha = 1.0;
-    outColor = vec4(waterColor, alpha);
-    outNormal = vec4(normal, 0.0);
-    outMask = vec4(1.0);
 
    // Debug mode 35: water noise
     if (int(ubo.debugParams.x) == 35) {
         outColor = vec4(refractionNoise, 0.5 + 0.5 * (refractionNoise.x - refractionNoise.y), 1.0);
-        return;
     }
 
     // Debug mode 36: final displaced normal used by shading.
     if (int(ubo.debugParams.x) == 36) {
         vec3 n = normalize(normal);
         outColor = vec4(n * 0.5 + 0.5, 1.0);
-        return;
     }
+
+    // --- Reflection sampling debug helpers ---
+    // Use the global debug mode (ubo.debugParams.x) to visualize reflection
+    // computation steps and cubemap sampling. Helpful to diagnose orientation.
+    if (dbgMode == 37) {
+        // Visualize reflection vector (packed to [0,1])
+        vec3 vis = reflectDir * 0.5 + 0.5;
+        outColor = vec4(vis, 1.0);
+    }
+    if (dbgMode == 38) {
+        // Show direct cubemap sample
+        outColor = vec4(skyColor, 1.0);
+    }
+
+    if (dbgMode == 39) {
+        vec3 maps = vec3(clamp(caustFront, 0.0, 1.0), clamp(caustBack, 0.0, 1.0), clamp(mix(caustFront, caustBack, depthInfluence), 0.0, 1.0));
+        outColor = vec4(maps, 1.0);
+    }
+    if (dbgMode == 40) {
+        vec3 maps = vec3(clamp(lineFrontRaw, 0.0, 1.0), clamp(lineBackRaw, 0.0, 1.0), clamp(lineCombined, 0.0, 1.0));
+        outColor = vec4(maps, 1.0);
+    }
+    if (dbgMode == 41) {
+        vec3 maps = vec3(clamp(cloudFinal, 0.0, 1.0), clamp(lineFinal, 0.0, 1.0), clamp(caustRaw, 0.0, 1.0));
+        outColor = vec4(maps, 1.0);
+    }
+    if (dbgMode == 42) {
+        outColor = vec4(vec3(clamp(caustic, 0.0, 1.0)), 1.0);
+    }
+
+    // --- Water thickness / depth debug modes (43..48) ---
+    // 43: Back-face raw depth (texture sample)
+    if (dbgMode == 43) {
+        outColor = vec4(vec3(backFaceDepthRaw), 1.0);
+    }
+    // 44: Front-face linear depth (normalized to [0,1])
+    if (dbgMode == 44) {
+        float nearP = ubo.passParams.z;
+        float farP = ubo.passParams.w;
+        float v = clamp((frontFaceLinear - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
+        outColor = vec4(vec3(v), 1.0);
+    }
+    // 45: Back-face linear depth (normalized to [0,1])
+    if (dbgMode == 45) {
+        float nearP = ubo.passParams.z;
+        float farP = ubo.passParams.w;
+        float v = clamp((backFaceLinear - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
+        outColor = vec4(vec3(v), 1.0);
+    }
+    // 46: Scene depth at early-screen UV (linearized, normalized)
+    if (dbgMode == 46) {
+        float nearP = ubo.passParams.z;
+        float farP = ubo.passParams.w;
+        float v = clamp((sceneDepthEarly - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
+        outColor = vec4(vec3(v), 1.0);
+    }
+    // 47: Effective back depth (min(backFaceLinear, sceneDepthEarly))
+    if (dbgMode == 47) {
+        float nearP = ubo.passParams.z;
+        float farP = ubo.passParams.w;
+        float v = clamp((effectiveBack - nearP) / max(farP - nearP, 1e-6), 0.0, 1.0);
+        outColor = vec4(vec3(v), 1.0);
+    }
+    // 48: Water thickness (normalized by per-layer caustic depth scale or 1.0)
+    if (dbgMode == 48) {
+        float denom = max(wp.causticParams.w, 1.0);
+        float v = clamp(waterThickness / denom, 0.0, 1.0);
+        outColor = vec4(vec3(v), 1.0);
+    }
+
+
+    outNormal = vec4(normal, 0.0);
+    outMask = vec4(1.0);
+
 
 }

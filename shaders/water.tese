@@ -127,25 +127,7 @@ void main() {
 
     // Displace along the interpolated surface normal so bump follows mesh orientation.
     pos += waveDisplacement * normal;
-
-    // Calculate perturbed normal from neighboring displaced points in barycentric space.
-    // This is robust on curved meshes and avoids axis-aligned artifacts.
-    float epsBary = 0.005;
-    vec3 bUPlus  = clampAndNormalizeBary(bary + vec3( epsBary, -epsBary, 0.0));
-    vec3 bUMinus = clampAndNormalizeBary(bary + vec3(-epsBary,  epsBary, 0.0));
-    vec3 bVPlus  = clampAndNormalizeBary(bary + vec3(0.0,  epsBary, -epsBary));
-    vec3 bVMinus = clampAndNormalizeBary(bary + vec3(0.0, -epsBary,  epsBary));
-
-    vec3 pUPlus = sampleDisplacedPos(bUPlus, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
-    vec3 pUMinus = sampleDisplacedPos(bUMinus, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
-    vec3 pVPlus = sampleDisplacedPos(bVPlus, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
-    vec3 pVMinus = sampleDisplacedPos(bVMinus, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
-
-    vec3 tangentU = pUPlus - pUMinus;
-    vec3 tangentV = pVPlus - pVMinus;
-
-    fragNormal = normalize(cross(tangentU, tangentV));
-    if (dot(fragNormal, normal) < 0.0) fragNormal = -fragNormal;
+    fragNormal = normal;
 
     // Debug: encode displacement as color (normalized)
     float maxExpected = bumpAmp * waveScale * 1.5; // heuristic normalization factor

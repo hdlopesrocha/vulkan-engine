@@ -155,20 +155,10 @@ void SettingsWidget::render() {
             "Water Screen UV",
             "Water Noise",
             "Water Displaced Normal",
-            // Water reflection sampling debug modes (37..42)
+            // Water reflection sampling debug modes (37..38)
             "Reflection Vector (visualize)",
             "Water Reflection UV",
-            "Water Sky Sample (equirect)",
-            "Water Sky Sample (flip X)",
-            "Water Sky Sample (flip Y)",
-            "Water Sky Sample (alt mapping)",
-            "Water Sky Sample (swap X/Z - 1)",
-            "Water Sky Sample (swap X/Z - 2)",
-            "Water Sky Sample (negate Z)",
-            "Water Sky Sample (UV rotate CW)",
-            "Water Sky Sample (UV rotate CCW)",
-            "Water Sky Sample (invert UV)"
-            , "Caustics: Area Contraction (front/back/blend)",
+            "Caustics: Area Contraction (front/back/blend)",
             "Caustics: Anisotropy (front/back/blend)",
             "Caustics: Cloud/Line Components (cloud,line,raw)",
             "Caustics: Final Caustic Mask"
