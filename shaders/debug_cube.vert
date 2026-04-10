@@ -7,19 +7,7 @@ layout(location = 2) in vec3 inTexCoord;
 layout(location = 0) out vec3 fragTexCoord;
 layout(location = 1) out vec3 fragColor;
 
-layout(set = 0, binding = 0) uniform UBO {
-    mat4 viewProjection;
-    vec4 viewPos;
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 materialFlags;
-    mat4 lightSpaceMatrix;
-    vec4 shadowEffects;
-    vec4 debugParams;
-    vec4 triplanarSettings;
-    vec4 tessParams;
-    vec4 passParams;
-} ubo;
+#include "includes/ubo.glsl"
 
 struct InstanceData {
     mat4 model;

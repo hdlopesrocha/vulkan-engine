@@ -1,6 +1,6 @@
 // UBO layout must match the CPU-side UniformObject (std140-like):
 // mat4 viewProjection; vec4 viewPos; vec4 lightDir; vec4 lightColor;
-layout(set = 0, binding = 0) uniform UBO {
+layout(set = 0, binding = 0) uniform SolidParamsUBO {
     mat4 viewProjection;
     vec4 viewPos;
     vec4 lightDir;
@@ -43,3 +43,27 @@ layout(set = 0, binding = 6) uniform SkyUBO {
     vec4 nightZenith;  // rgb = night zenith color
     vec4 nightParams;  // x = night intensity (0..1), y = starIntensity, z/w unused
 } sky;
+
+layout(set = 0, binding = 10) uniform WaterRenderUBO {
+    vec4 timeParams;
+} waterRenderUBO;
+
+
+struct WaterParamsGPU {
+    vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=reflectionStrength
+    vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
+    vec4 params3;  // x=noiseTimeSpeed, y=unused, z=specularIntensity, w=specularPower
+    vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
+    vec4 deepColor; // xyz = deepColor, w = glitterIntensity
+    vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
+    vec4 reserved1;  // unused
+    vec4 reserved2;  // unused
+    vec4 reserved3;  // unused (x = cube360Available)
+    vec4 causticColor; // rgb = caustic tint, w = unused
+    vec4 causticParams; // x = scale, y = intensity, z = power, w = depthScale
+    vec4 causticExtraParams; // x = lineScale, y = lineMix, z = causticType (0=perlin,1=voronoi), w = causticVelocity
+};
+
+layout(std430, set = 0, binding = 7) readonly buffer WaterParamsBlock {
+    WaterParamsGPU waterParams[];
+};

@@ -6,6 +6,7 @@
 #include "SolidRenderer.hpp"
 #include <glm/glm.hpp>
 #include <memory>
+#include <vector>
 #include "../utils/Scene.hpp"
 #include "../Uniforms.hpp"
 #include "../widgets/SkySettings.hpp"
@@ -19,7 +20,7 @@ public:
     WaterRenderer();
     ~WaterRenderer();
 
-    void init(VulkanApp* app, Buffer& waterParamsBuffer);
+    void init(VulkanApp* app, Buffer& waterParamsBuffer, const std::vector<WaterParams>& waterParams, uint32_t layerCount);
     void cleanup(VulkanApp* app);
 
     // Create offscreen render targets for water rendering
@@ -42,7 +43,6 @@ public:
     // The solid render pass must have already ended on this same command buffer.
     void render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                 VkImageView sceneColorView, VkImageView sceneDepthView,
-                const WaterParams& params, float waterTime,
                 VkImageView skyView = VK_NULL_HANDLE);
 
     // Get water depth/normal/mask images for post-process sampling
@@ -62,55 +62,9 @@ public:
         void beginScenePass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear);
         void endScenePass(VkCommandBuffer cmd);
 
-    // Update parameters (per-layer). `getParams()` returns the active layer params.
-    void setParams(const WaterParams& params) {
-        if (externalParams) {
-            if (activeParamsIndex < externalParams->size()) (*externalParams)[activeParamsIndex] = params;
-        } else {
-            if (activeParamsIndex < paramsList.size()) paramsList[activeParamsIndex] = params;
-        }
-    }
-    WaterParams& getParams() {
-        if (externalParams) {
-            if (!externalParams->empty() && activeParamsIndex < externalParams->size()) return (*externalParams)[activeParamsIndex];
-            return paramsFallback;
-        }
-        return paramsList.size() ? paramsList[activeParamsIndex] : paramsFallback;
-    }
-    // Per-layer access
-    uint32_t getParamsCount() const { return static_cast<uint32_t>((externalParams) ? externalParams->size() : paramsList.size()); }
-    WaterParams& getParamsForLayer(uint32_t layer) { return (externalParams) ? externalParams->at(layer) : paramsList.at(layer); }
-    void setActiveLayer(uint32_t layer) { if (externalParams) { if (layer < externalParams->size()) activeParamsIndex = layer; } else { if (layer < paramsList.size()) activeParamsIndex = layer; } }
-    uint32_t getActiveLayer() const { return activeParamsIndex; }
-    // Associate an allocated SSBO buffer (storage buffer) for water params. `count` = number of array slots.
-    void setParamsBuffer(Buffer& buf, uint32_t count);
-    // Upload a single layer's params to the GPU SSBO
-    void updateGPUParamsForLayer(uint32_t layer);
 
-    // Let the application (main.cpp) provide an external params vector owned by the app.
-    void setExternalParamsList(std::vector<WaterParams>* list) { externalParams = list; }
+    void updateGPUParamsForLayer(uint32_t layer, const WaterParams& params);
 
-    // Time management for water animation (advance per-layer times)
-    void advanceTime(float dt) {
-        if (externalParams) {
-            for (auto &p : *externalParams) p.time += dt;
-        } else {
-            for (auto &p : paramsList) p.time += dt;
-        }
-        paramsFallback.time += dt;
-    }
-    float getTime() const {
-        if (externalParams) {
-            if (externalParams->empty()) return paramsFallback.time;
-            uint32_t idx = activeParamsIndex;
-            if (idx >= externalParams->size()) idx = 0;
-            return (*externalParams)[idx].time;
-        }
-        if (paramsList.empty()) return paramsFallback.time;
-        uint32_t idx = activeParamsIndex;
-        if (idx >= paramsList.size()) idx = 0;
-        return paramsList[idx].time;
-    }
     
     // Get the water geometry pipeline (for rendering water to G-buffer)
     VkPipeline getWaterGeometryPipeline() const { return waterGeometryPipeline; }
@@ -128,7 +82,6 @@ public:
     // Call this before beginWaterGeometryPass when manually recording commands.
     void prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                        VkImageView sceneColorView, VkImageView sceneDepthView,
-                       const WaterParams& params, float waterTime,
                        VkImageView skyView = VK_NULL_HANDLE);
 
     // Emit post-geometry-pass barrier for fragment shader sampling.
@@ -171,19 +124,11 @@ public:
 private:
     void createWaterRenderPass(VulkanApp* app);
     void createSceneRenderPass(VulkanApp* app);
-    void createWaterPipelines(VulkanApp* app);
+    void createWaterPipelines(VulkanApp* app, const std::vector<WaterParams>& waterParams);
+    void initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams);
     void createSamplers(VulkanApp* app);
 
     
-    // CPU-side per-layer water params; indexed by texture layer / texIndex
-    std::vector<WaterParams> paramsList;
-    // Optional external pointer to an application-owned params vector (main.cpp)
-    std::vector<WaterParams>* externalParams = nullptr;
-    // Fallback single params used if paramsList is empty
-    WaterParams paramsFallback;
-    // Currently active layer index used by `getParams()` and the UI
-    uint32_t activeParamsIndex = 0;
-
     // Indirect renderer for water geometry
     IndirectRenderer waterIndirectRenderer;
 
