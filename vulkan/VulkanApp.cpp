@@ -200,6 +200,8 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = &poolSize;
     poolInfo.maxSets = 1;
+    // Allow freeing individual descriptor sets from this pool
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     VkDescriptorPool descPool = VK_NULL_HANDLE;
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool) != VK_SUCCESS) {
         fprintf(stderr, "[VulkanApp] Failed to create descriptor pool for vegetation compute\n");

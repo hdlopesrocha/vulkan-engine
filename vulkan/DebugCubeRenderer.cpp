@@ -244,6 +244,8 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
     poolInfo.poolSizeCount = 2;
     poolInfo.pPoolSizes = poolSizes;
     poolInfo.maxSets = 1;
+    // Allow freeing descriptor sets created from this pool
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     
     if (vkCreateDescriptorPool(app->getDevice(), &poolInfo, nullptr, &gridDescriptorPool) != VK_SUCCESS) {
         fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to create grid descriptor pool!\n");
