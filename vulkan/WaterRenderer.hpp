@@ -4,7 +4,10 @@
 #include "IndirectRenderer.hpp"
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
+#include "WaterBackFaceRenderer.hpp"
+#include "Solid360Renderer.hpp"
 #include <glm/glm.hpp>
+#include <memory>
 #include "../utils/Scene.hpp"
 #include "../Uniforms.hpp"
 #include "../widgets/SkySettings.hpp"
@@ -34,8 +37,8 @@ public:
 
     // Back-face depth pre-pass (reversed winding for water volume thickness)
     void renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex);
-    VkImageView getBackFaceDepthView(uint32_t frameIndex) const { return backFaceDepthImageViews[frameIndex]; }
-    VkImage getBackFaceDepthImage(uint32_t frameIndex) const { return backFaceDepthImages[frameIndex]; }
+    VkImageView getBackFaceDepthView(uint32_t frameIndex) const { return (backFaceRenderer) ? backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE; }
+    VkImage getBackFaceDepthImage(uint32_t frameIndex) const { return (backFaceRenderer) ? backFaceRenderer->getBackFaceDepthImage(frameIndex) : VK_NULL_HANDLE; }
 
     // Execute the water offscreen geometry pass on the provided command buffer.
     // The solid render pass must have already ended on this same command buffer.
@@ -167,10 +170,11 @@ public:
                         Buffer& uniformBuffer, const UniformObject& ubo);
 
     // Access the 360° solid equirectangular view for water reflection sampling
-    VkImageView getSolid360View() const { return equirect360View; }
+    VkImageView getSolid360View() const { return (solid360Renderer) ? solid360Renderer->getSolid360View() : VK_NULL_HANDLE; }
     // Access the cubemap view for the 360° solid reflection (cube)
     // Access per-face 2D image views for debugging (order: +X, -X, +Y, -Y, +Z, -Z)
-    VkImageView getCube360FaceView(uint32_t face) const { return (face < 6) ? cube360FaceViews[face] : VK_NULL_HANDLE; }
+    VkImageView getCube360FaceView(uint32_t face) const { return (solid360Renderer) ? solid360Renderer->getCube360FaceView(face) : VK_NULL_HANDLE; }
+    VkImageView getCube360CubeView() const { return (solid360Renderer) ? solid360Renderer->getCube360CubeView() : VK_NULL_HANDLE; }
 
     // Register model version for water meshes (stored here)
     void registerModelVersion(NodeID id, const Model3DVersion& ver) { waterNodeModelVersions[id] = ver; }
@@ -237,14 +241,6 @@ private:
     std::array<VkFramebuffer, 2> waterFramebuffers = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkRenderPass waterRenderPass = VK_NULL_HANDLE;
 
-    // Back-face depth pass (reversed winding for water volume thickness)
-    VkRenderPass backFaceRenderPass = VK_NULL_HANDLE;
-    VkPipeline backFacePipeline = VK_NULL_HANDLE;
-    std::array<VkImage, 2> backFaceDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkDeviceMemory, 2> backFaceDepthMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageView, 2> backFaceDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkFramebuffer, 2> backFaceFramebuffers = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-
     // Pipelines
     VkPipeline waterGeometryPipeline = VK_NULL_HANDLE;
     
@@ -273,40 +269,10 @@ private:
     // Map of node -> model version for water geometry managed here
     std::unordered_map<NodeID, Model3DVersion> waterNodeModelVersions;
 
-    // --- Solid 360° cubemap reflection resources ---
-    static constexpr uint32_t CUBE360_FACE_SIZE = 512;
-    static constexpr uint32_t EQUIRECT360_WIDTH = 1024;
-    static constexpr uint32_t EQUIRECT360_HEIGHT = 512;
+    // Solid 360° renderer (separated)
+    std::unique_ptr<class Solid360Renderer> solid360Renderer;
 
-    // Cubemap color image (6 layers, CUBE_COMPATIBLE)
-    VkImage cube360ColorImage = VK_NULL_HANDLE;
-    VkDeviceMemory cube360ColorMemory = VK_NULL_HANDLE;
-    std::array<VkImageView, 6> cube360FaceViews = {};   // per-face 2D views for FBO
-    VkImageView cube360CubeView = VK_NULL_HANDLE;       // cubemap view for sampling
-
-    // Shared depth image for cubemap face rendering
-    VkImage cube360DepthImage = VK_NULL_HANDLE;
-    VkDeviceMemory cube360DepthMemory = VK_NULL_HANDLE;
-    VkImageView cube360DepthView = VK_NULL_HANDLE;
-
-    // Per-face framebuffers (reuse solidRenderPass)
-    std::array<VkFramebuffer, 6> cube360Framebuffers = {};
-
-    // Equirectangular output (2D texture, same format as swapchain)
-    VkImage equirect360Image = VK_NULL_HANDLE;
-    VkDeviceMemory equirect360Memory = VK_NULL_HANDLE;
-    VkImageView equirect360View = VK_NULL_HANDLE;
-    VkFramebuffer equirect360Framebuffer = VK_NULL_HANDLE;
-
-    // Cubemap→equirect conversion pipeline
-    VkRenderPass equirect360RenderPass = VK_NULL_HANDLE;
-    VkPipeline equirect360Pipeline = VK_NULL_HANDLE;
-    VkPipelineLayout equirect360PipelineLayout = VK_NULL_HANDLE;
-    VkShaderModule equirect360VertModule = VK_NULL_HANDLE;
-    VkShaderModule equirect360FragModule = VK_NULL_HANDLE;
-
-    // Descriptor set for cubemap sampling in the conversion pass
-    VkDescriptorSetLayout cube360DescSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool cube360DescPool = VK_NULL_HANDLE;
-    VkDescriptorSet cube360DescSet = VK_NULL_HANDLE;
+    // Back-face depth pass (reversed winding for water volume thickness)
+    // Back-face renderer (separated)
+    std::unique_ptr<class WaterBackFaceRenderer> backFaceRenderer;
 };

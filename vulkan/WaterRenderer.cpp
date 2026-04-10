@@ -5,6 +5,8 @@
 #include <iostream>
 #include <array>
 #include <glm/gtc/matrix_transform.hpp>
+#include "WaterBackFaceRenderer.hpp"
+#include "Solid360Renderer.hpp"
 
 // Global image layout tracking for WaterRenderer render targets
 static VkImageLayout sceneColorImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
@@ -13,7 +15,7 @@ static VkImageLayout waterDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK
 static VkImageLayout waterNormalImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
 static VkImageLayout waterMaskImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
 static VkImageLayout waterGeomDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
-static VkImageLayout backFaceDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+// back-face image layout tracking moved to WaterBackFaceRenderer
 
 WaterRenderer::WaterRenderer() {}
 
@@ -26,7 +28,20 @@ void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer) {
     createSamplers(app);
     createWaterRenderPass(app);
     createSceneRenderPass(app);
+
+    // Create sub-renderers for back-face and solid-360 responsibilities
+    backFaceRenderer = std::make_unique<WaterBackFaceRenderer>();
+    solid360Renderer = std::make_unique<Solid360Renderer>();
+
+    // Back-face renderpass must exist before creating its pipeline
+    backFaceRenderer->createRenderPass(app);
+
+    // Create water pipelines (produces waterGeometryPipelineLayout)
     createWaterPipelines(app);
+
+    // Let back-face renderer create its pipeline using the water pipeline layout
+    if (backFaceRenderer) backFaceRenderer->createPipelines(app, waterGeometryPipelineLayout);
+    if (solid360Renderer) solid360Renderer->init(app);
 }
 
 void WaterRenderer::setParamsBuffer(Buffer& buf, uint32_t count) {
@@ -100,7 +115,7 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer) {
     gpu.causticColor = glm::vec4(p->causticColor, 0.0f);
     gpu.causticParams = glm::vec4(p->causticScale, p->causticIntensity, p->causticPower, p->causticDepthScale);
     gpu.causticExtraParams = glm::vec4(p->causticLineScale, p->causticLineMix, 0.0f, 0.0f);
-    gpu.reserved3 = glm::vec4((cube360CubeView != VK_NULL_HANDLE) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+    gpu.reserved3 = glm::vec4((solid360Renderer && solid360Renderer->getCube360CubeView() != VK_NULL_HANDLE) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 
     size_t offset = static_cast<size_t>(layer) * sizeof(WaterParamsGPU);
     void* data = nullptr;
@@ -332,58 +347,6 @@ void WaterRenderer::createWaterRenderPass(VulkanApp* app) {
     // Register water render pass
     app->resources.addRenderPass(waterRenderPass, "WaterRenderer: waterRenderPass");
 
-    // --- Back-face depth-only render pass ---
-    // Single D32_SFLOAT depth attachment, no color outputs.
-    // Used to render water geometry with front-face culling to capture the
-    // back-face depth for water volume thickness calculation.
-    {
-        VkAttachmentDescription bfDepthAtt{};
-        bfDepthAtt.format = VK_FORMAT_D32_SFLOAT;
-        bfDepthAtt.samples = VK_SAMPLE_COUNT_1_BIT;
-        bfDepthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        bfDepthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        bfDepthAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        bfDepthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        bfDepthAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        bfDepthAtt.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkAttachmentReference bfDepthRef{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-
-        VkSubpassDescription bfSubpass{};
-        bfSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        bfSubpass.colorAttachmentCount = 0;
-        bfSubpass.pColorAttachments = nullptr;
-        bfSubpass.pDepthStencilAttachment = &bfDepthRef;
-
-        std::array<VkSubpassDependency, 2> bfDeps{};
-        bfDeps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-        bfDeps[0].dstSubpass = 0;
-        bfDeps[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        bfDeps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        bfDeps[0].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-        bfDeps[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-        bfDeps[1].srcSubpass = 0;
-        bfDeps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-        bfDeps[1].srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-        bfDeps[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        bfDeps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        bfDeps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-        VkRenderPassCreateInfo bfRPInfo{};
-        bfRPInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        bfRPInfo.attachmentCount = 1;
-        bfRPInfo.pAttachments = &bfDepthAtt;
-        bfRPInfo.subpassCount = 1;
-        bfRPInfo.pSubpasses = &bfSubpass;
-        bfRPInfo.dependencyCount = static_cast<uint32_t>(bfDeps.size());
-        bfRPInfo.pDependencies = bfDeps.data();
-
-        if (vkCreateRenderPass(app->getDevice(), &bfRPInfo, nullptr, &backFaceRenderPass) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create back-face depth render pass!");
-        }
-        app->resources.addRenderPass(backFaceRenderPass, "WaterRenderer: backFaceRenderPass");
-    }
 }
 
 void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
@@ -467,7 +430,6 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         waterNormalImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
         waterMaskImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
         waterGeomDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
-        backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     // Create per-frame scene offscreen render targets (2 sets for 2 frames in flight)
@@ -553,13 +515,11 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         waterGeomDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
         fprintf(stderr, "[WaterRenderer] waterGeomDepthImage[%d] = %p\n", frameIdx, (void*)waterGeomDepthImages[frameIdx]);
 
-        // Back-face depth image (samplable depth for water volume thickness)
-        createImage(VK_FORMAT_D32_SFLOAT,
-                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT,
-                    backFaceDepthImages[frameIdx], backFaceDepthMemories[frameIdx], backFaceDepthImageViews[frameIdx]);
-        backFaceDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
+        // Back-face depth image will be created by WaterBackFaceRenderer
     }
+
+    // Create back-face depth targets (owned by WaterBackFaceRenderer)
+    if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, width, height);
 
     // Transition all images to their required layouts
     auto transitionImageLayout = [&](VkImage image, VkImageLayout& currentLayout, VkImageLayout newLayout, VkImageAspectFlags aspect) {
@@ -616,25 +576,6 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         transitionImageLayout(waterNormalImages[frameIdx], waterNormalImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
         transitionImageLayout(waterMaskImages[frameIdx], waterMaskImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
         transitionImageLayout(waterGeomDepthImages[frameIdx], waterGeomDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
-        transitionImageLayout(backFaceDepthImages[frameIdx], backFaceDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
-    }
-
-    // Create per-frame back-face depth framebuffers
-    for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
-        VkImageView bfAttachments[1] = { backFaceDepthImageViews[frameIdx] };
-        VkFramebufferCreateInfo bfFbInfo{};
-        bfFbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        bfFbInfo.renderPass = backFaceRenderPass;
-        bfFbInfo.attachmentCount = 1;
-        bfFbInfo.pAttachments = bfAttachments;
-        bfFbInfo.width = width;
-        bfFbInfo.height = height;
-        bfFbInfo.layers = 1;
-
-        if (vkCreateFramebuffer(device, &bfFbInfo, nullptr, &backFaceFramebuffers[frameIdx]) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create back-face depth framebuffer!");
-        }
-        app->resources.addFramebuffer(backFaceFramebuffers[frameIdx], "WaterRenderer: backFaceFramebuffer");
     }
 
     // Create per-frame water framebuffers using the dedicated water geometry depth buffer
@@ -724,12 +665,8 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
         waterGeomDepthImages[i] = VK_NULL_HANDLE;
         waterGeomDepthMemories[i] = VK_NULL_HANDLE;
         waterGeomDepthImageViews[i] = VK_NULL_HANDLE;
-
-        backFaceDepthImages[i] = VK_NULL_HANDLE;
-        backFaceDepthMemories[i] = VK_NULL_HANDLE;
-        backFaceDepthImageViews[i] = VK_NULL_HANDLE;
     }
-    for (int i = 0; i < 2; ++i) { backFaceFramebuffers[i] = VK_NULL_HANDLE; }
+    if (backFaceRenderer) backFaceRenderer->destroyRenderTargets(app);
 
     // Reset descriptor pool to free descriptor sets (safe to reset even if pending)
     if (waterDepthDescriptorPool != VK_NULL_HANDLE) {
@@ -1031,97 +968,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app) {
     if (tescModule) tescModule = VK_NULL_HANDLE;
     if (teseModule) teseModule = VK_NULL_HANDLE;
 
-    // --- Create back-face depth-only pipeline ---
-    // Same vertex + tessellation shaders, minimal fragment shader, front-face culling.
-    if (backFaceRenderPass != VK_NULL_HANDLE && waterGeometryPipelineLayout != VK_NULL_HANDLE) {
-        auto bfVertCode = FileReader::readFile("shaders/water.vert.spv");
-        auto bfTescCode = FileReader::readFile("shaders/water.tesc.spv");
-        auto bfTeseCode = FileReader::readFile("shaders/water.tese.spv");
-        auto bfFragCode = FileReader::readFile("shaders/water_backface.frag.spv");
-
-        if (!bfVertCode.empty() && !bfFragCode.empty()) {
-            VkShaderModule bfVert = app->createShaderModule(bfVertCode);
-            VkShaderModule bfFrag = app->createShaderModule(bfFragCode);
-            VkShaderModule bfTesc = VK_NULL_HANDLE;
-            VkShaderModule bfTese = VK_NULL_HANDLE;
-
-            bool bfHasTess = !bfTescCode.empty() && !bfTeseCode.empty();
-            if (bfHasTess) {
-                bfTesc = app->createShaderModule(bfTescCode);
-                bfTese = app->createShaderModule(bfTeseCode);
-            }
-
-            std::vector<VkPipelineShaderStageCreateInfo> bfStages;
-            VkPipelineShaderStageCreateInfo vs{};
-            vs.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-            vs.stage = VK_SHADER_STAGE_VERTEX_BIT;
-            vs.module = bfVert;
-            vs.pName = "main";
-            bfStages.push_back(vs);
-
-            if (bfHasTess) {
-                VkPipelineShaderStageCreateInfo tc{};
-                tc.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-                tc.stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-                tc.module = bfTesc;
-                tc.pName = "main";
-                bfStages.push_back(tc);
-
-                VkPipelineShaderStageCreateInfo te{};
-                te.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-                te.stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-                te.module = bfTese;
-                te.pName = "main";
-                bfStages.push_back(te);
-            }
-
-            VkPipelineShaderStageCreateInfo fs{};
-            fs.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-            fs.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-            fs.module = bfFrag;
-            fs.pName = "main";
-            bfStages.push_back(fs);
-
-            // Reuse vertex input, input assembly, viewport, dynamic state from above
-            VkPipelineRasterizationStateCreateInfo bfRasterizer{};
-            bfRasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-            bfRasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-            bfRasterizer.lineWidth = 1.0f;
-            bfRasterizer.cullMode = VK_CULL_MODE_FRONT_BIT;  // cull front faces → render back faces
-            bfRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
-
-            // No color attachments in back-face render pass
-            VkPipelineColorBlendStateCreateInfo bfBlend{};
-            bfBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-            bfBlend.attachmentCount = 0;
-            bfBlend.pAttachments = nullptr;
-
-            VkGraphicsPipelineCreateInfo bfPipeInfo{};
-            bfPipeInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-            bfPipeInfo.stageCount = static_cast<uint32_t>(bfStages.size());
-            bfPipeInfo.pStages = bfStages.data();
-            bfPipeInfo.pVertexInputState = &vertexInputInfo;
-            bfPipeInfo.pInputAssemblyState = &inputAssembly;
-            bfPipeInfo.pViewportState = &viewportState;
-            bfPipeInfo.pDynamicState = &dynamicState;
-            bfPipeInfo.pRasterizationState = &bfRasterizer;
-            bfPipeInfo.pMultisampleState = &multisampling;
-            bfPipeInfo.pDepthStencilState = &depthStencil;
-            bfPipeInfo.pColorBlendState = &bfBlend;
-            bfPipeInfo.layout = waterGeometryPipelineLayout;
-            bfPipeInfo.renderPass = backFaceRenderPass;
-            bfPipeInfo.subpass = 0;
-            if (bfHasTess) bfPipeInfo.pTessellationState = &tessState;
-
-            if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &bfPipeInfo, nullptr, &backFacePipeline) != VK_SUCCESS) {
-                std::cerr << "[WaterRenderer] Warning: Failed to create back-face depth pipeline" << std::endl;
-                backFacePipeline = VK_NULL_HANDLE;
-            } else {
-                app->resources.addPipeline(backFacePipeline, "WaterRenderer: backFacePipeline");
-                std::cout << "[WaterRenderer] Created back-face depth pipeline" << std::endl;
-            }
-        }
-    }
+    // Back-face pipeline creation moved to WaterBackFaceRenderer
 }
 
 void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex) {
@@ -1171,6 +1018,18 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
     vkCmdEndRenderPass(cmd);
 }
 
+void WaterRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex) {
+    if (!app || cmd == VK_NULL_HANDLE) return;
+    if (!backFaceRenderer) return;
+    // Forward to the back-face renderer, providing necessary pipeline layout and descriptor sets
+    backFaceRenderer->renderBackFacePass(app, cmd, frameIndex,
+                                         waterIndirectRenderer,
+                                         waterGeometryPipelineLayout,
+                                         app->getMainDescriptorSet(),
+                                         app->getMaterialDescriptorSet(),
+                                         waterDepthDescriptorSets[frameIndex]);
+}
+
 void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView) {
     if (waterDepthDescriptorSets[frameIndex] == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
         return;
@@ -1199,12 +1058,12 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
 
     // Water back-face depth (binding 3) — will be in SHADER_READ_ONLY after back-face pass
     imageInfos[3].sampler = linearSampler;
-    imageInfos[3].imageView = (backFaceDepthImageViews[frameIndex] != VK_NULL_HANDLE) ? backFaceDepthImageViews[frameIndex] : depthView;
+    imageInfos[3].imageView = (backFaceRenderer && backFaceRenderer->getBackFaceDepthView(frameIndex) != VK_NULL_HANDLE) ? backFaceRenderer->getBackFaceDepthView(frameIndex) : depthView;
     imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     // Cubemap (binding 4) — if available, bind cube360CubeView, otherwise leave as fallback to scene color
     imageInfos[4].sampler = linearSampler;
-    imageInfos[4].imageView = (cube360CubeView != VK_NULL_HANDLE) ? cube360CubeView : colorView;
+    imageInfos[4].imageView = (solid360Renderer && solid360Renderer->getCube360CubeView() != VK_NULL_HANDLE) ? solid360Renderer->getCube360CubeView() : colorView;
     imageInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     
     std::array<VkWriteDescriptorSet, 5> writes{};
@@ -1288,7 +1147,7 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
                     gpu.causticColor = glm::vec4(p->causticColor, 0.0f);
                     gpu.causticParams = glm::vec4(p->causticScale, p->causticIntensity, p->causticPower, p->causticDepthScale);
                     gpu.causticExtraParams = glm::vec4(p->causticLineScale, p->causticLineMix, 0.0f, 0.0f);
-                    gpu.reserved3 = glm::vec4((cube360CubeView != VK_NULL_HANDLE) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+                    gpu.reserved3 = glm::vec4((solid360Renderer && solid360Renderer->getCube360CubeView() != VK_NULL_HANDLE) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 
             memcpy(static_cast<char*>(mapped) + i * sizeof(WaterParamsGPU), &gpu, sizeof(WaterParamsGPU));
         }
@@ -1313,88 +1172,7 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
         0, 1, &memBarrier, 0, nullptr, 0, nullptr);
 }
 
-void WaterRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex) {
-    if (!app || cmd == VK_NULL_HANDLE) return;
-    if (backFaceRenderPass == VK_NULL_HANDLE || backFacePipeline == VK_NULL_HANDLE) return;
-    if (backFaceFramebuffers[frameIndex] == VK_NULL_HANDLE) return;
-
-    // Begin back-face depth-only render pass
-    VkClearValue bfClear{};
-    bfClear.depthStencil = {1.0f, 0};
-
-    VkRenderPassBeginInfo bfRPInfo{};
-    bfRPInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    bfRPInfo.renderPass = backFaceRenderPass;
-    bfRPInfo.framebuffer = backFaceFramebuffers[frameIndex];
-    bfRPInfo.renderArea.offset = {0, 0};
-    bfRPInfo.renderArea.extent = {renderWidth, renderHeight};
-    bfRPInfo.clearValueCount = 1;
-    bfRPInfo.pClearValues = &bfClear;
-    vkCmdBeginRenderPass(cmd, &bfRPInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = static_cast<float>(renderWidth);
-    viewport.height = static_cast<float>(renderHeight);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    VkRect2D scissor{};
-    scissor.offset = {0, 0};
-    scissor.extent = {renderWidth, renderHeight};
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, backFacePipeline);
-
-    // Bind the same descriptor sets as the main water pass
-    VkDescriptorSet mainDs = app->getMainDescriptorSet();
-    if (mainDs != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
-    }
-    VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
-    if (materialDs != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
-    }
-    VkDescriptorSet sceneDs = waterDepthDescriptorSets[frameIndex];
-    if (sceneDs != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
-    }
-
-    // Draw the same water geometry (back faces only due to front-face culling)
-    waterIndirectRenderer.drawPrepared(cmd);
-
-    vkCmdEndRenderPass(cmd);
-    // Render pass finalLayout transitions back-face depth to SHADER_READ_ONLY_OPTIMAL
-    // Emit an explicit image memory barrier for the back-face depth image so
-    // subsequent fragment shader reads are properly synchronized across the
-    // render pass boundary. Use a no-layout-change barrier since the render
-    // pass already performs the layout transition to SHADER_READ_ONLY_OPTIMAL.
-    if (backFaceDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        VkImageMemoryBarrier bfBarrier{};
-        bfBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        bfBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        bfBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        bfBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        bfBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        bfBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bfBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bfBarrier.image = backFaceDepthImages[frameIndex];
-        bfBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        bfBarrier.subresourceRange.baseMipLevel = 0;
-        bfBarrier.subresourceRange.levelCount = 1;
-        bfBarrier.subresourceRange.baseArrayLayer = 0;
-        bfBarrier.subresourceRange.layerCount = 1;
-
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &bfBarrier);
-    }
-}
+// Back-face pass implementation moved to WaterBackFaceRenderer
 void WaterRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex) {
     if (cmd == VK_NULL_HANDLE) return;
 
@@ -1427,22 +1205,8 @@ void WaterRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex) 
     pushColorBarrier(waterMaskImages[frameIndex]);
 
     // Depth-based back-face image (ensure depth writes are visible to shader reads)
-    if (backFaceDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        VkImageMemoryBarrier db{};
-        db.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        db.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        db.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        db.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        db.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        db.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        db.image = backFaceDepthImages[frameIndex];
-        db.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        db.subresourceRange.baseMipLevel = 0;
-        db.subresourceRange.levelCount = 1;
-        db.subresourceRange.baseArrayLayer = 0;
-        db.subresourceRange.layerCount = 1;
-        barriers.push_back(db);
+    if (backFaceRenderer) {
+        backFaceRenderer->postRenderBarrier(cmd, frameIndex);
     }
 
     if (!barriers.empty()) {
@@ -1460,7 +1224,14 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
     prepareRender(app, cmd, frameIndex, sceneColorView, sceneDepthView, params, waterTime, skyView);
 
     // Back-face depth pre-pass (reversed winding for water volume thickness)
-    renderBackFacePass(app, cmd, frameIndex);
+    if (backFaceRenderer) {
+        backFaceRenderer->renderBackFacePass(app, cmd, frameIndex,
+                                             waterIndirectRenderer,
+                                             waterGeometryPipelineLayout,
+                                             app->getMainDescriptorSet(),
+                                             app->getMaterialDescriptorSet(),
+                                             waterDepthDescriptorSets[frameIndex]);
+    }
 
     beginWaterGeometryPass(cmd, frameIndex);
 
@@ -1505,354 +1276,11 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
 // ============================================================================
 
 void WaterRenderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidRenderPass) {
-    if (!app || solidRenderPass == VK_NULL_HANDLE) return;
-    VkDevice device = app->getDevice();
-    VkFormat colorFormat = app->getSwapchainImageFormat();
-
-    // --- Helper: create image + memory ---
-    auto allocImage = [&](VkImageCreateInfo& imgInfo, VkImage& image, VkDeviceMemory& memory) {
-        if (vkCreateImage(device, &imgInfo, nullptr, &image) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create 360 image!");
-        app->resources.addImage(image, "WaterRenderer: solid360 image");
-        VkMemoryRequirements memReqs;
-        vkGetImageMemoryRequirements(device, image, &memReqs);
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memReqs.size;
-        allocInfo.memoryTypeIndex = app->findMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS)
-            throw std::runtime_error("Failed to allocate 360 image memory!");
-        app->resources.addDeviceMemory(memory, "WaterRenderer: solid360 memory");
-        vkBindImageMemory(device, image, memory, 0);
-    };
-
-    auto createView = [&](VkImage image, VkFormat format, VkImageAspectFlags aspect,
-                           VkImageViewType viewType, uint32_t baseLayer, uint32_t layerCount,
-                           VkImageView& view, const char* name) {
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = image;
-        viewInfo.viewType = viewType;
-        viewInfo.format = format;
-        viewInfo.subresourceRange.aspectMask = aspect;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = baseLayer;
-        viewInfo.subresourceRange.layerCount = layerCount;
-        if (vkCreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create 360 image view!");
-        app->resources.addImageView(view, name);
-    };
-
-    // --- 1. Cubemap color image (6 layers) ---
-    {
-        VkImageCreateInfo imgInfo{};
-        imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imgInfo.imageType = VK_IMAGE_TYPE_2D;
-        imgInfo.format = colorFormat;
-        imgInfo.extent = {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE, 1};
-        imgInfo.mipLevels = 1;
-        imgInfo.arrayLayers = 6;
-        imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imgInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        imgInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-        imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        allocImage(imgInfo, cube360ColorImage, cube360ColorMemory);
-    }
-
-    // Per-face 2D views (for framebuffer attachment)
-    for (uint32_t face = 0; face < 6; ++face) {
-        createView(cube360ColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT,
-                   VK_IMAGE_VIEW_TYPE_2D, face, 1,
-                   cube360FaceViews[face], "WaterRenderer: cube360 face view");
-    }
-
-    // Cubemap view (for sampling in the conversion shader)
-    createView(cube360ColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT,
-               VK_IMAGE_VIEW_TYPE_CUBE, 0, 6,
-               cube360CubeView, "WaterRenderer: cube360 cube view");
-
-    // --- 2. Shared depth image ---
-    {
-        VkImageCreateInfo imgInfo{};
-        imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imgInfo.imageType = VK_IMAGE_TYPE_2D;
-        imgInfo.format = VK_FORMAT_D32_SFLOAT;
-        imgInfo.extent = {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE, 1};
-        imgInfo.mipLevels = 1;
-        imgInfo.arrayLayers = 1;
-        imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imgInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        allocImage(imgInfo, cube360DepthImage, cube360DepthMemory);
-    }
-    createView(cube360DepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT,
-               VK_IMAGE_VIEW_TYPE_2D, 0, 1,
-               cube360DepthView, "WaterRenderer: cube360 depth view");
-
-    // --- 3. Per-face framebuffers (reuse solidRenderPass: color + depth) ---
-    for (uint32_t face = 0; face < 6; ++face) {
-        std::array<VkImageView, 2> attachments = {cube360FaceViews[face], cube360DepthView};
-        VkFramebufferCreateInfo fbInfo{};
-        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fbInfo.renderPass = solidRenderPass;
-        fbInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-        fbInfo.pAttachments = attachments.data();
-        fbInfo.width = CUBE360_FACE_SIZE;
-        fbInfo.height = CUBE360_FACE_SIZE;
-        fbInfo.layers = 1;
-        if (vkCreateFramebuffer(device, &fbInfo, nullptr, &cube360Framebuffers[face]) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create cube360 framebuffer!");
-        app->resources.addFramebuffer(cube360Framebuffers[face], "WaterRenderer: cube360 framebuffer");
-    }
-
-    // --- 4. Equirectangular output image ---
-    {
-        VkImageCreateInfo imgInfo{};
-        imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imgInfo.imageType = VK_IMAGE_TYPE_2D;
-        imgInfo.format = colorFormat;
-        imgInfo.extent = {EQUIRECT360_WIDTH, EQUIRECT360_HEIGHT, 1};
-        imgInfo.mipLevels = 1;
-        imgInfo.arrayLayers = 1;
-        imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imgInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        allocImage(imgInfo, equirect360Image, equirect360Memory);
-    }
-    createView(equirect360Image, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT,
-               VK_IMAGE_VIEW_TYPE_2D, 0, 1,
-               equirect360View, "WaterRenderer: equirect360 view");
-
-    // --- 5. Equirect render pass (color only, no depth) ---
-    {
-        VkAttachmentDescription colorAtt{};
-        colorAtt.format = colorFormat;
-        colorAtt.samples = VK_SAMPLE_COUNT_1_BIT;
-        colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        colorAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        colorAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        colorAtt.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-
-        VkSubpassDescription subpass{};
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &colorRef;
-
-        VkSubpassDependency dep{};
-        dep.srcSubpass = 0;
-        dep.dstSubpass = VK_SUBPASS_EXTERNAL;
-        dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        dep.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        dep.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-        VkRenderPassCreateInfo rpInfo{};
-        rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        rpInfo.attachmentCount = 1;
-        rpInfo.pAttachments = &colorAtt;
-        rpInfo.subpassCount = 1;
-        rpInfo.pSubpasses = &subpass;
-        rpInfo.dependencyCount = 1;
-        rpInfo.pDependencies = &dep;
-
-        if (vkCreateRenderPass(device, &rpInfo, nullptr, &equirect360RenderPass) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create equirect360 render pass!");
-        app->resources.addRenderPass(equirect360RenderPass, "WaterRenderer: equirect360RenderPass");
-    }
-
-    // Equirect framebuffer
-    {
-        VkFramebufferCreateInfo fbInfo{};
-        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fbInfo.renderPass = equirect360RenderPass;
-        fbInfo.attachmentCount = 1;
-        fbInfo.pAttachments = &equirect360View;
-        fbInfo.width = EQUIRECT360_WIDTH;
-        fbInfo.height = EQUIRECT360_HEIGHT;
-        fbInfo.layers = 1;
-        if (vkCreateFramebuffer(device, &fbInfo, nullptr, &equirect360Framebuffer) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create equirect360 framebuffer!");
-        app->resources.addFramebuffer(equirect360Framebuffer, "WaterRenderer: equirect360 framebuffer");
-    }
-
-    // --- 6. Cubemap descriptor set layout + pool + set ---
-    {
-        VkDescriptorSetLayoutBinding binding{};
-        binding.binding = 0;
-        binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        binding.descriptorCount = 1;
-        binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        VkDescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 1;
-        layoutInfo.pBindings = &binding;
-        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &cube360DescSetLayout) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create cube360 descriptor set layout!");
-        app->resources.addDescriptorSetLayout(cube360DescSetLayout, "WaterRenderer: cube360DescSetLayout");
-
-        VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
-        VkDescriptorPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.maxSets = 1;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
-        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &cube360DescPool) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create cube360 descriptor pool!");
-        app->resources.addDescriptorPool(cube360DescPool, "WaterRenderer: cube360DescPool");
-
-        VkDescriptorSetAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = cube360DescPool;
-        allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &cube360DescSetLayout;
-        if (vkAllocateDescriptorSets(device, &allocInfo, &cube360DescSet) != VK_SUCCESS)
-            throw std::runtime_error("Failed to allocate cube360 descriptor set!");
-
-        // Write cubemap sampler to the descriptor set
-        VkDescriptorImageInfo imgInfo{};
-        imgInfo.sampler = linearSampler;
-        imgInfo.imageView = cube360CubeView;
-        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = cube360DescSet;
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo = &imgInfo;
-        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-    }
-
-    // --- 7. Cubemap→equirect conversion pipeline ---
-    {
-        equirect360VertModule = app->createShaderModule(FileReader::readFile("shaders/fullscreen.vert.spv"));
-        equirect360FragModule = app->createShaderModule(FileReader::readFile("shaders/cubemap_to_equirect.frag.spv"));
-
-        std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
-        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-        stages[0].module = equirect360VertModule;
-        stages[0].pName = "main";
-        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        stages[1].module = equirect360FragModule;
-        stages[1].pName = "main";
-
-        VkPipelineVertexInputStateCreateInfo vertexInput{};
-        vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-        VkPipelineViewportStateCreateInfo viewportState{};
-        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        viewportState.viewportCount = 1;
-        viewportState.scissorCount = 1;
-
-        VkPipelineRasterizationStateCreateInfo rasterizer{};
-        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-        rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE;
-        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-
-        VkPipelineMultisampleStateCreateInfo multisample{};
-        multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-        VkPipelineDepthStencilStateCreateInfo depthStencil{};
-        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depthStencil.depthTestEnable = VK_FALSE;
-        depthStencil.depthWriteEnable = VK_FALSE;
-
-        VkPipelineColorBlendAttachmentState blendAtt{};
-        blendAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                  VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        blendAtt.blendEnable = VK_FALSE;
-
-        VkPipelineColorBlendStateCreateInfo blending{};
-        blending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        blending.attachmentCount = 1;
-        blending.pAttachments = &blendAtt;
-
-        std::array<VkDynamicState, 2> dynStates = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-        VkPipelineDynamicStateCreateInfo dynState{};
-        dynState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        dynState.dynamicStateCount = static_cast<uint32_t>(dynStates.size());
-        dynState.pDynamicStates = dynStates.data();
-
-        VkPushConstantRange pushRange{};
-        pushRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        pushRange.offset = 0;
-        pushRange.size = sizeof(float) * 2;
-
-        VkPipelineLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        layoutInfo.setLayoutCount = 1;
-        layoutInfo.pSetLayouts = &cube360DescSetLayout;
-        layoutInfo.pushConstantRangeCount = 1;
-        layoutInfo.pPushConstantRanges = &pushRange;
-        if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &equirect360PipelineLayout) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create equirect360 pipeline layout!");
-        app->resources.addPipelineLayout(equirect360PipelineLayout, "WaterRenderer: equirect360PipelineLayout");
-
-        VkGraphicsPipelineCreateInfo pipeInfo{};
-        pipeInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        pipeInfo.stageCount = static_cast<uint32_t>(stages.size());
-        pipeInfo.pStages = stages.data();
-        pipeInfo.pVertexInputState = &vertexInput;
-        pipeInfo.pInputAssemblyState = &inputAssembly;
-        pipeInfo.pViewportState = &viewportState;
-        pipeInfo.pRasterizationState = &rasterizer;
-        pipeInfo.pMultisampleState = &multisample;
-        pipeInfo.pDepthStencilState = &depthStencil;
-        pipeInfo.pColorBlendState = &blending;
-        pipeInfo.pDynamicState = &dynState;
-        pipeInfo.layout = equirect360PipelineLayout;
-        pipeInfo.renderPass = equirect360RenderPass;
-        pipeInfo.subpass = 0;
-        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeInfo, nullptr, &equirect360Pipeline) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create equirect360 pipeline!");
-        app->resources.addPipeline(equirect360Pipeline, "WaterRenderer: equirect360Pipeline");
-    }
-
-    fprintf(stderr, "[WaterRenderer] Created solid 360 targets: cubemap %ux%u, equirect %ux%u\n",
-            CUBE360_FACE_SIZE, CUBE360_FACE_SIZE, EQUIRECT360_WIDTH, EQUIRECT360_HEIGHT);
+    if (solid360Renderer) solid360Renderer->createSolid360Targets(app, solidRenderPass, linearSampler);
 }
 
 void WaterRenderer::destroySolid360Targets(VulkanApp* app) {
-    // Clear handles; VulkanResourceManager handles actual destruction
-    cube360ColorImage = VK_NULL_HANDLE;
-    cube360ColorMemory = VK_NULL_HANDLE;
-    for (auto& v : cube360FaceViews) v = VK_NULL_HANDLE;
-    cube360CubeView = VK_NULL_HANDLE;
-    cube360DepthImage = VK_NULL_HANDLE;
-    cube360DepthMemory = VK_NULL_HANDLE;
-    cube360DepthView = VK_NULL_HANDLE;
-    for (auto& fb : cube360Framebuffers) fb = VK_NULL_HANDLE;
-    equirect360Image = VK_NULL_HANDLE;
-    equirect360Memory = VK_NULL_HANDLE;
-    equirect360View = VK_NULL_HANDLE;
-    equirect360Framebuffer = VK_NULL_HANDLE;
-    equirect360RenderPass = VK_NULL_HANDLE;
-    equirect360Pipeline = VK_NULL_HANDLE;
-    equirect360PipelineLayout = VK_NULL_HANDLE;
-    equirect360VertModule = VK_NULL_HANDLE;
-    equirect360FragModule = VK_NULL_HANDLE;
-    cube360DescSetLayout = VK_NULL_HANDLE;
-    cube360DescPool = VK_NULL_HANDLE;
-    cube360DescSet = VK_NULL_HANDLE;
+    if (solid360Renderer) solid360Renderer->destroySolid360Targets(app);
 }
 
 void WaterRenderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
@@ -1861,148 +1289,5 @@ void WaterRenderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                                     SolidRenderer* solidRenderer,
                                     VkDescriptorSet mainDescriptorSet,
                                     Buffer& uniformBuffer, const UniformObject& ubo) {
-    if (!app || cmd == VK_NULL_HANDLE) return;
-    if (cube360Framebuffers[0] == VK_NULL_HANDLE || equirect360Pipeline == VK_NULL_HANDLE) return;
-
-    // --- Build 6 face view matrices (Y-up, right-handed) ---
-    // Cubemap face order: +X, -X, +Y, -Y, +Z, -Z
-    glm::vec3 camPos = glm::vec3(ubo.viewPos);
-
-    struct FaceInfo { glm::vec3 target; glm::vec3 up; };
-    const FaceInfo faces[6] = {
-        { glm::vec3( 1, 0, 0), glm::vec3(0, 1, 0) }, // +X (flipped vertically)
-        // Invert -X up to correct roll
-        { glm::vec3(-1, 0, 0), glm::vec3(0, 1, 0) }, // -X (flipped up)
-        // +Y/-Y up vectors (kept flipped from earlier change)
-        { glm::vec3( 0, 1, 0), glm::vec3(0, 0,-1) }, // +Y
-        { glm::vec3( 0,-1, 0), glm::vec3(0, 0, 1) }, // -Y
-        { glm::vec3( 0, 0, 1), glm::vec3(0, 1, 0) }, // +Z (flipped)
-        // Invert -Z up to correct roll
-        { glm::vec3( 0, 0,-1), glm::vec3(0, 1, 0) }, // -Z (flipped up)
-    };
-
-    // 90° FOV projection (square faces)
-    glm::mat4 faceProj = glm::perspective(glm::radians(90.0f), 1.0f, ubo.passParams.z, ubo.passParams.w);
-    faceProj[1][1] *= -1; // Vulkan Y-flip
-
-    // --- Render 6 cubemap faces ---
-    for (uint32_t face = 0; face < 6; ++face) {
-        glm::mat4 faceView = glm::lookAt(camPos, camPos + faces[face].target, faces[face].up);
-        glm::mat4 faceVP = faceProj * faceView;
-
-        // Build per-face UBO (same as main UBO but with face VP)
-        UniformObject faceUBO = ubo;
-        faceUBO.viewProjection = faceVP;
-
-        // Write per-face UBO to the buffer via command stream (GPU-side update)
-        vkCmdUpdateBuffer(cmd, uniformBuffer.buffer, 0, sizeof(UniformObject), &faceUBO);
-
-        // Barrier: transfer write → uniform read
-        VkMemoryBarrier memBarrier{};
-        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        memBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 1, &memBarrier, 0, nullptr, 0, nullptr);
-
-        // Begin render pass on this face
-        VkClearValue clears[2];
-        clears[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-        clears[1].depthStencil = {1.0f, 0};
-
-        VkRenderPassBeginInfo rpInfo{};
-        rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rpInfo.renderPass = solidRenderPass;
-        rpInfo.framebuffer = cube360Framebuffers[face];
-        rpInfo.renderArea.offset = {0, 0};
-        rpInfo.renderArea.extent = {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE};
-        rpInfo.clearValueCount = 2;
-        rpInfo.pClearValues = clears;
-        vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-        VkViewport viewport{0.0f, 0.0f, (float)CUBE360_FACE_SIZE, (float)CUBE360_FACE_SIZE, 0.0f, 1.0f};
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        VkRect2D scissor{{0, 0}, {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE}};
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-        // Draw sky sphere into this face
-        if (skyRenderer) {
-            VkPipeline skyPipe = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyGridPipeline() : skyRenderer->getSkyPipeline();
-            VkPipelineLayout skyLayout = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyGridPipelineLayout() : skyRenderer->getSkyPipelineLayout();
-            if (skyPipe != VK_NULL_HANDLE && skyLayout != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipe);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
-                const auto& skyVBO = skyRenderer->getSkyVBO();
-                if (skyVBO.vertexBuffer.buffer != VK_NULL_HANDLE && skyVBO.indexCount > 0) {
-                    VkBuffer vbs[] = {skyVBO.vertexBuffer.buffer};
-                    VkDeviceSize offsets[] = {0};
-                    vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
-                    vkCmdBindIndexBuffer(cmd, skyVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-                    vkCmdDrawIndexed(cmd, skyVBO.indexCount, 1, 0, 0, 0);
-                }
-            }
-        }
-
-        // Draw ALL solid meshes (no frustum cull — omnidirectional render)
-        if (solidRenderer) {
-            VkPipeline gfxPipe = solidRenderer->getGraphicsPipeline();
-            VkPipelineLayout gfxLayout = solidRenderer->getGraphicsPipelineLayout();
-            if (gfxPipe != VK_NULL_HANDLE && gfxLayout != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxPipe);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
-                solidRenderer->getIndirectRenderer().drawAll(cmd);
-            }
-        }
-
-        vkCmdEndRenderPass(cmd);
-    }
-
-    // --- Transition cubemap to SHADER_READ_ONLY_OPTIMAL ---
-    // After the render passes, each face layer's color is in SHADER_READ_ONLY_OPTIMAL
-    // (from the solidRenderPass finalLayout). No extra barrier needed for sampling.
-
-    // --- Convert cubemap → equirectangular ---
-    {
-        VkClearValue clear{};
-        clear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        VkRenderPassBeginInfo rpInfo{};
-        rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rpInfo.renderPass = equirect360RenderPass;
-        rpInfo.framebuffer = equirect360Framebuffer;
-        rpInfo.renderArea.offset = {0, 0};
-        rpInfo.renderArea.extent = {EQUIRECT360_WIDTH, EQUIRECT360_HEIGHT};
-        rpInfo.clearValueCount = 1;
-        rpInfo.pClearValues = &clear;
-        vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, equirect360Pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, equirect360PipelineLayout,
-                                0, 1, &cube360DescSet, 0, nullptr);
-
-        float resolution[2] = {(float)EQUIRECT360_WIDTH, (float)EQUIRECT360_HEIGHT};
-        vkCmdPushConstants(cmd, equirect360PipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(resolution), resolution);
-
-        VkViewport viewport{0.0f, 0.0f, (float)EQUIRECT360_WIDTH, (float)EQUIRECT360_HEIGHT, 0.0f, 1.0f};
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        VkRect2D scissor{{0, 0}, {EQUIRECT360_WIDTH, EQUIRECT360_HEIGHT}};
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-        vkCmdDraw(cmd, 3, 1, 0, 0); // fullscreen triangle
-        vkCmdEndRenderPass(cmd);
-    }
-
-    // Restore the main UBO via command stream so subsequent passes see the original data
-    vkCmdUpdateBuffer(cmd, uniformBuffer.buffer, 0, sizeof(UniformObject), &ubo);
-    {
-        VkMemoryBarrier memBarrier{};
-        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        memBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 1, &memBarrier, 0, nullptr, 0, nullptr);
-    }
+    if (solid360Renderer) solid360Renderer->renderSolid360(app, cmd, solidRenderPass, skyRenderer, skyMode, solidRenderer, mainDescriptorSet, uniformBuffer, ubo);
 }
