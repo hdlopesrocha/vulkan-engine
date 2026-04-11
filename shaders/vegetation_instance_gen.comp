@@ -20,7 +20,7 @@ layout(push_constant) uniform Push {
     uint vertexCount;
     uint indexCount;
     uint seed;
-    uint pad;
+    uint baseTri;
 } push;
 
 // Simple hash for random float
@@ -32,7 +32,7 @@ float rand(inout uint state) {
 }
 
 void main() {
-    uint tri = gl_GlobalInvocationID.x;
+    uint tri = gl_GlobalInvocationID.x + push.baseTri;
     uint triBase = tri * 3;
     if (triBase + 2 >= push.indexCount) return;
 
