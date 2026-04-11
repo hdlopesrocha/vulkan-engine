@@ -28,20 +28,23 @@ private:
     // ImGui texture descriptors
     VkDescriptorSet skyDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet solid360Descriptor = VK_NULL_HANDLE;
-    VkDescriptorSet cube360Descriptor = VK_NULL_HANDLE;
-    CubeToEquirectRenderer cube360EquirectRenderer;
+    VkDescriptorSet cube360EquirectDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet cube360FaceDescriptor[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
     VkDescriptorSet solidColorDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet solidDepthDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterColorDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet backFaceDepthDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterDepthLinearDescriptor = VK_NULL_HANDLE;
+
+    CubeToEquirectRenderer cube360EquirectRenderer;
+
     // Ownership flags: true if this widget created the descriptor via ImGui_ImplVulkan_AddTexture
     bool skyDescriptorOwned = false;
     bool solid360DescriptorOwned = false;
-    bool cube360DescriptorOwned = false;
+    bool cube360EquirectDescriptorOwned = false;
     bool cube360FaceDescriptorOwned[6] = { false, false, false, false, false, false };
     bool solidColorDescriptorOwned = false;
+    int selectedCubeFaceIndex = 0;
     bool solidDepthDescriptorOwned = false;
     bool waterColorDescriptorOwned = false;
     bool backFaceDepthDescriptorOwned = false;
@@ -109,6 +112,7 @@ private:
     enum class PreviewTarget {
         Sky = 0,
         Solid360Cube,
+        Solid360Equirect,
         SolidColor,
         SolidDepth,
         WaterWorldPos,

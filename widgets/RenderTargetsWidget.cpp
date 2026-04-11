@@ -49,7 +49,7 @@ RenderTargetsWidget::~RenderTargetsWidget() {
     removeOwnedDesc(waterColorDescriptor, waterColorDescriptorOwned);
     removeOwnedDesc(solidDepthDescriptor, solidDepthDescriptorOwned);
     removeOwnedDesc(solid360Descriptor, solid360DescriptorOwned);
-    removeOwnedDesc(cube360Descriptor, cube360DescriptorOwned);
+    removeOwnedDesc(cube360EquirectDescriptor, cube360EquirectDescriptorOwned);
     for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
     removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
@@ -82,7 +82,7 @@ void RenderTargetsWidget::cleanup() {
     removeOwnedDesc(waterColorDescriptor, waterColorDescriptorOwned);
     removeOwnedDesc(solidDepthDescriptor, solidDepthDescriptorOwned);
     removeOwnedDesc(solid360Descriptor, solid360DescriptorOwned);
-    removeOwnedDesc(cube360Descriptor, cube360DescriptorOwned);
+    removeOwnedDesc(cube360EquirectDescriptor, cube360EquirectDescriptorOwned);
     for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
     removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
@@ -398,15 +398,21 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         }
     }
 
-    VkImageView solid360View = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
-    if (solid360View != VK_NULL_HANDLE && selectedPreview == PreviewTarget::Solid360Cube) {
-        cube360EquirectRenderer.render(app, sampler, solid360View);
-        if (cube360Descriptor == VK_NULL_HANDLE) {
+    VkSampler solid360Sampler = sampler;
+    if (sceneRenderer && sceneRenderer->solid360Renderer) {
+        VkSampler s = sceneRenderer->solid360Renderer->getSolid360Sampler();
+        if (s != VK_NULL_HANDLE) solid360Sampler = s;
+    }
+
+    VkImageView cube360EquirectView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
+    if (cube360EquirectView != VK_NULL_HANDLE && selectedPreview == PreviewTarget::Solid360Cube) {
+        cube360EquirectRenderer.render(app, solid360Sampler, cube360EquirectView);
+        if (cube360EquirectDescriptor == VK_NULL_HANDLE) {
             VkImageView equirectView = cube360EquirectRenderer.getEquirectView();
             if (equirectView != VK_NULL_HANDLE) {
-                cube360Descriptor = ImGui_ImplVulkan_AddTexture(
-                    sampler, equirectView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                cube360DescriptorOwned = true;
+                cube360EquirectDescriptor = ImGui_ImplVulkan_AddTexture(
+                    solid360Sampler, equirectView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                cube360EquirectDescriptorOwned = true;
             }
         }
     }
@@ -415,7 +421,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     for (uint32_t f = 0; f < 6; ++f) {
         VkImageView faceView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360FaceView(f) : VK_NULL_HANDLE;
         if (faceView != VK_NULL_HANDLE && cube360FaceDescriptor[f] == VK_NULL_HANDLE) {
-            cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(sampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(solid360Sampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             cube360FaceDescriptorOwned[f] = true;
         }
     }
@@ -831,23 +837,40 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     // Choose a single preview descriptor according to the current selection.
     previewDescriptor = VK_NULL_HANDLE;
     switch (selectedPreview) {
-        case PreviewTarget::Sky: previewDescriptor = skyDescriptor; break;
-        case PreviewTarget::Solid360Cube: previewDescriptor = cube360Descriptor; break;
-        case PreviewTarget::SolidColor: previewDescriptor = solidColorDescriptor; break;
+        case PreviewTarget::Sky: 
+            previewDescriptor = skyDescriptor; 
+            break;
+        case PreviewTarget::Solid360Cube: 
+            previewDescriptor = cube360FaceDescriptor[this->selectedCubeFaceIndex]; 
+            break;
+        case PreviewTarget::Solid360Equirect: 
+            previewDescriptor = cube360EquirectDescriptor; 
+            break;            
+        case PreviewTarget::SolidColor: 
+            previewDescriptor = solidColorDescriptor; 
+            break;
         // Prefer the GPU-linearized scene depth if available, otherwise fall back to raw depth view
         case PreviewTarget::SolidDepth:
             if (linearSceneDepthDescriptor != VK_NULL_HANDLE) previewDescriptor = linearSceneDepthDescriptor;
             else previewDescriptor = solidDepthDescriptor;
             break;
-        case PreviewTarget::WaterWorldPos: previewDescriptor = waterColorDescriptor; break;
-        case PreviewTarget::WaterLinearDepth: previewDescriptor = waterDepthLinearDescriptor; break;
+        case PreviewTarget::WaterWorldPos: 
+            previewDescriptor = waterColorDescriptor; 
+            break;
+        case PreviewTarget::WaterLinearDepth: 
+            previewDescriptor = waterDepthLinearDescriptor; 
+            break;
         // Prefer the GPU-linearized back-face depth if available, otherwise fall back to raw back-face depth view
         case PreviewTarget::WaterBackFace:
             if (linearBackFaceDepthDescriptor != VK_NULL_HANDLE) previewDescriptor = linearBackFaceDepthDescriptor;
             else previewDescriptor = backFaceDepthDescriptor;
             break;
-        case PreviewTarget::LinearSceneDepth: previewDescriptor = linearSceneDepthDescriptor; break;
-        case PreviewTarget::LinearBackFaceDepth: previewDescriptor = linearBackFaceDepthDescriptor; break;
+        case PreviewTarget::LinearSceneDepth: 
+            previewDescriptor = linearSceneDepthDescriptor; 
+            break;
+        case PreviewTarget::LinearBackFaceDepth: 
+            previewDescriptor = linearBackFaceDepthDescriptor; 
+            break;
         case PreviewTarget::ShadowCascade:
             if (shadowViewMode == RenderTargetsWidget::ShadowViewMode::Linearized) {
                 if (linearShadowDepthDescriptor[selectedShadowCascade] != VK_NULL_HANDLE)
@@ -857,7 +880,9 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
                 if (shadowMapper) previewDescriptor = shadowMapper->getImGuiDescriptorSet(selectedShadowCascade);
             }
             break;
-        default: previewDescriptor = VK_NULL_HANDLE; break;
+        default: 
+            previewDescriptor = VK_NULL_HANDLE; 
+            break;
     }
 
     // Periodic debug: print resource counts after update (throttled)
@@ -903,7 +928,8 @@ void RenderTargetsWidget::render() {
         if (ImGui::RadioButton(label, active)) selectedPreview = v;
     };
     rb("Sky", PreviewTarget::Sky); ImGui::NextColumn();
-    rb("Solid 360 Equirect", PreviewTarget::Solid360Cube); ImGui::NextColumn();
+    rb("Solid 360 Cube", PreviewTarget::Solid360Cube); ImGui::NextColumn();
+    rb("Solid 360 Equirect", PreviewTarget::Solid360Equirect); ImGui::NextColumn();
     rb("Solid Color", PreviewTarget::SolidColor); ImGui::NextColumn();
     rb("Solid Depth", PreviewTarget::SolidDepth); ImGui::NextColumn();
     rb("Water WorldPos", PreviewTarget::WaterWorldPos); ImGui::NextColumn();
@@ -943,8 +969,18 @@ void RenderTargetsWidget::render() {
     const char* label = "Preview";
     bool available = (ds != VK_NULL_HANDLE);
     switch (selectedPreview) {
-        case PreviewTarget::Sky: label = "Sky (Equirectangular)"; imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); break;
-        case PreviewTarget::Solid360Cube: label = "Solid 360 (Equirectangular)"; imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); break;
+        case PreviewTarget::Sky: 
+            label = "Sky (Equirectangular)"; 
+            imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); 
+            break;
+        case PreviewTarget::Solid360Cube: 
+            label = "Solid 360 (Cube)"; 
+            imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH); 
+            break;
+        case PreviewTarget::Solid360Equirect: 
+            label = "Solid 360 (Equirectangular)"; 
+            imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); 
+            break;
         case PreviewTarget::SolidColor: label = "Solid (Scene Color)"; break;
         case PreviewTarget::SolidDepth: label = "Solid (Depth Buffer)"; break;
         case PreviewTarget::WaterWorldPos: label = "Water (World Pos)"; break;
@@ -958,32 +994,27 @@ void RenderTargetsWidget::render() {
             break;
         default: label = "Unknown preview"; break;
     }
+
+    if (selectedPreview == PreviewTarget::Solid360Cube) {
+        const char* faceLabels[6] = {"+X", "-X", "+Y", "-Y", "+Z", "-Z"};
+        ImGui::Text("Cube face");
+        ImGui::SameLine();
+        if (ImGui::ArrowButton("##cube_face_prev", ImGuiDir_Left)) {
+            this->selectedCubeFaceIndex = (this->selectedCubeFaceIndex + 5) % 6;
+        }
+        ImGui::SameLine();
+        ImGui::Text("%s (%d/6)", faceLabels[this->selectedCubeFaceIndex], this->selectedCubeFaceIndex + 1);
+        ImGui::SameLine();
+        if (ImGui::ArrowButton("##cube_face_next", ImGuiDir_Right)) {
+            this->selectedCubeFaceIndex = (this->selectedCubeFaceIndex + 1) % 6;
+        }
+    }
+    
     ImGui::TextUnformatted(label);
     if (available) ImGui::Image((ImTextureID)ds, imgSize); else ImGui::Text("Preview unavailable");
     ImGui::Separator();
 
-    // When showing the cubemap preview, also show individual faces for debugging
-    if (selectedPreview == PreviewTarget::Solid360Cube) {
-        ImGui::Text("Cube faces (+X -X +Y -Y +Z -Z)");
-        const char* faceLabels[6] = {"+X", "-X", "+Y", "-Y", "+Z", "-Z"};
-        float thumbSize = PREVIEW_WIDTH / 2.0f;
-        for (int i = 0; i < 6; ++i) {
-            if (cube360FaceDescriptor[i] != VK_NULL_HANDLE) {
-                ImVec2 uv0(0.0f, 0.0f);
-                ImVec2 uv1(1.0f, 1.0f);
-                if (i == 3) {
-                    // Flip -Y face horizontally for correct preview orientation.
-                    uv0.x = 1.0f;
-                    uv1.x = 0.0f;
-                }
-                ImGui::Image((ImTextureID)cube360FaceDescriptor[i], ImVec2(thumbSize, thumbSize), uv0, uv1);
-            } else {
-                ImGui::Text("(missing)");
-            }
-            ImGui::TextUnformatted(faceLabels[i]);
-            ImGui::Separator();
-        }
-    }
+
 
     // Optionally show all cascades (in selected shadow view mode)
     // Only show the full cascade grid when the shadow cascade preview is selected.
