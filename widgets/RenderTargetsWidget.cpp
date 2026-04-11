@@ -57,8 +57,203 @@ RenderTargetsWidget::~RenderTargetsWidget() {
 
 void RenderTargetsWidget::setFrameInfo(uint32_t frameIndex, int width, int height) {
     currentFrame = static_cast<int>(frameIndex);
+    // If the size changed, destroy linear preview targets so they are recreated
+    // at the new size (avoids renderArea vs framebuffer extent mismatches).
+    if (cachedWidth != width || cachedHeight != height) {
+        destroyLinearTargets();
+    }
     cachedWidth = width;
     cachedHeight = height;
+}
+
+void RenderTargetsWidget::destroyLinearTargets() {
+    VulkanApp* a = app;
+    if (!a) return;
+
+    // Remove ImGui descriptors owned by this widget and destroy associated
+    // images, views, framebuffers and pipeline. Defer if GPU work is pending.
+    auto removeDescIfOwned = [&](VkDescriptorSet &ds, bool &owned) {
+        if (ds == VK_NULL_HANDLE) return;
+        if (!owned) { ds = VK_NULL_HANDLE; return; }
+        if (a->hasPendingCommandBuffers()) {
+            VkDescriptorSet tmp = ds;
+            VkFence f = VK_NULL_HANDLE;
+            uint32_t fi = a->getCurrentFrame();
+            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
+            a->deferDestroyUntilFence(f, [tmp]() { ImGui_ImplVulkan_RemoveTexture(tmp); });
+        } else {
+            ImGui_ImplVulkan_RemoveTexture(ds);
+        }
+        ds = VK_NULL_HANDLE;
+        owned = false;
+    };
+
+    removeDescIfOwned(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
+    removeDescIfOwned(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
+        removeDescIfOwned(linearShadowDepthDescriptor[i], linearShadowDepthDescriptorOwned[i]);
+    }
+
+    // Destroy images, views, memories and framebuffers created for linearization
+    auto destroyImageAndMemory = [&](VkImageView &iv, VkImage &img, VkDeviceMemory &mem) {
+        if (iv == VK_NULL_HANDLE && img == VK_NULL_HANDLE && mem == VK_NULL_HANDLE) return;
+        VkImageView tmp_iv = iv;
+        VkImage tmp_img = img;
+        VkDeviceMemory tmp_mem = mem;
+        VkDevice device = a->getDevice();
+        if (a->hasPendingCommandBuffers()) {
+            VkFence f = VK_NULL_HANDLE;
+            uint32_t fi = a->getCurrentFrame();
+            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
+            a->deferDestroyUntilFence(f, [device, tmp_iv, tmp_img, tmp_mem, a]() {
+                if (tmp_iv != VK_NULL_HANDLE) {
+                    a->resources.removeImageView(tmp_iv);
+                    vkDestroyImageView(device, tmp_iv, nullptr);
+                }
+                if (tmp_img != VK_NULL_HANDLE) {
+                    a->resources.removeImage(tmp_img);
+                    vkDestroyImage(device, tmp_img, nullptr);
+                }
+                if (tmp_mem != VK_NULL_HANDLE) {
+                    a->resources.removeDeviceMemory(tmp_mem);
+                    vkFreeMemory(device, tmp_mem, nullptr);
+                }
+            });
+        } else {
+            if (tmp_iv != VK_NULL_HANDLE) {
+                a->resources.removeImageView(tmp_iv);
+                vkDestroyImageView(device, tmp_iv, nullptr);
+            }
+            if (tmp_img != VK_NULL_HANDLE) {
+                a->resources.removeImage(tmp_img);
+                vkDestroyImage(device, tmp_img, nullptr);
+            }
+            if (tmp_mem != VK_NULL_HANDLE) {
+                a->resources.removeDeviceMemory(tmp_mem);
+                vkFreeMemory(device, tmp_mem, nullptr);
+            }
+        }
+        iv = VK_NULL_HANDLE;
+        img = VK_NULL_HANDLE;
+        mem = VK_NULL_HANDLE;
+    };
+
+    auto destroyFramebuffer = [&](VkFramebuffer &fb) {
+        if (fb == VK_NULL_HANDLE) return;
+        VkFramebuffer tmp = fb;
+        VkDevice device = a->getDevice();
+        if (a->hasPendingCommandBuffers()) {
+            VkFence f = VK_NULL_HANDLE;
+            uint32_t fi = a->getCurrentFrame();
+            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
+            a->deferDestroyUntilFence(f, [tmp, a]() {
+                a->resources.removeFramebuffer(tmp);
+                vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
+            });
+        } else {
+            a->resources.removeFramebuffer(tmp);
+            vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
+        }
+        fb = VK_NULL_HANDLE;
+    };
+
+    destroyFramebuffer(linearSceneFramebuffer);
+    destroyFramebuffer(linearBackFaceFramebuffer);
+
+    destroyImageAndMemory(linearSceneDepthView, linearSceneDepthImage, linearSceneDepthMemory);
+    destroyImageAndMemory(linearBackFaceDepthView, linearBackFaceDepthImage, linearBackFaceDepthMemory);
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
+        destroyImageAndMemory(linearShadowDepthView[i], linearShadowDepthImage[i], linearShadowDepthMemory[i]);
+    }
+
+    // Destroy pipeline, layout, descriptor set/layout and render pass
+    if (linearizePipeline != VK_NULL_HANDLE) {
+        VkPipeline tmp = linearizePipeline;
+        if (a->hasPendingCommandBuffers()) {
+            VkFence f = VK_NULL_HANDLE;
+            uint32_t fi = a->getCurrentFrame();
+            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
+            a->deferDestroyUntilFence(f, [tmp, a]() {
+                a->resources.removePipeline(tmp);
+                vkDestroyPipeline(a->getDevice(), tmp, nullptr);
+            });
+        } else {
+            a->resources.removePipeline(tmp);
+            vkDestroyPipeline(a->getDevice(), tmp, nullptr);
+        }
+        linearizePipeline = VK_NULL_HANDLE;
+    }
+
+    if (linearizePipelineLayout != VK_NULL_HANDLE) {
+        VkPipelineLayout tmp = linearizePipelineLayout;
+        if (a->hasPendingCommandBuffers()) {
+            VkFence f = VK_NULL_HANDLE;
+            uint32_t fi = a->getCurrentFrame();
+            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
+            a->deferDestroyUntilFence(f, [tmp, a]() {
+                a->resources.removePipelineLayout(tmp);
+                vkDestroyPipelineLayout(a->getDevice(), tmp, nullptr);
+            });
+        } else {
+            a->resources.removePipelineLayout(tmp);
+            vkDestroyPipelineLayout(a->getDevice(), tmp, nullptr);
+        }
+        linearizePipelineLayout = VK_NULL_HANDLE;
+    }
+
+    if (linearizeDescriptorSet != VK_NULL_HANDLE) {
+        VkDescriptorSet tmp = linearizeDescriptorSet;
+        if (a->hasPendingCommandBuffers()) {
+            VkFence f = VK_NULL_HANDLE;
+            uint32_t fi = a->getCurrentFrame();
+            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
+            a->deferDestroyUntilFence(f, [tmp, a]() {
+                a->resources.removeDescriptorSet(tmp);
+            });
+        } else {
+            a->resources.removeDescriptorSet(tmp);
+        }
+        linearizeDescriptorSet = VK_NULL_HANDLE;
+    }
+
+    if (linearizeDescriptorSetLayout != VK_NULL_HANDLE) {
+        VkDescriptorSetLayout tmp = linearizeDescriptorSetLayout;
+        if (a->hasPendingCommandBuffers()) {
+            VkFence f = VK_NULL_HANDLE;
+            uint32_t fi = a->getCurrentFrame();
+            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
+            a->deferDestroyUntilFence(f, [tmp, a]() {
+                a->resources.removeDescriptorSetLayout(tmp);
+                vkDestroyDescriptorSetLayout(a->getDevice(), tmp, nullptr);
+            });
+        } else {
+            a->resources.removeDescriptorSetLayout(tmp);
+            vkDestroyDescriptorSetLayout(a->getDevice(), tmp, nullptr);
+        }
+        linearizeDescriptorSetLayout = VK_NULL_HANDLE;
+    }
+
+    if (linearizeRenderPass != VK_NULL_HANDLE) {
+        VkRenderPass tmp = linearizeRenderPass;
+        if (a->hasPendingCommandBuffers()) {
+            VkFence f = VK_NULL_HANDLE;
+            uint32_t fi = a->getCurrentFrame();
+            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
+            a->deferDestroyUntilFence(f, [tmp, a]() {
+                a->resources.removeRenderPass(tmp);
+                vkDestroyRenderPass(a->getDevice(), tmp, nullptr);
+            });
+        } else {
+            a->resources.removeRenderPass(tmp);
+            vkDestroyRenderPass(a->getDevice(), tmp, nullptr);
+        }
+        linearizeRenderPass = VK_NULL_HANDLE;
+    }
+
+    // Reset tracked sizes
+    linearSceneWidth = 0;
+    linearSceneHeight = 0;
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) linearShadowSize[i] = 0;
 }
 
 void RenderTargetsWidget::cleanup() {

@@ -134,6 +134,8 @@ public:
     ~RenderTargetsWidget();
 
     void setFrameInfo(uint32_t frameIndex, int width, int height);
+    // Destroy and recreate linear preview targets when size changes
+    void destroyLinearTargets();
     void render() override;
     void updateDescriptors(uint32_t frameIndex);
     void cleanup();
