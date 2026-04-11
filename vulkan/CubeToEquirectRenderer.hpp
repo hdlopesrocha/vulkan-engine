@@ -11,7 +11,7 @@ public:
     void cleanup(VulkanApp* app);
     void render(VulkanApp* app, VkSampler sampler, VkImageView cubeMapView);
     VkImageView getEquirectView() const { return cube360EquirectView; }
-
+    VkDescriptorSet getDescriptor() const { return cube360EquirectSampleDescriptorSet; }
 private:
     void ensureResources(VulkanApp* app);
     void createRenderPass(VulkanApp* app);
