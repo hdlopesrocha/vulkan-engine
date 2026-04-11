@@ -280,7 +280,7 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
 
     for (int i = 0; i < 2; ++i) {
         createImage(VK_FORMAT_D32_SFLOAT,
-                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT,
                     backFaceDepthImages[i], backFaceDepthMemories[i], backFaceDepthImageViews[i]);
         backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -360,7 +360,7 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
         VkImageMemoryBarrier copyBarriers[2]{};
 
         copyBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        copyBarriers[0].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        copyBarriers[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
         copyBarriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         copyBarriers[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         copyBarriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -518,7 +518,7 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
         bfBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         bfBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         bfBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        bfBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        bfBarrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         bfBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         bfBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         bfBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -545,7 +545,7 @@ void WaterBackFaceRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t fram
     db.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     db.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     db.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    db.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    db.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     db.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     db.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;

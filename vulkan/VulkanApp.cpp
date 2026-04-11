@@ -185,6 +185,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
         fprintf(stderr, "[VulkanApp] Failed to create vegetation compute pipeline\n");
+        resources.removeShaderModule(compModule);
         vkDestroyShaderModule(device, compModule, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
@@ -206,6 +207,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool) != VK_SUCCESS) {
         fprintf(stderr, "[VulkanApp] Failed to create descriptor pool for vegetation compute\n");
         vkDestroyPipeline(device, pipeline, nullptr);
+        resources.removeShaderModule(compModule);
         vkDestroyShaderModule(device, compModule, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
@@ -222,6 +224,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
         fprintf(stderr, "[VulkanApp] Failed to allocate descriptor set for vegetation compute\n");
         vkDestroyDescriptorPool(device, descPool, nullptr);
         vkDestroyPipeline(device, pipeline, nullptr);
+        resources.removeShaderModule(compModule);
         vkDestroyShaderModule(device, compModule, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
@@ -261,19 +264,32 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
 
-        // Push constants: instancesPerTriangle, vertexCount, indexCount, seed, pad
+        // Push constants: instancesPerTriangle, vertexCount, indexCount, seed, baseTri
         uint32_t push[5];
         push[0] = instancesPerTriangle;
         push[1] = vertexCount;
         push[2] = indexCount;
         push[3] = seed;
-        push[4] = 0u;
-        vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
+        push[4] = 0u; // will be used as base triangle offset for chunked dispatch
 
         if (triCount > 0) {
-            // Dispatch one workgroup per triangle (local_size_x == 1)
-            vkCmdDispatch(cmd, triCount, 1, 1);
-            // Ensure shader writes are visible to subsequent vertex input
+            // Query device limits for max dispatchable groups along X
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties(physicalDevice, &props);
+            uint32_t maxGroupsX = props.limits.maxComputeWorkGroupCount[0];
+
+            uint32_t remaining = triCount;
+            uint32_t baseTri = 0;
+            while (remaining > 0) {
+                uint32_t thisGroups = remaining > maxGroupsX ? maxGroupsX : remaining;
+                push[4] = baseTri;
+                vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
+                vkCmdDispatch(cmd, thisGroups, 1, 1);
+                baseTri += thisGroups;
+                remaining -= thisGroups;
+            }
+
+            // Ensure shader writes are visible to subsequent vertex input after all chunks
             VkBufferMemoryBarrier bufBarrier{};
             bufBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
             bufBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -291,6 +307,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     vkFreeDescriptorSets(device, descPool, 1, &descSet);
     vkDestroyDescriptorPool(device, descPool, nullptr);
     vkDestroyPipeline(device, pipeline, nullptr);
+    resources.removeShaderModule(compModule);
     vkDestroyShaderModule(device, compModule, nullptr);
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
     vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
