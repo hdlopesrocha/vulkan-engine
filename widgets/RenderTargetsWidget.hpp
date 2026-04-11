@@ -3,6 +3,7 @@
 #include "../Uniforms.hpp"
 #include <vulkan/vulkan.h>
 #include "../vulkan/Buffer.hpp"
+#include "../vulkan/CubeToEquirectRenderer.hpp"
 
 class VulkanApp;
 class WaterRenderer;
@@ -28,6 +29,7 @@ private:
     VkDescriptorSet skyDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet solid360Descriptor = VK_NULL_HANDLE;
     VkDescriptorSet cube360Descriptor = VK_NULL_HANDLE;
+    CubeToEquirectRenderer cube360EquirectRenderer;
     VkDescriptorSet cube360FaceDescriptor[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
     VkDescriptorSet solidColorDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet solidDepthDescriptor = VK_NULL_HANDLE;

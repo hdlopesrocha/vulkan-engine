@@ -10,9 +10,13 @@
 #include <backends/imgui_impl_vulkan.h>
 #include <string>
 #include <cstdio>
+#include <stdexcept>
 #include "../utils/FileReader.hpp"
 #include <vector>
 #include <array>
+
+static constexpr uint32_t CUBE360_EQUIRECT_WIDTH = 1024;
+static constexpr uint32_t CUBE360_EQUIRECT_HEIGHT = 512;
 
 RenderTargetsWidget::RenderTargetsWidget(VulkanApp* app, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
                                                                                  ShadowRenderer* shadow, ShadowParams* shadowParams, Settings* settings)
@@ -84,6 +88,7 @@ void RenderTargetsWidget::cleanup() {
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
     removeOwnedDesc(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
     removeOwnedDesc(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
+    cube360EquirectRenderer.cleanup(app);
     // Destroy persistent staging buffers (VulkanApp::createBuffer registers them with resource manager)
     // Unmap persistent staging buffers; if GPU work is pending, defer unmap until safe
     if (stagingReadPtr && app && stagingReadBuffer.memory != VK_NULL_HANDLE) {
@@ -393,12 +398,17 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         }
     }
 
-    // Solid 360° equirectangular reflection
     VkImageView solid360View = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
-    if (solid360View != VK_NULL_HANDLE && solid360Descriptor == VK_NULL_HANDLE) {
-        solid360Descriptor = ImGui_ImplVulkan_AddTexture(
-            sampler, solid360View, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        solid360DescriptorOwned = true;
+    if (solid360View != VK_NULL_HANDLE && selectedPreview == PreviewTarget::Solid360Cube) {
+        cube360EquirectRenderer.render(app, sampler, solid360View);
+        if (cube360Descriptor == VK_NULL_HANDLE) {
+            VkImageView equirectView = cube360EquirectRenderer.getEquirectView();
+            if (equirectView != VK_NULL_HANDLE) {
+                cube360Descriptor = ImGui_ImplVulkan_AddTexture(
+                    sampler, equirectView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                cube360DescriptorOwned = true;
+            }
+        }
     }
 
     // Per-face cube descriptors for detailed orientation inspection
@@ -893,7 +903,7 @@ void RenderTargetsWidget::render() {
         if (ImGui::RadioButton(label, active)) selectedPreview = v;
     };
     rb("Sky", PreviewTarget::Sky); ImGui::NextColumn();
-    rb("Solid 360 Cube", PreviewTarget::Solid360Cube); ImGui::NextColumn();
+    rb("Solid 360 Equirect", PreviewTarget::Solid360Cube); ImGui::NextColumn();
     rb("Solid Color", PreviewTarget::SolidColor); ImGui::NextColumn();
     rb("Solid Depth", PreviewTarget::SolidDepth); ImGui::NextColumn();
     rb("Water WorldPos", PreviewTarget::WaterWorldPos); ImGui::NextColumn();
@@ -934,7 +944,7 @@ void RenderTargetsWidget::render() {
     bool available = (ds != VK_NULL_HANDLE);
     switch (selectedPreview) {
         case PreviewTarget::Sky: label = "Sky (Equirectangular)"; imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); break;
-        case PreviewTarget::Solid360Cube: label = "Solid 360 (Cube)"; imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); break;
+        case PreviewTarget::Solid360Cube: label = "Solid 360 (Equirectangular)"; imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); break;
         case PreviewTarget::SolidColor: label = "Solid (Scene Color)"; break;
         case PreviewTarget::SolidDepth: label = "Solid (Depth Buffer)"; break;
         case PreviewTarget::WaterWorldPos: label = "Water (World Pos)"; break;
@@ -959,7 +969,14 @@ void RenderTargetsWidget::render() {
         float thumbSize = PREVIEW_WIDTH / 2.0f;
         for (int i = 0; i < 6; ++i) {
             if (cube360FaceDescriptor[i] != VK_NULL_HANDLE) {
-                ImGui::Image((ImTextureID)cube360FaceDescriptor[i], ImVec2(thumbSize, thumbSize));
+                ImVec2 uv0(0.0f, 0.0f);
+                ImVec2 uv1(1.0f, 1.0f);
+                if (i == 3) {
+                    // Flip -Y face horizontally for correct preview orientation.
+                    uv0.x = 1.0f;
+                    uv1.x = 0.0f;
+                }
+                ImGui::Image((ImTextureID)cube360FaceDescriptor[i], ImVec2(thumbSize, thumbSize), uv0, uv1);
             } else {
                 ImGui::Text("(missing)");
             }
