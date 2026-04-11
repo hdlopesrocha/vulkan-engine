@@ -405,7 +405,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     }
 
     VkImageView cube360EquirectView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
-    if (cube360EquirectView != VK_NULL_HANDLE && selectedPreview == PreviewTarget::Solid360Cube) {
+    if (cube360EquirectView != VK_NULL_HANDLE && selectedPreview == PreviewTarget::Solid360Equirect) {
         cube360EquirectRenderer.render(app, solid360Sampler, cube360EquirectView);
         if (cube360EquirectDescriptor == VK_NULL_HANDLE) {
             VkImageView equirectView = cube360EquirectRenderer.getEquirectView();
@@ -1009,7 +1009,7 @@ void RenderTargetsWidget::render() {
             this->selectedCubeFaceIndex = (this->selectedCubeFaceIndex + 1) % 6;
         }
     }
-    
+
     ImGui::TextUnformatted(label);
     if (available) ImGui::Image((ImTextureID)ds, imgSize); else ImGui::Text("Preview unavailable");
     ImGui::Separator();
