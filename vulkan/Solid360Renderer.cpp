@@ -153,13 +153,14 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
 
     glm::vec3 camPos = glm::vec3(ubo.viewPos);
     struct FaceInfo { glm::vec3 target; glm::vec3 up; };
+    // Cubemap orientations: +X, -X, +Y, -Y, +Z, -Z.
     const FaceInfo faces[6] = {
-        { glm::vec3( 1, 0, 0), glm::vec3(0, 1, 0) },
-        { glm::vec3(-1, 0, 0), glm::vec3(0, 1, 0) },
-        { glm::vec3( 0, 1, 0), glm::vec3(0, 0,-1) },
-        { glm::vec3( 0,-1, 0), glm::vec3(0, 0, 1) },
-        { glm::vec3( 0, 0, 1), glm::vec3(0, 1, 0) },
-        { glm::vec3( 0, 0,-1), glm::vec3(0, 1, 0) },
+        { glm::vec3(-1, 0, 0), glm::vec3(0, 1, 0) }, // -X (horizontally flipped)
+        { glm::vec3( 1, 0, 0), glm::vec3(0, 1, 0) }, // +X (horizontally flipped)
+        { glm::vec3( 0, 1, 0), glm::vec3(0, 0, -1) }, // +Y
+        { glm::vec3( 0, -1, 0), glm::vec3(0, 0, 1) }, // -Y
+        { glm::vec3( 0, 0, 1), glm::vec3(0, 1, 0) }, // +Z (horizontally flipped)
+        { glm::vec3( 0, 0,-1), glm::vec3(0, 1, 0) }, // -Z (horizontally flipped)
     };
 
     glm::mat4 faceProj = glm::perspective(glm::radians(90.0f), 1.0f, ubo.passParams.z, ubo.passParams.w);
