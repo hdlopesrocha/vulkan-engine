@@ -256,24 +256,7 @@ void main() {
     // === REFLECTION ===
     vec3 reflectDir = reflect(-viewDir, normal);
 
-    // Sample the solid 360 cubemap directly.
-    // Apply per-face horizontal mirroring to match cube face orientation.
-    vec3 rd = reflectDir;
-    float axc = abs(rd.x);
-    float ayc = abs(rd.y);
-    float azc = abs(rd.z);
-    if (ayc >= axc && ayc >= azc && rd.y > 0.0) {
-        rd.x = -rd.x;
-    } else if (axc >= ayc && axc >= azc && rd.x > 0.0) {
-        rd.z = -rd.z;
-    } else if (axc >= ayc && axc >= azc && rd.x < 0.0) {
-        rd.z = -rd.z;
-    } else if (azc >= axc && azc >= ayc && rd.z > 0.0) {
-        rd.x = -rd.x;
-    } else if (azc >= axc && azc >= ayc && rd.z < 0.0) {
-        rd.x = -rd.x;
-    }
-    vec3 skyColor = texture(sceneSkyCube, rd).rgb;
+    vec3 skyColor = texture(sceneSkyCube, reflectDir).rgb;
 
     // Uniform reflection toggle: when set, apply reflectionStrength uniformly
     // instead of modulating by Fresnel. This flag is stored in reserved2.w
