@@ -16,6 +16,7 @@ void Solid360Renderer::cleanup(VulkanApp* app) {
     cube360ColorMemory = VK_NULL_HANDLE;
     for (auto& v : cube360FaceViews) v = VK_NULL_HANDLE;
     cube360CubeView = VK_NULL_HANDLE;
+    solid360Sampler = VK_NULL_HANDLE;
     cube360DepthImage = VK_NULL_HANDLE;
     cube360DepthMemory = VK_NULL_HANDLE;
     cube360DepthView = VK_NULL_HANDLE;
