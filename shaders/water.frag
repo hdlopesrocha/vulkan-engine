@@ -173,30 +173,70 @@ void main() {
                      smoothstep(0.0, 0.1, screenUV.y) * smoothstep(1.0, 0.9, screenUV.y);
     refractionOffset *= edgeFade;
     
-    // Sample scene with refracted UVs
-    vec2 refractedUV = screenUV + refractionOffset;
-    refractedUV = clamp(refractedUV, 0.001, 0.999);  // Prevent edge artifacts
-    
-    // === SCENE COLOR SAMPLING (optional PCF blur) ===
+    // Sample refraction: prefer a solid 360 cubemap for environment refraction.
+    // Keep a small contribution from screen-space sampling so nearby geometry
+    // still contributes to the refracted appearance.
     vec3 sceneColor;
-    if (enableBlur && blurSamples > 1) {
-        // PCF-style NxN box blur on the refracted scene color
-        vec2 texelSize = 1.0 / textureSize(sceneColorTex, 0);
-        vec3 colorAccum = vec3(0.0);
-        int halfK = blurSamples / 2;
-        float totalWeight = 0.0;
-        for (int bx = -halfK; bx <= halfK; ++bx) {
-            for (int by = -halfK; by <= halfK; ++by) {
-                vec2 offset = vec2(float(bx), float(by)) * texelSize * blurRadius;
-                vec2 sampleUV = clamp(refractedUV + offset, 0.001, 0.999);
-                colorAccum += texture(sceneColorTex, sampleUV).rgb;
-                totalWeight += 1.0;
-            }
+    if (enableRefraction) {
+        // Approximate air->water refraction. `refract` expects the incident
+        // vector (we use `viewDir` here to match reflection sign conventions).
+        float waterIor = 1.333333; // approximate index of refraction for water
+        vec3 refractDir = refract(viewDir, normal, 1.0 / waterIor);
+        if (length(refractDir) < 1e-5) {
+            // fallback to reflection if total internal reflection occurs
+            refractDir = reflect(viewDir, normal);
         }
-        sceneColor = colorAccum / totalWeight;
+
+        vec3 cubeColor = texture(sceneSkyCube, refractDir).rgb;
+
+        // Also sample screen-space scene (with the existing refraction offset)
+        // so close geometry still appears correctly refracted. Blend by
+        // `refractionStrength` to preserve existing per-material control.
+        vec2 refractedUV = clamp(screenUV + refractionOffset, 0.001, 0.999);
+        vec3 screenSample;
+        if (enableBlur && blurSamples > 1) {
+            vec2 texelSize = 1.0 / textureSize(sceneColorTex, 0);
+            vec3 colorAccum = vec3(0.0);
+            int halfK = blurSamples / 2;
+            float totalWeight = 0.0;
+            for (int bx = -halfK; bx <= halfK; ++bx) {
+                for (int by = -halfK; by <= halfK; ++by) {
+                    vec2 offset = vec2(float(bx), float(by)) * texelSize * blurRadius;
+                    vec2 sampleUV = clamp(refractedUV + offset, 0.001, 0.999);
+                    colorAccum += texture(sceneColorTex, sampleUV).rgb;
+                    totalWeight += 1.0;
+                }
+            }
+            screenSample = colorAccum / totalWeight;
+        } else {
+            screenSample = texture(sceneColorTex, refractedUV).rgb;
+        }
+
+        sceneColor = mix(screenSample, cubeColor, clamp(refractionStrength, 0.0, 1.0));
     } else {
-        sceneColor = texture(sceneColorTex, refractedUV).rgb;
+        // Fall back to pure screen-space refraction (existing behavior)
+        vec2 refractedUV = clamp(screenUV + refractionOffset, 0.001, 0.999);  // Prevent edge artifacts
+
+        if (enableBlur && blurSamples > 1) {
+            // PCF-style NxN box blur on the refracted scene color
+            vec2 texelSize = 1.0 / textureSize(sceneColorTex, 0);
+            vec3 colorAccum = vec3(0.0);
+            int halfK = blurSamples / 2;
+            float totalWeight = 0.0;
+            for (int bx = -halfK; bx <= halfK; ++bx) {
+                for (int by = -halfK; by <= halfK; ++by) {
+                    vec2 offset = vec2(float(bx), float(by)) * texelSize * blurRadius;
+                    vec2 sampleUV = clamp(refractedUV + offset, 0.001, 0.999);
+                    colorAccum += texture(sceneColorTex, sampleUV).rgb;
+                    totalWeight += 1.0;
+                }
+            }
+            sceneColor = colorAccum / totalWeight;
+        } else {
+            sceneColor = texture(sceneColorTex, refractedUV).rgb;
+        }
     }
+
     sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
 
     // === DEPTH-BASED EFFECTS ===
