@@ -57,7 +57,7 @@ struct WaterParams {
     float causticLineScale = 1.0f;    // multiplier for anisotropy -> line strength
     float causticLineMix = 1.0f;      // 0=cloudy, 1=lines
     // Speed multiplier for caustic animation. 0 = static, 1 = normal speed.
-    float causticVelocity = 0.1f;
+    float causticVelocity = 1.0f;
     // Caustic generation mode: 0 = Perlin (Jacobian-based), 1 = Voronoi (Worley)
     int causticType = 0;
 };
