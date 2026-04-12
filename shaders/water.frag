@@ -14,7 +14,7 @@ layout(location = 7) flat in int fragTexIndex;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal;
-layout(location = 3) out vec4 outPosition;
+layout(location = 2) out vec4 outMask;
 
 // Use the same UBO as main shader
 #include "includes/ubo.glsl"
@@ -27,7 +27,6 @@ layout(set = 2, binding = 0) uniform sampler2D sceneColorTex;
 layout(set = 2, binding = 1) uniform sampler2D sceneDepthTex;
 layout(set = 2, binding = 3) uniform sampler2D waterBackDepthTex;  // back-face depth for volume thickness
 layout(set = 2, binding = 4) uniform samplerCube sceneSkyCube;    // solid 360 cubemap (used directly)
-layout(set = 2, binding = 2) uniform sampler2D sceneNormalTex;    // g-buffer normal
 // `scenePositionTex` removed: world-position is reconstructed from depth when needed
 
 // Near/far planes for linearizing depth – read from UBO passParams (z = near, w = far)
@@ -215,33 +214,10 @@ void main() {
         }
 
         sceneColor = mix(screenSample, cubeColor, clamp(refractionStrength, 0.0, 1.0));
-    } else {
-        // Fall back to pure screen-space refraction (existing behavior)
-        vec2 refractedUV = clamp(screenUV + refractionOffset, 0.001, 0.999);  // Prevent edge artifacts
-
-        if (enableBlur && blurSamples > 1) {
-            // PCF-style NxN box blur on the refracted scene color
-            vec2 texelSize = 1.0 / textureSize(sceneColorTex, 0);
-            vec3 colorAccum = vec3(0.0);
-            int halfK = blurSamples / 2;
-            float totalWeight = 0.0;
-            for (int bx = -halfK; bx <= halfK; ++bx) {
-                for (int by = -halfK; by <= halfK; ++by) {
-                    vec2 offset = vec2(float(bx), float(by)) * texelSize * blurRadius;
-                    vec2 sampleUV = clamp(refractedUV + offset, 0.001, 0.999);
-                    colorAccum += texture(sceneColorTex, sampleUV).rgb;
-                    totalWeight += 1.0;
-                }
-            }
-            sceneColor = colorAccum / totalWeight;
-        } else {
-            sceneColor = texture(sceneColorTex, refractedUV).rgb;
-        }
-    }
+    } 
 
     sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
     // Sample g-buffer attachments produced by the main pass (if available)
-    vec3 sceneNormalPixel = texture(sceneNormalTex, screenUV).rgb;
 
     // === DEPTH-BASED EFFECTS ===
     float waterDepthRaw = gl_FragCoord.z;
@@ -599,7 +575,9 @@ void main() {
     }
 
 
-    outPosition = vec4(fragPosWorld, 1.0);
+    // Write a simple mask into the R channel of attachment 2 (R8_UNORM)
+    // Use the computed water alpha as the mask value so post-process can sample it.
+    outMask = vec4(vec3(0.0), alpha);
     outNormal = vec4(normal, 0.0);
 
 
