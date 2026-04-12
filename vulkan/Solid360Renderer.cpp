@@ -158,12 +158,12 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
     struct FaceInfo { glm::vec3 target; glm::vec3 up; };
     // Standard cubemap face order and orientation: +X, -X, +Y, -Y, +Z, -Z.
     const FaceInfo faces[6] = {
-        { glm::vec3( 1, 0, 0), glm::vec3(0,-1, 0) }, // +X
-        { glm::vec3(-1, 0, 0), glm::vec3(0,-1, 0) }, // -X
-        { glm::vec3( 0, 1, 0), glm::vec3(0, 0, 1) },  // +Y
-        { glm::vec3( 0,-1, 0), glm::vec3(0, 0,-1) },  // -Y
-        { glm::vec3( 0, 0, 1), glm::vec3(0,-1, 0) }, // +Z
-        { glm::vec3( 0, 0,-1), glm::vec3(0,-1, 0) }, // -Z
+        { glm::vec3(-1, 0, 0), glm::vec3(0,-1, 0) }, // +X
+        { glm::vec3( 1, 0, 0), glm::vec3(0,-1, 0) }, // -X
+        { glm::vec3( 0,-1, 0), glm::vec3(0, 0, 1) },  // +Y
+        { glm::vec3( 0, 1, 0), glm::vec3(0, 0,-1) },  // -Y
+        { glm::vec3( 0, 0,-1), glm::vec3(0,-1, 0) }, // +Z
+        { glm::vec3( 0, 0, 1), glm::vec3(0,-1, 0) }, // -Z
     };
 
     glm::mat4 faceProj = glm::perspective(glm::radians(90.0f), 1.0f, ubo.passParams.z, ubo.passParams.w);
