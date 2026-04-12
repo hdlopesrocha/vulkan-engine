@@ -152,7 +152,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         VkPipelineLayout layout = shadowMapper->getShadowPipelineLayout();
         VkDescriptorSet ds = shadowDescriptorSet;
         if (layout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
-            printf("[BIND] SceneRenderer::mainPass (shadow bind): layout=%p firstSet=0 count=1 sets=%p\n", (void*)layout, (void*)ds);
+            //printf("[BIND] SceneRenderer::mainPass (shadow bind): layout=%p firstSet=0 count=1 sets=%p\n", (void*)layout, (void*)ds);
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
         }
 

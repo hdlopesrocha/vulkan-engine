@@ -1183,7 +1183,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         // Set 0: main UBO + texture samplers + water params
         VkDescriptorSet mainDs = app->getMainDescriptorSet();
         if (mainDs != VK_NULL_HANDLE) {
-            printf("[BIND] WaterRenderer::render: layout=%p firstSet=0 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)mainDs);
+            //printf("[BIND] WaterRenderer::render: layout=%p firstSet=0 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)mainDs);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
         }
@@ -1191,7 +1191,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         // Set 1: materials SSBO — only bind if available (shader doesn't use it)
         VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
         if (materialDs != VK_NULL_HANDLE) {
-            printf("[BIND] WaterRenderer::render: layout=%p firstSet=1 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)materialDs);
+            //printf("[BIND] WaterRenderer::render: layout=%p firstSet=1 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)materialDs);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
         }
@@ -1199,7 +1199,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         // Set 2: scene depth textures (color + depth)
         VkDescriptorSet sceneDs = waterDepthDescriptorSets[frameIndex];
         if (sceneDs != VK_NULL_HANDLE) {
-            printf("[BIND] WaterRenderer::render: layout=%p firstSet=2 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)sceneDs);
+            //printf("[BIND] WaterRenderer::render: layout=%p firstSet=2 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)sceneDs);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
         }

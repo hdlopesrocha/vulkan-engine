@@ -193,8 +193,8 @@ void VulkanResourceManager::removeDeviceMemory(VkDeviceMemory mem) {
     std::lock_guard<std::mutex> lk(mtx);
     size_t before = deviceMemories.size();
     deviceMemories.erase((uintptr_t)mem);
-    fprintf(stderr, "[VulkanResourceManager] removeDeviceMemory this=%p mem=%p before=%zu after=%zu\n",
-            (void*)this, (void*)mem, before, deviceMemories.size());
+    /*fprintf(stderr, "[VulkanResourceManager] removeDeviceMemory this=%p mem=%p before=%zu after=%zu\n",
+            (void*)this, (void*)mem, before, deviceMemories.size());*/
 }
 void VulkanResourceManager::removeImage(VkImage img) { std::lock_guard<std::mutex> lk(mtx); images.erase((uintptr_t)img); }
 void VulkanResourceManager::removeImageView(VkImageView iv) { std::lock_guard<std::mutex> lk(mtx); imageViews.erase((uintptr_t)iv); }
@@ -204,8 +204,8 @@ void VulkanResourceManager::removeBuffer(VkBuffer b) {
     std::lock_guard<std::mutex> lk(mtx);
     size_t before = buffers.size();
     buffers.erase((uintptr_t)b);
-    fprintf(stderr, "[VulkanResourceManager] removeBuffer this=%p buf=%p before=%zu after=%zu\n",
-            (void*)this, (void*)b, before, buffers.size());
+    /*fprintf(stderr, "[VulkanResourceManager] removeBuffer this=%p buf=%p before=%zu after=%zu\n",
+            (void*)this, (void*)b, before, buffers.size());*/
 }
 void VulkanResourceManager::removePipeline(VkPipeline p) { std::lock_guard<std::mutex> lk(mtx); pipelines.erase((uintptr_t)p); }
 void VulkanResourceManager::removePipelineLayout(VkPipelineLayout pl) { std::lock_guard<std::mutex> lk(mtx); pipelineLayouts.erase((uintptr_t)pl); }

@@ -475,7 +475,7 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer,
     VkPipelineLayout layout = app->getPipelineLayout();
     if (shadowPipelineLayout != VK_NULL_HANDLE) layout = shadowPipelineLayout;
     if (descriptorSet != VK_NULL_HANDLE) {
-        printf("[BIND] ShadowRenderer::render: layout=%p firstSet=0 count=1 sets=%p\n", (void*)layout, (void*)descriptorSet);
+        //printf("[BIND] ShadowRenderer::render: layout=%p firstSet=0 count=1 sets=%p\n", (void*)layout, (void*)descriptorSet);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptorSet, 0, nullptr);
     }
     
