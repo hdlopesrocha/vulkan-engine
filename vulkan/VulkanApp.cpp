@@ -2093,6 +2093,7 @@ VkDescriptorSet VulkanApp::createDescriptorSet(VkDescriptorSetLayout layout) {
     }
     // Register descriptor set so manager can track it for inspection
     resources.addDescriptorSet(descriptorSet, "VulkanApp: descriptorSet");
+    fprintf(stderr, "[VulkanApp::createDescriptorSet] allocated descriptorSet=%p layout=%p\n", (void*)descriptorSet, (void*)layout);
     return descriptorSet;
 }
 
@@ -2106,9 +2107,9 @@ void VulkanApp::updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &des
     for (size_t i = 0; i < descriptors.size(); ++i) {
         const VkWriteDescriptorSet &w = descriptors[i];
         if (w.pImageInfo) {
-            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] binding=%u type=%d imageView=%p sampler=%p\n", i, w.dstBinding, w.descriptorType, (void*)w.pImageInfo[0].imageView, (void*)w.pImageInfo[0].sampler);
+            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] dstSet=%p binding=%u type=%d imageView=%p sampler=%p\n", i, (void*)w.dstSet, w.dstBinding, w.descriptorType, (void*)w.pImageInfo[0].imageView, (void*)w.pImageInfo[0].sampler);
         } else if (w.pBufferInfo) {
-            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] binding=%u type=%d buffer=%p\n", i, w.dstBinding, w.descriptorType, (void*)w.pBufferInfo[0].buffer);
+            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] dstSet=%p binding=%u type=%d buffer=%p offset=%llu range=%llu\n", i, (void*)w.dstSet, w.dstBinding, w.descriptorType, (void*)w.pBufferInfo[0].buffer, (unsigned long long)w.pBufferInfo[0].offset, (unsigned long long)w.pBufferInfo[0].range);
         }
     }
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptors.size()), descriptors.data(), 0, nullptr);
@@ -2120,9 +2121,9 @@ void VulkanApp::updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> 
     for (size_t i = 0; i < descriptorWrites.size(); ++i) {
         const VkWriteDescriptorSet &w = descriptorWrites[i];
         if (w.pImageInfo) {
-            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] binding=%u type=%d imageView=%p sampler=%p\n", i, w.dstBinding, w.descriptorType, (void*)w.pImageInfo[0].imageView, (void*)w.pImageInfo[0].sampler);
+            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] dstSet=%p binding=%u type=%d imageView=%p sampler=%p\n", i, (void*)w.dstSet, w.dstBinding, w.descriptorType, (void*)w.pImageInfo[0].imageView, (void*)w.pImageInfo[0].sampler);
         } else if (w.pBufferInfo) {
-            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] binding=%u type=%d buffer=%p\n", i, w.dstBinding, w.descriptorType, (void*)w.pBufferInfo[0].buffer);
+            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] dstSet=%p binding=%u type=%d buffer=%p offset=%llu range=%llu\n", i, (void*)w.dstSet, w.dstBinding, w.descriptorType, (void*)w.pBufferInfo[0].buffer, (unsigned long long)w.pBufferInfo[0].offset, (unsigned long long)w.pBufferInfo[0].range);
         }
     }
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
@@ -2349,9 +2350,9 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     // Register buffer and its memory so the VulkanResourceManager tracks them
     resources.addBuffer(buffer.buffer, "VulkanApp: buffer.buffer");
     resources.addDeviceMemory(buffer.memory, "VulkanApp: buffer.memory");
-    fprintf(stderr, "[VulkanApp::createBuffer] buffer=%p size=%zu usage=0x%08x mem=%p buffers=%zu memories=%zu\n",
+    /*fprintf(stderr, "[VulkanApp::createBuffer] buffer=%p size=%zu usage=0x%08x mem=%p buffers=%zu memories=%zu\n",
             (void*)buffer.buffer, (size_t)size, (unsigned)usage, (void*)buffer.memory,
-            resources.getBufferMap().size(), resources.getDeviceMemoryMap().size());
+            resources.getBufferMap().size(), resources.getDeviceMemoryMap().size());*/
     return buffer;
 }
 

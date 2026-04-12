@@ -18,8 +18,8 @@ void VulkanResourceManager::addDeviceMemory(VkDeviceMemory mem, const char* desc
     }
     std::lock_guard<std::mutex> lk(mtx);
     deviceMemories[(uintptr_t)mem] = {mem, desc ? std::string(desc) : std::string()};
-    fprintf(stderr, "[VulkanResourceManager] addDeviceMemory this=%p mem=%p desc=%s deviceMemories=%zu\n",
-            (void*)this, (void*)mem, desc ? desc : "(null)", deviceMemories.size());
+    /*fprintf(stderr, "[VulkanResourceManager] addDeviceMemory this=%p mem=%p desc=%s deviceMemories=%zu\n",
+            (void*)this, (void*)mem, desc ? desc : "(null)", deviceMemories.size());*/
 }
 
 void VulkanResourceManager::addImage(VkImage img, const char* desc) {
@@ -70,8 +70,8 @@ void VulkanResourceManager::addBuffer(VkBuffer b, const char* desc) {
     }
     std::lock_guard<std::mutex> lk(mtx);
     buffers[(uintptr_t)b] = {b, desc ? std::string(desc) : std::string()};
-    fprintf(stderr, "[VulkanResourceManager] addBuffer this=%p buf=%p desc=%s buffers=%zu\n",
-            (void*)this, (void*)b, desc ? desc : "(null)", buffers.size());
+    /*fprintf(stderr, "[VulkanResourceManager] addBuffer this=%p buf=%p desc=%s buffers=%zu\n",
+            (void*)this, (void*)b, desc ? desc : "(null)", buffers.size());*/
 }
 
 void VulkanResourceManager::addPipeline(VkPipeline p, const char* desc) {
@@ -134,6 +134,8 @@ void VulkanResourceManager::addDescriptorSet(VkDescriptorSet ds, const char* des
     }
     std::lock_guard<std::mutex> lk(mtx);
     descriptorSets[(uintptr_t)ds] = {ds, desc ? std::string(desc) : std::string()};
+    fprintf(stderr, "[VulkanResourceManager] addDescriptorSet this=%p ds=%p desc=%s descriptorSets=%zu\n",
+            (void*)this, (void*)ds, desc ? desc : "(null)", descriptorSets.size());
 }
 
 void VulkanResourceManager::addDescriptorSetLayout(VkDescriptorSetLayout dsl, const char* desc) {

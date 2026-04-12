@@ -302,6 +302,7 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         return;
     }
     VkDescriptorSet sets[2] = { globalSet, vegDescriptorSet };
+    printf("[BIND] VegetationRenderer::draw: layout=%p firstSet=0 count=2 sets=%p %p\n", (void*)pipelineLayout, (void*)sets[0], (void*)sets[1]);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 2, sets, 0, nullptr);
 
     // Push billboard scale as push constant

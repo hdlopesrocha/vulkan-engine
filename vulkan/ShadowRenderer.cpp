@@ -468,15 +468,14 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
 void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, 
                                  const VertexBufferObject& vbo, VkDescriptorSet descriptorSet) {
 
-    // Bind descriptor sets: material set (set 0) and per-instance set (set 1) if available.
-    VkDescriptorSet matDs = app->getMaterialDescriptorSet();
+    // Bind descriptor sets: bind the provided per-instance/main descriptor set at set 0.
+    // Do NOT bind the material-only descriptor set at set 0 because shadow pipelines are
+    // created with only the main descriptor set layout. Binding an incompatible set
+    // to set 0 causes validation errors.
     VkPipelineLayout layout = app->getPipelineLayout();
     if (shadowPipelineLayout != VK_NULL_HANDLE) layout = shadowPipelineLayout;
-    if (matDs != VK_NULL_HANDLE) {
-        VkDescriptorSet sets[2] = { matDs, descriptorSet };
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 2, sets, 0, nullptr);
-    } else {
-        // Fallback: bind only the provided instance set at set 0 for compatibility
+    if (descriptorSet != VK_NULL_HANDLE) {
+        printf("[BIND] ShadowRenderer::render: layout=%p firstSet=0 count=1 sets=%p\n", (void*)layout, (void*)descriptorSet);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptorSet, 0, nullptr);
     }
     
