@@ -28,7 +28,7 @@ layout(set = 2, binding = 1) uniform sampler2D sceneDepthTex;
 layout(set = 2, binding = 3) uniform sampler2D waterBackDepthTex;  // back-face depth for volume thickness
 layout(set = 2, binding = 4) uniform samplerCube sceneSkyCube;    // solid 360 cubemap (used directly)
 layout(set = 2, binding = 2) uniform sampler2D sceneNormalTex;    // g-buffer normal
-layout(set = 2, binding = 5) uniform sampler2D scenePositionTex;  // g-buffer world position
+// `scenePositionTex` removed: world-position is reconstructed from depth when needed
 
 // Near/far planes for linearizing depth – read from UBO passParams (z = near, w = far)
 // so they always match the glm::perspective call on the CPU side.
@@ -242,7 +242,6 @@ void main() {
     sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
     // Sample g-buffer attachments produced by the main pass (if available)
     vec3 sceneNormalPixel = texture(sceneNormalTex, screenUV).rgb;
-    vec3 scenePositionPixel = texture(scenePositionTex, screenUV).rgb;
 
     // === DEPTH-BASED EFFECTS ===
     float waterDepthRaw = gl_FragCoord.z;
