@@ -49,6 +49,8 @@ public:
     VkImageView getWaterDepthView(uint32_t frameIndex) const { return waterDepthImageViews[frameIndex]; }
     // View that swizzles alpha into RGB so linear depth can be displayed easily
     VkImageView getWaterDepthAlphaView(uint32_t frameIndex) const { return waterDepthAlphaImageViews[frameIndex]; }
+    // Depth image view used as the depth/stencil attachment for the water geometry pass
+    VkImageView getWaterGeomDepthView(uint32_t frameIndex) const { return waterGeomDepthImageViews[frameIndex]; }
     
     // Get scene offscreen target views (for rendering scene before water)
     VkImage getSceneColorImage(uint32_t frameIndex) const { return sceneColorImages[frameIndex]; }
