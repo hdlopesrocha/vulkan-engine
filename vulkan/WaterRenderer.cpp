@@ -633,7 +633,9 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     // Binding 1: Scene depth texture
     // Binding 2: Sky color texture
     // Binding 3: Water back-face depth texture (for volume thickness)
-    std::array<VkDescriptorSetLayoutBinding, 5> sceneBindings{};
+    // Binding 4: Optional cubemap
+    // Binding 5: Scene position/world-position texture (g-buffer)
+    std::array<VkDescriptorSetLayoutBinding, 6> sceneBindings{};
     
     // Scene color (binding 0)
     sceneBindings[0].binding = 0;
@@ -669,6 +671,13 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     sceneBindings[4].descriptorCount = 1;
     sceneBindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     sceneBindings[4].pImmutableSamplers = nullptr;
+
+    // Scene position/world-position (binding 5) — g-buffer world-space position
+    sceneBindings[5].binding = 5;
+    sceneBindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sceneBindings[5].descriptorCount = 1;
+    sceneBindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[5].pImmutableSamplers = nullptr;
     
     VkDescriptorSetLayoutCreateInfo depthLayoutInfo{};
     depthLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -684,7 +693,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     // Create descriptor pool for scene textures (color + depth), 2 sets for 2 frames
     VkDescriptorPoolSize depthPoolSize{};
     depthPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    depthPoolSize.descriptorCount = 10;  // Now including cubemap sampler (binding 4) per frame: (color + depth + sky + backfaceDepth + cube) * 2
+    depthPoolSize.descriptorCount = 12;  // (color + depth + sky + backfaceDepth + cube + position) * 2 frames
     
     VkDescriptorPoolCreateInfo depthPoolInfo{};
     depthPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -976,7 +985,7 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     VkImageView colorView = colorImageView;
     VkImageView depthView = depthImageView;
 
-    std::array<VkDescriptorImageInfo, 5> imageInfos{};
+    std::array<VkDescriptorImageInfo, 6> imageInfos{};
 
     // Scene color (binding 0)
     imageInfos[0].sampler = linearSampler;
@@ -1004,7 +1013,12 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     imageInfos[4].imageView = (finalCubeView != VK_NULL_HANDLE) ? finalCubeView : colorView;
     imageInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 5> writes{};
+    // Scene position (binding 5) — g-buffer world position. If not available, fall back to scene color view.
+    imageInfos[5].sampler = linearSampler;
+    imageInfos[5].imageView = colorView; // fallback; caller may supply a dedicated position view in future
+    imageInfos[5].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    std::array<VkWriteDescriptorSet, 6> writes{};
 
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = waterDepthDescriptorSets[frameIndex];
@@ -1045,6 +1059,14 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[4].descriptorCount = 1;
     writes[4].pImageInfo = &imageInfos[4];
+
+    writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[5].dstSet = waterDepthDescriptorSets[frameIndex];
+    writes[5].dstBinding = 5;
+    writes[5].dstArrayElement = 0;
+    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[5].descriptorCount = 1;
+    writes[5].pImageInfo = &imageInfos[5];
     vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
@@ -1173,6 +1195,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         // Set 0: main UBO + texture samplers + water params
         VkDescriptorSet mainDs = app->getMainDescriptorSet();
         if (mainDs != VK_NULL_HANDLE) {
+            printf("[BIND] WaterRenderer::render: layout=%p firstSet=0 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)mainDs);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
         }
@@ -1180,6 +1203,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         // Set 1: materials SSBO — only bind if available (shader doesn't use it)
         VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
         if (materialDs != VK_NULL_HANDLE) {
+            printf("[BIND] WaterRenderer::render: layout=%p firstSet=1 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)materialDs);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
         }
@@ -1187,6 +1211,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         // Set 2: scene depth textures (color + depth)
         VkDescriptorSet sceneDs = waterDepthDescriptorSets[frameIndex];
         if (sceneDs != VK_NULL_HANDLE) {
+            printf("[BIND] WaterRenderer::render: layout=%p firstSet=2 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)sceneDs);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
         }
