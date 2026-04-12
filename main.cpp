@@ -723,8 +723,6 @@ public:
                 sceneRenderer->solidRenderer->getColorView(frameIdx),
                 sceneRenderer->solidRenderer->getDepthView(frameIdx),
                 sceneRenderer->waterRenderer->getWaterDepthView(frameIdx),
-                sceneRenderer->waterRenderer->getWaterNormalView(frameIdx),
-                sceneRenderer->waterRenderer->getWaterMaskView(frameIdx),
                 viewProj,
                 invViewProj,
                 glm::vec3(uboStatic.viewPos),

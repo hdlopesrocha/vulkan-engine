@@ -579,7 +579,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             app->getMaterialDescriptorSetLayout(),
             waterRenderer->getWaterDepthDescriptorSetLayout()
         };
-        waterWireframe->createPipeline(app, waterRenderer->getWaterRenderPass(), 3,
+        waterWireframe->createPipeline(app, waterRenderer->getWaterRenderPass(), 1,
             waterSetLayouts,
             "shaders/water.vert.spv", "shaders/water.frag.spv",
             "shaders/water.tesc.spv", "shaders/water.tese.spv",
