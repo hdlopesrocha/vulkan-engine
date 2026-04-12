@@ -69,6 +69,7 @@ private:
     VkPipelineLayout linearizePipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout linearizeDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorSet linearizeDescriptorSet = VK_NULL_HANDLE;
+    
     VkFramebuffer linearSceneFramebuffer = VK_NULL_HANDLE;
     VkFramebuffer linearBackFaceFramebuffer = VK_NULL_HANDLE;
     VkFramebuffer linearShadowFramebuffer[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };

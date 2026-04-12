@@ -1215,34 +1215,7 @@ void RenderTargetsWidget::render() {
     // Render only the selected preview using a single preview descriptor
     VkDescriptorSet ds = previewDescriptor;
     ImVec2 imgSize = previewSize;
-    const char* label = "Preview";
     bool available = (ds != VK_NULL_HANDLE);
-    switch (selectedPreview) {
-        case PreviewTarget::Sky: 
-            label = "Sky (Equirectangular)"; 
-            imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); 
-            break;
-        case PreviewTarget::Solid360Cube: 
-            label = "Solid 360 (Cube)"; 
-            imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH); 
-            break;
-        case PreviewTarget::Solid360Equirect: 
-            label = "Solid 360 (Equirectangular)"; 
-            imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH * 0.5f); 
-            break;
-        case PreviewTarget::SolidColor: label = "Solid (Scene Color)"; break;
-        case PreviewTarget::SolidDepth: label = "Solid (Depth Buffer)"; break;
-        case PreviewTarget::WaterColor: label = "Water (World Pos)"; break;
-        case PreviewTarget::WaterDepth: label = "Water (Linear Depth)"; break;
-        case PreviewTarget::BackFaceColor: label = "Water (Back-Face Depth)"; break;
-        case PreviewTarget::LinearSceneDepth: label = "Scene (Linearized Depth)"; break;
-        case PreviewTarget::BackFaceDepth: label = "BackFace (Linearized Depth)"; break;
-        case PreviewTarget::ShadowCascade:
-            label = "Shadow Cascade";
-            if (shadowMapper) imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH);
-            break;
-        default: label = "Unknown preview"; break;
-    }
 
     if (selectedPreview == PreviewTarget::Solid360Cube) {
         const char* faceLabels[6] = {"+X", "-X", "+Y", "-Y", "+Z", "-Z"};
@@ -1259,7 +1232,6 @@ void RenderTargetsWidget::render() {
         }
     }
 
-    ImGui::TextUnformatted(label);
     if (available) ImGui::Image((ImTextureID)ds, imgSize); else ImGui::Text("Preview unavailable");
     ImGui::Separator();
 
