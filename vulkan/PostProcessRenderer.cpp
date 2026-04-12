@@ -261,7 +261,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                   VkFramebuffer swapchainFramebuffer,
                                   VkRenderPass swapchainRenderPass,
                                   VkImageView sceneColorView, VkImageView sceneDepthView,
-                                  VkImageView waterDepthView, VkImageView waterNormalView, VkImageView waterMaskView,
+                                  VkImageView waterDepthView,
                                   const glm::mat4& viewProj, const glm::mat4& invViewProj,
                                   const glm::vec3& viewPos,
                                   bool beginRenderPass, VkImageView skyView) {
@@ -301,8 +301,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     imageInfos[0] = {linearSampler, sceneColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[1] = {linearSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[2] = {linearSampler, waterDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    imageInfos[3] = {linearSampler, waterNormalView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    imageInfos[4] = {linearSampler, waterMaskView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // waterNormal and waterMask are no longer produced by WaterRenderer; leave as VK_NULL_HANDLE so writes are skipped
+    imageInfos[3] = {linearSampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    imageInfos[4] = {linearSampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
     VkDescriptorBufferInfo bufferInfo{uniformBuffer.buffer, 0, sizeof(WaterUBO)};
 

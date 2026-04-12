@@ -21,7 +21,7 @@ public:
                 VkFramebuffer swapchainFramebuffer,
                 VkRenderPass swapchainRenderPass,
                 VkImageView sceneColorView, VkImageView sceneDepthView,
-                VkImageView waterDepthView, VkImageView waterNormalView, VkImageView waterMaskView,
+                VkImageView waterDepthView,
                 const glm::mat4& viewProj, const glm::mat4& invViewProj,
                 const glm::vec3& viewPos,
                 bool beginRenderPass = true,
