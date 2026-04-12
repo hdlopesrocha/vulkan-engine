@@ -135,6 +135,10 @@ public:
                         ShadowRenderer* shadow = nullptr, ShadowParams* shadowParams = nullptr, Settings* settings = nullptr);
     ~RenderTargetsWidget();
 
+    // Initialize static GPU resources used by the widget (run once).
+    // If width/height are provided, create size-dependent targets too.
+    void init(VulkanApp* app, int width = 0, int height = 0);
+
     void setFrameInfo(uint32_t frameIndex, int width, int height);
     // Destroy and recreate linear preview targets when size changes
     void destroyLinearTargets();
