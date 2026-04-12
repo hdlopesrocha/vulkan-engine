@@ -1170,7 +1170,23 @@ void RenderTargetsWidget::render() {
         ImGui::TextUnformatted("Choose preview");
         ImGui::EndPopup();
     }
-    // Radio buttons laid out in two columns
+    // Add preview items array (prepare for dropdown selector)
+    const char* previewItems[] = {
+        "Sky",
+        "Solid360Cube",
+        "Solid360Equirect",
+        "SolidColor",
+        "SolidDepth",
+        "WaterColor",
+        "WaterDepth",
+        "BackFaceColor",
+        "BackFaceDepth",
+        "LinearSceneDepth",
+        "ShadowCascade"
+    };
+    int previewIndex = static_cast<int>(selectedPreview);
+
+    // Radio buttons laid out in two columns (kept temporarily)
     ImGui::Columns(2, "preview_cols", false);
     auto rb = [&](const char* label, RenderTargetsWidget::PreviewTarget v){
         bool active = (selectedPreview == v);
