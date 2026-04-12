@@ -16,6 +16,8 @@ layout(location = 7) in vec3 fragPosWorldNotDisplaced;
 #include "includes/textures.glsl"
 
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outNormal;
+layout(location = 3) out vec4 outPosition;
 
 #include "includes/common.glsl"
 
@@ -26,6 +28,10 @@ layout(location = 0) out vec4 outColor;
 
 void main() {
     bool isShadowPass = ubo.passParams.x > 0.5;
+    // Provide default outputs so early debug/special-case returns still
+    // produce valid g-buffer attachments for downstream passes.
+    outNormal = vec4(normalize(fragNormal) * 0.5 + 0.5, 0.0);
+    outPosition = vec4(fragPosWorld, 1.0);
 
     // Fast-path for shadow pass: skip expensive lighting/texture work.
     if (isShadowPass) {
@@ -419,5 +425,8 @@ void main() {
     // outColor = vec4(albedoColor, 1.0); return; // Show raw albedo
     // outColor = vec4(vec3(NdotL), 1.0); return; // Show N·L term
     
+    // Finalize g-buffer outputs
+    outNormal = vec4(worldNormal * 0.5 + 0.5, 0.0);
+    outPosition = vec4(fragPosWorld, 1.0);
     outColor = vec4(finalColor, 1.0);
 }

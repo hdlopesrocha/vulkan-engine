@@ -14,7 +14,7 @@ layout(location = 7) flat in int fragTexIndex;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal;
-layout(location = 2) out vec4 outMask;
+layout(location = 3) out vec4 outPosition;
 
 // Use the same UBO as main shader
 #include "includes/ubo.glsl"
@@ -27,6 +27,8 @@ layout(set = 2, binding = 0) uniform sampler2D sceneColorTex;
 layout(set = 2, binding = 1) uniform sampler2D sceneDepthTex;
 layout(set = 2, binding = 3) uniform sampler2D waterBackDepthTex;  // back-face depth for volume thickness
 layout(set = 2, binding = 4) uniform samplerCube sceneSkyCube;    // solid 360 cubemap (used directly)
+layout(set = 2, binding = 2) uniform sampler2D sceneNormalTex;    // g-buffer normal
+layout(set = 2, binding = 5) uniform sampler2D scenePositionTex;  // g-buffer world position
 
 // Near/far planes for linearizing depth – read from UBO passParams (z = near, w = far)
 // so they always match the glm::perspective call on the CPU side.
@@ -238,6 +240,9 @@ void main() {
     }
 
     sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
+    // Sample g-buffer attachments produced by the main pass (if available)
+    vec3 sceneNormalPixel = texture(sceneNormalTex, screenUV).rgb;
+    vec3 scenePositionPixel = texture(scenePositionTex, screenUV).rgb;
 
     // === DEPTH-BASED EFFECTS ===
     float waterDepthRaw = gl_FragCoord.z;
@@ -595,8 +600,8 @@ void main() {
     }
 
 
+    outPosition = vec4(fragPosWorld, 1.0);
     outNormal = vec4(normal, 0.0);
-    outMask = vec4(1.0);
 
 
 }
