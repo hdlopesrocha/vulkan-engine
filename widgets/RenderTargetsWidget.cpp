@@ -830,71 +830,78 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     VkSampler sampler = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getLinearSampler() : VK_NULL_HANDLE;
     if (sampler == VK_NULL_HANDLE) return;
 
-    // Sky equirectangular texture
-    if (skyRenderer) {
-        VkImageView skyView = skyRenderer->getSkyView(frameIndex);
-        if (skyView != VK_NULL_HANDLE && skyDescriptor == VK_NULL_HANDLE) {
-            skyDescriptor = ImGui_ImplVulkan_AddTexture(
-                sampler, skyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            skyDescriptorOwned = true;
-        }
-    }
-
-    // Solid color
-    if (solidRenderer) {
-        VkImageView solidView = solidRenderer->getColorView(frameIndex);
-        if (solidView != VK_NULL_HANDLE && solidColorDescriptor == VK_NULL_HANDLE) {
-            solidColorDescriptor = ImGui_ImplVulkan_AddTexture(
-                sampler, solidView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            solidColorDescriptorOwned = true;
-        }
-    }
-
-    // Solid depth (D32_SFLOAT – use shadow sampler which has compareEnable=VK_FALSE)
-    if (solidRenderer && shadowMapper) {
-        VkImageView depthView = solidRenderer->getDepthView(frameIndex);
-        if (depthView != VK_NULL_HANDLE && solidDepthDescriptor == VK_NULL_HANDLE) {
-            solidDepthDescriptor = ImGui_ImplVulkan_AddTexture(
-                shadowMapper->getShadowMapSampler(), depthView,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            solidDepthDescriptorOwned = true;
-        }
-    }
-
+    // Create only the ImGui descriptors needed for the current preview selection
     VkSampler solid360Sampler = sampler;
     if (sceneRenderer && sceneRenderer->solid360Renderer) {
         VkSampler s = sceneRenderer->solid360Renderer->getSolid360Sampler();
         if (s != VK_NULL_HANDLE) solid360Sampler = s;
     }
 
-    VkImageView cube360EquirectView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
-    if (cube360EquirectView != VK_NULL_HANDLE && selectedPreview == PreviewTarget::Solid360Equirect) {
-        cube360EquirectRenderer.render(app, solid360Sampler, cube360EquirectView);
-        if (cube360EquirectDescriptor == VK_NULL_HANDLE) {
-            VkImageView equirectView = cube360EquirectRenderer.getEquirectView();
-            if (equirectView != VK_NULL_HANDLE) {
-                cube360EquirectDescriptor = ImGui_ImplVulkan_AddTexture(
-                    solid360Sampler, equirectView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                cube360EquirectDescriptorOwned = true;
+    switch (selectedPreview) {
+        case PreviewTarget::Sky: {
+            if (skyRenderer) {
+                VkImageView skyView = skyRenderer->getSkyView(frameIndex);
+                if (skyView != VK_NULL_HANDLE && skyDescriptor == VK_NULL_HANDLE) {
+                    skyDescriptor = ImGui_ImplVulkan_AddTexture(sampler, skyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    skyDescriptorOwned = true;
+                }
             }
-        }
-    }
+        } break;
 
-    // Per-face cube descriptors for detailed orientation inspection
-    for (uint32_t f = 0; f < 6; ++f) {
-        VkImageView faceView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360FaceView(f) : VK_NULL_HANDLE;
-        if (faceView != VK_NULL_HANDLE && cube360FaceDescriptor[f] == VK_NULL_HANDLE) {
-            cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(solid360Sampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            cube360FaceDescriptorOwned[f] = true;
-        }
-    }
+        case PreviewTarget::SolidColor: {
+            if (solidRenderer) {
+                VkImageView solidView = solidRenderer->getColorView(frameIndex);
+                if (solidView != VK_NULL_HANDLE && solidColorDescriptor == VK_NULL_HANDLE) {
+                    solidColorDescriptor = ImGui_ImplVulkan_AddTexture(sampler, solidView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    solidColorDescriptorOwned = true;
+                }
+            }
+        } break;
 
-    // Water color (first attachment of water geometry pass — R32G32B32A32_SFLOAT worldPos)
-    VkImageView waterView = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getWaterDepthView(frameIndex) : VK_NULL_HANDLE;
-    if (waterView != VK_NULL_HANDLE && waterColorDescriptor == VK_NULL_HANDLE) {
-        waterColorDescriptor = ImGui_ImplVulkan_AddTexture(
-            sampler, waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        waterColorDescriptorOwned = true;
+        case PreviewTarget::SolidDepth: {
+            if (solidRenderer) {
+                VkImageView depthView = solidRenderer->getDepthView(frameIndex);
+                if (depthView != VK_NULL_HANDLE && solidDepthDescriptor == VK_NULL_HANDLE) {
+                    VkSampler depthSampler = (shadowMapper) ? shadowMapper->getShadowMapSampler() : sampler;
+                    solidDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    solidDepthDescriptorOwned = true;
+                }
+            }
+        } break;
+
+        case PreviewTarget::Solid360Equirect: {
+            VkImageView cube360EquirectView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
+            if (cube360EquirectView != VK_NULL_HANDLE) {
+                cube360EquirectRenderer.render(app, solid360Sampler, cube360EquirectView);
+                if (cube360EquirectDescriptor == VK_NULL_HANDLE) {
+                    VkImageView equirectView = cube360EquirectRenderer.getEquirectView();
+                    if (equirectView != VK_NULL_HANDLE) {
+                        cube360EquirectDescriptor = ImGui_ImplVulkan_AddTexture(solid360Sampler, equirectView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                        cube360EquirectDescriptorOwned = true;
+                    }
+                }
+            }
+        } break;
+
+        case PreviewTarget::Solid360Cube: {
+            uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
+            VkImageView faceView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360FaceView(f) : VK_NULL_HANDLE;
+            if (faceView != VK_NULL_HANDLE && cube360FaceDescriptor[f] == VK_NULL_HANDLE) {
+                cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(solid360Sampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                cube360FaceDescriptorOwned[f] = true;
+            }
+        } break;
+
+        case PreviewTarget::WaterColor: {
+            VkImageView waterView = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getWaterDepthView(frameIndex) : VK_NULL_HANDLE;
+            if (waterView != VK_NULL_HANDLE && waterColorDescriptor == VK_NULL_HANDLE) {
+                waterColorDescriptor = ImGui_ImplVulkan_AddTexture(sampler, waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                waterColorDescriptorOwned = true;
+            }
+        } break;
+
+        default:
+            break;
     }
 
 
