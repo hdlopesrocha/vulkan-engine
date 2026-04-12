@@ -71,6 +71,7 @@ private:
     VkDescriptorSet linearizeDescriptorSet = VK_NULL_HANDLE;
     VkFramebuffer linearSceneFramebuffer = VK_NULL_HANDLE;
     VkFramebuffer linearBackFaceFramebuffer = VK_NULL_HANDLE;
+    VkFramebuffer linearShadowFramebuffer[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
 
     // Single preview descriptor (widget displays one texture at a time)
     VkDescriptorSet previewDescriptor = VK_NULL_HANDLE;
@@ -139,4 +140,13 @@ public:
     void render() override;
     void updateDescriptors(uint32_t frameIndex);
     void cleanup();
+    // Run a small fullscreen pass that samples a depth image and writes a
+    // normalized RGBA preview into `dstView`/`dstFb`. `dstDescriptor` will be
+    // created via ImGui_ImplVulkan_AddTexture if needed. `mode` selects
+    // linearization mode: 0.0 = perspective linearize, 1.0 = passthrough.
+    bool runLinearizePass(VulkanApp* app, VkImageView srcView, VkSampler srcSampler, VkSampler previewSampler,
+                          VkImageView dstView, VkFramebuffer dstFb,
+                          VkDescriptorSet &dstDescriptor, bool &dstDescriptorOwned,
+                          uint32_t width, uint32_t height,
+                          float zNear, float zFar, float mode);
 };
