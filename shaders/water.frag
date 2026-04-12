@@ -254,7 +254,7 @@ void main() {
     specularColor += ubo.lightColor.xyz * glitter * glitterIntensity;
     
     // === REFLECTION ===
-    vec3 reflectDir = reflect(-viewDir, normal);
+    vec3 reflectDir = reflect(viewDir, normal);
 
     vec3 skyColor = texture(sceneSkyCube, reflectDir).rgb;
 
