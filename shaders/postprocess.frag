@@ -8,8 +8,6 @@
 layout(set = 0, binding = 0) uniform sampler2D sceneColorTex;
 layout(set = 0, binding = 1) uniform sampler2D sceneDepthTex;
 layout(set = 0, binding = 2) uniform sampler2D waterColorTex;  // Water geometry pass output (attachment 0)
-layout(set = 0, binding = 3) uniform sampler2D waterNormalTex;
-layout(set = 0, binding = 4) uniform sampler2D waterMaskTex;
 
 layout(set = 0, binding = 5) uniform WaterUBO {
     mat4 viewProjection;

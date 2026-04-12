@@ -13,8 +13,6 @@ layout(location = 6) in vec4 fragPosLightSpace; // light-space pos (cascade 0)
 layout(location = 7) flat in int fragTexIndex;
 
 layout(location = 0) out vec4 outColor;
-layout(location = 1) out vec4 outNormal;
-layout(location = 2) out vec4 outMask;
 
 // Use the same UBO as main shader
 #include "includes/ubo.glsl"
@@ -575,10 +573,8 @@ void main() {
     }
 
 
-    // Write a simple mask into the R channel of attachment 2 (R8_UNORM)
-    // Use the computed water alpha as the mask value so post-process can sample it.
-    outMask = vec4(vec3(0.0), alpha);
-    outNormal = vec4(normal, 0.0);
+    // Final outputs: only write the composited water color (RGBA)
+    // Normal/mask outputs removed — they are no longer produced by this pass.
 
 
 }
