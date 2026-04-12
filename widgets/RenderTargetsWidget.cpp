@@ -101,8 +101,8 @@ RenderTargetsWidget::~RenderTargetsWidget() {
     };
     removeOwnedDesc(skyDescriptor, skyDescriptorOwned);
     removeOwnedDesc(solidColorDescriptor, solidColorDescriptorOwned);
-    removeOwnedDesc(waterColorDescriptor, waterColorDescriptorOwned);
     removeOwnedDesc(solidDepthDescriptor, solidDepthDescriptorOwned);
+    removeOwnedDesc(waterColorDescriptor, waterColorDescriptorOwned);
     removeOwnedDesc(solid360Descriptor, solid360DescriptorOwned);
     removeOwnedDesc(cube360EquirectDescriptor, cube360EquirectDescriptorOwned);
     for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
@@ -1104,21 +1104,21 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             if (linearSceneDepthDescriptor != VK_NULL_HANDLE) previewDescriptor = linearSceneDepthDescriptor;
             else previewDescriptor = solidDepthDescriptor;
             break;
-        case PreviewTarget::WaterWorldPos: 
+        case PreviewTarget::WaterColor: 
             previewDescriptor = waterColorDescriptor; 
             break;
-        case PreviewTarget::WaterLinearDepth: 
+        case PreviewTarget::WaterDepth: 
             previewDescriptor = waterDepthLinearDescriptor; 
             break;
         // Prefer the GPU-linearized back-face depth if available, otherwise fall back to raw back-face depth view
-        case PreviewTarget::WaterBackFace:
+        case PreviewTarget::BackFaceColor:
             if (linearBackFaceDepthDescriptor != VK_NULL_HANDLE) previewDescriptor = linearBackFaceDepthDescriptor;
             else previewDescriptor = backFaceDepthDescriptor;
             break;
         case PreviewTarget::LinearSceneDepth: 
             previewDescriptor = linearSceneDepthDescriptor; 
             break;
-        case PreviewTarget::LinearBackFaceDepth: 
+        case PreviewTarget::BackFaceDepth: 
             previewDescriptor = linearBackFaceDepthDescriptor; 
             break;
         case PreviewTarget::ShadowCascade:
@@ -1166,7 +1166,6 @@ void RenderTargetsWidget::render() {
 
     // Preview selector: show only one image at a time
     ImGui::Text("Preview Selector");
-    ImGui::SameLine();
     if (ImGui::BeginPopupContextItem("preview_selector")) {
         ImGui::TextUnformatted("Choose preview");
         ImGui::EndPopup();
@@ -1178,16 +1177,16 @@ void RenderTargetsWidget::render() {
         if (ImGui::RadioButton(label, active)) selectedPreview = v;
     };
     rb("Sky", PreviewTarget::Sky); ImGui::NextColumn();
-    rb("Solid 360 Cube", PreviewTarget::Solid360Cube); ImGui::NextColumn();
-    rb("Solid 360 Equirect", PreviewTarget::Solid360Equirect); ImGui::NextColumn();
-    rb("Solid Color", PreviewTarget::SolidColor); ImGui::NextColumn();
-    rb("Solid Depth", PreviewTarget::SolidDepth); ImGui::NextColumn();
-    rb("Water WorldPos", PreviewTarget::WaterWorldPos); ImGui::NextColumn();
-    rb("Water Linear", PreviewTarget::WaterLinearDepth); ImGui::NextColumn();
-    rb("Water BackFace", PreviewTarget::WaterBackFace); ImGui::NextColumn();
-    rb("Linear Scene Depth", PreviewTarget::LinearSceneDepth); ImGui::NextColumn();
-    rb("Linear BackFace", PreviewTarget::LinearBackFaceDepth); ImGui::NextColumn();
-    rb("Shadow Cascade", PreviewTarget::ShadowCascade); ImGui::NextColumn();
+    rb("Solid360Cube", PreviewTarget::Solid360Cube); ImGui::NextColumn();
+    rb("Solid360Equirect", PreviewTarget::Solid360Equirect); ImGui::NextColumn();
+    rb("SolidColor", PreviewTarget::SolidColor); ImGui::NextColumn();
+    rb("SolidDepth", PreviewTarget::SolidDepth); ImGui::NextColumn();
+    rb("WaterColor", PreviewTarget::WaterColor); ImGui::NextColumn();
+    rb("WaterDepth", PreviewTarget::WaterDepth); ImGui::NextColumn();
+    rb("BackFaceColor", PreviewTarget::BackFaceColor); ImGui::NextColumn();
+    rb("BackFaceDepth", PreviewTarget::BackFaceDepth); ImGui::NextColumn();
+    rb("LinearSceneDepth", PreviewTarget::LinearSceneDepth); ImGui::NextColumn();
+    rb("ShadowCascade", PreviewTarget::ShadowCascade); ImGui::NextColumn();
     ImGui::Columns(1);
     if (selectedPreview == PreviewTarget::ShadowCascade) {
         ImGui::SliderInt("Cascade", &selectedShadowCascade, 0, SHADOW_CASCADE_COUNT - 1);
@@ -1233,11 +1232,11 @@ void RenderTargetsWidget::render() {
             break;
         case PreviewTarget::SolidColor: label = "Solid (Scene Color)"; break;
         case PreviewTarget::SolidDepth: label = "Solid (Depth Buffer)"; break;
-        case PreviewTarget::WaterWorldPos: label = "Water (World Pos)"; break;
-        case PreviewTarget::WaterLinearDepth: label = "Water (Linear Depth)"; break;
-        case PreviewTarget::WaterBackFace: label = "Water (Back-Face Depth)"; break;
+        case PreviewTarget::WaterColor: label = "Water (World Pos)"; break;
+        case PreviewTarget::WaterDepth: label = "Water (Linear Depth)"; break;
+        case PreviewTarget::BackFaceColor: label = "Water (Back-Face Depth)"; break;
         case PreviewTarget::LinearSceneDepth: label = "Scene (Linearized Depth)"; break;
-        case PreviewTarget::LinearBackFaceDepth: label = "BackFace (Linearized Depth)"; break;
+        case PreviewTarget::BackFaceDepth: label = "BackFace (Linearized Depth)"; break;
         case PreviewTarget::ShadowCascade:
             label = "Shadow Cascade";
             if (shadowMapper) imgSize = ImVec2(PREVIEW_WIDTH, PREVIEW_WIDTH);
