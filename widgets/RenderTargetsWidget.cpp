@@ -1186,24 +1186,10 @@ void RenderTargetsWidget::render() {
     };
     int previewIndex = static_cast<int>(selectedPreview);
 
-    // Radio buttons laid out in two columns (kept temporarily)
-    ImGui::Columns(2, "preview_cols", false);
-    auto rb = [&](const char* label, RenderTargetsWidget::PreviewTarget v){
-        bool active = (selectedPreview == v);
-        if (ImGui::RadioButton(label, active)) selectedPreview = v;
-    };
-    rb("Sky", PreviewTarget::Sky); ImGui::NextColumn();
-    rb("Solid360Cube", PreviewTarget::Solid360Cube); ImGui::NextColumn();
-    rb("Solid360Equirect", PreviewTarget::Solid360Equirect); ImGui::NextColumn();
-    rb("SolidColor", PreviewTarget::SolidColor); ImGui::NextColumn();
-    rb("SolidDepth", PreviewTarget::SolidDepth); ImGui::NextColumn();
-    rb("WaterColor", PreviewTarget::WaterColor); ImGui::NextColumn();
-    rb("WaterDepth", PreviewTarget::WaterDepth); ImGui::NextColumn();
-    rb("BackFaceColor", PreviewTarget::BackFaceColor); ImGui::NextColumn();
-    rb("BackFaceDepth", PreviewTarget::BackFaceDepth); ImGui::NextColumn();
-    rb("LinearSceneDepth", PreviewTarget::LinearSceneDepth); ImGui::NextColumn();
-    rb("ShadowCascade", PreviewTarget::ShadowCascade); ImGui::NextColumn();
-    ImGui::Columns(1);
+    // Replace radio buttons with a dropdown combo using the prepared array
+    if (ImGui::Combo("Preview", &previewIndex, previewItems, static_cast<int>(sizeof(previewItems)/sizeof(previewItems[0])))) {
+        selectedPreview = static_cast<RenderTargetsWidget::PreviewTarget>(previewIndex);
+    }
     if (selectedPreview == PreviewTarget::ShadowCascade) {
         ImGui::SliderInt("Cascade", &selectedShadowCascade, 0, SHADOW_CASCADE_COUNT - 1);
     }
