@@ -45,12 +45,10 @@ public:
                 VkImageView sceneColorView, VkImageView sceneDepthView,
                 VkImageView skyView = VK_NULL_HANDLE);
 
-    // Get water depth/normal/mask images for post-process sampling
+    // Get water color/depth image view for post-process sampling
     VkImageView getWaterDepthView(uint32_t frameIndex) const { return waterDepthImageViews[frameIndex]; }
     // View that swizzles alpha into RGB so linear depth can be displayed easily
     VkImageView getWaterDepthAlphaView(uint32_t frameIndex) const { return waterDepthAlphaImageViews[frameIndex]; }
-    VkImageView getWaterNormalView(uint32_t frameIndex) const { return waterNormalImageViews[frameIndex]; }
-    VkImageView getWaterMaskView(uint32_t frameIndex) const { return waterMaskImageViews[frameIndex]; }
     
     // Get scene offscreen target views (for rendering scene before water)
     VkImage getSceneColorImage(uint32_t frameIndex) const { return sceneColorImages[frameIndex]; }
@@ -150,14 +148,7 @@ private:
     // Alternate view that swizzles alpha (linear depth) into RGB for debug display
     std::array<VkImageView, 2> waterDepthAlphaImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
-    std::array<VkImage, 2> waterNormalImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkDeviceMemory, 2> waterNormalMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageView, 2> waterNormalImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-
-    // Water mask (where water exists)
-    std::array<VkImage, 2> waterMaskImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkDeviceMemory, 2> waterMaskMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageView, 2> waterMaskImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    // (Normals and mask images removed — water pass now only outputs a single color target)
     
     // Water geometry pass depth buffer (per-frame)
     std::array<VkImage, 2> waterGeomDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
