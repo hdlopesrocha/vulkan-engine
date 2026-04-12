@@ -30,6 +30,28 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
     if (!app) return;
     VkDevice device = app->getDevice();
 
+    // Create a simple sampler used as a fallback for widget previews
+    if (widgetSampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo sci{};
+        sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sci.magFilter = VK_FILTER_LINEAR;
+        sci.minFilter = VK_FILTER_LINEAR;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.anisotropyEnable = VK_FALSE;
+        sci.maxAnisotropy = 1.0f;
+        sci.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        sci.unnormalizedCoordinates = VK_FALSE;
+        sci.compareEnable = VK_FALSE;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        if (vkCreateSampler(device, &sci, nullptr, &widgetSampler) == VK_SUCCESS) {
+            app->resources.addSampler(widgetSampler, "RenderTargetsWidget: widgetSampler");
+        } else {
+            widgetSampler = VK_NULL_HANDLE;
+        }
+    }
+
     // Create a tiny renderpass for the linearize write (color output)
     if (linearizeRenderPass == VK_NULL_HANDLE) {
         VkAttachmentDescription att{};
@@ -805,6 +827,24 @@ void RenderTargetsWidget::cleanup() {
         }
         linearizeRenderPass = VK_NULL_HANDLE;
     }
+
+    // Destroy widget-owned sampler
+    if (widgetSampler != VK_NULL_HANDLE) {
+        VkSampler tmp = widgetSampler;
+        if (a && a->hasPendingCommandBuffers()) {
+            VkFence f = VK_NULL_HANDLE;
+            uint32_t fi = a->getCurrentFrame();
+            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
+            a->deferDestroyUntilFence(f, [tmp, a]() {
+                a->resources.removeSampler(tmp);
+                vkDestroySampler(a->getDevice(), tmp, nullptr);
+            });
+        } else {
+            a->resources.removeSampler(tmp);
+            vkDestroySampler(a->getDevice(), tmp, nullptr);
+        }
+        widgetSampler = VK_NULL_HANDLE;
+    }
 }
 
 void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
@@ -827,67 +867,49 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     // allocating a new descriptor every frame (which was causing the growth
     // seen in the logs).
 
-    VkSampler sampler = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getLinearSampler() : VK_NULL_HANDLE;
-    if (sampler == VK_NULL_HANDLE) return;
 
-    // Create only the ImGui descriptors needed for the current preview selection
-    VkSampler solid360Sampler = sampler;
-    if (sceneRenderer && sceneRenderer->solid360Renderer) {
-        VkSampler s = sceneRenderer->solid360Renderer->getSolid360Sampler();
-        if (s != VK_NULL_HANDLE) solid360Sampler = s;
-    }
 
     switch (selectedPreview) {
         case PreviewTarget::Sky: {
-            if (skyRenderer) {
-                VkImageView skyView = skyRenderer->getSkyView(frameIndex);
-                if (skyView != VK_NULL_HANDLE && skyDescriptor == VK_NULL_HANDLE) {
-                    skyDescriptor = ImGui_ImplVulkan_AddTexture(sampler, skyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    skyDescriptorOwned = true;
-                }
+            if (skyDescriptor == VK_NULL_HANDLE) {
+                skyDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, skyRenderer->getSkyView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                skyDescriptorOwned = true;
             }
+            
         } break;
 
         case PreviewTarget::SolidColor: {
-            if (solidRenderer) {
-                VkImageView solidView = solidRenderer->getColorView(frameIndex);
-                if (solidView != VK_NULL_HANDLE && solidColorDescriptor == VK_NULL_HANDLE) {
-                    solidColorDescriptor = ImGui_ImplVulkan_AddTexture(sampler, solidView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    solidColorDescriptorOwned = true;
-                }
+            if (solidColorDescriptor == VK_NULL_HANDLE) {
+                solidColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, solidRenderer->getColorView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                solidColorDescriptorOwned = true;
             }
+            
         } break;
 
         case PreviewTarget::SolidDepth: {
-            if (solidRenderer) {
-                VkImageView depthView = solidRenderer->getDepthView(frameIndex);
-                if (depthView != VK_NULL_HANDLE && solidDepthDescriptor == VK_NULL_HANDLE) {
-                    VkSampler depthSampler = (shadowMapper) ? shadowMapper->getShadowMapSampler() : sampler;
-                    solidDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    solidDepthDescriptorOwned = true;
-                }
+            if (solidDepthDescriptor == VK_NULL_HANDLE) {
+                VkSampler depthSampler = (shadowMapper) ? shadowMapper->getShadowMapSampler() : widgetSampler;
+                solidDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler,  solidRenderer->getDepthView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                solidDepthDescriptorOwned = true;
             }
+            
         } break;
 
         case PreviewTarget::Solid360Equirect: {
-            VkImageView cube360EquirectView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
-            if (cube360EquirectView != VK_NULL_HANDLE) {
-                cube360EquirectRenderer.render(app, solid360Sampler, cube360EquirectView);
-                if (cube360EquirectDescriptor == VK_NULL_HANDLE) {
-                    VkImageView equirectView = cube360EquirectRenderer.getEquirectView();
-                    if (equirectView != VK_NULL_HANDLE) {
-                        cube360EquirectDescriptor = ImGui_ImplVulkan_AddTexture(solid360Sampler, equirectView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                        cube360EquirectDescriptorOwned = true;
-                    }
-                }
+            cube360EquirectRenderer.render(app, widgetSampler, sceneRenderer->solid360Renderer->getSolid360View());
+            if (cube360EquirectDescriptor == VK_NULL_HANDLE) {
+                cube360EquirectDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, cube360EquirectRenderer.getEquirectView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                cube360EquirectDescriptorOwned = true;
+                
             }
+            
         } break;
 
         case PreviewTarget::Solid360Cube: {
             uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
             VkImageView faceView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360FaceView(f) : VK_NULL_HANDLE;
             if (faceView != VK_NULL_HANDLE && cube360FaceDescriptor[f] == VK_NULL_HANDLE) {
-                cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(solid360Sampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(widgetSampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 cube360FaceDescriptorOwned[f] = true;
             }
         } break;
@@ -895,7 +917,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         case PreviewTarget::WaterColor: {
             VkImageView waterView = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getWaterDepthView(frameIndex) : VK_NULL_HANDLE;
             if (waterView != VK_NULL_HANDLE && waterColorDescriptor == VK_NULL_HANDLE) {
-                waterColorDescriptor = ImGui_ImplVulkan_AddTexture(sampler, waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                waterColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 waterColorDescriptorOwned = true;
             }
         } break;
@@ -933,7 +955,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         // Prepare a sampler for sampling depth textures (prefer shadow sampler)
         VkSampler depthSampler = VK_NULL_HANDLE;
         if (shadowMapper) depthSampler = shadowMapper->getShadowMapSampler();
-        if (depthSampler == VK_NULL_HANDLE) depthSampler = sampler;
+        if (depthSampler == VK_NULL_HANDLE) depthSampler = widgetSampler;
 
         // Run the pass for scene depth (use perspective linearization)
         if (solidRenderer && linearizePipeline != VK_NULL_HANDLE && linearSceneFramebuffer != VK_NULL_HANDLE) {
@@ -943,7 +965,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, src, depthSampler, sampler, linearSceneDepthView, linearSceneFramebuffer,
+                runLinearizePass(app, src, depthSampler, widgetSampler, linearSceneDepthView, linearSceneFramebuffer,
                                  linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
                 fprintf(stderr, "[RenderTargetsWidget] Scene linearize: pass completed\n");
@@ -959,7 +981,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, src, depthSampler, sampler, linearBackFaceDepthView, linearBackFaceFramebuffer,
+                runLinearizePass(app, src, depthSampler, widgetSampler, linearBackFaceDepthView, linearBackFaceFramebuffer,
                                  linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
                 fprintf(stderr, "[RenderTargetsWidget] Backface linearize: pass completed\n");
@@ -982,7 +1004,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, src, depthSampler, sampler, linearSceneDepthView, linearSceneFramebuffer,
+                runLinearizePass(app, src, depthSampler, widgetSampler, linearSceneDepthView, linearSceneFramebuffer,
                                  linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
                 fprintf(stderr, "[RenderTargetsWidget] Water linearize: pass completed\n");
@@ -1004,7 +1026,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
                 VkImageView src = shadowMapper->getShadowMapView(c);
                 if (src != VK_NULL_HANDLE && linearShadowFramebuffer[c] != VK_NULL_HANDLE) {
                     float nearP = 0.0f, farP = 1.0f;
-                    runLinearizePass(app, src, depthSampler, sampler, linearShadowDepthView[c], linearShadowFramebuffer[c],
+                    runLinearizePass(app, src, depthSampler, widgetSampler, linearShadowDepthView[c], linearShadowFramebuffer[c],
                                      linearShadowDepthDescriptor[c], linearShadowDepthDescriptorOwned[c], shadowSize, shadowSize, nearP, farP, 1.0f);
                     fprintf(stderr, "[RenderTargetsWidget] Shadow linearize: cascade=%d done\n", c);
                 }
@@ -1029,7 +1051,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     if (linearSceneDepthDescriptor == VK_NULL_HANDLE && solidRenderer) {
         VkImageView sceneDepthView = solidRenderer->getDepthView(frameIndex);
         if (sceneDepthView != VK_NULL_HANDLE) {
-            VkSampler depthSampler = shadowMapper ? shadowMapper->getShadowMapSampler() : sampler;
+            VkSampler depthSampler = shadowMapper ? shadowMapper->getShadowMapSampler() : widgetSampler;
             linearSceneDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             linearSceneDepthDescriptorOwned = true;
         }
@@ -1037,7 +1059,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     // Back-face depth (water): alias to water back-face depth view
     VkImageView bfView2 = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
     if (linearBackFaceDepthDescriptor == VK_NULL_HANDLE && bfView2 != VK_NULL_HANDLE) {
-        VkSampler depthSampler = shadowMapper ? shadowMapper->getShadowMapSampler() : sampler;
+        VkSampler depthSampler = shadowMapper ? shadowMapper->getShadowMapSampler() : widgetSampler;
         linearBackFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, bfView2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         linearBackFaceDepthDescriptorOwned = true;
     }
