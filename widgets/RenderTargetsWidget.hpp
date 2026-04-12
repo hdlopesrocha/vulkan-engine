@@ -116,11 +116,11 @@ private:
         Solid360Equirect,
         SolidColor,
         SolidDepth,
-        WaterWorldPos,
-        WaterLinearDepth,
-        WaterBackFace,
+        BackFaceColor,
+        BackFaceDepth,
+        WaterColor,
+        WaterDepth,
         LinearSceneDepth,
-        LinearBackFaceDepth,
         ShadowCascade,
         Count
     };
