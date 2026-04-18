@@ -80,22 +80,23 @@ public:
     void cleanup(VkDevice device);
 
     // Remove methods (called when an owner explicitly destroys a handle)
-    void removeDeviceMemory(VkDeviceMemory mem);
-    void removeImage(VkImage img);
-    void removeImageView(VkImageView iv);
-    void removeSampler(VkSampler s);
-    void removeFramebuffer(VkFramebuffer fb);
-    void removeBuffer(VkBuffer b);
-    void removePipeline(VkPipeline p);
-    void removePipelineLayout(VkPipelineLayout pl);
-    void removeShaderModule(VkShaderModule m);
-    void removeDescriptorPool(VkDescriptorPool dp);
-    void removeDescriptorSet(VkDescriptorSet ds);
-    void removeDescriptorSetLayout(VkDescriptorSetLayout dsl);
-    void removeRenderPass(VkRenderPass rp);
-    void removeSemaphore(VkSemaphore s);
-    void removeFence(VkFence f);
-    void removeCommandPool(VkCommandPool cp);
+    // Remove methods return true if the resource was tracked and erased.
+    bool removeDeviceMemory(VkDeviceMemory mem);
+    bool removeImage(VkImage img);
+    bool removeImageView(VkImageView iv);
+    bool removeSampler(VkSampler s);
+    bool removeFramebuffer(VkFramebuffer fb);
+    bool removeBuffer(VkBuffer b);
+    bool removePipeline(VkPipeline p);
+    bool removePipelineLayout(VkPipelineLayout pl);
+    bool removeShaderModule(VkShaderModule m);
+    bool removeDescriptorPool(VkDescriptorPool dp);
+    bool removeDescriptorSet(VkDescriptorSet ds);
+    bool removeDescriptorSetLayout(VkDescriptorSetLayout dsl);
+    bool removeRenderPass(VkRenderPass rp);
+    bool removeSemaphore(VkSemaphore s);
+    bool removeFence(VkFence f);
+    bool removeCommandPool(VkCommandPool cp);
 
 private:
     mutable std::mutex mtx;

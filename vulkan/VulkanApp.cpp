@@ -3,6 +3,7 @@
 #include <vector>
 #include <stdexcept>
 #include <unordered_set>
+#include <cstdio>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
 #include <mutex>
@@ -1023,7 +1024,7 @@ void VulkanApp::waitForFrameFences() {
     }
 }
 
-void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) {
+void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory, const char* debugName) {
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -1043,9 +1044,10 @@ void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, Vk
         throw std::runtime_error("failed to create image!");
     }
 
-    // Debug: log the created image handle and requested usage flags
-    printf("[VulkanApp::createImage] created image=%p usage=0x%08x size=%ux%u format=%d mipLevels=%u arrayLayers=%u\n",
-           (void*)image, (unsigned int)usage, width, height, (int)format, mipLevelCount, imageInfo.arrayLayers);
+        // Debug: log the created image handle and requested usage flags
+        printf("[VulkanApp::createImage] created image=%p usage=0x%08x size=%ux%u format=%d mipLevels=%u arrayLayers=%u name=%s\n",
+            (void*)image, (unsigned int)usage, width, height, (int)format, mipLevelCount, imageInfo.arrayLayers,
+            debugName ? debugName : "unnamed");
 
     VkMemoryRequirements memRequirements;
     vkGetImageMemoryRequirements(device, image, &memRequirements);
@@ -1060,9 +1062,23 @@ void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, Vk
     }
 
     vkBindImageMemory(device, image, imageMemory, 0);
-    // Register image and its memory for final-sweep safety
-    resources.addImage(image, "VulkanApp: image");
-    resources.addDeviceMemory(imageMemory, "VulkanApp: imageMemory");
+    // Register image and its memory for final-sweep safety (use debug name if provided)
+    resources.addImage(image, debugName ? debugName : "VulkanApp: image");
+    if (debugName) {
+        std::string memDesc = std::string(debugName) + " memory";
+        resources.addDeviceMemory(imageMemory, memDesc.c_str());
+    } else {
+        resources.addDeviceMemory(imageMemory, "VulkanApp: imageMemory");
+    }
+    // Initialize per-layer layout tracking (default UNDEFINED)
+    {
+        std::lock_guard<std::mutex> lk(imageLayoutMutex);
+        uint32_t layers = imageInfo.arrayLayers;
+        for (uint32_t l = 0; l < layers; ++l) {
+            uint64_t key = ( (uint64_t)(uintptr_t)image << 32 ) | (uint64_t)l;
+            imageLayerLayouts[key] = VK_IMAGE_LAYOUT_UNDEFINED;
+        }
+    }
 }
 
 void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount, uint32_t baseArrayLayer) {
@@ -1079,6 +1095,17 @@ void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t tex
     runSingleTimeCommands([&](VkCommandBuffer cmd) {
         recordGenerateMipmaps(cmd, image, imageFormat, texWidth, texHeight, mipLevels, layerCount, baseArrayLayer);
     });
+
+    // Update authoritative tracked layout for the affected layers after
+    // performing the synchronous transition so future record-time callers
+    // observe the correct oldLayout.
+    {
+        std::lock_guard<std::mutex> lk(imageLayoutMutex);
+        for (uint32_t l = 0; l < layerCount; ++l) {
+            uint64_t key = ((uint64_t)(uintptr_t)image << 32) | (uint64_t)(baseArrayLayer + l);
+            imageLayerLayouts[key] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+    }
 }
 
 // Record mipmap generation commands into an existing command buffer (no begin/end or wait)
@@ -1384,15 +1411,48 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
     if (image == VK_NULL_HANDLE) {
         throw std::runtime_error("transitionImageLayout called with VK_NULL_HANDLE image!");
     }
+    auto aspectFromFormat = [](VkFormat fmt) -> VkImageAspectFlags {
+        switch (fmt) {
+            case VK_FORMAT_D16_UNORM:
+            case VK_FORMAT_X8_D24_UNORM_PACK32:
+            case VK_FORMAT_D32_SFLOAT:
+                return VK_IMAGE_ASPECT_DEPTH_BIT;
+            case VK_FORMAT_D16_UNORM_S8_UINT:
+            case VK_FORMAT_D24_UNORM_S8_UINT:
+            case VK_FORMAT_D32_SFLOAT_S8_UINT:
+                return VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+            default:
+                return VK_IMAGE_ASPECT_COLOR_BIT;
+        }
+    };
+
     runSingleTimeCommands([&](VkCommandBuffer commandBuffer){
+        // For whole-image synchronous transitions use baseArrayLayer=0 and
+        // cover all array layers. Prefer the app-tracked layout if present.
+        VkImageLayout effectiveOld = oldLayout;
+        {
+            std::lock_guard<std::mutex> lk(imageLayoutMutex);
+            uint64_t key = ((uint64_t)(uintptr_t)image << 32) | (uint64_t)0;
+            auto it = imageLayerLayouts.find(key);
+            if (it != imageLayerLayouts.end()) {
+                VkImageLayout tracked = it->second;
+                if (tracked != oldLayout) {
+                    fprintf(stderr, "[VulkanApp] transitionImageLayoutLayer: image=%p callerOld=%d trackedOld=%d -> using tracked\n", (void*)image, (int)oldLayout, (int)tracked);
+                    effectiveOld = tracked;
+                }
+            } else {
+                imageLayerLayouts[key] = oldLayout;
+            }
+        }
+
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = oldLayout;
+        barrier.oldLayout = effectiveOld;
         barrier.newLayout = newLayout;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.aspectMask = aspectFromFormat(format);
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = mipLevels;
         barrier.subresourceRange.baseArrayLayer = 0;
@@ -1413,6 +1473,12 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
 
             sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        } else if ((oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            // Transition depth attachment -> shader read (for sampling depth textures)
+            barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         } else {
             throw std::invalid_argument("unsupported layout transition!");
         }
@@ -1425,8 +1491,164 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             0, nullptr,
             1, &barrier
         );
+        // Update authoritative tracked layout for the affected layers
+        {
+            std::lock_guard<std::mutex> lk(imageLayoutMutex);
+            for (uint32_t l = 0; l < arrayLayers; ++l) {
+                uint64_t key = ((uint64_t)(uintptr_t)image << 32) | (uint64_t)l;
+                imageLayerLayouts[key] = newLayout;
+            }
+        }
     });
 }
+
+    VkCommandBuffer VulkanApp::allocatePrimaryCommandBuffer() {
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandPool = commandPool;
+        allocInfo.commandBufferCount = 1;
+
+        // Follow lock ordering used elsewhere: acquire queueSubmitMutex then commandPoolMutex
+        std::lock_guard<std::mutex> lk(queueSubmitMutex);
+        std::lock_guard<std::mutex> lockC(commandPoolMutex);
+        if (vkAllocateCommandBuffers(device, &allocInfo, &cmd) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate command buffer for async submit");
+        }
+        return cmd;
+    }
+
+    void VulkanApp::recordTransitionImageLayoutLayer(VkCommandBuffer commandBuffer, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount) {
+        if (commandBuffer == VK_NULL_HANDLE) throw std::runtime_error("recordTransitionImageLayoutLayer called with VK_NULL_HANDLE commandBuffer");
+        if (image == VK_NULL_HANDLE) throw std::runtime_error("recordTransitionImageLayoutLayer called with VK_NULL_HANDLE image");
+
+        // If caller requested a no-op transition (old == new), skip emitting a barrier.
+        if (oldLayout == newLayout) {
+            fprintf(stderr, "[VulkanApp] recordTransitionImageLayoutLayer: image=%p old==new (%d), skipping\n", (void*)image, (int)oldLayout);
+            return;
+        }
+
+        // Determine authoritative oldLayout per image-layer. If the caller's
+        // supplied oldLayout disagrees with the app-tracked layout, prefer the
+        // app-tracked value to avoid validation-layer VUID-oldLayout-01197.
+        VkImageLayout effectiveOld = oldLayout;
+        {
+            std::lock_guard<std::mutex> lk(imageLayoutMutex);
+            uint64_t key = ((uint64_t)(uintptr_t)image << 32) | (uint64_t)baseArrayLayer;
+            auto it = imageLayerLayouts.find(key);
+            if (it != imageLayerLayouts.end()) {
+                VkImageLayout tracked = it->second;
+                if (tracked != oldLayout) {
+                    fprintf(stderr, "[VulkanApp] recordTransitionImageLayoutLayer: image=%p callerOld=%d trackedOld=%d -> using tracked\\n", (void*)image, (int)oldLayout, (int)tracked);
+                    effectiveOld = tracked;
+                }
+            } else {
+                // Initialize tracking for this layer from caller's oldLayout.
+                imageLayerLayouts[key] = oldLayout;
+            }
+        }
+
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = effectiveOld;
+        barrier.newLayout = newLayout;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image;
+        auto aspectFromFormat = [](VkFormat fmt) -> VkImageAspectFlags {
+            switch (fmt) {
+                case VK_FORMAT_D16_UNORM:
+                case VK_FORMAT_X8_D24_UNORM_PACK32:
+                case VK_FORMAT_D32_SFLOAT:
+                    return VK_IMAGE_ASPECT_DEPTH_BIT;
+                case VK_FORMAT_D16_UNORM_S8_UINT:
+                case VK_FORMAT_D24_UNORM_S8_UINT:
+                case VK_FORMAT_D32_SFLOAT_S8_UINT:
+                    return VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+                default:
+                    return VK_IMAGE_ASPECT_COLOR_BIT;
+            }
+        };
+        barrier.subresourceRange.aspectMask = aspectFromFormat(format);
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = mipLevels;
+        barrier.subresourceRange.baseArrayLayer = baseArrayLayer;
+        barrier.subresourceRange.layerCount = layerCount;
+
+        // Debug: print immediate transition details
+        fprintf(stderr, "[VulkanApp] transitionImageLayoutLayer (single-time): image=%p oldLayout=%d newLayout=%d mipLevels=%u baseArrayLayer=%u layerCount=%u\n",
+            (void*)image, (int)oldLayout, (int)newLayout, (unsigned)mipLevels, (unsigned)baseArrayLayer, (unsigned)layerCount);
+
+            // Debug: print requested transition details to help trace oldLayout mismatches
+            fprintf(stderr, "[VulkanApp] recordTransitionImageLayoutLayer: cmd=%p image=%p oldLayout=%d newLayout=%d mipLevels=%u baseArrayLayer=%u layerCount=%u\n",
+                (void*)commandBuffer, (void*)image, (int)oldLayout, (int)newLayout, (unsigned)mipLevels, (unsigned)baseArrayLayer, (unsigned)layerCount);
+
+        VkPipelineStageFlags sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        VkPipelineStageFlags destinationStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+
+        if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_GENERAL) {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_GENERAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        } else if ((oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+                barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            } else {
+                barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            }
+            sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        } else {
+            barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+            sourceStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+            destinationStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        }
+
+        // Debug: log chosen access masks and pipeline stages for this barrier
+        fprintf(stderr, "[VulkanApp] recordTransitionImageLayoutLayer: image=%p old=%d new=%d srcAccess=0x%x dstAccess=0x%x srcStage=0x%x dstStage=0x%x aspect=0x%x\n",
+            (void*)image, (int)barrier.oldLayout, (int)newLayout, (unsigned)barrier.srcAccessMask, (unsigned)barrier.dstAccessMask, (unsigned)sourceStage, (unsigned)destinationStage, (unsigned)barrier.subresourceRange.aspectMask);
+
+        vkCmdPipelineBarrier(
+            commandBuffer,
+            sourceStage, destinationStage,
+            0,
+            0, nullptr,
+            0, nullptr,
+            1, &barrier
+        );
+        // Update authoritative tracked layout for the affected layers
+        {
+            std::lock_guard<std::mutex> lk(imageLayoutMutex);
+            for (uint32_t l = 0; l < layerCount; ++l) {
+                uint64_t key = ((uint64_t)(uintptr_t)image << 32) | (uint64_t)(baseArrayLayer + l);
+                imageLayerLayouts[key] = newLayout;
+            }
+        }
+    }
 
 void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount) {
     if (image == VK_NULL_HANDLE) throw std::runtime_error("transitionImageLayoutLayer called with VK_NULL_HANDLE image");
@@ -1438,11 +1660,31 @@ void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkIma
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        auto aspectFromFormat = [](VkFormat fmt) -> VkImageAspectFlags {
+            switch (fmt) {
+                case VK_FORMAT_D16_UNORM:
+                case VK_FORMAT_X8_D24_UNORM_PACK32:
+                case VK_FORMAT_D32_SFLOAT:
+                    return VK_IMAGE_ASPECT_DEPTH_BIT;
+                case VK_FORMAT_D16_UNORM_S8_UINT:
+                case VK_FORMAT_D24_UNORM_S8_UINT:
+                case VK_FORMAT_D32_SFLOAT_S8_UINT:
+                    return VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+                default:
+                    return VK_IMAGE_ASPECT_COLOR_BIT;
+            }
+        };
+        barrier.subresourceRange.aspectMask = aspectFromFormat(format);
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = mipLevels;
         barrier.subresourceRange.baseArrayLayer = baseArrayLayer;
         barrier.subresourceRange.layerCount = layerCount;
+
+        // If caller requested a no-op transition (old == new), skip emitting a barrier.
+        if (oldLayout == newLayout) {
+            fprintf(stderr, "[VulkanApp] transitionImageLayoutLayer: image=%p old==new (%d), skipping\n", (void*)image, (int)oldLayout);
+            return;
+        }
 
         VkPipelineStageFlags sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         VkPipelineStageFlags destinationStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
@@ -1468,6 +1710,21 @@ void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkIma
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             sourceStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        } else if ((oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
+            // Transition from shader-read back to a depth attachment layout (write or read-only).
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+                barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            } else {
+                barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            }
+            sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         } else {
             // Fallback conservative barrier
             barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
@@ -1475,6 +1732,10 @@ void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkIma
             sourceStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
             destinationStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
         }
+
+        // Debug: log chosen access masks and pipeline stages for this barrier
+        fprintf(stderr, "[VulkanApp] transitionImageLayoutLayer: image=%p old=%d new=%d srcAccess=0x%x dstAccess=0x%x srcStage=0x%x dstStage=0x%x aspect=0x%x\n",
+                (void*)image, (int)oldLayout, (int)newLayout, (unsigned)barrier.srcAccessMask, (unsigned)barrier.dstAccessMask, (unsigned)sourceStage, (unsigned)destinationStage, (unsigned)barrier.subresourceRange.aspectMask);
 
         vkCmdPipelineBarrier(
             commandBuffer,
@@ -1485,6 +1746,19 @@ void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkIma
             1, &barrier
         );
     });
+}
+
+// Update the authoritative tracked layout for the specified image layers
+// without emitting any pipeline barrier. Useful when the layout change is
+// performed implicitly by a render pass (finalLayout) or other recorded
+// commands and we only need to synchronize our tracked state.
+void VulkanApp::setImageLayoutTracked(VkImage image, VkImageLayout newLayout, uint32_t baseArrayLayer, uint32_t layerCount) {
+    if (image == VK_NULL_HANDLE) return;
+    std::lock_guard<std::mutex> lk(imageLayoutMutex);
+    for (uint32_t l = 0; l < layerCount; ++l) {
+        uint64_t key = ((uint64_t)(uintptr_t)image << 32) | (uint64_t)(baseArrayLayer + l);
+        imageLayerLayouts[key] = newLayout;
+    }
 }
 
 // Deferred-destruction helpers
@@ -2744,8 +3018,7 @@ void VulkanApp::cleanupSwapchain() {
     // destroy framebuffers
     for (auto fb : swapchainFramebuffers) {
         if (fb != VK_NULL_HANDLE) {
-            resources.removeFramebuffer(fb);
-            vkDestroyFramebuffer(device, fb, nullptr);
+            if (resources.removeFramebuffer(fb)) vkDestroyFramebuffer(device, fb, nullptr);
         }
     }
     swapchainFramebuffers.clear();
@@ -2755,8 +3028,7 @@ void VulkanApp::cleanupSwapchain() {
     // released before device teardown (avoid manager ordering surprises).
     for (auto &iv : swapchainImageViews) {
         if (iv != VK_NULL_HANDLE) {
-            resources.removeImageView(iv);
-            vkDestroyImageView(device, iv, nullptr);
+            if (resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr);
             iv = VK_NULL_HANDLE;
         }
     }
@@ -2765,18 +3037,15 @@ void VulkanApp::cleanupSwapchain() {
     // destroy depth resources
     // Unregister and destroy depth resources now
     if (depthImageView != VK_NULL_HANDLE) {
-        resources.removeImageView(depthImageView);
-        vkDestroyImageView(device, depthImageView, nullptr);
+        if (resources.removeImageView(depthImageView)) vkDestroyImageView(device, depthImageView, nullptr);
         depthImageView = VK_NULL_HANDLE;
     }
     if (depthImage != VK_NULL_HANDLE) {
-        resources.removeImage(depthImage);
-        vkDestroyImage(device, depthImage, nullptr);
+        if (resources.removeImage(depthImage)) vkDestroyImage(device, depthImage, nullptr);
         depthImage = VK_NULL_HANDLE;
     }
     if (depthImageMemory != VK_NULL_HANDLE) {
-        resources.removeDeviceMemory(depthImageMemory);
-        vkFreeMemory(device, depthImageMemory, nullptr);
+        if (resources.removeDeviceMemory(depthImageMemory)) vkFreeMemory(device, depthImageMemory, nullptr);
         depthImageMemory = VK_NULL_HANDLE;
     }
 

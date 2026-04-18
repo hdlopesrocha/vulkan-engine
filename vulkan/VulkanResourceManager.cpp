@@ -189,34 +189,28 @@ void VulkanResourceManager::addCommandPool(VkCommandPool cp, const char* desc) {
 }
 
 // Remove methods
-void VulkanResourceManager::removeDeviceMemory(VkDeviceMemory mem) {
+bool VulkanResourceManager::removeDeviceMemory(VkDeviceMemory mem) {
     std::lock_guard<std::mutex> lk(mtx);
-    size_t before = deviceMemories.size();
-    deviceMemories.erase((uintptr_t)mem);
-    /*fprintf(stderr, "[VulkanResourceManager] removeDeviceMemory this=%p mem=%p before=%zu after=%zu\n",
-            (void*)this, (void*)mem, before, deviceMemories.size());*/
+    return deviceMemories.erase((uintptr_t)mem) > 0;
 }
-void VulkanResourceManager::removeImage(VkImage img) { std::lock_guard<std::mutex> lk(mtx); images.erase((uintptr_t)img); }
-void VulkanResourceManager::removeImageView(VkImageView iv) { std::lock_guard<std::mutex> lk(mtx); imageViews.erase((uintptr_t)iv); }
-void VulkanResourceManager::removeSampler(VkSampler s) { std::lock_guard<std::mutex> lk(mtx); samplers.erase((uintptr_t)s); }
-void VulkanResourceManager::removeFramebuffer(VkFramebuffer fb) { std::lock_guard<std::mutex> lk(mtx); framebuffers.erase((uintptr_t)fb); }
-void VulkanResourceManager::removeBuffer(VkBuffer b) {
+bool VulkanResourceManager::removeImage(VkImage img) { std::lock_guard<std::mutex> lk(mtx); return images.erase((uintptr_t)img) > 0; }
+bool VulkanResourceManager::removeImageView(VkImageView iv) { std::lock_guard<std::mutex> lk(mtx); return imageViews.erase((uintptr_t)iv) > 0; }
+bool VulkanResourceManager::removeSampler(VkSampler s) { std::lock_guard<std::mutex> lk(mtx); return samplers.erase((uintptr_t)s) > 0; }
+bool VulkanResourceManager::removeFramebuffer(VkFramebuffer fb) { std::lock_guard<std::mutex> lk(mtx); return framebuffers.erase((uintptr_t)fb) > 0; }
+bool VulkanResourceManager::removeBuffer(VkBuffer b) {
     std::lock_guard<std::mutex> lk(mtx);
-    size_t before = buffers.size();
-    buffers.erase((uintptr_t)b);
-    /*fprintf(stderr, "[VulkanResourceManager] removeBuffer this=%p buf=%p before=%zu after=%zu\n",
-            (void*)this, (void*)b, before, buffers.size());*/
+    return buffers.erase((uintptr_t)b) > 0;
 }
-void VulkanResourceManager::removePipeline(VkPipeline p) { std::lock_guard<std::mutex> lk(mtx); pipelines.erase((uintptr_t)p); }
-void VulkanResourceManager::removePipelineLayout(VkPipelineLayout pl) { std::lock_guard<std::mutex> lk(mtx); pipelineLayouts.erase((uintptr_t)pl); }
-void VulkanResourceManager::removeShaderModule(VkShaderModule m) { std::lock_guard<std::mutex> lk(mtx); shaderModules.erase((uintptr_t)m); }
-void VulkanResourceManager::removeDescriptorPool(VkDescriptorPool dp) { std::lock_guard<std::mutex> lk(mtx); descriptorPools.erase((uintptr_t)dp); }
-void VulkanResourceManager::removeDescriptorSet(VkDescriptorSet ds) { std::lock_guard<std::mutex> lk(mtx); descriptorSets.erase((uintptr_t)ds); }
-void VulkanResourceManager::removeDescriptorSetLayout(VkDescriptorSetLayout dsl) { std::lock_guard<std::mutex> lk(mtx); descriptorSetLayouts.erase((uintptr_t)dsl); }
-void VulkanResourceManager::removeRenderPass(VkRenderPass rp) { std::lock_guard<std::mutex> lk(mtx); renderPasses.erase((uintptr_t)rp); }
-void VulkanResourceManager::removeSemaphore(VkSemaphore s) { std::lock_guard<std::mutex> lk(mtx); semaphores.erase((uintptr_t)s); }
-void VulkanResourceManager::removeFence(VkFence f) { std::lock_guard<std::mutex> lk(mtx); fences.erase((uintptr_t)f); }
-void VulkanResourceManager::removeCommandPool(VkCommandPool cp) { std::lock_guard<std::mutex> lk(mtx); commandPools.erase((uintptr_t)cp); }
+bool VulkanResourceManager::removePipeline(VkPipeline p) { std::lock_guard<std::mutex> lk(mtx); return pipelines.erase((uintptr_t)p) > 0; }
+bool VulkanResourceManager::removePipelineLayout(VkPipelineLayout pl) { std::lock_guard<std::mutex> lk(mtx); return pipelineLayouts.erase((uintptr_t)pl) > 0; }
+bool VulkanResourceManager::removeShaderModule(VkShaderModule m) { std::lock_guard<std::mutex> lk(mtx); return shaderModules.erase((uintptr_t)m) > 0; }
+bool VulkanResourceManager::removeDescriptorPool(VkDescriptorPool dp) { std::lock_guard<std::mutex> lk(mtx); return descriptorPools.erase((uintptr_t)dp) > 0; }
+bool VulkanResourceManager::removeDescriptorSet(VkDescriptorSet ds) { std::lock_guard<std::mutex> lk(mtx); return descriptorSets.erase((uintptr_t)ds) > 0; }
+bool VulkanResourceManager::removeDescriptorSetLayout(VkDescriptorSetLayout dsl) { std::lock_guard<std::mutex> lk(mtx); return descriptorSetLayouts.erase((uintptr_t)dsl) > 0; }
+bool VulkanResourceManager::removeRenderPass(VkRenderPass rp) { std::lock_guard<std::mutex> lk(mtx); return renderPasses.erase((uintptr_t)rp) > 0; }
+bool VulkanResourceManager::removeSemaphore(VkSemaphore s) { std::lock_guard<std::mutex> lk(mtx); return semaphores.erase((uintptr_t)s) > 0; }
+bool VulkanResourceManager::removeFence(VkFence f) { std::lock_guard<std::mutex> lk(mtx); return fences.erase((uintptr_t)f) > 0; }
+bool VulkanResourceManager::removeCommandPool(VkCommandPool cp) { std::lock_guard<std::mutex> lk(mtx); return commandPools.erase((uintptr_t)cp) > 0; }
 
 // Accessors
 const VulkanResourceManager::ResourceMap<VkDeviceMemory> &VulkanResourceManager::getDeviceMemoryMap() const { return deviceMemories; }

@@ -14,6 +14,8 @@
 
 #include <vulkan/vulkan.h>
 #include <mutex>
+#include <cstdint>
+#include <unordered_map>
 
 #include "vulkan.hpp"
 #include "VulkanResourceManager.hpp"
@@ -97,6 +99,11 @@ private:
 
     // Central resource manager for automatic cleanup
     VulkanResourceManager resources;
+    // Track per-image per-layer last-known layouts to avoid callers supplying
+    // stale oldLayout values that trigger validation errors. Key is a 64-bit
+    // composed from (image_ptr << 32) | baseArrayLayer.
+    mutable std::mutex imageLayoutMutex;
+    std::unordered_map<uint64_t, VkImageLayout> imageLayerLayouts;
     
     // mutex used by runSingleTimeCommands and other transient-pool users
     std::mutex transientPoolMutex;
@@ -306,11 +313,21 @@ protected:
         void runSingleTimeCommands(const std::function<void(VkCommandBuffer)>& fn);
 
         // Image helpers (moved from protected so external helpers can use them)
-        void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory);
+        void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory, const char* debugName = nullptr);
         void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels = 1, uint32_t arrayLayers = 1);
         // Transition a specific array layer range (baseArrayLayer, layerCount) synchronously.
         void transitionImageLayoutLayer(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);
+        // Update the authoritative tracked layout for an image (no barrier emitted).
+        void setImageLayoutTracked(VkImage image, VkImageLayout newLayout, uint32_t baseArrayLayer = 0, uint32_t layerCount = 1);
         void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+
+        // Allocate a primary command buffer from the app command pool for asynchronous submissions.
+        // Caller is responsible for recording commands (vkBeginCommandBuffer) and passing
+        // the command buffer to `submitCommandBufferAsync` (which will call vkEndCommandBuffer).
+        VkCommandBuffer allocatePrimaryCommandBuffer();
+
+        // Record an image layout transition into an existing command buffer (non-blocking).
+        void recordTransitionImageLayoutLayer(VkCommandBuffer commandBuffer, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);
 
         void run();
     // request the app to close the main window
