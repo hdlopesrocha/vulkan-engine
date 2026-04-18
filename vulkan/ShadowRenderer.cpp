@@ -108,6 +108,7 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         if (vkCreateImage(device, &imageInfo, nullptr, &cas.depthImage) != VK_SUCCESS)
             throw std::runtime_error("failed to create shadow map depth image cascade " + std::to_string(c));
+        fprintf(stderr, "[ShadowRenderer] createImage: cascade=%d depthImage=%p tag=%s\n", c, (void*)cas.depthImage, (tag + " depthImage").c_str());
         app->resources.addImage(cas.depthImage, (tag + " depthImage").c_str());
 
         VkMemoryRequirements memReq;
@@ -133,19 +134,11 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
         app->resources.addImageView(cas.depthView, (tag + " depthView").c_str());
 
         // Transition depth to READ_ONLY so the render pass starts from a valid layout
-        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-            VkImageMemoryBarrier barrier{};
-            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.image = cas.depthImage;
-            barrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-        });
+        // Use the centralized helper so the authoritative layout map is updated.
+        app->transitionImageLayoutLayer(cas.depthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 1, 0, 1);
+
+        // Track that this cascade's depth image is now in READ_ONLY layout
+        cascadeDepthLayouts[c] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
         // ImGui descriptor for shadow map visualisation
         cas.imguiDescSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
@@ -166,6 +159,7 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
         colorInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         if (vkCreateImage(device, &colorInfo, nullptr, &cas.colorImage) != VK_SUCCESS)
             throw std::runtime_error("failed to create shadow color image cascade " + std::to_string(c));
+        fprintf(stderr, "[ShadowRenderer] createImage: cascade=%d colorImage=%p tag=%s\n", c, (void*)cas.colorImage, (tag + " colorImage").c_str());
         app->resources.addImage(cas.colorImage, (tag + " colorImage").c_str());
 
         vkGetImageMemoryRequirements(device, cas.colorImage, &memReq);
@@ -383,22 +377,7 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
         app->resources.addImageView(dummyDepthView, "ShadowRenderer: dummyDepthView");
 
         // Transition to DEPTH_STENCIL_READ_ONLY_OPTIMAL once at init
-        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-            VkImageMemoryBarrier b{};
-            b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            b.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-            b.newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            b.image               = dummyDepthImage;
-            b.subresourceRange    = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
-            b.srcAccessMask       = 0;
-            b.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-            vkCmdPipelineBarrier(cmd,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0, 0, nullptr, 0, nullptr, 1, &b);
-        });
+        app->transitionImageLayoutLayer(dummyDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 1, 0, 1);
     }
 }
 
@@ -408,20 +387,28 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
 
     // Transition shadow map from READ_ONLY to DEPTH_STENCIL_ATTACHMENT_OPTIMAL before shadow pass
     if (cas.depthImage != VK_NULL_HANDLE) {
-        VkImageMemoryBarrier barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = cas.depthImage;
-        barrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
-        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        vkCmdPipelineBarrier(commandBuffer,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &barrier);
+        fprintf(stderr, "[ShadowRenderer::beginShadowPass] transition (via app helper): cmd=%p image=%p cascade=%u old=%d new=%d\n",
+                (void*)commandBuffer, (void*)cas.depthImage, (unsigned)cascadeIndex, (int)cascadeDepthLayouts[cascadeIndex], (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        if (app) {
+            app->recordTransitionImageLayoutLayer(commandBuffer, cas.depthImage, VK_FORMAT_D32_SFLOAT, cascadeDepthLayouts[cascadeIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+        } else {
+            VkImageMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout = cascadeDepthLayouts[cascadeIndex];
+            barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = cas.depthImage;
+            barrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            vkCmdPipelineBarrier(commandBuffer,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &barrier);
+        }
+        // Recorded a transition to DEPTH_STENCIL_ATTACHMENT_OPTIMAL — update tracked layout
+        if (cascadeIndex < cascadeDepthLayouts.size()) cascadeDepthLayouts[cascadeIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
     if (shadowRenderPass == VK_NULL_HANDLE || cas.framebuffer == VK_NULL_HANDLE) {
@@ -489,10 +476,17 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer,
     vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
 }
 
-void ShadowRenderer::endShadowPass(VulkanApp* /*app*/, VkCommandBuffer commandBuffer, uint32_t /*cascadeIndex*/) {
+void ShadowRenderer::endShadowPass(VulkanApp* /*app*/, VkCommandBuffer commandBuffer, uint32_t cascadeIndex) {
     // The render pass finalLayout (DEPTH_STENCIL_READ_ONLY_OPTIMAL) automatically
     // transitions the cascade's shadow map to the correct layout for shader sampling.
     vkCmdEndRenderPass(commandBuffer);
+    // Update tracked layout to reflect the renderpass final layout
+    if (cascadeIndex < cascadeDepthLayouts.size()) cascadeDepthLayouts[cascadeIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+}
+
+VkImageLayout ShadowRenderer::getDepthLayout(uint32_t cascade) const {
+    if (cascade >= cascadeDepthLayouts.size()) return VK_IMAGE_LAYOUT_UNDEFINED;
+    return cascadeDepthLayouts[cascade];
 }
 
 void ShadowRenderer::requestWireframeReadback() {

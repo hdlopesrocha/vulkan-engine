@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vulkan.hpp"
+#include <array>
 #include "../Uniforms.hpp"
 
 class ShadowRenderer {
@@ -26,6 +27,8 @@ public:
     VkImageView getDummyDepthView() const { return dummyDepthView; }
     // Expose raw depth image for readback/debugging
     VkImage getDepthImage(uint32_t cascade = 0) const;
+    // Expose tracked layout for each cascade (used by debug widgets)
+    VkImageLayout getDepthLayout(uint32_t cascade = 0) const;
 private:
     uint32_t shadowMapSize;
 
@@ -69,4 +72,6 @@ private:
     // Debug helpers
     void render(VulkanApp* app, VkCommandBuffer commandBuffer, 
                       const VertexBufferObject& vbo, VkDescriptorSet descriptorSet);
+    // Track per-cascade depth image layouts for external callers
+    std::array<VkImageLayout, SHADOW_CASCADE_COUNT> cascadeDepthLayouts = {};
 };

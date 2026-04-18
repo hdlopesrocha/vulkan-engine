@@ -428,59 +428,23 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
 
     // Back-face depth targets are owned/created by SceneRenderer
 
-    // Transition all images to their required layouts
-    auto transitionImageLayout = [&](VkImage image, VkImageLayout& currentLayout, VkImageLayout newLayout, VkImageAspectFlags aspect) {
+    // Transition all images to their required layouts using the app helper
+    auto transitionImageLayout = [&](VkImage image, VkFormat format, VkImageLayout& currentLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount) {
         if (currentLayout != newLayout) {
-            app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-            VkImageMemoryBarrier barrier{};
-            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier.oldLayout = currentLayout;
-            barrier.newLayout = newLayout;
-            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.image = image;
-            barrier.subresourceRange.aspectMask = aspect;
-            barrier.subresourceRange.baseMipLevel = 0;
-            barrier.subresourceRange.levelCount = 1;
-            barrier.subresourceRange.baseArrayLayer = 0;
-            barrier.subresourceRange.layerCount = 1;
-            barrier.srcAccessMask = 0;
-
-            VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-            VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            if (newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            } else if (newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-                barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                dstStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            } else if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-                barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                dstStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-            } else {
-                barrier.dstAccessMask = 0;
-                dstStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-            }
-
-            vkCmdPipelineBarrier(
-                cmd,
-                srcStage,
-                dstStage,
-                0, 0, nullptr, 0, nullptr, 1, &barrier
-            );
-            });
+            // Use VulkanApp helper so tracked layouts are kept authoritative
+            app->transitionImageLayoutLayer(image, format, currentLayout, newLayout, mipLevels, baseArrayLayer, layerCount);
             currentLayout = newLayout;
         }
     };
 
     // Transition scene color images
     for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
-        transitionImageLayout(sceneColorImages[frameIdx], sceneColorImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
-        transitionImageLayout(sceneDepthImages[frameIdx], sceneDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+        transitionImageLayout(sceneColorImages[frameIdx], app->getSwapchainImageFormat(), sceneColorImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        transitionImageLayout(sceneDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, sceneDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
     }
     for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
-        transitionImageLayout(waterDepthImages[frameIdx], waterDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
-        transitionImageLayout(waterGeomDepthImages[frameIdx], waterGeomDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+        transitionImageLayout(waterDepthImages[frameIdx], VK_FORMAT_R32G32B32A32_SFLOAT, waterDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        transitionImageLayout(waterGeomDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, waterGeomDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
     }
 
     // Create per-frame water framebuffers using the dedicated water geometry depth buffer
@@ -573,6 +537,16 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
             fprintf(stderr, "[WaterRenderer] Skipping descriptor pool reset: device not idle (result=%d)\n", (int)r);
         }
     }
+}
+
+VkImageLayout WaterRenderer::getWaterGeomDepthLayout(uint32_t frameIndex) const {
+    if (frameIndex < 2) return waterGeomDepthImageLayouts[frameIndex];
+    return VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
+VkImageLayout WaterRenderer::getSceneDepthLayout(uint32_t frameIndex) const {
+    if (frameIndex < 2) return sceneDepthImageLayouts[frameIndex];
+    return VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<WaterParams>& waterParams) {
@@ -1105,11 +1079,22 @@ void WaterRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex) 
     // Depth-based back-face image barriers are handled by SceneRenderer-owned back-face renderer.
 
     if (!barriers.empty()) {
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 0, nullptr, 0, nullptr,
-            static_cast<uint32_t>(barriers.size()), barriers.data());
+        VulkanApp* a = getImGuiVulkanApp();
+        if (a) {
+            for (auto &b : barriers) {
+                a->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R32G32B32A32_SFLOAT,
+                                                    b.oldLayout, b.newLayout,
+                                                    b.subresourceRange.levelCount,
+                                                    b.subresourceRange.baseArrayLayer,
+                                                    b.subresourceRange.layerCount);
+            }
+        } else {
+            vkCmdPipelineBarrier(cmd,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 0, nullptr, 0, nullptr,
+                static_cast<uint32_t>(barriers.size()), barriers.data());
+        }
     }
 }
 

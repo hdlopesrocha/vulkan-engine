@@ -26,6 +26,8 @@ public:
                                               VkImage sceneDepthImage);
     VkImage getBackFaceDepthImage(uint32_t frameIndex) const { return (frameIndex < 2) ? backFaceDepthImages[frameIndex] : VK_NULL_HANDLE; }
     VkImageView getBackFaceDepthView(uint32_t frameIndex) const { return (frameIndex < 2) ? backFaceDepthImageViews[frameIndex] : VK_NULL_HANDLE; }
+    // Accessor for tracked per-frame layout (used by widgets to emit correct barriers)
+    VkImageLayout getBackFaceDepthLayout(uint32_t frameIndex) const;
 
     // Add post-render barriers for the back-face depth image
     void postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex);

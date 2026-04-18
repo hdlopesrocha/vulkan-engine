@@ -28,11 +28,14 @@ void WaterBackFaceRenderer::createRenderPass(VulkanApp* app) {
     VkAttachmentDescription bfDepthAtt{};
     bfDepthAtt.format = VK_FORMAT_D32_SFLOAT;
     bfDepthAtt.samples = VK_SAMPLE_COUNT_1_BIT;
-    bfDepthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    // Clear the back-face depth each frame so the buffer contains only
+    // water back-face geometry (do not initialize from scene depth).
+    bfDepthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     bfDepthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     bfDepthAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     bfDepthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    bfDepthAtt.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    // Start undefined so the clear will produce a defined depth buffer.
+    bfDepthAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     bfDepthAtt.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkAttachmentReference bfDepthRef{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
@@ -290,24 +293,11 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
     for (int i = 0; i < 2; ++i) {
         if (backFaceDepthImages[i] == VK_NULL_HANDLE) continue;
         app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-            VkImageMemoryBarrier barrier{};
-            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier.oldLayout = backFaceDepthImageLayouts[i];
-            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.image = backFaceDepthImages[i];
-            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-            barrier.subresourceRange.baseMipLevel = 0;
-            barrier.subresourceRange.levelCount = 1;
-            barrier.subresourceRange.baseArrayLayer = 0;
-            barrier.subresourceRange.layerCount = 1;
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            vkCmdPipelineBarrier(cmd,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0, 0, nullptr, 0, nullptr, 1, &barrier);
+            fprintf(stderr, "[WaterBackFaceRenderer::createRenderTargets] initial transition: cmd=%p image=%p old=%d new=%d\n",
+                    (void*)cmd, (void*)backFaceDepthImages[i], (int)backFaceDepthImageLayouts[i], (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[i], VK_FORMAT_D32_SFLOAT,
+                                                 backFaceDepthImageLayouts[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                 1, 0, 1);
         });
         backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
@@ -354,122 +344,37 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     VkClearValue bfClear{};
     bfClear.depthStencil = {1.0f, 0};
 
-    if (sceneDepthImage != VK_NULL_HANDLE) {
-        // Initialize the back-face depth buffer with scene depth so the back-face
-        // render is occluded by solid geometry and only visible water volume is captured.
-        VkImageMemoryBarrier copyBarriers[2]{};
-
-        copyBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        copyBarriers[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        copyBarriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        copyBarriers[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        copyBarriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        copyBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        copyBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        copyBarriers[0].image = sceneDepthImage;
-        copyBarriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        copyBarriers[0].subresourceRange.baseMipLevel = 0;
-        copyBarriers[0].subresourceRange.levelCount = 1;
-        copyBarriers[0].subresourceRange.baseArrayLayer = 0;
-        copyBarriers[0].subresourceRange.layerCount = 1;
-
-        copyBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        copyBarriers[1].srcAccessMask = (backFaceDepthImageLayouts[frameIndex] == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-            ? VK_ACCESS_SHADER_READ_BIT
-            : 0;
-        copyBarriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        copyBarriers[1].oldLayout = backFaceDepthImageLayouts[frameIndex];
-        copyBarriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        copyBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        copyBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        copyBarriers[1].image = backFaceDepthImages[frameIndex];
-        copyBarriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        copyBarriers[1].subresourceRange.baseMipLevel = 0;
-        copyBarriers[1].subresourceRange.levelCount = 1;
-        copyBarriers[1].subresourceRange.baseArrayLayer = 0;
-        copyBarriers[1].subresourceRange.layerCount = 1;
-
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 0, nullptr, 0, nullptr, 2, copyBarriers);
-
-        VkImageCopy copyRegion{};
-        copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        copyRegion.srcSubresource.baseArrayLayer = 0;
-        copyRegion.srcSubresource.layerCount = 1;
-        copyRegion.srcSubresource.mipLevel = 0;
-        copyRegion.srcOffset = {0, 0, 0};
-        copyRegion.dstSubresource = copyRegion.srcSubresource;
-        copyRegion.dstOffset = {0, 0, 0};
-        copyRegion.extent = {renderWidth, renderHeight, 1};
-
-        vkCmdCopyImage(cmd,
-            sceneDepthImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            backFaceDepthImages[frameIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1, &copyRegion);
-
-        VkImageMemoryBarrier loadBarrier{};
-        loadBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        loadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        loadBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        loadBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        loadBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        loadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        loadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        loadBarrier.image = backFaceDepthImages[frameIndex];
-        loadBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        loadBarrier.subresourceRange.baseMipLevel = 0;
-        loadBarrier.subresourceRange.levelCount = 1;
-        loadBarrier.subresourceRange.baseArrayLayer = 0;
-        loadBarrier.subresourceRange.layerCount = 1;
-
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &loadBarrier);
-
-        backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        VkImageMemoryBarrier sceneRestoreBarrier{};
-        sceneRestoreBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        sceneRestoreBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        sceneRestoreBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        sceneRestoreBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        sceneRestoreBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        sceneRestoreBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        sceneRestoreBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        sceneRestoreBarrier.image = sceneDepthImage;
-        sceneRestoreBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        sceneRestoreBarrier.subresourceRange.baseMipLevel = 0;
-        sceneRestoreBarrier.subresourceRange.levelCount = 1;
-        sceneRestoreBarrier.subresourceRange.baseArrayLayer = 0;
-        sceneRestoreBarrier.subresourceRange.layerCount = 1;
-
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &sceneRestoreBarrier);
-    } else if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-        VkImageMemoryBarrier fallbackBarrier{};
-        fallbackBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        fallbackBarrier.srcAccessMask = 0;
-        fallbackBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        fallbackBarrier.oldLayout = backFaceDepthImageLayouts[frameIndex];
-        fallbackBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        fallbackBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        fallbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        fallbackBarrier.image = backFaceDepthImages[frameIndex];
-        fallbackBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        fallbackBarrier.subresourceRange.baseMipLevel = 0;
-        fallbackBarrier.subresourceRange.levelCount = 1;
-        fallbackBarrier.subresourceRange.baseArrayLayer = 0;
-        fallbackBarrier.subresourceRange.layerCount = 1;
-
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &fallbackBarrier);
+    // Ensure the back-face depth image is in the depth-stencil-attachment layout
+    // so the render pass's clear will initialize it to 1.0 (far plane). Do not
+    // initialize from the scene depth here - the back-face preview must show
+    // only water back-face geometry (no solid occluders).
+    if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+        fprintf(stderr, "[WaterBackFaceRenderer::renderBackFacePass] fallbackBarrier: cmd=%p image=%p frame=%u old=%d new=%d\n",
+                (void*)cmd, (void*)backFaceDepthImages[frameIndex], (unsigned)frameIndex, (int)backFaceDepthImageLayouts[frameIndex], (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        if (app) {
+            app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
+                                                 backFaceDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                                 1, 0, 1);
+        } else {
+            VkImageMemoryBarrier fallbackBarrier{};
+            fallbackBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            fallbackBarrier.srcAccessMask = 0;
+            fallbackBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            fallbackBarrier.oldLayout = backFaceDepthImageLayouts[frameIndex];
+            fallbackBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            fallbackBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            fallbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            fallbackBarrier.image = backFaceDepthImages[frameIndex];
+            fallbackBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            fallbackBarrier.subresourceRange.baseMipLevel = 0;
+            fallbackBarrier.subresourceRange.levelCount = 1;
+            fallbackBarrier.subresourceRange.baseArrayLayer = 0;
+            fallbackBarrier.subresourceRange.layerCount = 1;
+            vkCmdPipelineBarrier(cmd,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &fallbackBarrier);
+        }
         backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
@@ -517,28 +422,33 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
 
     // Barrier to make depth writes visible to shader reads
     if (backFaceDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        // Only transition if current known layout differs from the desired
         if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            VkImageMemoryBarrier bfBarrier{};
-            bfBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            bfBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            bfBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            bfBarrier.oldLayout = backFaceDepthImageLayouts[frameIndex];
-            bfBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            bfBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            bfBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            bfBarrier.image = backFaceDepthImages[frameIndex];
-            bfBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-            bfBarrier.subresourceRange.baseMipLevel = 0;
-            bfBarrier.subresourceRange.levelCount = 1;
-            bfBarrier.subresourceRange.baseArrayLayer = 0;
-            bfBarrier.subresourceRange.layerCount = 1;
-
-            vkCmdPipelineBarrier(cmd,
-                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0, 0, nullptr, 0, nullptr, 1, &bfBarrier);
-
+            fprintf(stderr, "[WaterBackFaceRenderer::renderBackFacePass] post-render barrier: cmd=%p image=%p frame=%u old=%d new=%d\n",
+                    (void*)cmd, (void*)backFaceDepthImages[frameIndex], (unsigned)frameIndex, (int)backFaceDepthImageLayouts[frameIndex], (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            if (app) {
+                app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
+                                                     backFaceDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                     1, 0, 1);
+            } else {
+                VkImageMemoryBarrier bfBarrier{};
+                bfBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                bfBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                bfBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                bfBarrier.oldLayout = backFaceDepthImageLayouts[frameIndex];
+                bfBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                bfBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                bfBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                bfBarrier.image = backFaceDepthImages[frameIndex];
+                bfBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                bfBarrier.subresourceRange.baseMipLevel = 0;
+                bfBarrier.subresourceRange.levelCount = 1;
+                bfBarrier.subresourceRange.baseArrayLayer = 0;
+                bfBarrier.subresourceRange.layerCount = 1;
+                vkCmdPipelineBarrier(cmd,
+                    VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0, 0, nullptr, 0, nullptr, 1, &bfBarrier);
+            }
             backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
     }
@@ -549,23 +459,43 @@ void WaterBackFaceRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t fram
     if (frameIndex >= backFaceDepthImages.size()) return;
     if (backFaceDepthImages[frameIndex] == VK_NULL_HANDLE) return;
 
-    VkImageMemoryBarrier db{};
-    db.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    db.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    db.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    db.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    db.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    db.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    db.image = backFaceDepthImages[frameIndex];
-    db.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    db.subresourceRange.baseMipLevel = 0;
-    db.subresourceRange.levelCount = 1;
-    db.subresourceRange.baseArrayLayer = 0;
-    db.subresourceRange.layerCount = 1;
+    // Use tracked layout when available to avoid mismatches with the
+    // validation layer's known layout state at record time.
+    VkImageLayout trackedOld = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (frameIndex < backFaceDepthImageLayouts.size()) trackedOld = backFaceDepthImageLayouts[frameIndex];
 
-    vkCmdPipelineBarrier(cmd,
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, 0, nullptr, 0, nullptr, 1, &db);
+    fprintf(stderr, "[WaterBackFaceRenderer::postRenderBarrier] cmd=%p image=%p frame=%u trackedOld=%d new=%d\n",
+            (void*)cmd, (void*)backFaceDepthImages[frameIndex], (unsigned)frameIndex, (int)trackedOld, (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    VulkanApp* app = getImGuiVulkanApp();
+    if (app) {
+        app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
+                                             trackedOld, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                             1, 0, 1);
+    } else {
+        VkImageMemoryBarrier db{};
+        db.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        db.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        db.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        db.oldLayout = trackedOld;
+        db.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        db.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        db.image = backFaceDepthImages[frameIndex];
+        db.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        db.subresourceRange.baseMipLevel = 0;
+        db.subresourceRange.levelCount = 1;
+        db.subresourceRange.baseArrayLayer = 0;
+        db.subresourceRange.layerCount = 1;
+
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &db);
+    }
+}
+
+VkImageLayout WaterBackFaceRenderer::getBackFaceDepthLayout(uint32_t frameIndex) const {
+    if (frameIndex < backFaceDepthImageLayouts.size()) return backFaceDepthImageLayouts[frameIndex];
+    return VK_IMAGE_LAYOUT_UNDEFINED;
 }

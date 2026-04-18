@@ -47,45 +47,39 @@ static void cleanupTextureImage(VulkanApp* app, TextureImage &ti) {
 	// Destroy view
 	if (ti.view != VK_NULL_HANDLE) {
 		VkImageView v = ti.view;
-		// Remove from central manager so it won't be double-destroyed later
-		app->resources.removeImageView(v);
 		if (app->hasPendingCommandBuffers()) {
 			fprintf(stderr, "[TextureArrayManager] deferring vkDestroyImageView(%p) until pending cmds complete\n", (void*)v);
-			app->deferDestroyUntilAllPending([device, v, app](){ app->resources.removeImageView(v); vkDestroyImageView(device, v, nullptr); });
+			app->deferDestroyUntilAllPending([device, v, app](){ if (app->resources.removeImageView(v)) vkDestroyImageView(device, v, nullptr); });
 			ti.view = VK_NULL_HANDLE;
 		} else {
 			fprintf(stderr, "[TextureArrayManager] destroying vkDestroyImageView(%p) now\n", (void*)v);
-			vkDestroyImageView(device, ti.view, nullptr);
+			if (app->resources.removeImageView(v)) vkDestroyImageView(device, v, nullptr);
 			ti.view = VK_NULL_HANDLE;
 		}
 	}
 	// Destroy image
 	if (ti.image != VK_NULL_HANDLE) {
 		VkImage img = ti.image;
-		// Remove from manager to avoid later double-destroy
-		app->resources.removeImage(img);
 		if (app->hasPendingCommandBuffers()) {
 			fprintf(stderr, "[TextureArrayManager] deferring vkDestroyImage(%p) until pending cmds complete\n", (void*)img);
-			app->deferDestroyUntilAllPending([device, img, app](){ app->resources.removeImage(img); vkDestroyImage(device, img, nullptr); });
+			app->deferDestroyUntilAllPending([device, img, app](){ if (app->resources.removeImage(img)) vkDestroyImage(device, img, nullptr); });
 			ti.image = VK_NULL_HANDLE;
 		} else {
 			fprintf(stderr, "[TextureArrayManager] destroying vkDestroyImage(%p) now\n", (void*)img);
-			vkDestroyImage(device, ti.image, nullptr);
+			if (app->resources.removeImage(img)) vkDestroyImage(device, img, nullptr);
 			ti.image = VK_NULL_HANDLE;
 		}
 	}
 	// Free memory
 	if (ti.memory != VK_NULL_HANDLE) {
 		VkDeviceMemory mem = ti.memory;
-		// Remove from manager to avoid double-free
-		app->resources.removeDeviceMemory(mem);
 		if (app->hasPendingCommandBuffers()) {
 			fprintf(stderr, "[TextureArrayManager] deferring vkFreeMemory(%p) until pending cmds complete\n", (void*)mem);
-			app->deferDestroyUntilAllPending([device, mem, app](){ app->resources.removeDeviceMemory(mem); vkFreeMemory(device, mem, nullptr); });
+			app->deferDestroyUntilAllPending([device, mem, app](){ if (app->resources.removeDeviceMemory(mem)) vkFreeMemory(device, mem, nullptr); });
 			ti.memory = VK_NULL_HANDLE;
 		} else {
 			fprintf(stderr, "[TextureArrayManager] freeing vkFreeMemory(%p) now\n", (void*)mem);
-			vkFreeMemory(device, ti.memory, nullptr);
+			if (app->resources.removeDeviceMemory(mem)) vkFreeMemory(device, mem, nullptr);
 			ti.memory = VK_NULL_HANDLE;
 		}
 	}
@@ -99,15 +93,13 @@ static void cleanupSampler(VulkanApp* app, VkSampler &s) {
 	fprintf(stderr, "[TextureArrayManager] cleanupSampler: sampler=%p\n", (void*)s);
 	if (s != VK_NULL_HANDLE) {
 		VkSampler ss = s;
-		// Remove from central manager to avoid double-destroy
-		app->resources.removeSampler(ss);
 		if (app->hasPendingCommandBuffers()) {
 			fprintf(stderr, "[TextureArrayManager] deferring vkDestroySampler(%p) until pending cmds complete\n", (void*)ss);
-			app->deferDestroyUntilAllPending([device, ss, app](){ app->resources.removeSampler(ss); vkDestroySampler(device, ss, nullptr); });
+			app->deferDestroyUntilAllPending([device, ss, app](){ if (app->resources.removeSampler(ss)) vkDestroySampler(device, ss, nullptr); });
 			s = VK_NULL_HANDLE;
 		} else {
 			fprintf(stderr, "[TextureArrayManager] destroying vkDestroySampler(%p) now\n", (void*)ss);
-			vkDestroySampler(device, s, nullptr);
+			if (app->resources.removeSampler(ss)) vkDestroySampler(device, ss, nullptr);
 			s = VK_NULL_HANDLE;
 		}
 	}
@@ -165,15 +157,13 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 	for (auto &v : albedoLayerViews) {
 		if (v != VK_NULL_HANDLE) {
 			VkImageView iv = v;
-			// Ensure the central manager won't later try to destroy this image view
-			app->resources.removeImageView(iv);
 			if (app && app->hasPendingCommandBuffers()) {
 				fprintf(stderr, "[TextureArrayManager] deferring vkDestroyImageView(%p) for albedoLayerViews until pending cmds complete\n", (void*)iv);
-				app->deferDestroyUntilAllPending([device, iv, app](){ app->resources.removeImageView(iv); vkDestroyImageView(device, iv, nullptr); });
+				app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
 				v = VK_NULL_HANDLE;
 			} else {
 				fprintf(stderr, "[TextureArrayManager] destroying vkDestroyImageView(%p) for albedoLayerViews now\n", (void*)iv);
-				vkDestroyImageView(device, v, nullptr);
+				if (app->resources.removeImageView(iv)) vkDestroyImageView(device, v, nullptr);
 				v = VK_NULL_HANDLE;
 			}
 		}
@@ -181,14 +171,13 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 	for (auto &v : normalLayerViews) {
 		if (v != VK_NULL_HANDLE) {
 			VkImageView iv = v;
-			app->resources.removeImageView(iv);
 			if (app && app->hasPendingCommandBuffers()) {
 				fprintf(stderr, "[TextureArrayManager] deferring vkDestroyImageView(%p) for normalLayerViews until pending cmds complete\n", (void*)iv);
-				app->deferDestroyUntilAllPending([device, iv, app](){ app->resources.removeImageView(iv); vkDestroyImageView(device, iv, nullptr); });
+				app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
 				v = VK_NULL_HANDLE;
 			} else {
 				fprintf(stderr, "[TextureArrayManager] destroying vkDestroyImageView(%p) for normalLayerViews now\n", (void*)iv);
-				vkDestroyImageView(device, v, nullptr);
+				if (app->resources.removeImageView(iv)) vkDestroyImageView(device, v, nullptr);
 				v = VK_NULL_HANDLE;
 			}
 		}
@@ -196,14 +185,13 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 	for (auto &v : bumpLayerViews) {
 		if (v != VK_NULL_HANDLE) {
 			VkImageView iv = v;
-			app->resources.removeImageView(iv);
 			if (app && app->hasPendingCommandBuffers()) {
 				fprintf(stderr, "[TextureArrayManager] deferring vkDestroyImageView(%p) for bumpLayerViews until pending cmds complete\n", (void*)iv);
-				app->deferDestroyUntilAllPending([device, iv, app](){ app->resources.removeImageView(iv); vkDestroyImageView(device, iv, nullptr); });
+				app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
 				v = VK_NULL_HANDLE;
 			} else {
 				fprintf(stderr, "[TextureArrayManager] destroying vkDestroyImageView(%p) for bumpLayerViews now\n", (void*)iv);
-				vkDestroyImageView(device, v, nullptr);
+				if (app->resources.removeImageView(iv)) vkDestroyImageView(device, v, nullptr);
 				v = VK_NULL_HANDLE;
 			}
 		}
@@ -425,32 +413,13 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 		// Build command buffer and perform per-layer copy with barriers
 		a->runSingleTimeCommands([&](VkCommandBuffer cmd) {
 
-		// Transition this layer to TRANSFER_DST_OPTIMAL
-		VkImageMemoryBarrier barrier1{};
-		barrier1.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	// Use current tracked layout as oldLayout so transitions are correct. Clamp
-	// transient TRANSFER_DST tracked states to SHADER_READ_ONLY to avoid
-	// validation mismatches where the validation layer's known layout differs
-	// due to concurrency or delayed updates.
-	VkImageLayout currentLayout = getLayerLayout(i, currentLayer);
-	if (currentLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-		currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	}
-	barrier1.oldLayout = currentLayout;
-	barrier1.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	barrier1.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier1.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier1.image = imgs[i].dstImage->image;
-	barrier1.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	barrier1.subresourceRange.baseMipLevel = 0;
-	barrier1.subresourceRange.levelCount = imgs[i].dstImage->mipLevels;
-	barrier1.subresourceRange.baseArrayLayer = currentLayer;
-	barrier1.subresourceRange.layerCount = 1;
-	barrier1.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	barrier1.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-		 0, nullptr, 0, nullptr, 1, &barrier1);
+		// Transition this layer to TRANSFER_DST_OPTIMAL using the app helper
+		// so the authoritative tracked layout is consulted when recording.
+		VkImageLayout currentLayout = getLayerLayout(i, currentLayer);
+		if (currentLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+			currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		}
+		a->recordTransitionImageLayoutLayer(cmd, imgs[i].dstImage->image, imgs[i].format, currentLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, imgs[i].dstImage->mipLevels, currentLayer, 1);
 	// Do NOT set the tracked per-layer layout to TRANSFER_DST here; the command
 	// buffer has not yet completed and setting this early can cause other
 	// threads to read a transient TRANSFER_DST state and build incorrect
@@ -478,24 +447,18 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 			setLayerLayout(i, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		} else {
 			// single-level: transition layer to SHADER_READ_ONLY_OPTIMAL
+			// Use the app helper so the recorded oldLayout matches the authoritative tracked layout.
 			a->runSingleTimeCommands([&](VkCommandBuffer cmd2) {
-			VkImageMemoryBarrier barrier{};
-			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.image = imgs[i].dstImage->image;
-			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			barrier.subresourceRange.baseMipLevel = 0;
-			barrier.subresourceRange.levelCount = imgs[i].dstImage->mipLevels;
-			barrier.subresourceRange.baseArrayLayer = currentLayer;
-			barrier.subresourceRange.layerCount = 1;
-			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-			vkCmdPipelineBarrier(cmd2, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-					 0, nullptr, 0, nullptr, 1, &barrier);
+				a->recordTransitionImageLayoutLayer(
+					cmd2,
+					imgs[i].dstImage->image,
+					imgs[i].format,
+					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					imgs[i].dstImage->mipLevels,
+					currentLayer,
+					1
+				);
 			});
 			// set tracked layout
 			setLayerLayout(i, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -600,24 +563,11 @@ uint TextureArrayManager::create(VulkanApp* a) {
 
 		a->runSingleTimeCommands([&](VkCommandBuffer cmd) {
 
-		// transition layer to TRANSFER_DST_OPTIMAL
-		VkImageMemoryBarrier barrier1{};
-		barrier1.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier1.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		barrier1.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		barrier1.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier1.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier1.image = dst->image;
-		barrier1.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier1.subresourceRange.baseMipLevel = 0;
-		barrier1.subresourceRange.levelCount = dst->mipLevels;
-		barrier1.subresourceRange.baseArrayLayer = currentLayer;
-		barrier1.subresourceRange.layerCount = 1;
-		barrier1.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		barrier1.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-							 0, nullptr, 0, nullptr, 1, &barrier1);
+		// transition layer to TRANSFER_DST_OPTIMAL using centralized app helper
+		a->recordTransitionImageLayoutLayer(cmd, dst->image, VK_FORMAT_R8G8B8A8_UNORM,
+						   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+						   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+						   dst->mipLevels, currentLayer, 1);
 
 		VkBufferImageCopy region{};
 		region.bufferOffset = 0;
@@ -635,23 +585,7 @@ uint TextureArrayManager::create(VulkanApp* a) {
 		// Only transition to SHADER_READ_ONLY if we're NOT generating mipmaps
 		// (generateMipmaps handles the transition itself)
 		if (dst->mipLevels <= 1) {
-			VkImageMemoryBarrier barrier2{};
-			barrier2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			barrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			barrier2.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			barrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier2.image = dst->image;
-			barrier2.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			barrier2.subresourceRange.baseMipLevel = 0;
-			barrier2.subresourceRange.levelCount = dst->mipLevels;
-			barrier2.subresourceRange.baseArrayLayer = currentLayer;
-			barrier2.subresourceRange.layerCount = 1;
-			barrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			barrier2.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-								 0, nullptr, 0, nullptr, 1, &barrier2);
+			a->recordTransitionImageLayoutLayer(cmd, dst->image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, dst->mipLevels, currentLayer, 1);
 		}
 
 		});
@@ -702,42 +636,12 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 	a->runSingleTimeCommands([&](VkCommandBuffer cmd) {
 
 	auto doBarrier = [&](VkImage dst, VkImageLayout oldDst, VkImageLayout newDst, uint32_t dstBaseLayer) {
-		VkImageMemoryBarrier barrier{};
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.oldLayout = oldDst;
-		barrier.newLayout = newDst;
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = dst;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.baseMipLevel = 0;
-		barrier.subresourceRange.levelCount = 1;
-		barrier.subresourceRange.baseArrayLayer = dstBaseLayer;
-		barrier.subresourceRange.layerCount = 1;
-		barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-					  0, nullptr, 0, nullptr, 1, &barrier);
+		// Use app helper to record per-layer transition into the current cmd
+		a->recordTransitionImageLayoutLayer(cmd, dst, VK_FORMAT_R8G8B8A8_UNORM, oldDst, newDst, 1, dstBaseLayer, 1);
 	};
 
-	// source barrier: shader read -> transfer src
-	VkImageMemoryBarrier srcBarrier{};
-	srcBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	srcBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	srcBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-	srcBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	srcBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	srcBarrier.image = srcImage;
-	srcBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	srcBarrier.subresourceRange.baseMipLevel = 0;
-	srcBarrier.subresourceRange.levelCount = 1;
-	srcBarrier.subresourceRange.baseArrayLayer = 0;
-	srcBarrier.subresourceRange.layerCount = 1;
-	srcBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	srcBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-					  0, nullptr, 0, nullptr, 1, &srcBarrier);
+	// source barrier: shader read -> transfer src (record via app helper)
+	a->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1);
 
 	// Copy into selected array layer (ensure we log what we're doing)
 	fprintf(stderr, "[TextureArrayManager] Copying into array image %p layer=%u\n", (void*)dstImage, layer);
@@ -756,32 +660,12 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 	copyRegion.extent = { width, height, 1 };
 	vkCmdCopyImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
-	// Transition dst layer back to SHADER_READ_ONLY_OPTIMAL
+	// Transition dst layer back to SHADER_READ_ONLY_OPTIMAL (record via app helper)
 	fprintf(stderr, "[TextureArrayManager] Transitioning dst layer %u back to SHADER_READ_ONLY_OPTIMAL\n", layer);
-	VkImageMemoryBarrier dstBack{};
-	dstBack.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	dstBack.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	dstBack.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	dstBack.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	dstBack.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	dstBack.image = dstImage;
-	dstBack.subresourceRange.baseMipLevel = 0;
-	dstBack.subresourceRange.levelCount = 1;
-	dstBack.subresourceRange.baseArrayLayer = layer;
-	dstBack.subresourceRange.layerCount = 1;
-	dstBack.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	dstBack.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-						 0, nullptr, 0, nullptr, 1, &dstBack);
+	a->recordTransitionImageLayoutLayer(cmd, dstImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layer, 1);
 
 	// Transition src back to SHADER_READ_ONLY_OPTIMAL
-	VkImageMemoryBarrier srcBack = srcBarrier;
-	srcBack.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-	srcBack.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	srcBack.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-	srcBack.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-						 0, nullptr, 0, nullptr, 1, &srcBack);
+	a->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
 	});
 
 		// Generate mipmaps for the updated layer if needed

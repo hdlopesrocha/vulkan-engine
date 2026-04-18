@@ -846,16 +846,12 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
 
                 vegetationRenderer->generateChunkInstances(nid, posBuf.buffer, vertexCount, idxBuf.buffer, indexCount, instancesPerTriangle, app, seed);
 
-                // Free temporary GPU buffers immediately - resource manager tracked them, so remove then destroy
-                app->resources.removeBuffer(posBuf.buffer);
-                vkDestroyBuffer(device, posBuf.buffer, nullptr);
-                app->resources.removeDeviceMemory(posBuf.memory);
-                vkFreeMemory(device, posBuf.memory, nullptr);
+                // Free temporary GPU buffers immediately - only destroy if resource manager tracked them
+                if (app->resources.removeBuffer(posBuf.buffer)) vkDestroyBuffer(device, posBuf.buffer, nullptr);
+                if (app->resources.removeDeviceMemory(posBuf.memory)) vkFreeMemory(device, posBuf.memory, nullptr);
 
-                app->resources.removeBuffer(idxBuf.buffer);
-                vkDestroyBuffer(device, idxBuf.buffer, nullptr);
-                app->resources.removeDeviceMemory(idxBuf.memory);
-                vkFreeMemory(device, idxBuf.memory, nullptr);
+                if (app->resources.removeBuffer(idxBuf.buffer)) vkDestroyBuffer(device, idxBuf.buffer, nullptr);
+                if (app->resources.removeDeviceMemory(idxBuf.memory)) vkFreeMemory(device, idxBuf.memory, nullptr);
             } catch (const std::exception &e) {
                 fprintf(stderr, "[SceneRenderer] Vegetation generation failed for node %llu: %s\n", (unsigned long long)nid, e.what());
             }

@@ -990,16 +990,10 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
     		if (!preBarriers.empty()) {
     			for (auto &b : preBarriers) {
     				fprintf(stderr, "[TextureMixer] Pre-barrier: image=%p layer=%u old=%s new=%s\n", (void*)b.image, b.subresourceRange.baseArrayLayer, layoutName(b.oldLayout), layoutName(b.newLayout));
+    				// Record per-layer transition using authoritative app helper so tracked
+    				// oldLayout is consulted and validation mismatches avoided.
+    				app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, b.oldLayout, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
     			}
-    			vkCmdPipelineBarrier(
-    				cmd,
-    				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-    				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-    				0,
-    				0, nullptr,
-    				0, nullptr,
-    				static_cast<uint32_t>(preBarriers.size()), preBarriers.data()
-    			);
     		}
 
 	// Use persistent per-layer descriptor set if available; otherwise use the chosen descSet
@@ -1054,16 +1048,8 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 			if (!mipPrepBarriers.empty()) {
 				for (auto &b : mipPrepBarriers) {
 					fprintf(stderr, "[TextureMixer] Mip-prep barrier: image=%p layer=%u old=%s new=%s\n", (void*)b.image, b.subresourceRange.baseArrayLayer, layoutName(b.oldLayout), layoutName(b.newLayout));
+					app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, b.oldLayout, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
 				}
-				vkCmdPipelineBarrier(
-					cmd,
-					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-					VK_PIPELINE_STAGE_TRANSFER_BIT,
-					0,
-					0, nullptr,
-					0, nullptr,
-					static_cast<uint32_t>(mipPrepBarriers.size()), mipPrepBarriers.data()
-				);
 			}
 
 			// Record mipmap generation into the same command buffer
@@ -1104,15 +1090,9 @@ if (genB && textureArrayManager->bumpArray.mipLevels <= 1) {
 					postBarriers.push_back(mkPost(textureArrayManager->bumpArray.image));
 				}
 				if (!postBarriers.empty()) {
-					vkCmdPipelineBarrier(
-						cmd,
-						VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-						VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-						0,
-						0, nullptr,
-						0, nullptr,
-						static_cast<uint32_t>(postBarriers.size()), postBarriers.data()
-					);
+					for (auto &b : postBarriers) {
+						app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, b.oldLayout, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
+					}
 				}
 			}
 				}
@@ -1145,15 +1125,9 @@ if (genB && textureArrayManager->bumpArray.mipLevels <= 1) {
 		if (genN) addRestoreBarriers(textureArrayManager->normalArray.image, textureArrayManager->normalArray.mipLevels);
 		if (genB) addRestoreBarriers(textureArrayManager->bumpArray.image, textureArrayManager->bumpArray.mipLevels);
 		if (!restoreBarriers.empty()) {
-			vkCmdPipelineBarrier(
-				cmd,
-				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-				0,
-				0, nullptr,
-				0, nullptr,
-				static_cast<uint32_t>(restoreBarriers.size()), restoreBarriers.data()
-			);
+			for (auto &b : restoreBarriers) {
+				app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, b.oldLayout, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
+			}
 		}
 	}
 

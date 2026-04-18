@@ -51,6 +51,11 @@ public:
     VkImageView getWaterDepthAlphaView(uint32_t frameIndex) const { return waterDepthAlphaImageViews[frameIndex]; }
     // Depth image view used as the depth/stencil attachment for the water geometry pass
     VkImageView getWaterGeomDepthView(uint32_t frameIndex) const { return waterGeomDepthImageViews[frameIndex]; }
+    // Expose the raw water geometry depth image (for layout transitions and sampling)
+    VkImage getWaterGeomDepthImage(uint32_t frameIndex) const { return (frameIndex < 2) ? waterGeomDepthImages[frameIndex] : VK_NULL_HANDLE; }
+    // Accessors for renderer-tracked layouts (used by widgets to record correct barriers)
+    VkImageLayout getWaterGeomDepthLayout(uint32_t frameIndex) const;
+    VkImageLayout getSceneDepthLayout(uint32_t frameIndex) const;
     
     // Get scene offscreen target views (for rendering scene before water)
     VkImage getSceneColorImage(uint32_t frameIndex) const { return sceneColorImages[frameIndex]; }
