@@ -442,7 +442,7 @@ public:
         colorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
         VkClearValue depthClear{};
         depthClear.depthStencil = {1.0f, 0};
-            sceneRenderer->solidRenderer->beginPass(commandBuffer, frameIdx, colorClear, depthClear);
+            sceneRenderer->solidRenderer->beginPass(commandBuffer, frameIdx, colorClear, depthClear, this);
 
         // Render sky first inside the solid pass so water composites on top of (sky + solid).
         // skyRenderer->render() temporarily overwrites the UBO with sky-specific values,
@@ -511,7 +511,7 @@ public:
             }
         }
 
-            sceneRenderer->solidRenderer->endPass(commandBuffer);
+            sceneRenderer->solidRenderer->endPass(commandBuffer, frameIdx, this);
 
         // Render 360° cubemap reflection (sky + solid) from camera position
         // Must run outside any active render pass; writes equirect texture for water sampling

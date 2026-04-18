@@ -10,7 +10,6 @@ CC = g++
 BUILD ?= release
 ifeq ($(BUILD),debug)
 	CFLAGS = -std=c++23 -O0 -g -DDEBUG -pthread -Ithird_party/imgui
-
 else
 	CFLAGS = -std=c++23 -O3 -march=native -DNDEBUG -pthread -DUSE_IMGUI -Ithird_party/imgui
 endif
