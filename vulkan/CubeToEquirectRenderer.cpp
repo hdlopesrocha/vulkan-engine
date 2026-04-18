@@ -22,30 +22,24 @@ void CubeToEquirectRenderer::cleanup(VulkanApp* app) {
             if (fi < app->inFlightFences.size()) f = app->inFlightFences[fi];
             app->deferDestroyUntilFence(f, [tmp_iv, tmp_img, tmp_mem, device, app]() {
                 if (tmp_iv != VK_NULL_HANDLE) {
-                    app->resources.removeImageView(tmp_iv);
-                    vkDestroyImageView(device, tmp_iv, nullptr);
+                    if (app->resources.removeImageView(tmp_iv)) vkDestroyImageView(device, tmp_iv, nullptr);
                 }
                 if (tmp_img != VK_NULL_HANDLE) {
-                    app->resources.removeImage(tmp_img);
-                    vkDestroyImage(device, tmp_img, nullptr);
+                    if (app->resources.removeImage(tmp_img)) vkDestroyImage(device, tmp_img, nullptr);
                 }
                 if (tmp_mem != VK_NULL_HANDLE) {
-                    app->resources.removeDeviceMemory(tmp_mem);
-                    vkFreeMemory(device, tmp_mem, nullptr);
+                    if (app->resources.removeDeviceMemory(tmp_mem)) vkFreeMemory(device, tmp_mem, nullptr);
                 }
             });
         } else {
             if (tmp_iv != VK_NULL_HANDLE) {
-                app->resources.removeImageView(tmp_iv);
-                vkDestroyImageView(device, tmp_iv, nullptr);
+                if (app->resources.removeImageView(tmp_iv)) vkDestroyImageView(device, tmp_iv, nullptr);
             }
             if (tmp_img != VK_NULL_HANDLE) {
-                app->resources.removeImage(tmp_img);
-                vkDestroyImage(device, tmp_img, nullptr);
+                if (app->resources.removeImage(tmp_img)) vkDestroyImage(device, tmp_img, nullptr);
             }
             if (tmp_mem != VK_NULL_HANDLE) {
-                app->resources.removeDeviceMemory(tmp_mem);
-                vkFreeMemory(device, tmp_mem, nullptr);
+                if (app->resources.removeDeviceMemory(tmp_mem)) vkFreeMemory(device, tmp_mem, nullptr);
             }
         }
         iv = VK_NULL_HANDLE;
@@ -61,12 +55,10 @@ void CubeToEquirectRenderer::cleanup(VulkanApp* app) {
             uint32_t fi = app->getCurrentFrame();
             if (fi < app->inFlightFences.size()) f = app->inFlightFences[fi];
             app->deferDestroyUntilFence(f, [tmp, app, removeFn, destroyFn, device]() {
-                (app->resources.*removeFn)(tmp);
-                destroyFn(device, tmp, nullptr);
+                if ((app->resources.*removeFn)(tmp)) destroyFn(device, tmp, nullptr);
             });
         } else {
-            (app->resources.*removeFn)(tmp);
-            destroyFn(device, tmp, nullptr);
+            if ((app->resources.*removeFn)(tmp)) destroyFn(device, tmp, nullptr);
         }
         handle = VK_NULL_HANDLE;
     };
@@ -258,7 +250,7 @@ void CubeToEquirectRenderer::createOutputTarget(VulkanApp* app) {
 
     app->createImage(EQ_WIDTH, EQ_HEIGHT, VK_FORMAT_R8G8B8A8_UNORM,
                      VK_IMAGE_TILING_OPTIMAL, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, cube360EquirectImage, cube360EquirectMemory);
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, cube360EquirectImage, cube360EquirectMemory, "CubeToEquirectRenderer: cube360EquirectImage");
 
     VkImageViewCreateInfo iv{};
     iv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;

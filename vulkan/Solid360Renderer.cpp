@@ -19,7 +19,7 @@ void Solid360Renderer::cleanup(VulkanApp* app) {
     solid360Sampler = VK_NULL_HANDLE;
     cube360DepthImage = VK_NULL_HANDLE;
     cube360DepthMemory = VK_NULL_HANDLE;
-    cube360DepthView = VK_NULL_HANDLE;
+    for (auto &dv : cube360DepthViews) dv = VK_NULL_HANDLE;
     for (auto& fb : cube360Framebuffers) fb = VK_NULL_HANDLE;
 }
 
@@ -79,6 +79,10 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidR
         allocImage(imgInfo, cube360ColorImage, cube360ColorMemory);
     }
 
+    if (app) {
+        app->setImageLayoutTracked(cube360ColorImage, VK_IMAGE_LAYOUT_UNDEFINED, 0, 6);
+    }
+
     for (uint32_t face = 0; face < 6; ++face) {
         createView(cube360ColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT,
                    VK_IMAGE_VIEW_TYPE_2D, face, 1,
@@ -93,7 +97,7 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidR
     // Keep the sampler used for solid 360 sampling, which must be clamp-to-edge.
     solid360Sampler = linearSampler;
 
-    // --- 2. Shared depth image ---
+    // --- 2. Depth image with per-face layers (one layer per cubemap face) ---
     {
         VkImageCreateInfo imgInfo{};
         imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -101,20 +105,30 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidR
         imgInfo.format = VK_FORMAT_D32_SFLOAT;
         imgInfo.extent = {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE, 1};
         imgInfo.mipLevels = 1;
-        imgInfo.arrayLayers = 1;
+        imgInfo.arrayLayers = 6; // one layer per cubemap face
         imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imgInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         allocImage(imgInfo, cube360DepthImage, cube360DepthMemory);
     }
-    createView(cube360DepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT,
-               VK_IMAGE_VIEW_TYPE_2D, 0, 1,
-               cube360DepthView, "Solid360Renderer: cube360 depth view");
+
+    if (app) {
+        app->setImageLayoutTracked(cube360DepthImage, VK_IMAGE_LAYOUT_UNDEFINED, 0, 6);
+    }
+    // Create a per-face 2D view that references the corresponding array layer
+    for (uint32_t face = 0; face < 6; ++face) {
+        createView(cube360DepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT,
+                   VK_IMAGE_VIEW_TYPE_2D, face, 1,
+                   cube360DepthViews[face], "Solid360Renderer: cube360 depth view");
+    }
+
+    // Initialize per-face tracked layouts to UNDEFINED
+    for (uint32_t face = 0; face < 6; ++face) cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_UNDEFINED;
 
     // --- 3. Per-face framebuffers (reuse solidRenderPass: color + depth) ---
     for (uint32_t face = 0; face < 6; ++face) {
-        std::array<VkImageView, 2> attachments = {cube360FaceViews[face], cube360DepthView};
+        std::array<VkImageView, 2> attachments = {cube360FaceViews[face], cube360DepthViews[face]};
         VkFramebufferCreateInfo fbInfo{};
         fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         fbInfo.renderPass = solidRenderPass;
@@ -133,7 +147,9 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidR
 }
 
 void Solid360Renderer::destroySolid360Targets(VulkanApp* app) {
-    (void)app;
+    if (app && cube360DepthImage != VK_NULL_HANDLE) {
+        app->setImageLayoutTracked(cube360DepthImage, VK_IMAGE_LAYOUT_UNDEFINED, 0, 6);
+    }
     cube360ColorImage = VK_NULL_HANDLE;
     cube360ColorMemory = VK_NULL_HANDLE;
     for (auto& v : cube360FaceViews) v = VK_NULL_HANDLE;
@@ -141,8 +157,11 @@ void Solid360Renderer::destroySolid360Targets(VulkanApp* app) {
     solid360Sampler = VK_NULL_HANDLE;
     cube360DepthImage = VK_NULL_HANDLE;
     cube360DepthMemory = VK_NULL_HANDLE;
-    cube360DepthView = VK_NULL_HANDLE;
+    for (auto &dv : cube360DepthViews) dv = VK_NULL_HANDLE;
     for (auto& fb : cube360Framebuffers) fb = VK_NULL_HANDLE;
+
+    // Reset tracked layouts
+    for (uint32_t face = 0; face < 6; ++face) cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
@@ -234,6 +253,12 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         }
 
         vkCmdEndRenderPass(cmd);
+        // After the render pass completes the depth attachment is in the
+        // depth-stencil attachment layout (renderpass finalLayout).
+        // Record that so callers emitting later transitions use the correct
+        // oldLayout when scheduling barriers.
+        if (app) app->setImageLayoutTracked(cube360DepthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, face, 1);
+        cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
     // Cubemap rendering complete; cubemap image view is available for sampling.
