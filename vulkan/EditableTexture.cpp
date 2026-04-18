@@ -17,7 +17,7 @@ void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt,
 	// Create GPU resources (allow transfer-src so we can copy from this image)
 	app->createImage(width, height, format, VK_IMAGE_TILING_OPTIMAL, 1,
 					 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-					 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
+					 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory, name.c_str());
 
     // create view
 	VkImageViewCreateInfo viewInfo{};
@@ -66,7 +66,13 @@ void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt,
 
 void EditableTexture::cleanup() {
 	if (imguiDescSet != VK_NULL_HANDLE) {
-		ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)imguiDescSet);
+		VulkanApp* a = getImGuiVulkanApp();
+		if (a) {
+			VkDescriptorSet tmp = (VkDescriptorSet)imguiDescSet;
+			a->deferDestroyUntilAllPending([tmp]() { ImGui_ImplVulkan_RemoveTexture(tmp); });
+		} else {
+			ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)imguiDescSet);
+		}
 		imguiDescSet = VK_NULL_HANDLE;
 	}
 	// Do not destroy Vulkan objects here; central manager handles destruction.

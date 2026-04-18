@@ -4,6 +4,7 @@
 #include <vulkan/vulkan.h>
 #include "../vulkan/Buffer.hpp"
 #include "../vulkan/CubeToEquirectRenderer.hpp"
+#include <unordered_map>
 
 class VulkanApp;
 class WaterRenderer;
@@ -30,6 +31,7 @@ private:
     VkDescriptorSet solid360Descriptor = VK_NULL_HANDLE;
     VkDescriptorSet cube360EquirectDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet cube360FaceDescriptor[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkDescriptorSet cube360FaceDepthDescriptor[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
     VkDescriptorSet solidColorDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet solidDepthDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterColorDescriptor = VK_NULL_HANDLE;
@@ -43,6 +45,7 @@ private:
     bool solid360DescriptorOwned = false;
     bool cube360EquirectDescriptorOwned = false;
     bool cube360FaceDescriptorOwned[6] = { false, false, false, false, false, false };
+    bool cube360FaceDepthDescriptorOwned[6] = { false, false, false, false, false, false };
     bool solidColorDescriptorOwned = false;
     int selectedCubeFaceIndex = 0;
     bool solidDepthDescriptorOwned = false;
@@ -62,6 +65,12 @@ private:
     VkImageView linearBackFaceDepthView = VK_NULL_HANDLE;
     VkDescriptorSet linearBackFaceDepthDescriptor = VK_NULL_HANDLE;
     bool linearBackFaceDepthDescriptorOwned = false;
+
+    // Per-face linearized targets for cubemap depth previews
+    VkImage linearCubeFaceDepthImage[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkDeviceMemory linearCubeFaceDepthMemory[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkImageView linearCubeFaceDepthView[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkFramebuffer linearCubeFaceFramebuffer[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
 
     // GPU linearization pass resources
     VkRenderPass linearizeRenderPass = VK_NULL_HANDLE;
@@ -116,6 +125,7 @@ private:
     enum class PreviewTarget {
         Sky = 0,
         Solid360Cube,
+        Solid360DepthCube,
         Solid360Equirect,
         SolidColor,
         SolidDepth,
@@ -131,6 +141,9 @@ private:
     int selectedShadowCascade = 0;
     bool showAllCascades = false;
     enum class ShadowViewMode { Raw = 0, Linearized = 1 } shadowViewMode = ShadowViewMode::Linearized;
+
+    // NOTE: widget no longer maintains fallbacks or heuristic layout maps.
+    // Rely on renderer-provided tracked layouts (e.g. Solid360Renderer).
 
 public:
     RenderTargetsWidget(VulkanApp* app, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
@@ -151,9 +164,10 @@ public:
     // normalized RGBA preview into `dstView`/`dstFb`. `dstDescriptor` will be
     // created via ImGui_ImplVulkan_AddTexture if needed. `mode` selects
     // linearization mode: 0.0 = perspective linearize, 1.0 = passthrough.
-    bool runLinearizePass(VulkanApp* app, VkImageView srcView, VkSampler srcSampler, VkSampler previewSampler,
+    bool runLinearizePass(VulkanApp* app, VkImage srcImage, VkImageView srcView, VkSampler srcSampler, VkSampler previewSampler,
                           VkImageView dstView, VkFramebuffer dstFb,
                           VkDescriptorSet &dstDescriptor, bool &dstDescriptorOwned,
                           uint32_t width, uint32_t height,
-                          float zNear, float zFar, float mode);
+                          float zNear, float zFar, float mode,
+                          uint32_t srcBaseArrayLayer = 0);
 };

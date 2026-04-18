@@ -15,8 +15,6 @@
 #include <vector>
 #include <array>
 
-static constexpr uint32_t CUBE360_EQUIRECT_WIDTH = 1024;
-static constexpr uint32_t CUBE360_EQUIRECT_HEIGHT = 512;
 
 RenderTargetsWidget::RenderTargetsWidget(VulkanApp* app, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
                                                                                  ShadowRenderer* shadow, ShadowParams* shadowParams, Settings* settings)
@@ -227,7 +225,7 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
         if (linearSceneDepthImage == VK_NULL_HANDLE) {
             app->createImage(static_cast<uint32_t>(width), static_cast<uint32_t>(height), VK_FORMAT_R8G8B8A8_UNORM,
                              VK_IMAGE_TILING_OPTIMAL, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearSceneDepthImage, linearSceneDepthMemory);
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearSceneDepthImage, linearSceneDepthMemory, "RenderTargetsWidget: linearSceneDepthImage");
             VkImageViewCreateInfo iv{};
             iv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
             iv.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -246,7 +244,7 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
         if (linearBackFaceDepthImage == VK_NULL_HANDLE) {
             app->createImage(static_cast<uint32_t>(width), static_cast<uint32_t>(height), VK_FORMAT_R8G8B8A8_UNORM,
                              VK_IMAGE_TILING_OPTIMAL, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearBackFaceDepthImage, linearBackFaceDepthMemory);
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearBackFaceDepthImage, linearBackFaceDepthMemory, "RenderTargetsWidget: linearBackFaceDepthImage");
             VkImageViewCreateInfo iv{};
             iv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
             iv.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -291,6 +289,43 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
                 app->resources.addFramebuffer(linearBackFaceFramebuffer, "RenderTargetsWidget: linearBackFaceFramebuffer");
             } else linearBackFaceFramebuffer = VK_NULL_HANDLE;
         }
+
+        // Create per-face linearized targets for cubemap depth previews
+        for (int face = 0; face < 6; ++face) {
+            if (linearCubeFaceDepthImage[face] == VK_NULL_HANDLE) {
+                app->createImage(static_cast<uint32_t>(width), static_cast<uint32_t>(height), VK_FORMAT_R8G8B8A8_UNORM,
+                                 VK_IMAGE_TILING_OPTIMAL, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearCubeFaceDepthImage[face], linearCubeFaceDepthMemory[face], "RenderTargetsWidget: linearCubeFaceDepthImage");
+                VkImageViewCreateInfo iv{};
+                iv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                iv.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                iv.format = VK_FORMAT_R8G8B8A8_UNORM;
+                iv.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                iv.subresourceRange.baseMipLevel = 0;
+                iv.subresourceRange.levelCount = 1;
+                iv.subresourceRange.baseArrayLayer = 0;
+                iv.subresourceRange.layerCount = 1;
+                iv.image = linearCubeFaceDepthImage[face];
+                if (vkCreateImageView(device, &iv, nullptr, &linearCubeFaceDepthView[face]) == VK_SUCCESS) {
+                    app->resources.addImageView(linearCubeFaceDepthView[face], "RenderTargetsWidget: linearCubeFaceDepthView");
+                } else linearCubeFaceDepthView[face] = VK_NULL_HANDLE;
+            }
+
+            if (linearCubeFaceFramebuffer[face] == VK_NULL_HANDLE && linearCubeFaceDepthView[face] != VK_NULL_HANDLE && linearizeRenderPass != VK_NULL_HANDLE) {
+                VkImageView atts[] = { linearCubeFaceDepthView[face] };
+                VkFramebufferCreateInfo fb{};
+                fb.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+                fb.renderPass = linearizeRenderPass;
+                fb.attachmentCount = 1;
+                fb.pAttachments = atts;
+                fb.width = static_cast<uint32_t>(width);
+                fb.height = static_cast<uint32_t>(height);
+                fb.layers = 1;
+                if (vkCreateFramebuffer(device, &fb, nullptr, &linearCubeFaceFramebuffer[face]) == VK_SUCCESS) {
+                    app->resources.addFramebuffer(linearCubeFaceFramebuffer[face], "RenderTargetsWidget: linearCubeFaceFramebuffer");
+                } else linearCubeFaceFramebuffer[face] = VK_NULL_HANDLE;
+            }
+        }
     }
 
     // Create per-cascade linear shadow targets if a shadow mapper exists.
@@ -300,7 +335,7 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
             if (linearShadowDepthImage[c] == VK_NULL_HANDLE) {
                 app->createImage(shadowSize, shadowSize, VK_FORMAT_R8G8B8A8_UNORM,
                                  VK_IMAGE_TILING_OPTIMAL, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearShadowDepthImage[c], linearShadowDepthMemory[c]);
+                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearShadowDepthImage[c], linearShadowDepthMemory[c], "RenderTargetsWidget: linearShadowDepthImage");
                 VkImageViewCreateInfo iv{};
                 iv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
                 iv.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -335,11 +370,12 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
     }
 }
 
-bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImageView srcView, VkSampler srcSampler, VkSampler previewSampler,
+bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkImageView srcView, VkSampler srcSampler, VkSampler previewSampler,
                                           VkImageView dstView, VkFramebuffer dstFb,
                                           VkDescriptorSet &dstDescriptor, bool &dstDescriptorOwned,
                                           uint32_t width, uint32_t height,
-                                          float zNear, float zFar, float mode) {
+                                          float zNear, float zFar, float mode,
+                                          uint32_t srcBaseArrayLayer) {
     if (!app || srcView == VK_NULL_HANDLE || dstView == VK_NULL_HANDLE || dstFb == VK_NULL_HANDLE) return false;
     if (linearizePipeline == VK_NULL_HANDLE || linearizeDescriptorSet == VK_NULL_HANDLE || linearizePipelineLayout == VK_NULL_HANDLE) return false;
 
@@ -351,35 +387,172 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImageView srcView, 
     di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkWriteDescriptorSet w{};
     w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w.dstSet = linearizeDescriptorSet;
+    // Always allocate a temporary descriptor set for this pass to avoid
+    // updating a descriptor set that may be currently bound by another
+    // command buffer (including one in RECORDING state). The temporary
+    // set will be freed after the synchronous submit below.
+    VkDescriptorSet dsToUse = VK_NULL_HANDLE;
+    try {
+        dsToUse = app->createDescriptorSet(linearizeDescriptorSetLayout);
+    } catch (...) {
+        // Fall back to the persistent set if allocation fails (rare)
+        dsToUse = linearizeDescriptorSet;
+    }
+    w.dstSet = dsToUse;
     w.dstBinding = 0;
     w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     w.descriptorCount = 1;
     w.pImageInfo = &di;
     app->updateDescriptorSet({ w });
 
-    app->runSingleTimeCommands([&](VkCommandBuffer cmd){
-        VkClearValue clr{}; clr.color = {{0.0f,0.0f,0.0f,1.0f}};
-        VkRenderPassBeginInfo rbi{};
-        rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rbi.renderPass = linearizeRenderPass;
-        rbi.framebuffer = dstFb;
-        rbi.renderArea.offset = {0,0};
-        rbi.renderArea.extent = { width, height };
-        rbi.clearValueCount = 1;
-        rbi.pClearValues = &clr;
-        vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, linearizePipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, linearizePipelineLayout, 0, 1, &linearizeDescriptorSet, 0, nullptr);
-        VkViewport vp{}; vp.x = 0.0f; vp.y = 0.0f; vp.width = static_cast<float>(width); vp.height = static_cast<float>(height); vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        VkRect2D sc{}; sc.offset = {0,0}; sc.extent = { width, height };
-        vkCmdSetScissor(cmd, 0, 1, &sc);
-        float pc[3] = { zNear, zFar, mode };
-        vkCmdPushConstants(cmd, linearizePipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), pc);
-        vkCmdDraw(cmd, 3, 1, 0, 0);
-        vkCmdEndRenderPass(cmd);
-    });
+    // Allocate a primary command buffer and record the linearize pass and
+    // the required image layout transitions into it, then submit asynchronously.
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    try {
+        cmd = app->allocatePrimaryCommandBuffer();
+    } catch (...) {
+        return false;
+    }
+
+    VkCommandBufferBeginInfo binfo{};
+    binfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    binfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(cmd, &binfo) != VK_SUCCESS) {
+        // Best-effort cleanup on failure
+        vkFreeCommandBuffers(app->getDevice(), app->getCommandPool(), 1, &cmd);
+        return false;
+    }
+
+    // Ensure the source depth image is in a shader-readable layout before sampling (recorded into cmd)
+    if (srcImage != VK_NULL_HANDLE) {
+        // Consult renderer-tracked layouts when available so we emit a barrier
+        // with the correct oldLayout instead of guessing. Check known renderers
+        // (solid360, back-face, water) across both frames.
+        VkImageLayout trackedOld = VK_IMAGE_LAYOUT_UNDEFINED;
+        // Solid 360 (per-face array)
+        if (sceneRenderer && sceneRenderer->solid360Renderer && srcImage == sceneRenderer->solid360Renderer->getCube360DepthImage()) {
+            trackedOld = sceneRenderer->solid360Renderer->getCube360DepthLayout(srcBaseArrayLayer);
+        }
+        // Main solid renderer (per-frame depth images)
+        if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && solidRenderer) {
+            for (uint32_t f = 0; f < 2; ++f) {
+                if (srcImage == solidRenderer->getDepthImage(f)) {
+                    trackedOld = solidRenderer->getDepthLayout(f);
+                    break;
+                }
+            }
+        }
+        // Back-face renderer (per-frame)
+        if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && sceneRenderer && sceneRenderer->backFaceRenderer) {
+            for (uint32_t f = 0; f < 2; ++f) {
+                if (srcImage == sceneRenderer->backFaceRenderer->getBackFaceDepthImage(f)) {
+                    trackedOld = sceneRenderer->backFaceRenderer->getBackFaceDepthLayout(f);
+                    break;
+                }
+            }
+        }
+        // Water renderer (water geometry depth, per-frame)
+        if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && sceneRenderer && sceneRenderer->waterRenderer) {
+            for (uint32_t f = 0; f < 2; ++f) {
+                if (srcImage == sceneRenderer->waterRenderer->getWaterGeomDepthImage(f)) {
+                    trackedOld = sceneRenderer->waterRenderer->getWaterGeomDepthLayout(f);
+                    break;
+                }
+            }
+        }
+        // Shadow cascades (single-image per cascade)
+        if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && shadowMapper) {
+            for (uint32_t sc = 0; sc < SHADOW_CASCADE_COUNT; ++sc) {
+                if (srcImage == shadowMapper->getDepthImage(sc)) {
+                    VkImageLayout l = shadowMapper->getDepthLayout(sc);
+                    if (l == VK_IMAGE_LAYOUT_UNDEFINED) l = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+                    trackedOld = l;
+                    break;
+                }
+            }
+        }
+        fprintf(stderr, "[RenderTargetsWidget] runLinearizePass: srcImage=%p baseLayer=%u trackedOld=%d\n",
+                (void*)srcImage, (unsigned)srcBaseArrayLayer, (int)trackedOld);
+        // Record transition using the tracked old layout (no widget fallbacks).
+        app->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_D32_SFLOAT, trackedOld, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, srcBaseArrayLayer, 1);
+    }
+
+    VkClearValue clr{}; clr.color = {{0.0f,0.0f,0.0f,1.0f}};
+    VkRenderPassBeginInfo rbi{};
+    rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rbi.renderPass = linearizeRenderPass;
+    rbi.framebuffer = dstFb;
+    rbi.renderArea.offset = {0,0};
+    rbi.renderArea.extent = { width, height };
+    rbi.clearValueCount = 1;
+    rbi.pClearValues = &clr;
+    vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, linearizePipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, linearizePipelineLayout, 0, 1, &dsToUse, 0, nullptr);
+    VkViewport vp{}; vp.x = 0.0f; vp.y = 0.0f; vp.width = static_cast<float>(width); vp.height = static_cast<float>(height); vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    VkRect2D sc{}; sc.offset = {0,0}; sc.extent = { width, height };
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+    float pc[3] = { zNear, zFar, mode };
+    vkCmdPushConstants(cmd, linearizePipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), pc);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cmd);
+
+    // Revert source depth image back to a depth-stencil attachment layout (recorded into cmd)
+    if (srcImage != VK_NULL_HANDLE) {
+        // Use the canonical final layout: depth-stencil attachment.
+        VkImageLayout desiredFinal = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        fprintf(stderr, "[RenderTargetsWidget] runLinearizePass (pre-revert): srcImage=%p baseLayer=%u desiredFinal=%d\n", (void*)srcImage, (unsigned)srcBaseArrayLayer, (int)desiredFinal);
+        app->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, desiredFinal, 1, srcBaseArrayLayer, 1);
+        // Best-effort: do not change the renderer's tracked layout here because
+        // recorded barriers are not yet submitted. Update tracked layout only
+        // after submit so other record-time logic sees a consistent state.
+    }
+
+    // Submit the recorded command buffer synchronously and wait for completion.
+    // Synchronous submission avoids races where descriptor sets or image
+    // layouts are updated while other command buffers are still recording.
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        vkFreeCommandBuffers(app->getDevice(), app->getCommandPool(), 1, &cmd);
+        return false;
+    }
+    try {
+        app->submitCommandBufferAndWait(cmd);
+    } catch (...) {
+        // Free the command buffer on failure
+        vkFreeCommandBuffers(app->getDevice(), app->getCommandPool(), 1, &cmd);
+        return false;
+    }
+
+    // Free the temporary descriptor set immediately — GPU work is complete.
+    if (dsToUse != linearizeDescriptorSet && dsToUse != VK_NULL_HANDLE) {
+        VkDevice dev = app->getDevice();
+        VkDescriptorPool pool = app->getDescriptorPool();
+        vkFreeDescriptorSets(dev, pool, 1, &dsToUse);
+        app->resources.removeDescriptorSet(dsToUse);
+    }
+
+    // Free the command buffer now that synchronous submit completed
+    vkFreeCommandBuffers(app->getDevice(), app->getCommandPool(), 1, &cmd);
+
+    // After the synchronous submit completed, update the renderer's per-face
+    // tracking for cubemaps so future passes will record correct oldLayout values.
+    if (srcImage != VK_NULL_HANDLE) {
+        if (sceneRenderer && sceneRenderer->solid360Renderer && srcImage == sceneRenderer->solid360Renderer->getCube360DepthImage()) {
+            sceneRenderer->solid360Renderer->setCube360DepthLayout(srcBaseArrayLayer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+            fprintf(stderr, "[RenderTargetsWidget] runLinearizePass: updated cube360 tracked layout for srcImage=%p baseLayer=%u -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL\n", (void*)srcImage, (unsigned)srcBaseArrayLayer);
+        }
+        // Update main solid renderer tracked layouts if we operated on its depth image
+        if (solidRenderer) {
+            for (uint32_t f = 0; f < 2; ++f) {
+                if (srcImage == solidRenderer->getDepthImage(f)) {
+                    solidRenderer->setDepthLayout(f, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+                    fprintf(stderr, "[RenderTargetsWidget] runLinearizePass: updated solid renderer tracked layout for srcImage=%p frame=%u -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL\n", (void*)srcImage, (unsigned)f);
+                    break;
+                }
+            }
+        }
+    }
 
     if (dstView != VK_NULL_HANDLE && dstDescriptor == VK_NULL_HANDLE) {
         dstDescriptor = ImGui_ImplVulkan_AddTexture(previewSampler, dstView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -396,14 +569,14 @@ RenderTargetsWidget::~RenderTargetsWidget() {
     auto removeOwnedDesc = [&](VkDescriptorSet &ds, bool &owned) {
         if (ds == VK_NULL_HANDLE) return;
         if (!owned) { ds = VK_NULL_HANDLE; return; }
-        if (app && app->hasPendingCommandBuffers()) {
+        // Defer removal until the in-flight fence for the current frame to
+        // avoid destroying descriptor sets that may be bound by command
+        // buffers still being recorded or submitted.
+        if (app) {
             VkDescriptorSet tmp = ds;
-            // Prefer deferring until the current in-flight fence signals so the
-            // descriptor set isn't freed while still in use by GPU work.
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = app->getCurrentFrame();
-            if (fi < app->inFlightFences.size()) f = app->inFlightFences[fi];
-            app->deferDestroyUntilFence(f, [tmp](){ ImGui_ImplVulkan_RemoveTexture(tmp); });
+            // Defer until all pending GPU work completes to avoid destroying
+            // descriptor sets that may be bound by other command buffers.
+            app->deferDestroyUntilAllPending([tmp]() { ImGui_ImplVulkan_RemoveTexture(tmp); });
         } else {
             ImGui_ImplVulkan_RemoveTexture(ds);
         }
@@ -417,6 +590,7 @@ RenderTargetsWidget::~RenderTargetsWidget() {
     removeOwnedDesc(solid360Descriptor, solid360DescriptorOwned);
     removeOwnedDesc(cube360EquirectDescriptor, cube360EquirectDescriptorOwned);
     for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
+    for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDepthDescriptor[i], cube360FaceDepthDescriptorOwned[i]);
     removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
 }
@@ -433,8 +607,6 @@ void RenderTargetsWidget::setFrameInfo(uint32_t frameIndex, int width, int heigh
         init(app, width, height);
         return;
     }
-    cachedWidth = width;
-    cachedHeight = height;
 }
 
 void RenderTargetsWidget::destroyLinearTargets() {
@@ -446,14 +618,9 @@ void RenderTargetsWidget::destroyLinearTargets() {
     auto removeDescIfOwned = [&](VkDescriptorSet &ds, bool &owned) {
         if (ds == VK_NULL_HANDLE) return;
         if (!owned) { ds = VK_NULL_HANDLE; return; }
-        if (a->hasPendingCommandBuffers()) {
+        {
             VkDescriptorSet tmp = ds;
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [tmp]() { ImGui_ImplVulkan_RemoveTexture(tmp); });
-        } else {
-            ImGui_ImplVulkan_RemoveTexture(ds);
+            a->deferDestroyUntilAllPending([tmp]() { ImGui_ImplVulkan_RemoveTexture(tmp); });
         }
         ds = VK_NULL_HANDLE;
         owned = false;
@@ -478,30 +645,30 @@ void RenderTargetsWidget::destroyLinearTargets() {
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
             a->deferDestroyUntilFence(f, [device, tmp_iv, tmp_img, tmp_mem, a]() {
                 if (tmp_iv != VK_NULL_HANDLE) {
-                    a->resources.removeImageView(tmp_iv);
-                    vkDestroyImageView(device, tmp_iv, nullptr);
+                    if (a->resources.removeImageView(tmp_iv))
+                        vkDestroyImageView(device, tmp_iv, nullptr);
                 }
                 if (tmp_img != VK_NULL_HANDLE) {
-                    a->resources.removeImage(tmp_img);
-                    vkDestroyImage(device, tmp_img, nullptr);
+                    if (a->resources.removeImage(tmp_img))
+                        vkDestroyImage(device, tmp_img, nullptr);
                 }
                 if (tmp_mem != VK_NULL_HANDLE) {
-                    a->resources.removeDeviceMemory(tmp_mem);
-                    vkFreeMemory(device, tmp_mem, nullptr);
+                    if (a->resources.removeDeviceMemory(tmp_mem))
+                        vkFreeMemory(device, tmp_mem, nullptr);
                 }
             });
         } else {
             if (tmp_iv != VK_NULL_HANDLE) {
-                a->resources.removeImageView(tmp_iv);
-                vkDestroyImageView(device, tmp_iv, nullptr);
+                if (a->resources.removeImageView(tmp_iv))
+                    vkDestroyImageView(device, tmp_iv, nullptr);
             }
             if (tmp_img != VK_NULL_HANDLE) {
-                a->resources.removeImage(tmp_img);
-                vkDestroyImage(device, tmp_img, nullptr);
+                if (a->resources.removeImage(tmp_img))
+                    vkDestroyImage(device, tmp_img, nullptr);
             }
             if (tmp_mem != VK_NULL_HANDLE) {
-                a->resources.removeDeviceMemory(tmp_mem);
-                vkFreeMemory(device, tmp_mem, nullptr);
+                if (a->resources.removeDeviceMemory(tmp_mem))
+                    vkFreeMemory(device, tmp_mem, nullptr);
             }
         }
         iv = VK_NULL_HANDLE;
@@ -518,12 +685,10 @@ void RenderTargetsWidget::destroyLinearTargets() {
             uint32_t fi = a->getCurrentFrame();
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
             a->deferDestroyUntilFence(f, [tmp, a]() {
-                a->resources.removeFramebuffer(tmp);
-                vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
+                if (a->resources.removeFramebuffer(tmp)) vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
             });
         } else {
-            a->resources.removeFramebuffer(tmp);
-            vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
+            if (a->resources.removeFramebuffer(tmp)) vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
         }
         fb = VK_NULL_HANDLE;
     };
@@ -531,11 +696,15 @@ void RenderTargetsWidget::destroyLinearTargets() {
     destroyFramebuffer(linearSceneFramebuffer);
     destroyFramebuffer(linearBackFaceFramebuffer);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) destroyFramebuffer(linearShadowFramebuffer[i]);
+    for (int i = 0; i < 6; ++i) destroyFramebuffer(linearCubeFaceFramebuffer[i]);
 
     destroyImageAndMemory(linearSceneDepthView, linearSceneDepthImage, linearSceneDepthMemory);
     destroyImageAndMemory(linearBackFaceDepthView, linearBackFaceDepthImage, linearBackFaceDepthMemory);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
         destroyImageAndMemory(linearShadowDepthView[i], linearShadowDepthImage[i], linearShadowDepthMemory[i]);
+    }
+    for (int i = 0; i < 6; ++i) {
+        destroyImageAndMemory(linearCubeFaceDepthView[i], linearCubeFaceDepthImage[i], linearCubeFaceDepthMemory[i]);
     }
 
     // Keep pipeline/renderpass/layout/descriptor set until full cleanup()
@@ -550,12 +719,9 @@ void RenderTargetsWidget::cleanup() {
     auto removeOwnedDesc = [&](VkDescriptorSet &ds, bool &owned) {
         if (ds == VK_NULL_HANDLE) return;
         if (!owned) { ds = VK_NULL_HANDLE; return; }
-        if (app && app->hasPendingCommandBuffers()) {
+        if (app) {
             VkDescriptorSet tmp = ds;
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = app->getCurrentFrame();
-            if (fi < app->inFlightFences.size()) f = app->inFlightFences[fi];
-            app->deferDestroyUntilFence(f, [tmp](){ ImGui_ImplVulkan_RemoveTexture(tmp); });
+            app->deferDestroyUntilAllPending([tmp](){ ImGui_ImplVulkan_RemoveTexture(tmp); });
         } else {
             ImGui_ImplVulkan_RemoveTexture(ds);
         }
@@ -569,6 +735,7 @@ void RenderTargetsWidget::cleanup() {
     removeOwnedDesc(solid360Descriptor, solid360DescriptorOwned);
     removeOwnedDesc(cube360EquirectDescriptor, cube360EquirectDescriptorOwned);
     for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
+    for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDepthDescriptor[i], cube360FaceDepthDescriptorOwned[i]);
     removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
     removeOwnedDesc(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
@@ -612,30 +779,30 @@ void RenderTargetsWidget::cleanup() {
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
             a->deferDestroyUntilFence(f, [device, tmp_iv, tmp_img, tmp_mem, a](){
                 if (tmp_iv != VK_NULL_HANDLE) {
-                    a->resources.removeImageView(tmp_iv);
-                    vkDestroyImageView(device, tmp_iv, nullptr);
+                    if (a->resources.removeImageView(tmp_iv))
+                        vkDestroyImageView(device, tmp_iv, nullptr);
                 }
                 if (tmp_img != VK_NULL_HANDLE) {
-                    a->resources.removeImage(tmp_img);
-                    vkDestroyImage(device, tmp_img, nullptr);
+                    if (a->resources.removeImage(tmp_img))
+                        vkDestroyImage(device, tmp_img, nullptr);
                 }
                 if (tmp_mem != VK_NULL_HANDLE) {
-                    a->resources.removeDeviceMemory(tmp_mem);
-                    vkFreeMemory(device, tmp_mem, nullptr);
+                    if (a->resources.removeDeviceMemory(tmp_mem))
+                        vkFreeMemory(device, tmp_mem, nullptr);
                 }
             });
         } else {
             if (tmp_iv != VK_NULL_HANDLE) {
-                a->resources.removeImageView(tmp_iv);
-                vkDestroyImageView(device, tmp_iv, nullptr);
+                if (a->resources.removeImageView(tmp_iv))
+                    vkDestroyImageView(device, tmp_iv, nullptr);
             }
             if (tmp_img != VK_NULL_HANDLE) {
-                a->resources.removeImage(tmp_img);
-                vkDestroyImage(device, tmp_img, nullptr);
+                if (a->resources.removeImage(tmp_img))
+                    vkDestroyImage(device, tmp_img, nullptr);
             }
             if (tmp_mem != VK_NULL_HANDLE) {
-                a->resources.removeDeviceMemory(tmp_mem);
-                vkFreeMemory(device, tmp_mem, nullptr);
+                if (a->resources.removeDeviceMemory(tmp_mem))
+                    vkFreeMemory(device, tmp_mem, nullptr);
             }
         }
         iv = VK_NULL_HANDLE;
@@ -653,16 +820,12 @@ void RenderTargetsWidget::cleanup() {
             uint32_t fi = a->getCurrentFrame();
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
             a->deferDestroyUntilFence(f, [device, tmpBuf, tmpMem, a](){
-                a->resources.removeBuffer(tmpBuf);
-                vkDestroyBuffer(device, tmpBuf, nullptr);
-                a->resources.removeDeviceMemory(tmpMem);
-                vkFreeMemory(device, tmpMem, nullptr);
+                if (a->resources.removeBuffer(tmpBuf)) vkDestroyBuffer(device, tmpBuf, nullptr);
+                if (a->resources.removeDeviceMemory(tmpMem)) vkFreeMemory(device, tmpMem, nullptr);
             });
         } else {
-            a->resources.removeBuffer(tmpBuf);
-            vkDestroyBuffer(device, tmpBuf, nullptr);
-            a->resources.removeDeviceMemory(tmpMem);
-            vkFreeMemory(device, tmpMem, nullptr);
+            if (a->resources.removeBuffer(tmpBuf)) vkDestroyBuffer(device, tmpBuf, nullptr);
+            if (a->resources.removeDeviceMemory(tmpMem)) vkFreeMemory(device, tmpMem, nullptr);
         }
         buf = {};
     };
@@ -697,12 +860,10 @@ void RenderTargetsWidget::cleanup() {
             uint32_t fi = a->getCurrentFrame();
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
             a->deferDestroyUntilFence(f, [device, tmp, a, removeFn, destroyFn]() mutable {
-                (a->resources.*removeFn)(tmp);
-                destroyFn(device, tmp);
+                if ((a->resources.*removeFn)(tmp)) destroyFn(device, tmp);
             });
         } else {
-            (a->resources.*removeFn)(tmp);
-            destroyFn(a->getDevice(), tmp);
+            if ((a->resources.*removeFn)(tmp)) destroyFn(a->getDevice(), tmp);
         }
         handle = VK_NULL_HANDLE;
     };
@@ -715,12 +876,10 @@ void RenderTargetsWidget::cleanup() {
             uint32_t fi = a->getCurrentFrame();
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
             a->deferDestroyUntilFence(f, [tmp, a]() {
-                a->resources.removeFramebuffer(tmp);
-                vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
+                if (a->resources.removeFramebuffer(tmp)) vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
             });
         } else {
-            a->resources.removeFramebuffer(tmp);
-            vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
+            if (a->resources.removeFramebuffer(tmp)) vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
         }
         linearSceneFramebuffer = VK_NULL_HANDLE;
     }
@@ -731,12 +890,10 @@ void RenderTargetsWidget::cleanup() {
             uint32_t fi = a->getCurrentFrame();
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
             a->deferDestroyUntilFence(f, [tmp, a]() {
-                a->resources.removeFramebuffer(tmp);
-                vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
+                if (a->resources.removeFramebuffer(tmp)) vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
             });
         } else {
-            a->resources.removeFramebuffer(tmp);
-            vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
+            if (a->resources.removeFramebuffer(tmp)) vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
         }
         linearBackFaceFramebuffer = VK_NULL_HANDLE;
     }
@@ -749,12 +906,10 @@ void RenderTargetsWidget::cleanup() {
             uint32_t fi = a->getCurrentFrame();
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
             a->deferDestroyUntilFence(f, [tmp, a]() {
-                a->resources.removePipeline(tmp);
-                vkDestroyPipeline(a->getDevice(), tmp, nullptr);
+                if (a->resources.removePipeline(tmp)) vkDestroyPipeline(a->getDevice(), tmp, nullptr);
             });
         } else {
-            a->resources.removePipeline(tmp);
-            vkDestroyPipeline(a->getDevice(), tmp, nullptr);
+            if (a->resources.removePipeline(tmp)) vkDestroyPipeline(a->getDevice(), tmp, nullptr);
         }
         linearizePipeline = VK_NULL_HANDLE;
     }
@@ -767,12 +922,10 @@ void RenderTargetsWidget::cleanup() {
             uint32_t fi = a->getCurrentFrame();
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
             a->deferDestroyUntilFence(f, [tmp, a]() {
-                a->resources.removePipelineLayout(tmp);
-                vkDestroyPipelineLayout(a->getDevice(), tmp, nullptr);
+                if (a->resources.removePipelineLayout(tmp)) vkDestroyPipelineLayout(a->getDevice(), tmp, nullptr);
             });
         } else {
-            a->resources.removePipelineLayout(tmp);
-            vkDestroyPipelineLayout(a->getDevice(), tmp, nullptr);
+            if (a->resources.removePipelineLayout(tmp)) vkDestroyPipelineLayout(a->getDevice(), tmp, nullptr);
         }
         linearizePipelineLayout = VK_NULL_HANDLE;
     }
@@ -800,12 +953,10 @@ void RenderTargetsWidget::cleanup() {
             uint32_t fi = a->getCurrentFrame();
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
             a->deferDestroyUntilFence(f, [tmp, a]() {
-                a->resources.removeDescriptorSetLayout(tmp);
-                vkDestroyDescriptorSetLayout(a->getDevice(), tmp, nullptr);
+                if (a->resources.removeDescriptorSetLayout(tmp)) vkDestroyDescriptorSetLayout(a->getDevice(), tmp, nullptr);
             });
         } else {
-            a->resources.removeDescriptorSetLayout(tmp);
-            vkDestroyDescriptorSetLayout(a->getDevice(), tmp, nullptr);
+            if (a->resources.removeDescriptorSetLayout(tmp)) vkDestroyDescriptorSetLayout(a->getDevice(), tmp, nullptr);
         }
         linearizeDescriptorSetLayout = VK_NULL_HANDLE;
     }
@@ -818,12 +969,10 @@ void RenderTargetsWidget::cleanup() {
             uint32_t fi = a->getCurrentFrame();
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
             a->deferDestroyUntilFence(f, [tmp, a]() {
-                a->resources.removeRenderPass(tmp);
-                vkDestroyRenderPass(a->getDevice(), tmp, nullptr);
+                if (a->resources.removeRenderPass(tmp)) vkDestroyRenderPass(a->getDevice(), tmp, nullptr);
             });
         } else {
-            a->resources.removeRenderPass(tmp);
-            vkDestroyRenderPass(a->getDevice(), tmp, nullptr);
+            if (a->resources.removeRenderPass(tmp)) vkDestroyRenderPass(a->getDevice(), tmp, nullptr);
         }
         linearizeRenderPass = VK_NULL_HANDLE;
     }
@@ -836,12 +985,10 @@ void RenderTargetsWidget::cleanup() {
             uint32_t fi = a->getCurrentFrame();
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
             a->deferDestroyUntilFence(f, [tmp, a]() {
-                a->resources.removeSampler(tmp);
-                vkDestroySampler(a->getDevice(), tmp, nullptr);
+                if (a->resources.removeSampler(tmp)) vkDestroySampler(a->getDevice(), tmp, nullptr);
             });
         } else {
-            a->resources.removeSampler(tmp);
-            vkDestroySampler(a->getDevice(), tmp, nullptr);
+            if (a->resources.removeSampler(tmp)) vkDestroySampler(a->getDevice(), tmp, nullptr);
         }
         widgetSampler = VK_NULL_HANDLE;
     }
@@ -889,7 +1036,10 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         case PreviewTarget::SolidDepth: {
             if (solidDepthDescriptor == VK_NULL_HANDLE) {
                 VkSampler depthSampler = (shadowMapper) ? shadowMapper->getShadowMapSampler() : widgetSampler;
-                solidDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler,  solidRenderer->getDepthView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                // Sample the previously-produced frame's depth (one-frame latency)
+                // to avoid binding the current-frame attachment before it's rendered.
+                uint32_t producerFrame = (frameIndex + 1) % 2;
+                solidDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler,  solidRenderer->getDepthView(producerFrame), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 solidDepthDescriptorOwned = true;
             }
             
@@ -911,6 +1061,21 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             if (faceView != VK_NULL_HANDLE && cube360FaceDescriptor[f] == VK_NULL_HANDLE) {
                 cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(widgetSampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 cube360FaceDescriptorOwned[f] = true;
+            }
+        } break;
+
+        case PreviewTarget::Solid360DepthCube: {
+            uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
+            VkImageView depthView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360DepthView(f) : VK_NULL_HANDLE;
+            if (depthView != VK_NULL_HANDLE && cube360FaceDepthDescriptor[f] == VK_NULL_HANDLE) {
+                VkSampler depthSampler = (shadowMapper) ? shadowMapper->getShadowMapSampler() : widgetSampler;
+                float nearP = 0.1f, farP = 1000.0f;
+                if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
+                // Linearize the depth for this cubemap face into its own per-face linear target
+                runLinearizePass(app, sceneRenderer->solid360Renderer->getCube360DepthImage(), depthView, widgetSampler, widgetSampler,
+                                 linearCubeFaceDepthView[f], linearCubeFaceFramebuffer[f],
+                                 cube360FaceDepthDescriptor[f], cube360FaceDepthDescriptorOwned[f],
+                                 static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f, f);
             }
         } break;
 
@@ -959,13 +1124,17 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         // Run the pass for scene depth (use perspective linearization)
         if (solidRenderer && linearizePipeline != VK_NULL_HANDLE && linearSceneFramebuffer != VK_NULL_HANDLE) {
-            VkImageView src = solidRenderer->getDepthView(frameIndex);
-            fprintf(stderr, "[RenderTargetsWidget] Scene linearize check: pipeline=%p descSet=%p fb=%p view=%p src=%p\n",
-                    (void*)linearizePipeline, (void*)linearizeDescriptorSet, (void*)linearSceneFramebuffer, (void*)linearSceneDepthView, (void*)src);
-            if (src != VK_NULL_HANDLE) {
+            // Sample the previously-produced frame's depth (one-frame latency)
+            // to avoid sampling an attachment that will be written later in
+            // the same frame while ImGui is being built.
+            uint32_t producerFrame = (frameIndex + 1) % 2;
+            VkImageView src = solidRenderer->getDepthView(producerFrame);
+            fprintf(stderr, "[RenderTargetsWidget] Scene linearize check: pipeline=%p descSet=%p fb=%p view=%p src=%p producerFrame=%u\n",
+                    (void*)linearizePipeline, (void*)linearizeDescriptorSet, (void*)linearSceneFramebuffer, (void*)linearSceneDepthView, (void*)src, (unsigned)producerFrame);
+                if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, src, depthSampler, widgetSampler, linearSceneDepthView, linearSceneFramebuffer,
+                runLinearizePass(app, solidRenderer->getDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearSceneDepthView, linearSceneFramebuffer,
                                  linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
                 fprintf(stderr, "[RenderTargetsWidget] Scene linearize: pass completed\n");
@@ -975,13 +1144,16 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         // Back-face depth pass
         // Back-face depth pass (use perspective linearization)
         if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE && linearBackFaceFramebuffer != VK_NULL_HANDLE) {
-            VkImageView src = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
-            fprintf(stderr, "[RenderTargetsWidget] Backface linearize check: pipeline=%p descSet=%p fb=%p view=%p src=%p\n",
-                    (void*)linearizePipeline, (void*)linearizeDescriptorSet, (void*)linearBackFaceFramebuffer, (void*)linearBackFaceDepthView, (void*)src);
-            if (src != VK_NULL_HANDLE) {
+            // Use previous producer frame for the back-face source to avoid
+            // sampling images that may still be in-flight.
+            uint32_t producerFrame = (frameIndex + 1) % 2;
+            VkImageView src = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(producerFrame) : VK_NULL_HANDLE;
+            fprintf(stderr, "[RenderTargetsWidget] Backface linearize check: pipeline=%p descSet=%p fb=%p view=%p src=%p producerFrame=%u\n",
+                    (void*)linearizePipeline, (void*)linearizeDescriptorSet, (void*)linearBackFaceFramebuffer, (void*)linearBackFaceDepthView, (void*)src, (unsigned)producerFrame);
+                if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, src, depthSampler, widgetSampler, linearBackFaceDepthView, linearBackFaceFramebuffer,
+                runLinearizePass(app, sceneRenderer->backFaceRenderer->getBackFaceDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearBackFaceDepthView, linearBackFaceFramebuffer,
                                  linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
                 fprintf(stderr, "[RenderTargetsWidget] Backface linearize: pass completed\n");
@@ -1004,9 +1176,9 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, src, depthSampler, widgetSampler, linearSceneDepthView, linearSceneFramebuffer,
+                runLinearizePass(app, sceneRenderer->waterRenderer->getWaterGeomDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearSceneDepthView, linearSceneFramebuffer,
                                  linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
-                                 static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
+                                 static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 1.0f);
                 fprintf(stderr, "[RenderTargetsWidget] Water linearize: pass completed\n");
 
                 // Expose the linearized image as the water-depth preview descriptor.
@@ -1026,7 +1198,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
                 VkImageView src = shadowMapper->getShadowMapView(c);
                 if (src != VK_NULL_HANDLE && linearShadowFramebuffer[c] != VK_NULL_HANDLE) {
                     float nearP = 0.0f, farP = 1.0f;
-                    runLinearizePass(app, src, depthSampler, widgetSampler, linearShadowDepthView[c], linearShadowFramebuffer[c],
+                    runLinearizePass(app, shadowMapper->getDepthImage(c), src, widgetSampler, widgetSampler, linearShadowDepthView[c], linearShadowFramebuffer[c],
                                      linearShadowDepthDescriptor[c], linearShadowDepthDescriptorOwned[c], shadowSize, shadowSize, nearP, farP, 1.0f);
                     fprintf(stderr, "[RenderTargetsWidget] Shadow linearize: cascade=%d done\n", c);
                 }
@@ -1049,11 +1221,28 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     // Scene linear depth: if we didn't create a GPU-linearized image above,
     // alias to the solid renderer depth view so we still show something.
     if (linearSceneDepthDescriptor == VK_NULL_HANDLE && solidRenderer) {
-        VkImageView sceneDepthView = solidRenderer->getDepthView(frameIndex);
+        // Try to produce a GPU-linearized RGBA preview first. If linearization
+        // fails or is unavailable, fall back to aliasing the raw depth view.
+        uint32_t producerFrame = (frameIndex + 1) % 2;
+        VkImageView sceneDepthView = solidRenderer->getDepthView(producerFrame);
+        VkImage sceneDepthImage = solidRenderer->getDepthImage(producerFrame);
         if (sceneDepthView != VK_NULL_HANDLE) {
-            VkSampler depthSampler = shadowMapper ? shadowMapper->getShadowMapSampler() : widgetSampler;
-            linearSceneDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            linearSceneDepthDescriptorOwned = true;
+            bool linearized = false;
+            // Only attempt linearize if we have the pipeline and target framebuffer
+            if (linearizePipeline != VK_NULL_HANDLE && linearSceneFramebuffer != VK_NULL_HANDLE && sceneDepthImage != VK_NULL_HANDLE) {
+                float nearP = 0.1f, farP = 1000.0f;
+                if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
+                // runLinearizePass will set `linearSceneDepthDescriptor` on success
+                linearized = runLinearizePass(app, sceneDepthImage, sceneDepthView, widgetSampler, widgetSampler,
+                                              linearSceneDepthView, linearSceneFramebuffer,
+                                              linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
+                                              static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
+            }
+            if (!linearized) {
+                // Fallback: alias raw depth view (may appear incorrect on some GPUs)
+                linearSceneDepthDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                linearSceneDepthDescriptorOwned = true;
+            }
         }
     }
     // Back-face depth (water): alias to water back-face depth view
@@ -1072,6 +1261,9 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             break;
         case PreviewTarget::Solid360Cube: 
             previewDescriptor = cube360FaceDescriptor[this->selectedCubeFaceIndex]; 
+            break;
+        case PreviewTarget::Solid360DepthCube:
+            previewDescriptor = cube360FaceDepthDescriptor[this->selectedCubeFaceIndex];
             break;
         case PreviewTarget::Solid360Equirect: 
             previewDescriptor = cube360EquirectDescriptor; 
@@ -1138,7 +1330,7 @@ void RenderTargetsWidget::render() {
         return;
     }
 
-    updateDescriptors(currentFrame);
+    
 
     // Fixed preview width (px)
     const float PREVIEW_WIDTH = 800.0f;
@@ -1151,16 +1343,18 @@ void RenderTargetsWidget::render() {
         ImGui::EndPopup();
     }
     // Add preview items array (prepare for dropdown selector)
+    // Items must be in the same order as RenderTargetsWidget::PreviewTarget
     const char* previewItems[] = {
         "Sky",
         "Solid360Cube",
+        "Solid360DepthCube",
         "Solid360Equirect",
         "SolidColor",
         "SolidDepth",
-        "WaterColor",
-        "WaterDepth",
         "BackFaceColor",
         "BackFaceDepth",
+        "WaterColor",
+        "WaterDepth",
         "LinearSceneDepth",
         "ShadowCascade"
     };
@@ -1173,8 +1367,6 @@ void RenderTargetsWidget::render() {
     if (selectedPreview == PreviewTarget::ShadowCascade) {
         ImGui::SliderInt("Cascade", &selectedShadowCascade, 0, SHADOW_CASCADE_COUNT - 1);
     }
-    ImGui::SameLine();
-    ImGui::Checkbox("Show All Cascades", &showAllCascades);
     ImGui::Text("Shadow View"); ImGui::SameLine();
     if (ImGui::RadioButton("Linearized", shadowViewMode == RenderTargetsWidget::ShadowViewMode::Linearized)) {
         shadowViewMode = RenderTargetsWidget::ShadowViewMode::Linearized;
@@ -1187,19 +1379,11 @@ void RenderTargetsWidget::render() {
     ImGui::Checkbox("Show All Cascades", &showAllCascades);
     ImGui::Separator();
 
-    // Debug: print current selection to stderr for quick diagnostics
-    fprintf(stderr, "RenderTargetsWidget: selectedPreview=%d selectedShadowCascade=%d showAllCascades=%d\n", static_cast<int>(selectedPreview), selectedShadowCascade, showAllCascades);
-
     float aspect = 1.0f;
     if (cachedWidth > 0 && cachedHeight > 0) aspect = static_cast<float>(cachedHeight) / static_cast<float>(cachedWidth);
     ImVec2 previewSize(PREVIEW_WIDTH, PREVIEW_WIDTH * aspect);
 
-    // Render only the selected preview using a single preview descriptor
-    VkDescriptorSet ds = previewDescriptor;
-    ImVec2 imgSize = previewSize;
-    bool available = (ds != VK_NULL_HANDLE);
-
-    if (selectedPreview == PreviewTarget::Solid360Cube) {
+    if (selectedPreview == PreviewTarget::Solid360Cube || selectedPreview == PreviewTarget::Solid360DepthCube) {
         const char* faceLabels[6] = {"+X", "-X", "+Y", "-Y", "+Z", "-Z"};
         ImGui::Text("Cube face");
         ImGui::SameLine();
@@ -1214,7 +1398,22 @@ void RenderTargetsWidget::render() {
         }
     }
 
-    if (available) ImGui::Image((ImTextureID)ds, imgSize); else ImGui::Text("Preview unavailable");
+        // Update/create descriptors and run linearize passes now that the
+        // UI selection (including cube-face arrows and shadow cascade sliders)
+        // has been applied so the displayed preview matches the current UI
+        // state in the same frame.
+        updateDescriptors(currentFrame);
+
+        // Debug: print current selection to stderr for quick diagnostics
+        fprintf(stderr, "RenderTargetsWidget: selectedPreview=%d selectedShadowCascade=%d showAllCascades=%d selectedCubeFace=%d\n",
+            static_cast<int>(selectedPreview), selectedShadowCascade, showAllCascades, selectedCubeFaceIndex);
+
+        // Render only the selected preview using a single preview descriptor
+        VkDescriptorSet ds = previewDescriptor;
+        ImVec2 imgSize = previewSize;
+        bool available = (ds != VK_NULL_HANDLE);
+
+        if (available) ImGui::Image((ImTextureID)ds, imgSize); else ImGui::Text("Preview unavailable");
     ImGui::Separator();
 
 
