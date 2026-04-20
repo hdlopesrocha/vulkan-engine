@@ -203,7 +203,7 @@ void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDe
     skyRenderer->render(app, commandBuffer, perTextureDescriptorSet, mainUniformBuffer, uboStatic, viewProj, mode);
 }
 
-void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, float waterTime, VkImageView skyView, VkImageView cubeReflectionView) {
+void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, float waterTime, bool skipBackFace, VkImageView skyView, VkImageView cubeReflectionView) {
     if (commandBuffer == VK_NULL_HANDLE) {
         fprintf(stderr, "[SceneRenderer::waterPass] commandBuffer is VK_NULL_HANDLE, skipping.\n");
         return;
@@ -234,7 +234,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
         // Wireframe path: use WaterRenderer for setup/pass management,
         // but bind the wireframe pipeline instead of the normal one.
         waterRenderer->prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
-        if (backFaceRenderer) {
+        if (backFaceRenderer && !skipBackFace) {
             backFaceRenderer->renderBackFacePass(app, commandBuffer, frameIdx,
                                                 waterRenderer->getIndirectRenderer(),
                                                 waterRenderer->getWaterGeometryPipelineLayout(),
@@ -254,7 +254,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
         waterRenderer->endWaterGeometryPass(commandBuffer);
         waterRenderer->postRenderBarrier(commandBuffer, frameIdx);
     } else {
-        if (backFaceRenderer) {
+        if (backFaceRenderer && !skipBackFace) {
             backFaceRenderer->renderBackFacePass(app, commandBuffer, frameIdx,
                                                 waterRenderer->getIndirectRenderer(),
                                                 waterRenderer->getWaterGeometryPipelineLayout(),

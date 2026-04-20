@@ -555,12 +555,14 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         // Descriptor pool
         VkDescriptorPoolSize poolSize{};
         poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = 10;
+        // Increase capacity to support many concurrent compute descriptor allocations
+        poolSize.descriptorCount = 256;
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = 1;
         poolInfo.pPoolSizes = &poolSize;
-        poolInfo.maxSets = 4;
+        // Allow more descriptor sets to be allocated from this pool
+        poolInfo.maxSets = 64;
         // Allow freeing descriptor sets if needed
         poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         if (vkCreateDescriptorPool(app->getDevice(), &poolInfo, nullptr, &computeDescriptorPool) != VK_SUCCESS) {
@@ -712,6 +714,96 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     barriers[1].dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
 
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 0, nullptr, 2, barriers, 0, nullptr);
+}
+
+void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
+                                                VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer, uint32_t maxDraws) {
+    if (computePipeline == VK_NULL_HANDLE || outCompactBuffer == VK_NULL_HANDLE || computeDesc == VK_NULL_HANDLE) {
+        static bool reported = false;
+        if (!reported) {
+            printf("[IndirectRenderer::prepareCullWithDescriptor] SKIP: computePipeline=%p, outCompactBuffer=%p, computeDesc=%p\n",
+                   (void*)computePipeline, (void*)outCompactBuffer, (void*)computeDesc);
+            reported = true;
+        }
+        return;
+    }
+
+    // Reset visible count to zero using a command (clear GPU-side counter)
+    vkCmdFillBuffer(cmd, outVisibleCountBuffer, 0, sizeof(uint32_t), 0);
+
+    // Barrier: vkCmdFillBuffer is a TRANSFER write. The compute shader does
+    // atomicAdd on visibleCountBuffer, so we must ensure the fill is visible
+    // before the dispatch starts.
+    {
+        VkBufferMemoryBarrier fillBarrier{};
+        fillBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        fillBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        fillBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        fillBarrier.buffer = outVisibleCountBuffer;
+        fillBarrier.offset = 0;
+        fillBarrier.size = sizeof(uint32_t);
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, nullptr, 1, &fillBarrier, 0, nullptr);
+    }
+
+    // Bind and dispatch compute cull using caller-provided descriptor set
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeDesc, 0, nullptr);
+    vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::mat4), &viewProj);
+
+    uint32_t numCmds = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        numCmds = static_cast<uint32_t>(indirectCommands.size());
+    }
+    uint32_t groupSize = 64;
+    uint32_t groups = (numCmds + groupSize - 1) / groupSize;
+    if (groups > 0) vkCmdDispatch(cmd, groups, 1, 1);
+
+    // Barrier to make shader writes to the compact indirect buffer and visible count visible to indirect draw
+    VkBufferMemoryBarrier barriers[2] = {};
+    barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].buffer = outCompactBuffer;
+    barriers[0].offset = 0;
+    barriers[0].size = VK_WHOLE_SIZE;
+
+    barriers[1] = barriers[0];
+    barriers[1].buffer = outVisibleCountBuffer;
+    barriers[1].dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 0, nullptr, 2, barriers, 0, nullptr);
+}
+
+void IndirectRenderer::drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer compactBuffer, VkBuffer visibleCountBuffer, uint32_t maxDraws) {
+    if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) {
+        static bool reported = false;
+        if (!reported) {
+            printf("[IndirectRenderer::drawPreparedWithBuffers] vertex or index buffer is NULL, skipping\n");
+            reported = true;
+        }
+        return;
+    }
+
+    VkBuffer vbs[] = { vertexBuffer.buffer };
+    VkDeviceSize offsets[] = { 0 };
+    vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
+    vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+    uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
+
+    if (cmdDrawIndexedIndirectCount) {
+        cmdDrawIndexedIndirectCount(cmd, compactBuffer, 0, visibleCountBuffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+    } else {
+        vkCmdDrawIndexedIndirect(cmd, compactBuffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+    }
 }
 
 void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {

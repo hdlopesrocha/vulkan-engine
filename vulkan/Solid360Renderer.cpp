@@ -169,7 +169,8 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                                      SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
                                      SolidRenderer* solidRenderer,
                                      VkDescriptorSet mainDescriptorSet,
-                                     Buffer& uniformBuffer, const UniformObject& ubo) {
+                                     Buffer& uniformBuffer, const UniformObject& ubo,
+                                     VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer) {
     if (!app || cmd == VK_NULL_HANDLE) return;
     if (cube360Framebuffers[0] == VK_NULL_HANDLE) return;
 
@@ -248,7 +249,12 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             if (gfxPipe != VK_NULL_HANDLE && gfxLayout != VK_NULL_HANDLE) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxPipe);
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
-                solidRenderer->getIndirectRenderer().drawAll(cmd);
+                // If caller provided per-task compact/visible buffers, use them to draw the solid renderer's visible set.
+                if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
+                    solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
+                } else {
+                    solidRenderer->getIndirectRenderer().drawAll(cmd);
+                }
             }
         }
 

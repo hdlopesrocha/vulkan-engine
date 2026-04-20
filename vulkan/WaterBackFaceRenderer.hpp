@@ -23,7 +23,9 @@ public:
     void renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                             IndirectRenderer& indirect, VkPipelineLayout pipelineLayout,
                                               VkDescriptorSet mainDs, VkDescriptorSet materialDs, VkDescriptorSet sceneDs,
-                                              VkImage sceneDepthImage);
+                                              VkImage sceneDepthImage,
+                                              VkBuffer compactIndirectBuffer = VK_NULL_HANDLE,
+                                              VkBuffer visibleCountBuffer = VK_NULL_HANDLE);
     VkImage getBackFaceDepthImage(uint32_t frameIndex) const { return (frameIndex < 2) ? backFaceDepthImages[frameIndex] : VK_NULL_HANDLE; }
     VkImageView getBackFaceDepthView(uint32_t frameIndex) const { return (frameIndex < 2) ? backFaceDepthImageViews[frameIndex] : VK_NULL_HANDLE; }
     // Accessor for tracked per-frame layout (used by widgets to emit correct barriers)

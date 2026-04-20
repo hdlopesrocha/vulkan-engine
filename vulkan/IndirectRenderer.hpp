@@ -73,8 +73,13 @@ public:
   
     // Run GPU culling/compaction (must be called outside any render pass).
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws = 0);
+    // Run GPU culling into caller-provided output buffers using a provided compute descriptor set.
+    void prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
+                                   VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer, uint32_t maxDraws = 0);
     // Issue indirect draw using the compacted indirect buffer (call inside render pass).
     void drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws = 0);
+    // Issue indirect draw using caller-provided compact/visible count buffers.
+    void drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer compactBuffer, VkBuffer visibleCountBuffer, uint32_t maxDraws = 0);
     // Draw ALL meshes without GPU frustum culling (uses original indirect buffer).
     // Useful for omnidirectional renders (cubemap faces, shadow maps, etc.).
     void drawAll(VkCommandBuffer cmd);
@@ -90,7 +95,10 @@ public:
     const Buffer& getIndexBuffer() const { return indexBuffer; }
     const Buffer& getIndirectBuffer() const { return indirectBuffer; }
     const Buffer& getCompactIndirectBuffer() const { return compactIndirectBuffer; }
+    const Buffer& getBoundsBuffer() const { return boundsBuffer; }
     VkPipeline getComputePipeline() const { return computePipeline; }
+    VkDescriptorSetLayout getComputeDescriptorSetLayout() const { return computeDescriptorSetLayout; }
+    VkDescriptorPool getComputeDescriptorPool() const { return computeDescriptorPool; }
 
     // Get count of active meshes
     size_t getMeshCount() const {

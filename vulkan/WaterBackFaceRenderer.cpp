@@ -335,7 +335,8 @@ void WaterBackFaceRenderer::destroyRenderTargets(VulkanApp* app) {
 void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                                               IndirectRenderer& indirect, VkPipelineLayout pipelineLayout,
                                               VkDescriptorSet mainDs, VkDescriptorSet materialDs, VkDescriptorSet sceneDs,
-                                              VkImage sceneDepthImage) {
+                                              VkImage sceneDepthImage,
+                                              VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer) {
     if (!app || cmd == VK_NULL_HANDLE) return;
     if (backFaceRenderPass == VK_NULL_HANDLE || backFacePipeline == VK_NULL_HANDLE) return;
     if (frameIndex >= backFaceFramebuffers.size()) return;
@@ -416,7 +417,11 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1, &sceneDs, 0, nullptr);
     }
 
-    indirect.drawPrepared(cmd);
+    if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
+        indirect.drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
+    } else {
+        indirect.drawPrepared(cmd);
+    }
 
     vkCmdEndRenderPass(cmd);
 

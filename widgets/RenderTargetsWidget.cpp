@@ -1035,7 +1035,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         case PreviewTarget::SolidDepth: {
             if (solidDepthDescriptor == VK_NULL_HANDLE) {
-                VkSampler depthSampler = (shadowMapper) ? shadowMapper->getShadowMapSampler() : widgetSampler;
+                VkSampler depthSampler = widgetSampler;
                 // Sample the previously-produced frame's depth (one-frame latency)
                 // to avoid binding the current-frame attachment before it's rendered.
                 uint32_t producerFrame = (frameIndex + 1) % 2;
@@ -1068,7 +1068,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
             VkImageView depthView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360DepthView(f) : VK_NULL_HANDLE;
             if (depthView != VK_NULL_HANDLE && cube360FaceDepthDescriptor[f] == VK_NULL_HANDLE) {
-                VkSampler depthSampler = (shadowMapper) ? shadowMapper->getShadowMapSampler() : widgetSampler;
+                VkSampler depthSampler = widgetSampler;
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
                 // Linearize the depth for this cubemap face into its own per-face linear target
@@ -1117,10 +1117,8 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         // pipeline and descriptor set are created once in init()
 
-        // Prepare a sampler for sampling depth textures (prefer shadow sampler)
-        VkSampler depthSampler = VK_NULL_HANDLE;
-        if (shadowMapper) depthSampler = shadowMapper->getShadowMapSampler();
-        if (depthSampler == VK_NULL_HANDLE) depthSampler = widgetSampler;
+        // Prepare a sampler for sampling depth textures (use non-compare widget sampler)
+        VkSampler depthSampler = widgetSampler;
 
         // Run the pass for scene depth (use perspective linearization)
         if (solidRenderer && linearizePipeline != VK_NULL_HANDLE && linearSceneFramebuffer != VK_NULL_HANDLE) {
@@ -1210,7 +1208,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         VkImageView bfView = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
         if (bfView != VK_NULL_HANDLE && backFaceDepthDescriptor == VK_NULL_HANDLE) {
             backFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(
-                shadowMapper->getShadowMapSampler(), bfView,
+                widgetSampler, bfView,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             backFaceDepthDescriptorOwned = true;
         }
@@ -1248,7 +1246,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     // Back-face depth (water): alias to water back-face depth view
     VkImageView bfView2 = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
     if (linearBackFaceDepthDescriptor == VK_NULL_HANDLE && bfView2 != VK_NULL_HANDLE) {
-        VkSampler depthSampler = shadowMapper ? shadowMapper->getShadowMapSampler() : widgetSampler;
+        VkSampler depthSampler = widgetSampler;
         linearBackFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, bfView2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         linearBackFaceDepthDescriptorOwned = true;
     }

@@ -104,6 +104,13 @@ private:
     // composed from (image_ptr << 32) | baseArrayLayer.
     mutable std::mutex imageLayoutMutex;
     std::unordered_map<uint64_t, VkImageLayout> imageLayerLayouts;
+    // Pending per-command-buffer layout updates recorded at record-time.
+    // These are applied to `imageLayerLayouts` only when the command buffer
+    // has actually executed (synchronously or when its fence signals) to
+    // avoid marking layouts as changed before the GPU performs the barrier.
+    struct PendingLayoutUpdate { VkImage image; VkImageLayout newLayout; uint32_t baseArrayLayer; uint32_t layerCount; };
+    std::unordered_map<VkCommandBuffer, std::vector<PendingLayoutUpdate>> commandBufferPendingLayouts;
+    std::mutex pendingLayoutMutex;
     
     // mutex used by runSingleTimeCommands and other transient-pool users
     std::mutex transientPoolMutex;
@@ -184,6 +191,9 @@ protected:
         // Wait for all per-frame in-flight fences to signal (blocks).
         void waitForFrameFences();
         void processPendingCommandBuffers();
+        // Apply any pending layout updates recorded for a command buffer
+        // (transfers per-CB pending updates into the authoritative map).
+        void applyPendingLayoutUpdatesForCommandBuffer(VkCommandBuffer cmd);
         // Wait for all tracked pending command buffers to finish (blocks).
         void waitForAllPendingCommandBuffers();
         // Query whether a given fence is still tracked as pending by VulkanApp
@@ -319,12 +329,21 @@ protected:
         void transitionImageLayoutLayer(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);
         // Update the authoritative tracked layout for an image (no barrier emitted).
         void setImageLayoutTracked(VkImage image, VkImageLayout newLayout, uint32_t baseArrayLayer = 0, uint32_t layerCount = 1);
+        // Record a tracked layout change associated with a specific command buffer.
+        // If `commandBuffer` is VK_NULL_HANDLE the authoritative map is updated
+        // immediately; otherwise the change is queued and applied when the
+        // command buffer completes (avoids premature updates during recording).
+        void recordTrackedLayoutForCommandBuffer(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout newLayout, uint32_t baseArrayLayer = 0, uint32_t layerCount = 1);
         void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
 
         // Allocate a primary command buffer from the app command pool for asynchronous submissions.
         // Caller is responsible for recording commands (vkBeginCommandBuffer) and passing
         // the command buffer to `submitCommandBufferAsync` (which will call vkEndCommandBuffer).
         VkCommandBuffer allocatePrimaryCommandBuffer();
+        // Free a command buffer previously allocated via `allocatePrimaryCommandBuffer`.
+        // This will free the command buffer from the correct command pool (may be a
+        // per-thread temporary pool) and destroy that pool if it was temporary.
+        void freeCommandBuffer(VkCommandBuffer cmd);
 
         // Record an image layout transition into an existing command buffer (non-blocking).
         void recordTransitionImageLayoutLayer(VkCommandBuffer commandBuffer, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);

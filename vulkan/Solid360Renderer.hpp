@@ -20,7 +20,9 @@ public:
                         SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
                         SolidRenderer* solidRenderer,
                         VkDescriptorSet mainDescriptorSet,
-                        Buffer& uniformBuffer, const UniformObject& ubo);
+                        Buffer& uniformBuffer, const UniformObject& ubo,
+                        VkBuffer compactIndirectBuffer = VK_NULL_HANDLE,
+                        VkBuffer visibleCountBuffer = VK_NULL_HANDLE);
 
     // Return the cubemap view for reflection sampling
     VkImageView getSolid360View() const { return cube360CubeView; }
