@@ -419,7 +419,7 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
     binfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (vkBeginCommandBuffer(cmd, &binfo) != VK_SUCCESS) {
         // Best-effort cleanup on failure
-        vkFreeCommandBuffers(app->getDevice(), app->getCommandPool(), 1, &cmd);
+        app->freeCommandBuffer(cmd);
         return false;
     }
 
@@ -513,14 +513,14 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
     // Synchronous submission avoids races where descriptor sets or image
     // layouts are updated while other command buffers are still recording.
     if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-        vkFreeCommandBuffers(app->getDevice(), app->getCommandPool(), 1, &cmd);
+        app->freeCommandBuffer(cmd);
         return false;
     }
     try {
         app->submitCommandBufferAndWait(cmd);
     } catch (...) {
         // Free the command buffer on failure
-        vkFreeCommandBuffers(app->getDevice(), app->getCommandPool(), 1, &cmd);
+        app->freeCommandBuffer(cmd);
         return false;
     }
 
@@ -533,7 +533,7 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
     }
 
     // Free the command buffer now that synchronous submit completed
-    vkFreeCommandBuffers(app->getDevice(), app->getCommandPool(), 1, &cmd);
+    app->freeCommandBuffer(cmd);
 
     // After the synchronous submit completed, update the renderer's per-face
     // tracking for cubemaps so future passes will record correct oldLayout values.

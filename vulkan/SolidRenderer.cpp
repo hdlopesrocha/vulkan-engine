@@ -239,7 +239,7 @@ void SolidRenderer::endPass(VkCommandBuffer cmd, uint32_t frameIndex, VulkanApp*
             fprintf(stderr, "[SolidRenderer::endPass] updating tracked layout: image=%p frame=%u -> %d\n",
                     (void*)solidDepthImages[frameIndex], (unsigned)frameIndex, (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             if (app) {
-                app->setImageLayoutTracked(solidDepthImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+                app->recordTrackedLayoutForCommandBuffer(cmd, solidDepthImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
             }
             solidDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }

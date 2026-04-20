@@ -263,7 +263,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         // depth-stencil attachment layout (renderpass finalLayout).
         // Record that so callers emitting later transitions use the correct
         // oldLayout when scheduling barriers.
-        if (app) app->setImageLayoutTracked(cube360DepthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, face, 1);
+        if (app) app->recordTrackedLayoutForCommandBuffer(cmd, cube360DepthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, face, 1);
         cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
