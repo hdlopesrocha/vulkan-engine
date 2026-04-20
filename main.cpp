@@ -531,6 +531,7 @@ public:
                 beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
                 if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
                     fprintf(stderr, "[Async] vkBeginCommandBuffer failed for solid360\n");
+                    app->freeCommandBuffer(cmd);
                     return;
                 }
                 // Allocate per-task compact/visible buffers and descriptor set so cull+draw
@@ -729,6 +730,7 @@ public:
                 beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
                 if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
                     fprintf(stderr, "[Async] vkBeginCommandBuffer failed for backFace\n");
+                    app->freeCommandBuffer(cmd);
                     return;
                 }
                 // Allocate per-task compact/visible buffers and descriptor set so cull+draw
