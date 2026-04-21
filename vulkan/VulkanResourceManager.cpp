@@ -1,13 +1,14 @@
 // Single authoritative implementation of VulkanResourceManager
 #include "VulkanResourceManager.hpp"
 
+
 #include <vulkan/vulkan.h>
 #include <string>
 #include <vector>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-
+#include <iostream>
 using namespace std;
 
 void VulkanResourceManager::addDeviceMemory(VkDeviceMemory mem, const char* desc) {
@@ -18,8 +19,7 @@ void VulkanResourceManager::addDeviceMemory(VkDeviceMemory mem, const char* desc
     }
     std::lock_guard<std::mutex> lk(mtx);
     deviceMemories[(uintptr_t)mem] = {mem, desc ? std::string(desc) : std::string()};
-    /*fprintf(stderr, "[VulkanResourceManager] addDeviceMemory this=%p mem=%p desc=%s deviceMemories=%zu\n",
-            (void*)this, (void*)mem, desc ? desc : "(null)", deviceMemories.size());*/
+    /* std::cerr << "[VulkanResourceManager] addDeviceMemory this=" << (void*)this << " mem=" << (void*)mem << " desc=" << (desc ? desc : "(null)") << " deviceMemories=" << deviceMemories.size() << std::endl;*/
 }
 
 void VulkanResourceManager::addImage(VkImage img, const char* desc) {
@@ -70,8 +70,7 @@ void VulkanResourceManager::addBuffer(VkBuffer b, const char* desc) {
     }
     std::lock_guard<std::mutex> lk(mtx);
     buffers[(uintptr_t)b] = {b, desc ? std::string(desc) : std::string()};
-    /*fprintf(stderr, "[VulkanResourceManager] addBuffer this=%p buf=%p desc=%s buffers=%zu\n",
-            (void*)this, (void*)b, desc ? desc : "(null)", buffers.size());*/
+    /*std::cerr << "[VulkanResourceManager] addBuffer this=" << (void*)this << " buf=" << (void*)b << " desc=" << (desc ? desc : "(null)") << " buffers=" << buffers.size() << std::endl;*/
 }
 
 void VulkanResourceManager::addPipeline(VkPipeline p, const char* desc) {
@@ -113,15 +112,14 @@ void VulkanResourceManager::addDescriptorPool(VkDescriptorPool dp, const char* d
     std::lock_guard<std::mutex> lk(mtx);
     // debug: log internal map state before insertion
     size_t bc = descriptorPools.bucket_count();
-    fprintf(stderr, "[VulkanResourceManager] addDescriptorPool this=%p dp=%p desc=%s bucket_count=%zu\n",
-            (void*)this, (void*)dp, desc ? desc : "(null)", bc);
+    std::cerr << "[VulkanResourceManager] addDescriptorPool this=" << (void*)this << " dp=" << (void*)dp << " desc=" << (desc ? desc : "(null)") << " bucket_count=" << bc << std::endl;
     if (bc == 0) {
         // ensure there's at least one bucket before using operator[];
         // `reserve` is safer than `rehash` for empty maps as it won't try to
         // free a sentinel pointer value that some implementations use.
         descriptorPools.reserve(1);
         bc = descriptorPools.bucket_count();
-        fprintf(stderr, "[VulkanResourceManager] reserved descriptorPools bucket_count=%zu\n", bc);
+        std::cerr << "[VulkanResourceManager] reserved descriptorPools bucket_count=" << bc << std::endl;
     }
     descriptorPools[(uintptr_t)dp] = {dp, desc ? std::string(desc) : std::string()};
 }
@@ -134,8 +132,7 @@ void VulkanResourceManager::addDescriptorSet(VkDescriptorSet ds, const char* des
     }
     std::lock_guard<std::mutex> lk(mtx);
     descriptorSets[(uintptr_t)ds] = {ds, desc ? std::string(desc) : std::string()};
-    fprintf(stderr, "[VulkanResourceManager] addDescriptorSet this=%p ds=%p desc=%s descriptorSets=%zu\n",
-            (void*)this, (void*)ds, desc ? desc : "(null)", descriptorSets.size());
+    std::cerr << "[VulkanResourceManager] addDescriptorSet this=" << (void*)this << " ds=" << (void*)ds << " desc=" << (desc ? desc : "(null)") << " descriptorSets=" << descriptorSets.size() << std::endl;
 }
 
 void VulkanResourceManager::addDescriptorSetLayout(VkDescriptorSetLayout dsl, const char* desc) {
@@ -283,38 +280,38 @@ void VulkanResourceManager::cleanup(VkDevice device) {
         }
     };
 
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying pipelines\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying pipelines\n"; fflush(stderr);
     destroyAndClear(pipelines, [](VkDevice d, uintptr_t h){ vkDestroyPipeline(d, reinterpret_cast<VkPipeline>(h), nullptr); });
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying pipeline layouts\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying pipeline layouts\n"; fflush(stderr);
     destroyAndClear(pipelineLayouts, [](VkDevice d, uintptr_t h){ vkDestroyPipelineLayout(d, reinterpret_cast<VkPipelineLayout>(h), nullptr); });
     // Destroy shader modules explicitly to satisfy validation layers.
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying shaderModules\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying shaderModules\n"; fflush(stderr);
     destroyAndClear(shaderModules, [](VkDevice d, uintptr_t h){ vkDestroyShaderModule(d, reinterpret_cast<VkShaderModule>(h), nullptr); });
     
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying framebuffers\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying framebuffers\n"; fflush(stderr);
     destroyAndClear(framebuffers, [](VkDevice d, uintptr_t h){ vkDestroyFramebuffer(d, reinterpret_cast<VkFramebuffer>(h), nullptr); });
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying samplers\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying samplers\n"; fflush(stderr);
     destroyAndClear(samplers, [](VkDevice d, uintptr_t h){ vkDestroySampler(d, reinterpret_cast<VkSampler>(h), nullptr); });
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying imageViews\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying imageViews\n"; fflush(stderr);
     destroyAndClear(imageViews, [](VkDevice d, uintptr_t h){ vkDestroyImageView(d, reinterpret_cast<VkImageView>(h), nullptr); });
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying images\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying images\n"; fflush(stderr);
     destroyAndClear(images, [](VkDevice d, uintptr_t h){ vkDestroyImage(d, reinterpret_cast<VkImage>(h), nullptr); });
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying buffers\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying buffers\n"; fflush(stderr);
     destroyAndClear(buffers, [](VkDevice d, uintptr_t h){ vkDestroyBuffer(d, reinterpret_cast<VkBuffer>(h), nullptr); });
-    fprintf(stderr, "[VulkanResourceManager] cleanup: freeing device memories\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: freeing device memories\n"; fflush(stderr);
     destroyAndClear(deviceMemories, [](VkDevice d, uintptr_t h){ vkFreeMemory(d, reinterpret_cast<VkDeviceMemory>(h), nullptr); });
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying descriptorPools\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying descriptorPools\n"; fflush(stderr);
     destroyAndClear(descriptorPools, [](VkDevice d, uintptr_t h){ vkDestroyDescriptorPool(d, reinterpret_cast<VkDescriptorPool>(h), nullptr); });
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying descriptorSetLayouts\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying descriptorSetLayouts\n"; fflush(stderr);
     destroyAndClear(descriptorSetLayouts, [](VkDevice d, uintptr_t h){ vkDestroyDescriptorSetLayout(d, reinterpret_cast<VkDescriptorSetLayout>(h), nullptr); });
 
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying renderPasses\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying renderPasses\n"; fflush(stderr);
     destroyAndClear(renderPasses, [](VkDevice d, uintptr_t h){ vkDestroyRenderPass(d, reinterpret_cast<VkRenderPass>(h), nullptr); });
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying semaphores\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying semaphores\n"; fflush(stderr);
     destroyAndClear(semaphores, [](VkDevice d, uintptr_t h){ vkDestroySemaphore(d, reinterpret_cast<VkSemaphore>(h), nullptr); });
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying fences\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying fences\n"; fflush(stderr);
     destroyAndClear(fences, [](VkDevice d, uintptr_t h){ vkDestroyFence(d, reinterpret_cast<VkFence>(h), nullptr); });
-    fprintf(stderr, "[VulkanResourceManager] cleanup: destroying commandPools\n"); fflush(stderr);
+    std::cerr << "[VulkanResourceManager] cleanup: destroying commandPools\n"; fflush(stderr);
     destroyAndClear(commandPools, [](VkDevice d, uintptr_t h){ vkDestroyCommandPool(d, reinterpret_cast<VkCommandPool>(h), nullptr); });
 
     // Descriptor sets are implicitly freed with pools; just clear the map

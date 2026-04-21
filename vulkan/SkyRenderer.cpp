@@ -1,4 +1,5 @@
 #include "SkyRenderer.hpp"
+
 #include "../utils/FileReader.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -38,9 +39,9 @@ void SkyRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
     skyPipeline = pipeline;
     skyPipelineLayout = layout;
     if (skyPipeline == VK_NULL_HANDLE || skyPipelineLayout == VK_NULL_HANDLE) {
-        fprintf(stderr, "[SKY PIPELINE ERROR] Failed to create sky pipeline or layout!\n");
+        std::cerr << "[SKY PIPELINE ERROR] Failed to create sky pipeline or layout!" << std::endl;
     } else {
-        fprintf(stderr, "[SKY PIPELINE] Created pipeline=%p layout=%p\n", (void*)skyPipeline, (void*)skyPipelineLayout);
+        std::cerr << "[SKY PIPELINE] Created pipeline=" << (void*)skyPipeline << " layout=" << (void*)skyPipelineLayout << std::endl;
     }
 
     // create sky grid pipeline (vertex + grid fragment)
@@ -63,9 +64,9 @@ void SkyRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
     skyGridPipeline = gridPipeline;
     skyGridPipelineLayout = gridLayout;
     if (skyGridPipeline == VK_NULL_HANDLE || skyGridPipelineLayout == VK_NULL_HANDLE) {
-        fprintf(stderr, "[SKY GRID PIPELINE ERROR] Failed to create sky grid pipeline or layout!\n");
+        std::cerr << "[SKY GRID PIPELINE ERROR] Failed to create sky grid pipeline or layout!" << std::endl;
     } else {
-        fprintf(stderr, "[SKY GRID PIPELINE] Created pipeline=%p layout=%p\n", (void*)skyGridPipeline, (void*)skyGridPipelineLayout);
+        std::cerr << "[SKY GRID PIPELINE] Created pipeline=" << (void*)skyGridPipeline << " layout=" << (void*)skyGridPipelineLayout << std::endl;
     }
 }
 void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkySettings::Mode skyMode) {
@@ -73,10 +74,10 @@ void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet d
         VkPipeline activePipeline = (skyMode == SkySettings::Mode::Grid) ? skyGridPipeline : skyPipeline;
         VkPipelineLayout activeLayout = (skyMode == SkySettings::Mode::Grid) ? skyGridPipelineLayout : skyPipelineLayout;
         if (activePipeline == VK_NULL_HANDLE || activeLayout == VK_NULL_HANDLE) {
-            fprintf(stderr, "[SKY RENDER ERROR] Attempted to bind VK_NULL_HANDLE pipeline or layout!\n");
+            std::cerr << "[SKY RENDER ERROR] Attempted to bind VK_NULL_HANDLE pipeline or layout!" << std::endl;
             return;
         }
-        //fprintf(stderr, "[SKY RENDER] Binding pipeline=%p layout=%p\n", (void*)activePipeline, (void*)activeLayout);
+        //std::cerr << "[SKY RENDER] Binding pipeline=" << (void*)activePipeline << " layout=" << (void*)activeLayout << std::endl;
 
     // update sky uniform centered at camera
     // Use the live UBO passed in so we preserve fields like debugParams
@@ -90,7 +91,7 @@ void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet d
     //printf("[SkyRenderer] vkCmdBindPipeline: activePipeline=%p\n", (void*)activePipeline);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
     // Only bind the sky descriptor set (set 0)
-    //fprintf(stderr, "[SKY RENDER] Binding descriptor set: skyDs=%p\n", (void*)descriptorSet);
+    //std::cerr << "[SKY RENDER] Binding descriptor set: skyDs=" << (void*)descriptorSet << std::endl;
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeLayout, 0, 1, &descriptorSet, 0, nullptr);
     // No push-constants used for sky; model is encoded into UBO/viewPos.
 
@@ -118,8 +119,8 @@ void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet d
         vkCmdBindIndexBuffer(cmd, skyVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd, skyVBO.indexCount, 1, 0, 0, 0);
     } else {
-        fprintf(stderr, "[SkyRenderer::render] Sky VBO not available! vertexBuffer=%p indexCount=%u\n",
-            (void*)skyVBO.vertexBuffer.buffer, skyVBO.indexCount);
+        std::cerr << "[SkyRenderer::render] Sky VBO not available! vertexBuffer=" << (void*)skyVBO.vertexBuffer.buffer
+                  << " indexCount=" << skyVBO.indexCount << std::endl;
     }
 }
 
@@ -392,7 +393,7 @@ void SkyRenderer::createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_
         app->resources.addFramebuffer(skyFramebuffers[i], "SkyRenderer: skyEquirectFramebuffer");
     }
 
-    fprintf(stderr, "[SkyRenderer] Created equirectangular sky targets %ux%u\n", offscreenWidth, offscreenHeight);
+    std::cerr << "[SkyRenderer] Created equirectangular sky targets " << offscreenWidth << "x" << offscreenHeight << std::endl;
 }
 
 void SkyRenderer::destroyOffscreenTargets(VulkanApp* app) {

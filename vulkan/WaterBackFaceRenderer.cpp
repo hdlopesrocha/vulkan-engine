@@ -1,4 +1,5 @@
 #include "WaterBackFaceRenderer.hpp"
+
 #include "../utils/FileReader.hpp"
 #include <stdexcept>
 #include <iostream>
@@ -293,8 +294,10 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
     for (int i = 0; i < 2; ++i) {
         if (backFaceDepthImages[i] == VK_NULL_HANDLE) continue;
         app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-            fprintf(stderr, "[WaterBackFaceRenderer::createRenderTargets] initial transition: cmd=%p image=%p old=%d new=%d\n",
-                    (void*)cmd, (void*)backFaceDepthImages[i], (int)backFaceDepthImageLayouts[i], (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            std::cerr << "[WaterBackFaceRenderer::createRenderTargets] initial transition: cmd=" << (void*)cmd
+                      << " image=" << (void*)backFaceDepthImages[i]
+                      << " old=" << (int)backFaceDepthImageLayouts[i]
+                      << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
             app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[i], VK_FORMAT_D32_SFLOAT,
                                                  backFaceDepthImageLayouts[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                                  1, 0, 1);
@@ -350,8 +353,11 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     // initialize from the scene depth here - the back-face preview must show
     // only water back-face geometry (no solid occluders).
     if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-        fprintf(stderr, "[WaterBackFaceRenderer::renderBackFacePass] fallbackBarrier: cmd=%p image=%p frame=%u old=%d new=%d\n",
-                (void*)cmd, (void*)backFaceDepthImages[frameIndex], (unsigned)frameIndex, (int)backFaceDepthImageLayouts[frameIndex], (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        std::cerr << "[WaterBackFaceRenderer::renderBackFacePass] fallbackBarrier: cmd=" << (void*)cmd
+                  << " image=" << (void*)backFaceDepthImages[frameIndex]
+                  << " frame=" << (unsigned)frameIndex
+                  << " old=" << (int)backFaceDepthImageLayouts[frameIndex]
+                  << " new=" << (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL << std::endl;
         if (app) {
             app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
                                                  backFaceDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -428,8 +434,11 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     // Barrier to make depth writes visible to shader reads
     if (backFaceDepthImages[frameIndex] != VK_NULL_HANDLE) {
         if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            fprintf(stderr, "[WaterBackFaceRenderer::renderBackFacePass] post-render barrier: cmd=%p image=%p frame=%u old=%d new=%d\n",
-                    (void*)cmd, (void*)backFaceDepthImages[frameIndex], (unsigned)frameIndex, (int)backFaceDepthImageLayouts[frameIndex], (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            std::cerr << "[WaterBackFaceRenderer::renderBackFacePass] post-render barrier: cmd=" << (void*)cmd
+                      << " image=" << (void*)backFaceDepthImages[frameIndex]
+                      << " frame=" << (unsigned)frameIndex
+                      << " old=" << (int)backFaceDepthImageLayouts[frameIndex]
+                      << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
             if (app) {
                 app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
                                                      backFaceDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -469,8 +478,11 @@ void WaterBackFaceRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t fram
     VkImageLayout trackedOld = VK_IMAGE_LAYOUT_UNDEFINED;
     if (frameIndex < backFaceDepthImageLayouts.size()) trackedOld = backFaceDepthImageLayouts[frameIndex];
 
-    fprintf(stderr, "[WaterBackFaceRenderer::postRenderBarrier] cmd=%p image=%p frame=%u trackedOld=%d new=%d\n",
-            (void*)cmd, (void*)backFaceDepthImages[frameIndex], (unsigned)frameIndex, (int)trackedOld, (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    std::cerr << "[WaterBackFaceRenderer::postRenderBarrier] cmd=" << (void*)cmd
+              << " image=" << (void*)backFaceDepthImages[frameIndex]
+              << " frame=" << (unsigned)frameIndex
+              << " trackedOld=" << (int)trackedOld
+              << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
 
     VulkanApp* app = getImGuiVulkanApp();
     if (app) {

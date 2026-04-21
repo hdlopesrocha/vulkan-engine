@@ -608,7 +608,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             compactIndirectBuffer.buffer == VK_NULL_HANDLE ||
             boundsBuffer.buffer == VK_NULL_HANDLE ||
             visibleCountBuffer.buffer == VK_NULL_HANDLE) {
-            fprintf(stderr, "[IndirectRenderer] Skipping compute descriptor set update: one or more buffers are VK_NULL_HANDLE\n");
+            std::cerr << "[IndirectRenderer] Skipping compute descriptor set update: one or more buffers are VK_NULL_HANDLE" << std::endl;
         } else {
             VkWriteDescriptorSet writes[4] = {};
             writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -650,8 +650,8 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     if (computePipeline == VK_NULL_HANDLE || compactIndirectBuffer.buffer == VK_NULL_HANDLE) {
         static bool reported = false;
         if (!reported) {
-            printf("[IndirectRenderer::prepareCull] SKIP: computePipeline=%p, compactIndirectBuffer=%p\n", 
-                (void*)computePipeline, (void*)compactIndirectBuffer.buffer);
+            std::cerr << "[IndirectRenderer::prepareCull] SKIP: computePipeline=" << (void*)computePipeline
+                      << ", compactIndirectBuffer=" << (void*)compactIndirectBuffer.buffer << std::endl;
             reported = true;
         }
         return;
@@ -660,8 +660,9 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     static bool printedOnce = false;
     if (!printedOnce) {
         uint32_t numCmds = static_cast<uint32_t>(indirectCommands.size());
-        printf("[IndirectRenderer::prepareCull] RUNNING: numCmds=%u, computePipeline=%p, computeDescriptorSet=%p\n", 
-            numCmds, (void*)computePipeline, (void*)computeDescriptorSet);
+        std::cout << "[IndirectRenderer::prepareCull] RUNNING: numCmds=" << numCmds
+                  << ", computePipeline=" << (void*)computePipeline
+                  << ", computeDescriptorSet=" << (void*)computeDescriptorSet << std::endl;
         printedOnce = true;
     }
     

@@ -1,4 +1,5 @@
 #include <cstdint>
+
 #include <vulkan/vulkan.h>
 #include <vector>
 #include <stdexcept>
@@ -113,7 +114,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     uint32_t expectedInstances = triCount * instancesPerTriangle;
     uint32_t expectedBytes = expectedInstances * sizeof(float) * 4; // shader writes vec4
     if (outputBufferSize < expectedBytes) {
-        fprintf(stderr, "[VulkanApp] generateVegetationInstancesCompute: outputBufferSize too small (%u < %u)\n", outputBufferSize, expectedBytes);
+        std::cerr << "[VulkanApp] generateVegetationInstancesCompute: outputBufferSize too small (" << outputBufferSize << " < " << expectedBytes << ")" << std::endl;
         return 0;
     }
 
@@ -143,7 +144,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
 
     VkDescriptorSetLayout descLayout = VK_NULL_HANDLE;
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descLayout) != VK_SUCCESS) {
-        fprintf(stderr, "[VulkanApp] Failed to create vegetation compute descriptor set layout\n");
+        std::cerr << "[VulkanApp] Failed to create vegetation compute descriptor set layout" << std::endl;
         return 0;
     }
 
@@ -162,14 +163,14 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     plInfo.pPushConstantRanges = &pushRange;
     if (vkCreatePipelineLayout(device, &plInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
-        fprintf(stderr, "[VulkanApp] Failed to create vegetation compute pipeline layout\n");
+        std::cerr << "[VulkanApp] Failed to create vegetation compute pipeline layout" << std::endl;
         return 0;
     }
 
     // Load compute shader
     auto compCode = FileReader::readFile("shaders/vegetation_instance_gen.comp.spv");
     if (compCode.empty()) {
-        fprintf(stderr, "[VulkanApp] vegetation_instance_gen.comp.spv not found or empty\n");
+        std::cerr << "[VulkanApp] vegetation_instance_gen.comp.spv not found or empty" << std::endl;
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
         return 0;
@@ -189,7 +190,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
 
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
-        fprintf(stderr, "[VulkanApp] Failed to create vegetation compute pipeline\n");
+        std::cerr << "[VulkanApp] Failed to create vegetation compute pipeline" << std::endl;
         resources.removeShaderModule(compModule);
         vkDestroyShaderModule(device, compModule, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
@@ -210,7 +211,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     VkDescriptorPool descPool = VK_NULL_HANDLE;
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool) != VK_SUCCESS) {
-        fprintf(stderr, "[VulkanApp] Failed to create descriptor pool for vegetation compute\n");
+        std::cerr << "[VulkanApp] Failed to create descriptor pool for vegetation compute" << std::endl;
         vkDestroyPipeline(device, pipeline, nullptr);
         resources.removeShaderModule(compModule);
         vkDestroyShaderModule(device, compModule, nullptr);
@@ -226,7 +227,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     ainfo.pSetLayouts = &descLayout;
     VkDescriptorSet descSet = VK_NULL_HANDLE;
     if (vkAllocateDescriptorSets(device, &ainfo, &descSet) != VK_SUCCESS) {
-        fprintf(stderr, "[VulkanApp] Failed to allocate descriptor set for vegetation compute\n");
+        std::cerr << "[VulkanApp] Failed to allocate descriptor set for vegetation compute" << std::endl;
         vkDestroyDescriptorPool(device, descPool, nullptr);
         vkDestroyPipeline(device, pipeline, nullptr);
         resources.removeShaderModule(compModule);
@@ -322,7 +323,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
 
 void VulkanApp::createImageViews() {
     swapchainImageViews.resize(swapchainImages.size());
-    std::cerr << "[DEBUG] createImageViews: swapchainImageViews.size()=" << swapchainImageViews.size() << std::endl;
+    // std::cerr << "[DEBUG] createImageViews: swapchainImageViews.size()=" << swapchainImageViews.size() << std::endl;
     for (size_t i = 0; i < swapchainImages.size(); i++) {
         VkImageViewCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -719,7 +720,7 @@ void VulkanApp::createSwapchain() {
     vkGetSwapchainImagesKHR(device, swapchain, &actualImageCount, nullptr);
     swapchainImages.resize(actualImageCount);
     vkGetSwapchainImagesKHR(device, swapchain, &actualImageCount, swapchainImages.data());
-    std::cerr << "[DEBUG] createSwapchain: swapchainImages.size()=" << swapchainImages.size() << std::endl;
+    // std::cerr << "[DEBUG] createSwapchain: swapchainImages.size()=" << swapchainImages.size() << std::endl;
     swapchainImageFormat = surfaceFormat.format;
     swapchainExtent = extent;
 }
@@ -852,7 +853,7 @@ void VulkanApp::createRenderPasses() {
 
 void VulkanApp::createFramebuffers() {
     swapchainFramebuffers.resize(swapchainImageViews.size());
-    std::cerr << "[DEBUG] createFramebuffers: swapchainFramebuffers.size()=" << swapchainFramebuffers.size() << std::endl;
+    // std::cerr << "[DEBUG] createFramebuffers: swapchainFramebuffers.size()=" << swapchainFramebuffers.size() << std::endl;
     for (size_t i = 0; i < swapchainImageViews.size(); i++) {
         VkImageView attachments[] = { swapchainImageViews[i], depthImageView };
 
@@ -1325,7 +1326,7 @@ void VulkanApp::applyPendingLayoutUpdatesForCommandBuffer(VkCommandBuffer cmd) {
             }
         }
     }
-    fprintf(stderr, "[VulkanApp] applyPendingLayouts: cmd=%p applied %zu updates\n", (void*)cmd, updates.size());
+    // std::cerr << "[VulkanApp] applyPendingLayouts: cmd=" << (void*)cmd << " applied " << updates.size() << " updates" << std::endl;
 }
 
 void VulkanApp::waitForAllPendingCommandBuffers() {
@@ -1396,13 +1397,12 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
             std::lock_guard<std::mutex> plk(pendingLayoutMutex);
             auto pit = commandBufferPendingLayouts.find(commandBuffer);
             if (pit != commandBufferPendingLayouts.end()) {
-                fprintf(stderr, "[VulkanApp] submitCommandBufferAsync: cmd=%p has %zu pending layout updates\n", (void*)commandBuffer, pit->second.size());
+                // std::cerr << "[VulkanApp] submitCommandBufferAsync: cmd=" << (void*)commandBuffer << " has " << pit->second.size() << " pending layout updates" << std::endl;
                 for (const auto &u : pit->second) {
-                    fprintf(stderr, "[VulkanApp] submitCommandBufferAsync: cmd=%p pending image=%p new=%d baseLayer=%u layerCount=%u\n",
-                            (void*)commandBuffer, (void*)u.image, (int)u.newLayout, (unsigned)u.baseArrayLayer, (unsigned)u.layerCount);
+                    // std::cerr << "[VulkanApp] submitCommandBufferAsync: cmd=" << (void*)commandBuffer << " pending image=" << (void*)u.image << " new=" << (int)u.newLayout << " baseLayer=" << (unsigned)u.baseArrayLayer << " layerCount=" << (unsigned)u.layerCount << std::endl;
                 }
             } else {
-                fprintf(stderr, "[VulkanApp] submitCommandBufferAsync: cmd=%p has no pending layout updates\n", (void*)commandBuffer);
+                // std::cerr << "[VulkanApp] submitCommandBufferAsync: cmd=" << (void*)commandBuffer << " has no pending layout updates" << std::endl;
             }
         }
 
@@ -1459,13 +1459,12 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
             std::lock_guard<std::mutex> plk(pendingLayoutMutex);
             auto pit = commandBufferPendingLayouts.find(commandBuffer);
             if (pit != commandBufferPendingLayouts.end()) {
-                fprintf(stderr, "[VulkanApp] submitCommandBufferAndWait: cmd=%p has %zu pending layout updates\n", (void*)commandBuffer, pit->second.size());
+                // std::cerr << "[VulkanApp] submitCommandBufferAndWait: cmd=" << (void*)commandBuffer << " has " << pit->second.size() << " pending layout updates" << std::endl;
                 for (const auto &u : pit->second) {
-                    fprintf(stderr, "[VulkanApp] submitCommandBufferAndWait: cmd=%p pending image=%p new=%d baseLayer=%u layerCount=%u\n",
-                            (void*)commandBuffer, (void*)u.image, (int)u.newLayout, (unsigned)u.baseArrayLayer, (unsigned)u.layerCount);
+                    // std::cerr << "[VulkanApp] submitCommandBufferAndWait: cmd=" << (void*)commandBuffer << " pending image=" << (void*)u.image << " new=" << (int)u.newLayout << " baseLayer=" << (unsigned)u.baseArrayLayer << " layerCount=" << (unsigned)u.layerCount << std::endl;
                 }
             } else {
-                fprintf(stderr, "[VulkanApp] submitCommandBufferAndWait: cmd=%p has no pending layout updates\n", (void*)commandBuffer);
+                // std::cerr << "[VulkanApp] submitCommandBufferAndWait: cmd=" << (void*)commandBuffer << " has no pending layout updates" << std::endl;
             }
         }
 
@@ -1518,7 +1517,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             if (it != imageLayerLayouts.end()) {
                 VkImageLayout tracked = it->second;
                 if (tracked != oldLayout) {
-                    fprintf(stderr, "[VulkanApp] transitionImageLayoutLayer: image=%p callerOld=%d trackedOld=%d -> using tracked\n", (void*)image, (int)oldLayout, (int)tracked);
+                    // std::cerr << "[VulkanApp] transitionImageLayoutLayer: image=" << (void*)image << " callerOld=" << (int)oldLayout << " trackedOld=" << (int)tracked << " -> using tracked" << std::endl;
                     effectiveOld = tracked;
                 }
             } else {
@@ -1581,11 +1580,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             1, &barrier
         );
         // Debug: log the executed barrier and its selected masks/stages
-        fprintf(stderr, "[VulkanApp] recordTransitionImageLayoutLayer: cmd=%p image=%p old=%d new=%d srcAccess=0x%x dstAccess=0x%x srcStage=0x%x dstStage=0x%x aspect=0x%x baseLayer=%u layerCount=%u\n",
-            (void*)commandBuffer, (void*)image, (int)barrier.oldLayout, (int)newLayout,
-            (unsigned)barrier.srcAccessMask, (unsigned)barrier.dstAccessMask,
-            (unsigned)sourceStage, (unsigned)destinationStage,
-            (unsigned)barrier.subresourceRange.aspectMask, (unsigned)barrier.subresourceRange.baseArrayLayer, (unsigned)barrier.subresourceRange.layerCount);
+        // std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: cmd=" << (void*)commandBuffer << " image=" << (void*)image << " old=" << (int)barrier.oldLayout << " new=" << (int)newLayout << " srcAccess=0x" << std::hex << (unsigned)barrier.srcAccessMask << " dstAccess=0x" << (unsigned)barrier.dstAccessMask << " srcStage=0x" << (unsigned)sourceStage << " dstStage=0x" << (unsigned)destinationStage << " aspect=0x" << (unsigned)barrier.subresourceRange.aspectMask << " baseLayer=" << (unsigned)barrier.subresourceRange.baseArrayLayer << " layerCount=" << (unsigned)barrier.subresourceRange.layerCount << std::endl;
         // Update authoritative tracked layout for the affected layers
         {
             std::lock_guard<std::mutex> lk(imageLayoutMutex);
@@ -1678,7 +1673,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
                 if (it != imageLayerLayouts.end()) {
                 VkImageLayout tracked = it->second;
                 if (tracked != oldLayout) {
-                    fprintf(stderr, "[VulkanApp] recordTransitionImageLayoutLayer: cmd=%p image=%p callerOld=%d trackedOld=%d -> using tracked\\n", (void*)commandBuffer, (void*)image, (int)oldLayout, (int)tracked);
+                    // std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: cmd=" << (void*)commandBuffer << " image=" << (void*)image << " callerOld=" << (int)oldLayout << " trackedOld=" << (int)tracked << " -> using tracked" << std::endl;
                     effectiveOld = tracked;
                 }
             } else {
@@ -1699,7 +1694,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
                 for (auto it = vec.rbegin(); it != vec.rend(); ++it) {
                     if (it->image == image && it->baseArrayLayer == baseArrayLayer) {
                         if (it->newLayout != effectiveOld) {
-                            fprintf(stderr, "[VulkanApp] recordTransitionImageLayoutLayer: cmd=%p image=%p pendingOld=%d -> using pending\\n", (void*)commandBuffer, (void*)image, (int)it->newLayout);
+                            // std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: cmd=" << (void*)commandBuffer << " image=" << (void*)image << " pendingOld=" << (int)it->newLayout << " -> using pending" << std::endl;
                             effectiveOld = it->newLayout;
                         }
                         break;
@@ -1711,7 +1706,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         // If the authoritative (tracked) layout already equals the requested
         // final layout, there's nothing to emit.
         if (effectiveOld == newLayout) {
-            fprintf(stderr, "[VulkanApp] recordTransitionImageLayoutLayer: cmd=%p image=%p effectiveOld==new (%d), skipping\n", (void*)commandBuffer, (void*)image, (int)effectiveOld);
+            // std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: cmd=" << (void*)commandBuffer << " image=" << (void*)image << " effectiveOld==new (" << (int)effectiveOld << "), skipping" << std::endl;
             return;
         }
 
@@ -1743,12 +1738,10 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         barrier.subresourceRange.layerCount = layerCount;
 
         // Debug: print immediate transition details
-        //fprintf(stderr, "[VulkanApp] transitionImageLayoutLayer (single-time): image=%p oldLayout=%d newLayout=%d mipLevels=%u baseArrayLayer=%u layerCount=%u\n",
-        //    (void*)image, (int)oldLayout, (int)newLayout, (unsigned)mipLevels, (unsigned)baseArrayLayer, (unsigned)layerCount);
+        //std::cerr << "[VulkanApp] transitionImageLayoutLayer (single-time): image=" << (void*)image << " oldLayout=" << (int)oldLayout << " newLayout=" << (int)newLayout << " mipLevels=" << (unsigned)mipLevels << " baseArrayLayer=" << (unsigned)baseArrayLayer << " layerCount=" << (unsigned)layerCount << std::endl;
 
-            // Debug: print requested transition details to help trace oldLayout mismatches
-        //    fprintf(stderr, "[VulkanApp] recordTransitionImageLayoutLayer: cmd=%p image=%p oldLayout=%d newLayout=%d mipLevels=%u baseArrayLayer=%u layerCount=%u\n",
-        //        (void*)commandBuffer, (void*)image, (int)oldLayout, (int)newLayout, (unsigned)mipLevels, (unsigned)baseArrayLayer, (unsigned)layerCount);
+        // Debug: print requested transition details to help trace oldLayout mismatches
+        //    std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: cmd=" << (void*)commandBuffer << " image=" << (void*)image << " oldLayout=" << (int)oldLayout << " newLayout=" << (int)newLayout << " mipLevels=" << (unsigned)mipLevels << " baseArrayLayer=" << (unsigned)baseArrayLayer << " layerCount=" << (unsigned)layerCount << std::endl;
 
         VkPipelineStageFlags sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         VkPipelineStageFlags destinationStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
@@ -1795,8 +1788,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         }
 
         // Debug: log chosen access masks and pipeline stages for this barrier
-        //fprintf(stderr, "[VulkanApp] recordTransitionImageLayoutLayer: image=%p old=%d new=%d srcAccess=0x%x dstAccess=0x%x srcStage=0x%x dstStage=0x%x aspect=0x%x\n",
-        //    (void*)image, (int)barrier.oldLayout, (int)newLayout, (unsigned)barrier.srcAccessMask, (unsigned)barrier.dstAccessMask, (unsigned)sourceStage, (unsigned)destinationStage, (unsigned)barrier.subresourceRange.aspectMask);
+        //std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: image=" << (void*)image << " old=" << (int)barrier.oldLayout << " new=" << (int)newLayout << " srcAccess=0x" << std::hex << (unsigned)barrier.srcAccessMask << " dstAccess=0x" << (unsigned)barrier.dstAccessMask << " srcStage=0x" << (unsigned)sourceStage << " dstStage=0x" << (unsigned)destinationStage << " aspect=0x" << (unsigned)barrier.subresourceRange.aspectMask << std::dec << std::endl;
 
         vkCmdPipelineBarrier(
             commandBuffer,
@@ -1820,9 +1812,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             up.layerCount = layerCount;
             commandBufferPendingLayouts[commandBuffer].push_back(up);
             // Debug: record that we appended a pending update for this command buffer
-            fprintf(stderr, "[VulkanApp] recordTransitionImageLayoutLayer: cmd=%p recorded pending update image=%p new=%d baseLayer=%u layerCount=%u pendingCount=%zu\n",
-                    (void*)commandBuffer, (void*)image, (int)newLayout, (unsigned)baseArrayLayer, (unsigned)layerCount,
-                    commandBufferPendingLayouts[commandBuffer].size());
+            //std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: cmd=" << (void*)commandBuffer << " recorded pending update image=" << (void*)image << " new=" << (int)newLayout << " baseLayer=" << (unsigned)baseArrayLayer << " layerCount=" << (unsigned)layerCount << " pendingCount=" << commandBufferPendingLayouts[commandBuffer].size() << std::endl;
         }
     }
 
@@ -1866,7 +1856,7 @@ void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkIma
             if (it != imageLayerLayouts.end()) {
                 VkImageLayout tracked = it->second;
                 if (tracked != oldLayout) {
-                    fprintf(stderr, "[VulkanApp] transitionImageLayoutLayer: image=%p callerOld=%d trackedOld=%d -> using tracked\n", (void*)image, (int)oldLayout, (int)tracked);
+                    std::cerr << "[VulkanApp] transitionImageLayoutLayer: image=" << (void*)image << " callerOld=" << (int)oldLayout << " trackedOld=" << (int)tracked << " -> using tracked" << std::endl;
                     effectiveOld = tracked;
                 }
             } else {
@@ -1928,8 +1918,7 @@ void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkIma
         }
 
         // Debug: log chosen access masks and pipeline stages for this barrier
-        //fprintf(stderr, "[VulkanApp] transitionImageLayoutLayer: image=%p old=%d new=%d srcAccess=0x%x dstAccess=0x%x srcStage=0x%x dstStage=0x%x aspect=0x%x\n",
-        //        (void*)image, (int)oldLayout, (int)newLayout, (unsigned)barrier.srcAccessMask, (unsigned)barrier.dstAccessMask, (unsigned)sourceStage, (unsigned)destinationStage, (unsigned)barrier.subresourceRange.aspectMask);
+        //std::cerr << "[VulkanApp] transitionImageLayoutLayer: image=" << (void*)image << " old=" << (int)oldLayout << " new=" << (int)newLayout << " srcAccess=0x" << std::hex << (unsigned)barrier.srcAccessMask << " dstAccess=0x" << (unsigned)barrier.dstAccessMask << " srcStage=0x" << (unsigned)sourceStage << " dstStage=0x" << (unsigned)destinationStage << " aspect=0x" << (unsigned)barrier.subresourceRange.aspectMask << std::dec << std::endl;
 
         vkCmdPipelineBarrier(
             commandBuffer,
@@ -1982,7 +1971,7 @@ void VulkanApp::recordTrackedLayoutForCommandBuffer(VkCommandBuffer commandBuffe
     up.baseArrayLayer = baseArrayLayer;
     up.layerCount = layerCount;
     commandBufferPendingLayouts[commandBuffer].push_back(up);
-    fprintf(stderr, "[VulkanApp] recordTrackedLayoutForCommandBuffer: cmd=%p image=%p new=%d\n", (void*)commandBuffer, (void*)image, (int)newLayout);
+    //std::cerr << "[VulkanApp] recordTrackedLayoutForCommandBuffer: cmd=" << (void*)commandBuffer << " image=" << (void*)image << " new=" << (int)newLayout << std::endl;
 }
 
 // Deferred-destruction helpers
@@ -2036,18 +2025,18 @@ void VulkanApp::copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width
 std::vector<VkCommandBuffer> VulkanApp::createCommandBuffers() {
     commandBuffers.clear();
     commandBuffers.resize(swapchainFramebuffers.size());
-    std::cerr << "[DEBUG] createCommandBuffers: requested " << commandBuffers.size() << " command buffers, swapchainFramebuffers=" << swapchainFramebuffers.size() << "\n";
+    // std::cerr << "[DEBUG] createCommandBuffers: requested " << commandBuffers.size() << " command buffers, swapchainFramebuffers=" << swapchainFramebuffers.size() << "\n";
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.commandPool = commandPool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfo.commandBufferCount = static_cast<uint32_t>(commandBuffers.size());
     VkResult allocResult = vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data());
-    std::cerr << "[DEBUG] vkAllocateCommandBuffers result=" << allocResult << "\n";
+    // std::cerr << "[DEBUG] vkAllocateCommandBuffers result=" << allocResult << "\n";
     if (allocResult != VK_SUCCESS) {
         throw std::runtime_error("failed to allocate command buffers!");
     }
-    std::cerr << "[DEBUG] createCommandBuffers: post-alloc commandBuffers.size()=" << commandBuffers.size() << "\n";
+    // std::cerr << "[DEBUG] createCommandBuffers: post-alloc commandBuffers.size()=" << commandBuffers.size() << "\n";
 
     return commandBuffers;
 }
@@ -2567,8 +2556,7 @@ void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
     }
     // Register default descriptor pool for app-managed allocations
     // debug: print addresses to verify resources object
-    fprintf(stderr, "[VulkanApp] createDescriptorPool: this=%p resources=%p descriptorPool=%p\n",
-            (void*)this, (void*)&resources, (void*)descriptorPool);
+    //std::cerr << "[VulkanApp] createDescriptorPool: this=" << (void*)this << " resources=" << (void*)&resources << " descriptorPool=" << (void*)descriptorPool << std::endl;
     resources.addDescriptorPool(descriptorPool, "VulkanApp: descriptorPool");
 }
 
@@ -2580,18 +2568,18 @@ VkDescriptorSet VulkanApp::createDescriptorSet(VkDescriptorSetLayout layout) {
     allocInfo.pSetLayouts = &layout;
 
     if (layout == VK_NULL_HANDLE) {
-        fprintf(stderr, "[VulkanApp::createDescriptorSet] ERROR: requested layout is VK_NULL_HANDLE\n");
+        std::cerr << "[VulkanApp::createDescriptorSet] ERROR: requested layout is VK_NULL_HANDLE" << std::endl;
         throw std::runtime_error("createDescriptorSet called with VK_NULL_HANDLE layout");
     }
 
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
-        fprintf(stderr, "[VulkanApp::createDescriptorSet] vkAllocateDescriptorSets failed for layout=%p\n", (void*)layout);
+        std::cerr << "[VulkanApp::createDescriptorSet] vkAllocateDescriptorSets failed for layout=" << (void*)layout << std::endl;
         throw std::runtime_error("failed to allocate descriptor set!");
     }
     // Register descriptor set so manager can track it for inspection
     resources.addDescriptorSet(descriptorSet, "VulkanApp: descriptorSet");
-    fprintf(stderr, "[VulkanApp::createDescriptorSet] allocated descriptorSet=%p layout=%p\n", (void*)descriptorSet, (void*)layout);
+    std::cout << "[VulkanApp::createDescriptorSet] allocated descriptorSet=" << (void*)descriptorSet << " layout=" << (void*)layout << std::endl;
     return descriptorSet;
 }
 
@@ -2605,9 +2593,9 @@ void VulkanApp::updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &des
     for (size_t i = 0; i < descriptors.size(); ++i) {
         const VkWriteDescriptorSet &w = descriptors[i];
         if (w.pImageInfo) {
-            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] dstSet=%p binding=%u type=%d imageView=%p sampler=%p\n", i, (void*)w.dstSet, w.dstBinding, w.descriptorType, (void*)w.pImageInfo[0].imageView, (void*)w.pImageInfo[0].sampler);
+            std::cerr << "[VulkanApp::updateDescriptorSet] write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " type=" << w.descriptorType << " imageView=" << (void*)w.pImageInfo[0].imageView << " sampler=" << (void*)w.pImageInfo[0].sampler << std::endl;
         } else if (w.pBufferInfo) {
-            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] dstSet=%p binding=%u type=%d buffer=%p offset=%llu range=%llu\n", i, (void*)w.dstSet, w.dstBinding, w.descriptorType, (void*)w.pBufferInfo[0].buffer, (unsigned long long)w.pBufferInfo[0].offset, (unsigned long long)w.pBufferInfo[0].range);
+            std::cerr << "[VulkanApp::updateDescriptorSet] write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " type=" << w.descriptorType << " buffer=" << (void*)w.pBufferInfo[0].buffer << " offset=" << w.pBufferInfo[0].offset << " range=" << w.pBufferInfo[0].range << std::endl;
         }
     }
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptors.size()), descriptors.data(), 0, nullptr);
@@ -2619,9 +2607,9 @@ void VulkanApp::updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> 
     for (size_t i = 0; i < descriptorWrites.size(); ++i) {
         const VkWriteDescriptorSet &w = descriptorWrites[i];
         if (w.pImageInfo) {
-            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] dstSet=%p binding=%u type=%d imageView=%p sampler=%p\n", i, (void*)w.dstSet, w.dstBinding, w.descriptorType, (void*)w.pImageInfo[0].imageView, (void*)w.pImageInfo[0].sampler);
+            std::cerr << "[VulkanApp::updateDescriptorSet] write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " type=" << w.descriptorType << " imageView=" << (void*)w.pImageInfo[0].imageView << " sampler=" << (void*)w.pImageInfo[0].sampler << std::endl;
         } else if (w.pBufferInfo) {
-            fprintf(stderr, "[VulkanApp::updateDescriptorSet] write[%zu] dstSet=%p binding=%u type=%d buffer=%p offset=%llu range=%llu\n", i, (void*)w.dstSet, w.dstBinding, w.descriptorType, (void*)w.pBufferInfo[0].buffer, (unsigned long long)w.pBufferInfo[0].offset, (unsigned long long)w.pBufferInfo[0].range);
+            std::cerr << "[VulkanApp::updateDescriptorSet] write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " type=" << w.descriptorType << " buffer=" << (void*)w.pBufferInfo[0].buffer << " offset=" << w.pBufferInfo[0].offset << " range=" << w.pBufferInfo[0].range << std::endl;
         }
     }
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
@@ -2741,7 +2729,7 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     pipelineLayoutInfo.pSetLayouts = setLayouts.empty() ? nullptr : setLayouts.data();
     // Diagnostic: print provided set layouts for easier debugging of descriptor mismatches
     if (setLayouts.empty()) {
-        fprintf(stderr, "[createGraphicsPipeline] setLayouts count=0\n");
+        std::cerr << "[createGraphicsPipeline] setLayouts count=0\n";
     }
     if (pushConstantRange) {
         pipelineLayoutInfo.pushConstantRangeCount = 1;
@@ -2848,9 +2836,7 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     // Register buffer and its memory so the VulkanResourceManager tracks them
     resources.addBuffer(buffer.buffer, "VulkanApp: buffer.buffer");
     resources.addDeviceMemory(buffer.memory, "VulkanApp: buffer.memory");
-    /*fprintf(stderr, "[VulkanApp::createBuffer] buffer=%p size=%zu usage=0x%08x mem=%p buffers=%zu memories=%zu\n",
-            (void*)buffer.buffer, (size_t)size, (unsigned)usage, (void*)buffer.memory,
-            resources.getBufferMap().size(), resources.getDeviceMemoryMap().size());*/
+    /*std::cerr << "[VulkanApp::createBuffer] buffer=" << (void*)buffer.buffer << " size=" << (size_t)size << " usage=0x" << std::hex << (unsigned)usage << " mem=" << (void*)buffer.memory << " buffers=" << resources.getBufferMap().size() << " memories=" << resources.getDeviceMemoryMap().size() << std::endl;*/
     return buffer;
 }
 
@@ -3360,7 +3346,7 @@ void VulkanApp::recreateSwapchain() {
 
 
     bool imguiInitOk = ImGui_ImplVulkan_Init(&init_info);
-    printf("[ImGui] ImGui_ImplVulkan_Init (recreate) returned %s\n", imguiInitOk ? "true" : "false");
+    // printf("[ImGui] ImGui_ImplVulkan_Init (recreate) returned %s\\n", imguiInitOk ? "true" : "false");
     // Re-upload fonts (creates/destroys temporary upload objects)
     ImGui_ImplVulkan_CreateFontsTexture();
     ImGui_ImplVulkan_DestroyFontsTexture();

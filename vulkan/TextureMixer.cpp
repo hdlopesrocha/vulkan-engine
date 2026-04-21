@@ -1,4 +1,5 @@
 #include "TextureMixer.hpp"
+
 #include "VulkanApp.hpp"
 #include "../utils/FileReader.hpp"
 #include "PerlinPushConstants.hpp"
@@ -74,12 +75,12 @@ void TextureMixer::generateInitialTextures(std::vector<MixerParameters> &mixerPa
 	if (!textureArrayManager || textureArrayManager->layerAmount == 0) {
 		std::lock_guard<std::mutex> lk(logsMutex);
 		logs.emplace_back("Skipping generateInitialTextures: no texture arrays available");
-		fprintf(stderr, "[TextureMixer] Skipping generateInitialTextures: no texture arrays available\n");
+		std::cerr << "[TextureMixer] Skipping generateInitialTextures: no texture arrays available" << std::endl;
 		return;
 	}
 	printf("Enqueuing initial textures for generation (Albedo, Normal, Bump)...\n");
 	for (auto &param : mixerParams) {
-		fprintf(stderr, "[TextureMixer] generateInitialTextures: enqueueing generation for layer=%zu\n", param.targetLayer);
+		std::cerr << "[TextureMixer] generateInitialTextures: enqueueing generation for layer=" << param.targetLayer << std::endl;
 		try {
 			enqueueGenerate(param);
 		} catch (const std::exception &e) {
@@ -87,7 +88,7 @@ void TextureMixer::generateInitialTextures(std::vector<MixerParameters> &mixerPa
 			char buf[256];
 			snprintf(buf, sizeof(buf), "generateInitialTextures: enqueue failed for layer=%zu reason=%s", param.targetLayer, e.what());
 			logs.emplace_back(buf);
-			fprintf(stderr, "[TextureMixer] generateInitialTextures: enqueue failed for layer=%zu reason=%s\n", param.targetLayer, e.what());
+			std::cerr << "[TextureMixer] generateInitialTextures: enqueue failed for layer=" << param.targetLayer << " reason=" << e.what() << std::endl;
 		}
 	}
 }
@@ -131,7 +132,7 @@ void TextureMixer::flushPendingRequests(VulkanApp* app) {
 			char buf[256];
 			snprintf(buf, sizeof(buf), "generate Perlin failed: layer=%zu map=%d reason=%s", t.first.targetLayer, t.second, e.what());
 			logs.emplace_back(buf);
-			fprintf(stderr, "[TextureMixer] generatePerlinNoise failed: %s\n", e.what());
+			std::cerr << "[TextureMixer] generatePerlinNoise failed: layer=" << t.first.targetLayer << " map=" << t.second << " reason=" << e.what() << std::endl;
 		}
 	}
 }
@@ -404,22 +405,24 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 		ainfo.pSetLayouts = layouts.data();
 		// Validate that the TextureArrayManager has layer views available
 		if (textureArrayManager->albedoLayerViews.size() < layers || textureArrayManager->normalLayerViews.size() < layers || textureArrayManager->bumpLayerViews.size() < layers) {
-			fprintf(stderr, "[TextureMixer] Warning: textureArrayManager layer view arrays are smaller than layerAmount (expected=%u albedo=%zu normal=%zu bump=%zu)\n",
-				layers, textureArrayManager->albedoLayerViews.size(), textureArrayManager->normalLayerViews.size(), textureArrayManager->bumpLayerViews.size());
+			std::cerr << "[TextureMixer] Warning: textureArrayManager layer view arrays are smaller than layerAmount (expected=" << layers
+					  << " albedo=" << textureArrayManager->albedoLayerViews.size()
+					  << " normal=" << textureArrayManager->normalLayerViews.size()
+					  << " bump=" << textureArrayManager->bumpLayerViews.size() << ")" << std::endl;
 			// Avoid allocating per-layer sets if views are not ready
 			return;
 		}
 
 		VkResult allocRes = vkAllocateDescriptorSets(app->getDevice(), &ainfo, perLayerDescSets.data());
 		if (allocRes != VK_SUCCESS) {
-			fprintf(stderr, "[TextureMixer] Warning: failed to allocate per-layer descriptor sets (res=%d)\n", allocRes);
+			std::cerr << "[TextureMixer] Warning: failed to allocate per-layer descriptor sets (res=" << allocRes << ")" << std::endl;
 			return;
 		}
 
 		// For each allocated descriptor set, build stable local image info structures and update.
 		for (uint32_t i = 0; i < layers; ++i) {
 			if (perLayerDescSets[i] == VK_NULL_HANDLE) {
-				fprintf(stderr, "[TextureMixer] Skipping per-layer descriptor update for layer %u: descSet is NULL\n", i);
+				std::cerr << "[TextureMixer] Skipping per-layer descriptor update for layer " << i << ": descSet is NULL" << std::endl;
 				continue;
 			}
 
@@ -464,15 +467,15 @@ void TextureMixer::createTripleComputeDescriptorSet(VulkanApp* app) {
 	allocInfo.pSetLayouts = &computeDescriptorSetLayout;
 
 	if (computeDescriptorSetLayout == VK_NULL_HANDLE) {
-		fprintf(stderr, "[TextureMixer::createTripleComputeDescriptorSet] ERROR: computeDescriptorSetLayout is VK_NULL_HANDLE\n");
+		std::cerr << "[TextureMixer::createTripleComputeDescriptorSet] ERROR: computeDescriptorSetLayout is VK_NULL_HANDLE" << std::endl;
 		throw std::runtime_error("TextureMixer: computeDescriptorSetLayout is VK_NULL_HANDLE");
 	}
 	if (computeDescriptorPool == VK_NULL_HANDLE) {
-		fprintf(stderr, "[TextureMixer::createTripleComputeDescriptorSet] ERROR: computeDescriptorPool is VK_NULL_HANDLE\n");
+		std::cerr << "[TextureMixer::createTripleComputeDescriptorSet] ERROR: computeDescriptorPool is VK_NULL_HANDLE" << std::endl;
 		throw std::runtime_error("TextureMixer: computeDescriptorPool is VK_NULL_HANDLE");
 	}
 	if (vkAllocateDescriptorSets(app->getDevice(), &allocInfo, &tripleComputeDescSet) != VK_SUCCESS) {
-		fprintf(stderr, "[TextureMixer::createTripleComputeDescriptorSet] vkAllocateDescriptorSets failed\n");
+		std::cerr << "[TextureMixer::createTripleComputeDescriptorSet] vkAllocateDescriptorSets failed" << std::endl;
 		throw std::runtime_error("failed to allocate compute triple descriptor set!");
 	}
 
@@ -525,7 +528,7 @@ void TextureMixer::createTripleComputeDescriptorSet(VulkanApp* app) {
 
 	auto addStorageImage = [&](uint32_t binding, VkDescriptorImageInfo &info){
 		if (info.imageView == VK_NULL_HANDLE) {
-			fprintf(stderr, "[TextureMixer] Skipping storage image binding %u: imageView=%p\n", binding, (void*)info.imageView);
+			std::cerr << "[TextureMixer] Skipping storage image binding " << binding << ": imageView=" << (void*)info.imageView << std::endl;
 			return;
 		}
 		VkWriteDescriptorSet w{};
@@ -540,7 +543,7 @@ void TextureMixer::createTripleComputeDescriptorSet(VulkanApp* app) {
 
 	auto addCombinedSampler = [&](uint32_t binding, VkDescriptorImageInfo &info){
 		if (info.imageView == VK_NULL_HANDLE || info.sampler == VK_NULL_HANDLE) {
-			fprintf(stderr, "[TextureMixer] Skipping sampler binding %u: imageView=%p sampler=%p\n", binding, (void*)info.imageView, (void*)info.sampler);
+			std::cerr << "[TextureMixer] Skipping sampler binding " << binding << ": imageView=" << (void*)info.imageView << " sampler=" << (void*)info.sampler << std::endl;
 			return;
 		}
 		VkWriteDescriptorSet w{};
@@ -645,13 +648,13 @@ void TextureMixer::updateComputeDescriptorSets(VulkanApp* app) {
 		vkUpdateDescriptorSets(dev, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 		std::lock_guard<std::mutex> lk(logsMutex);
 		logs.emplace_back("updateComputeDescriptorSets: descriptor sets updated with texture arrays");
-		fprintf(stderr, "[TextureMixer] updateComputeDescriptorSets: wrote %zu descriptors\n", writes.size());
+		std::cerr << "[TextureMixer] updateComputeDescriptorSets: wrote " << writes.size() << " descriptors" << std::endl;
 	}
 }
 
 void TextureMixer::attachTextureArrayManager(TextureArrayManager* tam) {
 	this->textureArrayManager = tam;
-	fprintf(stderr, "[TextureMixer] attachTextureArrayManager called: tam=%p\n", (void*)tam);
+	std::cerr << "[TextureMixer] attachTextureArrayManager called: tam=" << (void*)tam << std::endl;
 	// No stored app — caller should call updateComputeDescriptorSets(app) when app is available.
 }
 
@@ -693,15 +696,15 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet,
 	allocInfo.pSetLayouts = &computeDescriptorSetLayout;
 
 	if (computeDescriptorSetLayout == VK_NULL_HANDLE) {
-		fprintf(stderr, "[TextureMixer::createComputeDescriptorSet] ERROR: computeDescriptorSetLayout is VK_NULL_HANDLE\n");
+		std::cerr << "[TextureMixer::createComputeDescriptorSet] ERROR: computeDescriptorSetLayout is VK_NULL_HANDLE" << std::endl;
 		throw std::runtime_error("TextureMixer: computeDescriptorSetLayout is VK_NULL_HANDLE");
 	}
 	if (computeDescriptorPool == VK_NULL_HANDLE) {
-		fprintf(stderr, "[TextureMixer::createComputeDescriptorSet] ERROR: computeDescriptorPool is VK_NULL_HANDLE\n");
+		std::cerr << "[TextureMixer::createComputeDescriptorSet] ERROR: computeDescriptorPool is VK_NULL_HANDLE" << std::endl;
 		throw std::runtime_error("TextureMixer: computeDescriptorPool is VK_NULL_HANDLE");
 	}
 	if (vkAllocateDescriptorSets(app->getDevice(), &allocInfo, &descSet) != VK_SUCCESS) {
-		fprintf(stderr, "[TextureMixer::createComputeDescriptorSet] vkAllocateDescriptorSets failed\n");
+		std::cerr << "[TextureMixer::createComputeDescriptorSet] ERROR: vkAllocateDescriptorSets failed" << std::endl;
 		throw std::runtime_error("failed to allocate compute descriptor set!");
 	}
 	app->resources.addDescriptorSet(descSet, "TextureMixer: descSet");
@@ -757,7 +760,7 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet,
 		VkWriteDescriptorSet w = descriptorWrite;
 		writes.push_back(w);
 	} else {
-		fprintf(stderr, "[TextureMixer] Skipping createComputeDescriptorSet storage image for map %d: imageView=%p\n", map, (void*)imageInfo.imageView);
+		std::cerr << "[TextureMixer] Skipping createComputeDescriptorSet storage image for map " << map << ": imageView=" << (void*)imageInfo.imageView << std::endl;
 	}
 	if (samplerInfo.imageView != VK_NULL_HANDLE && samplerInfo.sampler != VK_NULL_HANDLE) {
 		VkWriteDescriptorSet s1{}; s1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; s1.dstSet = descSet; s1.dstBinding = 1; s1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; s1.descriptorCount = 1; s1.pImageInfo = &samplerInfo;
@@ -765,7 +768,7 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet,
 		writes.push_back(s1);
 		writes.push_back(s2);
 	} else {
-		fprintf(stderr, "[TextureMixer] Skipping sampler bindings for map %d: imageView=%p sampler=%p\n", map, (void*)samplerInfo.imageView, (void*)samplerInfo.sampler);
+		std::cerr << "[TextureMixer] Skipping sampler bindings for map " << map << ": imageView=" << (void*)samplerInfo.imageView << " sampler=" << (void*)samplerInfo.sampler << std::endl;
 	}
 	if (!writes.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
@@ -888,8 +891,12 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 				VkImageLayout la = textureArrayManager->getLayerLayout(0, targetLayer);
 				VkImageLayout ln = textureArrayManager->getLayerLayout(1, targetLayer);
 				VkImageLayout lb = textureArrayManager->getLayerLayout(2, targetLayer);
-				fprintf(stderr, "[TextureMixer] Debug: targetLayer=%u trackedLayouts A=%s N=%s B=%s hasPendingCmds=%d\n",
-					targetLayer, layoutName(la), layoutName(ln), layoutName(lb), app ? (int)app->hasPendingCommandBuffers() : 0);
+				std::cerr << "[TextureMixer] Debug: targetLayer=" << targetLayer
+						  << " trackedLayouts A=" << layoutName(la)
+						  << " N=" << layoutName(ln)
+						  << " B=" << layoutName(lb)
+						  << " hasPendingCmds=" << (app ? (int)app->hasPendingCommandBuffers() : 0)
+						  << std::endl;
 			}
 		}
 	}
@@ -989,7 +996,11 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 
     		if (!preBarriers.empty()) {
     			for (auto &b : preBarriers) {
-    				fprintf(stderr, "[TextureMixer] Pre-barrier: image=%p layer=%u old=%s new=%s\n", (void*)b.image, b.subresourceRange.baseArrayLayer, layoutName(b.oldLayout), layoutName(b.newLayout));
+    				std::cerr << "[TextureMixer] Pre-barrier: image=" << (void*)b.image
+    						  << " layer=" << b.subresourceRange.baseArrayLayer
+    						  << " old=" << layoutName(b.oldLayout)
+    						  << " new=" << layoutName(b.newLayout)
+    						  << std::endl;
     				// Record per-layer transition using authoritative app helper so tracked
     				// oldLayout is consulted and validation mismatches avoided.
     				app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, b.oldLayout, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
@@ -1047,7 +1058,11 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 
 			if (!mipPrepBarriers.empty()) {
 				for (auto &b : mipPrepBarriers) {
-					fprintf(stderr, "[TextureMixer] Mip-prep barrier: image=%p layer=%u old=%s new=%s\n", (void*)b.image, b.subresourceRange.baseArrayLayer, layoutName(b.oldLayout), layoutName(b.newLayout));
+					std::cerr << "[TextureMixer] Mip-prep barrier: image=" << (void*)b.image
+							  << " layer=" << b.subresourceRange.baseArrayLayer
+							  << " old=" << layoutName(b.oldLayout)
+							  << " new=" << layoutName(b.newLayout)
+							  << std::endl;
 					app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, b.oldLayout, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
 				}
 			}

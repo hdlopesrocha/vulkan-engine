@@ -1,6 +1,7 @@
 // ...existing code...
 #include "SceneRenderer.hpp"
 
+
 #include "../utils/SolidSpaceChangeHandler.hpp"
 #include "../utils/LiquidSpaceChangeHandler.hpp"
 #include "../utils/LocalScene.hpp"
@@ -113,8 +114,9 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
     static bool firstCall = true;
     if (firstCall) {
         firstCall = false;
-        fprintf(stderr, "[SceneRenderer::shadowPass] FIRST CALL! shadowsEnabled=%d commandBuffer=%p cascades=%d\n",
-                (int)shadowsEnabled, (void*)commandBuffer, SHADOW_CASCADE_COUNT);
+        std::cerr << "[SceneRenderer::shadowPass] FIRST CALL! shadowsEnabled=" << (int)shadowsEnabled
+                  << " commandBuffer=" << (void*)commandBuffer
+                  << " cascades=" << SHADOW_CASCADE_COUNT << std::endl;
     }
     if (commandBuffer == VK_NULL_HANDLE) return;
     if (!shadowsEnabled) return;
@@ -178,12 +180,13 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
 void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
                   const UniformObject &uboStatic, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent) {
     if (commandBuffer == VK_NULL_HANDLE) {
-        fprintf(stderr, "[SceneRenderer::mainPass] commandBuffer is VK_NULL_HANDLE, skipping.\n");
+        std::cerr << "[SceneRenderer::mainPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
     static bool printedOnce = false;
     if (!printedOnce) {
-        fprintf(stderr, "[SceneRenderer::mainPass] Entered. solidRenderer=%p skyRenderer=%p\n", (void*)solidRenderer.get(), (void*)skyRenderer.get());
+        std::cerr << "[SceneRenderer::mainPass] Entered. solidRenderer=" << (void*)solidRenderer.get()
+                  << " skyRenderer=" << (void*)skyRenderer.get() << std::endl;
         printedOnce = true;
     }
     if (wireframeEnabled && solidWireframe) {
@@ -196,7 +199,7 @@ void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkR
 
 void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj) {
     if (!skyRenderer) {
-        fprintf(stderr, "[SceneRenderer::skyPass] skyRenderer is nullptr, skipping.\n");
+        std::cerr << "[SceneRenderer::skyPass] skyRenderer is nullptr, skipping." << std::endl;
         return;
     }
     SkySettings::Mode mode = skySettings->mode;
@@ -205,7 +208,7 @@ void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDe
 
 void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, float waterTime, bool skipBackFace, VkImageView skyView, VkImageView cubeReflectionView) {
     if (commandBuffer == VK_NULL_HANDLE) {
-        fprintf(stderr, "[SceneRenderer::waterPass] commandBuffer is VK_NULL_HANDLE, skipping.\n");
+        std::cerr << "[SceneRenderer::waterPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
 
@@ -273,7 +276,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
 
 void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterParams>& waterParams) {
     if (!app) {
-        fprintf(stderr, "[SceneRenderer::init] app is nullptr!\n");
+        std::cerr << "[SceneRenderer::init] app is nullptr!" << std::endl;
         return;
     }
     // skySettingsRef was initialized at construction and must be valid
@@ -285,7 +288,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             vegetationRenderer->setTextureArrayManager(textureArrayManager, app);
             vegetationRenderer->init();
         } else {
-            fprintf(stderr, "[SceneRenderer::init] No TextureArrayManager provided — vegetation renderer initialization deferred\n");
+            std::cerr << "[SceneRenderer::init] No TextureArrayManager provided — vegetation renderer initialization deferred" << std::endl;
         }
     }
     
@@ -345,7 +348,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Helper to add image write if valid
     auto addImageWrite = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
         if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
-            fprintf(stderr, "[SceneRenderer::init] Skipping descriptor binding %u: imageView=%p sampler=%p\n", binding, (void*)view, (void*)sampler);
+            std::cerr << "[SceneRenderer::init] Skipping descriptor binding " << binding
+                      << ": imageView=" << (void*)view
+                      << " sampler=" << (void*)sampler << std::endl;
             return;
         }
         VkDescriptorImageInfo* info = new VkDescriptorImageInfo();
@@ -367,7 +372,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         addImageWrite(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         addImageWrite(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     } else {
-        fprintf(stderr, "[SceneRenderer::init] No TextureArrayManager set — skipping texture array descriptor writes\n");
+        std::cerr << "[SceneRenderer::init] No TextureArrayManager set — skipping texture array descriptor writes" << std::endl;
     }
     addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
     addImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
@@ -550,7 +555,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         for (auto &w : shadowWrites) {
             if (w.pImageInfo) delete w.pImageInfo;
         }
-        fprintf(stderr, "[SceneRenderer::init] shadowDescriptorSet = %p\n", (void*)shadowDescriptorSet);
+        std::cerr << "[SceneRenderer::init] shadowDescriptorSet = " << (void*)shadowDescriptorSet << std::endl;
     }
 
     // Register listener so we update the main descriptor set when texture arrays are allocated later
@@ -713,7 +718,7 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
         for (auto &w : shadowWrites) { if (w.pImageInfo) delete w.pImageInfo; }
     }
 
-    fprintf(stderr, "[SceneRenderer] updateTextureDescriptorSet: updated main descriptor set with texture bindings\n");
+    std::cerr << "[SceneRenderer] updateTextureDescriptorSet: updated main descriptor set with texture bindings" << std::endl;
 }
 
 
@@ -853,7 +858,8 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
                 if (app->resources.removeBuffer(idxBuf.buffer)) vkDestroyBuffer(device, idxBuf.buffer, nullptr);
                 if (app->resources.removeDeviceMemory(idxBuf.memory)) vkFreeMemory(device, idxBuf.memory, nullptr);
             } catch (const std::exception &e) {
-                fprintf(stderr, "[SceneRenderer] Vegetation generation failed for node %llu: %s\n", (unsigned long long)nid, e.what());
+                std::cerr << "[SceneRenderer] Vegetation generation failed for node " << (unsigned long long)nid
+                          << ": " << e.what() << std::endl;
             }
         }
     }

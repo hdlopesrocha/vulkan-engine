@@ -61,7 +61,7 @@ void DebugCubeRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
     pipelineLayout = layoutHandle;
     
     if (pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE) {
-        fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to create pipeline!\n");
+        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to create pipeline!" << std::endl;
     }
 }
 
@@ -71,7 +71,7 @@ void DebugCubeRenderer::createCubeVBO(VulkanApp* app) {
     BoxLineGeometry cubeGeom(unitBox);
     
     cubeVBO = VertexBufferObjectBuilder::create(app, cubeGeom);
-    printf("[DebugCubeRenderer] Created cube VBO: vertices=%zu indices=%zu\n", cubeGeom.vertices.size(), cubeGeom.indices.size());
+    std::cout << "[DebugCubeRenderer] Created cube VBO: vertices=" << cubeGeom.vertices.size() << " indices=" << cubeGeom.indices.size() << std::endl;
 }
 
 void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
@@ -80,7 +80,7 @@ void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
     stbi_uc* pixels = stbi_load("textures/grid.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
     
     if (!pixels) {
-        fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to load grid texture!\n");
+        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to load grid texture!" << std::endl;
         return;
     }
     
@@ -117,10 +117,10 @@ void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     
     if (vkCreateImage(app->getDevice(), &imageInfo, nullptr, &gridTextureImage) != VK_SUCCESS) {
-        fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to create grid texture image!\n");
+        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to create grid texture image!" << std::endl;
         return;
     }
-    printf("[DebugCubeRenderer] createImage: gridTextureImage=%p\n", (void*)gridTextureImage);
+    std::cout << "[DebugCubeRenderer] createImage: gridTextureImage=" << (void*)gridTextureImage << std::endl;
     // Register grid texture image
     app->resources.addImage(gridTextureImage, "DebugCubeRenderer: gridTextureImage");
     
@@ -135,10 +135,10 @@ void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     
     if (vkAllocateMemory(app->getDevice(), &allocInfo, nullptr, &gridTextureMemory) != VK_SUCCESS) {
-        fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to allocate grid texture memory!\n");
+        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to allocate grid texture memory!" << std::endl;
         return;
     }
-    printf("[DebugCubeRenderer] allocateMemory: gridTextureMemory=%p\n", (void*)gridTextureMemory);
+    std::cout << "[DebugCubeRenderer] allocateMemory: gridTextureMemory=" << (void*)gridTextureMemory << std::endl;
     
     vkBindImageMemory(app->getDevice(), gridTextureImage, gridTextureMemory, 0);
     // Register grid texture memory
@@ -168,10 +168,10 @@ void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
     viewInfo.subresourceRange.layerCount = 1;
     
     if (vkCreateImageView(app->getDevice(), &viewInfo, nullptr, &gridTextureView) != VK_SUCCESS) {
-        fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to create grid texture view!\n");
+        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to create grid texture view!" << std::endl;
         return;
     }
-    printf("[DebugCubeRenderer] createImageView: gridTextureView=%p for image=%p\n", (void*)gridTextureView, (void*)gridTextureImage);
+    std::cout << "[DebugCubeRenderer] createImageView: gridTextureView=" << (void*)gridTextureView << " for image=" << (void*)gridTextureImage << std::endl;
     // Register grid texture view
     app->resources.addImageView(gridTextureView, "DebugCubeRenderer: gridTextureView");
     
@@ -192,13 +192,13 @@ void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     
     if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &gridTextureSampler) != VK_SUCCESS) {
-        fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to create grid texture sampler!\n");
+        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to create grid texture sampler!" << std::endl;
     }
-    printf("[DebugCubeRenderer] createSampler: gridTextureSampler=%p\n", (void*)gridTextureSampler);
+    std::cout << "[DebugCubeRenderer] createSampler: gridTextureSampler=" << (void*)gridTextureSampler << std::endl;
     // Register grid texture sampler
     app->resources.addSampler(gridTextureSampler, "DebugCubeRenderer: gridTextureSampler");
     
-    printf("[DebugCubeRenderer] Loaded grid texture: %dx%d\n", texWidth, texHeight);
+    std::cout << "[DebugCubeRenderer] Loaded grid texture: " << texWidth << "x" << texHeight << std::endl;
 }
 
 void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
@@ -225,10 +225,10 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
     layoutInfo.pBindings = bindings;
     
     if (vkCreateDescriptorSetLayout(app->getDevice(), &layoutInfo, nullptr, &gridDescriptorSetLayout) != VK_SUCCESS) {
-        fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to create grid descriptor set layout!\n");
+        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to create grid descriptor set layout!" << std::endl;
         return;
     }
-    printf("[DebugCubeRenderer] createDescriptorSetLayout: gridDescriptorSetLayout=%p\n", (void*)gridDescriptorSetLayout);
+    std::cout << "[DebugCubeRenderer] createDescriptorSetLayout: gridDescriptorSetLayout=" << (void*)gridDescriptorSetLayout << std::endl;
     // Register descriptor set layout
     app->resources.addDescriptorSetLayout(gridDescriptorSetLayout, "DebugCubeRenderer: gridDescriptorSetLayout");
     
@@ -248,10 +248,10 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     
     if (vkCreateDescriptorPool(app->getDevice(), &poolInfo, nullptr, &gridDescriptorPool) != VK_SUCCESS) {
-        fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to create grid descriptor pool!\n");
+        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to create grid descriptor pool!" << std::endl;
         return;
     }
-    printf("[DebugCubeRenderer] createDescriptorPool: gridDescriptorPool=%p\n", (void*)gridDescriptorPool);
+    std::cout << "[DebugCubeRenderer] createDescriptorPool: gridDescriptorPool=" << (void*)gridDescriptorPool << std::endl;
     // Register descriptor pool
     app->resources.addDescriptorPool(gridDescriptorPool, "DebugCubeRenderer: gridDescriptorPool");
     
@@ -263,7 +263,7 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
     allocInfo.pSetLayouts = &gridDescriptorSetLayout;
     
     if (vkAllocateDescriptorSets(app->getDevice(), &allocInfo, &gridDescriptorSet) != VK_SUCCESS) {
-        fprintf(stderr, "[DEBUG CUBE RENDERER ERROR] Failed to allocate grid descriptor set!\n");
+        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to allocate grid descriptor set!" << std::endl;
         return;
     }
     // Register descriptor set for tracking

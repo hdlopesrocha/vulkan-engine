@@ -1,4 +1,5 @@
 #include "ShadowRenderer.hpp"
+
 #include "VulkanApp.hpp"
 #include "ShaderStage.hpp"
 #include "../utils/FileReader.hpp"
@@ -108,7 +109,9 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         if (vkCreateImage(device, &imageInfo, nullptr, &cas.depthImage) != VK_SUCCESS)
             throw std::runtime_error("failed to create shadow map depth image cascade " + std::to_string(c));
-        fprintf(stderr, "[ShadowRenderer] createImage: cascade=%d depthImage=%p tag=%s\n", c, (void*)cas.depthImage, (tag + " depthImage").c_str());
+        std::cerr << "[ShadowRenderer] createImage: cascade=" << c
+                  << " depthImage=" << (void*)cas.depthImage
+                  << " tag=" << (tag + " depthImage") << std::endl;
         app->resources.addImage(cas.depthImage, (tag + " depthImage").c_str());
 
         VkMemoryRequirements memReq;
@@ -159,7 +162,9 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
         colorInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         if (vkCreateImage(device, &colorInfo, nullptr, &cas.colorImage) != VK_SUCCESS)
             throw std::runtime_error("failed to create shadow color image cascade " + std::to_string(c));
-        fprintf(stderr, "[ShadowRenderer] createImage: cascade=%d colorImage=%p tag=%s\n", c, (void*)cas.colorImage, (tag + " colorImage").c_str());
+        std::cerr << "[ShadowRenderer] createImage: cascade=" << c
+                  << " colorImage=" << (void*)cas.colorImage
+                  << " tag=" << (tag + " colorImage") << std::endl;
         app->resources.addImage(cas.colorImage, (tag + " colorImage").c_str());
 
         vkGetImageMemoryRequirements(device, cas.colorImage, &memReq);
@@ -181,8 +186,8 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
         app->resources.addImageView(cas.colorView, (tag + " colorView").c_str());
     }
 
-    fprintf(stderr, "[ShadowRenderer] Created %d cascade shadow maps (%ux%u each)\n",
-            SHADOW_CASCADE_COUNT, shadowMapSize, shadowMapSize);
+    std::cerr << "[ShadowRenderer] Created " << SHADOW_CASCADE_COUNT
+              << " cascade shadow maps (" << shadowMapSize << "x" << shadowMapSize << " each)" << std::endl;
 }
 
 void ShadowRenderer::createShadowRenderPass(VulkanApp* app) {
@@ -324,8 +329,8 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
     );
     shadowPipeline = pipeline;
     shadowPipelineLayout = layout;
-    fprintf(stderr, "[ShadowRenderer] createShadowPipeline: pipeline=%p layout=%p\n",
-            (void*)shadowPipeline, (void*)shadowPipelineLayout);
+    std::cerr << "[ShadowRenderer] createShadowPipeline: pipeline=" << (void*)shadowPipeline
+              << " layout=" << (void*)shadowPipelineLayout << std::endl;
 
     // Clean up local shader module references (VulkanResourceManager owns them)
     vertexShader.info.module  = VK_NULL_HANDLE;
@@ -387,8 +392,11 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
 
     // Transition shadow map from READ_ONLY to DEPTH_STENCIL_ATTACHMENT_OPTIMAL before shadow pass
     if (cas.depthImage != VK_NULL_HANDLE) {
-        fprintf(stderr, "[ShadowRenderer::beginShadowPass] transition (via app helper): cmd=%p image=%p cascade=%u old=%d new=%d\n",
-                (void*)commandBuffer, (void*)cas.depthImage, (unsigned)cascadeIndex, (int)cascadeDepthLayouts[cascadeIndex], (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        std::cerr << "[ShadowRenderer::beginShadowPass] transition (via app helper): cmd=" << (void*)commandBuffer
+                  << " image=" << (void*)cas.depthImage
+                  << " cascade=" << (unsigned)cascadeIndex
+                  << " old=" << (int)cascadeDepthLayouts[cascadeIndex]
+                  << " new=" << (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL << std::endl;
         if (app) {
             app->recordTransitionImageLayoutLayer(commandBuffer, cas.depthImage, VK_FORMAT_D32_SFLOAT, cascadeDepthLayouts[cascadeIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
         } else {
@@ -412,7 +420,7 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     }
 
     if (shadowRenderPass == VK_NULL_HANDLE || cas.framebuffer == VK_NULL_HANDLE) {
-        fprintf(stderr, "[ShadowRenderer] Error: shadowRenderPass or framebuffer is VK_NULL_HANDLE for cascade %u\n", cascadeIndex);
+        std::cerr << "[ShadowRenderer] Error: shadowRenderPass or framebuffer is VK_NULL_HANDLE for cascade " << cascadeIndex << std::endl;
         return;
     }
 

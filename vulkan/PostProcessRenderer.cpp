@@ -58,7 +58,7 @@ void PostProcessRenderer::createSampler(VulkanApp* app) {
     if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &linearSampler) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create post-process linear sampler!");
     }
-    fprintf(stderr, "[PostProcessRenderer] createSampler: linearSampler=%p\n", (void*)linearSampler);
+    std::cout << "[PostProcessRenderer] createSampler: linearSampler=" << (void*)linearSampler << std::endl;
     app->resources.addSampler(linearSampler, "PostProcessRenderer: linearSampler");
 }
 
@@ -266,19 +266,19 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                   const glm::vec3& viewPos,
                                   bool beginRenderPass, VkImageView skyView) {
     if (pipeline == VK_NULL_HANDLE) {
-        fprintf(stderr, "[PostProcessRenderer::render] pipeline is VK_NULL_HANDLE, skipping.\n");
+        std::cerr << "[PostProcessRenderer::render] pipeline is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
     if (cmd == VK_NULL_HANDLE) {
-        fprintf(stderr, "[PostProcessRenderer::render] cmd is VK_NULL_HANDLE, skipping.\n");
+        std::cerr << "[PostProcessRenderer::render] cmd is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
     if (swapchainFramebuffer == VK_NULL_HANDLE) {
-        fprintf(stderr, "[PostProcessRenderer::render] swapchainFramebuffer is VK_NULL_HANDLE, skipping.\n");
+        std::cerr << "[PostProcessRenderer::render] swapchainFramebuffer is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
     if (swapchainRenderPass == VK_NULL_HANDLE) {
-        fprintf(stderr, "[PostProcessRenderer::render] swapchainRenderPass is VK_NULL_HANDLE, skipping.\n");
+        std::cerr << "[PostProcessRenderer::render] swapchainRenderPass is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
 
@@ -316,8 +316,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     std::vector<VkWriteDescriptorSet> writes;
     for (int i = 0; i < 5; ++i) {
         if (imageInfos[i].imageView == VK_NULL_HANDLE || imageInfos[i].sampler == VK_NULL_HANDLE) {
-            fprintf(stderr, "[PostProcessRenderer] Skipping binding %d: imageView=%p sampler=%p\n",
-                    i, (void*)imageInfos[i].imageView, (void*)imageInfos[i].sampler);
+            std::cerr << "[PostProcessRenderer] Skipping binding " << i
+                      << ": imageView=" << (void*)imageInfos[i].imageView
+                      << " sampler=" << (void*)imageInfos[i].sampler << std::endl;
             continue;
         }
         VkWriteDescriptorSet write{};
@@ -340,7 +341,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
         bufWrite.pBufferInfo = &bufferInfo;
         writes.push_back(bufWrite);
     } else {
-        fprintf(stderr, "[PostProcessRenderer] Skipping UBO binding: buffer is VK_NULL_HANDLE\n");
+        std::cerr << "[PostProcessRenderer] Skipping UBO binding: buffer is VK_NULL_HANDLE" << std::endl;
     }
 
     // Sky color texture (binding 6)

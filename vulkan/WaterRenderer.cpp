@@ -1,5 +1,6 @@
 
 #include "WaterRenderer.hpp"
+
 #include "../utils/FileReader.hpp"
 #include <stdexcept>
 #include <iostream>
@@ -97,7 +98,7 @@ void WaterRenderer::createSamplers(VulkanApp* app) {
     if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &linearSampler) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water linear sampler!");
     }
-    fprintf(stderr, "[WaterRenderer] createSampler: linearSampler=%p\n", (void*)linearSampler);
+    std::cerr << "[WaterRenderer] createSampler: linearSampler=" << (void*)linearSampler << std::endl;
     app->resources.addSampler(linearSampler, "WaterRenderer: linearSampler");
 
     samplerInfo.magFilter = VK_FILTER_NEAREST;
@@ -106,7 +107,7 @@ void WaterRenderer::createSamplers(VulkanApp* app) {
     if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &nearestSampler) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water nearest sampler!");
     }
-    fprintf(stderr, "[WaterRenderer] createSampler: nearestSampler=%p\n", (void*)nearestSampler);
+    std::cerr << "[WaterRenderer] createSampler: nearestSampler=" << (void*)nearestSampler << std::endl;
     app->resources.addSampler(nearestSampler, "WaterRenderer: nearestSampler");
 }
 
@@ -171,7 +172,7 @@ void WaterRenderer::createSceneRenderPass(VulkanApp* app) {
 
 void WaterRenderer::beginScenePass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear) {
     if (cmd == VK_NULL_HANDLE || sceneRenderPass == VK_NULL_HANDLE || sceneFramebuffers[frameIndex] == VK_NULL_HANDLE) {
-        fprintf(stderr, "[WaterRenderer::beginScenePass] Missing cmd/renderPass/framebuffer, skipping.\n");
+        std::cerr << "[WaterRenderer::beginScenePass] Missing cmd/renderPass/framebuffer, skipping." << std::endl;
         return;
     }
     std::array<VkClearValue, 2> clears{colorClear, depthClear};
@@ -303,7 +304,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
             throw std::runtime_error("Failed to create water image!");
         }
         // Debug: print created image handle for leak tracing
-        fprintf(stderr, "[WaterRenderer] createImage: image=%p format=%d usage=0x%x\n", (void*)image, (int)format, usage);
+        std::cerr << "[WaterRenderer] createImage: image=" << (void*)image << " format=" << (int)format << " usage=0x" << std::hex << usage << std::dec << std::endl;
         // Register image in app registry
         app->resources.addImage(image, "WaterRenderer: image");
         
@@ -337,7 +338,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         if (vkCreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create water image view!");
         }
-        fprintf(stderr, "[WaterRenderer] createImageView: view=%p image=%p format=%d\n", (void*)view, (void*)image, (int)format);
+        std::cerr << "[WaterRenderer] createImageView: view=" << (void*)view << " image=" << (void*)image << " format=" << (int)format << std::endl;
         // Register image view
         app->resources.addImageView(view, "WaterRenderer: view");
     };
@@ -365,7 +366,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
                     VK_IMAGE_ASPECT_DEPTH_BIT,
                     sceneDepthImages[frameIdx], sceneDepthMemories[frameIdx], sceneDepthImageViews[frameIdx]);
         sceneDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
-        fprintf(stderr, "[WaterRenderer] sceneDepthImages[%d] = %p\n", frameIdx, (void*)sceneDepthImages[frameIdx]);
+        std::cerr << "[WaterRenderer] sceneDepthImages[" << frameIdx << "] = " << (void*)sceneDepthImages[frameIdx] << std::endl;
 
         std::array<VkImageView, 2> sceneAttachments = {
             sceneColorImageViews[frameIdx],
@@ -421,7 +422,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
                     VK_IMAGE_ASPECT_DEPTH_BIT,
                     waterGeomDepthImages[frameIdx], waterGeomDepthMemories[frameIdx], waterGeomDepthImageViews[frameIdx]);
         waterGeomDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
-        fprintf(stderr, "[WaterRenderer] waterGeomDepthImage[%d] = %p\n", frameIdx, (void*)waterGeomDepthImages[frameIdx]);
+        std::cerr << "[WaterRenderer] waterGeomDepthImage[" << frameIdx << "] = " << (void*)waterGeomDepthImages[frameIdx] << std::endl;
 
         // Back-face depth image will be created by SceneRenderer-owned WaterBackFaceRenderer
     }
@@ -534,7 +535,7 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
         if (r == VK_SUCCESS) {
             vkResetDescriptorPool(device, waterDepthDescriptorPool, 0);
         } else {
-            fprintf(stderr, "[WaterRenderer] Skipping descriptor pool reset: device not idle (result=%d)\n", (int)r);
+            std::cerr << "[WaterRenderer] Skipping descriptor pool reset: device not idle (result=" << (int)r << ")" << std::endl;
         }
     }
 }
@@ -835,11 +836,11 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
 
 void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex) {
     if (waterRenderPass == VK_NULL_HANDLE) {
-        fprintf(stderr, "[WaterRenderer::beginWaterGeometryPass] waterRenderPass is VK_NULL_HANDLE, skipping.\n");
+        std::cerr << "[WaterRenderer::beginWaterGeometryPass] waterRenderPass is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
     if (waterFramebuffers[frameIndex] == VK_NULL_HANDLE) {
-        fprintf(stderr, "[WaterRenderer::beginWaterGeometryPass] waterFramebuffers[%u] is VK_NULL_HANDLE, skipping.\n", frameIndex);
+        std::cerr << "[WaterRenderer::beginWaterGeometryPass] waterFramebuffers[" << frameIndex << "] is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
     std::array<VkClearValue, 2> clearValues{};
@@ -871,7 +872,7 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
 
 void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
     if (cmd == VK_NULL_HANDLE) {
-        fprintf(stderr, "[WaterRenderer::endWaterGeometryPass] cmd is VK_NULL_HANDLE, skipping.\n");
+        std::cerr << "[WaterRenderer::endWaterGeometryPass] cmd is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
     // Properly end the water geometry render pass recorded on the provided command buffer

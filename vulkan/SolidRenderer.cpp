@@ -1,4 +1,5 @@
 #include "SolidRenderer.hpp"
+
 #include "../utils/FileReader.hpp"
 #include "ShaderStage.hpp"
 #include <glm/gtc/matrix_transform.hpp>
@@ -36,7 +37,7 @@ void SolidRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
             throw std::runtime_error("Failed to create solid image!");
         }
         // Debug: print created image handle for leak tracing
-        fprintf(stderr, "[SolidRenderer] createImage: image=%p format=%d usage=0x%x\n", (void*)image, (int)format, usage);
+        std::cerr << "[SolidRenderer] createImage: image=" << (void*)image << " format=" << (int)format << " usage=0x" << std::hex << usage << std::dec << std::endl;
 
         VkMemoryRequirements memReq;
         vkGetImageMemoryRequirements(device, image, &memReq);
@@ -69,7 +70,7 @@ void SolidRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         if (vkCreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create solid image view!");
         }
-        fprintf(stderr, "[SolidRenderer] createImageView: view=%p image=%p format=%d\n", (void*)view, (void*)image, (int)format);
+        std::cerr << "[SolidRenderer] createImageView: view=" << (void*)view << " image=" << (void*)image << " format=" << (int)format << std::endl;
         app->resources.addImageView(view, "SolidRenderer: view");
     };
 
@@ -173,7 +174,7 @@ void SolidRenderer::destroyRenderTargets(VulkanApp* app) {
 
 void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear, VulkanApp* app) {
     if (cmd == VK_NULL_HANDLE || solidRenderPass == VK_NULL_HANDLE || solidFramebuffers[frameIndex] == VK_NULL_HANDLE) {
-        fprintf(stderr, "[SolidRenderer::beginPass] Missing cmd/renderPass/framebuffer, skipping.\n");
+        std::cerr << "[SolidRenderer::beginPass] Missing cmd/renderPass/framebuffer, skipping." << std::endl;
         return;
     }
     // Ensure the depth image for this frame is in the depth-stencil-attachment
@@ -182,8 +183,7 @@ void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearV
     if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
         if (solidDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
             // Use centralized app helper so recorded oldLayout matches the app's transition logic
-            fprintf(stderr, "[SolidRenderer::beginPass] transition: cmd=%p image=%p frame=%u trackedOld=%d new=%d\n",
-                    (void*)cmd, (void*)solidDepthImages[frameIndex], (unsigned)frameIndex, (int)solidDepthImageLayouts[frameIndex], (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+            std::cerr << "[SolidRenderer::beginPass] transition: cmd=" << (void*)cmd << " image=" << (void*)solidDepthImages[frameIndex] << " frame=" << (unsigned)frameIndex << " trackedOld=" << (int)solidDepthImageLayouts[frameIndex] << " new=" << (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL << std::endl;
             if (app) {
                 app->recordTransitionImageLayoutLayer(cmd, solidDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, solidDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
             } else {
@@ -236,8 +236,7 @@ void SolidRenderer::endPass(VkCommandBuffer cmd, uint32_t frameIndex, VulkanApp*
             // Avoid emitting an extra barrier here (which can conflict with the
             // renderpass transition) — just update the authoritative tracked
             // layout so later record-time callers see the correct state.
-            fprintf(stderr, "[SolidRenderer::endPass] updating tracked layout: image=%p frame=%u -> %d\n",
-                    (void*)solidDepthImages[frameIndex], (unsigned)frameIndex, (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            std::cerr << "[SolidRenderer::endPass] updating tracked layout: image=" << (void*)solidDepthImages[frameIndex] << " frame=" << (unsigned)frameIndex << " -> " << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
             if (app) {
                 app->recordTrackedLayoutForCommandBuffer(cmd, solidDepthImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
             }
@@ -334,11 +333,11 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
 
 void SolidRenderer::depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VulkanApp* app) {
     if (!app) {
-        fprintf(stderr, "[SolidRenderer::depthPrePass] app is nullptr, skipping.\n");
+        std::cerr << "[SolidRenderer::depthPrePass] app is nullptr, skipping." << std::endl;
         return;
     }
     if (depthPrePassPipeline == VK_NULL_HANDLE) {
-        fprintf(stderr, "[SolidRenderer::depthPrePass] depthPrePassPipeline is VK_NULL_HANDLE, skipping.\n");
+        std::cerr << "[SolidRenderer::depthPrePass] depthPrePassPipeline is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
 
@@ -365,7 +364,7 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
     }
     
     if (!appArg) {
-        fprintf(stderr, "[SolidRenderer::draw] appArg is nullptr, skipping.\n");
+        std::cerr << "[SolidRenderer::draw] appArg is nullptr, skipping." << std::endl;
         return;
     }
     
@@ -373,7 +372,7 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
     
     VkPipelineLayout usedLayout = graphicsPipelineLayout;
     if (graphicsPipeline == VK_NULL_HANDLE) {
-        fprintf(stderr, "[SolidRenderer::draw] graphicsPipeline is VK_NULL_HANDLE, skipping.\n");
+        std::cerr << "[SolidRenderer::draw] graphicsPipeline is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
     if (!printedOnce) {
@@ -419,7 +418,7 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
         //printf("[BIND] SolidRenderer::draw: layout=%p firstSet=0 count=1 sets=%p\n", (void*)usedLayout, (void*)perTextureDescriptorSet);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, usedLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
     } else {
-        fprintf(stderr, "[SolidRenderer::draw] ERROR: perTextureDescriptorSet is NULL!\n");
+        std::cerr << "[SolidRenderer::draw] ERROR: perTextureDescriptorSet is NULL!" << std::endl;
     }
     
     // Draw all meshes using GPU-culled indirect commands

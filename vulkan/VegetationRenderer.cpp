@@ -1,4 +1,5 @@
 #include "VegetationRenderer.hpp"
+
 #include <vulkan/vulkan.h>
 #include <cstdint>
 #include <cstddef>
@@ -66,7 +67,7 @@ void VegetationRenderer::setTextureArrayManager(TextureArrayManager* mgr, Vulkan
 }
 
 void VegetationRenderer::onTextureArraysReallocated(VulkanApp* app) {
-    fprintf(stderr, "[VEGETATION] onTextureArraysReallocated: invalidating vegDescriptorSet\n");
+    std::cerr << "[VEGETATION] onTextureArraysReallocated: invalidating vegDescriptorSet" << std::endl;
     if (!app) return;
     if (vegDescriptorSet != VK_NULL_HANDLE) {
         VkDescriptorSet ds = vegDescriptorSet;
@@ -86,9 +87,9 @@ void VegetationRenderer::onTextureArraysReallocated(VulkanApp* app) {
         vegDescriptorVersion = 0;
     }
     if (ensureVegDescriptorSet(app)) {
-        fprintf(stderr, "[VEGETATION] onTextureArraysReallocated: recreated vegDescriptorSet=%p\n", (void*)vegDescriptorSet);
+        std::cerr << "[VEGETATION] onTextureArraysReallocated: recreated vegDescriptorSet=" << (void*)vegDescriptorSet << std::endl;
     } else {
-        fprintf(stderr, "[VEGETATION] onTextureArraysReallocated: descriptor still not ready\n");
+        std::cerr << "[VEGETATION] onTextureArraysReallocated: descriptor still not ready" << std::endl;
     }
 }
 
@@ -96,7 +97,7 @@ bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
     if (!app) return false;
     if (!vegetationTextureArrayManager) return false;
     if (descriptorSetLayout == VK_NULL_HANDLE) {
-        fprintf(stderr, "[VEGETATION] ensureVegDescriptorSet: descriptorSetLayout not created yet, deferring allocation\n");
+        std::cerr << "[VEGETATION] ensureVegDescriptorSet: descriptorSetLayout not created yet, deferring allocation" << std::endl;
         return false;
     }
     // Need valid view and sampler
@@ -129,7 +130,7 @@ bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
         vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
         vegDescriptorVersion = managerVersion;
         app->registerDescriptorSet(vegDescriptorSet);
-        fprintf(stderr, "[VEGETATION] Allocated vegDescriptorSet=%p version=%u\n", (void*)vegDescriptorSet, vegDescriptorVersion);
+        std::cerr << "[VEGETATION] Allocated vegDescriptorSet=" << (void*)vegDescriptorSet << " version=" << vegDescriptorVersion << std::endl;
     }
     return vegDescriptorSet != VK_NULL_HANDLE;
 }
@@ -232,9 +233,9 @@ void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
     vegetationPipeline = pipeline;
     pipelineLayout = layout;
     if (vegetationPipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE) {
-        fprintf(stderr, "[VEGETATION PIPELINE ERROR] Failed to create vegetation pipeline or layout!\n");
+        std::cerr << "[VEGETATION PIPELINE ERROR] Failed to create vegetation pipeline or layout!" << std::endl;
     } else {
-        fprintf(stderr, "[VEGETATION PIPELINE] Created pipeline=%p layout=%p\n", (void*)vegetationPipeline, (void*)pipelineLayout);
+        std::cerr << "[VEGETATION PIPELINE] Created pipeline=" << (void*)vegetationPipeline << " layout=" << (void*)pipelineLayout << std::endl;
     }
 
     // Clear local shader module references; destruction handled by VulkanResourceManager
@@ -279,18 +280,18 @@ size_t VegetationRenderer::getInstanceTotal() const {
 
 void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj) {
     if (!app || vegetationPipeline == VK_NULL_HANDLE) {
-        if (!app) fprintf(stderr, "[VEGETATION DRAW ERROR] app is null!\n");
-        if (vegetationPipeline == VK_NULL_HANDLE) fprintf(stderr, "[VEGETATION DRAW ERROR] Attempted to bind VK_NULL_HANDLE pipeline!\n");
+        if (!app) std::cerr << "[VEGETATION DRAW ERROR] app is null!" << std::endl;
+        if (vegetationPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION DRAW ERROR] Attempted to bind VK_NULL_HANDLE pipeline!" << std::endl;
         return;
     }
     if (!vegetationTextureArrayManager || vegetationTextureArrayManager->albedoArray.view == VK_NULL_HANDLE || vegetationTextureArrayManager->albedoSampler == VK_NULL_HANDLE) {
-        fprintf(stderr, "[VEGETATION DRAW ERROR] texture array not ready (view/sampler missing), skipping draw.\n");
+        std::cerr << "[VEGETATION DRAW ERROR] texture array not ready (view/sampler missing), skipping draw." << std::endl;
         return;
     }
 
     // Ensure vegetation descriptor set is present and up-to-date
     if (!ensureVegDescriptorSet(app)) {
-        fprintf(stderr, "[VEGETATION DRAW ERROR] vegDescriptorSet not ready, skipping draw.\n");
+        std::cerr << "[VEGETATION DRAW ERROR] vegDescriptorSet not ready, skipping draw." << std::endl;
         return;
     }
 
@@ -299,7 +300,7 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
     // Bind the persistent, already-updated global descriptor set from VulkanApp as set 0
     VkDescriptorSet globalSet = app->getMainDescriptorSet();
     if (globalSet == VK_NULL_HANDLE) {
-        fprintf(stderr, "[VEGETATION DRAW ERROR] globalSet (main descriptor set) is VK_NULL_HANDLE!\n");
+        std::cerr << "[VEGETATION DRAW ERROR] globalSet (main descriptor set) is VK_NULL_HANDLE!" << std::endl;
         return;
     }
     VkDescriptorSet sets[2] = { globalSet, vegDescriptorSet };

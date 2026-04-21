@@ -1,5 +1,6 @@
 // Minimal implementation file for TextureArrayManager
 #include "TextureArrayManager.hpp"
+
 #include "VulkanApp.hpp"
 #include <stdexcept>
 #include <backends/imgui_impl_vulkan.h>
@@ -32,9 +33,9 @@ void TextureArrayManager::notifyAllocationListeners() {
 		try {
 			listenersCopy[i]();
 		} catch (const std::exception &e) {
-			fprintf(stderr, "[TextureArrayManager] allocation listener %zu threw std::exception: %s\n", i, e.what());
+			std::cerr << "[TextureArrayManager] allocation listener " << i << " threw std::exception: " << e.what() << std::endl;
 		} catch (...) {
-			fprintf(stderr, "[TextureArrayManager] allocation listener %zu threw unknown exception\n", i);
+			std::cerr << "[TextureArrayManager] allocation listener " << i << " threw unknown exception" << std::endl;
 		}
 	}
 }
@@ -43,16 +44,16 @@ void TextureArrayManager::notifyAllocationListeners() {
 static void cleanupTextureImage(VulkanApp* app, TextureImage &ti) {
 	if (!app) return;
 	VkDevice device = app->getDevice();
-    fprintf(stderr, "[TextureArrayManager] cleanupTextureImage: image=%p view=%p memory=%p\n", (void*)ti.image, (void*)ti.view, (void*)ti.memory);
+    std::cerr << "[TextureArrayManager] cleanupTextureImage: image=" << (void*)ti.image << " view=" << (void*)ti.view << " memory=" << (void*)ti.memory << std::endl;
 	// Destroy view
 	if (ti.view != VK_NULL_HANDLE) {
 		VkImageView v = ti.view;
 		if (app->hasPendingCommandBuffers()) {
-			fprintf(stderr, "[TextureArrayManager] deferring vkDestroyImageView(%p) until pending cmds complete\n", (void*)v);
+			std::cerr << "[TextureArrayManager] deferring vkDestroyImageView(" << (void*)v << ") until pending cmds complete" << std::endl;
 			app->deferDestroyUntilAllPending([device, v, app](){ if (app->resources.removeImageView(v)) vkDestroyImageView(device, v, nullptr); });
 			ti.view = VK_NULL_HANDLE;
 		} else {
-			fprintf(stderr, "[TextureArrayManager] destroying vkDestroyImageView(%p) now\n", (void*)v);
+			std::cerr << "[TextureArrayManager] destroying vkDestroyImageView(" << (void*)v << ") now" << std::endl;
 			if (app->resources.removeImageView(v)) vkDestroyImageView(device, v, nullptr);
 			ti.view = VK_NULL_HANDLE;
 		}
@@ -61,11 +62,11 @@ static void cleanupTextureImage(VulkanApp* app, TextureImage &ti) {
 	if (ti.image != VK_NULL_HANDLE) {
 		VkImage img = ti.image;
 		if (app->hasPendingCommandBuffers()) {
-			fprintf(stderr, "[TextureArrayManager] deferring vkDestroyImage(%p) until pending cmds complete\n", (void*)img);
+			std::cerr << "[TextureArrayManager] deferring vkDestroyImage(" << (void*)img << ") until pending cmds complete" << std::endl;
 			app->deferDestroyUntilAllPending([device, img, app](){ if (app->resources.removeImage(img)) vkDestroyImage(device, img, nullptr); });
 			ti.image = VK_NULL_HANDLE;
 		} else {
-			fprintf(stderr, "[TextureArrayManager] destroying vkDestroyImage(%p) now\n", (void*)img);
+			std::cerr << "[TextureArrayManager] destroying vkDestroyImage(" << (void*)img << ") now" << std::endl;
 			if (app->resources.removeImage(img)) vkDestroyImage(device, img, nullptr);
 			ti.image = VK_NULL_HANDLE;
 		}
@@ -74,11 +75,11 @@ static void cleanupTextureImage(VulkanApp* app, TextureImage &ti) {
 	if (ti.memory != VK_NULL_HANDLE) {
 		VkDeviceMemory mem = ti.memory;
 		if (app->hasPendingCommandBuffers()) {
-			fprintf(stderr, "[TextureArrayManager] deferring vkFreeMemory(%p) until pending cmds complete\n", (void*)mem);
+			std::cerr << "[TextureArrayManager] deferring vkFreeMemory(" << (void*)mem << ") until pending cmds complete" << std::endl;
 			app->deferDestroyUntilAllPending([device, mem, app](){ if (app->resources.removeDeviceMemory(mem)) vkFreeMemory(device, mem, nullptr); });
 			ti.memory = VK_NULL_HANDLE;
 		} else {
-			fprintf(stderr, "[TextureArrayManager] freeing vkFreeMemory(%p) now\n", (void*)mem);
+			std::cerr << "[TextureArrayManager] freeing vkFreeMemory(" << (void*)mem << ") now" << std::endl;
 			if (app->resources.removeDeviceMemory(mem)) vkFreeMemory(device, mem, nullptr);
 			ti.memory = VK_NULL_HANDLE;
 		}
@@ -90,15 +91,15 @@ static void cleanupTextureImage(VulkanApp* app, TextureImage &ti) {
 static void cleanupSampler(VulkanApp* app, VkSampler &s) {
 	if (!app) return;
 	VkDevice device = app->getDevice();
-	fprintf(stderr, "[TextureArrayManager] cleanupSampler: sampler=%p\n", (void*)s);
+	std::cerr << "[TextureArrayManager] cleanupSampler: sampler=" << (void*)s << std::endl;
 	if (s != VK_NULL_HANDLE) {
 		VkSampler ss = s;
 		if (app->hasPendingCommandBuffers()) {
-			fprintf(stderr, "[TextureArrayManager] deferring vkDestroySampler(%p) until pending cmds complete\n", (void*)ss);
+			std::cerr << "[TextureArrayManager] deferring vkDestroySampler(" << (void*)ss << ") until pending cmds complete" << std::endl;
 			app->deferDestroyUntilAllPending([device, ss, app](){ if (app->resources.removeSampler(ss)) vkDestroySampler(device, ss, nullptr); });
 			s = VK_NULL_HANDLE;
 		} else {
-			fprintf(stderr, "[TextureArrayManager] destroying vkDestroySampler(%p) now\n", (void*)ss);
+			std::cerr << "[TextureArrayManager] destroying vkDestroySampler(" << (void*)ss << ") now" << std::endl;
 			if (app->resources.removeSampler(ss)) vkDestroySampler(device, ss, nullptr);
 			s = VK_NULL_HANDLE;
 		}
@@ -107,7 +108,7 @@ static void cleanupSampler(VulkanApp* app, VkSampler &s) {
 
 void TextureArrayManager::destroy(VulkanApp* app) {
 	if (!app) return;
-	fprintf(stderr, "[TextureArrayManager] destroy() called - this=%p app=%p\n", (void*)this, (void*)app);
+	std::cerr << "[TextureArrayManager] destroy() called - this=" << (void*)this << " app=" << (void*)app << std::endl;
 	cleanupTextureImage(app, albedoArray);
 	cleanupTextureImage(app, normalArray);
 	cleanupTextureImage(app, bumpArray);
@@ -158,11 +159,11 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 		if (v != VK_NULL_HANDLE) {
 			VkImageView iv = v;
 			if (app && app->hasPendingCommandBuffers()) {
-				fprintf(stderr, "[TextureArrayManager] deferring vkDestroyImageView(%p) for albedoLayerViews until pending cmds complete\n", (void*)iv);
+				std::cerr << "[TextureArrayManager] deferring vkDestroyImageView(" << (void*)iv << ") for albedoLayerViews until pending cmds complete" << std::endl;
 				app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
 				v = VK_NULL_HANDLE;
 			} else {
-				fprintf(stderr, "[TextureArrayManager] destroying vkDestroyImageView(%p) for albedoLayerViews now\n", (void*)iv);
+				std::cerr << "[TextureArrayManager] destroying vkDestroyImageView(" << (void*)iv << ") for albedoLayerViews now" << std::endl;
 				if (app->resources.removeImageView(iv)) vkDestroyImageView(device, v, nullptr);
 				v = VK_NULL_HANDLE;
 			}
@@ -172,11 +173,11 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 		if (v != VK_NULL_HANDLE) {
 			VkImageView iv = v;
 			if (app && app->hasPendingCommandBuffers()) {
-				fprintf(stderr, "[TextureArrayManager] deferring vkDestroyImageView(%p) for normalLayerViews until pending cmds complete\n", (void*)iv);
+				std::cerr << "[TextureArrayManager] deferring vkDestroyImageView(" << (void*)iv << ") for normalLayerViews until pending cmds complete" << std::endl;
 				app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
 				v = VK_NULL_HANDLE;
 			} else {
-				fprintf(stderr, "[TextureArrayManager] destroying vkDestroyImageView(%p) for normalLayerViews now\n", (void*)iv);
+				std::cerr << "[TextureArrayManager] destroying vkDestroyImageView(" << (void*)iv << ") for normalLayerViews now" << std::endl;
 				if (app->resources.removeImageView(iv)) vkDestroyImageView(device, v, nullptr);
 				v = VK_NULL_HANDLE;
 			}
@@ -186,11 +187,11 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 		if (v != VK_NULL_HANDLE) {
 			VkImageView iv = v;
 			if (app && app->hasPendingCommandBuffers()) {
-				fprintf(stderr, "[TextureArrayManager] deferring vkDestroyImageView(%p) for bumpLayerViews until pending cmds complete\n", (void*)iv);
+				std::cerr << "[TextureArrayManager] deferring vkDestroyImageView(" << (void*)iv << ") for bumpLayerViews until pending cmds complete" << std::endl;
 				app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
 				v = VK_NULL_HANDLE;
 			} else {
-				fprintf(stderr, "[TextureArrayManager] destroying vkDestroyImageView(%p) for bumpLayerViews now\n", (void*)iv);
+				std::cerr << "[TextureArrayManager] destroying vkDestroyImageView(" << (void*)iv << ") for bumpLayerViews now" << std::endl;
 				if (app->resources.removeImageView(iv)) vkDestroyImageView(device, v, nullptr);
 				v = VK_NULL_HANDLE;
 			}
@@ -248,7 +249,7 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 			throw std::runtime_error("failed to create texture array image");
 		}
 		// Debug: print created image handle for leak tracing
-		fprintf(stderr, "[TextureArrayManager] createArray: image=%p format=%d layers=%u mipLevels=%u\n", (void*)out.image, (int)format, imageInfo.arrayLayers, imageInfo.mipLevels);
+		std::cerr << "[TextureArrayManager] createArray: image=" << (void*)out.image << " format=" << (int)format << " layers=" << imageInfo.arrayLayers << " mipLevels=" << imageInfo.mipLevels << std::endl;
 		// Register image so final-sweep can clean it if an owner misses unregister
 		app->resources.addImage(out.image, "TextureArrayManager: out.image");
 		// Also add to central resource manager
@@ -298,7 +299,7 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 			out.memory = VK_NULL_HANDLE;
 			throw std::runtime_error("failed to create texture array image view");
 		}
-		fprintf(stderr, "[TextureArrayManager] createArray: view=%p image=%p\n", (void*)out.view, (void*)out.image);
+		std::cerr << "[TextureArrayManager] createArray: view=" << (void*)out.view << " image=" << (void*)out.image << std::endl;
 		// Register image view
 		app->resources.addImageView(out.view, "TextureArrayManager: out.view");
 		app->resources.addImageView(out.view, "TextureArrayManager::createArray view");
@@ -483,14 +484,14 @@ size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureT
 	size_t loaded = 0;
 	for (const auto &t : triples) {
 		if (currentLayer >= layerAmount) {
-			fprintf(stderr, "[TextureArrayManager] Reached texture array capacity (%u layers)\n", layerAmount);
+			std::cerr << "[TextureArrayManager] Reached texture array capacity (" << layerAmount << " layers)" << std::endl;
 			break;
 		}
 		try {
 			load(a, t.albedo, t.normal, t.bump);
 			++loaded;
 		} catch (const std::exception &e) {
-			fprintf(stderr, "[TextureArrayManager] Failed to load %s: %s\n", t.albedo ? t.albedo : "(null)", e.what());
+			std::cerr << "[TextureArrayManager] Failed to load " << (t.albedo ? t.albedo : "(null)") << ": " << e.what() << std::endl;
 		}
 	}
 	return loaded;
@@ -518,7 +519,7 @@ void TextureArrayManager::setLayerLayout(int map, uint32_t layer, VkImageLayout 
 		default: break;
 	}
 	if (prev != layout) {
-		fprintf(stderr, "[TextureArrayManager] setLayerLayout: map=%d layer=%u %d -> %d\n", map, layer, prev, layout);
+		std::cerr << "[TextureArrayManager] setLayerLayout: map=" << map << " layer=" << layer << " " << prev << " -> " << layout << std::endl;
 	}
 }
 
@@ -619,7 +620,7 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 	// If a per-layer generation is in-flight for this layer, wait for it to finish to avoid layout races
 	TextureMixer* gm = TextureMixer::getGlobalInstance();
 	if (gm && gm->isLayerGenerationPending(layer)) {
-		fprintf(stderr, "[TextureArrayManager] Waiting for pending generation on layer %u before copying\n", layer);
+		std::cerr << "[TextureArrayManager] Waiting for pending generation on layer " << layer << " before copying" << std::endl;
 		gm->waitForLayerGeneration(a, layer);
 	}
 
@@ -644,7 +645,7 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 	a->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1);
 
 	// Copy into selected array layer (ensure we log what we're doing)
-	fprintf(stderr, "[TextureArrayManager] Copying into array image %p layer=%u\n", (void*)dstImage, layer);
+	std::cerr << "[TextureArrayManager] Copying into array image " << (void*)dstImage << " layer=" << layer << std::endl;
 	doBarrier(dstImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, layer);
 	VkImageCopy copyRegion{};
 	copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -661,7 +662,7 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 	vkCmdCopyImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
 	// Transition dst layer back to SHADER_READ_ONLY_OPTIMAL (record via app helper)
-	fprintf(stderr, "[TextureArrayManager] Transitioning dst layer %u back to SHADER_READ_ONLY_OPTIMAL\n", layer);
+	std::cerr << "[TextureArrayManager] Transitioning dst layer " << layer << " back to SHADER_READ_ONLY_OPTIMAL" << std::endl;
 	a->recordTransitionImageLayoutLayer(cmd, dstImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layer, 1);
 
 	// Transition src back to SHADER_READ_ONLY_OPTIMAL
@@ -733,7 +734,10 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 						// Failed to create view; leave tex as nullptr
 					}
 					else {
-						fprintf(stderr, "[TextureArrayManager] createLayerView: view=%p image=%p layer=%u map=%d\n", (void*)(*viewVec)[layer], (void*)arrImg->image, (unsigned)layer, map);
+						std::cerr << "[TextureArrayManager] createLayerView: view=" << (void*)(*viewVec)[layer]
+								  << " image=" << (void*)arrImg->image
+								  << " layer=" << (unsigned)layer
+								  << " map=" << map << std::endl;
 						// Register per-layer view so centralized cleanup can track and destroy it if needed
 						if (a) a->resources.addImageView((*viewVec)[layer], "TextureArrayManager: layerView");
 					}
@@ -802,7 +806,10 @@ ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
 		if (vkCreateImageView(device, &viewInfo, nullptr, &(*viewVec)[layer]) != VK_SUCCESS) {
 			return nullptr;
 		}
-				fprintf(stderr, "[TextureArrayManager] createLayerView: view=%p image=%p layer=%u map=%d\n", (void*)(*viewVec)[layer], (void*)src->image, (unsigned)layer, map);
+				std::cerr << "[TextureArrayManager] createLayerView: view=" << (void*)(*viewVec)[layer]
+						  << " image=" << (void*)src->image
+						  << " layer=" << (unsigned)layer
+						  << " map=" << map << std::endl;
 				// Register per-layer view so centralized cleanup can track and destroy it if needed
 				if (a) a->resources.addImageView((*viewVec)[layer], "TextureArrayManager: layerView");
 	}
@@ -859,7 +866,10 @@ ImTextureID TextureArrayManager::getImTextureAlpha(size_t layer, int map) {
         if (vkCreateImageView(device, &viewInfo, nullptr, &(*viewVec)[layer]) != VK_SUCCESS) {
             return nullptr;
         }
-        fprintf(stderr, "[TextureArrayManager] createAlphaLayerView: view=%p image=%p layer=%u map=%d\n", (void*)(*viewVec)[layer], (void*)src->image, (unsigned)layer, map);
+        std::cerr << "[TextureArrayManager] createAlphaLayerView: view=" << (void*)(*viewVec)[layer]
+                  << " image=" << (void*)src->image
+                  << " layer=" << (unsigned)layer
+                  << " map=" << map << std::endl;
         if (a) a->resources.addImageView((*viewVec)[layer], "TextureArrayManager: alphaLayerView");
     }
 
