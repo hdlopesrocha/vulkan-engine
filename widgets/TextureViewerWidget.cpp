@@ -1,4 +1,5 @@
 #include "TextureViewerWidget.hpp"
+
 #include <string>
 #include "components/ScrollablePicker.hpp"
 #include "../vulkan/TextureMixer.hpp"
@@ -64,12 +65,13 @@ void TextureViewer::render() {
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Log info")) {
-                    fprintf(stderr, "[TextureViewer] Preview NULL: layer=%zu map=Albedo layerInitialized=%d layerAmount=%u albedo.image=%p albedoSampler=%p\n",
-                        currentIndex,
-                        arrayManager->isLayerInitialized(static_cast<uint32_t>(currentIndex)) ? 1 : 0,
-                        arrayManager->layerAmount,
-                        (void*)arrayManager->albedoArray.image,
-                        (void*)arrayManager->albedoSampler);
+                    std::cerr << "[TextureViewer] Preview NULL: layer=" << currentIndex
+                              << " map=Albedo"
+                              << " layerInitialized=" << (arrayManager->isLayerInitialized(static_cast<uint32_t>(currentIndex)) ? 1 : 0)
+                              << " layerAmount=" << arrayManager->layerAmount
+                              << " albedo.image=" << (void*)arrayManager->albedoArray.image
+                              << " albedoSampler=" << (void*)arrayManager->albedoSampler
+                              << std::endl;
                 }
             }
 
@@ -101,12 +103,13 @@ void TextureViewer::render() {
                 if (ImGui::Button("Recreate descriptor")) { arrayManager->getImTexture(currentIndex, 1); }
                 ImGui::SameLine();
                 if (ImGui::Button("Log info")) {
-                    fprintf(stderr, "[TextureViewer] Preview NULL: layer=%zu map=Normal layerInitialized=%d layerAmount=%u normal.image=%p normalSampler=%p\n",
-                        currentIndex,
-                        arrayManager->isLayerInitialized(static_cast<uint32_t>(currentIndex)) ? 1 : 0,
-                        arrayManager->layerAmount,
-                        (void*)arrayManager->normalArray.image,
-                        (void*)arrayManager->normalSampler);
+                    std::cerr << "[TextureViewer] Preview NULL: layer=" << currentIndex
+                              << " map=Normal"
+                              << " layerInitialized=" << (arrayManager->isLayerInitialized(static_cast<uint32_t>(currentIndex)) ? 1 : 0)
+                              << " layerAmount=" << arrayManager->layerAmount
+                              << " normal.image=" << (void*)arrayManager->normalArray.image
+                              << " normalSampler=" << (void*)arrayManager->normalSampler
+                              << std::endl;
                 }
             }
 
@@ -130,12 +133,13 @@ void TextureViewer::render() {
                 if (ImGui::Button("Recreate descriptor")) { arrayManager->getImTexture(currentIndex, 2); }
                 ImGui::SameLine();
                 if (ImGui::Button("Log info")) {
-                    fprintf(stderr, "[TextureViewer] Preview NULL: layer=%zu map=Height layerInitialized=%d layerAmount=%u bump.image=%p bumpSampler=%p\n",
-                        currentIndex,
-                        arrayManager->isLayerInitialized(static_cast<uint32_t>(currentIndex)) ? 1 : 0,
-                        arrayManager->layerAmount,
-                        (void*)arrayManager->bumpArray.image,
-                        (void*)arrayManager->bumpSampler);
+                    std::cerr << "[TextureViewer] Preview NULL: layer=" << currentIndex
+                              << " map=Height"
+                              << " layerInitialized=" << (arrayManager->isLayerInitialized(static_cast<uint32_t>(currentIndex)) ? 1 : 0)
+                              << " layerAmount=" << arrayManager->layerAmount
+                              << " bump.image=" << (void*)arrayManager->bumpArray.image
+                              << " bumpSampler=" << (void*)arrayManager->bumpSampler
+                              << std::endl;
                 }
             }
 

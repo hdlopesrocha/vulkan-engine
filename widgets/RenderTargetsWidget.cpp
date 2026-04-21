@@ -1,4 +1,5 @@
 #include "RenderTargetsWidget.hpp"
+
 #include "Settings.hpp"
 #include "../vulkan/VulkanApp.hpp"
 #include "../vulkan/SceneRenderer.hpp"
@@ -207,7 +208,7 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
 
             if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &linearizePipeline) == VK_SUCCESS) {
                 app->resources.addPipeline(linearizePipeline, "RenderTargetsWidget: linearizePipeline");
-                fprintf(stderr, "[RenderTargetsWidget] Created linearizePipeline=%p layout=%p renderPass=%p\n", (void*)linearizePipeline, (void*)linearizePipelineLayout, (void*)linearizeRenderPass);
+                std::cout << "[RenderTargetsWidget] Created linearizePipeline=" << (void*)linearizePipeline << " layout=" << (void*)linearizePipelineLayout << " renderPass=" << (void*)linearizeRenderPass << std::endl;
             } else linearizePipeline = VK_NULL_HANDLE;
         }
     }
@@ -379,7 +380,7 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
     if (!app || srcView == VK_NULL_HANDLE || dstView == VK_NULL_HANDLE || dstFb == VK_NULL_HANDLE) return false;
     if (linearizePipeline == VK_NULL_HANDLE || linearizeDescriptorSet == VK_NULL_HANDLE || linearizePipelineLayout == VK_NULL_HANDLE) return false;
 
-    fprintf(stderr, "[RenderTargetsWidget] runLinearizePass: src=%p dst=%p fb=%p size=%ux%u mode=%f\n", (void*)srcView, (void*)dstView, (void*)dstFb, (unsigned)width, (unsigned)height, mode);
+    // std::cerr << "[RenderTargetsWidget] runLinearizePass: src=" << (void*)srcView << " dst=" << (void*)dstView << " fb=" << (void*)dstFb << " size=" << width << "x" << height << " mode=" << mode << std::endl;
 
     VkDescriptorImageInfo di{};
     di.sampler = srcSampler;
@@ -471,8 +472,7 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
                 }
             }
         }
-        fprintf(stderr, "[RenderTargetsWidget] runLinearizePass: srcImage=%p baseLayer=%u trackedOld=%d\n",
-                (void*)srcImage, (unsigned)srcBaseArrayLayer, (int)trackedOld);
+        // std::cerr << "[RenderTargetsWidget] runLinearizePass: srcImage=" << (void*)srcImage << " baseLayer=" << (unsigned)srcBaseArrayLayer << " trackedOld=" << (int)trackedOld << std::endl;
         // Record transition using the tracked old layout (no widget fallbacks).
         app->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_D32_SFLOAT, trackedOld, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, srcBaseArrayLayer, 1);
     }
@@ -502,7 +502,7 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
     if (srcImage != VK_NULL_HANDLE) {
         // Use the canonical final layout: depth-stencil attachment.
         VkImageLayout desiredFinal = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        fprintf(stderr, "[RenderTargetsWidget] runLinearizePass (pre-revert): srcImage=%p baseLayer=%u desiredFinal=%d\n", (void*)srcImage, (unsigned)srcBaseArrayLayer, (int)desiredFinal);
+        // std::cerr << "[RenderTargetsWidget] runLinearizePass (pre-revert): srcImage=" << (void*)srcImage << " baseLayer=" << (unsigned)srcBaseArrayLayer << " desiredFinal=" << (int)desiredFinal << std::endl;
         app->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, desiredFinal, 1, srcBaseArrayLayer, 1);
         // Best-effort: do not change the renderer's tracked layout here because
         // recorded barriers are not yet submitted. Update tracked layout only
@@ -540,14 +540,14 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
     if (srcImage != VK_NULL_HANDLE) {
         if (sceneRenderer && sceneRenderer->solid360Renderer && srcImage == sceneRenderer->solid360Renderer->getCube360DepthImage()) {
             sceneRenderer->solid360Renderer->setCube360DepthLayout(srcBaseArrayLayer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-            fprintf(stderr, "[RenderTargetsWidget] runLinearizePass: updated cube360 tracked layout for srcImage=%p baseLayer=%u -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL\n", (void*)srcImage, (unsigned)srcBaseArrayLayer);
+            // std::cerr << "[RenderTargetsWidget] runLinearizePass: updated cube360 tracked layout for srcImage=" << (void*)srcImage << " baseLayer=" << (unsigned)srcBaseArrayLayer << " -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL" << std::endl;
         }
         // Update main solid renderer tracked layouts if we operated on its depth image
         if (solidRenderer) {
             for (uint32_t f = 0; f < 2; ++f) {
                 if (srcImage == solidRenderer->getDepthImage(f)) {
                     solidRenderer->setDepthLayout(f, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-                    fprintf(stderr, "[RenderTargetsWidget] runLinearizePass: updated solid renderer tracked layout for srcImage=%p frame=%u -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL\n", (void*)srcImage, (unsigned)f);
+                    // std::cerr << "[RenderTargetsWidget] runLinearizePass: updated solid renderer tracked layout for srcImage=" << (void*)srcImage << " frame=" << (unsigned)f << " -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL" << std::endl;
                     break;
                 }
             }
@@ -1005,8 +1005,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         size_t bufCount = rm.getBufferMap().size();
         size_t memCount = rm.getDeviceMemoryMap().size();
         size_t descSetCount = rm.getDescriptorSetMap().size();
-        fprintf(stderr, "[RenderTargetsWidget] updateDescriptors START frame=%d resources pre-cleanup images=%zu imageViews=%zu buffers=%zu memories=%zu descSets=%zu\n",
-                currentFrame, imgCount, ivCount, bufCount, memCount, descSetCount);
+        // std::cerr << "[RenderTargetsWidget] updateDescriptors START frame=" << currentFrame << " resources pre-cleanup images=" << imgCount << " imageViews=" << ivCount << " buffers=" << bufCount << " memories=" << memCount << " descSets=" << descSetCount << std::endl;
     }
 
     // Keep existing descriptor sets alive across frames. Create ImGui texture
@@ -1127,15 +1126,14 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             // the same frame while ImGui is being built.
             uint32_t producerFrame = (frameIndex + 1) % 2;
             VkImageView src = solidRenderer->getDepthView(producerFrame);
-            fprintf(stderr, "[RenderTargetsWidget] Scene linearize check: pipeline=%p descSet=%p fb=%p view=%p src=%p producerFrame=%u\n",
-                    (void*)linearizePipeline, (void*)linearizeDescriptorSet, (void*)linearSceneFramebuffer, (void*)linearSceneDepthView, (void*)src, (unsigned)producerFrame);
+                // std::cerr << "[RenderTargetsWidget] Scene linearize check: pipeline=" << (void*)linearizePipeline << " descSet=" << (void*)linearizeDescriptorSet << " fb=" << (void*)linearSceneFramebuffer << " view=" << (void*)linearSceneDepthView << " src=" << (void*)src << " producerFrame=" << (unsigned)producerFrame << std::endl;
                 if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
                 runLinearizePass(app, solidRenderer->getDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearSceneDepthView, linearSceneFramebuffer,
                                  linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
-                fprintf(stderr, "[RenderTargetsWidget] Scene linearize: pass completed\n");
+                // std::cerr << "[RenderTargetsWidget] Scene linearize: pass completed" << std::endl;
             }
         }
 
@@ -1146,15 +1144,14 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             // sampling images that may still be in-flight.
             uint32_t producerFrame = (frameIndex + 1) % 2;
             VkImageView src = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(producerFrame) : VK_NULL_HANDLE;
-            fprintf(stderr, "[RenderTargetsWidget] Backface linearize check: pipeline=%p descSet=%p fb=%p view=%p src=%p producerFrame=%u\n",
-                    (void*)linearizePipeline, (void*)linearizeDescriptorSet, (void*)linearBackFaceFramebuffer, (void*)linearBackFaceDepthView, (void*)src, (unsigned)producerFrame);
+                // std::cerr << "[RenderTargetsWidget] Backface linearize check: pipeline=" << (void*)linearizePipeline << " descSet=" << (void*)linearizeDescriptorSet << " fb=" << (void*)linearBackFaceFramebuffer << " view=" << (void*)linearBackFaceDepthView << " src=" << (void*)src << " producerFrame=" << (unsigned)producerFrame << std::endl;
                 if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
                 runLinearizePass(app, sceneRenderer->backFaceRenderer->getBackFaceDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearBackFaceDepthView, linearBackFaceFramebuffer,
                                  linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
-                fprintf(stderr, "[RenderTargetsWidget] Backface linearize: pass completed\n");
+                // std::cerr << "[RenderTargetsWidget] Backface linearize: pass completed" << std::endl;
             }
         }
 
@@ -1169,15 +1166,14 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             // we sample a completed image (one-frame latency) and avoid hazards.
             uint32_t producerFrame = (frameIndex + 1) % 2;
             VkImageView src = sceneRenderer->waterRenderer->getWaterGeomDepthView(producerFrame);
-            fprintf(stderr, "[RenderTargetsWidget] Water linearize check: pipeline=%p descSet=%p fb=%p view=%p src=%p producerFrame=%u\n",
-                    (void*)linearizePipeline, (void*)linearizeDescriptorSet, (void*)linearSceneFramebuffer, (void*)linearSceneDepthView, (void*)src, (unsigned)producerFrame);
+                // std::cerr << "[RenderTargetsWidget] Water linearize check: pipeline=" << (void*)linearizePipeline << " descSet=" << (void*)linearizeDescriptorSet << " fb=" << (void*)linearSceneFramebuffer << " view=" << (void*)linearSceneDepthView << " src=" << (void*)src << " producerFrame=" << (unsigned)producerFrame << std::endl;
             if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
                 runLinearizePass(app, sceneRenderer->waterRenderer->getWaterGeomDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearSceneDepthView, linearSceneFramebuffer,
                                  linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 1.0f);
-                fprintf(stderr, "[RenderTargetsWidget] Water linearize: pass completed\n");
+                // std::cerr << "[RenderTargetsWidget] Water linearize: pass completed" << std::endl;
 
                 // Expose the linearized image as the water-depth preview descriptor.
                 if (waterDepthLinearDescriptor == VK_NULL_HANDLE && linearSceneDepthDescriptor != VK_NULL_HANDLE) {
@@ -1198,7 +1194,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
                     float nearP = 0.0f, farP = 1.0f;
                     runLinearizePass(app, shadowMapper->getDepthImage(c), src, widgetSampler, widgetSampler, linearShadowDepthView[c], linearShadowFramebuffer[c],
                                      linearShadowDepthDescriptor[c], linearShadowDepthDescriptorOwned[c], shadowSize, shadowSize, nearP, farP, 1.0f);
-                    fprintf(stderr, "[RenderTargetsWidget] Shadow linearize: cascade=%d done\n", c);
+                    // std::cerr << "[RenderTargetsWidget] Shadow linearize: cascade=" << c << " done" << std::endl;
                 }
             }
         }
@@ -1314,8 +1310,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         size_t bufCount = rm.getBufferMap().size();
         size_t memCount = rm.getDeviceMemoryMap().size();
         size_t descSetCount = rm.getDescriptorSetMap().size();
-        fprintf(stderr, "[RenderTargetsWidget] updateDescriptors END frame=%d resources post-update images=%zu imageViews=%zu buffers=%zu memories=%zu descSets=%zu\n",
-                currentFrame, imgCount, ivCount, bufCount, memCount, descSetCount);
+        // std::cerr << "[RenderTargetsWidget] updateDescriptors END frame=" << currentFrame << " resources post-update images=" << imgCount << " imageViews=" << ivCount << " buffers=" << bufCount << " memories=" << memCount << " descSets=" << descSetCount << std::endl;
     }
 }
 
@@ -1403,8 +1398,10 @@ void RenderTargetsWidget::render() {
         updateDescriptors(currentFrame);
 
         // Debug: print current selection to stderr for quick diagnostics
-        fprintf(stderr, "RenderTargetsWidget: selectedPreview=%d selectedShadowCascade=%d showAllCascades=%d selectedCubeFace=%d\n",
-            static_cast<int>(selectedPreview), selectedShadowCascade, showAllCascades, selectedCubeFaceIndex);
+        // std::cerr << "RenderTargetsWidget: selectedPreview=" << static_cast<int>(selectedPreview)
+        //           << " selectedShadowCascade=" << selectedShadowCascade
+        //           << " showAllCascades=" << showAllCascades
+        //           << " selectedCubeFace=" << selectedCubeFaceIndex << std::endl;
 
         // Render only the selected preview using a single preview descriptor
         VkDescriptorSet ds = previewDescriptor;

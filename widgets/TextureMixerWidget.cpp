@@ -1,4 +1,5 @@
 #include "TextureMixerWidget.hpp"
+
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
 #include "components/ScrollablePicker.hpp"
@@ -53,7 +54,7 @@ void TextureMixerWidget::render() {
         if (previousIndex != currentMixerIndex) {
             if (textures) textures->setDebugOutput(showNoise);
             if (maxLayers > 0) textures->enqueueGenerate(mp);
-            else fprintf(stderr, "[TextureMixerWidget] Skipping Perlin generation: no texture arrays available (target layer=%zu)\n", mp.targetLayer);
+            else std::cerr << "[TextureMixerWidget] Skipping Perlin generation: no texture arrays available (target layer=" << mp.targetLayer << ")" << std::endl;
         }
         // Texture selection UI: allow picking primary and secondary layers via thumbnails
         if (maxLayers > 0) {
@@ -138,7 +139,7 @@ void TextureMixerWidget::render() {
                 previewSource = 0; // show result when parameters update
                 if (textures) textures->setDebugOutput(showNoise);
                 textures->enqueueGenerate(mp, activeMap);
-            } else fprintf(stderr, "[TextureMixerWidget] Params changed but no texture arrays allocated — generation skipped.\n");
+            } else std::cerr << "[TextureMixerWidget] Params changed but no texture arrays allocated — generation skipped." << std::endl;
         }
     }
 
