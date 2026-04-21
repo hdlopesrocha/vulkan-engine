@@ -1406,10 +1406,30 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
             }
         }
 
-        // Apply pending layout updates into the authoritative tracked map before
-        // submitting so the validation layers observe the expected layouts at
-        // vkQueueSubmit time.
-        applyPendingLayoutUpdatesForCommandBuffer(commandBuffer);
+        // Before submitting, apply the *earliest* pending layout update for
+        // each image/layer that this command buffer records. This makes the
+        // authoritative tracked layout reflect the earliest transition that
+        // will occur inside the command buffer (so the validation layers see
+        // the expected layout at vkQueueSubmit time). The full set of
+        // pending updates will still be applied when the command buffer
+        // actually completes (see applyPendingLayoutUpdatesForCommandBuffer).
+        {
+            std::lock_guard<std::mutex> plk(pendingLayoutMutex);
+            auto pit = commandBufferPendingLayouts.find(commandBuffer);
+            if (pit != commandBufferPendingLayouts.end() && !pit->second.empty()) {
+                std::unordered_set<uint64_t> seen;
+                std::lock_guard<std::mutex> lk(imageLayoutMutex);
+                for (const auto &u : pit->second) {
+                    uint64_t keyBase = ((uint64_t)(uintptr_t)u.image << 32) | (uint64_t)u.baseArrayLayer;
+                    if (seen.find(keyBase) != seen.end()) continue;
+                    seen.insert(keyBase);
+                    for (uint32_t l = 0; l < u.layerCount; ++l) {
+                        uint64_t key = ((uint64_t)(uintptr_t)u.image << 32) | (uint64_t)(u.baseArrayLayer + l);
+                        imageLayerLayouts[key] = u.newLayout;
+                    }
+                }
+            }
+        }
 
         std::lock_guard<std::mutex> lock(queueSubmitMutex);
         if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence) != VK_SUCCESS) {
@@ -1468,9 +1488,31 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
             }
         }
 
-        // Apply pending updates into the authoritative map before submit so
-        // validation layers see the expected layouts at vkQueueSubmit time.
-        applyPendingLayoutUpdatesForCommandBuffer(commandBuffer);
+        // Before submitting, apply the *earliest* pending layout update for
+        // each image/layer that this command buffer records. This ensures the
+        // authoritative tracked layout reflects the earliest transition that
+        // will occur inside the command buffer (so the validation layers see
+        // the expected layout at vkQueueSubmit time). The full set of pending
+        // updates will still be applied when the command buffer completes
+        // (see applyPendingLayoutUpdatesForCommandBuffer called after the
+        // fence signals).
+        {
+            std::lock_guard<std::mutex> plk(pendingLayoutMutex);
+            auto pit = commandBufferPendingLayouts.find(commandBuffer);
+            if (pit != commandBufferPendingLayouts.end() && !pit->second.empty()) {
+                std::unordered_set<uint64_t> seen;
+                std::lock_guard<std::mutex> lk(imageLayoutMutex);
+                for (const auto &u : pit->second) {
+                    uint64_t keyBase = ((uint64_t)(uintptr_t)u.image << 32) | (uint64_t)u.baseArrayLayer;
+                    if (seen.find(keyBase) != seen.end()) continue;
+                    seen.insert(keyBase);
+                    for (uint32_t l = 0; l < u.layerCount; ++l) {
+                        uint64_t key = ((uint64_t)(uintptr_t)u.image << 32) | (uint64_t)(u.baseArrayLayer + l);
+                        imageLayerLayouts[key] = u.newLayout;
+                    }
+                }
+            }
+        }
 
         std::lock_guard<std::mutex> lock(queueSubmitMutex);
         if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence) != VK_SUCCESS) {
@@ -3153,6 +3195,31 @@ void VulkanApp::drawFrame() {
     submitInfo.pSignalSemaphores = signalSemaphores;
 
     {
+        // Before submitting the main frame command buffer, pre-apply the
+        // earliest pending layout update for each image/layer that this
+        // command buffer recorded. This makes the authoritative tracked
+        // layout reflect the transition that will occur inside the
+        // command buffer so validation sees the expected layout at
+        // vkQueueSubmit time. The full set of pending updates will still be
+        // applied when the command buffer completes.
+        {
+            std::lock_guard<std::mutex> plk(pendingLayoutMutex);
+            auto pit = commandBufferPendingLayouts.find(commandBuffer);
+            if (pit != commandBufferPendingLayouts.end() && !pit->second.empty()) {
+                std::unordered_set<uint64_t> seen;
+                std::lock_guard<std::mutex> lk(imageLayoutMutex);
+                for (const auto &u : pit->second) {
+                    uint64_t keyBase = ((uint64_t)(uintptr_t)u.image << 32) | (uint64_t)u.baseArrayLayer;
+                    if (seen.find(keyBase) != seen.end()) continue;
+                    seen.insert(keyBase);
+                    for (uint32_t l = 0; l < u.layerCount; ++l) {
+                        uint64_t key = ((uint64_t)(uintptr_t)u.image << 32) | (uint64_t)(u.baseArrayLayer + l);
+                        imageLayerLayouts[key] = u.newLayout;
+                    }
+                }
+            }
+        }
+
         std::lock_guard<std::mutex> lock(queueSubmitMutex);
         r = vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]);
         // Register pending layout updates recorded into this frame's command
