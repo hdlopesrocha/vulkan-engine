@@ -213,6 +213,9 @@ void ShadowRenderer::createShadowRenderPass(VulkanApp* app) {
     depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     // Use depth-stencil attachment layout while rendering, and read-only optimal when sampling from shaders
+    // Expect the shadow map to be in READ_ONLY when not being written.
+    // Let the render pass perform the implicit transition to the
+    // DEPTH_STENCIL_ATTACHMENT_OPTIMAL subpass layout when the pass begins.
     depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     
@@ -390,7 +393,16 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     currentLightSpaceMatrix = lightSpaceMatrix;
     auto& cas = cascades[cascadeIndex];
 
-    // No explicit transition here: the render pass will perform the implicit transition.
+    // No explicit barrier here: rely on the render pass implicit transition
+    // to move the image into DEPTH_STENCIL_ATTACHMENT_OPTIMAL for the
+    // subpass. However, record the expected tracked layout for this
+    // command buffer so validation layers see the correct layout at
+    // vkQueueSubmit time (we don't emit a barrier because the renderpass
+    // performs it implicitly).
+    if (cas.depthImage != VK_NULL_HANDLE) {
+        if (app) {
+            app->recordTrackedLayoutForCommandBuffer(commandBuffer, cas.depthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+        }
         if (cascadeIndex < cascadeDepthLayouts.size()) cascadeDepthLayouts[cascadeIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
