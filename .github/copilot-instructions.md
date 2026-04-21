@@ -150,6 +150,7 @@ valgrind ./bin/app > /tmp/xxx.log 2>&1
 ## Validation Layers
 
 No validation layer warnings or errors are allowed. If you see any, fix them immediately. Validation layers are your best friend for catching synchronization and resource management issues early.
+Never commit or assume a task is done before checking if ALL validation errors are fixed.
 
 ---
 
