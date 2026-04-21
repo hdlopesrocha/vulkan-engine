@@ -156,3 +156,17 @@ No validation layer warnings or errors are allowed. If you see any, fix them imm
 ## Version Control
 
 Keep track of all changes in version control. Use descriptive commit messages that explain the reasoning behind changes, especially for synchronization and resource management code. 
+
+---
+
+## Repository Ownership & Third‑Party Files (Strict)
+
+- Do NOT modify any files under `third_party/` unless you have
+  explicit, written permission from the repository owner. Any edits
+  to third-party code must be reviewed and approved by the maintainer
+  responsible for those dependencies. Automated agents (Copilot)
+  must not alter `third_party/` files during routine maintenance or
+  formatting tasks.
+
+This rule is authoritative: if you are not the repository owner or an
+explicitly delegated maintainer, leave `third_party/` untouched.
