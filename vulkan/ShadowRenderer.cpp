@@ -213,7 +213,7 @@ void ShadowRenderer::createShadowRenderPass(VulkanApp* app) {
     depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     // Use depth-stencil attachment layout while rendering, and read-only optimal when sampling from shaders
-    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     
     VkAttachmentReference colorAttachmentRef{};
@@ -390,32 +390,7 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     currentLightSpaceMatrix = lightSpaceMatrix;
     auto& cas = cascades[cascadeIndex];
 
-    // Transition shadow map from READ_ONLY to DEPTH_STENCIL_ATTACHMENT_OPTIMAL before shadow pass
-    if (cas.depthImage != VK_NULL_HANDLE) {
-        std::cerr << "[ShadowRenderer::beginShadowPass] transition (via app helper): cmd=" << (void*)commandBuffer
-                  << " image=" << (void*)cas.depthImage
-                  << " cascade=" << (unsigned)cascadeIndex
-                  << " old=" << (int)cascadeDepthLayouts[cascadeIndex]
-                  << " new=" << (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL << std::endl;
-        if (app) {
-            app->recordTransitionImageLayoutLayer(commandBuffer, cas.depthImage, VK_FORMAT_D32_SFLOAT, cascadeDepthLayouts[cascadeIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
-        } else {
-            VkImageMemoryBarrier barrier{};
-            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier.oldLayout = cascadeDepthLayouts[cascadeIndex];
-            barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.image = cas.depthImage;
-            barrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
-            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            vkCmdPipelineBarrier(commandBuffer,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                0, 0, nullptr, 0, nullptr, 1, &barrier);
-        }
-        // Recorded a transition to DEPTH_STENCIL_ATTACHMENT_OPTIMAL — update tracked layout
+    // No explicit transition here: the render pass will perform the implicit transition.
         if (cascadeIndex < cascadeDepthLayouts.size()) cascadeDepthLayouts[cascadeIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
