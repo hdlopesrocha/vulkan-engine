@@ -194,7 +194,7 @@ public:
 
         // Trigger initial generation for configured mixers so UI previews show meaningful results
         // (Previously this was deferred to the user pressing "Generate" in the UI)
-        fprintf(stderr, "[TextureMixer] Running initial generation for configured mixers...\n");
+        std::cerr << "[TextureMixer] Running initial generation for configured mixers...\n";
         textureMixer->setEditableLayer(editableLayer);
         // Prime ImGui descriptors so the texture viewer shows immediately
         textureArrayManager.setLayerInitialized(editableLayer, true);
@@ -408,7 +408,7 @@ public:
         if (sceneRenderer) {
             sceneRenderer->shadowPass(this, commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, settings.enableShadows);
         } else {
-            fprintf(stderr, "[MyApp::preRenderPass] sceneRenderer is null, skipping shadow pass\n");
+            std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping shadow pass\n";
         }
 
         // Upload UBO to GPU
@@ -418,7 +418,7 @@ public:
             memcpy(data, &uboStatic, sizeof(UniformObject));
             vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory);
         } else {
-            fprintf(stderr, "[MyApp::preRenderPass] sceneRenderer is null, skipping UBO upload\n");
+            std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping UBO upload\n";
         }
 
 
@@ -530,7 +530,7 @@ public:
                 beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
                 beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
                 if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
-                    fprintf(stderr, "[Async] vkBeginCommandBuffer failed for solid360\n");
+                    std::cerr << "[Async] vkBeginCommandBuffer failed for solid360\n";
                     app->freeCommandBuffer(cmd);
                     return;
                 }
@@ -579,7 +579,7 @@ public:
                 // If shared allocation failed, create a temporary pool and allocate from it
                 if (computeDs == VK_NULL_HANDLE) {
                     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &taskPool) != VK_SUCCESS) {
-                        fprintf(stderr, "[Async] Failed to create descriptor pool for solid360 task\n");
+                        std::cerr << "[Async] Failed to create descriptor pool for solid360 task\n";
                         // fall back to in-place cull
                         ind.prepareCull(cmd, viewProj);
                         SkySettings::Mode skyMode360 = this->sceneRenderer->getSkySettings().mode;
@@ -602,7 +602,7 @@ public:
                         ainfo.descriptorSetCount = 1;
                         ainfo.pSetLayouts = &dsLayout;
                         if (vkAllocateDescriptorSets(device, &ainfo, &computeDs) != VK_SUCCESS) {
-                            fprintf(stderr, "[Async] Failed to allocate compute descriptor set for solid360 task\n");
+                            std::cerr << "[Async] Failed to allocate compute descriptor set for solid360 task\n";
                             // fallback
                             ind.prepareCull(cmd, viewProj);
                             SkySettings::Mode skyMode360 = this->sceneRenderer->getSkySettings().mode;
@@ -729,7 +729,7 @@ public:
                 beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
                 beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
                 if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
-                    fprintf(stderr, "[Async] vkBeginCommandBuffer failed for backFace\n");
+                    std::cerr << "[Async] vkBeginCommandBuffer failed for backFace" << std::endl;
                     app->freeCommandBuffer(cmd);
                     return;
                 }
@@ -738,7 +738,7 @@ public:
                 IndirectRenderer &ind = this->sceneRenderer->waterRenderer->getIndirectRenderer();
                 uint32_t numCmds = static_cast<uint32_t>(ind.getMeshCount());
                 VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * (numCmds > 0 ? numCmds : 1);
-
+                
                 Buffer taskCompact = app->createBuffer(compactSize,
                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -759,7 +759,7 @@ public:
                 poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
                 VkDescriptorPool taskPool = VK_NULL_HANDLE;
                 if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &taskPool) != VK_SUCCESS) {
-                    fprintf(stderr, "[Async] Failed to create descriptor pool for backFace task\n");
+                    std::cerr << "[Async] Failed to create descriptor pool for backFace task" << std::endl;
                     // fall back to in-place cull
                     ind.prepareCull(cmd, viewProj);
                     this->sceneRenderer->backFaceRenderer->renderBackFacePass(app, cmd, frameIdx,
@@ -784,7 +784,7 @@ public:
                     ainfo.descriptorSetCount = 1;
                     ainfo.pSetLayouts = &dsLayout;
                     if (vkAllocateDescriptorSets(device, &ainfo, &computeDs) != VK_SUCCESS) {
-                        fprintf(stderr, "[Async] Failed to allocate compute descriptor set for backFace task\n");
+                        std::cerr << "[Async] Failed to allocate compute descriptor set for backFace task" << std::endl;
                         // fallback
                         ind.prepareCull(cmd, viewProj);
                         this->sceneRenderer->backFaceRenderer->renderBackFacePass(app, cmd, frameIdx,
@@ -1066,25 +1066,25 @@ public:
     void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
         // Only record draw commands; command buffer and render pass are already active
         if (commandBuffer == VK_NULL_HANDLE) {
-            fprintf(stdout, "[MyApp::draw] Error: commandBuffer is VK_NULL_HANDLE, skipping draw.\n");
+            std::cerr << "[MyApp::draw] Error: commandBuffer is VK_NULL_HANDLE, skipping draw." << std::endl;
             return;
         }
         if (!sceneRenderer) {
-            fprintf(stdout  , "[MyApp::draw] Error: sceneRenderer is nullptr, skipping draw.\n");
+            std::cerr << "[MyApp::draw] Error: sceneRenderer is nullptr, skipping draw." << std::endl;
             return;
         }
         if (!mainScene) {
-            fprintf(stdout  , "[MyApp::draw] Error: mainScene is nullptr, skipping draw.\n");
+            std::cerr << "[MyApp::draw] Error: mainScene is nullptr, skipping draw." << std::endl;
             return;
         }
 
         // --- SAFETY: Ensure indirect buffers are rebuilt if dirty before first draw ---
         if (sceneRenderer->solidRenderer->getIndirectRenderer().isDirty()) {
-            printf("[MyApp::draw] solidRenderer indirect buffer dirty, rebuilding before draw...\n");
+            // printf("[MyApp::draw] solidRenderer indirect buffer dirty, rebuilding before draw...\\n");
             sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
         }
         if (sceneRenderer->waterRenderer->getIndirectRenderer().isDirty()) {
-            printf("[MyApp::draw] waterRenderer indirect buffer dirty, rebuilding before draw...\n");
+            // printf("[MyApp::draw] waterRenderer indirect buffer dirty, rebuilding before draw...\\n");
             sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
         }
 
@@ -1109,15 +1109,15 @@ public:
                 false,
                 skyViewPP);
         }
-        //fprintf(stderr, "[MyApp::draw] waterPass returned. Rendering ImGui...\n");
+        //std::cout << "[MyApp::draw] waterPass returned. Rendering ImGui..." << std::endl;
         // ImGui rendering
         ImDrawData* draw_data = ImGui::GetDrawData();
         if (!draw_data) {
-            fprintf(stdout, "[MyApp::draw] Warning: ImGui::GetDrawData() returned nullptr, skipping ImGui rendering.\n");
+            std::cerr << "[MyApp::draw] Warning: ImGui::GetDrawData() returned nullptr, skipping ImGui rendering." << std::endl;
         } else if (commandBuffer == VK_NULL_HANDLE) {
-            fprintf(stdout, "[MyApp::draw] Error: commandBuffer is VK_NULL_HANDLE before ImGui rendering, skipping ImGui.\n");
+            std::cerr << "[MyApp::draw] Error: commandBuffer is VK_NULL_HANDLE before ImGui rendering, skipping ImGui." << std::endl;
         } else {
-            //fprintf(stderr, "[MyApp::draw] ImGui::GetDrawData() valid, calling ImGui_ImplVulkan_RenderDrawData...\n");
+            //std::cerr << "[MyApp::draw] ImGui::GetDrawData() valid, calling ImGui_ImplVulkan_RenderDrawData..." << std::endl;
             ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
         }
     }
@@ -1243,16 +1243,16 @@ void MyApp::setupVegetationTextures() {
         { "textures/vegetation/wild_color.jpg",    "textures/vegetation/wild_normal.jpg",    "textures/vegetation/wild_opacity.jpg" }
     };
     size_t loaded = vegetationTextureArrayManager.loadTriples(this, vegTriples);
-    fprintf(stderr, "[MyApp::setupVegetationTextures] Loaded %zu vegetation texture layers\n", loaded);
+    std::cerr << "[MyApp::setupVegetationTextures] Loaded " << loaded << " vegetation texture layers" << std::endl;
 
     // Auto-detect atlas tiles from opacity maps and populate AtlasManager for each texture
     const char* opacityPaths[3] = { "textures/vegetation/foliage_opacity.jpg", "textures/vegetation/grass_opacity.jpg", "textures/vegetation/wild_opacity.jpg" };
     for (int atlasIndex = 0; atlasIndex < 3; ++atlasIndex) {
         try {
             int added = vegetationAtlasManager.autoDetectTiles(atlasIndex, opacityPaths[atlasIndex]);
-            fprintf(stderr, "[MyApp::setupVegetationTextures] Atlas %d: auto-detected %d tiles\n", atlasIndex, added);
+            std::cerr << "[MyApp::setupVegetationTextures] Atlas " << atlasIndex << ": auto-detected " << added << " tiles" << std::endl;
         } catch (...) {
-            fprintf(stderr, "[MyApp::setupVegetationTextures] Atlas %d: autoDetectTiles failed\n", atlasIndex);
+            std::cerr << "[MyApp::setupVegetationTextures] Atlas " << atlasIndex << ": autoDetectTiles failed" << std::endl;
         }
     }
 
@@ -1274,7 +1274,7 @@ void MyApp::rebuildBrushScene() {
     // Process only the currently-selected brush entry from the manager
     const BrushEntry* selectedEntry = brushManager.getSelectedEntry();
     size_t selCount = selectedEntry ? 1 : 0;
-    fprintf(stderr, "[MyApp::rebuildBrushScene] Rebuilding with %zu selected entries\n", selCount);
+    std::cerr << "[MyApp::rebuildBrushScene] Rebuilding with " << selCount << " selected entries" << std::endl;
 
     // 1. Remove all existing brush meshes from GPU
     sceneRenderer->clearBrushMeshes();
@@ -1430,7 +1430,7 @@ void MyApp::rebuildBrushScene() {
                 break;
             }
             default:
-                fprintf(stderr, "[rebuildBrushScene] Unknown sdfType %d, skipping\n", entry.sdfType);
+                std::cerr << "[rebuildBrushScene] Unknown sdfType " << entry.sdfType << ", skipping" << std::endl;
                 break;
             }
 
@@ -1444,8 +1444,8 @@ void MyApp::rebuildBrushScene() {
     sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
     sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
 
-    fprintf(stderr, "[MyApp::rebuildBrushScene] Done — brush opaque chunks: %zu, brush transparent chunks: %zu\n",
-            sceneRenderer->brushSolidChunks.size(), sceneRenderer->brushTransparentChunks.size());
+    // std::cerr << "[MyApp::rebuildBrushScene] Done — brush opaque chunks: " << sceneRenderer->brushSolidChunks.size()
+    //           << ", brush transparent chunks: " << sceneRenderer->brushTransparentChunks.size() << std::endl;
 }
 
 // Ensure pending texture generation requests are flushed after a frame is submitted
@@ -1460,7 +1460,7 @@ void MyApp::postSubmit() {
     // after the frame was submitted so GPU fences can be waited on safely.
     if (brushRebuildPending) {
         brushRebuildPending = false;
-        fprintf(stderr, "[MyApp::postSubmit] Performing deferred brush rebuild\n");
+        // std::cerr << "[MyApp::postSubmit] Performing deferred brush rebuild" << std::endl;
         rebuildBrushScene();
     }
 }
