@@ -820,6 +820,25 @@ void VulkanApp::initImGui() {
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     ImGui::StyleColorsDark();
 
+    // Ensure a default font is present, then merge an icon font (FontAwesome) into it.
+    // Place a TTF at assets/fonts/fa-solid-900.ttf (free subset) if you want icons.
+    io.Fonts->AddFontDefault();
+    {
+        ImFontConfig fontCfg;
+        fontCfg.MergeMode = true;
+        fontCfg.PixelSnapH = true;
+        static const ImWchar icons_ranges[] = { 0xF000, 0xF8FF, 0 };
+        const char* iconFontPath = "assets/fonts/fa-solid-900.ttf";
+        FILE* f = fopen(iconFontPath, "rb");
+        if (f) {
+            fclose(f);
+            io.Fonts->AddFontFromFileTTF(iconFontPath, 16.0f, &fontCfg, icons_ranges);
+            printf("[ImGui] Merged icon font: %s\n", iconFontPath);
+        } else {
+            printf("[ImGui] Icon font not found at %s; using placeholder glyphs\n", iconFontPath);
+        }
+    }
+
     ImGui_ImplGlfw_InitForVulkan(window, true);
 
     ImGui_ImplVulkan_InitInfo init_info{};
