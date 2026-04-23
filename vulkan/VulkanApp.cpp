@@ -1553,8 +1553,15 @@ void VulkanApp::processPendingCommandBuffers() {
                 std::lock_guard<std::mutex> lk(pendingCmdMutex);
                 if (pendingCommandBuffers.empty()) canRun = true;
             } else {
-                VkResult st = vkGetFenceStatus(device, f);
-                if (st == VK_SUCCESS || st == VK_ERROR_DEVICE_LOST) canRun = true;
+                // If the resource manager no longer tracks this fence the
+                // fence has been destroyed out-of-band; treat the callback as
+                // eligible to run to avoid calling into an invalid handle.
+                if (!resources.find((uintptr_t)f).has_value()) {
+                    canRun = true;
+                } else {
+                    VkResult st = vkGetFenceStatus(device, f);
+                    if (st == VK_SUCCESS || st == VK_ERROR_DEVICE_LOST) canRun = true;
+                }
             }
             if (canRun) {
                 try {
