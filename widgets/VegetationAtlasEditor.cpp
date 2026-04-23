@@ -2,7 +2,7 @@
 #include "VegetationAtlasEditor.hpp"
 
 VegetationAtlasEditor::VegetationAtlasEditor(TextureArrayManager* vegTextureArrayManager, AtlasManager* atlasManager)
-    : Widget("Vegetation Atlas Editor"), vegetationTextureManager(vegTextureArrayManager), atlasManager(atlasManager) {
+    : Widget("Vegetation Atlas Editor", u8"\uf06c"), vegetationTextureManager(vegTextureArrayManager), atlasManager(atlasManager) {
     isOpen = false; // Start closed to avoid crashes on startup
 }
 
@@ -15,7 +15,7 @@ void VegetationAtlasEditor::render() {
     if (!vegetationTextureManager || !atlasManager) return; // Safety check
 
     ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin(title.c_str(), &isOpen)) {
+    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
         ImGui::End();
         return;
     }

@@ -2,7 +2,7 @@
 #include <imgui.h>
 
 WaterWidget::WaterWidget(WaterRenderer* renderer, std::vector<WaterParams>* params)
-    : Widget("Water Settings"), renderer(renderer), params(params) {
+    : Widget("Water Settings", u8"\uf043"), renderer(renderer), params(params) {
     isOpen = false;
 }
 
@@ -17,7 +17,7 @@ void WaterWidget::render() {
 
     WaterParams &layerParams = (*params)[currentLayer];
 
-    if (ImGui::Begin(title.c_str(), &isOpen)) {
+    if (ImGui::Begin(displayTitle().c_str(), &isOpen)) {
         ImGui::Text("Water Rendering Parameters");
         // Pagination controls for multiple water param layers
         if (count > 1) {

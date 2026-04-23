@@ -47,10 +47,10 @@ static const char* buttonName(int b) {
     }
 }
 
-GamepadWidget::GamepadWidget(ControllerParameters* params) : Widget("Gamepad"), ctrlParams(params) {}
+GamepadWidget::GamepadWidget(ControllerParameters* params) : Widget("Gamepad", u8"\uf11b"), ctrlParams(params) {}
 
 void GamepadWidget::render() {
-    if (!ImGui::Begin(title.c_str(), &isOpen)) {
+    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
         ImGui::End();
         return;
     }

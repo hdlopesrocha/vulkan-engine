@@ -1,7 +1,7 @@
 #include "SettingsWidget.hpp"
 
-SettingsWidget::SettingsWidget(Settings& settingsRef) : Widget("Settings"), settings(settingsRef) {
-    isOpen = true;
+SettingsWidget::SettingsWidget(Settings& settingsRef) : Widget("Settings", u8"\uf013"), settings(settingsRef) {
+    
 }
 
 void SettingsWidget::resetToDefaults() {
@@ -11,7 +11,7 @@ void SettingsWidget::resetToDefaults() {
 void SettingsWidget::render() {
     if (!isOpen) return;
 
-    if (ImGui::Begin(title.c_str(), &isOpen)) {
+    if (ImGui::Begin(displayTitle().c_str(), &isOpen)) {
         ImGui::Text("Shadow Effects");
         ImGui::Separator();
         if (ImGui::Checkbox("Enable Shadows", &settings.enableShadows)) {

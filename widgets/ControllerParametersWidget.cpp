@@ -5,10 +5,10 @@
 #include "../utils/Brush3dEntry.hpp"
 
 ControllerParametersWidget::ControllerParametersWidget(ControllerParameters* params, Brush3dManager* brushManager)
-    : Widget("Controller Parameters"), params(params), brushManager(brushManager) {}
+    : Widget("Controller Parameters", u8"\uf085"), params(params), brushManager(brushManager) {}
 
 void ControllerParametersWidget::render() {
-    if (!ImGui::Begin(title.c_str(), &isOpen)) {
+    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
         ImGui::End();
         return;
     }

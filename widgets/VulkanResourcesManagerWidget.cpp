@@ -6,7 +6,7 @@
 #include <iomanip>
 
 VulkanResourcesManagerWidget::VulkanResourcesManagerWidget(VulkanResourceManager* mgr)
-    : Widget("Vulkan Resources"), mgr(mgr) {}
+    : Widget("Vulkan Resources", u8"\uf0e8"), mgr(mgr) {}
 
 void VulkanResourcesManagerWidget::updateWithApp(VulkanApp* app) {
     if (!app) { hasAppCache = false; return; }
@@ -33,7 +33,7 @@ static std::string handleToString(uint64_t v, bool hex) {
 }
 
 void VulkanResourcesManagerWidget::render() {
-    if (!ImGui::Begin(title.c_str(), &isOpen)) {
+    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
         ImGui::End();
         return;
     }

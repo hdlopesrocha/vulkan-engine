@@ -17,7 +17,7 @@ const char* Brush3dWidget::effectTypeNames[] = {
 };
 
 Brush3dWidget::Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, Brush3dManager& manager, EventManager* eventManager)
-        : Widget("Brush 3D"),
+    : Widget("Brush 3D", u8"\uf1fc"),
             manager(manager),
             textureArrayManager(texMgr),
             loadedTextureLayers(loadedLayers),
@@ -29,7 +29,7 @@ void Brush3dWidget::render() {
     if (!isOpen) return;
 
     ImGui::SetNextWindowSize(ImVec2(460, 600), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin(title.c_str(), &isOpen)) {
+    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
         ImGui::End();
         return;
     }

@@ -1,11 +1,11 @@
 #include "DebugWidget.hpp"
 
 DebugWidget::DebugWidget(std::vector<MaterialProperties>* materials, Camera* camera, size_t* cubeCount)
-    : Widget("Debug"), materials(materials), camera(camera), cubeCount(cubeCount) {
+    : Widget("Debug", u8"\uf188"), materials(materials), camera(camera), cubeCount(cubeCount) {
 }
 
 void DebugWidget::render() {
-    if (!ImGui::Begin(title.c_str(), &isOpen)) {
+    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
         ImGui::End();
         return;
     }

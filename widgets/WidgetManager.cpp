@@ -18,7 +18,8 @@ void WidgetManager::renderMenu() {
 		for (auto& widget : widgets) {
 			if (!widget) continue;
 			bool isOpen = widget->isVisible();
-			if (ImGui::MenuItem(widget->getTitle().c_str(), nullptr, &isOpen)) {
+			std::string label = widget->displayTitle();
+			if (ImGui::MenuItem(label.c_str(), nullptr, &isOpen)) {
 				if (isOpen) widget->show();
 				else widget->hide();
 			}

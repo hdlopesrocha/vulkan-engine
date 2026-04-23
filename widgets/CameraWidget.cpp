@@ -1,9 +1,9 @@
 #include "CameraWidget.hpp"
 
-CameraWidget::CameraWidget(Camera* camera) : Widget("Camera"), camera(camera) {}
+CameraWidget::CameraWidget(Camera* camera) : Widget("Camera", u8"\uf030"), camera(camera) {}
 
 void CameraWidget::render() {
-	if (!ImGui::Begin(title.c_str(), &isOpen)) {
+	if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
 		ImGui::End();
 		return;
 	}

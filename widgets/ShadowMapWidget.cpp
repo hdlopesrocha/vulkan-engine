@@ -2,11 +2,11 @@
 #include "../Uniforms.hpp"
 
 ShadowMapWidget::ShadowMapWidget(ShadowRenderer* shadowMapper, ShadowParams* shadowParams)
-    : Widget("Shadow Map"), shadowMapper(shadowMapper), shadowParams(shadowParams) {
+    : Widget("Shadow Map", u8"\uf0c1"), shadowMapper(shadowMapper), shadowParams(shadowParams) {
 }
 
 void ShadowMapWidget::render() {
-    if (!ImGui::Begin(title.c_str(), &isOpen)) {
+    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
         ImGui::End();
         return;
     }

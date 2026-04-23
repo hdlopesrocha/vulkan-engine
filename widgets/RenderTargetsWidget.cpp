@@ -19,7 +19,7 @@
 
 RenderTargetsWidget::RenderTargetsWidget(VulkanApp* app, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
                                                                                  ShadowRenderer* shadow, ShadowParams* shadowParams, Settings* settings)
-        : Widget("Render Targets"), app(app), sceneRenderer(scene), solidRenderer(solid), skyRenderer(sky),
+        : Widget("Render Targets", u8"\uf5b0"), app(app), sceneRenderer(scene), solidRenderer(solid), skyRenderer(sky),
             shadowMapper(shadow), shadowParams(shadowParams), settings(settings) {
     // Initialize static GPU resources used by this widget (run once)
     init(app, 512, 512);

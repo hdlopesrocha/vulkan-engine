@@ -9,7 +9,7 @@
 
 // Constructor moved from header
 BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr)
-    : Widget("Billboard Creator"), billboardManager(billboardMgr), atlasManager(atlasMgr), textureManager(textureMgr) {
+    : Widget("Billboard Creator", u8"\uf03a"), billboardManager(billboardMgr), atlasManager(atlasMgr), textureManager(textureMgr) {
     isOpen = false; // Start closed
 }
 
@@ -581,7 +581,7 @@ void BillboardCreator::render() {
     if (!billboardManager || !atlasManager) return;
 
     ImGui::SetNextWindowSize(ImVec2(900, 700), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin(title.c_str(), &isOpen)) {
+    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
         ImGui::End();
         return;
     }

@@ -1,7 +1,7 @@
 #include "LightWidget.hpp"
 
 LightWidget::LightWidget(Light* l)
-	: Widget("Light Control"), light(l) {
+	: Widget("Light Control", u8"\uf0eb"), light(l) {
 	if (light) {
 		calculateAnglesFromDirection();
 		glm::vec3 col = light->getColor();
@@ -28,7 +28,7 @@ void LightWidget::calculateAnglesFromDirection() {
 void LightWidget::render() {
 	if (!isOpen) return;
 
-	if (ImGui::Begin(title.c_str(), &isOpen)) {
+	if (ImGui::Begin(displayTitle().c_str(), &isOpen)) {
 		glm::vec3 dir = light->getDirection();
 		float dirArray[3] = { dir.x, dir.y, dir.z };
 		if (ImGui::InputFloat3("Direction", dirArray, "%.3f")) {

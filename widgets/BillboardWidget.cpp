@@ -4,7 +4,7 @@
 #endif
 
 
-BillboardWidget::BillboardWidget() : Widget("Billboard Count"), count(100), scale(1.0f) {}
+BillboardWidget::BillboardWidget() : Widget("Billboard Count", u8"\uf0c8"), count(100), scale(1.0f) {}
 void BillboardWidget::setScale(float s) {
     scale = s;
 }

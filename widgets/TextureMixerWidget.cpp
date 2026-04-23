@@ -7,10 +7,10 @@
 #include "components/TexturePreviewTabs.hpp"
 
 TextureMixerWidget::TextureMixerWidget(std::shared_ptr<TextureMixer> textures_, std::vector<MixerParameters>& mixerParams_, const char* title)
-    : Widget(title), textures(std::move(textures_)), mixerParams(mixerParams_) {}
+    : Widget(title, u8"\uf1de"), textures(std::move(textures_)), mixerParams(mixerParams_) {}
 
 void TextureMixerWidget::render() {
-    if (!ImGui::Begin(title.c_str(), &isOpen, ImGuiWindowFlags_None)) {
+    if (!ImGui::Begin(displayTitle().c_str(), &isOpen, ImGuiWindowFlags_None)) {
         ImGui::End();
         return;
     }

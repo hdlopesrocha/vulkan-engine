@@ -2,7 +2,7 @@
 #include <array>
 
 OctreeExplorerWidget::OctreeExplorerWidget(LocalScene* scene_)
-    : Widget("Octree Explorer"), scene(scene_) {}
+    : Widget("Octree Explorer", u8"\uf1ad"), scene(scene_) {}
 
 const char* OctreeExplorerWidget::spaceTypeToString(SpaceType t) {
     switch (t) {
@@ -15,7 +15,7 @@ const char* OctreeExplorerWidget::spaceTypeToString(SpaceType t) {
 
 void OctreeExplorerWidget::render() {
     if (!scene) return;
-    if (!ImGui::Begin(title.c_str(), &isOpen)) {
+    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
         ImGui::End();
         return;
     }

@@ -7,7 +7,7 @@
 void TextureViewer::render() {
     if (!arrayManager || !materials) return;
 
-    if (!ImGui::Begin(title.c_str(), &isOpen)) {
+    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
         ImGui::End();
         return;
     }
@@ -212,7 +212,7 @@ void TextureViewer::render() {
     ImGui::End();
 }
 
-TextureViewer::TextureViewer() : Widget("Textures") {}
+TextureViewer::TextureViewer() : Widget("Textures", u8"\uf03e") {}
 
 void TextureViewer::init(TextureArrayManager* arrayManager, std::vector<MaterialProperties>* materials) {
     this->arrayManager = arrayManager;
