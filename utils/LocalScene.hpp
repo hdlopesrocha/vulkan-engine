@@ -25,7 +25,6 @@ public:
     LocalScene();
     ~LocalScene();
 
-    void requestVisibleNodes(Layer layer, glm::mat4 viewMatrix, const VisibleNodeCallback& callback) override;
     void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback) override;
     bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) override;
     void loadScene(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) override;

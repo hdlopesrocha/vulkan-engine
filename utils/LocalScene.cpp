@@ -14,13 +14,6 @@ LocalScene::~LocalScene() = default;
 Octree& LocalScene::getOpaqueOctree() { return opaqueOctree; }
 const Octree& LocalScene::getOpaqueOctree() const { return opaqueOctree; }
 
-void LocalScene::requestVisibleNodes(Layer layer, glm::mat4 viewMatrix, const VisibleNodeCallback& callback) {
-    Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
-    OctreeVisibilityChecker checker;
-    checker.update(viewMatrix);
-    tree->iterate(checker);
-    callback(checker.visibleNodes);
-}
 
 void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback) {
     long tessCount = 0;
