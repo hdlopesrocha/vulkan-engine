@@ -849,14 +849,8 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
                 uint32_t instancesPerTriangle = 2u;
                 uint32_t seed = static_cast<uint32_t>(nid & 0xffffffffull);
 
-                vegetationRenderer->generateChunkInstances(nid, posBuf.buffer, vertexCount, idxBuf.buffer, indexCount, instancesPerTriangle, app, seed);
-
-                // Free temporary GPU buffers immediately - only destroy if resource manager tracked them
-                if (app->resources.removeBuffer(posBuf.buffer)) vkDestroyBuffer(device, posBuf.buffer, nullptr);
-                if (app->resources.removeDeviceMemory(posBuf.memory)) vkFreeMemory(device, posBuf.memory, nullptr);
-
-                if (app->resources.removeBuffer(idxBuf.buffer)) vkDestroyBuffer(device, idxBuf.buffer, nullptr);
-                if (app->resources.removeDeviceMemory(idxBuf.memory)) vkFreeMemory(device, idxBuf.memory, nullptr);
+                // Pass Buffer objects to vegetationRenderer and let it defer destruction
+                vegetationRenderer->generateChunkInstances(nid, posBuf, vertexCount, idxBuf, indexCount, instancesPerTriangle, app, seed);
             } catch (const std::exception &e) {
                 std::cerr << "[SceneRenderer] Vegetation generation failed for node " << (unsigned long long)nid
                           << ": " << e.what() << std::endl;
