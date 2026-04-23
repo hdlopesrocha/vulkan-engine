@@ -1,3 +1,41 @@
+#include "Buffer.hpp"
+#include "VulkanApp.hpp"
+#include <cstring>
+
+Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkFence* outFence) {
+    // Create staging buffer (host-visible)
+    Buffer stagingBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    void* mapped;
+    vkMapMemory(device, stagingBuffer.memory, 0, size, 0, &mapped);
+    memcpy(mapped, data, (size_t)size);
+    vkUnmapMemory(device, stagingBuffer.memory);
+
+    // Create device-local buffer
+    Buffer gpuBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    // Allocate command buffer for async transfer
+    VkCommandBuffer cmd = allocatePrimaryCommandBuffer();
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+    VkBufferCopy copyRegion{};
+    copyRegion.size = size;
+    vkCmdCopyBuffer(cmd, stagingBuffer.buffer, gpuBuffer.buffer, 1, &copyRegion);
+    // End and submit to geometry queue
+    VkFence fence = submitCommandBufferAsyncToQueue(cmd, geometryQueue, nullptr);
+    // Defer destruction of staging buffer until transfer completes
+    deferDestroyUntilFence(fence, [dev = device, sb = stagingBuffer, this]() {
+        if (sb.buffer != VK_NULL_HANDLE) {
+            if (resources.removeBuffer(sb.buffer)) vkDestroyBuffer(dev, sb.buffer, nullptr);
+        }
+        if (sb.memory != VK_NULL_HANDLE) {
+            if (resources.removeDeviceMemory(sb.memory)) vkFreeMemory(dev, sb.memory, nullptr);
+        }
+    });
+    if (outFence) *outFence = fence;
+    return gpuBuffer;
+}
 #include <cstdint>
 
 #include <vulkan/vulkan.h>

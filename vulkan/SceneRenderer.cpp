@@ -805,7 +805,6 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
 void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
     std::lock_guard<std::recursive_mutex> lock(chunksMutex);
     IndirectRenderer &renderer = layer == LAYER_OPAQUE ? solidRenderer->getIndirectRenderer() : waterRenderer->getIndirectRenderer();
-
     auto &cur = layer == LAYER_OPAQUE ? solidChunks : transparentChunks;
     auto it = cur.find(nid);
     if (it != cur.end()) {
@@ -821,8 +820,11 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
     uint32_t meshId = renderer.addMesh(geom);
     Model3DVersion mv{meshId, nd.node->version};
     cur[nid] = mv;
+    // Upload mesh into the renderer (may mark renderer dirty). The renderer
+    // rebuild will perform GPU uploads; we keep that responsibility centralized
+    // so uploads may be performed asynchronously inside the renderer.
     renderer.uploadMesh(app, meshId);
-    // After all mesh uploads, force a buffer rebuild if dirty
+    // After mesh upload, rebuild if needed (renderer may choose async upload)
     if (renderer.isDirty()) {
         printf("[SceneRenderer::updateMeshForNode] Forcing buffer rebuild for %s renderer after mesh upload.\n", (layer == LAYER_OPAQUE ? "solid" : "water"));
         renderer.rebuild(app);

@@ -1,4 +1,3 @@
-// ...existing code...
 // IndirectRenderer.hpp
 #pragma once
 
@@ -53,6 +52,9 @@ public:
     // Upload a single mesh to GPU (incremental update). Requires buffers to have capacity.
     // Returns true if upload succeeded, false if rebuild() is needed (capacity exceeded or buffers not created).
     bool uploadMesh(VulkanApp* app, uint32_t meshId);
+    // Setters for async buffer publication (called when an async upload finishes)
+    void setVertexBufferForMesh(uint32_t meshId, Buffer vbuf);
+    void setIndexBufferForMesh(uint32_t meshId, Buffer ibuf);
     
     // Erase a mesh from GPU by zeroing its indirect command (prevents culling from reading trash).
 

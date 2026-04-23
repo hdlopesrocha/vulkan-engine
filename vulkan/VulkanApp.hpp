@@ -1,7 +1,6 @@
-
-// Standard library includes first
-
 #pragma once
+
+#include "Buffer.hpp"
 
 // Standard library includes first
 #include <iostream>
@@ -282,6 +281,9 @@ protected:
         Buffer createVertexBuffer(const std::vector<Vertex> &vertices);
         Buffer createIndexBuffer(const std::vector<uint> &indices);
         // Create a device-local storage buffer and upload data via staging transfer
+        // Async device-local buffer upload: returns a fence, defers publication until ready
+        Buffer createDeviceLocalBufferAsync(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkFence* outFence);
+        // Synchronous variant: Create a device-local storage buffer and upload data via staging transfer
         Buffer createDeviceLocalBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
         VkShaderModule createShaderModule(const std::vector<char>& code);
     // Refactored: Accepts set layouts and optional push constant range, returns pipeline and layout
