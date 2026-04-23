@@ -323,8 +323,8 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
 }
 
 void VegetationRenderer::generateChunkInstances(NodeID chunkId,
-                                               VkBuffer vertexBuffer, uint32_t vertexCount,
-                                               VkBuffer indexBuffer, uint32_t indexCount,
+                                               Buffer vertexBuffer, uint32_t vertexCount,
+                                               Buffer indexBuffer, uint32_t indexCount,
                                                uint32_t instancesPerTriangle, VulkanApp* app,
                                                uint32_t seed) {
     if (!app) return;
@@ -412,25 +412,54 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     vkUnmapMemory(device, indirectMemory);
     app->resources.addDeviceMemory(indirectMemory, "VegetationRenderer: indirectMemory");
 
-    // Dispatch compute to fill instanceBuffer
-    uint32_t written = app->generateVegetationInstancesCompute(vertexBuffer, vertexCount, indexBuffer, indexCount, instancesPerTriangle, instanceBuffer, static_cast<uint32_t>(instanceBufferSize), seed);
-    if (written == 0) {
-        // Clean up partially created buffers
-        instanceBuffer = VK_NULL_HANDLE;
-        instanceMemory = VK_NULL_HANDLE;
-        indirectBuffer = VK_NULL_HANDLE;
-        indirectMemory = VK_NULL_HANDLE;
+    // Dispatch compute to fill instanceBuffer asynchronously on vegetation queue
+    VkFence fence = VK_NULL_HANDLE;
+    uint32_t expected = app->generateVegetationInstancesComputeAsync(vertexBuffer.buffer, vertexCount, indexBuffer.buffer, indexCount, instancesPerTriangle, instanceBuffer, static_cast<uint32_t>(instanceBufferSize), &fence, seed);
+    if (expected == 0 || fence == VK_NULL_HANDLE) {
+        // Clean up partially created buffers if compute not dispatched
+        if (app->resources.removeBuffer(instanceBuffer)) vkDestroyBuffer(device, instanceBuffer, nullptr);
+        if (app->resources.removeDeviceMemory(instanceMemory)) vkFreeMemory(device, instanceMemory, nullptr);
+        if (app->resources.removeBuffer(indirectBuffer)) vkDestroyBuffer(device, indirectBuffer, nullptr);
+        if (app->resources.removeDeviceMemory(indirectMemory)) vkFreeMemory(device, indirectMemory, nullptr);
         return;
     }
-    std::cout << "[VegetationRenderer::generateChunkInstances] written = " << written << std::endl; 
+
+    std::cout << "[VegetationRenderer::generateChunkInstances] async dispatched, expected = " << expected << " fence=" << (void*)fence << std::endl;
+
+    // Prepare instance buffer record to insert on completion
     InstanceBuffer ibuf;
     ibuf.buffer = instanceBuffer;
     ibuf.memory = instanceMemory;
     ibuf.indirectBuffer = indirectBuffer;
     ibuf.indirectMemory = indirectMemory;
-    ibuf.count = written;
-    chunkBuffers[chunkId] = ibuf;
-    chunkInstanceCounts[chunkId] = written;
+    ibuf.count = expected;
+
+    // Defer adding the instance buffer to the visible map until the GPU finished
+    app->deferDestroyUntilFence(fence, [this, chunkId, ibuf, expected]() mutable {
+        // insert into local maps so draw will pick it up
+        this->chunkBuffers[chunkId] = ibuf;
+        this->chunkInstanceCounts[chunkId] = expected;
+        std::cout << "[VegetationRenderer] chunk " << (unsigned long long)chunkId << " instances ready: " << expected << std::endl;
+    });
+
+    // Defer destruction of the temporary input buffers (vertex/index) until fence signals
+    VkDevice dev = device;
+    Buffer vbuf = vertexBuffer;
+    Buffer ib = indexBuffer;
+    app->deferDestroyUntilFence(fence, [dev, vbuf, ib, app]() {
+        if (vbuf.buffer != VK_NULL_HANDLE) {
+            if (app->resources.removeBuffer(vbuf.buffer)) vkDestroyBuffer(dev, vbuf.buffer, nullptr);
+        }
+        if (vbuf.memory != VK_NULL_HANDLE) {
+            if (app->resources.removeDeviceMemory(vbuf.memory)) vkFreeMemory(dev, vbuf.memory, nullptr);
+        }
+        if (ib.buffer != VK_NULL_HANDLE) {
+            if (app->resources.removeBuffer(ib.buffer)) vkDestroyBuffer(dev, ib.buffer, nullptr);
+        }
+        if (ib.memory != VK_NULL_HANDLE) {
+            if (app->resources.removeDeviceMemory(ib.memory)) vkFreeMemory(dev, ib.memory, nullptr);
+        }
+    });
 }
 
 void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId) {

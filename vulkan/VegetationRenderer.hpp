@@ -23,9 +23,11 @@ public:
     void init(VulkanApp* app, VkRenderPass renderPassOverride = VK_NULL_HANDLE);
     // Generate per-chunk vegetation instances from mesh geometry using the
     // compute shader. This is the only supported instancing path now.
+    // vertexBuffer/indexBuffer are device-local buffers created by the caller.
+    // We accept `Buffer` objects so the renderer can defer destruction until GPU work completes.
     void generateChunkInstances(NodeID chunkId,
-                                VkBuffer vertexBuffer, uint32_t vertexCount,
-                                VkBuffer indexBuffer, uint32_t indexCount,
+                                Buffer vertexBuffer, uint32_t vertexCount,
+                                Buffer indexBuffer, uint32_t indexCount,
                                 uint32_t instancesPerTriangle, VulkanApp* app,
                                 uint32_t seed = 1337);
     void clearAllInstances();
