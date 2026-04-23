@@ -1315,7 +1315,10 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 }
 
 void RenderTargetsWidget::render() {
-    ImGui::Begin("Render Targets", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    if (!ImGui::Begin(displayTitle().c_str(), &isOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::End();
+        return;
+    }
 
     if (!sceneRenderer || !sceneRenderer->waterRenderer || !solidRenderer) {
         ImGui::TextUnformatted("Renderers not available.");
