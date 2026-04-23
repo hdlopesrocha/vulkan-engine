@@ -321,6 +321,234 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     return expectedInstances;
 }
 
+uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
+    VkBuffer vertexBuffer, uint32_t vertexCount,
+    VkBuffer indexBuffer, uint32_t indexCount,
+    uint32_t instancesPerTriangle,
+    VkBuffer outputBuffer, uint32_t outputBufferSize, VkFence* outFence,
+    uint32_t seed) {
+    if (vertexBuffer == VK_NULL_HANDLE || indexBuffer == VK_NULL_HANDLE || outputBuffer == VK_NULL_HANDLE) return 0;
+    if (indexCount < 3 || instancesPerTriangle == 0) return 0;
+
+    uint32_t triCount = indexCount / 3;
+    uint32_t expectedInstances = triCount * instancesPerTriangle;
+    uint32_t expectedBytes = expectedInstances * sizeof(float) * 4; // shader writes vec4
+    if (outputBufferSize < expectedBytes) {
+        std::cerr << "[VulkanApp] generateVegetationInstancesComputeAsync: outputBufferSize too small (" << outputBufferSize << " < " << expectedBytes << ")" << std::endl;
+        return 0;
+    }
+
+    VkDevice device = getDevice();
+
+    // Descriptor set layout: three storage buffers (vertices, indices, output instances)
+    VkDescriptorSetLayoutBinding bindings[3] = {};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 3;
+    layoutInfo.pBindings = bindings;
+
+    VkDescriptorSetLayout descLayout = VK_NULL_HANDLE;
+    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descLayout) != VK_SUCCESS) {
+        std::cerr << "[VulkanApp] Failed to create vegetation compute descriptor set layout (async)" << std::endl;
+        return 0;
+    }
+
+    // Push constant range matches shader Push struct (5 uints)
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(uint32_t) * 5;
+
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts = &descLayout;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges = &pushRange;
+    if (vkCreatePipelineLayout(device, &plInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+        std::cerr << "[VulkanApp] Failed to create vegetation compute pipeline layout (async)" << std::endl;
+        return 0;
+    }
+
+    // Load compute shader
+    auto compCode = FileReader::readFile("shaders/vegetation_instance_gen.comp.spv");
+    if (compCode.empty()) {
+        std::cerr << "[VulkanApp] vegetation_instance_gen.comp.spv not found or empty (async)" << std::endl;
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+        return 0;
+    }
+    VkShaderModule compModule = createShaderModule(compCode);
+
+    VkPipelineShaderStageCreateInfo stageInfo{};
+    stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stageInfo.module = compModule;
+    stageInfo.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage = stageInfo;
+    pipelineInfo.layout = pipelineLayout;
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
+        std::cerr << "[VulkanApp] Failed to create vegetation compute pipeline (async)" << std::endl;
+        vkDestroyShaderModule(device, compModule, nullptr);
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+        return 0;
+    }
+
+    // Descriptor pool and set
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = 3;
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = 1;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    VkDescriptorPool descPool = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool) != VK_SUCCESS) {
+        std::cerr << "[VulkanApp] Failed to create descriptor pool for vegetation compute (async)" << std::endl;
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyShaderModule(device, compModule, nullptr);
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+        return 0;
+    }
+
+    VkDescriptorSetAllocateInfo ainfo{};
+    ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ainfo.descriptorPool = descPool;
+    ainfo.descriptorSetCount = 1;
+    ainfo.pSetLayouts = &descLayout;
+    VkDescriptorSet descSet = VK_NULL_HANDLE;
+    if (vkAllocateDescriptorSets(device, &ainfo, &descSet) != VK_SUCCESS) {
+        std::cerr << "[VulkanApp] Failed to allocate descriptor set for vegetation compute (async)" << std::endl;
+        vkDestroyDescriptorPool(device, descPool, nullptr);
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyShaderModule(device, compModule, nullptr);
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+        return 0;
+    }
+
+    VkDescriptorBufferInfo vbInfo{ vertexBuffer, 0, VK_WHOLE_SIZE };
+    VkDescriptorBufferInfo ibInfo{ indexBuffer, 0, VK_WHOLE_SIZE };
+    VkDescriptorBufferInfo outInfo{ outputBuffer, 0, VK_WHOLE_SIZE };
+
+    VkWriteDescriptorSet writes[3]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = descSet;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[0].descriptorCount = 1;
+    writes[0].pBufferInfo = &vbInfo;
+
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = descSet;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[1].descriptorCount = 1;
+    writes[1].pBufferInfo = &ibInfo;
+
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = descSet;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[2].descriptorCount = 1;
+    writes[2].pBufferInfo = &outInfo;
+
+    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+
+    // Allocate a command buffer (temporary pool) for async dispatch
+    VkCommandBuffer cmd = allocatePrimaryCommandBuffer();
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
+
+    uint32_t push[5];
+    push[0] = instancesPerTriangle;
+    push[1] = vertexCount;
+    push[2] = indexCount;
+    push[3] = seed;
+    push[4] = 0u;
+
+    if (triCount > 0) {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(physicalDevice, &props);
+        uint32_t maxGroupsX = props.limits.maxComputeWorkGroupCount[0];
+
+        uint32_t remaining = triCount;
+        uint32_t baseTri = 0;
+        while (remaining > 0) {
+            uint32_t thisGroups = remaining > maxGroupsX ? maxGroupsX : remaining;
+            push[4] = baseTri;
+            vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
+            vkCmdDispatch(cmd, thisGroups, 1, 1);
+            baseTri += thisGroups;
+            remaining -= thisGroups;
+        }
+
+        VkBufferMemoryBarrier bufBarrier{};
+        bufBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        bufBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        bufBarrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+        bufBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufBarrier.buffer = outputBuffer;
+        bufBarrier.offset = 0;
+        bufBarrier.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, nullptr, 1, &bufBarrier, 0, nullptr);
+    }
+
+    // End and submit to the vegetation queue
+    VkFence f = submitCommandBufferAsyncToQueue(cmd, vegetationQueue, nullptr);
+
+    // Defer destruction of descriptor/pipeline resources until fence signals
+    deferDestroyUntilFence(f, [device, descPool, descSet, pipeline, pipelineLayout, descLayout, compModule, this]() {
+        if (descSet != VK_NULL_HANDLE) {
+            vkFreeDescriptorSets(device, descPool, 1, &descSet);
+        }
+        if (descPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descPool, nullptr);
+        if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, pipeline, nullptr);
+        if (compModule != VK_NULL_HANDLE) {
+            resources.removeShaderModule(compModule);
+            vkDestroyShaderModule(device, compModule, nullptr);
+        }
+        if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        if (descLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+    });
+
+    if (outFence) *outFence = f;
+    return expectedInstances;
+}
+
 void VulkanApp::createImageViews() {
     swapchainImageViews.resize(swapchainImages.size());
     // std::cerr << "[DEBUG] createImageViews: swapchainImageViews.size()=" << swapchainImageViews.size() << std::endl;
@@ -911,6 +1139,21 @@ void VulkanApp::createCommandPool() {
     }
     resources.addCommandPool(transientCommandPool, "VulkanApp: transientCommandPool");
 
+    // Create dedicated command pools for vegetation and geometry queues (same family)
+    VkCommandPoolCreateInfo vegPoolInfo = poolInfo;
+    vegPoolInfo.flags |= VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    if (vkCreateCommandPool(device, &vegPoolInfo, nullptr, &vegetationCommandPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create vegetation command pool!");
+    }
+    resources.addCommandPool(vegetationCommandPool, "VulkanApp: vegetationCommandPool");
+
+    VkCommandPoolCreateInfo geoPoolInfo = poolInfo;
+    geoPoolInfo.flags |= VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    if (vkCreateCommandPool(device, &geoPoolInfo, nullptr, &geometryCommandPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create geometry command pool!");
+    }
+    resources.addCommandPool(geometryCommandPool, "VulkanApp: geometryCommandPool");
+
     // initialize async bookkeeping containers
     // pendingCommandBuffers and extraWaitSemaphores are guarded by mutexes
     pendingCommandBuffers.clear();
@@ -1452,6 +1695,87 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
     if (semaphore != VK_NULL_HANDLE && outSemaphore) {
         *outSemaphore = semaphore;
         // register the semaphore so drawFrame will wait on it and later clean it up
+        std::lock_guard<std::mutex> lk(extraSemaphoreMutex);
+        extraWaitSemaphores.push_back(semaphore);
+    }
+
+    return fence;
+}
+
+// Submit a pre-recorded command buffer asynchronously to a specific queue and return a fence that will be signaled on completion.
+VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore) {
+    // End command buffer here (caller recorded commands assumed)
+    vkEndCommandBuffer(commandBuffer);
+
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = 0;
+    VkFence fence = VK_NULL_HANDLE;
+    if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create fence for async submit (to queue)");
+    }
+    resources.addFence(fence, "VulkanApp::submitCommandBufferAsyncToQueue: fence");
+
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    if (outSemaphore) {
+        VkSemaphoreCreateInfo semInfo{};
+        semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        if (vkCreateSemaphore(device, &semInfo, nullptr, &semaphore) != VK_SUCCESS) {
+            resources.removeFence(fence);
+            vkDestroyFence(device, fence, nullptr);
+            throw std::runtime_error("failed to create semaphore for async submit (to queue)");
+        }
+        resources.addSemaphore(semaphore, "VulkanApp::submitCommandBufferAsyncToQueue: semaphore");
+    }
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    if (semaphore != VK_NULL_HANDLE) {
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = &semaphore;
+    }
+
+    {
+        std::lock_guard<std::mutex> plk(pendingLayoutMutex);
+        auto pit = commandBufferPendingLayouts.find(commandBuffer);
+        if (pit != commandBufferPendingLayouts.end() && !pit->second.empty()) {
+            std::unordered_set<uint64_t> seen;
+            std::lock_guard<std::mutex> lk(imageLayoutMutex);
+            for (const auto &u : pit->second) {
+                uint64_t keyBase = ((uint64_t)(uintptr_t)u.image << 32) | (uint64_t)u.baseArrayLayer;
+                if (seen.find(keyBase) != seen.end()) continue;
+                seen.insert(keyBase);
+                for (uint32_t l = 0; l < u.layerCount; ++l) {
+                    uint64_t key = ((uint64_t)(uintptr_t)u.image << 32) | (uint64_t)(u.baseArrayLayer + l);
+                    imageLayerLayouts[key] = u.newLayout;
+                }
+            }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(queueSubmitMutex);
+        if (vkQueueSubmit(targetQueue, 1, &submitInfo, fence) != VK_SUCCESS) {
+            if (semaphore != VK_NULL_HANDLE) {
+                resources.removeSemaphore(semaphore);
+                vkDestroySemaphore(device, semaphore, nullptr);
+            }
+            resources.removeFence(fence);
+            vkDestroyFence(device, fence, nullptr);
+            throw std::runtime_error("failed to submit async command buffer to target queue");
+        }
+    }
+
+    // Track command buffer+fence ownership so we can free command buffers later when fence signals
+    {
+        std::lock_guard<std::mutex> lk(pendingCmdMutex);
+        pendingCommandBuffers.emplace_back(commandBuffer, fence);
+    }
+
+    if (semaphore != VK_NULL_HANDLE && outSemaphore) {
+        *outSemaphore = semaphore;
         std::lock_guard<std::mutex> lk(extraSemaphoreMutex);
         extraWaitSemaphores.push_back(semaphore);
     }
@@ -3604,15 +3928,40 @@ void VulkanApp::createLogicalDevice() {
 
     std::set<uint32_t> uniqueQueueFamilies = {indices.graphicsFamily.value(), indices.presentFamily.value()};
 
+    // Query available queue counts for families so we don't request more queues than supported
+    uint32_t familyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> familyProps(familyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, familyProps.data());
+
+    // Request one or more queues from each unique queue family. If the
+    // graphics family supports multiple queues, request extra queues for
+    // vegetation and geometry work. Ensure we supply a priorities array
+    // with the correct length for each VkDeviceQueueCreateInfo (one float
+    // per requested queue) to avoid undefined behavior.
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-    float queuePriority = 1.0f;
+    // container to hold per-create-info priority arrays (must outlive createInfo usage)
+    std::vector<std::vector<float>> queuePrioritiesStorage;
+    float defaultPriority = 1.0f;
+    // track how many queues we requested per family
+    std::unordered_map<uint32_t, uint32_t> requestedQueueCount;
     for (uint32_t queueFamily : uniqueQueueFamilies) {
         VkDeviceQueueCreateInfo queueCreateInfo{};
         queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queueCreateInfo.queueFamilyIndex = queueFamily;
-        queueCreateInfo.queueCount = 1;
-        queueCreateInfo.pQueuePriorities = &queuePriority;
+        // determine desired queue count: try to allocate 3 from graphics family
+        uint32_t want = 1;
+        if (queueFamily == indices.graphicsFamily.value()) want = 3; // graphics + vegetation + geometry
+        uint32_t available = 1;
+        if (queueFamily < familyProps.size()) available = familyProps[queueFamily].queueCount;
+        uint32_t take = std::min(available, want);
+        if (take == 0) take = 1; // fallback safety
+        queueCreateInfo.queueCount = take;
+        // prepare priority array for this create info
+        queuePrioritiesStorage.emplace_back(queueCreateInfo.queueCount, defaultPriority);
+        queueCreateInfo.pQueuePriorities = queuePrioritiesStorage.back().data();
         queueCreateInfos.push_back(queueCreateInfo);
+        requestedQueueCount[queueFamily] = queueCreateInfo.queueCount;
     }
 
     // Query supported features and enable non-solid fill (wireframe) if available
@@ -3675,9 +4024,21 @@ void VulkanApp::createLogicalDevice() {
     // (choose reasonable default counts for UBOs and samplers)
     createDescriptorPool(32, 32);
 
-    // retrieve queue handles
+    // retrieve queue handles. If we requested multiple queues from the
+    // graphics family, obtain them; otherwise fall back to the main
+    // graphics queue for vegetation/geometry work.
     vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
-    vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
+    uint32_t gfxRequested = 1;
+    auto it = requestedQueueCount.find(indices.graphicsFamily.value());
+    if (it != requestedQueueCount.end()) gfxRequested = it->second;
+    if (gfxRequested > 1) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 1, &vegetationQueue); else vegetationQueue = graphicsQueue;
+    if (gfxRequested > 2) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 2, &geometryQueue); else geometryQueue = graphicsQueue;
+    if (indices.presentFamily.value() == indices.graphicsFamily.value()) {
+        // present uses the same family; reuse the main graphics queue
+        presentQueue = graphicsQueue;
+    } else {
+        vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
+    }
     // debug: print queue family indices and whether the two queue handles are equal
     std::cerr << "createLogicalDevice: graphicsFamily=" << indices.graphicsFamily.value() << " presentFamily=" << indices.presentFamily.value() << "\n";
     std::cerr << "graphicsQueue handle: " << graphicsQueue << " presentQueue handle: " << presentQueue << "\n";

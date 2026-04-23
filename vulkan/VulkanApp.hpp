@@ -39,6 +39,13 @@ class VulkanApp {
             VkBuffer indexBuffer, uint32_t indexCount,
             uint32_t instancesPerTriangle,
             VkBuffer outputBuffer, uint32_t outputBufferSize, uint32_t seed = 1337);
+        // Async variant: dispatch compute on a subsystem queue and return a fence via outFence.
+        uint32_t generateVegetationInstancesComputeAsync(
+            VkBuffer vertexBuffer, uint32_t vertexCount,
+            VkBuffer indexBuffer, uint32_t indexCount,
+            uint32_t instancesPerTriangle,
+            VkBuffer outputBuffer, uint32_t outputBufferSize, VkFence* outFence,
+            uint32_t seed = 1337);
         void initWindow(); // Only one declaration, public
     GLFWwindow* window = nullptr;
 
@@ -48,6 +55,9 @@ class VulkanApp {
     VkDevice device = VK_NULL_HANDLE;
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     VkQueue presentQueue = VK_NULL_HANDLE;
+    // Dedicated queues for async subsystems
+    VkQueue vegetationQueue = VK_NULL_HANDLE;
+    VkQueue geometryQueue = VK_NULL_HANDLE;
 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     std::vector<VkImage> swapchainImages;
@@ -59,6 +69,9 @@ class VulkanApp {
     std::vector<VkFramebuffer> swapchainFramebuffers;
     VkCommandPool commandPool = VK_NULL_HANDLE;            // primary pool for framebuffers and main-thread work
     VkCommandPool transientCommandPool = VK_NULL_HANDLE;   // separate pool for asynchronous / short-lived operations
+    // Dedicated command pools for subsystem queues
+    VkCommandPool vegetationCommandPool = VK_NULL_HANDLE;
+    VkCommandPool geometryCommandPool = VK_NULL_HANDLE;
 
     std::vector<VkSemaphore> imageAvailableSemaphores;
     std::vector<VkSemaphore> renderFinishedSemaphores;
@@ -173,6 +186,8 @@ protected:
         // Submit a pre-recorded command buffer asynchronously and return a fence that will be signaled on completion.
         // If outSemaphore is non-null, the submission will signal that semaphore when finished (useful to make frame submit wait on generation).
         VkFence submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore = nullptr);
+        // Submit a pre-recorded command buffer asynchronously to a specific queue (e.g., vegetation/geometry) and return a fence.
+        VkFence submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore = nullptr);
         // Submit a pre-recorded command buffer and block until it completes.
         void submitCommandBufferAndWait(VkCommandBuffer commandBuffer);
         // Submit `VkSubmitInfo` array while serializing access to the `graphicsQueue` to avoid concurrent queue use from multiple threads.
