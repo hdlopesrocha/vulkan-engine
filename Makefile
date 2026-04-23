@@ -96,6 +96,7 @@ $(OUT): $(OBJS)
 	@echo "Copying runtime resources to $(OUT_DIR)/"
 	@mkdir -p $(OUT_DIR)/shaders
 	@if [ -d textures ]; then cp -a textures $(OUT_DIR)/ || true; fi
+	@if [ -d assets ]; then cp -a assets $(OUT_DIR)/ || true; fi
 	@if [ -f imgui.ini ]; then cp imgui.ini $(OUT_DIR)/ || true; fi
 
 # Pattern rule: compile each .cpp into an object under $(OBJ_DIR), preserving subdirs
