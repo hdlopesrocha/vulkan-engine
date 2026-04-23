@@ -1223,6 +1223,7 @@ void MyApp::setupScene() {
 
     brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager, &eventManager);
     widgetManager.addWidget(brush3dWidget);
+    std::cout << "[Main::setupScene] Setup Ok!" << std::endl;
 }
 
 // Implementation: setup vegetation textures
