@@ -1583,8 +1583,17 @@ void VulkanApp::processPendingCommandBuffers() {
         for (auto it = pendingCommandBuffers.begin(); it != pendingCommandBuffers.end(); ) {
             VkCommandBuffer cmd = it->first;
             VkFence fence = it->second;
-            VkResult st = vkGetFenceStatus(device, fence);
-            if (st == VK_SUCCESS || st == VK_ERROR_DEVICE_LOST) {
+            // Guard vkGetFenceStatus by ensuring the fence is still tracked
+            // by the resource manager. If not tracked, assume it was
+            // destroyed and treat it as signaled so we can clean up.
+            bool signaledOrGone = false;
+            if (!resources.find((uintptr_t)fence).has_value()) {
+                signaledOrGone = true;
+            } else {
+                VkResult st = vkGetFenceStatus(device, fence);
+                if (st == VK_SUCCESS || st == VK_ERROR_DEVICE_LOST) signaledOrGone = true;
+            }
+            if (signaledOrGone) {
                 toFree.emplace_back(cmd, fence);
                 it = pendingCommandBuffers.erase(it);
             } else {
