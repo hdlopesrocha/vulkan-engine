@@ -2,6 +2,7 @@
 
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
+#include "components/ImGuiHelpers.hpp"
 #include "components/ScrollablePicker.hpp"
 #include "components/TexturePreview.hpp"
 #include "components/TexturePreviewTabs.hpp"
@@ -10,10 +11,8 @@ TextureMixerWidget::TextureMixerWidget(std::shared_ptr<TextureMixer> textures_, 
     : Widget(title, u8"\uf1de"), textures(std::move(textures_)), mixerParams(mixerParams_) {}
 
 void TextureMixerWidget::render() {
-    if (!ImGui::Begin(displayTitle().c_str(), &isOpen, ImGuiWindowFlags_None)) {
-        ImGui::End();
-        return;
-    }
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen, ImGuiWindowFlags_None);
+    if (!wg.visible()) return;
 
     ImGuiComponents::RenderTexturePreviewTabs("TextureTabBar", textures, mixerParams, currentMixerIndex, previewSource, activeMap, showNoise);
 
@@ -144,7 +143,6 @@ void TextureMixerWidget::render() {
     }
 
     ImGui::Separator();
-    ImGui::End();
 }
 
 

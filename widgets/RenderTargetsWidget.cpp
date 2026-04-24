@@ -15,6 +15,7 @@
 #include "../utils/FileReader.hpp"
 #include <vector>
 #include <array>
+#include "components/ImGuiHelpers.hpp"
 
 
 RenderTargetsWidget::RenderTargetsWidget(VulkanApp* app, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
@@ -29,25 +30,18 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
     if (!app) return;
     VkDevice device = app->getDevice();
 
-    // Create a simple sampler used as a fallback for widget previews
+    // Require application-provided sampler for widget previews; do not create fallbacks
     if (widgetSampler == VK_NULL_HANDLE) {
-        VkSamplerCreateInfo sci{};
-        sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        sci.magFilter = VK_FILTER_LINEAR;
-        sci.minFilter = VK_FILTER_LINEAR;
-        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        sci.anisotropyEnable = VK_FALSE;
-        sci.maxAnisotropy = 1.0f;
-        sci.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-        sci.unnormalizedCoordinates = VK_FALSE;
-        sci.compareEnable = VK_FALSE;
-        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        if (vkCreateSampler(device, &sci, nullptr, &widgetSampler) == VK_SUCCESS) {
-            app->resources.addSampler(widgetSampler, "RenderTargetsWidget: widgetSampler");
-        } else {
-            widgetSampler = VK_NULL_HANDLE;
+        // Prefer a sampler owned by the SceneRenderer's PostProcessRenderer if present
+        if (sceneRenderer && sceneRenderer->postProcessRenderer) {
+            widgetSampler = sceneRenderer->postProcessRenderer->getLinearSampler();
+        }
+        // Fallback: use the water renderer's linear sampler if available
+        if (widgetSampler == VK_NULL_HANDLE && sceneRenderer && sceneRenderer->waterRenderer) {
+            widgetSampler = sceneRenderer->waterRenderer->getLinearSampler();
+        }
+        if (widgetSampler == VK_NULL_HANDLE) {
+            throw std::runtime_error("RenderTargetsWidget requires a valid sampler (no fallback allowed)");
         }
     }
 
@@ -1233,9 +1227,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
                                               static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
             }
             if (!linearized) {
-                // Fallback: alias raw depth view (may appear incorrect on some GPUs)
-                linearSceneDepthDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                linearSceneDepthDescriptorOwned = true;
+                throw std::runtime_error("RenderTargetsWidget: GPU linearize pass failed (no fallback allowed)");
             }
         }
     }
@@ -1315,14 +1307,11 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 }
 
 void RenderTargetsWidget::render() {
-    if (!ImGui::Begin(displayTitle().c_str(), &isOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::End();
-        return;
-    }
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen, ImGuiWindowFlags_AlwaysAutoResize);
+    if (!wg.visible()) return;
 
     if (!sceneRenderer || !sceneRenderer->waterRenderer || !solidRenderer) {
         ImGui::TextUnformatted("Renderers not available.");
-        ImGui::End();
         return;
     }
 
@@ -1411,7 +1400,7 @@ void RenderTargetsWidget::render() {
         ImVec2 imgSize = previewSize;
         bool available = (ds != VK_NULL_HANDLE);
 
-        if (available) ImGui::Image((ImTextureID)ds, imgSize); else ImGui::Text("Preview unavailable");
+        ImGuiHelpers::ImageOrUnavailable((ImTextureID)ds, imgSize, "Preview unavailable");
     ImGui::Separator();
 
 
@@ -1422,15 +1411,12 @@ void RenderTargetsWidget::render() {
         float shadowSize = PREVIEW_WIDTH;
         for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
             ImGui::Text("Shadow Cascade %d", i);
-            if (shadowViewMode == RenderTargetsWidget::ShadowViewMode::Linearized && linearShadowDepthDescriptor[i] != VK_NULL_HANDLE) {
-                ImGui::Image((ImTextureID)linearShadowDepthDescriptor[i], ImVec2(shadowSize, shadowSize));
+            if (shadowViewMode == RenderTargetsWidget::ShadowViewMode::Linearized) {
+                ImGuiHelpers::ImageOrUnavailable((ImTextureID)linearShadowDepthDescriptor[i], ImVec2(shadowSize, shadowSize));
             } else {
-                VkDescriptorSet ds = shadowMapper->getImGuiDescriptorSet(i);
-                if (ds != VK_NULL_HANDLE) ImGui::Image((ImTextureID)ds, ImVec2(shadowSize, shadowSize));
+                ImGuiHelpers::ImageOrUnavailable((ImTextureID)shadowMapper->getImGuiDescriptorSet(i), ImVec2(shadowSize, shadowSize));
             }
             ImGui::Separator();
         }
     }
-
-    ImGui::End();
 }

@@ -1,10 +1,12 @@
 #include "SkyWidget.hpp"
+#include "components/ImGuiHelpers.hpp"
 
 SkyWidget::SkyWidget(SkySettings &settingsRef) : Widget("Sky", u8"\uf0c2"), settings(settingsRef) {}
 
 void SkyWidget::render() {
-    if (!isOpen) return;
-    if (ImGui::Begin(displayTitle().c_str(), &isOpen)) {
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+    if (!wg.visible()) return;
+    {
         // Sky mode selection
         const char* skyModeItems[] = { "Gradient", "Grid" };
         int currentMode = static_cast<int>(settings.mode);

@@ -1,5 +1,6 @@
 #include "OctreeExplorerWidget.hpp"
 #include <array>
+#include "components/ImGuiHelpers.hpp"
 
 OctreeExplorerWidget::OctreeExplorerWidget(LocalScene* scene_)
     : Widget("Octree Explorer", u8"\uf1ad"), scene(scene_) {}
@@ -15,10 +16,8 @@ const char* OctreeExplorerWidget::spaceTypeToString(SpaceType t) {
 
 void OctreeExplorerWidget::render() {
     if (!scene) return;
-    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
-        ImGui::End();
-        return;
-    }
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+    if (!wg.visible()) return;
 
     // Clear expanded cubes before rendering tree
     expandedCubes.clear();
@@ -47,12 +46,10 @@ void OctreeExplorerWidget::render() {
         expandAllPersistent = false;
         collapseAll = true;
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Expand/collapse helpers: Expand All = one frame, Persist Expand = keep expanded, Collapse All = collapse now");
+    ImGuiHelpers::SetTooltipIfHovered("Expand/collapse helpers: Expand All = one frame, Persist Expand = keep expanded, Collapse All = collapse now");
 
     const Octree& tree = (selectedLayer == 0) ? scene->getOpaqueOctree() : scene->transparentOctree;
     renderTree(tree);
-
-    ImGui::End();
 }
 
 void OctreeExplorerWidget::renderTree(const Octree& tree) {

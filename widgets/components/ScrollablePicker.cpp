@@ -1,5 +1,6 @@
 #include "ScrollablePicker.hpp"
 #include <imgui.h>
+#include "ImGuiHelpers.hpp"
 
 namespace ImGuiComponents {
 
@@ -37,7 +38,7 @@ bool ScrollableTexturePicker(const char* id, size_t count, size_t &currentIndex,
                 if (ImGui::ImageButton(img, ImVec2(thumb, thumb))) { currentIndex = i; changed = true; if (centerOnSelection) ImGui::SetScrollHereX(0.5f); }
             }
             if (showTooltip && ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("%zu", i);
+                ImGuiHelpers::SetTooltipIfHovered("%zu");
             }
         }
         ImGui::PopID();

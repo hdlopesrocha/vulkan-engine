@@ -6,6 +6,7 @@
 #include <vector>
 #include <cstdio>
 #include <stb/stb_image.h>
+#include "components/ImGuiHelpers.hpp"
 
 // Constructor moved from header
 BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr)
@@ -577,14 +578,11 @@ void BillboardCreator::drawCheckerboard(ImDrawList* drawList, ImVec2 pos, float 
 
 // BillboardCreator::render moved from header
 void BillboardCreator::render() {
-    if (!isOpen) return;
     if (!billboardManager || !atlasManager) return;
 
     ImGui::SetNextWindowSize(ImVec2(900, 700), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
-        ImGui::End();
-        return;
-    }
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+    if (!wg.visible()) return;
 
     // Left panel - Billboard list
     ImGui::BeginChild("BillboardList", ImVec2(200, 0), true);
@@ -642,7 +640,6 @@ void BillboardCreator::render() {
         if (!billboard) {
             ImGui::Text("Error: Invalid billboard");
             ImGui::EndChild();
-            ImGui::End();
             return;
         }
 

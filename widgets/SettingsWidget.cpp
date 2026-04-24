@@ -1,4 +1,5 @@
 #include "SettingsWidget.hpp"
+#include "components/ImGuiHelpers.hpp"
 
 SettingsWidget::SettingsWidget(Settings& settingsRef) : Widget("Settings", u8"\uf013"), settings(settingsRef) {
     
@@ -9,19 +10,18 @@ void SettingsWidget::resetToDefaults() {
 }
 
 void SettingsWidget::render() {
-    if (!isOpen) return;
-
-    if (ImGui::Begin(displayTitle().c_str(), &isOpen)) {
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+    if (!wg.visible()) return;
         ImGui::Text("Shadow Effects");
         ImGui::Separator();
         if (ImGui::Checkbox("Enable Shadows", &settings.enableShadows)) {
 
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Globally enable or disable all shadowing");
+        ImGuiHelpers::SetTooltipIfHovered("Globally enable or disable all shadowing");
         if (ImGui::Button("Dump Shadow Depth")) {
             if (onDumpShadowDepth) onDumpShadowDepth();
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Write shadow depth PGM for debugging");
+        ImGuiHelpers::SetTooltipIfHovered("Write shadow depth PGM for debugging");
 
 
         ImGui::Separator();
@@ -30,16 +30,16 @@ void SettingsWidget::render() {
         if (ImGui::Checkbox("V-Sync (MAILBOX/FIFO)", &settings.vsyncEnabled)) {
             // Will be read by VulkanApp to recreate swapchain with different present mode
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("When disabled, uses IMMEDIATE mode for uncapped FPS (may cause tearing)");
+        ImGuiHelpers::SetTooltipIfHovered("When disabled, uses IMMEDIATE mode for uncapped FPS (may cause tearing)");
 
         ImGui::Separator();
 
         ImGui::Text("Camera");
         ImGui::Separator();
         ImGui::DragFloat("Near Plane", &settings.nearPlane, 0.01f, 0.001f, 100.0f, "%.3f");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Near clip plane distance (affects depth precision)");
+        ImGuiHelpers::SetTooltipIfHovered("Near clip plane distance (affects depth precision)");
         ImGui::DragFloat("Far Plane", &settings.farPlane, 10.0f, 100.0f, 100000.0f, "%.1f");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Far clip plane distance (view distance)");
+        ImGuiHelpers::SetTooltipIfHovered("Far clip plane distance (view distance)");
 
         ImGui::Separator();
 
@@ -50,32 +50,32 @@ void SettingsWidget::render() {
             if (ImGui::Checkbox("Render Water", &settings.waterEnabled)) {
                 // toggled
             }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("When off, water passes are skipped and only the solid scene is composited");
+            ImGuiHelpers::SetTooltipIfHovered("When off, water passes are skipped and only the solid scene is composited");
             if (ImGui::Checkbox("Render Vegetation", &settings.vegetationEnabled)) {
                 // toggled
             }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle billboarding vegetation draws");
+            ImGuiHelpers::SetTooltipIfHovered("Toggle billboarding vegetation draws");
             if (ImGui::Checkbox("Enable Normal Mapping", &settings.normalMappingEnabled)) {
                 // toggled
             }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Globally enable/disable normal mapping (normal maps still needed in textures)");
+            ImGuiHelpers::SetTooltipIfHovered("Globally enable/disable normal mapping (normal maps still needed in textures)");
         if (ImGui::Checkbox("Flip keyboard rotation axes", &settings.flipKeyboardRotation)) {
             // toggled
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Invert yaw/pitch directions for keyboard rotation controls");
+        ImGuiHelpers::SetTooltipIfHovered("Invert yaw/pitch directions for keyboard rotation controls");
         if (ImGui::Checkbox("Flip gamepad rotation axes", &settings.flipGamepadRotation)) {
             // toggled
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Invert yaw/pitch directions for gamepad right-stick");
+        ImGuiHelpers::SetTooltipIfHovered("Invert yaw/pitch directions for gamepad right-stick");
 
         ImGui::Separator();
 
         ImGui::Text("Input Sensitivity");
         ImGui::Separator();
         ImGui::SliderFloat("Move Speed", &settings.moveSpeed, 0.1f, 20.0f, "%.2f");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Movement speed in units/second used by keyboard and gamepad");
+        ImGuiHelpers::SetTooltipIfHovered("Movement speed in units/second used by keyboard and gamepad");
         ImGui::SliderFloat("Angular Speed (deg/s)", &settings.angularSpeedDeg, 1.0f, 360.0f, "%.0f");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Angular rotation speed in degrees/second used by keyboard and gamepad");
+        ImGuiHelpers::SetTooltipIfHovered("Angular rotation speed in degrees/second used by keyboard and gamepad");
 
         ImGui::Separator();
 
@@ -87,9 +87,9 @@ void SettingsWidget::render() {
         if (ImGui::Checkbox("Enable Shadow Tessellation", &settings.shadowTessellationEnabled)) {
             // toggled globally
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Global toggle: when disabled, tessellation and displacement are skipped");
+        ImGuiHelpers::SetTooltipIfHovered("Global toggle: when disabled, tessellation and displacement are skipped");
         ImGui::Checkbox("Adaptive Tessellation", &settings.adaptiveTessellation);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable camera-distance driven tessellation level");
+        ImGuiHelpers::SetTooltipIfHovered("Enable camera-distance driven tessellation level");
         ImGui::SliderFloat("Tess Min Level", &settings.tessMinLevel, 1.0f, 64.0f, "%.1f");
         ImGui::SliderFloat("Tess Max Level", &settings.tessMaxLevel, 1.0f, 64.0f, "%.1f");
         ImGui::SliderFloat("Tess Min Distance", &settings.tessMinDistance, 1.0f, 200.0f, "%.1f");
@@ -112,7 +112,7 @@ void SettingsWidget::render() {
         if (ImGui::Checkbox("Wireframe Mode", &settings.wireframeMode)) {
             // toggle wireframe rendering
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Render meshes in wireframe (requires GPU support)");
+        ImGuiHelpers::SetTooltipIfHovered("Render meshes in wireframe (requires GPU support)");
 
         ImGui::Separator();
         ImGui::Text("Debug Visualisation");
@@ -178,12 +178,10 @@ void SettingsWidget::render() {
         if (ImGui::Checkbox("Show Mesh Bounding Boxes", &settings.showBoundingBoxes)) {
             // toggled overlay of per-mesh bounding boxes
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Render bounding boxes for meshes currently uploaded to the GPU");
+        ImGuiHelpers::SetTooltipIfHovered("Render bounding boxes for meshes currently uploaded to the GPU");
 
         if (ImGui::Checkbox("Show Debug Cubes", &settings.showDebugCubes)) {
             // toggled overlay of debug octree cubes and node instance cubes
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Render debug octree/node cubes produced by the engine and explorer");
+        ImGuiHelpers::SetTooltipIfHovered("Render debug octree/node cubes produced by the engine and explorer");
     }
-    ImGui::End();
-}

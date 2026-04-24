@@ -5,6 +5,7 @@
 #include <cstdio>
 #include "../events/ControllerParameters.hpp"
 #include <imgui.h>
+#include "components/ImGuiHelpers.hpp"
 
 static void drawPageIcon(ControllerParameters::pageType p) {
     const char* label = "?";
@@ -50,10 +51,8 @@ static const char* buttonName(int b) {
 GamepadWidget::GamepadWidget(ControllerParameters* params) : Widget("Gamepad", u8"\uf11b"), ctrlParams(params) {}
 
 void GamepadWidget::render() {
-    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
-        ImGui::End();
-        return;
-    }
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+    if (!wg.visible()) return;
 
     // Build a list of joysticks with their presence/gamepad status
     std::vector<std::string> labels;
@@ -84,7 +83,6 @@ void GamepadWidget::render() {
     bool present = glfwJoystickPresent(selectedJoystick);
     ImGui::Text("Present: %s", present ? "Yes" : "No");
     if (!present) {
-        ImGui::End();
         return;
     }
 
@@ -127,9 +125,9 @@ void GamepadWidget::render() {
         } else {
             ImGui::Text("Failed to read gamepad state");
         }
-    } else {
-        ImGui::TextWrapped("This joystick is not recognized as a mapped gamepad. If you expect it to be a gamepad, ensure mappings are available (glfwUpdateGamepadMappings) or connect a supported controller.");
-    }
+        } else {
+            ImGui::TextWrapped("This joystick is not recognized as a mapped gamepad. If you expect it to be a gamepad, ensure mappings are available (glfwUpdateGamepadMappings) or connect a supported controller.");
+        }
 
     // Show controller page indicator after the gamepad state (axes/buttons)
     if (ctrlParams) {
@@ -137,5 +135,5 @@ void GamepadWidget::render() {
         drawPageIcon(ctrlParams->currentPage);
     }
 
-    ImGui::End();
+    
 }

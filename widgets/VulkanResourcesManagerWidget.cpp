@@ -4,6 +4,7 @@
 #include <imgui.h>
 #include <sstream>
 #include <iomanip>
+#include "components/ImGuiHelpers.hpp"
 
 VulkanResourcesManagerWidget::VulkanResourcesManagerWidget(VulkanResourceManager* mgr)
     : Widget("Vulkan Resources", u8"\uf0e8"), mgr(mgr) {}
@@ -33,14 +34,11 @@ static std::string handleToString(uint64_t v, bool hex) {
 }
 
 void VulkanResourcesManagerWidget::render() {
-    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
-        ImGui::End();
-        return;
-    }
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+    if (!wg.visible()) return;
 
     if (!mgr) {
         ImGui::TextUnformatted("No VulkanResourceManager reference");
-        ImGui::End();
         return;
     }
 

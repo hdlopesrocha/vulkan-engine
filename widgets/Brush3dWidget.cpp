@@ -5,6 +5,7 @@
 #include <imgui.h>
 #include <cstring>
 #include <memory>
+#include "components/ImGuiHelpers.hpp"
 
 // Static label arrays for combo boxes
 const char* Brush3dWidget::sdfTypeNames[] = {
@@ -29,10 +30,8 @@ void Brush3dWidget::render() {
     if (!isOpen) return;
 
     ImGui::SetNextWindowSize(ImVec2(460, 600), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
-        ImGui::End();
-        return;
-    }
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+    if (!wg.visible()) return;
 
     // Add / remove entry buttons (mutate the manager)
     if (ImGui::Button("+ Add Brush Entry")) {
@@ -94,7 +93,7 @@ void Brush3dWidget::render() {
         dirty = false;
     }
 
-    ImGui::End();
+    // WindowGuard will call ImGui::End() automatically
 }
 
 void Brush3dWidget::renderEntry(int index) {
@@ -240,9 +239,7 @@ void Brush3dWidget::renderMaterialPicker(BrushEntry& entry) {
             if (selected) {
                 ImGui::PopStyleColor();
             }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Material %d", i);
-            }
+            ImGuiHelpers::SetTooltipIfHovered("Material %d", i);
             ImGui::PopID();
         }
         ImGui::TreePop();

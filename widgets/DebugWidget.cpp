@@ -1,14 +1,13 @@
 #include "DebugWidget.hpp"
+#include "components/ImGuiHelpers.hpp"
 
 DebugWidget::DebugWidget(std::vector<MaterialProperties>* materials, Camera* camera, size_t* cubeCount)
     : Widget("Debug", u8"\uf188"), materials(materials), camera(camera), cubeCount(cubeCount) {
 }
 
 void DebugWidget::render() {
-    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
-        ImGui::End();
-        return;
-    }
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+    if (!wg.visible()) return;
 
     size_t texCount = materials ? materials->size() : 0;
     ImGui::Text("Loaded texture triples: %zu", texCount);

@@ -1,5 +1,6 @@
 // Implementation for VegetationAtlasEditor
 #include "VegetationAtlasEditor.hpp"
+#include "components/ImGuiHelpers.hpp"
 
 VegetationAtlasEditor::VegetationAtlasEditor(TextureArrayManager* vegTextureArrayManager, AtlasManager* atlasManager)
     : Widget("Vegetation Atlas Editor", u8"\uf06c"), vegetationTextureManager(vegTextureArrayManager), atlasManager(atlasManager) {
@@ -11,14 +12,11 @@ VegetationAtlasEditor::~VegetationAtlasEditor() {
 }
 
 void VegetationAtlasEditor::render() {
-    if (!isOpen) return;
     if (!vegetationTextureManager || !atlasManager) return; // Safety check
 
     ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
-        ImGui::End();
-        return;
-    }
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+    if (!wg.visible()) return;
 
     // Texture selection
     ImGui::Text("Select Vegetation Texture:");
@@ -94,7 +92,6 @@ void VegetationAtlasEditor::render() {
         if (!tile) {
             ImGui::Text("Error: Invalid tile");
             ImGui::EndChild();
-            ImGui::End();
             return;
         }
 
@@ -110,7 +107,6 @@ void VegetationAtlasEditor::render() {
             selectedTileIndex = -1; // Deselect after deletion
             ImGui::PopStyleColor(3);
             ImGui::EndChild();
-            ImGui::End();
             return;
         }
         ImGui::PopStyleColor(3);
@@ -199,7 +195,7 @@ void VegetationAtlasEditor::render() {
                 // Silently catch any exceptions during texture ID retrieval
             }
 
-            if (texID) {
+                if (texID) {
                 float previewSize = 256.0f;
                 ImVec2 cursorPos = ImGui::GetCursorScreenPos();
 
@@ -246,8 +242,8 @@ void VegetationAtlasEditor::render() {
                 ImGui::Text("UV Rect: (%.3f, %.3f) to (%.3f, %.3f)", 
                     tile->offsetX, tile->offsetY, 
                     tile->offsetX + tile->scaleX, tile->offsetY + tile->scaleY);
+                }
             }
-        }
 
         ImGui::Spacing();
 
@@ -256,7 +252,5 @@ void VegetationAtlasEditor::render() {
     }
 
     ImGui::EndChild();
-
-    ImGui::End();
 }
 

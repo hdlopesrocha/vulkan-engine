@@ -1,12 +1,11 @@
 #include "CameraWidget.hpp"
+#include "components/ImGuiHelpers.hpp"
 
 CameraWidget::CameraWidget(Camera* camera) : Widget("Camera", u8"\uf030"), camera(camera) {}
 
 void CameraWidget::render() {
-	if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
-		ImGui::End();
-		return;
-	}
+	ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+	if (!wg.visible()) return;
 
 	ImGui::DragFloat("Move Speed", &camera->speed, 0.1f, 0.0f, 512.0f);
 	float angDeg = glm::degrees(camera->angularSpeedRad);

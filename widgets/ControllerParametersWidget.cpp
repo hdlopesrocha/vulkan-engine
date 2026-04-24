@@ -1,6 +1,8 @@
 #include "ControllerParametersWidget.hpp"
 #include <glm/gtc/type_ptr.hpp>
 
+#include "components/ImGuiHelpers.hpp"
+
 #include "../utils/Brush3dManager.hpp"
 #include "../utils/Brush3dEntry.hpp"
 
@@ -8,10 +10,8 @@ ControllerParametersWidget::ControllerParametersWidget(ControllerParameters* par
     : Widget("Controller Parameters", u8"\uf085"), params(params), brushManager(brushManager) {}
 
 void ControllerParametersWidget::render() {
-    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
-        ImGui::End();
-        return;
-    }
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+    if (!wg.visible()) return;
     // Draw small icon for current page at the top-left of the widget
     {
         ControllerParameters::pageType p = params->currentPage;
@@ -93,5 +93,5 @@ void ControllerParametersWidget::render() {
         }
     }
 
-    ImGui::End();
+    
 }

@@ -1,4 +1,5 @@
 #include "LightWidget.hpp"
+#include "components/ImGuiHelpers.hpp"
 
 LightWidget::LightWidget(Light* l)
 	: Widget("Light Control", u8"\uf0eb"), light(l) {
@@ -26,9 +27,10 @@ void LightWidget::calculateAnglesFromDirection() {
 }
 
 void LightWidget::render() {
-	if (!isOpen) return;
-
-	if (ImGui::Begin(displayTitle().c_str(), &isOpen)) {
+	ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+	if (!wg.visible()) return;
+    
+	{
 		glm::vec3 dir = light->getDirection();
 		float dirArray[3] = { dir.x, dir.y, dir.z };
 		if (ImGui::InputFloat3("Direction", dirArray, "%.3f")) {
@@ -44,16 +46,12 @@ void LightWidget::render() {
 		if (ImGui::SliderFloat("Azimuth", &azimuth, -180.0f, 180.0f, "%.1f°")) {
 			updateLight();
 		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Horizontal angle\n0° = North (+Z), 90° = East (+X), ±180° = South (-Z), -90° = West (-X)");
-		}
+		ImGuiHelpers::SetTooltipIfHovered("Horizontal angle\n0° = North (+Z), 90° = East (+X), ±180° = South (-Z), -90° = West (-X)");
 
 		if (ImGui::SliderFloat("Elevation", &elevation, -89.0f, 89.0f, "%.1f°")) {
 			updateLight();
 		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Vertical angle\n0° = Horizon, +90° = Zenith (straight up), -90° = Nadir (straight down)");
-		}
+		ImGuiHelpers::SetTooltipIfHovered("Vertical angle\n0° = Horizon, +90° = Zenith (straight up), -90° = Nadir (straight down)");
 
 		ImGui::Separator();
 		ImGui::Text("Light Properties:");
@@ -74,9 +72,7 @@ void LightWidget::render() {
 			elevation = 89.0f;
 			updateLight();
 		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Light from directly above (zenith)");
-		}
+		ImGuiHelpers::SetTooltipIfHovered("Light from directly above (zenith)");
 
 		ImGui::SameLine();
 		if (ImGui::Button("Diagonal")) {
@@ -84,9 +80,7 @@ void LightWidget::render() {
 			elevation = 45.0f;
 			updateLight();
 		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("45° elevation from northeast");
-		}
+		ImGuiHelpers::SetTooltipIfHovered("45° elevation from northeast");
 
 		ImGui::SameLine();
 		if (ImGui::Button("Side")) {
@@ -94,18 +88,14 @@ void LightWidget::render() {
 			elevation = 0.0f;
 			updateLight();
 		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Light from the east (side, horizon)");
-		}
+		ImGuiHelpers::SetTooltipIfHovered("Light from the east (side, horizon)");
 
 		if (ImGui::Button("Front")) {
 			azimuth = 0.0f;
 			elevation = 0.0f;
 			updateLight();
 		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Light from the north (front, horizon)");
-		}
+		ImGuiHelpers::SetTooltipIfHovered("Light from the north (front, horizon)");
 
 		ImGui::SameLine();
 		if (ImGui::Button("Back")) {
@@ -113,9 +103,7 @@ void LightWidget::render() {
 			elevation = 0.0f;
 			updateLight();
 		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Light from the south (back, horizon)");
-		}
+		ImGuiHelpers::SetTooltipIfHovered("Light from the south (back, horizon)");
 
 		ImGui::SameLine();
 		if (ImGui::Button("Low Angle")) {
@@ -123,11 +111,8 @@ void LightWidget::render() {
 			elevation = 15.0f;
 			updateLight();
 		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Low angle light for long shadows");
-		}
+		ImGuiHelpers::SetTooltipIfHovered("Low angle light for long shadows");
 	}
-	ImGui::End();
 }
 
 float LightWidget::getAzimuth() const { return azimuth; }

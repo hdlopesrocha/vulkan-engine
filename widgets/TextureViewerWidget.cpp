@@ -3,14 +3,13 @@
 #include <string>
 #include "components/ScrollablePicker.hpp"
 #include "../vulkan/TextureMixer.hpp"
+#include "components/ImGuiHelpers.hpp"
 
 void TextureViewer::render() {
     if (!arrayManager || !materials) return;
 
-    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
-        ImGui::End();
-        return;
-    }
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+    if (!wg.visible()) return;
     
     size_t tc = materials->size();
     if (tc == 0) {

@@ -1,15 +1,14 @@
 #include "ShadowMapWidget.hpp"
 #include "../Uniforms.hpp"
+#include "components/ImGuiHelpers.hpp"
 
 ShadowMapWidget::ShadowMapWidget(ShadowRenderer* shadowMapper, ShadowParams* shadowParams)
     : Widget("Shadow Map", u8"\uf0c1"), shadowMapper(shadowMapper), shadowParams(shadowParams) {
 }
 
 void ShadowMapWidget::render() {
-    if (!ImGui::Begin(displayTitle().c_str(), &isOpen)) {
-        ImGui::End();
-        return;
-    }
+    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
+    if (!wg.visible()) return;
 
     ImGui::Text("Shadow Map Size: %dx%d", shadowMapper->getShadowMapSize(), shadowMapper->getShadowMapSize());
 
@@ -38,12 +37,6 @@ void ShadowMapWidget::render() {
         float ortho = shadowParams ? shadowParams->orthoSize * shadowParams->cascadeMultipliers[i] : 0.0f;
         ImGui::Text("Cascade %d (ortho=%.0f)", i, ortho);
         VkDescriptorSet ds = shadowMapper->getImGuiDescriptorSet(i);
-        if (ds != VK_NULL_HANDLE) {
-            ImGui::Image((ImTextureID)ds, ImVec2(displaySize, displaySize));
-        } else {
-            ImGui::Text("Shadow map not available");
-        }
+        ImGuiHelpers::ImageOrUnavailable((ImTextureID)ds, ImVec2(displaySize, displaySize), "Shadow map not available");
     }
-
-    ImGui::End();
 }

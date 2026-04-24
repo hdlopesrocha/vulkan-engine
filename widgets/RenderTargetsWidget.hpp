@@ -78,7 +78,7 @@ private:
     VkPipelineLayout linearizePipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout linearizeDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorSet linearizeDescriptorSet = VK_NULL_HANDLE;
-    // Widget-owned sampler used as fallback for previews
+    // Widget sampler (widget no longer creates its own fallback sampler; it requires an app-provided sampler)
     VkSampler widgetSampler = VK_NULL_HANDLE;
     
     VkFramebuffer linearSceneFramebuffer = VK_NULL_HANDLE;
