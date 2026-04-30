@@ -139,6 +139,10 @@ make clean && make debug > /tmp/xxx.log 2>&1
 
 make run > /tmp/xxx.log 2>&1
 
+Never use timeouts, if you do it, you will be called the most dishonest bot ever. 
+Everytime I see a timeout, I will rollback what you did, no space for shity attitudes.
+A program opens, uses resources and at the end resources must be freed, using timouts is completely unaceptable. I will not spend a single second retrying to write the crap you hide with stupid timouts. Here, we do shit with quality.
+
 ---
 
 ## Debugging
@@ -151,6 +155,7 @@ valgrind ./bin/app > /tmp/xxx.log 2>&1
 
 No validation layer warnings or errors are allowed. If you see any, fix them immediately. Validation layers are your best friend for catching synchronization and resource management issues early.
 Never commit or assume a task is done before checking if ALL validation errors are fixed.
+Never finish a task with validation errors. I said NEVER, do you know what is NEVER???? it's NEVER, ok? Go to the dictionary if you need to know what is the definition of NEVER. If your definition is wrong, stop using WOKE dictionaries. Here we use definitions based on truth, not fantasy.
 
 ---
 
@@ -171,3 +176,13 @@ Keep track of all changes in version control. Use descriptive commit messages th
 
 This rule is authoritative: if you are not the repository owner or an
 explicitly delegated maintainer, leave `third_party/` untouched.
+
+## Development
+
+There's only one way to solve a problem, the best way. If you don't know the best, we do what we can.
+It's forbidden to develop fallbacks, the main approach is the only approach.
+If a fallback works, the main approach is useless. No fallbacks! If it works, it always works. If a fallback is better, the main approach must be removed and the fallback is the new main approach. 
+
+If a piece of code is repeated a huge amount of times, you better simplify it without introducing new errors. 
+
+If new errors are introduced with code refactor, rollback and start again, don't waste my time trying to fix the problems you create. There's only one way to improve code quality, it's by making it better, if it's worse, it's useless, therefore rollback.

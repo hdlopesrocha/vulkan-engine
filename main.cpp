@@ -270,14 +270,14 @@ public:
         }
 
 
-        sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
-
         // IMPORTANT: run texture setup on the main thread.
         // Detached startup threads were racing with SceneRenderer initialization
         // and app lifetime, causing undefined behavior and intermittent
         // std::system_error("Invalid argument") during mesh rebuild.
         setupVegetationTextures();
         setupTextures();
+
+        sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
 
         printf("[MyApp::setup] Created and initialized SceneRenderer\n");
 
@@ -515,6 +515,19 @@ public:
 
         // Launch asynchronous recording+submit for independent offscreen passes
         std::vector<std::thread> asyncTasks;
+        // RAII guard: ensure any launched threads are joined if an exception
+        // escapes this function so std::terminate is not called from thread
+        // destructors. Joining here replicates the previous explicit join
+        // behavior in all exit paths.
+        struct ThreadJoiner {
+            std::vector<std::thread>& threads_;
+            ThreadJoiner(std::vector<std::thread>& t) : threads_(t) {}
+            ~ThreadJoiner() {
+                for (auto &thr : threads_) {
+                    if (thr.joinable()) thr.join();
+                }
+            }
+        } threadJoiner(asyncTasks);
         bool launchedSolid360 = false;
         bool launchedBackFace = false;
         VkSemaphore semSolid360 = VK_NULL_HANDLE;
@@ -579,19 +592,7 @@ public:
                 // If shared allocation failed, create a temporary pool and allocate from it
                 if (computeDs == VK_NULL_HANDLE) {
                     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &taskPool) != VK_SUCCESS) {
-                        std::cerr << "[Async] Failed to create descriptor pool for solid360 task\n";
-                        // fall back to in-place cull
-                        ind.prepareCull(cmd, viewProj);
-                        SkySettings::Mode skyMode360 = this->sceneRenderer->getSkySettings().mode;
-                        this->sceneRenderer->solid360Renderer->renderSolid360(
-                            app, cmd,
-                            this->sceneRenderer->solidRenderer->getRenderPass(),
-                            this->sceneRenderer->skyRenderer.get(), skyMode360,
-                            this->sceneRenderer->solidRenderer.get(),
-                            app->getMainDescriptorSet(),
-                            this->sceneRenderer->mainUniformBuffer, this->uboStatic);
-                        app->submitCommandBufferAsync(cmd, &semSolid360);
-                        return;
+                        throw std::runtime_error("[Async] Failed to create descriptor pool for solid360 task (no fallback allowed)");
                     }
                     app->resources.addDescriptorPool(taskPool, "Temp: solid360 cull pool");
 
@@ -602,23 +603,9 @@ public:
                         ainfo.descriptorSetCount = 1;
                         ainfo.pSetLayouts = &dsLayout;
                         if (vkAllocateDescriptorSets(device, &ainfo, &computeDs) != VK_SUCCESS) {
-                            std::cerr << "[Async] Failed to allocate compute descriptor set for solid360 task\n";
-                            // fallback
-                            ind.prepareCull(cmd, viewProj);
-                            SkySettings::Mode skyMode360 = this->sceneRenderer->getSkySettings().mode;
-                            this->sceneRenderer->solid360Renderer->renderSolid360(
-                                app, cmd,
-                                this->sceneRenderer->solidRenderer->getRenderPass(),
-                                this->sceneRenderer->skyRenderer.get(), skyMode360,
-                                this->sceneRenderer->solidRenderer.get(),
-                                app->getMainDescriptorSet(),
-                                this->sceneRenderer->mainUniformBuffer, this->uboStatic);
-                            app->submitCommandBufferAsync(cmd, &semSolid360);
-                            app->deferDestroyUntilAllPending([device, taskPool, app]() {
-                                app->resources.removeDescriptorPool(taskPool);
-                                vkDestroyDescriptorPool(device, taskPool, nullptr);
-                            });
-                            return;
+                            app->resources.removeDescriptorPool(taskPool);
+                            vkDestroyDescriptorPool(device, taskPool, nullptr);
+                            throw std::runtime_error("[Async] Failed to allocate compute descriptor set for solid360 task (no fallback allowed)");
                         }
                         app->resources.addDescriptorSet(computeDs, "Temp: solid360 compute DS");
                     }
@@ -645,12 +632,11 @@ public:
                 vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
 
                 // Run cull into per-task buffers using the temporary descriptor set
-                if (computeDs != VK_NULL_HANDLE) {
-                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
-                } else {
-                    // Fallback: run normal prepareCull which writes into renderer-owned buffers
-                    ind.prepareCull(cmd, viewProj);
+                // Must have a valid compute descriptor set to run cull into per-task buffers
+                if (computeDs == VK_NULL_HANDLE) {
+                    throw std::runtime_error("Expected valid compute descriptor set for solid360 task (no fallback allowed)");
                 }
+                ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
 
                 // Render solid360 using per-task compact/visible buffers when available
                 SkySettings::Mode skyMode360 = this->sceneRenderer->getSkySettings().mode;
@@ -666,56 +652,31 @@ public:
 
                 // Submit and schedule cleanup of temporary resources after fence signals
                 VkFence f = app->submitCommandBufferAsync(cmd, &semSolid360);
-                if (computeDs != VK_NULL_HANDLE) {
-                    app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app]() {
-                        // Unregister and destroy descriptor set/pool
-                        app->resources.removeDescriptorSet(computeDs);
-                        if (taskPool != VK_NULL_HANDLE) {
-                            app->resources.removeDescriptorPool(taskPool);
-                            vkDestroyDescriptorPool(device, taskPool, nullptr);
-                        }
-                        // Destroy buffers and free memory
-                        if (taskCompact.buffer != VK_NULL_HANDLE) {
-                            app->resources.removeBuffer(taskCompact.buffer);
-                            vkDestroyBuffer(device, taskCompact.buffer, nullptr);
-                        }
-                        if (taskCompact.memory != VK_NULL_HANDLE) {
-                            app->resources.removeDeviceMemory(taskCompact.memory);
-                            vkFreeMemory(device, taskCompact.memory, nullptr);
-                        }
-                        if (taskVisible.buffer != VK_NULL_HANDLE) {
-                            app->resources.removeBuffer(taskVisible.buffer);
-                            vkDestroyBuffer(device, taskVisible.buffer, nullptr);
-                        }
-                        if (taskVisible.memory != VK_NULL_HANDLE) {
-                            app->resources.removeDeviceMemory(taskVisible.memory);
-                            vkFreeMemory(device, taskVisible.memory, nullptr);
-                        }
-                    });
-                } else {
-                    app->deferDestroyUntilAllPending([device, taskPool, taskCompact, taskVisible, app]() {
-                        if (taskPool != VK_NULL_HANDLE) {
-                            app->resources.removeDescriptorPool(taskPool);
-                            vkDestroyDescriptorPool(device, taskPool, nullptr);
-                        }
-                        if (taskCompact.buffer != VK_NULL_HANDLE) {
-                            app->resources.removeBuffer(taskCompact.buffer);
-                            vkDestroyBuffer(device, taskCompact.buffer, nullptr);
-                        }
-                        if (taskCompact.memory != VK_NULL_HANDLE) {
-                            app->resources.removeDeviceMemory(taskCompact.memory);
-                            vkFreeMemory(device, taskCompact.memory, nullptr);
-                        }
-                        if (taskVisible.buffer != VK_NULL_HANDLE) {
-                            app->resources.removeBuffer(taskVisible.buffer);
-                            vkDestroyBuffer(device, taskVisible.buffer, nullptr);
-                        }
-                        if (taskVisible.memory != VK_NULL_HANDLE) {
-                            app->resources.removeDeviceMemory(taskVisible.memory);
-                            vkFreeMemory(device, taskVisible.memory, nullptr);
-                        }
-                    });
-                }
+                app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app]() {
+                    // Unregister and destroy descriptor set/pool
+                    app->resources.removeDescriptorSet(computeDs);
+                    if (taskPool != VK_NULL_HANDLE) {
+                        app->resources.removeDescriptorPool(taskPool);
+                        vkDestroyDescriptorPool(device, taskPool, nullptr);
+                    }
+                    // Destroy buffers and free memory
+                    if (taskCompact.buffer != VK_NULL_HANDLE) {
+                        app->resources.removeBuffer(taskCompact.buffer);
+                        vkDestroyBuffer(device, taskCompact.buffer, nullptr);
+                    }
+                    if (taskCompact.memory != VK_NULL_HANDLE) {
+                        app->resources.removeDeviceMemory(taskCompact.memory);
+                        vkFreeMemory(device, taskCompact.memory, nullptr);
+                    }
+                    if (taskVisible.buffer != VK_NULL_HANDLE) {
+                        app->resources.removeBuffer(taskVisible.buffer);
+                        vkDestroyBuffer(device, taskVisible.buffer, nullptr);
+                    }
+                    if (taskVisible.memory != VK_NULL_HANDLE) {
+                        app->resources.removeDeviceMemory(taskVisible.memory);
+                        vkFreeMemory(device, taskVisible.memory, nullptr);
+                    }
+                });
             });
         }
 
@@ -759,18 +720,7 @@ public:
                 poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
                 VkDescriptorPool taskPool = VK_NULL_HANDLE;
                 if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &taskPool) != VK_SUCCESS) {
-                    std::cerr << "[Async] Failed to create descriptor pool for backFace task" << std::endl;
-                    // fall back to in-place cull
-                    ind.prepareCull(cmd, viewProj);
-                    this->sceneRenderer->backFaceRenderer->renderBackFacePass(app, cmd, frameIdx,
-                        ind,
-                        this->sceneRenderer->waterRenderer->getWaterGeometryPipelineLayout(),
-                        app->getMainDescriptorSet(),
-                        app->getMaterialDescriptorSet(),
-                        this->sceneRenderer->waterRenderer->getWaterDepthDescriptorSet(frameIdx),
-                        this->sceneRenderer->solidRenderer->getDepthImage(frameIdx));
-                    app->submitCommandBufferAsync(cmd, &semBackFace);
-                    return;
+                    throw std::runtime_error("[Async] Failed to create descriptor pool for backFace task (no fallback allowed)");
                 }
                 app->resources.addDescriptorPool(taskPool, "Temp: backface cull pool");
 
@@ -784,23 +734,9 @@ public:
                     ainfo.descriptorSetCount = 1;
                     ainfo.pSetLayouts = &dsLayout;
                     if (vkAllocateDescriptorSets(device, &ainfo, &computeDs) != VK_SUCCESS) {
-                        std::cerr << "[Async] Failed to allocate compute descriptor set for backFace task" << std::endl;
-                        // fallback
-                        ind.prepareCull(cmd, viewProj);
-                        this->sceneRenderer->backFaceRenderer->renderBackFacePass(app, cmd, frameIdx,
-                            ind,
-                            this->sceneRenderer->waterRenderer->getWaterGeometryPipelineLayout(),
-                            app->getMainDescriptorSet(),
-                            app->getMaterialDescriptorSet(),
-                            this->sceneRenderer->waterRenderer->getWaterDepthDescriptorSet(frameIdx),
-                            this->sceneRenderer->solidRenderer->getDepthImage(frameIdx));
-                        app->submitCommandBufferAsync(cmd, &semBackFace);
-                        // cleanup pool
-                        app->deferDestroyUntilAllPending([device, taskPool, app]() {
-                            app->resources.removeDescriptorPool(taskPool);
-                            vkDestroyDescriptorPool(device, taskPool, nullptr);
-                        });
-                        return;
+                        app->resources.removeDescriptorPool(taskPool);
+                        vkDestroyDescriptorPool(device, taskPool, nullptr);
+                        throw std::runtime_error("[Async] Failed to allocate compute descriptor set for backFace task (no fallback allowed)");
                     }
                     app->resources.addDescriptorSet(computeDs, "Temp: backface compute DS");
 
@@ -826,12 +762,10 @@ public:
                 }
 
                 // Run cull into per-task buffers using the temporary descriptor set
-                if (computeDs != VK_NULL_HANDLE) {
-                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
-                } else {
-                    // Fallback: run normal prepareCull which writes into renderer-owned buffers
-                    ind.prepareCull(cmd, viewProj);
+                if (computeDs == VK_NULL_HANDLE) {
+                    throw std::runtime_error("Expected valid compute descriptor set for backFace task (no fallback allowed)");
                 }
+                ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
 
                 // Render back-face pass using the per-task compact/visible buffers so draws consume the cull results
                 this->sceneRenderer->backFaceRenderer->renderBackFacePass(app, cmd, frameIdx,
@@ -846,57 +780,31 @@ public:
 
                 // Submit and schedule cleanup of temporary resources after fence signals
                 VkFence f = app->submitCommandBufferAsync(cmd, &semBackFace);
-                if (computeDs != VK_NULL_HANDLE) {
-                    app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app]() {
-                        // Unregister and destroy descriptor set/pool
-                        app->resources.removeDescriptorSet(computeDs);
-                        if (taskPool != VK_NULL_HANDLE) {
-                            app->resources.removeDescriptorPool(taskPool);
-                            vkDestroyDescriptorPool(device, taskPool, nullptr);
-                        }
-                        // Destroy buffers and free memory
-                        if (taskCompact.buffer != VK_NULL_HANDLE) {
-                            app->resources.removeBuffer(taskCompact.buffer);
-                            vkDestroyBuffer(device, taskCompact.buffer, nullptr);
-                        }
-                        if (taskCompact.memory != VK_NULL_HANDLE) {
-                            app->resources.removeDeviceMemory(taskCompact.memory);
-                            vkFreeMemory(device, taskCompact.memory, nullptr);
-                        }
-                        if (taskVisible.buffer != VK_NULL_HANDLE) {
-                            app->resources.removeBuffer(taskVisible.buffer);
-                            vkDestroyBuffer(device, taskVisible.buffer, nullptr);
-                        }
-                        if (taskVisible.memory != VK_NULL_HANDLE) {
-                            app->resources.removeDeviceMemory(taskVisible.memory);
-                            vkFreeMemory(device, taskVisible.memory, nullptr);
-                        }
-                    });
-                } else {
-                    // If we fell back (no compute DS), free created buffers/pool now via defer until all pending
-                    app->deferDestroyUntilAllPending([device, taskPool, taskCompact, taskVisible, app]() {
-                        if (taskPool != VK_NULL_HANDLE) {
-                            app->resources.removeDescriptorPool(taskPool);
-                            vkDestroyDescriptorPool(device, taskPool, nullptr);
-                        }
-                        if (taskCompact.buffer != VK_NULL_HANDLE) {
-                            app->resources.removeBuffer(taskCompact.buffer);
-                            vkDestroyBuffer(device, taskCompact.buffer, nullptr);
-                        }
-                        if (taskCompact.memory != VK_NULL_HANDLE) {
-                            app->resources.removeDeviceMemory(taskCompact.memory);
-                            vkFreeMemory(device, taskCompact.memory, nullptr);
-                        }
-                        if (taskVisible.buffer != VK_NULL_HANDLE) {
-                            app->resources.removeBuffer(taskVisible.buffer);
-                            vkDestroyBuffer(device, taskVisible.buffer, nullptr);
-                        }
-                        if (taskVisible.memory != VK_NULL_HANDLE) {
-                            app->resources.removeDeviceMemory(taskVisible.memory);
-                            vkFreeMemory(device, taskVisible.memory, nullptr);
-                        }
-                    });
-                }
+                app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app]() {
+                    // Unregister and destroy descriptor set/pool
+                    app->resources.removeDescriptorSet(computeDs);
+                    if (taskPool != VK_NULL_HANDLE) {
+                        app->resources.removeDescriptorPool(taskPool);
+                        vkDestroyDescriptorPool(device, taskPool, nullptr);
+                    }
+                    // Destroy buffers and free memory
+                    if (taskCompact.buffer != VK_NULL_HANDLE) {
+                        app->resources.removeBuffer(taskCompact.buffer);
+                        vkDestroyBuffer(device, taskCompact.buffer, nullptr);
+                    }
+                    if (taskCompact.memory != VK_NULL_HANDLE) {
+                        app->resources.removeDeviceMemory(taskCompact.memory);
+                        vkFreeMemory(device, taskCompact.memory, nullptr);
+                    }
+                    if (taskVisible.buffer != VK_NULL_HANDLE) {
+                        app->resources.removeBuffer(taskVisible.buffer);
+                        vkDestroyBuffer(device, taskVisible.buffer, nullptr);
+                    }
+                    if (taskVisible.memory != VK_NULL_HANDLE) {
+                        app->resources.removeDeviceMemory(taskVisible.memory);
+                        vkFreeMemory(device, taskVisible.memory, nullptr);
+                    }
+                });
             });
         }
 
