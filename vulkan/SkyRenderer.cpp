@@ -435,6 +435,12 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     rpBegin.renderArea.extent = {offscreenWidth, offscreenHeight};
     rpBegin.clearValueCount = 1;
     rpBegin.pClearValues = &clear;
+    // Record the expected layout for the sky color attachment so pre-apply
+    // promotion has the authoritative layout available at submit time.
+    if (app && skyColorImages[frameIndex] != VK_NULL_HANDLE) {
+        app->recordTrackedLayoutForCommandBuffer(cmd, skyColorImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
+    }
+
     vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyEquirectPipeline);

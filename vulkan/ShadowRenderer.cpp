@@ -386,6 +386,8 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
 
         // Transition to DEPTH_STENCIL_READ_ONLY_OPTIMAL once at init
         app->transitionImageLayoutLayer(dummyDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 1, 0, 1);
+        // Ensure authoritative tracked layout reflects the synchronous transition
+        app->setImageLayoutTracked(dummyDepthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 0, 1);
     }
 }
 

@@ -184,6 +184,19 @@ void WaterRenderer::beginScenePass(VkCommandBuffer cmd, uint32_t frameIndex, VkC
     rpInfo.renderArea.extent = {renderWidth, renderHeight};
     rpInfo.clearValueCount = static_cast<uint32_t>(clears.size());
     rpInfo.pClearValues = clears.data();
+    // Record the expected render-pass layouts for the attachments so
+    // submit-time promotion can make the authoritative map reflect the
+    // layouts that the render pass will assume. This avoids validation
+    // mismatches at vkQueueSubmit when other threads query tracked state.
+    if (appPtr) {
+        if (sceneColorImages[frameIndex] != VK_NULL_HANDLE) {
+            appPtr->recordTrackedLayoutForCommandBuffer(cmd, sceneColorImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
+        }
+        if (sceneDepthImages[frameIndex] != VK_NULL_HANDLE) {
+            appPtr->recordTrackedLayoutForCommandBuffer(cmd, sceneDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+        }
+    }
+
     vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
 }
 
@@ -216,7 +229,8 @@ void WaterRenderer::createWaterRenderPass(VulkanApp* app) {
     attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    // Allow implicit render-pass transition from UNDEFINED -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     std::array<VkAttachmentReference, 1> colorRefs{};
@@ -361,12 +375,30 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
                     sceneColorImages[frameIdx], sceneColorMemories[frameIdx], sceneColorImageViews[frameIdx]);
         sceneColorImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
 
+        // Ensure GPU/tracked layout initialized for scene color image
+        if (sceneColorImages[frameIdx] != VK_NULL_HANDLE && app) {
+            try {
+                app->transitionImageLayoutLayer(sceneColorImages[frameIdx], app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+                // Update authoritative tracked layout immediately as a best-effort
+                app->setImageLayoutTracked(sceneColorImages[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+                sceneColorImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            } catch (...) { /* best-effort */ }
+        }
+
         createImage(VK_FORMAT_D32_SFLOAT,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT,
                     sceneDepthImages[frameIdx], sceneDepthMemories[frameIdx], sceneDepthImageViews[frameIdx]);
         sceneDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
         std::cerr << "[WaterRenderer] sceneDepthImages[" << frameIdx << "] = " << (void*)sceneDepthImages[frameIdx] << std::endl;
+        // Ensure GPU layout is transitioned immediately and then update tracked map.
+        if (sceneDepthImages[frameIdx] != VK_NULL_HANDLE && app) {
+            try {
+                app->transitionImageLayoutLayerForce(sceneDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+                app->setImageLayoutTracked(sceneDepthImages[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+                sceneDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            } catch (...) { /* best-effort */ }
+        }
 
         std::array<VkImageView, 2> sceneAttachments = {
             sceneColorImageViews[frameIdx],
@@ -396,6 +428,14 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
                     waterDepthImages[frameIdx], waterDepthMemories[frameIdx], waterDepthImageViews[frameIdx]);
         waterDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
 
+        if (waterDepthImages[frameIdx] != VK_NULL_HANDLE && app) {
+            try {
+                app->transitionImageLayoutLayer(waterDepthImages[frameIdx], VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+                app->setImageLayoutTracked(waterDepthImages[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+                waterDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            } catch (...) { /* best-effort */ }
+        }
+
         // Create an alternate image view that swizzles the alpha (linear depth)
         // into RGB channels so ImGui can display depth as a grayscale image.
         VkImageViewCreateInfo vw{};
@@ -423,6 +463,14 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
                     waterGeomDepthImages[frameIdx], waterGeomDepthMemories[frameIdx], waterGeomDepthImageViews[frameIdx]);
         waterGeomDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
         std::cerr << "[WaterRenderer] waterGeomDepthImage[" << frameIdx << "] = " << (void*)waterGeomDepthImages[frameIdx] << std::endl;
+
+        if (waterGeomDepthImages[frameIdx] != VK_NULL_HANDLE && app) {
+            try {
+                app->transitionImageLayoutLayerForce(waterGeomDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+                app->setImageLayoutTracked(waterGeomDepthImages[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+                waterGeomDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            } catch (...) { /* best-effort */ }
+        }
 
         // Back-face depth image will be created by SceneRenderer-owned WaterBackFaceRenderer
     }
@@ -488,10 +536,10 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
             app->resources.addDescriptorSet(waterDepthDescriptorSets[i], "WaterRenderer: waterDepthDescriptorSet");
         }
         
-        // Update both descriptor sets to bind their frame's scene images
-        for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
-            updateSceneTexturesBinding(app, sceneColorImageViews[frameIdx], sceneDepthImageViews[frameIdx], frameIdx, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
-        }
+        // Descriptor sets allocated. Do not update bindings here with VK_NULL_HANDLE
+        // for optional resources; the higher-level caller (SceneRenderer) is
+        // responsible for providing valid `sky`, `backFaceDepth` and cubemap
+        // views via `updateSceneTexturesBinding` before rendering.
     }
     
     std::cout << "[WaterRenderer] Created render targets (2 sets) " << width << "x" << height << std::endl;
@@ -854,6 +902,17 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     renderPassInfo.renderArea.extent = {renderWidth, renderHeight};
     renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
     renderPassInfo.pClearValues = clearValues.data();
+    // Record expected layouts for water attachments so submit-time promotion
+    // will make the authoritative state match the render pass assumptions.
+    if (appPtr) {
+        if (waterDepthImages[frameIndex] != VK_NULL_HANDLE) {
+            appPtr->recordTrackedLayoutForCommandBuffer(cmd, waterDepthImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
+        }
+        if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
+            appPtr->recordTrackedLayoutForCommandBuffer(cmd, waterGeomDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+        }
+    }
+
     vkCmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
     // Set viewport and scissor
     VkViewport viewport{};
@@ -922,18 +981,27 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
 
     // Sky color (binding 2)
     imageInfos[2].sampler = linearSampler;
-    imageInfos[2].imageView = (skyImageView != VK_NULL_HANDLE) ? skyImageView : colorView;  // fallback to scene color if no sky
+    if (skyImageView == VK_NULL_HANDLE) {
+        throw std::runtime_error("WaterRenderer requires a valid skyImageView (no fallback allowed)");
+    }
+    imageInfos[2].imageView = skyImageView;
     imageInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     // Water back-face depth (binding 3) — prefer explicit `backFaceDepthView` if provided.
     // Use nearest filtering so depth values are not interpolated across geometry edges.
     imageInfos[3].sampler = nearestSampler;
-    imageInfos[3].imageView = (backFaceDepthView != VK_NULL_HANDLE) ? backFaceDepthView : depthView;
+    if (backFaceDepthView == VK_NULL_HANDLE) {
+        throw std::runtime_error("WaterRenderer requires a valid backFaceDepthView (no fallback allowed)");
+    }
+    imageInfos[3].imageView = backFaceDepthView;
     imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     // Cubemap (binding 4) — prefer `finalCubeView` if available, otherwise fall back to scene color
     imageInfos[4].sampler = linearSampler;
-    imageInfos[4].imageView = (finalCubeView != VK_NULL_HANDLE) ? finalCubeView : colorView;
+    if (finalCubeView == VK_NULL_HANDLE) {
+        throw std::runtime_error("WaterRenderer requires a valid finalCubeView for reflections (no fallback allowed)");
+    }
+    imageInfos[4].imageView = finalCubeView;
     imageInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     // Scene position (binding 5) — g-buffer world position. If not available, fall back to scene color view.
@@ -1029,8 +1097,7 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     // Dynamic parameter updates are performed explicitly from the upper level
     // via updateGPUParamsForLayer().
 
-    // Update per-frame scene descriptors
-    updateSceneTexturesBinding(app, sceneColorView, sceneDepthView, frameIndex, skyView, VK_NULL_HANDLE, VK_NULL_HANDLE);
+
 
     // Record the water geometry pass directly on the main command buffer.
     // The solid render pass already ended (finalLayout transitions images to
@@ -1080,7 +1147,7 @@ void WaterRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex) 
     // Depth-based back-face image barriers are handled by SceneRenderer-owned back-face renderer.
 
     if (!barriers.empty()) {
-        VulkanApp* a = getImGuiVulkanApp();
+        VulkanApp* a = this->appPtr ? this->appPtr : getImGuiVulkanApp();
         if (a) {
             for (auto &b : barriers) {
                 a->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R32G32B32A32_SFLOAT,

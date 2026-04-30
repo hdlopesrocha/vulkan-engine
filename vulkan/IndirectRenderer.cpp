@@ -645,8 +645,11 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         }
     }
 
-    // Try to load optional device function for indirect-count draws
+    // Try to load device function for indirect-count draws; require it.
     cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCountKHR");
+    if (!cmdDrawIndexedIndirectCount) {
+        throw std::runtime_error("Required device function vkCmdDrawIndexedIndirectCountKHR is not available");
+    }
 
     // Models SSBO removed: skip updating main descriptor set for models
     descriptorDirty = false;
@@ -659,13 +662,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // NOTE: No mutex lock here - this is only called from the main render thread
     // and all buffer modifications happen in rebuild() which does lock.
     if (computePipeline == VK_NULL_HANDLE || compactIndirectBuffer.buffer == VK_NULL_HANDLE) {
-        static bool reported = false;
-        if (!reported) {
-            std::cerr << "[IndirectRenderer::prepareCull] SKIP: computePipeline=" << (void*)computePipeline
-                      << ", compactIndirectBuffer=" << (void*)compactIndirectBuffer.buffer << std::endl;
-            reported = true;
-        }
-        return;
+        throw std::runtime_error("IndirectRenderer::prepareCull requires compute pipeline and compactIndirectBuffer");
     }
     
     static bool printedOnce = false;
@@ -730,14 +727,11 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 
 void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
                                                 VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer, uint32_t maxDraws) {
-    if (computePipeline == VK_NULL_HANDLE || outCompactBuffer == VK_NULL_HANDLE || computeDesc == VK_NULL_HANDLE) {
-        static bool reported = false;
-        if (!reported) {
-            printf("[IndirectRenderer::prepareCullWithDescriptor] SKIP: computePipeline=%p, outCompactBuffer=%p, computeDesc=%p\n",
-                   (void*)computePipeline, (void*)outCompactBuffer, (void*)computeDesc);
-            reported = true;
-        }
-        return;
+    if (computePipeline == VK_NULL_HANDLE) {
+        throw std::runtime_error("IndirectRenderer::prepareCullWithDescriptor requires compute pipeline");
+    }
+    if (outCompactBuffer == VK_NULL_HANDLE || computeDesc == VK_NULL_HANDLE) {
+        throw std::runtime_error("IndirectRenderer::prepareCullWithDescriptor requires valid outCompactBuffer and computeDesc");
     }
 
     // Reset visible count to zero using a command (clear GPU-side counter)
@@ -811,11 +805,10 @@ void IndirectRenderer::drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer com
 
     uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
 
-    if (cmdDrawIndexedIndirectCount) {
-        cmdDrawIndexedIndirectCount(cmd, compactBuffer, 0, visibleCountBuffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
-    } else {
-        vkCmdDrawIndexedIndirect(cmd, compactBuffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+    if (!cmdDrawIndexedIndirectCount) {
+        throw std::runtime_error("vkCmdDrawIndexedIndirectCountKHR not available (draw-indirect-count required)");
     }
+    cmdDrawIndexedIndirectCount(cmd, compactBuffer, 0, visibleCountBuffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
 }
 
 void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
@@ -871,13 +864,11 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
     // Issue indirect-draw call; compute shader compacts only visible commands
     uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
     
-    if (cmdDrawIndexedIndirectCount) {
-        // Use indirect-count variant to let the GPU supply the visible count from compute shader
-        cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffer.buffer, 0, visibleCountBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
-    } else {
-        // Fallback: draw all commands (no GPU count available)
-        vkCmdDrawIndexedIndirect(cmd, compactIndirectBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+    if (!cmdDrawIndexedIndirectCount) {
+        throw std::runtime_error("vkCmdDrawIndexedIndirectCountKHR not available (draw-indirect-count required)");
     }
+    // Use indirect-count variant to let the GPU supply the visible count from compute shader
+    cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffer.buffer, 0, visibleCountBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
 }
 
 void IndirectRenderer::bindBuffers(VkCommandBuffer cmd) {
@@ -919,11 +910,10 @@ void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pi
     // No per-draw model push-constants: models are identity in shaders.
 
     uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
-    if (cmdDrawIndexedIndirectCount) {
-        cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffer.buffer, 0, visibleCountBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
-    } else {
-        vkCmdDrawIndexedIndirect(cmd, compactIndirectBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+    if (!cmdDrawIndexedIndirectCount) {
+        throw std::runtime_error("vkCmdDrawIndexedIndirectCountKHR not available (draw-indirect-count required)");
     }
+    cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffer.buffer, 0, visibleCountBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
 }
 
 uint32_t IndirectRenderer::readVisibleCount(VulkanApp* app) const {

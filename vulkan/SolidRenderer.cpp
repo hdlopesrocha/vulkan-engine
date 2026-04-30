@@ -154,6 +154,36 @@ void SolidRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         }
         app->resources.addFramebuffer(solidFramebuffers[i], "SolidRenderer: framebuffer");
     }
+
+    // Ensure created images have authoritative GPU/tracked layouts before
+    // first use. Use VulkanApp helpers to perform transitions so the
+    // app's layout-tracking map is updated consistently.
+    for (int i = 0; i < 2; ++i) {
+        // color image: transition UNDEFINED -> SHADER_READ_ONLY_OPTIMAL
+        if (solidColorImages[i] != VK_NULL_HANDLE && app) {
+            try {
+                app->transitionImageLayoutLayer(solidColorImages[i], app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            } catch (...) { /* best-effort: avoid throwing during init */ }
+        }
+        // depth image: ensure a concrete GPU/tracked layout so early
+        // sampling or other uses don't see UNDEFINED. Use a forced
+        // synchronous transition to SHADER_READ_ONLY_OPTIMAL and update
+        // the tracked layout so subsequent record-time barriers remain
+        // correct. This is a conservative init that avoids submit-time
+        // validation mismatches when other command buffers reference
+        // the depth image before a renderpass has written it.
+        solidDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (solidDepthImages[i] != VK_NULL_HANDLE && app) {
+            try {
+                // Force a GPU transition from UNDEFINED -> SHADER_READ_ONLY_OPTIMAL
+                // and make the authoritative tracked layout reflect that state.
+                app->transitionImageLayoutLayerForce(solidDepthImages[i], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+                // Ensure the tracked map matches the forced transition
+                app->setImageLayoutTracked(solidDepthImages[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+                solidDepthImageLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            } catch (...) { /* best-effort */ }
+        }
+    }
 }
 
 void SolidRenderer::destroyRenderTargets(VulkanApp* app) {
@@ -184,29 +214,15 @@ void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearV
         if (solidDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
             // Use centralized app helper so recorded oldLayout matches the app's transition logic
             std::cerr << "[SolidRenderer::beginPass] transition: cmd=" << (void*)cmd << " image=" << (void*)solidDepthImages[frameIndex] << " frame=" << (unsigned)frameIndex << " trackedOld=" << (int)solidDepthImageLayouts[frameIndex] << " new=" << (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL << std::endl;
-            if (app) {
-                app->recordTransitionImageLayoutLayer(cmd, solidDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, solidDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
-            } else {
-                // Fallback to inline barrier if app is not available
-                VkImageMemoryBarrier fallbackBarrier{};
-                fallbackBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                fallbackBarrier.srcAccessMask = 0;
-                fallbackBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                fallbackBarrier.oldLayout = solidDepthImageLayouts[frameIndex];
-                fallbackBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                fallbackBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                fallbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                fallbackBarrier.image = solidDepthImages[frameIndex];
-                fallbackBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-                fallbackBarrier.subresourceRange.baseMipLevel = 0;
-                fallbackBarrier.subresourceRange.levelCount = 1;
-                fallbackBarrier.subresourceRange.baseArrayLayer = 0;
-                fallbackBarrier.subresourceRange.layerCount = 1;
-                vkCmdPipelineBarrier(cmd,
-                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                    VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                    0, 0, nullptr, 0, nullptr, 1, &fallbackBarrier);
+            if (!app) {
+                throw std::runtime_error("SolidRenderer::beginPass requires valid VulkanApp to record layout transitions");
             }
+            app->recordTransitionImageLayoutLayer(cmd, solidDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, solidDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+            // Also record the expected render-pass layout as a tracked update for
+            // this command buffer so submit-time pre-apply can make the
+            // authoritative map reflect the transition the render pass will
+            // perform. This avoids validation mismatches at submit time.
+            app->recordTrackedLayoutForCommandBuffer(cmd, solidDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
             solidDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         }
     }

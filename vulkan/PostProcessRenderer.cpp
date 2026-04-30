@@ -307,10 +307,13 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
 
     VkDescriptorBufferInfo bufferInfo{uniformBuffer.buffer, 0, sizeof(WaterUBO)};
 
-    // Sky color image info (binding 6)
+    // Sky color image info (binding 6) - require explicit skyView
+    if (skyView == VK_NULL_HANDLE) {
+        throw std::runtime_error("PostProcessRenderer::render requires a valid skyView (no fallback allowed)");
+    }
     VkDescriptorImageInfo skyImageInfo{};
     skyImageInfo.sampler = linearSampler;
-    skyImageInfo.imageView = (skyView != VK_NULL_HANDLE) ? skyView : sceneColorView;  // fallback to scene color
+    skyImageInfo.imageView = skyView;
     skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     std::vector<VkWriteDescriptorSet> writes;

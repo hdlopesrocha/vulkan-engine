@@ -26,10 +26,13 @@ public:
                                               VkImage sceneDepthImage,
                                               VkBuffer compactIndirectBuffer = VK_NULL_HANDLE,
                                               VkBuffer visibleCountBuffer = VK_NULL_HANDLE);
-    VkImage getBackFaceDepthImage(uint32_t frameIndex) const { return (frameIndex < 2) ? backFaceDepthImages[frameIndex] : VK_NULL_HANDLE; }
-    VkImageView getBackFaceDepthView(uint32_t frameIndex) const { return (frameIndex < 2) ? backFaceDepthImageViews[frameIndex] : VK_NULL_HANDLE; }
+    // Map the application frame index into the internal double-buffered arrays.
+    // This allows callers to pass the swapchain frame index directly; the
+    // implementation will use modulo mapping into the two back-face buffers.
+    VkImage getBackFaceDepthImage(uint32_t frameIndex) const { return backFaceDepthImages[frameIndex % backFaceDepthImages.size()]; }
+    VkImageView getBackFaceDepthView(uint32_t frameIndex) const { return backFaceDepthImageViews[frameIndex % backFaceDepthImageViews.size()]; }
     // Accessor for tracked per-frame layout (used by widgets to emit correct barriers)
-    VkImageLayout getBackFaceDepthLayout(uint32_t frameIndex) const;
+    VkImageLayout getBackFaceDepthLayout(uint32_t frameIndex) const { return backFaceDepthImageLayouts[frameIndex % backFaceDepthImageLayouts.size()]; }
 
     // Add post-render barriers for the back-face depth image
     void postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex);
@@ -44,4 +47,5 @@ private:
     std::array<VkImageLayout, 2> backFaceDepthImageLayouts = {VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
+    VulkanApp* appPtr = nullptr;
 };

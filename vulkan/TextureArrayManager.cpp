@@ -417,9 +417,6 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 		// Transition this layer to TRANSFER_DST_OPTIMAL using the app helper
 		// so the authoritative tracked layout is consulted when recording.
 		VkImageLayout currentLayout = getLayerLayout(i, currentLayer);
-		if (currentLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-			currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		}
 		a->recordTransitionImageLayoutLayer(cmd, imgs[i].dstImage->image, imgs[i].format, currentLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, imgs[i].dstImage->mipLevels, currentLayer, 1);
 	// Do NOT set the tracked per-layer layout to TRANSFER_DST here; the command
 	// buffer has not yet completed and setting this early can cause other

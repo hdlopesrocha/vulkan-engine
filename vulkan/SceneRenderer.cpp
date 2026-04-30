@@ -2,6 +2,7 @@
 #include "SceneRenderer.hpp"
 
 
+#include <stdexcept>
 #include "../utils/SolidSpaceChangeHandler.hpp"
 #include "../utils/LiquidSpaceChangeHandler.hpp"
 #include "../utils/LocalScene.hpp"
@@ -378,22 +379,14 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     addImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
     addImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
-    // Create and bind Materials SSBO at binding 5. Prefer external MaterialManager if provided.
-    // Always create a valid materialsBuffer for descriptor binding 5
+    // Create and bind Materials SSBO at binding 5. Require an external MaterialManager.
     materialManagerPtr = materialManager;
-    if (materialManager) {
-        materialsBuffer = materialManager->getBuffer();
-        // If the MaterialManager exists but hasn't allocated its GPU buffer yet,
-        // create a local fallback so the descriptor update does not receive a
-        // VK_NULL_HANDLE buffer (which triggers validation errors).
-        if (materialsBuffer.buffer == VK_NULL_HANDLE) {
-            materialsBuffer = app->createBuffer(sizeof(MaterialGPU), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        }
-    } else {
-        // Fallback: create a dummy buffer and keep it alive for the renderer lifetime
-        materialsBuffer = app->createBuffer(sizeof(MaterialGPU), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (!materialManager) {
+        throw std::runtime_error("SceneRenderer::init requires a valid MaterialManager");
+    }
+    materialsBuffer = materialManager->getBuffer();
+    if (materialsBuffer.buffer == VK_NULL_HANDLE) {
+        throw std::runtime_error("MaterialManager provided but materials buffer is not allocated");
     }
     VkDescriptorBufferInfo materialsInfo{};
     materialsInfo.buffer = materialsBuffer.buffer;
@@ -410,8 +403,11 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 
     // Initialize WaterRenderer early and allocate a params SSBO sized to texture layers.
     // Use the passed vector of WaterParams as the source of truth for layer count.
-    // Fallback to texture array layer amount or a minimum of two slots if no params exist.
+    // Do not fall back to texture-array sizes; require explicit water parameters.
     uint32_t layerCount = waterParams.size();
+    if (layerCount == 0) {
+        throw std::runtime_error("SceneRenderer::init requires at least one WaterParams entry (no fallback allowed)");
+    }
     
     size_t paramsBufferSize = sizeof(WaterParamsGPU) * static_cast<size_t>(layerCount);
     waterParamsBuffer_ = app->createBuffer(paramsBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -428,6 +424,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Now that WaterRenderer has created its pipeline layout, allow the
     // back-face renderer to create pipelines that depend on it.
     if (backFaceRenderer) backFaceRenderer->createPipelines(app, waterRenderer->getWaterGeometryPipelineLayout());
+    // Create back-face render targets early so their image views are
+    // available before the first frame's water pass attempts to bind them.
+    if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (solid360Renderer) solid360Renderer->init(app);
 
     // Bind water params SSBO to binding 7 of main descriptor set
@@ -566,6 +565,10 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     }
     waterRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
 
+    // Ensure back-face render targets are created as well so the
+    // `backFaceDepthView` is valid before the first frame's water pass.
+    if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+
     // Create cubemap → equirect 360° reflection targets for water (owned by SceneRenderer)
     if (solid360Renderer) solid360Renderer->createSolid360Targets(app, solidRenderer->getRenderPass(), waterRenderer->getLinearSampler());
 
@@ -642,22 +645,26 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     }
 
     // Materials SSBO (binding 5) — refresh from MaterialManager in case the buffer
-    // was allocated after SceneRenderer::init (setupTextures runs on a separate thread)
+    // was allocated after SceneRenderer::init (setupTextures may run on a separate thread)
     if (materialManagerPtr && materialManagerPtr->getBuffer().buffer != VK_NULL_HANDLE) {
         materialsBuffer = materialManagerPtr->getBuffer();
     }
-    VkDescriptorBufferInfo materialsInfo{};
-    materialsInfo.buffer = materialsBuffer.buffer;
-    materialsInfo.offset = 0;
-    materialsInfo.range = VK_WHOLE_SIZE;
-    VkWriteDescriptorSet materialsWrite{};
-    materialsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    materialsWrite.dstSet = mainDs;
-    materialsWrite.dstBinding = 5;
-    materialsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    materialsWrite.descriptorCount = 1;
-    materialsWrite.pBufferInfo = &materialsInfo;
-    writes.push_back(materialsWrite);
+    if (materialsBuffer.buffer != VK_NULL_HANDLE) {
+        VkDescriptorBufferInfo materialsInfo{};
+        materialsInfo.buffer = materialsBuffer.buffer;
+        materialsInfo.offset = 0;
+        materialsInfo.range = VK_WHOLE_SIZE;
+        VkWriteDescriptorSet materialsWrite{};
+        materialsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        materialsWrite.dstSet = mainDs;
+        materialsWrite.dstBinding = 5;
+        materialsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        materialsWrite.descriptorCount = 1;
+        materialsWrite.pBufferInfo = &materialsInfo;
+        writes.push_back(materialsWrite);
+    } else {
+        std::cerr << "[SceneRenderer::updateTextureDescriptorSet] materials buffer not available — skipping binding 5\n";
+    }
 
     // Rebind water params UBO at binding 7 (must stay valid after texture re-allocation)
     if (waterParamsBuffer_.buffer != VK_NULL_HANDLE) {
@@ -700,12 +707,16 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
         addShadowImageWrite(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         addShadowImageWrite(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         addShadowImageWrite(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        VkDescriptorBufferInfo sMatInfo{ materialsBuffer.buffer, 0, VK_WHOLE_SIZE };
-        VkWriteDescriptorSet sMatWrite{}; sMatWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        sMatWrite.dstSet = shadowDescriptorSet; sMatWrite.dstBinding = 5;
-        sMatWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; sMatWrite.descriptorCount = 1;
-        sMatWrite.pBufferInfo = &sMatInfo;
-        shadowWrites.push_back(sMatWrite);
+        if (materialsBuffer.buffer != VK_NULL_HANDLE) {
+            VkDescriptorBufferInfo sMatInfo{ materialsBuffer.buffer, 0, VK_WHOLE_SIZE };
+            VkWriteDescriptorSet sMatWrite{}; sMatWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            sMatWrite.dstSet = shadowDescriptorSet; sMatWrite.dstBinding = 5;
+            sMatWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; sMatWrite.descriptorCount = 1;
+            sMatWrite.pBufferInfo = &sMatInfo;
+            shadowWrites.push_back(sMatWrite);
+        } else {
+            std::cerr << "[SceneRenderer::updateTextureDescriptorSet] shadow materials buffer not available — skipping shadow binding 5\n";
+        }
         if (waterParamsBuffer_.buffer != VK_NULL_HANDLE) {
             VkDescriptorBufferInfo sWaterInfo{ waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE };
             VkWriteDescriptorSet sWaterWrite{}; sWaterWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -884,9 +895,7 @@ void SceneRenderer::addDebugCubeForGeometry(Layer layer, NodeID nid, const Octre
         maxp = glm::max(maxp, v.position);
     }
     if (minp.x == FLT_MAX) {
-        // Fallback to node cube if geometry empty
-        minp = nd.cube.getMin();
-        maxp = nd.cube.getMax();
+        throw std::runtime_error("SceneRenderer::addDebugCubeForGeometry requires non-empty geometry (no fallback allowed)");
     }
     c.cube = BoundingBox(minp, maxp);
     c.color = (layer == LAYER_OPAQUE) ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(0.0f, 0.5f, 1.0f);

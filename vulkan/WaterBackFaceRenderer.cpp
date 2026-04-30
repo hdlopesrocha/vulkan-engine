@@ -8,11 +8,12 @@ WaterBackFaceRenderer::WaterBackFaceRenderer() {}
 WaterBackFaceRenderer::~WaterBackFaceRenderer() {}
 
 void WaterBackFaceRenderer::init(VulkanApp* app) {
-    (void)app;
+    appPtr = app;
 }
 
 void WaterBackFaceRenderer::cleanup(VulkanApp* app) {
     (void)app;
+    appPtr = nullptr;
     // VulkanResourceManager owns actual Vulkan objects; just clear handles
     backFaceRenderPass = VK_NULL_HANDLE;
     backFacePipeline = VK_NULL_HANDLE;
@@ -35,8 +36,9 @@ void WaterBackFaceRenderer::createRenderPass(VulkanApp* app) {
     bfDepthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     bfDepthAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     bfDepthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    // Start undefined so the clear will produce a defined depth buffer.
-    bfDepthAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    // Start in depth-attachment layout so implicit render-pass transitions
+    // align with the explicit pre-pass barrier we record (no fallback).
+    bfDepthAtt.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     bfDepthAtt.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkAttachmentReference bfDepthRef{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
@@ -288,21 +290,18 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
                     VK_IMAGE_ASPECT_DEPTH_BIT,
                     backFaceDepthImages[i], backFaceDepthMemories[i], backFaceDepthImageViews[i]);
         backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        // Ensure authoritative/tracked layout matches the render-pass initial layout
+        if (backFaceDepthImages[i] != VK_NULL_HANDLE && app) {
+            try {
+                app->transitionImageLayoutLayer(backFaceDepthImages[i], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+                app->setImageLayoutTracked(backFaceDepthImages[i], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+                backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            } catch (...) { /* best-effort */ }
+        }
     }
 
-    // Transition images to SHADER_READ_ONLY_OPTIMAL
     for (int i = 0; i < 2; ++i) {
-        if (backFaceDepthImages[i] == VK_NULL_HANDLE) continue;
-        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-            std::cerr << "[WaterBackFaceRenderer::createRenderTargets] initial transition: cmd=" << (void*)cmd
-                      << " image=" << (void*)backFaceDepthImages[i]
-                      << " old=" << (int)backFaceDepthImageLayouts[i]
-                      << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
-            app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[i], VK_FORMAT_D32_SFLOAT,
-                                                 backFaceDepthImageLayouts[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                                 1, 0, 1);
-        });
-        backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     // Create framebuffers
@@ -362,6 +361,10 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
             app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
                                                  backFaceDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                                                  1, 0, 1);
+            // Also record the expected render-pass layout as a tracked update
+            // for this command buffer so submit-time pre-apply can promote the
+            // authoritative layout and avoid validation mismatches.
+            app->recordTrackedLayoutForCommandBuffer(cmd, backFaceDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
         } else {
             VkImageMemoryBarrier fallbackBarrier{};
             fallbackBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -440,9 +443,11 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
                       << " old=" << (int)backFaceDepthImageLayouts[frameIndex]
                       << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
             if (app) {
-                app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
-                                                     backFaceDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                                     1, 0, 1);
+                // Let the centralized tracker know the render pass leaves the
+                // image in SHADER_READ_ONLY_OPTIMAL. Do not emit an extra
+                // barrier here — the render pass performed the implicit
+                // transition to the final layout.
+                app->recordTrackedLayoutForCommandBuffer(cmd, backFaceDepthImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
             } else {
                 VkImageMemoryBarrier bfBarrier{};
                 bfBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -484,7 +489,7 @@ void WaterBackFaceRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t fram
               << " trackedOld=" << (int)trackedOld
               << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
 
-    VulkanApp* app = getImGuiVulkanApp();
+    VulkanApp* app = this->appPtr ? this->appPtr : getImGuiVulkanApp();
     if (app) {
         app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
                                              trackedOld, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -512,7 +517,4 @@ void WaterBackFaceRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t fram
     }
 }
 
-VkImageLayout WaterBackFaceRenderer::getBackFaceDepthLayout(uint32_t frameIndex) const {
-    if (frameIndex < backFaceDepthImageLayouts.size()) return backFaceDepthImageLayouts[frameIndex];
-    return VK_IMAGE_LAYOUT_UNDEFINED;
-}
+// getBackFaceDepthLayout is defined inline in the header (maps indices via modulo).
