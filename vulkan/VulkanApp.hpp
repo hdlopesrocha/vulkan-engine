@@ -120,7 +120,7 @@ private:
     // These are applied to `imageLayerLayouts` only when the command buffer
     // has actually executed (synchronously or when its fence signals) to
     // avoid marking layouts as changed before the GPU performs the barrier.
-    struct PendingLayoutUpdate { VkImage image; VkImageLayout newLayout; uint32_t baseArrayLayer; uint32_t layerCount; };
+    struct PendingLayoutUpdate { VkImage image; VkImageLayout newLayout; uint32_t baseArrayLayer; uint32_t layerCount; bool isBarrier; };
     std::unordered_map<VkCommandBuffer, std::vector<PendingLayoutUpdate>> commandBufferPendingLayouts;
     std::mutex pendingLayoutMutex;
     
@@ -208,6 +208,12 @@ protected:
         // Apply any pending layout updates recorded for a command buffer
         // (transfers per-CB pending updates into the authoritative map).
         void applyPendingLayoutUpdatesForCommandBuffer(VkCommandBuffer cmd);
+        // Promote pending layout updates into the authoritative map before
+        // calling vkQueueSubmit. This makes validation-layer checks more
+        // robust by ensuring unknown/undefined entries are populated from
+        // recorded pending updates (prefers this command buffer's own
+        // pending updates, then fills gaps from other pending entries).
+        void preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer);
         // Wait for all tracked pending command buffers to finish (blocks).
         void waitForAllPendingCommandBuffers();
         // Query whether a given fence is still tracked as pending by VulkanApp
@@ -344,6 +350,10 @@ protected:
         void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels = 1, uint32_t arrayLayers = 1);
         // Transition a specific array layer range (baseArrayLayer, layerCount) synchronously.
         void transitionImageLayoutLayer(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);
+        // Force a transition on the GPU for the specified layers regardless of the
+        // app-authoritative tracked layout. Useful during initialization when we
+        // must ensure the GPU's layout matches expectations immediately.
+        void transitionImageLayoutLayerForce(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);
         // Update the authoritative tracked layout for an image (no barrier emitted).
         void setImageLayoutTracked(VkImage image, VkImageLayout newLayout, uint32_t baseArrayLayer = 0, uint32_t layerCount = 1);
         // Record a tracked layout change associated with a specific command buffer.
