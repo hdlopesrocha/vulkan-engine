@@ -1,10 +1,10 @@
 #pragma once
-#include "VulkanApp.hpp"
-#include "TextureArrayManager.hpp"
-#include "../math/Vertex.hpp"
-#include "../utils/BillboardManager.hpp"
-#include "VertexBufferObject.hpp"
-#include "../utils/Scene.hpp" // for NodeID
+#include "../VulkanApp.hpp"
+#include "../TextureArrayManager.hpp"
+#include "../../math/Vertex.hpp"
+#include "../../utils/BillboardManager.hpp"
+#include "../VertexBufferObject.hpp"
+#include "../../utils/Scene.hpp" // for NodeID
 #include <vector>
 #include <unordered_map>
 #include <glm/glm.hpp>

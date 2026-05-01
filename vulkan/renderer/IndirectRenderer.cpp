@@ -1,6 +1,6 @@
 #include "IndirectRenderer.hpp"
-#include "VulkanApp.hpp"
-#include "../utils/FileReader.hpp"
+#include "../VulkanApp.hpp"
+#include "../../utils/FileReader.hpp"
 
 void IndirectRenderer::setVertexBufferForMesh(uint32_t meshId, Buffer vbuf) {
     std::lock_guard<std::mutex> guard(mutex);

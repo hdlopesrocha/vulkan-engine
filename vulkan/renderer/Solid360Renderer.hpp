@@ -1,8 +1,8 @@
 #pragma once
-#include "VulkanApp.hpp"
+#include "../VulkanApp.hpp"
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
-#include "../Uniforms.hpp"
+#include "../ubo/UniformObject.hpp"
 #include <array>
 
 class Solid360Renderer {

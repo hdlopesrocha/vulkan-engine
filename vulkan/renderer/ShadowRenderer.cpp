@@ -1,9 +1,10 @@
 #include "ShadowRenderer.hpp"
+#include "RendererUtils.hpp"
 
-#include "VulkanApp.hpp"
-#include "ShaderStage.hpp"
-#include "../utils/FileReader.hpp"
-#include "../math/Vertex.hpp"
+#include "../VulkanApp.hpp"
+#include "../ShaderStage.hpp"
+#include "../../utils/FileReader.hpp"
+#include "../../math/Vertex.hpp"
 #include <backends/imgui_impl_vulkan.h>
 #include <stdexcept>
 #include <fstream>
@@ -95,46 +96,11 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
         std::string tag = "ShadowRenderer cascade " + std::to_string(c);
 
         // --- Depth image ---
-        VkImageCreateInfo imageInfo{};
-        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.extent = { shadowMapSize, shadowMapSize, 1 };
-        imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = 1;
-        imageInfo.format = VK_FORMAT_D32_SFLOAT;
-        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        if (vkCreateImage(device, &imageInfo, nullptr, &cas.depthImage) != VK_SUCCESS)
-            throw std::runtime_error("failed to create shadow map depth image cascade " + std::to_string(c));
-        std::cerr << "[ShadowRenderer] createImage: cascade=" << c
-                  << " depthImage=" << (void*)cas.depthImage
-                  << " tag=" << (tag + " depthImage") << std::endl;
-        app->resources.addImage(cas.depthImage, (tag + " depthImage").c_str());
-
-        VkMemoryRequirements memReq;
-        vkGetImageMemoryRequirements(device, cas.depthImage, &memReq);
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memReq.size;
-        allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &cas.depthMemory) != VK_SUCCESS)
-            throw std::runtime_error("failed to allocate shadow map memory cascade " + std::to_string(c));
-        vkBindImageMemory(device, cas.depthImage, cas.depthMemory, 0);
-        app->resources.addDeviceMemory(cas.depthMemory, (tag + " depthMemory").c_str());
-
-        // Depth image view
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = cas.depthImage;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = VK_FORMAT_D32_SFLOAT;
-        viewInfo.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
-        if (vkCreateImageView(device, &viewInfo, nullptr, &cas.depthView) != VK_SUCCESS)
-            throw std::runtime_error("failed to create shadow map depth view cascade " + std::to_string(c));
-        app->resources.addImageView(cas.depthView, (tag + " depthView").c_str());
+        RendererUtils::createImage2D(device, app, shadowMapSize, shadowMapSize,
+            VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            VK_IMAGE_ASPECT_DEPTH_BIT,
+            (tag + " depth").c_str(), cas.depthImage, cas.depthMemory, cas.depthView);
 
         // Transition depth to READ_ONLY so the render pass starts from a valid layout
         // Use the centralized helper so the authoritative layout map is updated.
@@ -148,42 +114,11 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
             shadowMapSampler, cas.depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
         // --- Color image (transient, unused but keeps renderpass attachment count compatible) ---
-        VkImageCreateInfo colorInfo{};
-        colorInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        colorInfo.imageType = VK_IMAGE_TYPE_2D;
-        colorInfo.extent = { shadowMapSize, shadowMapSize, 1 };
-        colorInfo.mipLevels = 1;
-        colorInfo.arrayLayers = 1;
-        colorInfo.format = colorFormat;
-        colorInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        colorInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        colorInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        colorInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        colorInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        if (vkCreateImage(device, &colorInfo, nullptr, &cas.colorImage) != VK_SUCCESS)
-            throw std::runtime_error("failed to create shadow color image cascade " + std::to_string(c));
-        std::cerr << "[ShadowRenderer] createImage: cascade=" << c
-                  << " colorImage=" << (void*)cas.colorImage
-                  << " tag=" << (tag + " colorImage") << std::endl;
-        app->resources.addImage(cas.colorImage, (tag + " colorImage").c_str());
-
-        vkGetImageMemoryRequirements(device, cas.colorImage, &memReq);
-        allocInfo.allocationSize = memReq.size;
-        allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &cas.colorMemory) != VK_SUCCESS)
-            throw std::runtime_error("failed to allocate shadow color memory cascade " + std::to_string(c));
-        vkBindImageMemory(device, cas.colorImage, cas.colorMemory, 0);
-        app->resources.addDeviceMemory(cas.colorMemory, (tag + " colorMemory").c_str());
-
-        VkImageViewCreateInfo colorViewInfo{};
-        colorViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        colorViewInfo.image = cas.colorImage;
-        colorViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        colorViewInfo.format = colorFormat;
-        colorViewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        if (vkCreateImageView(device, &colorViewInfo, nullptr, &cas.colorView) != VK_SUCCESS)
-            throw std::runtime_error("failed to create shadow color view cascade " + std::to_string(c));
-        app->resources.addImageView(cas.colorView, (tag + " colorView").c_str());
+        RendererUtils::createImage2D(device, app, shadowMapSize, shadowMapSize,
+            colorFormat,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            (tag + " color").c_str(), cas.colorImage, cas.colorMemory, cas.colorView);
     }
 
     std::cerr << "[ShadowRenderer] Created " << SHADOW_CASCADE_COUNT
@@ -347,42 +282,11 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
     {
         VkDevice device = app->getDevice();
 
-        VkImageCreateInfo imgInfo{};
-        imgInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imgInfo.imageType     = VK_IMAGE_TYPE_2D;
-        imgInfo.extent        = { 1, 1, 1 };
-        imgInfo.mipLevels     = 1;
-        imgInfo.arrayLayers   = 1;
-        imgInfo.format        = VK_FORMAT_D32_SFLOAT;
-        imgInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
-        imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imgInfo.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        imgInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
-        imgInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
-        if (vkCreateImage(device, &imgInfo, nullptr, &dummyDepthImage) != VK_SUCCESS)
-            throw std::runtime_error("failed to create dummy depth image");
-        app->resources.addImage(dummyDepthImage, "ShadowRenderer: dummyDepthImage");
-
-        VkMemoryRequirements memReq;
-        vkGetImageMemoryRequirements(device, dummyDepthImage, &memReq);
-        VkMemoryAllocateInfo alloc{};
-        alloc.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc.allocationSize  = memReq.size;
-        alloc.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(device, &alloc, nullptr, &dummyDepthMemory) != VK_SUCCESS)
-            throw std::runtime_error("failed to allocate dummy depth memory");
-        vkBindImageMemory(device, dummyDepthImage, dummyDepthMemory, 0);
-        app->resources.addDeviceMemory(dummyDepthMemory, "ShadowRenderer: dummyDepthMemory");
-
-        VkImageViewCreateInfo vwInfo{};
-        vwInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        vwInfo.image    = dummyDepthImage;
-        vwInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        vwInfo.format   = VK_FORMAT_D32_SFLOAT;
-        vwInfo.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
-        if (vkCreateImageView(device, &vwInfo, nullptr, &dummyDepthView) != VK_SUCCESS)
-            throw std::runtime_error("failed to create dummy depth view");
-        app->resources.addImageView(dummyDepthView, "ShadowRenderer: dummyDepthView");
+        RendererUtils::createImage2D(device, app, 1, 1,
+            VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_ASPECT_DEPTH_BIT,
+            "ShadowRenderer: dummyDepth", dummyDepthImage, dummyDepthMemory, dummyDepthView);
 
         // Transition to DEPTH_STENCIL_READ_ONLY_OPTIMAL once at init
         app->transitionImageLayoutLayer(dummyDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 1, 0, 1);

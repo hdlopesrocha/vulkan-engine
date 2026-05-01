@@ -1,5 +1,5 @@
 #include "WireframeRenderer.hpp"
-#include "../utils/FileReader.hpp"
+#include "../../utils/FileReader.hpp"
 #include <iostream>
 #include <array>
 

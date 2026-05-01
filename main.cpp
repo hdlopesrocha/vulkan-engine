@@ -18,9 +18,9 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
 
-#include "Uniforms.hpp"
+#include "vulkan/ubo/UniformObject.hpp"
 #include "vulkan/VulkanApp.hpp"
-#include "vulkan/SceneRenderer.hpp"
+#include "vulkan/renderer/SceneRenderer.hpp"
 #include "utils/LocalScene.hpp"
 #include "widgets/SettingsWidget.hpp"
 #include "widgets/SkyWidget.hpp"

@@ -2,7 +2,7 @@
 
 #include <glm/glm.hpp>
 #include "../math/Light.hpp"
-#include "../Uniforms.hpp"
+#include "../vulkan/ubo/UniformObject.hpp"
 
 struct ShadowParams {
     float orthoSize = 1024.0f;

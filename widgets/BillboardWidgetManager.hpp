@@ -2,7 +2,7 @@
 
 #include <memory>
 #include "BillboardWidget.hpp"
-#include "../vulkan/VegetationRenderer.hpp"
+#include "../vulkan/renderer/VegetationRenderer.hpp"
 #include <vector>
 #include <glm/glm.hpp>
 

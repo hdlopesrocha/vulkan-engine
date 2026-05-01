@@ -1,5 +1,5 @@
 #include "ShadowMapWidget.hpp"
-#include "../Uniforms.hpp"
+#include "../vulkan/ubo/UniformObject.hpp"
 #include "components/ImGuiHelpers.hpp"
 
 ShadowMapWidget::ShadowMapWidget(ShadowRenderer* shadowMapper, ShadowParams* shadowParams)

@@ -1,8 +1,8 @@
 // IndirectRenderer.hpp
 #pragma once
 
-#include "VulkanApp.hpp"
-#include "../math/Geometry.hpp"
+#include "../VulkanApp.hpp"
+#include "../../math/Geometry.hpp"
 #include <glm/glm.hpp>
 #include <vector>
 #include <unordered_map>

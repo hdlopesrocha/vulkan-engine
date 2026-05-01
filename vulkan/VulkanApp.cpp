@@ -2151,16 +2151,14 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             if (it != imageLayerLayouts.end()) {
                 tracked = it->second;
                 if (tracked != oldLayout) {
-                    // Prefer the app-tracked layout only when the caller supplied
-                    // a concrete oldLayout. If the caller passed UNDEFINED (i.e.
-                    // it doesn't know the current layout), prefer the caller's
-                    // UNDEFINED so the recorded barrier transitions from the
-                    // true unknown state. This avoids emitting barriers that
-                    // claim the image was in e.g. SHADER_READ_ONLY when the
-                    // GPU still has it as UNDEFINED (common during init).
-                    if (oldLayout != VK_IMAGE_LAYOUT_UNDEFINED) {
-                        effectiveOld = tracked;
-                    }
+                    // Prefer the app-tracked layout when available. Recording
+                    // a transition from the tracked layout reduces the chance
+                    // of emitting barriers that claim an UNDEFINED oldLayout
+                    // while the app (or previous submissions) know the image
+                    // is already in a concrete layout. This helps avoid
+                    // validation errors when callers pass VK_IMAGE_LAYOUT_UNDEFINED
+                    // to indicate they don't know the current layout.
+                    effectiveOld = tracked;
                 }
             } else {
                 // Initialize tracking for this layer from caller's oldLayout.
@@ -2189,32 +2187,50 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
                 // pending update exists, fall back to the most recent
                 // pending update of any type.
                 bool foundBarrier = false;
+                // Prefer the most recent pending barrier recorded for this
+                // command buffer. If an earlier vkCmdPipelineBarrier was
+                // emitted in the same command buffer for the same image/layer,
+                // the effective old layout for any subsequent barrier must
+                // reflect that earlier pending barrier to avoid emitting a
+                // second barrier whose oldLayout disagrees with the validation
+                // layer's recorded state for this command buffer.
                 for (auto it = vec.rbegin(); it != vec.rend(); ++it) {
-                    if (it->image == image && it->baseArrayLayer == baseArrayLayer && it->isBarrier) {
-                        pendingOld = it->newLayout;
-                        // Be conservative: only override the resolved effectiveOld
-                        // with a pending barrier when the caller did not already
-                        // supply a concrete oldLayout that matches the tracked
-                        // authoritative layout. This avoids claiming the image
-                        // was in a different layout than the driver/validation
-                        // layer believes when earlier pending updates exist.
-                        if (effectiveOld != oldLayout || oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
-                            if (it->newLayout != effectiveOld) effectiveOld = it->newLayout;
-                        }
-                        foundBarrier = true;
-                        break;
-                    }
-                }
-                if (!foundBarrier) {
-                    for (auto it = vec.rbegin(); it != vec.rend(); ++it) {
-                        if (it->image == image && it->baseArrayLayer == baseArrayLayer) {
+                    if (it->image == image && it->isBarrier) {
+                        uint32_t pendingBase = it->baseArrayLayer;
+                        uint32_t pendingCount = it->layerCount;
+                        // Treat a pending update as applicable if it covers the
+                        // requested base array layer (overlap). This handles
+                        // cases where a previous barrier updated multiple
+                        // layers but the current request targets a single
+                        // layer inside that range.
+                        if (baseArrayLayer >= pendingBase && baseArrayLayer < pendingBase + pendingCount) {
                             pendingOld = it->newLayout;
-                            if (effectiveOld != oldLayout || oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
-                                if (it->newLayout != effectiveOld) effectiveOld = it->newLayout;
+                            // Only adopt a pending barrier's newLayout as the
+                            // effective old layout when the caller explicitly
+                            // passed VK_IMAGE_LAYOUT_UNDEFINED (i.e. the caller
+                            // doesn't know the current layout). Favoring a
+                            // pending barrier for callers that supplied a
+                            // concrete oldLayout can lead to validation
+                            // mismatches; prefer the caller/tracked value in
+                            // that case.
+                            if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
+                                effectiveOld = it->newLayout;
                             }
+                            foundBarrier = true;
                             break;
                         }
                     }
+                }
+                if (!foundBarrier) {
+                    // If no barrier-type pending update exists, do NOT adopt
+                    // tracked-only pending updates as the effective old layout.
+                    // Tracked-only updates represent implicit render-pass
+                    // finalLayouts and do not correspond to an emitted
+                    // VkImageMemoryBarrier; using them here can cause
+                    // validation-layer mismatches. Leave `effectiveOld`
+                    // unchanged so we prefer the caller-supplied or
+                    // authoritative tracked layout instead.
+                    (void)pendingOld;
                 }
             }
         }
@@ -2447,6 +2463,22 @@ void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkIma
             }
             sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        } else if (effectiveOld == VK_IMAGE_LAYOUT_UNDEFINED && (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
+            // Initialize depth-format image into a depth attachment layout from UNDEFINED.
+            barrier.srcAccessMask = 0;
+            if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+                barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            } else {
+                barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            }
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        } else if (effectiveOld == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            // Initialize any image (color or depth) directly to shader-read layout.
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
         } else {
             throw std::runtime_error("transitionImageLayoutLayer: Unsupported image layout transition requested (no fallback allowed)");
         }
@@ -2523,6 +2555,16 @@ void VulkanApp::transitionImageLayoutLayerForce(VkImage image, VkFormat format, 
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
+            // Force initial transition for depth images from UNDEFINED into a depth attachment layout.
+            barrier.srcAccessMask = 0;
+            if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+                barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            } else {
+                barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            }
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
         } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -2552,6 +2594,12 @@ void VulkanApp::transitionImageLayoutLayerForce(VkImage image, VkFormat format, 
             }
             sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            // Initialize any image (color or depth) directly to shader-read layout.
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
         } else {
             throw std::runtime_error("transitionImageLayoutLayerForce: Unsupported image layout transition requested (no fallback allowed)");
         }
@@ -3160,6 +3208,11 @@ void VulkanApp::createDepthResources() {
             1, &barrier
         );
     });
+    // Update authoritative tracked layout so the app's layout map reflects
+    // the synchronous transition we just performed. This prevents later
+    // record-time callers from assuming an UNDEFINED layout when the GPU
+    // already has the image in DEPTH_STENCIL_ATTACHMENT_OPTIMAL.
+    setImageLayoutTracked(depthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
 }
 
 void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {

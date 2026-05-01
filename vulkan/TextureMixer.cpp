@@ -949,11 +949,12 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 	// happens during texture generation.
 	{
 		uint32_t totalLayers = textureArrayManager->layerAmount;
-		auto addNonTargetBarriers = [&](VkImage img, uint32_t mipLevels) {
+		auto addNonTargetBarriers = [&](VkImage img, uint32_t mipLevels, int map) {
 			// Range before target layer [0, targetLayer)
 			if (targetLayer > 0) {
 				VkImageMemoryBarrier b = mkBarrierLayer(img, 0, targetLayer, mipLevels);
-				b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				// Use authoritative per-layer tracked layout when available
+				b.oldLayout = textureArrayManager->getLayerLayout(map, 0);
 				b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 				b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
 				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -962,16 +963,17 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 			// Range after target layer [targetLayer+1, totalLayers)
 			if (targetLayer + 1 < totalLayers) {
 				VkImageMemoryBarrier b = mkBarrierLayer(img, targetLayer + 1, totalLayers - targetLayer - 1, mipLevels);
-				b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				// Use tracked layout for the first layer in the range as a best-effort
+				b.oldLayout = textureArrayManager->getLayerLayout(map, targetLayer + 1);
 				b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 				b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
 				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 				preBarriers.push_back(b);
 			}
 		};
-		if (genA) addNonTargetBarriers(textureArrayManager->albedoArray.image, textureArrayManager->albedoArray.mipLevels);
-		if (genN) addNonTargetBarriers(textureArrayManager->normalArray.image, textureArrayManager->normalArray.mipLevels);
-		if (genB) addNonTargetBarriers(textureArrayManager->bumpArray.image, textureArrayManager->bumpArray.mipLevels);
+		if (genA) addNonTargetBarriers(textureArrayManager->albedoArray.image, textureArrayManager->albedoArray.mipLevels, 0);
+		if (genN) addNonTargetBarriers(textureArrayManager->normalArray.image, textureArrayManager->normalArray.mipLevels, 1);
+		if (genB) addNonTargetBarriers(textureArrayManager->bumpArray.image, textureArrayManager->bumpArray.mipLevels, 2);
 	}
 
     		if (!preBarriers.empty()) {
@@ -981,9 +983,9 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
     						  << " old=" << layoutName(b.oldLayout)
     						  << " new=" << layoutName(b.newLayout)
     						  << std::endl;
-    				// Record per-layer transition using authoritative app helper so tracked
-    				// oldLayout is consulted and validation mismatches avoided.
-    				app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, b.oldLayout, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
+					// Record per-layer transition using authoritative app helper.
+					// Pass VK_IMAGE_LAYOUT_UNDEFINED so the app resolves the effective old layout.
+					app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
     			}
     		}
 
@@ -1043,7 +1045,7 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 							  << " old=" << layoutName(b.oldLayout)
 							  << " new=" << layoutName(b.newLayout)
 							  << std::endl;
-					app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, b.oldLayout, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
+					app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
 				}
 			}
 
@@ -1086,7 +1088,7 @@ if (genB && textureArrayManager->bumpArray.mipLevels <= 1) {
 				}
 				if (!postBarriers.empty()) {
 					for (auto &b : postBarriers) {
-						app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, b.oldLayout, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
+							app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
 					}
 				}
 			}
@@ -1120,9 +1122,9 @@ if (genB && textureArrayManager->bumpArray.mipLevels <= 1) {
 		if (genN) addRestoreBarriers(textureArrayManager->normalArray.image, textureArrayManager->normalArray.mipLevels);
 		if (genB) addRestoreBarriers(textureArrayManager->bumpArray.image, textureArrayManager->bumpArray.mipLevels);
 		if (!restoreBarriers.empty()) {
-			for (auto &b : restoreBarriers) {
-				app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, b.oldLayout, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
-			}
+				for (auto &b : restoreBarriers) {
+					app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
+				}
 		}
 	}
 

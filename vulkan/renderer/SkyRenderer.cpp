@@ -1,11 +1,12 @@
 #include "SkyRenderer.hpp"
+#include "RendererUtils.hpp"
 
-#include "../utils/FileReader.hpp"
+#include "../../utils/FileReader.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 
 // For VBO creation
-#include "VertexBufferObjectBuilder.hpp"
-#include "../math/SphereModel.hpp"
+#include "../VertexBufferObjectBuilder.hpp"
+#include "../../math/SphereModel.hpp"
 
 SkyRenderer::SkyRenderer() {}
 
@@ -186,45 +187,8 @@ void SkyRenderer::createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_
     auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
                            uint32_t w, uint32_t h,
                            VkImage &image, VkDeviceMemory &memory, VkImageView &view) {
-        VkImageCreateInfo imgInfo{};
-        imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imgInfo.imageType = VK_IMAGE_TYPE_2D;
-        imgInfo.format = format;
-        imgInfo.extent = {w, h, 1};
-        imgInfo.mipLevels = 1;
-        imgInfo.arrayLayers = 1;
-        imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imgInfo.usage = usage;
-        imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (vkCreateImage(device, &imgInfo, nullptr, &image) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create sky offscreen image!");
-        app->resources.addImage(image, "SkyRenderer: equirect image");
-
-        VkMemoryRequirements memReqs;
-        vkGetImageMemoryRequirements(device, image, &memReqs);
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memReqs.size;
-        allocInfo.memoryTypeIndex = app->findMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS)
-            throw std::runtime_error("Failed to allocate sky offscreen image memory!");
-        app->resources.addDeviceMemory(memory, "SkyRenderer: equirect memory");
-        vkBindImageMemory(device, image, memory, 0);
-
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = image;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = format;
-        viewInfo.subresourceRange.aspectMask = aspect;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-        if (vkCreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create sky offscreen image view!");
-        app->resources.addImageView(view, "SkyRenderer: equirect view");
+        RendererUtils::createImage2D(device, app, w, h, format, usage, aspect,
+                                     "SkyRenderer: equirect image", image, memory, view);
     };
 
     // --- Render pass: color only (no depth needed for fullscreen equirect) ---
@@ -275,63 +239,10 @@ void SkyRenderer::createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_
 
     // --- Create equirect pipeline (fullscreen triangle, no vertex input, no depth) ---
     {
-        std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages{};
-        shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        shaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-        shaderStages[0].module = skyEquirectVertModule;
-        shaderStages[0].pName = "main";
-        shaderStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        shaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        shaderStages[1].module = skyEquirectFragModule;
-        shaderStages[1].pName = "main";
-
-        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        inputAssembly.primitiveRestartEnable = VK_FALSE;
-
-        VkPipelineViewportStateCreateInfo viewportState{};
-        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        viewportState.viewportCount = 1;
-        viewportState.scissorCount = 1;
-
-        VkPipelineRasterizationStateCreateInfo rasterizer{};
-        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-        rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE;
-        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-
-        VkPipelineMultisampleStateCreateInfo multisampling{};
-        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-        VkPipelineDepthStencilStateCreateInfo depthStencil{};
-        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depthStencil.depthTestEnable = VK_FALSE;
-        depthStencil.depthWriteEnable = VK_FALSE;
-
-        VkPipelineColorBlendAttachmentState colorBlendAtt{};
-        colorBlendAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                       VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        colorBlendAtt.blendEnable = VK_FALSE;
-
-        VkPipelineColorBlendStateCreateInfo colorBlending{};
-        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        colorBlending.attachmentCount = 1;
-        colorBlending.pAttachments = &colorBlendAtt;
-
-        std::array<VkDynamicState, 2> dynamicStates = {
-            VK_DYNAMIC_STATE_VIEWPORT,
-            VK_DYNAMIC_STATE_SCISSOR
+        std::vector<VkPipelineShaderStageCreateInfo> stages = {
+            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,   skyEquirectVertModule, "main", nullptr},
+            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, skyEquirectFragModule, "main", nullptr},
         };
-        VkPipelineDynamicStateCreateInfo dynamicState{};
-        dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
-        dynamicState.pDynamicStates = dynamicStates.data();
 
         // Push constant for resolution (vec2)
         VkPushConstantRange pushRange{};
@@ -351,25 +262,9 @@ void SkyRenderer::createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_
             throw std::runtime_error("Failed to create sky equirect pipeline layout!");
         app->resources.addPipelineLayout(skyEquirectPipelineLayout, "SkyRenderer: skyEquirectPipelineLayout");
 
-        VkGraphicsPipelineCreateInfo pipelineInfo{};
-        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
-        pipelineInfo.pStages = shaderStages.data();
-        pipelineInfo.pVertexInputState = &vertexInputInfo;
-        pipelineInfo.pInputAssemblyState = &inputAssembly;
-        pipelineInfo.pViewportState = &viewportState;
-        pipelineInfo.pRasterizationState = &rasterizer;
-        pipelineInfo.pMultisampleState = &multisampling;
-        pipelineInfo.pDepthStencilState = &depthStencil;
-        pipelineInfo.pColorBlendState = &colorBlending;
-        pipelineInfo.pDynamicState = &dynamicState;
-        pipelineInfo.layout = skyEquirectPipelineLayout;
-        pipelineInfo.renderPass = skyOffscreenRenderPass;
-        pipelineInfo.subpass = 0;
-
-        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &skyEquirectPipeline) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create sky equirect pipeline!");
-        app->resources.addPipeline(skyEquirectPipeline, "SkyRenderer: skyEquirectPipeline");
+        skyEquirectPipeline = RendererUtils::buildFullscreenPipeline(
+            device, app, skyOffscreenRenderPass, skyEquirectPipelineLayout, stages,
+            RendererUtils::FullscreenPipelineOpts{}, "SkyRenderer: skyEquirectPipeline");
     }
 
     // --- Per-frame color images + framebuffers (no depth) ---
@@ -438,7 +333,7 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     // Record the expected layout for the sky color attachment so pre-apply
     // promotion has the authoritative layout available at submit time.
     if (app && skyColorImages[frameIndex] != VK_NULL_HANDLE) {
-        app->recordTrackedLayoutForCommandBuffer(cmd, skyColorImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
+        app->recordTrackedLayoutForCommandBuffer(cmd, skyColorImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
     }
 
     vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "VulkanApp.hpp"
+#include "../VulkanApp.hpp"
 #include <glm/glm.hpp>
 
 // Forward-declare shared water types (defined in WaterRenderer.hpp)

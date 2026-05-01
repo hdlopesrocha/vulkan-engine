@@ -99,7 +99,15 @@ void main() {
     vec3 worldRayDir = normalize(worldFrontPos - ubo.viewPos.xyz);
     float backFaceThickness = max(dot(backFaceWorld - worldFrontPos, worldRayDir), 0.0);
     float sceneThickness    = max(dot(sceneWorldPos - worldFrontPos, worldRayDir), 0.0);
-    float waterThickness    = min(backFaceThickness, sceneThickness);
+    // A single-layer height-field surface (flat plane or tessellated waves) has
+    // backFaceThickness ≈ 0 because the back-face geometry is co-planar with the
+    // front face.  Comparing raw depth values with a fixed epsilon is unreliable
+    // across different near/far planes and camera distances.  Instead, check the
+    // already-computed world-space thickness: only trust the back face when it
+    // represents a genuinely thick water body (>= 5 cm), not a thin surface.
+    const float kMinVolumeThickness = 0.05; // 5 cm world-space
+    bool hasValidBackFace = (backFaceThickness > kMinVolumeThickness);
+    float waterThickness  = hasValidBackFace ? min(backFaceThickness, sceneThickness) : sceneThickness;
 
     // Depth-based modulation factors (exponential ramp)
         float volumeBlurFactor = (volumeBlurRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBlurRate)) : 1.0;
@@ -242,7 +250,8 @@ void main() {
     // occluding solid geometry.
     float backFaceDiff = max(backFaceLinear - frontFaceLinear, 0.0);
     float solidDiff = max(sceneDepthLinear - waterDepthLinear, 0.0);
-    float depthDiff = min(backFaceDiff, solidDiff);
+    // Same validity check as waterThickness: for flat-plane water backFaceDiff ≈ 0.
+    float depthDiff = hasValidBackFace ? min(backFaceDiff, solidDiff) : solidDiff;
     
     // Depth-based color fade (deeper = more tinted)
     float depthFalloff = wp.waveParams.w;

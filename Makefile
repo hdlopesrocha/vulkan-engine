@@ -15,7 +15,7 @@ else
 endif
 
 # Use pkg-config for GLFW and Vulkan includes; also add common ImGui/stb include paths
-INCLUDES = `pkg-config --cflags glfw3 vulkan` -Ithird_party/imgui -Ithird_party/imgui/backends -I/usr/include/stb
+INCLUDES = `pkg-config --cflags glfw3 vulkan` -I. -Ithird_party/imgui -Ithird_party/imgui/backends -I/usr/include/stb
 LIBS = `pkg-config --libs glfw3 vulkan` -lstb -ljpeg -lgdal -lz
 
 # Output directory for runtime binary and resources
@@ -31,7 +31,7 @@ IMGUI_CORE_OBJS := $(patsubst third_party/imgui/%.cpp,$(OBJ_DIR)/imgui/%.o,$(IMG
 IMGUI_BACKEND_OBJS := $(patsubst third_party/imgui/backends/%.cpp,$(OBJ_DIR)/imgui/backends/%.o,$(IMGUI_BACKEND_SRCS))
 IMGUI_OBJS := $(IMGUI_CORE_OBJS) $(IMGUI_BACKEND_OBJS)
 # shader sources and generated SPIR-V
-SRCS := $(wildcard main.cpp utils/*.cpp vulkan/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp space/*.cpp)
+SRCS := $(wildcard main.cpp utils/*.cpp vulkan/*.cpp vulkan/renderer/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp space/*.cpp)
 # Exclude legacy utils Camera implementation (migrated to math/Camera)
 SRCS := $(filter-out utils/Camera.cpp,$(SRCS))
 OBJ_DIR := $(OUT_DIR)/obj

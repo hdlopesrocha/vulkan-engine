@@ -1,8 +1,8 @@
 #pragma once
 
-#include "VulkanApp.hpp"
-#include "VertexBufferObject.hpp"
-#include "../math/BoundingBox.hpp"
+#include "../VulkanApp.hpp"
+#include "../VertexBufferObject.hpp"
+#include "../../math/BoundingBox.hpp"
 #include <vector>
 #include <glm/glm.hpp>
 

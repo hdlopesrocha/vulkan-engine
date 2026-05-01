@@ -1,5 +1,5 @@
 #include "Solid360Renderer.hpp"
-#include "../utils/FileReader.hpp"
+#include "../../utils/FileReader.hpp"
 #include <stdexcept>
 #include <iostream>
 
@@ -114,7 +114,16 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidR
     }
 
     if (app) {
-        app->setImageLayoutTracked(cube360DepthImage, VK_IMAGE_LAYOUT_UNDEFINED, 0, 6);
+        // Force an initial tracked GPU layout for the cubemap depth image
+        // so other command buffers that sample the cubemap see a concrete
+        // layout instead of UNDEFINED. If the force transition fails,
+        // fall back to leaving the tracked layout as UNDEFINED.
+        try {
+            app->transitionImageLayoutLayerForce(cube360DepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 6);
+            app->setImageLayoutTracked(cube360DepthImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 6);
+        } catch (...) {
+            app->setImageLayoutTracked(cube360DepthImage, VK_IMAGE_LAYOUT_UNDEFINED, 0, 6);
+        }
     }
     // Create a per-face 2D view that references the corresponding array layer
     for (uint32_t face = 0; face < 6; ++face) {
@@ -123,8 +132,8 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidR
                    cube360DepthViews[face], "Solid360Renderer: cube360 depth view");
     }
 
-    // Initialize per-face tracked layouts to UNDEFINED
-    for (uint32_t face = 0; face < 6; ++face) cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_UNDEFINED;
+    // Initialize per-face tracked layouts to SHADER_READ_ONLY (initial state)
+    for (uint32_t face = 0; face < 6; ++face) cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     // --- 3. Per-face framebuffers (reuse solidRenderPass: color + depth) ---
     for (uint32_t face = 0; face < 6; ++face) {
@@ -212,6 +221,17 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         clears[1].depthStencil = {1.0f, 0};
 
         VkRenderPassBeginInfo rpInfo{};
+        // Ensure the depth attachment layer for this face is transitioned
+        // into the depth-stencil attachment layout before beginning the
+        // render pass so validation layers see a correct effective old
+        // layout when the command buffer is submitted.
+        if (app) {
+            // Do not pass a local old-layout guess; let VulkanApp determine
+            // the effective old layout (considering tracked/pending state).
+            app->recordTransitionImageLayoutLayer(cmd, cube360DepthImage, VK_FORMAT_D32_SFLOAT,
+                                                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                                 1, face, 1);
+        }
         rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         rpInfo.renderPass = solidRenderPass;
         rpInfo.framebuffer = cube360Framebuffers[face];

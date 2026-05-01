@@ -1,19 +1,21 @@
 #pragma once
 
-#include "VulkanApp.hpp"
+#include "../VulkanApp.hpp"
 #include "IndirectRenderer.hpp"
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
 #include <glm/glm.hpp>
 #include <memory>
 #include <vector>
-#include "../utils/Scene.hpp"
-#include "../Uniforms.hpp"
-#include "../widgets/SkySettings.hpp"
+#include "../../utils/Scene.hpp"
+#include "../ubo/UniformObject.hpp"
+#include "../../widgets/SkySettings.hpp"
 #include <unordered_map>
-#include "../utils/Model3DVersion.hpp"
-
-#include "../utils/WaterParams.hpp"
+#include "../../utils/Model3DVersion.hpp"
+#include "../../utils/WaterParams.hpp"
+#include "../ubo/WaterParamsGPU.hpp"
+#include "../ubo/WaterRenderUBO.hpp"
+#include "../ubo/WaterUBO.hpp"
 
 class WaterRenderer {
 public:

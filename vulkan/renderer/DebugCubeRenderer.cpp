@@ -1,8 +1,8 @@
 #include "DebugCubeRenderer.hpp"
-#include "VertexBufferObjectBuilder.hpp"
-#include "ShaderStage.hpp"
-#include "../utils/FileReader.hpp"
-#include "../math/BoxLineGeometry.hpp"
+#include "../VertexBufferObjectBuilder.hpp"
+#include "../ShaderStage.hpp"
+#include "../../utils/FileReader.hpp"
+#include "../../math/BoxLineGeometry.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <stb/stb_image.h>
 

@@ -415,9 +415,9 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 		a->runSingleTimeCommands([&](VkCommandBuffer cmd) {
 
 		// Transition this layer to TRANSFER_DST_OPTIMAL using the app helper
-		// so the authoritative tracked layout is consulted when recording.
-		VkImageLayout currentLayout = getLayerLayout(i, currentLayer);
-		a->recordTransitionImageLayoutLayer(cmd, imgs[i].dstImage->image, imgs[i].format, currentLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, imgs[i].dstImage->mipLevels, currentLayer, 1);
+		// pass VK_IMAGE_LAYOUT_UNDEFINED so the app resolves the effective
+		// old layout (avoid caller-supplied guesses causing validation mismatches).
+		a->recordTransitionImageLayoutLayer(cmd, imgs[i].dstImage->image, imgs[i].format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, imgs[i].dstImage->mipLevels, currentLayer, 1);
 	// Do NOT set the tracked per-layer layout to TRANSFER_DST here; the command
 	// buffer has not yet completed and setting this early can cause other
 	// threads to read a transient TRANSFER_DST state and build incorrect
@@ -633,13 +633,17 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 	// Transition dst layer to TRANSFER_DST_OPTIMAL for the selected array image and src to TRANSFER_SRC_OPTIMAL
 	a->runSingleTimeCommands([&](VkCommandBuffer cmd) {
 
-	auto doBarrier = [&](VkImage dst, VkImageLayout oldDst, VkImageLayout newDst, uint32_t dstBaseLayer) {
-		// Use app helper to record per-layer transition into the current cmd
-		a->recordTransitionImageLayoutLayer(cmd, dst, VK_FORMAT_R8G8B8A8_UNORM, oldDst, newDst, 1, dstBaseLayer, 1);
+	auto doBarrier = [&](VkImage dst, VkImageLayout /*oldDst*/, VkImageLayout newDst, uint32_t dstBaseLayer) {
+		// Use app helper to record per-layer transition into the current cmd.
+		// Pass VK_IMAGE_LAYOUT_UNDEFINED so VulkanApp resolves the authoritative
+		// effective old layout and avoids mismatches with pending tracked state.
+		a->recordTransitionImageLayoutLayer(cmd, dst, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, newDst, 1, dstBaseLayer, 1);
 	};
 
 	// source barrier: shader read -> transfer src (record via app helper)
-	a->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1);
+	// Pass VK_IMAGE_LAYOUT_UNDEFINED so the app resolves the authoritative
+	// old layout for this command buffer.
+	a->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1);
 
 	// Copy into selected array layer (ensure we log what we're doing)
 	std::cerr << "[TextureArrayManager] Copying into array image " << (void*)dstImage << " layer=" << layer << std::endl;

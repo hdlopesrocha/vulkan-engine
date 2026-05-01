@@ -1,13 +1,13 @@
 #pragma once
 
-#include "VulkanApp.hpp"
-#include "VertexBufferObject.hpp"
-#include "SkySphere.hpp"
-#include "VertexBufferObjectBuilder.hpp"
-#include "../math/SphereModel.hpp"
-#include "ShaderStage.hpp"
-#include "../Uniforms.hpp"
-#include "../widgets/SkySettings.hpp"
+#include "../VulkanApp.hpp"
+#include "../VertexBufferObject.hpp"
+#include "../SkySphere.hpp"
+#include "../VertexBufferObjectBuilder.hpp"
+#include "../../math/SphereModel.hpp"
+#include "../ShaderStage.hpp"
+#include "../ubo/UniformObject.hpp"
+#include "../../widgets/SkySettings.hpp"
 #include <array>
 
 class SkyRenderer {

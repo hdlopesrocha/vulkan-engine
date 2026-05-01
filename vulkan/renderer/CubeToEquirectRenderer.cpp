@@ -1,6 +1,7 @@
 #include "CubeToEquirectRenderer.hpp"
-#include "VulkanApp.hpp"
-#include "../utils/FileReader.hpp"
+#include "RendererUtils.hpp"
+#include "../VulkanApp.hpp"
+#include "../../utils/FileReader.hpp"
 #include <stdexcept>
 #include <array>
 
@@ -170,78 +171,14 @@ void CubeToEquirectRenderer::createPipeline(VulkanApp* app) {
         app->resources.addPipelineLayout(cube360EquirectPipelineLayout, "CubeToEquirectRenderer: pipelineLayout");
     }
 
-    std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages{};
-    shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    shaderStages[0].module = cube360EquirectVertModule;
-    shaderStages[0].pName = "main";
-    shaderStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    shaderStages[1].module = cube360EquirectFragModule;
-    shaderStages[1].pName = "main";
+    std::vector<VkPipelineShaderStageCreateInfo> stages = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,   cube360EquirectVertModule, "main", nullptr},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, cube360EquirectFragModule, "main", nullptr},
+    };
 
-    VkPipelineVertexInputStateCreateInfo vi{};
-    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-    VkPipelineInputAssemblyStateCreateInfo ia{};
-    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-    VkPipelineViewportStateCreateInfo vp{};
-    vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    vp.viewportCount = 1;
-    vp.scissorCount = 1;
-
-    VkPipelineRasterizationStateCreateInfo rs{};
-    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.lineWidth = 1.0f;
-    rs.cullMode = VK_CULL_MODE_NONE;
-    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-
-    VkPipelineMultisampleStateCreateInfo ms{};
-    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-    VkPipelineDepthStencilStateCreateInfo ds{};
-    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    ds.depthTestEnable = VK_FALSE;
-    ds.depthWriteEnable = VK_FALSE;
-
-    VkPipelineColorBlendAttachmentState ca{};
-    ca.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    ca.blendEnable = VK_FALSE;
-
-    VkPipelineColorBlendStateCreateInfo cb{};
-    cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    cb.attachmentCount = 1;
-    cb.pAttachments = &ca;
-
-    std::array<VkDynamicState, 2> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-    VkPipelineDynamicStateCreateInfo dyn{};
-    dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyn.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
-    dyn.pDynamicStates = dynamicStates.data();
-
-    VkGraphicsPipelineCreateInfo pi{};
-    pi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pi.stageCount = static_cast<uint32_t>(shaderStages.size());
-    pi.pStages = shaderStages.data();
-    pi.pVertexInputState = &vi;
-    pi.pInputAssemblyState = &ia;
-    pi.pViewportState = &vp;
-    pi.pRasterizationState = &rs;
-    pi.pMultisampleState = &ms;
-    pi.pDepthStencilState = &ds;
-    pi.pColorBlendState = &cb;
-    pi.pDynamicState = &dyn;
-    pi.layout = cube360EquirectPipelineLayout;
-    pi.renderPass = cube360EquirectRenderPass;
-    pi.subpass = 0;
-
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &cube360EquirectPipeline) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create cube360 equirect pipeline!");
-    app->resources.addPipeline(cube360EquirectPipeline, "CubeToEquirectRenderer: pipeline");
+    cube360EquirectPipeline = RendererUtils::buildFullscreenPipeline(
+        device, app, cube360EquirectRenderPass, cube360EquirectPipelineLayout, stages,
+        RendererUtils::FullscreenPipelineOpts{}, "CubeToEquirectRenderer: pipeline");
 }
 
 void CubeToEquirectRenderer::createOutputTarget(VulkanApp* app) {

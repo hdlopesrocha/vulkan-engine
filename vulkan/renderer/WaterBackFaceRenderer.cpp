@@ -1,6 +1,6 @@
 #include "WaterBackFaceRenderer.hpp"
 
-#include "../utils/FileReader.hpp"
+#include "../../utils/FileReader.hpp"
 #include <stdexcept>
 #include <iostream>
 
@@ -301,7 +301,9 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
     }
 
     for (int i = 0; i < 2; ++i) {
-        backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        // Keep the layout we recorded above (do not reset to UNDEFINED).
+        // Resetting here caused later callers to emit fallback transitions
+        // that disagreed with the app-tracked authoritative layout.
     }
 
     // Create framebuffers
@@ -352,39 +354,23 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     // initialize from the scene depth here - the back-face preview must show
     // only water back-face geometry (no solid occluders).
     if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-        std::cerr << "[WaterBackFaceRenderer::renderBackFacePass] fallbackBarrier: cmd=" << (void*)cmd
+        std::cerr << "[WaterBackFaceRenderer::renderBackFacePass] pre-pass transition: cmd=" << (void*)cmd
                   << " image=" << (void*)backFaceDepthImages[frameIndex]
                   << " frame=" << (unsigned)frameIndex
                   << " old=" << (int)backFaceDepthImageLayouts[frameIndex]
                   << " new=" << (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL << std::endl;
-        if (app) {
-            app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
-                                                 backFaceDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                                                 1, 0, 1);
-            // Also record the expected render-pass layout as a tracked update
-            // for this command buffer so submit-time pre-apply can promote the
-            // authoritative layout and avoid validation mismatches.
-            app->recordTrackedLayoutForCommandBuffer(cmd, backFaceDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
-        } else {
-            VkImageMemoryBarrier fallbackBarrier{};
-            fallbackBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            fallbackBarrier.srcAccessMask = 0;
-            fallbackBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            fallbackBarrier.oldLayout = backFaceDepthImageLayouts[frameIndex];
-            fallbackBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            fallbackBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            fallbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            fallbackBarrier.image = backFaceDepthImages[frameIndex];
-            fallbackBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-            fallbackBarrier.subresourceRange.baseMipLevel = 0;
-            fallbackBarrier.subresourceRange.levelCount = 1;
-            fallbackBarrier.subresourceRange.baseArrayLayer = 0;
-            fallbackBarrier.subresourceRange.layerCount = 1;
-            vkCmdPipelineBarrier(cmd,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                0, 0, nullptr, 0, nullptr, 1, &fallbackBarrier);
+        if (!app) {
+            throw std::runtime_error("WaterBackFaceRenderer::renderBackFacePass requires VulkanApp (no fallback allowed)");
         }
+        // Let VulkanApp determine the effective old layout (pass UNDEFINED)
+        // so the centralized tracker can consider pending/tracked state.
+        app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
+                             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                             1, 0, 1);
+        // Also record the expected render-pass layout as a tracked update
+        // for this command buffer so submit-time pre-apply can promote the
+        // authoritative layout and avoid validation mismatches.
+        app->recordTrackedLayoutForCommandBuffer(cmd, backFaceDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
         backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
@@ -437,37 +423,19 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     // Barrier to make depth writes visible to shader reads
     if (backFaceDepthImages[frameIndex] != VK_NULL_HANDLE) {
         if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            std::cerr << "[WaterBackFaceRenderer::renderBackFacePass] post-render barrier: cmd=" << (void*)cmd
+            std::cerr << "[WaterBackFaceRenderer::renderBackFacePass] post-render promotion: cmd=" << (void*)cmd
                       << " image=" << (void*)backFaceDepthImages[frameIndex]
                       << " frame=" << (unsigned)frameIndex
                       << " old=" << (int)backFaceDepthImageLayouts[frameIndex]
                       << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
-            if (app) {
-                // Let the centralized tracker know the render pass leaves the
-                // image in SHADER_READ_ONLY_OPTIMAL. Do not emit an extra
-                // barrier here — the render pass performed the implicit
-                // transition to the final layout.
-                app->recordTrackedLayoutForCommandBuffer(cmd, backFaceDepthImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-            } else {
-                VkImageMemoryBarrier bfBarrier{};
-                bfBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                bfBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                bfBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                bfBarrier.oldLayout = backFaceDepthImageLayouts[frameIndex];
-                bfBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                bfBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                bfBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                bfBarrier.image = backFaceDepthImages[frameIndex];
-                bfBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-                bfBarrier.subresourceRange.baseMipLevel = 0;
-                bfBarrier.subresourceRange.levelCount = 1;
-                bfBarrier.subresourceRange.baseArrayLayer = 0;
-                bfBarrier.subresourceRange.layerCount = 1;
-                vkCmdPipelineBarrier(cmd,
-                    VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                    0, 0, nullptr, 0, nullptr, 1, &bfBarrier);
+            if (!app) {
+                throw std::runtime_error("WaterBackFaceRenderer::renderBackFacePass requires VulkanApp for tracked promotion (no fallback allowed)");
             }
+            // Let the centralized tracker know the render pass leaves the
+            // image in SHADER_READ_ONLY_OPTIMAL. Do not emit an extra
+            // barrier here — the render pass performed the implicit
+            // transition to the final layout.
+            app->recordTrackedLayoutForCommandBuffer(cmd, backFaceDepthImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
             backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
     }
@@ -490,31 +458,14 @@ void WaterBackFaceRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t fram
               << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
 
     VulkanApp* app = this->appPtr ? this->appPtr : getImGuiVulkanApp();
-    if (app) {
-        app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
-                                             trackedOld, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                             1, 0, 1);
-    } else {
-        VkImageMemoryBarrier db{};
-        db.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        db.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        db.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        db.oldLayout = trackedOld;
-        db.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        db.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        db.image = backFaceDepthImages[frameIndex];
-        db.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        db.subresourceRange.baseMipLevel = 0;
-        db.subresourceRange.levelCount = 1;
-        db.subresourceRange.baseArrayLayer = 0;
-        db.subresourceRange.layerCount = 1;
-
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &db);
+    if (!app) {
+        throw std::runtime_error("WaterBackFaceRenderer::postRenderBarrier requires VulkanApp (no fallback allowed)");
     }
+            // Use UNDEFINED so VulkanApp consults its authoritative layout
+            // and any pending updates for this command buffer.
+            app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
+                                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                         1, 0, 1);
 }
 
 // getBackFaceDepthLayout is defined inline in the header (maps indices via modulo).

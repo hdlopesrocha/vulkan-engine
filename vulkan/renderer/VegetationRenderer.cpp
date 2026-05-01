@@ -3,9 +3,9 @@
 #include <vulkan/vulkan.h>
 #include <cstdint>
 #include <cstddef>
-#include "../math/Common.hpp" // for NodeID
+#include "../../math/Common.hpp" // for NodeID
 #include "VegetationRenderer.hpp"
-#include "../utils/FileReader.hpp"
+#include "../../utils/FileReader.hpp"
 #include <stdexcept>
 #include <cstring>
 #include <numeric>

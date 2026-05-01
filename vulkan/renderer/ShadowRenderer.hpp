@@ -1,8 +1,8 @@
 #pragma once
 
-#include "vulkan.hpp"
+#include "../vulkan.hpp"
 #include <array>
-#include "../Uniforms.hpp"
+#include "../ubo/UniformObject.hpp"
 
 class ShadowRenderer {
 public:

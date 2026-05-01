@@ -1,11 +1,11 @@
 #pragma once
 
-#include "VulkanApp.hpp"
+#include "../VulkanApp.hpp"
 #include "IndirectRenderer.hpp"
-#include "../utils/Model3DVersion.hpp"
-#include "ShaderStage.hpp"
-#include "../math/Vertex.hpp"
-#include "../utils/Scene.hpp"
+#include "../../utils/Model3DVersion.hpp"
+#include "../ShaderStage.hpp"
+#include "../../math/Vertex.hpp"
+#include "../../utils/Scene.hpp"
 #include <unordered_map>
 #include <vector>
 #include <array>

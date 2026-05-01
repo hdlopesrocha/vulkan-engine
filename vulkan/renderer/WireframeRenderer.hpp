@@ -1,8 +1,8 @@
 #pragma once
 
-#include "VulkanApp.hpp"
+#include "../VulkanApp.hpp"
 #include "IndirectRenderer.hpp"
-#include "../math/Vertex.hpp"
+#include "../../math/Vertex.hpp"
 #include <vulkan/vulkan.h>
 
 // Lightweight renderer that creates wireframe pipelines against arbitrary render

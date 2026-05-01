@@ -15,28 +15,28 @@ class SolidSpaceChangeHandler;
 class LiquidSpaceChangeHandler;
 
 #include <vulkan/vulkan.h>
-#include "VulkanApp.hpp"
+#include "../VulkanApp.hpp"
 #include <glm/gtc/type_ptr.hpp>
 #include <cmath>
-#include "TextureArrayManager.hpp"
-#include "TextureTriple.hpp"
-#include "MaterialManager.hpp"
-#include "ShaderStage.hpp"
-#include "../utils/FileReader.hpp"
-#include "../math/Vertex.hpp"
+#include "../TextureArrayManager.hpp"
+#include "../TextureTriple.hpp"
+#include "../MaterialManager.hpp"
+#include "../ShaderStage.hpp"
+#include "../../utils/FileReader.hpp"
+#include "../../math/Vertex.hpp"
 #include <unordered_map>
 #include <memory>
 #include <mutex>
 #include <vector>
-#include "../utils/Model3DVersion.hpp"
+#include "../../utils/Model3DVersion.hpp"
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
 #include "IndirectRenderer.hpp"
 #include "ShadowRenderer.hpp"
 #include "WaterRenderer.hpp"
-#include "../utils/UniqueOctreeChangeHandler.hpp"
+#include "../../utils/UniqueOctreeChangeHandler.hpp"
 
-#include "PassUBO.hpp"
+#include "../ubo/PassUBO.hpp"
 
 class SceneRenderer {
     void addDebugCubeForGeometry(Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom);

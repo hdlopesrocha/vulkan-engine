@@ -1,7 +1,8 @@
 #include "SolidRenderer.hpp"
+#include "RendererUtils.hpp"
 
-#include "../utils/FileReader.hpp"
-#include "ShaderStage.hpp"
+#include "../../utils/FileReader.hpp"
+#include "../ShaderStage.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 
 SolidRenderer::SolidRenderer() : indirectRenderer() {}
@@ -18,60 +19,8 @@ void SolidRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     VkDevice device = app->getDevice();
 
     auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect, VkImage& image, VkDeviceMemory& memory, VkImageView& view) {
-        VkImageCreateInfo imageInfo{};
-        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.extent.width = width;
-        imageInfo.extent.height = height;
-        imageInfo.extent.depth = 1;
-        imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = 1;
-        imageInfo.format = format;
-        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.usage = usage;
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create solid image!");
-        }
-        // Debug: print created image handle for leak tracing
-        std::cerr << "[SolidRenderer] createImage: image=" << (void*)image << " format=" << (int)format << " usage=0x" << std::hex << usage << std::dec << std::endl;
-
-        VkMemoryRequirements memReq;
-        vkGetImageMemoryRequirements(device, image, &memReq);
-
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memReq.size;
-        allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to allocate solid image memory!");
-        }
-
-        vkBindImageMemory(device, image, memory, 0);
-        // Register image and memory
-        app->resources.addImage(image, "SolidRenderer: image");
-        app->resources.addDeviceMemory(memory, "SolidRenderer: memory");
-
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = image;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = format;
-        viewInfo.subresourceRange.aspectMask = aspect;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-
-        if (vkCreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create solid image view!");
-        }
-        std::cerr << "[SolidRenderer] createImageView: view=" << (void*)view << " image=" << (void*)image << " format=" << (int)format << std::endl;
-        app->resources.addImageView(view, "SolidRenderer: view");
+        RendererUtils::createImage2D(device, app, width, height, format, usage, aspect,
+                                     "SolidRenderer: image", image, memory, view);
     };
 
     // Create simple render pass for solid offscreen (color+depth)
@@ -217,7 +166,9 @@ void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearV
             if (!app) {
                 throw std::runtime_error("SolidRenderer::beginPass requires valid VulkanApp to record layout transitions");
             }
-            app->recordTransitionImageLayoutLayer(cmd, solidDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, solidDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+            // Pass UNDEFINED so VulkanApp can resolve the authoritative old layout
+            // (including any pending tracked updates for this command buffer).
+            app->recordTransitionImageLayoutLayer(cmd, solidDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
             // Also record the expected render-pass layout as a tracked update for
             // this command buffer so submit-time pre-apply can make the
             // authoritative map reflect the transition the render pass will

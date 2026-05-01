@@ -2,10 +2,10 @@
 
 #include "Settings.hpp"
 #include "../vulkan/VulkanApp.hpp"
-#include "../vulkan/SceneRenderer.hpp"
-#include "../vulkan/SolidRenderer.hpp"
-#include "../vulkan/SkyRenderer.hpp"
-#include "../vulkan/ShadowRenderer.hpp"
+#include "../vulkan/renderer/SceneRenderer.hpp"
+#include "../vulkan/renderer/SolidRenderer.hpp"
+#include "../vulkan/renderer/SkyRenderer.hpp"
+#include "../vulkan/renderer/ShadowRenderer.hpp"
 #include "../utils/ShadowParams.hpp"
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
@@ -35,10 +35,6 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
         // Prefer a sampler owned by the SceneRenderer's PostProcessRenderer if present
         if (sceneRenderer && sceneRenderer->postProcessRenderer) {
             widgetSampler = sceneRenderer->postProcessRenderer->getLinearSampler();
-        }
-        // Fallback: use the water renderer's linear sampler if available
-        if (widgetSampler == VK_NULL_HANDLE && sceneRenderer && sceneRenderer->waterRenderer) {
-            widgetSampler = sceneRenderer->waterRenderer->getLinearSampler();
         }
         if (widgetSampler == VK_NULL_HANDLE) {
             throw std::runtime_error("RenderTargetsWidget requires a valid sampler (no fallback allowed)");
@@ -390,8 +386,7 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
     try {
         dsToUse = app->createDescriptorSet(linearizeDescriptorSetLayout);
     } catch (...) {
-        // Fall back to the persistent set if allocation fails (rare)
-        dsToUse = linearizeDescriptorSet;
+        throw std::runtime_error("RenderTargetsWidget: failed to allocate linearize descriptor set (no fallback allowed)");
     }
     w.dstSet = dsToUse;
     w.dstBinding = 0;
@@ -456,19 +451,22 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
             }
         }
         // Shadow cascades (single-image per cascade)
+        // Consult the shadow mapper for an authoritative tracked layout.
+        // Do not substitute a concrete layout here — leave UNDEFINED so
+        // VulkanApp can resolve effective oldLayout (pending/tracked)
+        // when callers pass VK_IMAGE_LAYOUT_UNDEFINED.
         if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && shadowMapper) {
             for (uint32_t sc = 0; sc < SHADOW_CASCADE_COUNT; ++sc) {
                 if (srcImage == shadowMapper->getDepthImage(sc)) {
-                    VkImageLayout l = shadowMapper->getDepthLayout(sc);
-                    if (l == VK_IMAGE_LAYOUT_UNDEFINED) l = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-                    trackedOld = l;
+                    trackedOld = shadowMapper->getDepthLayout(sc);
                     break;
                 }
             }
         }
         // std::cerr << "[RenderTargetsWidget] runLinearizePass: srcImage=" << (void*)srcImage << " baseLayer=" << (unsigned)srcBaseArrayLayer << " trackedOld=" << (int)trackedOld << std::endl;
-        // Record transition using the tracked old layout (no widget fallbacks).
-        app->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_D32_SFLOAT, trackedOld, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, srcBaseArrayLayer, 1);
+        // Let the centralized tracker resolve the effective old layout
+        // (avoid using local renderer-tracked values which may be stale).
+        app->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, srcBaseArrayLayer, 1);
     }
 
     VkClearValue clr{}; clr.color = {{0.0f,0.0f,0.0f,1.0f}};
@@ -497,7 +495,9 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
         // Use the canonical final layout: depth-stencil attachment.
         VkImageLayout desiredFinal = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         // std::cerr << "[RenderTargetsWidget] runLinearizePass (pre-revert): srcImage=" << (void*)srcImage << " baseLayer=" << (unsigned)srcBaseArrayLayer << " desiredFinal=" << (int)desiredFinal << std::endl;
-        app->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, desiredFinal, 1, srcBaseArrayLayer, 1);
+        // Pass UNDEFINED so VulkanApp resolves the authoritative old layout
+        // (avoid assuming the image is already SHADER_READ_ONLY at record time).
+        app->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, desiredFinal, 1, srcBaseArrayLayer, 1);
         // Best-effort: do not change the renderer's tracked layout here because
         // recorded barriers are not yet submitted. Update tracked layout only
         // after submit so other record-time logic sees a consistent state.

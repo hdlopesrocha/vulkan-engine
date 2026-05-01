@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../vulkan/ShadowRenderer.hpp"
+#include "../vulkan/renderer/ShadowRenderer.hpp"
 #include "../utils/ShadowParams.hpp"
 #include <imgui.h>
 #include <glm/glm.hpp>

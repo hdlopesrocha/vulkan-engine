@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../vulkan/WaterRenderer.hpp"
+#include "../vulkan/renderer/WaterRenderer.hpp"
 #include "../utils/WaterParams.hpp"
 #include <vector>
 

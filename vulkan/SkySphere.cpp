@@ -1,6 +1,6 @@
 #include "SkySphere.hpp"
 #include "../widgets/SkySettings.hpp"
-#include "../Uniforms.hpp"
+#include "ubo/SkyUniform.hpp"
 #include <glm/glm.hpp>
 
 SkySphere::SkySphere() {}

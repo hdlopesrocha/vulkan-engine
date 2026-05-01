@@ -1,7 +1,8 @@
 
 #include "WaterRenderer.hpp"
+#include "RendererUtils.hpp"
 
-#include "../utils/FileReader.hpp"
+#include "../../utils/FileReader.hpp"
 #include <stdexcept>
 #include <iostream>
 #include <array>
@@ -190,7 +191,7 @@ void WaterRenderer::beginScenePass(VkCommandBuffer cmd, uint32_t frameIndex, VkC
     // mismatches at vkQueueSubmit when other threads query tracked state.
     if (appPtr) {
         if (sceneColorImages[frameIndex] != VK_NULL_HANDLE) {
-            appPtr->recordTrackedLayoutForCommandBuffer(cmd, sceneColorImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
+            appPtr->recordTrackedLayoutForCommandBuffer(cmd, sceneColorImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
         }
         if (sceneDepthImages[frameIndex] != VK_NULL_HANDLE) {
             appPtr->recordTrackedLayoutForCommandBuffer(cmd, sceneDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
@@ -301,60 +302,8 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     // Helper to create image + memory + view
     auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
                            VkImage& image, VkDeviceMemory& memory, VkImageView& view) {
-        VkImageCreateInfo imageInfo{};
-        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.extent = {width, height, 1};
-        imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = 1;
-        imageInfo.format = format;
-        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.usage = usage;
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        
-        if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create water image!");
-        }
-        // Debug: print created image handle for leak tracing
-        std::cerr << "[WaterRenderer] createImage: image=" << (void*)image << " format=" << (int)format << " usage=0x" << std::hex << usage << std::dec << std::endl;
-        // Register image in app registry
-        app->resources.addImage(image, "WaterRenderer: image");
-        
-        VkMemoryRequirements memReq;
-        vkGetImageMemoryRequirements(device, image, &memReq);
-        
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memReq.size;
-        allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to allocate water image memory!");
-        }
-        
-        vkBindImageMemory(device, image, memory, 0);
-        // Register device memory
-        app->resources.addDeviceMemory(memory, "WaterRenderer: memory");
-        
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = image;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = format;
-        viewInfo.subresourceRange.aspectMask = aspect;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-        
-        if (vkCreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create water image view!");
-        }
-        std::cerr << "[WaterRenderer] createImageView: view=" << (void*)view << " image=" << (void*)image << " format=" << (int)format << std::endl;
-        // Register image view
-        app->resources.addImageView(view, "WaterRenderer: view");
+        RendererUtils::createImage2D(device, app, width, height, format, usage, aspect,
+                                     "WaterRenderer: image", image, memory, view);
     };
     
     // Reset layout tracking (use file-scope static variables)
@@ -430,7 +379,8 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
 
         if (waterDepthImages[frameIdx] != VK_NULL_HANDLE && app) {
             try {
-                app->transitionImageLayoutLayer(waterDepthImages[frameIdx], VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+                // Force an initial GPU transition and update authoritative tracked layout
+                app->transitionImageLayoutLayerForce(waterDepthImages[frameIdx], VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
                 app->setImageLayoutTracked(waterDepthImages[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
                 waterDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             } catch (...) { /* best-effort */ }
@@ -906,7 +856,11 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     // will make the authoritative state match the render pass assumptions.
     if (appPtr) {
         if (waterDepthImages[frameIndex] != VK_NULL_HANDLE) {
-            appPtr->recordTrackedLayoutForCommandBuffer(cmd, waterDepthImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
+            // waterDepthImages stores linear depth in an RGBA color image
+            // (VK_FORMAT_R32G32B32A32_SFLOAT). Record the render-pass FINAL
+            // layout (SHADER_READ_ONLY_OPTIMAL) so the authoritative tracked
+            // map reflects the post-render-pass state at submit time.
+            appPtr->recordTrackedLayoutForCommandBuffer(cmd, waterDepthImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
         }
         if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
             appPtr->recordTrackedLayoutForCommandBuffer(cmd, waterGeomDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
@@ -1148,20 +1102,17 @@ void WaterRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex) 
 
     if (!barriers.empty()) {
         VulkanApp* a = this->appPtr ? this->appPtr : getImGuiVulkanApp();
-        if (a) {
-            for (auto &b : barriers) {
-                a->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R32G32B32A32_SFLOAT,
-                                                    b.oldLayout, b.newLayout,
-                                                    b.subresourceRange.levelCount,
-                                                    b.subresourceRange.baseArrayLayer,
-                                                    b.subresourceRange.layerCount);
-            }
-        } else {
-            vkCmdPipelineBarrier(cmd,
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0, 0, nullptr, 0, nullptr,
-                static_cast<uint32_t>(barriers.size()), barriers.data());
+        if (!a) {
+            throw std::runtime_error("WaterRenderer::postRenderBarrier requires VulkanApp (no fallback allowed)");
+        }
+        for (auto &b : barriers) {
+            // Pass VK_IMAGE_LAYOUT_UNDEFINED so VulkanApp resolves the
+            // authoritative old layout (avoid caller-supplied guesses).
+            a->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R32G32B32A32_SFLOAT,
+                                                VK_IMAGE_LAYOUT_UNDEFINED, b.newLayout,
+                                                b.subresourceRange.levelCount,
+                                                b.subresourceRange.baseArrayLayer,
+                                                b.subresourceRange.layerCount);
         }
     }
 }
