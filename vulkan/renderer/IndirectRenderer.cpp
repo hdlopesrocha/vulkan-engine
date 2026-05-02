@@ -248,9 +248,14 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     if (!dirty) return;
     printf("[IndirectRenderer::rebuild] dirty=true, rebuilding buffers...\n");
 
-    // Wait for any async generation/submit to finish and for in-flight frames
+    // Wait for any async generation/submit to finish.
+    // Do NOT call waitForFrameFences() here: rebuild() is invoked from
+    // processPendingMeshes() which runs inside drawFrame() after the current
+    // frame's fence has already been reset but before it is re-submitted.
+    // Waiting for that fence would block forever. The drawFrame() fence wait
+    // at the top of drawFrame() already guarantees the GPU was idle before
+    // we entered update(), so old buffers are not in flight.
     app->waitForAllPendingCommandBuffers();
-    app->waitForFrameFences();
 
     // Calculate required capacity with 25% headroom for incremental adds
     size_t neededVertexCap = mergedVertices.size() + mergedVertices.size() / 4 + 1024;
