@@ -48,6 +48,10 @@ void OctreeExplorerWidget::render() {
     }
     ImGuiHelpers::SetTooltipIfHovered("Expand/collapse helpers: Expand All = one frame, Persist Expand = keep expanded, Collapse All = collapse now");
 
+    if (!octreeReady.load(std::memory_order_acquire)) {
+        ImGui::TextDisabled("Loading scene...");
+        return;
+    }
     const Octree& tree = (selectedLayer == 0) ? scene->getOpaqueOctree() : scene->transparentOctree;
     renderTree(tree);
 }

@@ -77,6 +77,7 @@ uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
     indirectCommands.push_back(cmd);
 
     meshes[m.id] = m; // insert or replace
+    dirty = true;     // adding a mesh always requires a rebuild
 
     return customId;
 }
@@ -662,7 +663,8 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // NOTE: No mutex lock here - this is only called from the main render thread
     // and all buffer modifications happen in rebuild() which does lock.
     if (computePipeline == VK_NULL_HANDLE || compactIndirectBuffer.buffer == VK_NULL_HANDLE) {
-        throw std::runtime_error("IndirectRenderer::prepareCull requires compute pipeline and compactIndirectBuffer");
+        // No meshes loaded yet (e.g. during parallel background loading). Nothing to cull.
+        return;
     }
     
     static bool printedOnce = false;
@@ -728,7 +730,8 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm::mat4& viewProj, VkDescriptorSet computeDesc,
                                                 VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer, uint32_t maxDraws) {
     if (computePipeline == VK_NULL_HANDLE) {
-        throw std::runtime_error("IndirectRenderer::prepareCullWithDescriptor requires compute pipeline");
+        // No meshes loaded yet (e.g. during parallel background loading). Nothing to cull.
+        return;
     }
     if (outCompactBuffer == VK_NULL_HANDLE || computeDesc == VK_NULL_HANDLE) {
         throw std::runtime_error("IndirectRenderer::prepareCullWithDescriptor requires valid outCompactBuffer and computeDesc");

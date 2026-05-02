@@ -27,6 +27,7 @@ class LiquidSpaceChangeHandler;
 #include <unordered_map>
 #include <memory>
 #include <mutex>
+#include <deque>
 #include <vector>
 #include "../../utils/Model3DVersion.hpp"
 #include "SkyRenderer.hpp"
@@ -167,6 +168,20 @@ public:
     // Resize offscreen resources when the swapchain changes
     void onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height);
 
+    // ── Parallel scene loading ─────────────────────────────────────────────────
+    // CPU mesh-generation results are pushed here from the background loading
+    // thread; the main (render) thread drains the queue each frame and performs
+    // the actual Vulkan uploads.
+    struct PendingMeshData {
+        Layer          layer;
+        NodeID         nid;
+        OctreeNodeData nodeData;
+        Geometry       geom;
+    };
+    // Drain the pending mesh queue on the main (render) thread.
+    // Call once per frame from update() before recording command buffers.
+    void processPendingMeshes(VulkanApp* app);
+
 private:
     // Callbacks stored here so handler references remain valid
     NodeDataCallback solidNodeEventCallback;
@@ -179,6 +194,10 @@ private:
     NodeDataCallback brushSolidNodeEraseCallback;
     NodeDataCallback brushLiquidNodeEventCallback;
     NodeDataCallback brushLiquidNodeEraseCallback;
+
+    // Thread-safe queue fed by the background loading thread
+    mutable std::mutex pendingMeshMutex;
+    std::deque<PendingMeshData> pendingMeshQueue;
 };
 
 // ...existing code...

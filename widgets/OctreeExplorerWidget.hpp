@@ -5,6 +5,7 @@
 #include <imgui.h>
 #include <string>
 #include <vector>
+#include <atomic>
 
 // Simple ImGui widget to explore an octree recursively.
 // Starts collapsed; shows node type/chunk flags and children.
@@ -12,6 +13,10 @@ class OctreeExplorerWidget : public Widget {
 public:
     explicit OctreeExplorerWidget(LocalScene* scene);
     void render() override;
+
+    // Set to false while the octree is being written by a background thread.
+    // The widget will skip accessing the octree until this becomes true.
+    std::atomic<bool> octreeReady{false};
 
     struct CubeWithColor {
         BoundingCube cube;

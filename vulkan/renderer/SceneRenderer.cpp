@@ -734,6 +734,28 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 
 
 
+// Drain whatever CPU-generated mesh data the background loading thread has
+// queued since the last frame, and perform the actual Vulkan GPU uploads.
+// Must be called from the main (render) thread each frame.
+void SceneRenderer::processPendingMeshes(VulkanApp* app) {
+    std::deque<PendingMeshData> batch;
+    {
+        std::lock_guard<std::mutex> lock(pendingMeshMutex);
+        batch.swap(pendingMeshQueue);
+    }
+    if (batch.empty()) return;
+    for (auto& pd : batch) {
+        updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, pd.geom);
+    }
+    // Batch rebuild: one GPU upload per frame instead of one per mesh.
+    // updateMeshForNode appends geometry to CPU arrays and marks dirty=true;
+    // rebuild() here consolidates all changes into the GPU buffers at once.
+    IndirectRenderer& solidIR = solidRenderer->getIndirectRenderer();
+    if (solidIR.isDirty()) solidIR.rebuild(app);
+    IndirectRenderer& waterIR = waterRenderer->getIndirectRenderer();
+    if (waterIR.isDirty()) waterIR.rebuild(app);
+}
+
 void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry) {
 
     // Make a local copy of the node data so the callback may safely outlive this stack frame
@@ -747,15 +769,17 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
 
 // Return Solid/Liquid change handlers that reference the callbacks stored on this object
 SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
-    solidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
+    solidNodeEventCallback = [this, scene](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        //std::cout << "[SceneRenderer] Solid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
-        // Trigger solid mesh update for this node if needed
+        // Trigger solid mesh update for this node if needed.
+        // CPU tessellation runs here (background thread); result is queued for
+        // main-thread GPU upload via processPendingMeshes().
         if (nd.containmentType != ContainmentType::Disjoint) {
             OctreeNodeData nodeCopy = nd;
             this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
-                [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
-                    this->updateMeshForNode(app, layer, nid, nd, geom);
+                [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+                    std::lock_guard<std::mutex> lock(pendingMeshMutex);
+                    pendingMeshQueue.push_back({layer, nid, nd, geom});
                 }
             );
         }
@@ -780,14 +804,16 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
 
 LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
 
-    liquidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
+    liquidNodeEventCallback = [this, scene](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        //std::cout << "[SceneRenderer] Liquid node event: nid=" << nid << " level=" << nd.level << " containment=" << static_cast<int>(nd.containmentType) << "\n";
+        // CPU tessellation runs here (background thread); result is queued for
+        // main-thread GPU upload via processPendingMeshes().
         if (nd.containmentType != ContainmentType::Disjoint) {
             OctreeNodeData nodeCopy = nd;
             this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
-                [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
-                    this->updateMeshForNode(app, layer, nid, nd, geom);
+                [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+                    std::lock_guard<std::mutex> lock(pendingMeshMutex);
+                    pendingMeshQueue.push_back({layer, nid, nd, geom});
                 }
             );
         }
@@ -835,11 +861,8 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
     // rebuild will perform GPU uploads; we keep that responsibility centralized
     // so uploads may be performed asynchronously inside the renderer.
     renderer.uploadMesh(app, meshId);
-    // After mesh upload, rebuild if needed (renderer may choose async upload)
-    if (renderer.isDirty()) {
-        printf("[SceneRenderer::updateMeshForNode] Forcing buffer rebuild for %s renderer after mesh upload.\n", (layer == LAYER_OPAQUE ? "solid" : "water"));
-        renderer.rebuild(app);
-    }
+    // Rebuild is deferred to the end of processPendingMeshes() for efficiency.
+    // When called from brush rebuild paths, the caller invokes rebuild() explicitly.
 
     // Generate vegetation instances for this node using the compute shader.
     // We create temporary device-local vertex/index buffers for the mesh geometry,

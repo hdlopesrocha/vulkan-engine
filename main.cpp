@@ -143,6 +143,13 @@ public:
     KeyboardPublisher keyboardPublisher;
     GamepadPublisher gamepadPublisher;
     bool sceneLoading = false;
+    std::thread sceneLoadThread; // background scene-loading thread (joined in clean())
+
+    ~MyApp() {
+        // Safety: if run() threw before cleanup() was called, sceneLoadThread
+        // may still be joinable. Join here to prevent std::terminate.
+        if (sceneLoadThread.joinable()) sceneLoadThread.join();
+    }
 
     // setupTextures (defined out-of-line to avoid inline/member-definition issues)
     void setupTextures() {
@@ -366,7 +373,12 @@ public:
         eventManager.processQueued();
 
         shadowParams.update(camera.getPosition(), light);
-        
+
+        // Drain the pending mesh queue populated by the background scene-loading
+        // thread.  GPU uploads happen here on the main thread so newly generated
+        // chunks become visible progressively without blocking the render loop.
+        if (sceneRenderer) sceneRenderer->processPendingMeshes(this);
+
         mainTime += deltaTime;
     }
 
@@ -612,32 +624,28 @@ public:
                     }
                 }
 
-                // Update descriptor set with buffers: inCmds, outCmds, bounds, visibleCount
-                VkDescriptorBufferInfo inBuf{}; inBuf.buffer = ind.getIndirectBuffer().buffer; inBuf.offset = 0; inBuf.range = VK_WHOLE_SIZE;
-                VkDescriptorBufferInfo outBuf{}; outBuf.buffer = taskCompact.buffer; outBuf.offset = 0; outBuf.range = VK_WHOLE_SIZE;
-                VkDescriptorBufferInfo boundsBuf{}; boundsBuf.buffer = ind.getBoundsBuffer().buffer; boundsBuf.offset = 0; boundsBuf.range = VK_WHOLE_SIZE;
-                VkDescriptorBufferInfo countBuf{}; countBuf.buffer = taskVisible.buffer; countBuf.offset = 0; countBuf.range = VK_WHOLE_SIZE;
+                // Run cull into per-task buffers - only when compute pipeline is ready (meshes loaded)
+                if (computeDs != VK_NULL_HANDLE) {
+                    VkDescriptorBufferInfo inBuf{}; inBuf.buffer = ind.getIndirectBuffer().buffer; inBuf.offset = 0; inBuf.range = VK_WHOLE_SIZE;
+                    VkDescriptorBufferInfo outBuf{}; outBuf.buffer = taskCompact.buffer; outBuf.offset = 0; outBuf.range = VK_WHOLE_SIZE;
+                    VkDescriptorBufferInfo boundsBuf{}; boundsBuf.buffer = ind.getBoundsBuffer().buffer; boundsBuf.offset = 0; boundsBuf.range = VK_WHOLE_SIZE;
+                    VkDescriptorBufferInfo countBuf{}; countBuf.buffer = taskVisible.buffer; countBuf.offset = 0; countBuf.range = VK_WHOLE_SIZE;
 
-                VkWriteDescriptorSet writes[4]{};
-                writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[0].dstSet = computeDs;
-                writes[0].dstBinding = 0;
-                writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                writes[0].descriptorCount = 1;
-                writes[0].pBufferInfo = &inBuf;
+                    VkWriteDescriptorSet writes[4]{};
+                    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    writes[0].dstSet = computeDs;
+                    writes[0].dstBinding = 0;
+                    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    writes[0].descriptorCount = 1;
+                    writes[0].pBufferInfo = &inBuf;
 
-                writes[1] = writes[0]; writes[1].dstBinding = 1; writes[1].pBufferInfo = &outBuf;
-                writes[2] = writes[0]; writes[2].dstBinding = 2; writes[2].pBufferInfo = &boundsBuf;
-                writes[3] = writes[0]; writes[3].dstBinding = 3; writes[3].pBufferInfo = &countBuf;
+                    writes[1] = writes[0]; writes[1].dstBinding = 1; writes[1].pBufferInfo = &outBuf;
+                    writes[2] = writes[0]; writes[2].dstBinding = 2; writes[2].pBufferInfo = &boundsBuf;
+                    writes[3] = writes[0]; writes[3].dstBinding = 3; writes[3].pBufferInfo = &countBuf;
 
-                vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
-
-                // Run cull into per-task buffers using the temporary descriptor set
-                // Must have a valid compute descriptor set to run cull into per-task buffers
-                if (computeDs == VK_NULL_HANDLE) {
-                    throw std::runtime_error("Expected valid compute descriptor set for solid360 task (no fallback allowed)");
+                    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
                 }
-                ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
 
                 // Render solid360 using per-task compact/visible buffers when available
                 SkySettings::Mode skyMode360 = this->sceneRenderer->getSkySettings().mode;
@@ -762,11 +770,10 @@ public:
                     vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
                 }
 
-                // Run cull into per-task buffers using the temporary descriptor set
-                if (computeDs == VK_NULL_HANDLE) {
-                    throw std::runtime_error("Expected valid compute descriptor set for backFace task (no fallback allowed)");
+                // Run cull into per-task buffers - only when compute pipeline is ready (meshes loaded)
+                if (computeDs != VK_NULL_HANDLE) {
+                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
                 }
-                ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
 
                 // Render back-face pass using the per-task compact/visible buffers so draws consume the cull results
                 this->sceneRenderer->backFaceRenderer->renderBackFacePass(app, cmd, frameIdx,
@@ -1032,6 +1039,18 @@ public:
     }
 
     void clean() override {
+        // Wait for the background scene-loading thread to finish before tearing
+        // down Vulkan resources it may still be accessing.
+        if (sceneLoadThread.joinable()) sceneLoadThread.join();
+
+        // Free all ImGui descriptor sets owned by the widget while ImGui is still
+        // alive. clean() is called before cleanupImGui(), so this is safe.
+        // Without this, ~RenderTargetsWidget() (called from ~MyApp() after Vulkan
+        // teardown) would try to free descriptors from a destroyed pool.
+        if (renderTargetsWidget) {
+            renderTargetsWidget->invalidateImGuiDescriptors();
+        }
+
         // Cleanup scene renderer and all sub-renderers
         if (sceneRenderer) {
             sceneRenderer->cleanup(this);
@@ -1097,33 +1116,14 @@ int main(int argc, char** argv) {
 
 // Implementation: setup scene
 void MyApp::setupScene() {
-    // Initialize and load the main scene so rendering has valid scene data
+    // ── Main thread: allocate scene objects and set up all UI widgets ──────────
     mainScene = new LocalScene();
     octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
     // Register the explorer widget after construction so the WidgetManager
     // receives a valid shared_ptr (previously it was added while null).
     widgetManager.addWidget(octreeExplorerWidget);
 
-    // If you have vegetation: sceneRenderer->vegetationRenderer->rebuildBuffers(this);
-
-    SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler(mainScene, this);
-    LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler(mainScene, this);
-    UniqueOctreeChangeHandler uniqueSolidHandler = UniqueOctreeChangeHandler(solidHandler);
-    UniqueOctreeChangeHandler uniqueLiquidHandler = UniqueOctreeChangeHandler(liquidHandler);
-
-    MainSceneLoader loader = MainSceneLoader();
-    mainScene->loadScene(loader, uniqueSolidHandler, uniqueLiquidHandler);
-
-    uniqueSolidHandler.handleEvents();
-    uniqueLiquidHandler.handleEvents();
-
-    sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
-    sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
-
-    sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
-    sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
-
-    // --- Brush scene setup ---
+    // --- Brush scene setup (no heavy work, stays on main thread) ---
     brushScene = new LocalScene();
 
     // Initialize manager-owned brush entries and create Brush3dWidget wired to the manager
@@ -1145,7 +1145,41 @@ void MyApp::setupScene() {
 
     brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager, &eventManager);
     widgetManager.addWidget(brush3dWidget);
-    std::cout << "[Main::setupScene] Setup Ok!" << std::endl;
+
+    // ── Background thread: heavy CPU work (SDF evaluation + octree traversal + tessellation) ──
+    // The change handlers now push CPU-generated geometry into a thread-safe
+    // pending queue.  processPendingMeshes() drains the queue each frame on the
+    // main thread and performs the Vulkan GPU uploads, so chunks appear in real
+    // time as they are generated.
+    sceneLoadThread = std::thread([this]() {
+        try {
+            SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler(mainScene, this);
+            LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler(mainScene, this);
+            UniqueOctreeChangeHandler uniqueSolidHandler(solidHandler);
+            UniqueOctreeChangeHandler uniqueLiquidHandler(liquidHandler);
+
+            MainSceneLoader loader;
+            mainScene->loadScene(loader, uniqueSolidHandler, uniqueLiquidHandler);
+
+            // loadScene() has finished writing the octrees — signal the explorer widget
+            // that it is now safe to read them on the main thread.
+            if (octreeExplorerWidget) {
+                octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
+            }
+
+            // Dispatch deferred node events — each one tessellates the chunk (CPU)
+            // and pushes the geometry into the pending queue for main-thread upload.
+            uniqueSolidHandler.handleEvents();
+            uniqueLiquidHandler.handleEvents();
+
+            std::cout << "[Main::setupScene] Background scene loading complete\n";
+        } catch (const std::exception& e) {
+            std::cerr << "[Main::setupScene] Background thread exception: " << e.what() << "\n";
+        } catch (...) {
+            std::cerr << "[Main::setupScene] Background thread unknown exception\n";
+        }
+    });
+    // Keep the thread handle so clean() can join it before Vulkan teardown.
 }
 
 // Implementation: setup vegetation textures

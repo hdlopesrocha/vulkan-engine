@@ -4396,6 +4396,11 @@ void VulkanApp::run() {
     initVulkan();
     setup();
 
-    mainLoop();
+    try {
+        mainLoop();
+    } catch (...) {
+        cleanup();
+        throw;
+    }
     cleanup();
 }
