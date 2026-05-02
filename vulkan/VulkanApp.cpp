@@ -1669,13 +1669,13 @@ void VulkanApp::applyPendingLayoutUpdatesForCommandBuffer(VkCommandBuffer cmd) {
 }
 
 void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer) {
-    // Build a map of earliest-seen pending updates for affected subresources.
-    // Prefer pending updates recorded for `commandBuffer` itself (these
-    // should be applied unconditionally), then fill gaps from other
-    // pending entries. Do this under `pendingLayoutMutex` and apply the
-    // results under `imageLayoutMutex` to preserve lock ordering.
-    std::unordered_map<uint64_t, VkImageLayout> earliest;
-    std::unordered_set<uint64_t> ownKeys;
+    // Build a map of latest-seen pending updates for affected subresources.
+    // "Latest" means the last recorded update for each key, which reflects
+    // the final layout the GPU image will be in after the command buffer
+    // finishes executing. Only this command buffer's own pending entries
+    // are considered (other command buffers' entries are only safe to apply
+    // when those buffers complete, via processPendingCommandBuffers).
+    std::unordered_map<uint64_t, VkImageLayout> latest;
 
     {
         std::lock_guard<std::mutex> plk(pendingLayoutMutex);
@@ -1684,10 +1684,8 @@ void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer
             for (const auto &u : pit->second) {
                 for (uint32_t l = 0; l < u.layerCount; ++l) {
                     uint64_t key = ((uint64_t)(uintptr_t)u.image << 32) | (uint64_t)(u.baseArrayLayer + l);
-                    if (earliest.find(key) == earliest.end()) {
-                        earliest[key] = u.newLayout;
-                        ownKeys.insert(key);
-                    }
+                    // Always overwrite — iterate in order so the last entry wins.
+                    latest[key] = u.newLayout;
                 }
             }
         }
@@ -1702,35 +1700,24 @@ void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer
         // applied when their command buffers complete.
     }
 
-    if (earliest.empty()) return;
+    if (latest.empty()) return;
     // Debug: show what will be applied for this submit
     std::cerr << "[VulkanApp::preApplyPendingLayoutsBeforeSubmit] cmd=" << (void*)commandBuffer
-              << " earliest_count=" << earliest.size() << std::endl;
-    for (const auto &p : earliest) {
+              << " latest_count=" << latest.size() << std::endl;
+    for (const auto &p : latest) {
         uint64_t key = p.first;
         VkImage image = (VkImage)(uintptr_t)(key >> 32);
         uint32_t layer = (uint32_t)(key & 0xffffffff);
         std::cerr << "  pending image=" << (void*)image << " layer=" << layer << " layout=" << (int)p.second << std::endl;
     }
 
-    // Apply the collected earliest updates into the authoritative map.
+    // Apply the collected latest updates into the authoritative map.
     std::lock_guard<std::mutex> lk(imageLayoutMutex);
-    for (const auto &p : earliest) {
-        uint64_t key = p.first;
-        VkImageLayout layout = p.second;
-        if (ownKeys.find(key) != ownKeys.end()) {
-            // For this command buffer's own pending updates, overwrite.
-            imageLayerLayouts[key] = layout;
-        } else {
-            // For others, only fill if currently unknown/UNDEFINED.
-            auto it = imageLayerLayouts.find(key);
-            if (it == imageLayerLayouts.end() || it->second == VK_IMAGE_LAYOUT_UNDEFINED) {
-                imageLayerLayouts[key] = layout;
-            }
-        }
+    for (const auto &p : latest) {
+        imageLayerLayouts[p.first] = p.second;
     }
     std::cerr << "[VulkanApp::preApplyPendingLayoutsBeforeSubmit] cmd=" << (void*)commandBuffer
-              << " applied_count=" << earliest.size() << std::endl;
+              << " applied_count=" << latest.size() << std::endl;
 }
 
 void VulkanApp::waitForAllPendingCommandBuffers() {
@@ -2635,6 +2622,15 @@ void VulkanApp::setImageLayoutTracked(VkImage image, VkImageLayout newLayout, ui
         uint64_t key = ((uint64_t)(uintptr_t)image << 32) | (uint64_t)(baseArrayLayer + l);
         imageLayerLayouts[key] = newLayout;
     }
+}
+
+VkImageLayout VulkanApp::getImageLayoutTracked(VkImage image, uint32_t baseArrayLayer) const {
+    if (image == VK_NULL_HANDLE) return VK_IMAGE_LAYOUT_UNDEFINED;
+    std::lock_guard<std::mutex> lk(imageLayoutMutex);
+    uint64_t key = ((uint64_t)(uintptr_t)image << 32) | (uint64_t)baseArrayLayer;
+    auto it = imageLayerLayouts.find(key);
+    if (it != imageLayerLayouts.end()) return it->second;
+    return VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 void VulkanApp::recordTrackedLayoutForCommandBuffer(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout newLayout, uint32_t baseArrayLayer, uint32_t layerCount) {
@@ -4075,6 +4071,11 @@ void VulkanApp::recreateSwapchain() {
     if (!imguiInitOk) {
         printf("[ImGui] ERROR: ImGui_ImplVulkan_Init (recreate) failed!\n");
     }
+
+    // Notify derived app to re-create any ImGui AddTexture DS that used the old DSL.
+    // The Shutdown() above destroyed the old DescriptorSetLayout; DS allocated with it
+    // must be freed and re-created with the new DSL to pass validation.
+    onImGuiRecreated();
 
     // Notify derived app to recreate size-dependent offscreen resources
     onSwapchainResized(static_cast<uint32_t>(width), static_cast<uint32_t>(height));

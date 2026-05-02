@@ -142,6 +142,11 @@ private:
     bool showAllCascades = false;
     enum class ShadowViewMode { Raw = 0, Linearized = 1 } shadowViewMode = ShadowViewMode::Linearized;
 
+    // Auto-advance: cycle through all preview targets every N frames
+    bool autoAdvance = true;
+    int autoAdvanceInterval = 10;  // frames between advances
+    int autoAdvanceFrameCounter = 0;
+
     // NOTE: widget no longer maintains fallbacks or heuristic layout maps.
     // Rely on renderer-provided tracked layouts (e.g. Solid360Renderer).
 
@@ -160,6 +165,10 @@ public:
     void render() override;
     void updateDescriptors(uint32_t frameIndex);
     void cleanup();
+    // Called after ImGui is re-initialized (new DSL). Frees all owned ImGui AddTexture DS
+    // (created with the old DSL) and resets them to VK_NULL_HANDLE so they are re-created
+    // with the new DSL on the next frame.
+    void invalidateImGuiDescriptors();
     // Run a small fullscreen pass that samples a depth image and writes a
     // normalized RGBA preview into `dstView`/`dstFb`. `dstDescriptor` will be
     // created via ImGui_ImplVulkan_AddTexture if needed. `mode` selects

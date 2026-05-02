@@ -94,7 +94,7 @@ void CubeToEquirectRenderer::createRenderPass(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
     VkAttachmentDescription colorAtt{};
-    colorAtt.format = app->getSwapchainImageFormat();
+    colorAtt.format = VK_FORMAT_R8G8B8A8_UNORM; // must match the image format used by createOutputTarget
     colorAtt.samples = VK_SAMPLE_COUNT_1_BIT;
     colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;

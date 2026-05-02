@@ -413,59 +413,71 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
         return false;
     }
 
+    // Determine the pre-linearization layout. VulkanApp's authoritative tracked
+    // layout (imageLayerLayouts) is consulted first — it reflects the last value
+    // applied at submit time and is more reliable than renderer-local tracking
+    // which can lag by one frame due to pending-layout deferred application.
+    // Renderer-local tracking is kept as a fallback for images not yet seen by VulkanApp.
+    VkImageLayout trackedOld = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (srcImage != VK_NULL_HANDLE) {
+        // Prefer the VulkanApp authoritative tracked layout (updated at submit time).
+        trackedOld = app->getImageLayoutTracked(srcImage, srcBaseArrayLayer);
+
+        // Renderer-local fallback when VulkanApp has no entry yet.
+        if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED) {
+            // Solid 360 (per-face array)
+            if (sceneRenderer && sceneRenderer->solid360Renderer && srcImage == sceneRenderer->solid360Renderer->getCube360DepthImage()) {
+                trackedOld = sceneRenderer->solid360Renderer->getCube360DepthLayout(srcBaseArrayLayer);
+            }
+            // Main solid renderer (per-frame depth images)
+            if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && solidRenderer) {
+                for (uint32_t f = 0; f < 2; ++f) {
+                    if (srcImage == solidRenderer->getDepthImage(f)) {
+                        trackedOld = solidRenderer->getDepthLayout(f);
+                        break;
+                    }
+                }
+            }
+            // Back-face renderer (per-frame)
+            if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && sceneRenderer && sceneRenderer->backFaceRenderer) {
+                for (uint32_t f = 0; f < 2; ++f) {
+                    if (srcImage == sceneRenderer->backFaceRenderer->getBackFaceDepthImage(f)) {
+                        trackedOld = sceneRenderer->backFaceRenderer->getBackFaceDepthLayout(f);
+                        break;
+                    }
+                }
+            }
+            // Water renderer (water geometry depth, per-frame)
+            if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && sceneRenderer && sceneRenderer->waterRenderer) {
+                for (uint32_t f = 0; f < 2; ++f) {
+                    if (srcImage == sceneRenderer->waterRenderer->getWaterGeomDepthImage(f)) {
+                        trackedOld = sceneRenderer->waterRenderer->getWaterGeomDepthLayout(f);
+                        break;
+                    }
+                }
+            }
+            // Shadow cascades
+            if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && shadowMapper) {
+                for (uint32_t sc = 0; sc < SHADOW_CASCADE_COUNT; ++sc) {
+                    if (srcImage == shadowMapper->getDepthImage(sc)) {
+                        trackedOld = shadowMapper->getDepthLayout(sc);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     // Ensure the source depth image is in a shader-readable layout before sampling (recorded into cmd)
     if (srcImage != VK_NULL_HANDLE) {
-        // Consult renderer-tracked layouts when available so we emit a barrier
-        // with the correct oldLayout instead of guessing. Check known renderers
-        // (solid360, back-face, water) across both frames.
-        VkImageLayout trackedOld = VK_IMAGE_LAYOUT_UNDEFINED;
-        // Solid 360 (per-face array)
-        if (sceneRenderer && sceneRenderer->solid360Renderer && srcImage == sceneRenderer->solid360Renderer->getCube360DepthImage()) {
-            trackedOld = sceneRenderer->solid360Renderer->getCube360DepthLayout(srcBaseArrayLayer);
+        // Force-correct VulkanApp's stale imageLayerLayouts using the renderer's
+        // authoritative local tracking. This avoids barriers being recorded with
+        // wrong oldLayouts when the deferred applyPending hasn't run yet.
+        if (trackedOld != VK_IMAGE_LAYOUT_UNDEFINED) {
+            app->setImageLayoutTracked(srcImage, trackedOld, srcBaseArrayLayer, 1);
         }
-        // Main solid renderer (per-frame depth images)
-        if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && solidRenderer) {
-            for (uint32_t f = 0; f < 2; ++f) {
-                if (srcImage == solidRenderer->getDepthImage(f)) {
-                    trackedOld = solidRenderer->getDepthLayout(f);
-                    break;
-                }
-            }
-        }
-        // Back-face renderer (per-frame)
-        if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && sceneRenderer && sceneRenderer->backFaceRenderer) {
-            for (uint32_t f = 0; f < 2; ++f) {
-                if (srcImage == sceneRenderer->backFaceRenderer->getBackFaceDepthImage(f)) {
-                    trackedOld = sceneRenderer->backFaceRenderer->getBackFaceDepthLayout(f);
-                    break;
-                }
-            }
-        }
-        // Water renderer (water geometry depth, per-frame)
-        if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && sceneRenderer && sceneRenderer->waterRenderer) {
-            for (uint32_t f = 0; f < 2; ++f) {
-                if (srcImage == sceneRenderer->waterRenderer->getWaterGeomDepthImage(f)) {
-                    trackedOld = sceneRenderer->waterRenderer->getWaterGeomDepthLayout(f);
-                    break;
-                }
-            }
-        }
-        // Shadow cascades (single-image per cascade)
-        // Consult the shadow mapper for an authoritative tracked layout.
-        // Do not substitute a concrete layout here — leave UNDEFINED so
-        // VulkanApp can resolve effective oldLayout (pending/tracked)
-        // when callers pass VK_IMAGE_LAYOUT_UNDEFINED.
-        if (trackedOld == VK_IMAGE_LAYOUT_UNDEFINED && shadowMapper) {
-            for (uint32_t sc = 0; sc < SHADOW_CASCADE_COUNT; ++sc) {
-                if (srcImage == shadowMapper->getDepthImage(sc)) {
-                    trackedOld = shadowMapper->getDepthLayout(sc);
-                    break;
-                }
-            }
-        }
-        // std::cerr << "[RenderTargetsWidget] runLinearizePass: srcImage=" << (void*)srcImage << " baseLayer=" << (unsigned)srcBaseArrayLayer << " trackedOld=" << (int)trackedOld << std::endl;
-        // Let the centralized tracker resolve the effective old layout
-        // (avoid using local renderer-tracked values which may be stale).
+        // Record transition to SHADER_READ_ONLY for sampling.
+        // VulkanApp will now see the corrected tracked layout.
         app->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, srcBaseArrayLayer, 1);
     }
 
@@ -490,17 +502,19 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
 
-    // Revert source depth image back to a depth-stencil attachment layout (recorded into cmd)
+    // Revert source depth image back to its pre-linearization layout.
+    // Using trackedOld as desiredFinal ensures we restore the exact layout the
+    // rendering system expects (e.g. DEPTH_STENCIL_READ_ONLY for shadow maps,
+    // SHADER_READ_ONLY for solid depth that already ends in read-only).
     if (srcImage != VK_NULL_HANDLE) {
-        // Use the canonical final layout: depth-stencil attachment.
-        VkImageLayout desiredFinal = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        // std::cerr << "[RenderTargetsWidget] runLinearizePass (pre-revert): srcImage=" << (void*)srcImage << " baseLayer=" << (unsigned)srcBaseArrayLayer << " desiredFinal=" << (int)desiredFinal << std::endl;
-        // Pass UNDEFINED so VulkanApp resolves the authoritative old layout
-        // (avoid assuming the image is already SHADER_READ_ONLY at record time).
+        // desiredFinal mirrors the layout the image was in before linearization.
+        // If trackedOld is UNDEFINED fall back to DEPTH_STENCIL_ATTACHMENT.
+        VkImageLayout desiredFinal = (trackedOld != VK_IMAGE_LAYOUT_UNDEFINED)
+                                        ? trackedOld
+                                        : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        // Pass UNDEFINED so VulkanApp resolves the old layout from the pending
+        // barrier recorded above (which left the image in SHADER_READ_ONLY).
         app->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, desiredFinal, 1, srcBaseArrayLayer, 1);
-        // Best-effort: do not change the renderer's tracked layout here because
-        // recorded barriers are not yet submitted. Update tracked layout only
-        // after submit so other record-time logic sees a consistent state.
     }
 
     // Submit the recorded command buffer synchronously and wait for completion.
@@ -529,19 +543,44 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
     // Free the command buffer now that synchronous submit completed
     app->freeCommandBuffer(cmd);
 
-    // After the synchronous submit completed, update the renderer's per-face
-    // tracking for cubemaps so future passes will record correct oldLayout values.
+    // After the synchronous submit completed, update all renderer-local layout
+    // tracking to reflect the image's actual final state (trackedOld, since we
+    // reverted the image back to its pre-linearization layout).
     if (srcImage != VK_NULL_HANDLE) {
+        VkImageLayout finalTrackedLayout = (trackedOld != VK_IMAGE_LAYOUT_UNDEFINED)
+                                               ? trackedOld
+                                               : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         if (sceneRenderer && sceneRenderer->solid360Renderer && srcImage == sceneRenderer->solid360Renderer->getCube360DepthImage()) {
-            sceneRenderer->solid360Renderer->setCube360DepthLayout(srcBaseArrayLayer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-            // std::cerr << "[RenderTargetsWidget] runLinearizePass: updated cube360 tracked layout for srcImage=" << (void*)srcImage << " baseLayer=" << (unsigned)srcBaseArrayLayer << " -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL" << std::endl;
+            sceneRenderer->solid360Renderer->setCube360DepthLayout(srcBaseArrayLayer, finalTrackedLayout);
         }
-        // Update main solid renderer tracked layouts if we operated on its depth image
         if (solidRenderer) {
             for (uint32_t f = 0; f < 2; ++f) {
                 if (srcImage == solidRenderer->getDepthImage(f)) {
-                    solidRenderer->setDepthLayout(f, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-                    // std::cerr << "[RenderTargetsWidget] runLinearizePass: updated solid renderer tracked layout for srcImage=" << (void*)srcImage << " frame=" << (unsigned)f << " -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL" << std::endl;
+                    solidRenderer->setDepthLayout(f, finalTrackedLayout);
+                    break;
+                }
+            }
+        }
+        if (sceneRenderer && sceneRenderer->backFaceRenderer) {
+            for (uint32_t f = 0; f < 2; ++f) {
+                if (srcImage == sceneRenderer->backFaceRenderer->getBackFaceDepthImage(f)) {
+                    sceneRenderer->backFaceRenderer->setBackFaceDepthLayout(f, finalTrackedLayout);
+                    break;
+                }
+            }
+        }
+        if (sceneRenderer && sceneRenderer->waterRenderer) {
+            for (uint32_t f = 0; f < 2; ++f) {
+                if (srcImage == sceneRenderer->waterRenderer->getWaterGeomDepthImage(f)) {
+                    sceneRenderer->waterRenderer->setWaterGeomDepthLayout(f, finalTrackedLayout);
+                    break;
+                }
+            }
+        }
+        if (shadowMapper) {
+            for (uint32_t sc = 0; sc < SHADOW_CASCADE_COUNT; ++sc) {
+                if (srcImage == shadowMapper->getDepthImage(sc)) {
+                    shadowMapper->setDepthLayout(sc, finalTrackedLayout);
                     break;
                 }
             }
@@ -988,6 +1027,36 @@ void RenderTargetsWidget::cleanup() {
     }
 }
 
+void RenderTargetsWidget::invalidateImGuiDescriptors() {
+    // After ImGui is re-initialized (new DSL), all AddTexture DS created with the old DSL
+    // must be freed and cleared. They will be re-created on the next render() call.
+    auto freeAndClear = [](VkDescriptorSet& ds, bool& owned) {
+        if (ds == VK_NULL_HANDLE) return;
+        if (owned) {
+            ImGui_ImplVulkan_RemoveTexture(ds);
+        }
+        ds = VK_NULL_HANDLE;
+        owned = false;
+    };
+
+    freeAndClear(skyDescriptor, skyDescriptorOwned);
+    freeAndClear(solidColorDescriptor, solidColorDescriptorOwned);
+    freeAndClear(solidDepthDescriptor, solidDepthDescriptorOwned);
+    freeAndClear(waterColorDescriptor, waterColorDescriptorOwned);
+    freeAndClear(solid360Descriptor, solid360DescriptorOwned);
+    freeAndClear(cube360EquirectDescriptor, cube360EquirectDescriptorOwned);
+    for (int i = 0; i < 6; ++i) freeAndClear(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
+    for (int i = 0; i < 6; ++i) freeAndClear(cube360FaceDepthDescriptor[i], cube360FaceDepthDescriptorOwned[i]);
+    freeAndClear(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
+    freeAndClear(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
+    freeAndClear(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
+    freeAndClear(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
+        freeAndClear(linearShadowDepthDescriptor[i], linearShadowDepthDescriptorOwned[i]);
+    }
+    previewDescriptor = VK_NULL_HANDLE;
+}
+
 void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     if (!sceneRenderer || !sceneRenderer->waterRenderer) return;
 
@@ -1326,6 +1395,25 @@ void RenderTargetsWidget::render() {
     if (ImGui::BeginPopupContextItem("preview_selector")) {
         ImGui::TextUnformatted("Choose preview");
         ImGui::EndPopup();
+    }
+
+    // Auto-advance: cycle through all targets every N frames
+    ImGui::Checkbox("Auto-advance", &autoAdvance);
+    if (autoAdvance) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80.0f);
+        ImGui::InputInt("frames/step", &autoAdvanceInterval);
+        if (autoAdvanceInterval < 1) autoAdvanceInterval = 1;
+        ++autoAdvanceFrameCounter;
+        if (autoAdvanceFrameCounter >= autoAdvanceInterval) {
+            autoAdvanceFrameCounter = 0;
+            int next = (static_cast<int>(selectedPreview) + 1) % static_cast<int>(PreviewTarget::Count);
+            selectedPreview = static_cast<PreviewTarget>(next);
+            // Reset shadow cascade on wrap-around so all cascades get exercised over time
+            if (selectedPreview == PreviewTarget::ShadowCascade) {
+                selectedShadowCascade = (selectedShadowCascade + 1) % SHADOW_CASCADE_COUNT;
+            }
+        }
     }
     // Add preview items array (prepare for dropdown selector)
     // Items must be in the same order as RenderTargetsWidget::PreviewTarget

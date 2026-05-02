@@ -377,17 +377,40 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer,
     vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
 }
 
-void ShadowRenderer::endShadowPass(VulkanApp* /*app*/, VkCommandBuffer commandBuffer, uint32_t cascadeIndex) {
+void ShadowRenderer::endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex) {
     // The render pass finalLayout (DEPTH_STENCIL_READ_ONLY_OPTIMAL) automatically
     // transitions the cascade's shadow map to the correct layout for shader sampling.
     vkCmdEndRenderPass(commandBuffer);
     // Update tracked layout to reflect the renderpass final layout
     if (cascadeIndex < cascadeDepthLayouts.size()) cascadeDepthLayouts[cascadeIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    // Propagate the correct final layout to VulkanApp's authoritative tracking so
+    // subsequent command buffers (e.g. the widget's linearize pass) read the right layout.
+    if (app && cascadeIndex < SHADOW_CASCADE_COUNT && cascades[cascadeIndex].depthImage != VK_NULL_HANDLE) {
+        app->recordTrackedLayoutForCommandBuffer(commandBuffer, cascades[cascadeIndex].depthImage,
+                                                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 0, 1);
+    }
 }
 
 VkImageLayout ShadowRenderer::getDepthLayout(uint32_t cascade) const {
     if (cascade >= cascadeDepthLayouts.size()) return VK_IMAGE_LAYOUT_UNDEFINED;
     return cascadeDepthLayouts[cascade];
+}
+
+void ShadowRenderer::setDepthLayout(uint32_t cascade, VkImageLayout layout) {
+    if (cascade < cascadeDepthLayouts.size()) cascadeDepthLayouts[cascade] = layout;
+}
+
+void ShadowRenderer::recreateImGuiDescriptors() {
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
+        if (cascades[i].imguiDescSet != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(cascades[i].imguiDescSet);
+            cascades[i].imguiDescSet = VK_NULL_HANDLE;
+        }
+        if (cascades[i].depthView != VK_NULL_HANDLE && shadowMapSampler != VK_NULL_HANDLE) {
+            cascades[i].imguiDescSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
+                shadowMapSampler, cascades[i].depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        }
+    }
 }
 
 void ShadowRenderer::requestWireframeReadback() {

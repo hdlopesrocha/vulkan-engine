@@ -356,6 +356,7 @@ protected:
         void transitionImageLayoutLayerForce(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);
         // Update the authoritative tracked layout for an image (no barrier emitted).
         void setImageLayoutTracked(VkImage image, VkImageLayout newLayout, uint32_t baseArrayLayer = 0, uint32_t layerCount = 1);
+        VkImageLayout getImageLayoutTracked(VkImage image, uint32_t baseArrayLayer = 0) const;
         // Record a tracked layout change associated with a specific command buffer.
         // If `commandBuffer` is VK_NULL_HANDLE the authoritative map is updated
         // immediately; otherwise the change is queued and applied when the
@@ -385,6 +386,9 @@ protected:
         virtual void clean() = 0;
         // Called after swapchain recreation so derived apps can resize their offscreen resources
         virtual void onSwapchainResized(uint32_t /*width*/, uint32_t /*height*/) {}
+        // Called after ImGui is re-initialized (new DSL) during swapchain recreate.
+        // Override to re-create any ImGui AddTexture DS that used the old DSL.
+        virtual void onImGuiRecreated() {}
         // Called after a frame has been submitted/presented. Derived apps may override.
         virtual void postSubmit();
 
