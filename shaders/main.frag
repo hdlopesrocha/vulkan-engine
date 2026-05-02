@@ -108,8 +108,9 @@ void main() {
         vec3 n1 = texture(normalArray, vec3(uv, float(fragTexIndices.y))).rgb * 2.0 - 1.0;
         vec3 n2 = texture(normalArray, vec3(uv, float(fragTexIndices.z))).rgb * 2.0 - 1.0;
         vec3 nmap = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
-        // Build TBN matrix from geometry for UV-space normal mapping
-        vec3 T = normalize(dFdx(fragPosWorld));
+        // Build TBN matrix from undisplaced geometry for UV-space normal mapping
+        // (normal maps are in tangent space of the original surface, not the displaced one)
+        vec3 T = normalize(dFdx(fragPosWorldNotDisplaced));
         vec3 B = normalize(cross(N, T));
         T = normalize(cross(B, N)); // re-orthogonalize
         mat3 TBN = mat3(T, B, N);
@@ -152,7 +153,11 @@ void main() {
     vec4 spec1 = materials[fragTexIndices.y].specularParams;
     vec4 spec2 = materials[fragTexIndices.z].specularParams;
     vec4 blendedSpec = spec0 * w.x + spec1 * w.y + spec2 * w.z;
-    float spec = pow(max(dot(viewDir, reflectDir), 0.0), blendedSpec.y);
+    // Gate specular on NdotL to prevent non-physical specular on dark-side surfaces
+    // (normal-mapped worldNormal can make NdotL == 0 while still reflecting toward viewer).
+    // Clamp shininess to >= 1.0 so pow(x, 0) == 1 never fires.
+    float shininess = max(blendedSpec.y, 1.0);
+    float spec = (NdotL > 0.0) ? pow(max(dot(viewDir, reflectDir), 0.0), shininess) : 0.0;
     vec3 specular = ubo.lightColor.rgb * spec * (1.0 - totalShadow) * blendedSpec.x;
 
     // Debug visualisation modes (0 = normal render)
