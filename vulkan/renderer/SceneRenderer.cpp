@@ -738,10 +738,17 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 // queued since the last frame, and perform the actual Vulkan GPU uploads.
 // Must be called from the main (render) thread each frame.
 void SceneRenderer::processPendingMeshes(VulkanApp* app) {
+    // Cap uploads per frame so the render loop stays responsive.
+    // Remaining entries stay in the queue for subsequent frames.
+    static constexpr size_t kMaxPerFrame = 4;
     std::deque<PendingMeshData> batch;
     {
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
-        batch.swap(pendingMeshQueue);
+        size_t n = std::min(pendingMeshQueue.size(), kMaxPerFrame);
+        batch.insert(batch.end(),
+                     std::make_move_iterator(pendingMeshQueue.begin()),
+                     std::make_move_iterator(pendingMeshQueue.begin() + n));
+        pendingMeshQueue.erase(pendingMeshQueue.begin(), pendingMeshQueue.begin() + n);
     }
     if (batch.empty()) return;
     for (auto& pd : batch) {
