@@ -298,6 +298,7 @@ public:
             sceneRenderer, sceneRenderer->solidRenderer.get(), sceneRenderer->skyRenderer.get(),
             sceneRenderer->shadowMapper.get(), &shadowParams);
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
+        if (renderTargetsWidget) renderTargetsWidget->show();
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
         controllerParametersWidget = std::make_shared<ControllerParametersWidget>(controllerManager.getParameters(), &brushManager);
@@ -1045,6 +1046,19 @@ public:
     void onSwapchainResized(uint32_t width, uint32_t height) override {
         if (sceneRenderer) {
             sceneRenderer->onSwapchainResized(this, width, height);
+        }
+    }
+
+    void onImGuiRecreated() override {
+        // Re-create ImGui AddTexture DS for shadow cascades — the old ones used the
+        // previous DescriptorSetLayout which was destroyed by ImGui_ImplVulkan_Shutdown.
+        if (sceneRenderer && sceneRenderer->shadowMapper) {
+            sceneRenderer->shadowMapper->recreateImGuiDescriptors();
+        }
+        // Invalidate all cached ImGui texture DS in the RenderTargetsWidget so they
+        // are re-created with the new DSL on the next frame.
+        if (renderTargetsWidget) {
+            renderTargetsWidget->invalidateImGuiDescriptors();
         }
     }
 

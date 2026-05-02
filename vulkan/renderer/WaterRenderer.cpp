@@ -543,6 +543,10 @@ VkImageLayout WaterRenderer::getWaterGeomDepthLayout(uint32_t frameIndex) const 
     return VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
+void WaterRenderer::setWaterGeomDepthLayout(uint32_t frameIndex, VkImageLayout layout) {
+    if (frameIndex < 2) waterGeomDepthImageLayouts[frameIndex] = layout;
+}
+
 VkImageLayout WaterRenderer::getSceneDepthLayout(uint32_t frameIndex) const {
     if (frameIndex < 2) return sceneDepthImageLayouts[frameIndex];
     return VK_IMAGE_LAYOUT_UNDEFINED;

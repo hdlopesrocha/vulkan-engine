@@ -29,6 +29,11 @@ public:
     VkImage getDepthImage(uint32_t cascade = 0) const;
     // Expose tracked layout for each cascade (used by debug widgets)
     VkImageLayout getDepthLayout(uint32_t cascade = 0) const;
+    void setDepthLayout(uint32_t cascade, VkImageLayout layout);
+    // Re-create all ImGui AddTexture DS after ImGui is re-initialized (swapchain recreate).
+    // The old DS used the previous DescriptorSetLayout which was destroyed; re-creating them
+    // with the new DSL prevents validation errors.
+    void recreateImGuiDescriptors();
 private:
     uint32_t shadowMapSize;
 

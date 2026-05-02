@@ -33,6 +33,7 @@ public:
     VkImageView getBackFaceDepthView(uint32_t frameIndex) const { return backFaceDepthImageViews[frameIndex % backFaceDepthImageViews.size()]; }
     // Accessor for tracked per-frame layout (used by widgets to emit correct barriers)
     VkImageLayout getBackFaceDepthLayout(uint32_t frameIndex) const { return backFaceDepthImageLayouts[frameIndex % backFaceDepthImageLayouts.size()]; }
+    void setBackFaceDepthLayout(uint32_t frameIndex, VkImageLayout layout) { if (frameIndex < backFaceDepthImageLayouts.size()) backFaceDepthImageLayouts[frameIndex] = layout; }
 
     // Add post-render barriers for the back-face depth image
     void postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex);

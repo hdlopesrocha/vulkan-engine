@@ -57,6 +57,7 @@ public:
     VkImage getWaterGeomDepthImage(uint32_t frameIndex) const { return (frameIndex < 2) ? waterGeomDepthImages[frameIndex] : VK_NULL_HANDLE; }
     // Accessors for renderer-tracked layouts (used by widgets to record correct barriers)
     VkImageLayout getWaterGeomDepthLayout(uint32_t frameIndex) const;
+    void setWaterGeomDepthLayout(uint32_t frameIndex, VkImageLayout layout);
     VkImageLayout getSceneDepthLayout(uint32_t frameIndex) const;
     
     // Get scene offscreen target views (for rendering scene before water)

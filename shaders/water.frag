@@ -106,7 +106,8 @@ void main() {
     // already-computed world-space thickness: only trust the back face when it
     // represents a genuinely thick water body (>= 5 cm), not a thin surface.
     const float kMinVolumeThickness = 0.05; // 5 cm world-space
-    bool hasValidBackFace = (backFaceThickness > kMinVolumeThickness);
+    // Also reject backFaceDepthRaw == 1.0 (depth-clear value = no geometry rendered).
+    bool hasValidBackFace = (backFaceDepthRaw < 0.9999) && (backFaceThickness > kMinVolumeThickness);
     float waterThickness  = hasValidBackFace ? min(backFaceThickness, sceneThickness) : sceneThickness;
 
     // Depth-based modulation factors (exponential ramp)
