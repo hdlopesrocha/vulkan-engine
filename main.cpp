@@ -1191,6 +1191,7 @@ void MyApp::setupVegetationTextures() {
     const char* opacityPaths[3] = { "textures/vegetation/foliage_opacity.jpg", "textures/vegetation/grass_opacity.jpg", "textures/vegetation/wild_opacity.jpg" };
     for (int atlasIndex = 0; atlasIndex < 3; ++atlasIndex) {
         try {
+            vegetationAtlasManager.clear(atlasIndex);
             int added = vegetationAtlasManager.autoDetectTiles(atlasIndex, opacityPaths[atlasIndex]);
             std::cerr << "[MyApp::setupVegetationTextures] Atlas " << atlasIndex << ": auto-detected " << added << " tiles" << std::endl;
         } catch (...) {
@@ -1198,13 +1199,37 @@ void MyApp::setupVegetationTextures() {
         }
     }
 
-    // Create simple billboards for each detected atlas tile so they appear in the editor
+    // Initialize the editor with 3 vegetation billboards.
+    // Each billboard uses only one atlas (its respective texture), and includes
+    // all available tiles from that atlas as layers with uniform horizontal offsets.
+    billboardManager.clear();
+
     for (int atlasIndex = 0; atlasIndex < 3; ++atlasIndex) {
-        size_t tileCount = vegetationAtlasManager.getTileCount(atlasIndex);
+        const std::string name = "Vegetation Billboard " + std::to_string(atlasIndex + 1);
+        const size_t bidx = billboardManager.createBillboard(name);
+
+        Billboard* billboard = billboardManager.getBillboard(bidx);
+        if (billboard) {
+            billboard->width = 1.0f;
+            billboard->height = 1.5f;
+        }
+
+        const size_t tileCount = vegetationAtlasManager.getTileCount(atlasIndex);
         for (size_t tileIndex = 0; tileIndex < tileCount; ++tileIndex) {
-            std::string name = "Veg_" + std::to_string(atlasIndex) + "_" + std::to_string(tileIndex);
-            size_t bidx = billboardManager.createBillboard(name);
-            billboardManager.addLayer(bidx, atlasIndex, static_cast<int>(tileIndex));
+            BillboardLayer layer;
+            layer.atlasIndex = atlasIndex;
+            layer.tileIndex = static_cast<int>(tileIndex);
+            layer.offsetX = (tileCount > 0)
+                ? (static_cast<float>(tileIndex) / static_cast<float>(tileCount))
+                : 0.0f;
+            layer.offsetY = 0.0f;
+            layer.scaleX = 1.0f;
+            layer.scaleY = 1.0f;
+            layer.rotation = 0.0f;
+            layer.opacity = 1.0f;
+            layer.renderOrder = static_cast<int>(tileIndex);
+
+            billboardManager.addLayer(bidx, layer);
         }
     }
 }
