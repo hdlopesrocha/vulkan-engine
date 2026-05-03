@@ -354,11 +354,11 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     // initialize from the scene depth here - the back-face preview must show
     // only water back-face geometry (no solid occluders).
     if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-        std::cerr << "[WaterBackFaceRenderer::renderBackFacePass] pre-pass transition: cmd=" << (void*)cmd
+        /* std::cerr << "[WaterBackFaceRenderer::renderBackFacePass] pre-pass transition: cmd=" << (void*)cmd
                   << " image=" << (void*)backFaceDepthImages[frameIndex]
                   << " frame=" << (unsigned)frameIndex
                   << " old=" << (int)backFaceDepthImageLayouts[frameIndex]
-                  << " new=" << (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL << std::endl;
+                  << " new=" << (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL << std::endl; */
         if (!app) {
             throw std::runtime_error("WaterBackFaceRenderer::renderBackFacePass requires VulkanApp (no fallback allowed)");
         }
@@ -423,11 +423,11 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     // Barrier to make depth writes visible to shader reads
     if (backFaceDepthImages[frameIndex] != VK_NULL_HANDLE) {
         if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            std::cerr << "[WaterBackFaceRenderer::renderBackFacePass] post-render promotion: cmd=" << (void*)cmd
+            /*std::cerr << "[WaterBackFaceRenderer::renderBackFacePass] post-render promotion: cmd=" << (void*)cmd
                       << " image=" << (void*)backFaceDepthImages[frameIndex]
                       << " frame=" << (unsigned)frameIndex
                       << " old=" << (int)backFaceDepthImageLayouts[frameIndex]
-                      << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
+                      << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;*/
             if (!app) {
                 throw std::runtime_error("WaterBackFaceRenderer::renderBackFacePass requires VulkanApp for tracked promotion (no fallback allowed)");
             }
@@ -451,11 +451,11 @@ void WaterBackFaceRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t fram
     VkImageLayout trackedOld = VK_IMAGE_LAYOUT_UNDEFINED;
     if (frameIndex < backFaceDepthImageLayouts.size()) trackedOld = backFaceDepthImageLayouts[frameIndex];
 
-    std::cerr << "[WaterBackFaceRenderer::postRenderBarrier] cmd=" << (void*)cmd
+    /* std::cerr << "[WaterBackFaceRenderer::postRenderBarrier] cmd=" << (void*)cmd
               << " image=" << (void*)backFaceDepthImages[frameIndex]
               << " frame=" << (unsigned)frameIndex
               << " trackedOld=" << (int)trackedOld
-              << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
+              << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl; */
 
     VulkanApp* app = this->appPtr ? this->appPtr : getImGuiVulkanApp();
     if (!app) {

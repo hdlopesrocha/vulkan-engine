@@ -346,7 +346,6 @@ public:
             sceneRenderer, sceneRenderer->solidRenderer.get(), sceneRenderer->skyRenderer.get(),
             sceneRenderer->shadowMapper.get(), &shadowParams);
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
-        if (renderTargetsWidget) renderTargetsWidget->show();
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
         controllerParametersWidget = std::make_shared<ControllerParametersWidget>(controllerManager.getParameters(), &brushManager);

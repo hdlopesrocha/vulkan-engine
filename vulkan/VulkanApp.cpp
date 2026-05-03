@@ -1702,13 +1702,14 @@ void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer
 
     if (latest.empty()) return;
     // Debug: show what will be applied for this submit
-    std::cerr << "[VulkanApp::preApplyPendingLayoutsBeforeSubmit] cmd=" << (void*)commandBuffer
-              << " latest_count=" << latest.size() << std::endl;
+    /*std::cerr << "[VulkanApp::preApplyPendingLayoutsBeforeSubmit] cmd=" << (void*)commandBuffer
+              << " latest_count=" << latest.size() << std::endl;*/
     for (const auto &p : latest) {
         uint64_t key = p.first;
         VkImage image = (VkImage)(uintptr_t)(key >> 32);
         uint32_t layer = (uint32_t)(key & 0xffffffff);
-        std::cerr << "  pending image=" << (void*)image << " layer=" << layer << " layout=" << (int)p.second << std::endl;
+        /*std::cerr << "  pending image=" << (void*)image << " layer=" << layer << " layout=" << (int)p.second << std::endl;*/
+
     }
 
     // Apply the collected latest updates into the authoritative map.
@@ -1716,8 +1717,8 @@ void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer
     for (const auto &p : latest) {
         imageLayerLayouts[p.first] = p.second;
     }
-    std::cerr << "[VulkanApp::preApplyPendingLayoutsBeforeSubmit] cmd=" << (void*)commandBuffer
-              << " applied_count=" << latest.size() << std::endl;
+    /*std::cerr << "[VulkanApp::preApplyPendingLayoutsBeforeSubmit] cmd=" << (void*)commandBuffer
+              << " applied_count=" << latest.size() << std::endl;*/
 }
 
 void VulkanApp::waitForAllPendingCommandBuffers() {
@@ -2223,14 +2224,14 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         }
 
         // Debug: print caller/tracked/pending/effective/new layouts for this request
-        std::cerr << "[VulkanApp::recordTransitionImageLayoutLayer] cmd=" << (void*)commandBuffer
+        /*std::cerr << "[VulkanApp::recordTransitionImageLayoutLayer] cmd=" << (void*)commandBuffer
                   << " image=" << (void*)image
                   << " callerOld=" << (int)oldLayout
                   << " tracked=" << (int)tracked
                   << " pending=" << (int)pendingOld
                   << " effectiveOld=" << (int)effectiveOld
                   << " new=" << (int)newLayout << std::endl;
-
+*/
         // If the authoritative (tracked) layout already equals the requested
         // final layout, there's nothing to emit.
         if (effectiveOld == newLayout) {
@@ -2641,11 +2642,11 @@ void VulkanApp::recordTrackedLayoutForCommandBuffer(VkCommandBuffer commandBuffe
         return;
     }
     // Debug: record that a tracked-only layout was recorded for this command buffer
-    std::cerr << "[VulkanApp::recordTrackedLayoutForCommandBuffer] cmd=" << (void*)commandBuffer
+    /*std::cerr << "[VulkanApp::recordTrackedLayoutForCommandBuffer] cmd=" << (void*)commandBuffer
               << " image=" << (void*)image
               << " new=" << (int)newLayout
               << " baseLayer=" << baseArrayLayer
-              << " layerCount=" << layerCount << std::endl;
+              << " layerCount=" << layerCount << std::endl;*/
 
     std::lock_guard<std::mutex> plk(pendingLayoutMutex);
     VulkanApp::PendingLayoutUpdate up;

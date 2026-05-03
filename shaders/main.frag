@@ -123,7 +123,12 @@ void main() {
 
     // Lighting calculation
     vec3 toLight = -normalize(ubo.lightDir.xyz);
-    float NdotL = max(dot(worldNormal, toLight), 0.0);
+    // Clamp NdotL by the geometric normal: a geometry back-face must receive no
+    // light even if the normal map perturbs the shading normal toward the light.
+    // Without this, normal-mapped normals cause bright specular speckles on
+    // surfaces whose geometry already faces away from the light source.
+    float geomNdotL = dot(geomN, toLight);
+    float NdotL = max(dot(worldNormal, toLight), 0.0) * step(0.0, geomNdotL);
 
     // Shadow calculation
     vec4 adjustedPosLightSpace = fragPosLightSpace;

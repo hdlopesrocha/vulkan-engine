@@ -112,14 +112,14 @@ void VulkanResourceManager::addDescriptorPool(VkDescriptorPool dp, const char* d
     std::lock_guard<std::mutex> lk(mtx);
     // debug: log internal map state before insertion
     size_t bc = descriptorPools.bucket_count();
-    std::cerr << "[VulkanResourceManager] addDescriptorPool this=" << (void*)this << " dp=" << (void*)dp << " desc=" << (desc ? desc : "(null)") << " bucket_count=" << bc << std::endl;
+    // std::cerr << "[VulkanResourceManager] addDescriptorPool this=" << (void*)this << " dp=" << (void*)dp << " desc=" << (desc ? desc : "(null)") << " bucket_count=" << bc << std::endl;
     if (bc == 0) {
         // ensure there's at least one bucket before using operator[];
         // `reserve` is safer than `rehash` for empty maps as it won't try to
         // free a sentinel pointer value that some implementations use.
         descriptorPools.reserve(1);
         bc = descriptorPools.bucket_count();
-        std::cerr << "[VulkanResourceManager] reserved descriptorPools bucket_count=" << bc << std::endl;
+        // std::cerr << "[VulkanResourceManager] reserved descriptorPools bucket_count=" << bc << std::endl;
     }
     descriptorPools[(uintptr_t)dp] = {dp, desc ? std::string(desc) : std::string()};
 }
@@ -132,7 +132,7 @@ void VulkanResourceManager::addDescriptorSet(VkDescriptorSet ds, const char* des
     }
     std::lock_guard<std::mutex> lk(mtx);
     descriptorSets[(uintptr_t)ds] = {ds, desc ? std::string(desc) : std::string()};
-    std::cerr << "[VulkanResourceManager] addDescriptorSet this=" << (void*)this << " ds=" << (void*)ds << " desc=" << (desc ? desc : "(null)") << " descriptorSets=" << descriptorSets.size() << std::endl;
+    // std::cerr << "[VulkanResourceManager] addDescriptorSet this=" << (void*)this << " ds=" << (void*)ds << " desc=" << (desc ? desc : "(null)") << " descriptorSets=" << descriptorSets.size() << std::endl;
 }
 
 void VulkanResourceManager::addDescriptorSetLayout(VkDescriptorSetLayout dsl, const char* desc) {

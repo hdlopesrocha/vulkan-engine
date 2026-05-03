@@ -239,9 +239,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     std::vector<VkWriteDescriptorSet> writes;
     for (int i = 0; i < 5; ++i) {
         if (imageInfos[i].imageView == VK_NULL_HANDLE || imageInfos[i].sampler == VK_NULL_HANDLE) {
-            std::cerr << "[PostProcessRenderer] Skipping binding " << i
+            /*std::cerr << "[PostProcessRenderer] Skipping binding " << i
                       << ": imageView=" << (void*)imageInfos[i].imageView
-                      << " sampler=" << (void*)imageInfos[i].sampler << std::endl;
+                      << " sampler=" << (void*)imageInfos[i].sampler << std::endl;*/
             continue;
         }
         VkWriteDescriptorSet write{};

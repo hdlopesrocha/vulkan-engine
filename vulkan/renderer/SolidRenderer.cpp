@@ -162,13 +162,15 @@ void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearV
     if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
         if (solidDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
             // Use centralized app helper so recorded oldLayout matches the app's transition logic
-            std::cerr << "[SolidRenderer::beginPass] transition: cmd=" << (void*)cmd << " image=" << (void*)solidDepthImages[frameIndex] << " frame=" << (unsigned)frameIndex << " trackedOld=" << (int)solidDepthImageLayouts[frameIndex] << " new=" << (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL << std::endl;
+            //std::cerr << "[SolidRenderer::beginPass] transition: cmd=" << (void*)cmd << " image=" << (void*)solidDepthImages[frameIndex] << " frame=" << (unsigned)frameIndex << " trackedOld=" << (int)solidDepthImageLayouts[frameIndex] << " new=" << (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL << std::endl;
             if (!app) {
                 throw std::runtime_error("SolidRenderer::beginPass requires valid VulkanApp to record layout transitions");
             }
-            // Pass UNDEFINED so VulkanApp can resolve the authoritative old layout
-            // (including any pending tracked updates for this command buffer).
-            app->recordTransitionImageLayoutLayer(cmd, solidDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+            // Pass the actual tracked layout (not UNDEFINED) so stale pending entries
+            // from the previous frame's recording cannot override effectiveOld and
+            // incorrectly skip this barrier (which leaves the image in SHADER_READ_ONLY
+            // when the render pass expects DEPTH_STENCIL_ATTACHMENT_OPTIMAL).
+            app->recordTransitionImageLayoutLayer(cmd, solidDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, solidDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
             // Also record the expected render-pass layout as a tracked update for
             // this command buffer so submit-time pre-apply can make the
             // authoritative map reflect the transition the render pass will
@@ -203,7 +205,7 @@ void SolidRenderer::endPass(VkCommandBuffer cmd, uint32_t frameIndex, VulkanApp*
             // Avoid emitting an extra barrier here (which can conflict with the
             // renderpass transition) — just update the authoritative tracked
             // layout so later record-time callers see the correct state.
-            std::cerr << "[SolidRenderer::endPass] updating tracked layout: image=" << (void*)solidDepthImages[frameIndex] << " frame=" << (unsigned)frameIndex << " -> " << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
+            //std::cerr << "[SolidRenderer::endPass] updating tracked layout: image=" << (void*)solidDepthImages[frameIndex] << " frame=" << (unsigned)frameIndex << " -> " << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
             if (app) {
                 app->recordTrackedLayoutForCommandBuffer(cmd, solidDepthImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
             }
