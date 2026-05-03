@@ -286,7 +286,7 @@ public:
         // Chunk tessellation is deferred and processed on a background thread.
         // Vulkan GPU uploads happen on the main thread via processPendingMeshes().
         mainScene = new LocalScene();
-        octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
+        octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene, &camera);
         widgetManager.addWidget(octreeExplorerWidget);
         brushScene = new LocalScene();
         brushManager.getEntries().clear();
@@ -524,7 +524,7 @@ public:
             viewProj, uboStatic, true, false, true, 0, 0.0f, 0.0f);
 
         // Render debug cubes for expanded octree nodes + node instances from change handlers
-        if (settings.showDebugCubes) {
+        if (octreeExplorerWidget && octreeExplorerWidget->getShowDebugCubes()) {
             std::vector<DebugCubeRenderer::CubeWithColor> debugCubes;
             // Add widget-expanded cubes when explorer is visible
             if (octreeExplorerWidget->isVisible()) {

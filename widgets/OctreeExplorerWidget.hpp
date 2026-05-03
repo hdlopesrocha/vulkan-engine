@@ -6,13 +6,19 @@
 #include <string>
 #include <vector>
 #include <atomic>
+#include <unordered_map>
+
+class Camera;
+class Ray;
 
 // Simple ImGui widget to explore an octree recursively.
 // Starts collapsed; shows node type/chunk flags and children.
 class OctreeExplorerWidget : public Widget {
 public:
-    explicit OctreeExplorerWidget(LocalScene* scene);
+    explicit OctreeExplorerWidget(LocalScene* scene, Camera* camera = nullptr);
     void render() override;
+    void setCamera(Camera* camera_) { camera = camera_; }
+    bool getShowDebugCubes() const { return showDebugCubes; }
 
     // Set to false while the octree is being written by a background thread.
     // The widget will skip accessing the octree until this becomes true.
@@ -35,6 +41,10 @@ private:
     bool expandAll = false; // Expand all nodes on first render
     bool expandAllPersistent = false; // Persistently keep nodes expanded
     bool collapseAll = false; // Trigger collapse of all nodes for one frame
+    bool showDebugCubes = false; // Debug cubes visibility for octree explorer
+    bool applyRayOpenState = false; // Apply ray-based open/closed state in next render pass
+    bool rootRayOpen = false;
+    std::unordered_map<const OctreeNode*, bool> rayOpenState;
     
     // Color priority (higher = more important): dirty > chunk > simplified > leaf
     glm::vec3 getNodeColor(OctreeNode* node) const {
@@ -46,5 +56,10 @@ private:
 
     void renderTree(const Octree& tree);
     void renderNode(OctreeNode* node, const BoundingCube& cube, int depth, OctreeAllocator* allocator, ImGuiTreeNodeFlags extraFlags = 0);
+    void handleRayExpandShortcut(const Octree& tree);
+    bool buildMouseRay(const Octree& tree, Ray& outRay) const;
+    bool updateRayOpenStateRecursive(OctreeNode* node, const BoundingCube& cube, OctreeAllocator* allocator, const Ray& ray);
     static const char* spaceTypeToString(SpaceType t);
+
+    Camera* camera = nullptr; // not owned
 };
