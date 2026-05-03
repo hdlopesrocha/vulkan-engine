@@ -24,6 +24,8 @@ layout(push_constant) uniform PushConstants {
     vec4 windNoise;
     vec4 windShape;
     vec4 windTurbulence;
+    vec4 densityParams;
+    vec4 cameraPosAndFalloff;
 };
 
 vec2 fade2(vec2 t) {
@@ -54,6 +56,26 @@ float perlin2(vec2 p) {
     float nx0 = mix(n00, n10, u.x);
     float nx1 = mix(n01, n11, u.x);
     return mix(nx0, nx1, u.y);
+}
+
+float hash13(vec3 p3) {
+    p3 = fract(p3 * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float densityFactorForDistance(float distanceToCamera) {
+    if (densityParams.x < 0.5) return 1.0;
+
+    float nearDistance = max(0.0, densityParams.y);
+    float minFactor = clamp(densityParams.w, 0.0, 1.0);
+    float falloff = cameraPosAndFalloff.w;
+    if (distanceToCamera <= nearDistance || minFactor >= 1.0 || falloff <= 0.0) {
+        return 1.0;
+    }
+
+    float density = exp(-falloff * (distanceToCamera - nearDistance));
+    return clamp(density, minFactor, 1.0);
 }
 
 vec3 applyWindSkew(vec3 basePos, vec3 right, float heightFactor) {
@@ -104,6 +126,11 @@ void main() {
 
     vec3 worldPos = fragWorldPosIn[0];
     vec3 camPos   = ubo.viewPos.xyz;
+    float densityFactor = densityFactorForDistance(distance(cameraPosAndFalloff.xyz, worldPos));
+    if (densityFactor < 0.9999) {
+        float keep = hash13(vec3(worldPos.xz * 0.03125, fragTexCoordIn[0].z + worldPos.y * 0.0078125));
+        if (keep > densityFactor) return;
+    }
 
     // Build camera-facing billboard axes.
     vec3 toCamera = normalize(camPos - worldPos);

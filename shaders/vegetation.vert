@@ -24,6 +24,8 @@ layout(push_constant) uniform PushConstants {
     vec4 windNoise;
     vec4 windShape;
     vec4 windTurbulence;
+    vec4 densityParams;
+    vec4 cameraPosAndFalloff;
 };
 
 void main() {
