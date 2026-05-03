@@ -1,6 +1,7 @@
 // Implementation for BillboardCreator - moved from header
 #include "BillboardCreator.hpp"
 #include <cmath>
+#include <cstring>
 #include "../vulkan/VulkanApp.hpp"
 #include <map>
 #include <vector>
@@ -11,7 +12,7 @@
 // Constructor moved from header
 BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr)
     : Widget("Billboard Creator", u8"\uf03a"), billboardManager(billboardMgr), atlasManager(atlasMgr), textureManager(textureMgr) {
-    isOpen = false; // Start closed
+    isOpen = true;
 }
 
 void BillboardCreator::setVulkanApp(VulkanApp* app) {
@@ -41,6 +42,8 @@ void BillboardCreator::cleanup() {
 }
 
 void BillboardCreator::renderBillboardEditor(Billboard* billboard) {
+    if (!billboard || !billboardManager) return;
+
     // Billboard properties section
     ImGui::BeginChild("BillboardProperties", ImVec2(0, 120), true);
 
@@ -76,7 +79,10 @@ void BillboardCreator::renderBillboardEditor(Billboard* billboard) {
 
     // Add layer button
     if (ImGui::Button("Add Layer", ImVec2(-1, 0))) {
-        selectedLayerIndex = billboardManager->addLayer(currentBillboardIndex, 0, 0);
+        size_t newLayerIndex = billboardManager->addLayer(static_cast<size_t>(currentBillboardIndex), 0, 0);
+        if (newLayerIndex != static_cast<size_t>(-1)) {
+            selectedLayerIndex = static_cast<int>(newLayerIndex);
+        }
         needsRecomposition = true;
     }
 
@@ -96,19 +102,24 @@ void BillboardCreator::renderBillboardEditor(Billboard* billboard) {
         // Right-click menu
         if (ImGui::BeginPopupContextItem()) {
             if (ImGui::MenuItem("Delete")) {
-                billboardManager->removeLayer(currentBillboardIndex, i);
-                if (selectedLayerIndex >= static_cast<int>(billboard->layers.size())) {
-                    selectedLayerIndex = billboard->layers.size() - 1;
+                billboardManager->removeLayer(static_cast<size_t>(currentBillboardIndex), i);
+                if (billboard->layers.empty()) {
+                    selectedLayerIndex = -1;
+                } else if (selectedLayerIndex >= static_cast<int>(billboard->layers.size())) {
+                    selectedLayerIndex = static_cast<int>(billboard->layers.size()) - 1;
                 }
+                needsRecomposition = true;
                 ImGui::EndPopup();
                 ImGui::PopID();
                 break;
             }
             if (ImGui::MenuItem("Move Up", nullptr, false, i > 0)) {
-                billboardManager->moveLayerUp(currentBillboardIndex, i);
+                billboardManager->moveLayerUp(static_cast<size_t>(currentBillboardIndex), i);
+                needsRecomposition = true;
             }
             if (ImGui::MenuItem("Move Down", nullptr, false, i < billboard->layers.size() - 1)) {
-                billboardManager->moveLayerDown(currentBillboardIndex, i);
+                billboardManager->moveLayerDown(static_cast<size_t>(currentBillboardIndex), i);
+                needsRecomposition = true;
             }
             ImGui::EndPopup();
         }
@@ -135,6 +146,8 @@ void BillboardCreator::renderBillboardEditor(Billboard* billboard) {
 }
 
 void BillboardCreator::renderLayerEditor(BillboardLayer* layer) {
+    if (!layer || !billboardManager || !atlasManager) return;
+
     ImGui::Text("Layer %d Properties", selectedLayerIndex);
 
     // Delete button
@@ -143,8 +156,9 @@ void BillboardCreator::renderLayerEditor(BillboardLayer* layer) {
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.6f, 0.1f, 0.1f, 1.0f));
     if (ImGui::Button("Delete Layer")) {
-        billboardManager->removeLayer(currentBillboardIndex, selectedLayerIndex);
+        billboardManager->removeLayer(static_cast<size_t>(currentBillboardIndex), static_cast<size_t>(selectedLayerIndex));
         selectedLayerIndex = -1;
+        needsRecomposition = true;
         ImGui::PopStyleColor(3);
         return;
     }
@@ -155,6 +169,9 @@ void BillboardCreator::renderLayerEditor(BillboardLayer* layer) {
     // Atlas and tile selection
     ImGui::Text("Texture Selection:");
     const char* atlasNames[] = { "Foliage", "Grass", "Wild" };
+    if (layer->atlasIndex < 0 || layer->atlasIndex >= 3) {
+        layer->atlasIndex = 0;
+    }
     if (ImGui::Combo("Atlas", &layer->atlasIndex, atlasNames, 3)) {
         // Reset tile index when changing atlas
         layer->tileIndex = 0;
@@ -163,6 +180,11 @@ void BillboardCreator::renderLayerEditor(BillboardLayer* layer) {
 
     // Tile selection
     size_t tileCount = atlasManager->getTileCount(layer->atlasIndex);
+    if (tileCount == 0) {
+        layer->tileIndex = -1;
+    } else if (layer->tileIndex < 0 || layer->tileIndex >= static_cast<int>(tileCount)) {
+        layer->tileIndex = 0;
+    }
     if (tileCount > 0) {
         ImGui::Text("Tile:");
         for (size_t i = 0; i < tileCount; ++i) {
@@ -318,7 +340,7 @@ void BillboardCreator::renderBillboardPreview(Billboard* billboard) {
 }
 
 void BillboardCreator::composeBillboard(Billboard* billboard) {
-    if (!texturesInitialized || !atlasManager) {
+    if (!billboard || !texturesInitialized || !atlasManager || !vulkanApp) {
         printf("Cannot compose billboard: textures not initialized\n");
         return;
     }
@@ -327,6 +349,10 @@ void BillboardCreator::composeBillboard(Billboard* billboard) {
     printf("Billboard has %zu layers\n", billboard->layers.size());
 
     const uint32_t texSize = composedAlbedo.getWidth();
+    if (texSize == 0) {
+        printf("Cannot compose billboard: invalid texture size\n");
+        return;
+    }
     printf("Output texture size: %u x %u\n", texSize, texSize);
 
     // Clear all textures to default values
@@ -347,6 +373,12 @@ void BillboardCreator::composeBillboard(Billboard* billboard) {
     printf("Loading atlas textures...\n");
     std::map<int, AtlasTextureData> atlasData;
     for (const auto& [order, layer] : sortedLayers) {
+        if (layer->atlasIndex < 0 || layer->atlasIndex > 2) {
+            continue;
+        }
+        if (layer->tileIndex < 0 || atlasManager->getTile(layer->atlasIndex, static_cast<size_t>(layer->tileIndex)) == nullptr) {
+            continue;
+        }
         if (atlasData.find(layer->atlasIndex) == atlasData.end()) {
             printf("Loading atlas %d...\n", layer->atlasIndex);
             atlasData[layer->atlasIndex] = loadAtlasTextures(layer->atlasIndex);
@@ -454,6 +486,9 @@ void BillboardCreator::clearTexture(EditableTexture& tex, uint8_t r, uint8_t g, 
 
 void BillboardCreator::compositeLayer(const BillboardLayer* layer, const AtlasTile* tile, 
                                    const AtlasTextureData& atlas, uint32_t texSize) {
+    if (!layer || !tile || !atlas.albedoData || !atlas.normalData || !atlas.opacityData) return;
+    if (atlas.width <= 0 || atlas.height <= 0 || texSize == 0) return;
+
     // For each pixel in the output texture
     for (uint32_t dy = 0; dy < texSize; ++dy) {
         for (uint32_t dx = 0; dx < texSize; ++dx) {
@@ -477,8 +512,14 @@ void BillboardCreator::compositeLayer(const BillboardLayer* layer, const AtlasTi
             }
 
             // Apply scale
-            sx /= layer->scaleX * tile->scaleX;
-            sy /= layer->scaleY * tile->scaleY;
+            const float denomX = layer->scaleX * tile->scaleX;
+            const float denomY = layer->scaleY * tile->scaleY;
+            if (std::abs(denomX) < 1e-6f || std::abs(denomY) < 1e-6f) {
+                continue;
+            }
+
+            sx /= denomX;
+            sy /= denomY;
 
             // Check if within tile bounds (-1 to 1)
             if (sx < -1.0f || sx > 1.0f || sy < -1.0f || sy > 1.0f) continue;
@@ -521,7 +562,9 @@ void BillboardCreator::compositeLayer(const BillboardLayer* layer, const AtlasTi
             blendPixel(composedNormal, dx, dy, normR, normG, normB, finalOpacity);
 
             // Set opacity (max of current and new)
-            uint8_t currentOp = composedOpacity.getPixelData()[dy * texSize * 4 + dx * 4];
+            const uint8_t* opacityPixels = composedOpacity.getPixelData();
+            if (!opacityPixels) continue;
+            uint8_t currentOp = opacityPixels[dy * texSize * 4 + dx * 4];
             uint8_t newOp = (uint8_t)(finalOpacity * 255.0f);
             if (newOp > currentOp) {
                 composedOpacity.setPixel(dx, dy, newOp, newOp, newOp, 255);
@@ -580,6 +623,22 @@ void BillboardCreator::drawCheckerboard(ImDrawList* drawList, ImVec2 pos, float 
 void BillboardCreator::render() {
     if (!billboardManager || !atlasManager) return;
 
+    const size_t billboardCount = billboardManager->getBillboardCount();
+    if (billboardCount == 0) {
+        currentBillboardIndex = -1;
+        selectedLayerIndex = -1;
+    } else {
+        if (currentBillboardIndex < 0 || currentBillboardIndex >= static_cast<int>(billboardCount)) {
+            currentBillboardIndex = 0;
+        }
+        if (selectedLayerIndex >= 0) {
+            Billboard* selectedBillboard = billboardManager->getBillboard(static_cast<size_t>(currentBillboardIndex));
+            if (!selectedBillboard || selectedLayerIndex >= static_cast<int>(selectedBillboard->layers.size())) {
+                selectedLayerIndex = -1;
+            }
+        }
+    }
+
     ImGui::SetNextWindowSize(ImVec2(900, 700), ImGuiCond_FirstUseEver);
     ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
     if (!wg.visible()) return;
@@ -593,8 +652,9 @@ void BillboardCreator::render() {
     // Create new billboard button
     if (ImGui::Button("New Billboard", ImVec2(-1, 0))) {
         std::string name = "Billboard " + std::to_string(billboardManager->getBillboardCount() + 1);
-        currentBillboardIndex = billboardManager->createBillboard(name);
+        currentBillboardIndex = static_cast<int>(billboardManager->createBillboard(name));
         selectedLayerIndex = -1;
+        needsRecomposition = true;
     }
 
     ImGui::Spacing();
@@ -607,18 +667,25 @@ void BillboardCreator::render() {
         ImGui::PushID(i);
         bool isSelected = (currentBillboardIndex == static_cast<int>(i));
         if (ImGui::Selectable(billboard->name.c_str(), isSelected)) {
-            currentBillboardIndex = i;
-            selectedLayerIndex = -1;
+            if (currentBillboardIndex != static_cast<int>(i)) {
+                currentBillboardIndex = static_cast<int>(i);
+                selectedLayerIndex = -1;
+                needsRecomposition = true;
+            }
         }
 
         // Right-click menu
         if (ImGui::BeginPopupContextItem()) {
             if (ImGui::MenuItem("Delete")) {
                 billboardManager->removeBillboard(i);
-                if (currentBillboardIndex >= static_cast<int>(billboardManager->getBillboardCount())) {
-                    currentBillboardIndex = billboardManager->getBillboardCount() - 1;
+                const size_t updatedCount = billboardManager->getBillboardCount();
+                if (updatedCount == 0) {
+                    currentBillboardIndex = -1;
+                } else if (currentBillboardIndex >= static_cast<int>(updatedCount)) {
+                    currentBillboardIndex = static_cast<int>(updatedCount) - 1;
                 }
                 selectedLayerIndex = -1;
+                needsRecomposition = true;
                 ImGui::EndPopup();
                 ImGui::PopID();
                 break;
@@ -649,6 +716,4 @@ void BillboardCreator::render() {
     }
 
     ImGui::EndChild();
-
-    ImGui::End();
 }
