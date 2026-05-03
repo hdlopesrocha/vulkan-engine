@@ -307,7 +307,7 @@ size_t VegetationRenderer::getInstanceTotal() const {
 }
 
 
-void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj) {
+void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
     if (!app || vegetationPipeline == VK_NULL_HANDLE) {
         if (!app) std::cerr << "[VEGETATION DRAW ERROR] app is null!" << std::endl;
         if (vegetationPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION DRAW ERROR] Attempted to bind VK_NULL_HANDLE pipeline!" << std::endl;
@@ -375,10 +375,38 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         &pc
     );
 
-    // For each chunk, bind base vertex buffer + instance buffer and draw indirect
-    for (const auto& [chunkId, buf] : chunkBuffers) {
+    // For each chunk, bind base vertex buffer + instance buffer and draw indirect.
+    // Distance-based density is applied by rewriting the indirect instance count.
+    for (auto& [chunkId, buf] : chunkBuffers) {
         if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
         if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
+
+        uint32_t drawInstanceCount = static_cast<uint32_t>(buf.count);
+        if (distanceDensitySettings.enabled) {
+            const float nearDistance = std::max(0.0f, distanceDensitySettings.fullDensityDistance);
+            const float farDistance = std::max(nearDistance + 1.0f, distanceDensitySettings.minDensityDistance);
+            const float minFactor = std::clamp(distanceDensitySettings.minDensityFactor, 0.0f, 1.0f);
+            const float distanceToCamera = glm::distance(buf.center, cameraPos);
+
+            float densityFactor = 1.0f;
+            if (distanceToCamera > nearDistance) {
+                const float t = std::clamp((distanceToCamera - nearDistance) / (farDistance - nearDistance), 0.0f, 1.0f);
+                densityFactor = 1.0f + (minFactor - 1.0f) * t;
+            }
+
+            drawInstanceCount = std::max(1u, static_cast<uint32_t>(std::ceil(static_cast<float>(buf.count) * densityFactor)));
+        }
+
+        VkDrawIndirectCommand drawCmd{};
+        drawCmd.vertexCount = 1;
+        drawCmd.instanceCount = drawInstanceCount;
+        drawCmd.firstVertex = 0;
+        drawCmd.firstInstance = 0;
+        void* indirectData = nullptr;
+        vkMapMemory(app->getDevice(), buf.indirectMemory, 0, sizeof(VkDrawIndirectCommand), 0, &indirectData);
+        std::memcpy(indirectData, &drawCmd, sizeof(VkDrawIndirectCommand));
+        vkUnmapMemory(app->getDevice(), buf.indirectMemory);
+
         VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
         VkDeviceSize offsets[2] = { 0, 0 };
         // Bind base vertex buffer at binding 0 and instance buffer at binding 1
@@ -390,6 +418,7 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
 void VegetationRenderer::generateChunkInstances(NodeID chunkId,
                                                Buffer vertexBuffer, uint32_t vertexCount,
                                                Buffer indexBuffer, uint32_t indexCount,
+                                               const glm::vec3& chunkCenter,
                                                uint32_t instancesPerTriangle, VulkanApp* app,
                                                uint32_t seed) {
     if (!app) return;
@@ -497,6 +526,7 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     ibuf.memory = instanceMemory;
     ibuf.indirectBuffer = indirectBuffer;
     ibuf.indirectMemory = indirectMemory;
+    ibuf.center = chunkCenter;
     ibuf.count = expected;
 
     // Defer adding the instance buffer to the visible map until the GPU finished

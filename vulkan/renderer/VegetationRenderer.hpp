@@ -40,6 +40,13 @@ public:
         glm::vec4 windTurbulence = glm::vec4(0.60f, 0.0f, 0.0f, 0.0f);
     };
 
+    struct DistanceDensitySettings {
+        bool enabled = true;
+        float fullDensityDistance = 512.0f;
+        float minDensityDistance = 4096.0f;
+        float minDensityFactor = 0.10f;
+    };
+
     float billboardScale = 10.0f;
     uint32_t billboardCount = 3; // number of billboard texture variants (3 = foliage/grass/wild)
     explicit VegetationRenderer();
@@ -58,12 +65,13 @@ public:
     void generateChunkInstances(NodeID chunkId,
                                 Buffer vertexBuffer, uint32_t vertexCount,
                                 Buffer indexBuffer, uint32_t indexCount,
+                                const glm::vec3& chunkCenter,
                                 uint32_t instancesPerTriangle, VulkanApp* app,
                                 uint32_t seed = 1337);
     void clearAllInstances();
 
     // Draw all visible vegetation chunks (frustum culling is per-chunk, matching geometry)
-    void draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj);
+    void draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos);
 
     // Stats helpers
     size_t getChunkCount() const { return chunkInstanceCounts.size(); }
@@ -71,6 +79,8 @@ public:
 
     WindSettings& getWindSettings() { return windSettings; }
     const WindSettings& getWindSettings() const { return windSettings; }
+    DistanceDensitySettings& getDistanceDensitySettings() { return distanceDensitySettings; }
+    const DistanceDensitySettings& getDistanceDensitySettings() const { return distanceDensitySettings; }
     void setWindTime(float timeSeconds) { windTimeSeconds = timeSeconds; }
 
 private:
@@ -96,6 +106,7 @@ private:
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VkBuffer indirectBuffer = VK_NULL_HANDLE; // indirect draw command
         VkDeviceMemory indirectMemory = VK_NULL_HANDLE;
+        glm::vec3 center = glm::vec3(0.0f);
         size_t count = 0;
     };
     std::unordered_map<NodeID, InstanceBuffer> chunkBuffers;
@@ -111,5 +122,6 @@ private:
     VertexBufferObject billboardVBO;
 
     WindSettings windSettings;
+    DistanceDensitySettings distanceDensitySettings;
     float windTimeSeconds = 0.0f;
 };

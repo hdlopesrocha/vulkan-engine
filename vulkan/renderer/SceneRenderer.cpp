@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <random>
 #include <unordered_set>
 
 void SceneRenderer::cleanup(VulkanApp* app) {
@@ -197,7 +198,7 @@ void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkR
         solidRenderer->render(commandBuffer, app, perTextureDescriptorSet);
     }
     if (vegetationEnabled && vegetationRenderer) {
-        vegetationRenderer->draw(app, commandBuffer, perTextureDescriptorSet, viewProj);
+        vegetationRenderer->draw(app, commandBuffer, perTextureDescriptorSet, viewProj, glm::vec3(uboStatic.viewPos));
     }
 }
 
@@ -925,12 +926,34 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
                     }
                 }
 
+                // Shuffle virtual triangle slots so reducing indirect instanceCount
+                // keeps a random spatial subset instead of always dropping the tail.
+                if (grassIndices.size() >= 6) {
+                    std::mt19937 rng(static_cast<uint32_t>(nid ^ (nid >> 32)) ^ 0x9e3779b9u);
+                    const size_t triangleCount = grassIndices.size() / 3;
+                    for (size_t slot = triangleCount - 1; slot > 0; --slot) {
+                        std::uniform_int_distribution<size_t> dist(0, slot);
+                        const size_t other = dist(rng);
+                        if (other == slot) continue;
+                        for (size_t component = 0; component < 3; ++component) {
+                            std::swap(grassIndices[slot * 3 + component], grassIndices[other * 3 + component]);
+                        }
+                    }
+                }
+
                 // Each virtual triangle slot produces exactly 1 instance.
                 uint32_t instancesPerTriangle = 1u;
                 uint32_t seed = static_cast<uint32_t>(nid & 0xffffffffull);
+                glm::vec3 chunkCenter(0.0f);
+                for (const auto& position : positions) {
+                    chunkCenter += position;
+                }
+                if (!positions.empty()) {
+                    chunkCenter /= static_cast<float>(positions.size());
+                }
                 if (grassIndices.size() < 3) {
                     // No grass triangles in this chunk; ensure old chunk vegetation is cleared.
-                    vegetationRenderer->generateChunkInstances(nid, Buffer{}, 0, Buffer{}, 0, instancesPerTriangle, app, seed);
+                    vegetationRenderer->generateChunkInstances(nid, Buffer{}, 0, Buffer{}, 0, chunkCenter, instancesPerTriangle, app, seed);
                     return;
                 }
 
@@ -941,7 +964,7 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
                 uint32_t indexCount = static_cast<uint32_t>(grassIndices.size());
 
                 // Pass Buffer objects to vegetationRenderer and let it defer destruction
-                vegetationRenderer->generateChunkInstances(nid, posBuf, vertexCount, idxBuf, indexCount, instancesPerTriangle, app, seed);
+                vegetationRenderer->generateChunkInstances(nid, posBuf, vertexCount, idxBuf, indexCount, chunkCenter, instancesPerTriangle, app, seed);
             } catch (const std::exception &e) {
                 std::cerr << "[SceneRenderer] Vegetation generation failed for node " << (unsigned long long)nid
                           << ": " << e.what() << std::endl;
