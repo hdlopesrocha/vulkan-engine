@@ -34,7 +34,7 @@ public:
     // Global toggles
     bool enableShadows = true;
     bool waterEnabled = true;
-    bool vegetationEnabled = true;
+    bool vegetationEnabled = false;
     bool wireframeMode = false;
     bool normalMappingEnabled = true;
 

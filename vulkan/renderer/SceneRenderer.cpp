@@ -195,7 +195,9 @@ void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkR
     }else {
         solidRenderer->render(commandBuffer, app, perTextureDescriptorSet);
     }
-    vegetationRenderer->draw(app, commandBuffer, perTextureDescriptorSet, viewProj);
+    if (vegetationEnabled && vegetationRenderer) {
+        vegetationRenderer->draw(app, commandBuffer, perTextureDescriptorSet, viewProj);
+    }
 }
 
 void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj) {
