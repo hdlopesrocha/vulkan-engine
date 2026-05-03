@@ -144,7 +144,16 @@ public:
     GamepadPublisher gamepadPublisher;
     bool sceneLoading = false;
 
+    // Handlers kept alive as members so the tessellation background thread
+    // can safely use them after setup() returns.
+    std::unique_ptr<SolidSpaceChangeHandler> sceneSolidHandler;
+    std::unique_ptr<LiquidSpaceChangeHandler> sceneLiquidHandler;
+    std::unique_ptr<UniqueOctreeChangeHandler> sceneUniqueSolidHandler;
+    std::unique_ptr<UniqueOctreeChangeHandler> sceneUniqueLiquidHandler;
+    std::thread sceneProcessThread; // tessellates chunks after octree is built
+
     ~MyApp() {
+        if (sceneProcessThread.joinable()) sceneProcessThread.join();
     }
 
     // setupTextures (defined out-of-line to avoid inline/member-definition issues)
@@ -273,11 +282,9 @@ public:
         }
 
 
-        // Create scene objects and start the CPU-heavy scene load in the background
-        // so it runs in parallel with texture and vegetation loading below.
-        // All work inside the thread is pure CPU (SDF evaluation, octree traversal,
-        // tessellation). Vulkan GPU uploads happen on the main thread via
-        // processPendingMeshes() in the render loop.
+        // Create scene objects and build the octree synchronously in setup().
+        // Chunk tessellation is deferred and processed on a background thread.
+        // Vulkan GPU uploads happen on the main thread via processPendingMeshes().
         mainScene = new LocalScene();
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
         widgetManager.addWidget(octreeExplorerWidget);
@@ -296,31 +303,36 @@ public:
         brushManager.getEntries()[2].materialIndex = 2;
         brushManager.getEntries()[2].translate = glm::vec3(-512.0f, 1024.0f, 0.0f);
         brushManager.getEntries()[2].scale = glm::vec3(256.0f);
+        sceneSolidHandler  = std::make_unique<SolidSpaceChangeHandler>(sceneRenderer->makeSolidSpaceChangeHandler(mainScene, this));
+        sceneLiquidHandler = std::make_unique<LiquidSpaceChangeHandler>(sceneRenderer->makeLiquidSpaceChangeHandler(mainScene, this));
+        sceneUniqueSolidHandler  = std::make_unique<UniqueOctreeChangeHandler>(*sceneSolidHandler);
+        sceneUniqueLiquidHandler = std::make_unique<UniqueOctreeChangeHandler>(*sceneLiquidHandler);
+
         {
-            SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler(mainScene, this);
-            LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler(mainScene, this);
-            UniqueOctreeChangeHandler uniqueSolidHandler(solidHandler);
-            UniqueOctreeChangeHandler uniqueLiquidHandler(liquidHandler);
+            // Octree building only — no tessellation here.
             MainSceneLoader loader;
-            // Flush after each shape: tessellate deduped chunks immediately via the
-            // ThreadPool and clear the handler so the next shape starts fresh.
-            // The octree building is synchronous; tessellation jobs run in parallel.
-            loader.flushCallback = [&uniqueSolidHandler, &uniqueLiquidHandler]() {
-                uniqueSolidHandler.handleEvents();
-                uniqueSolidHandler.clear();
-                uniqueLiquidHandler.handleEvents();
-                uniqueLiquidHandler.clear();
-            };
-            mainScene->loadScene(loader, uniqueSolidHandler, uniqueLiquidHandler);
+            mainScene->loadScene(loader, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler);
+            std::cout << "[Main::setup] Octree construction complete\n";
+        }
+
+        // Tessellate chunks in a background thread so setup() continues immediately.
+        sceneProcessThread = std::thread([this]() {
+            sceneUniqueSolidHandler->handleEvents();
+            sceneUniqueLiquidHandler->handleEvents();
             if (octreeExplorerWidget)
                 octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
-            std::cout << "[Main::setup] Scene loading complete\n";
-        }
+            std::cout << "[Main::setup] Scene chunk tessellation complete\n";
+        });
 
         setupVegetationTextures();
         setupTextures();
 
         sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
+
+        // sceneRenderer->init wires vegetation to the terrain texture array; override
+        // with the dedicated vegetation texture array that was loaded in setupVegetationTextures().
+        if (sceneRenderer->vegetationRenderer)
+            sceneRenderer->vegetationRenderer->setTextureArrayManager(&vegetationTextureArrayManager, this);
 
         printf("[MyApp::setup] Created and initialized SceneRenderer\n");
 
@@ -1073,6 +1085,9 @@ public:
     }
 
     void clean() override {
+    // Join tessellation thread before tearing down Vulkan resources.
+    if (sceneProcessThread.joinable()) sceneProcessThread.join();
+
 
         // Free all ImGui descriptor sets owned by the widget while ImGui is still
         // alive. clean() is called before cleanupImGui(), so this is safe.
