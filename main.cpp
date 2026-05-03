@@ -369,7 +369,7 @@ public:
         cameraWidget = std::make_shared<CameraWidget>(&camera);
         controllerParametersWidget = std::make_shared<ControllerParametersWidget>(controllerManager.getParameters(), &brushManager);
         gamepadWidget = std::make_shared<GamepadWidget>(controllerManager.getParameters());
-        debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &cubeCount);
+        debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &cubeCount, sceneRenderer->vegetationRenderer.get());
         shadowWidget = std::make_shared<ShadowMapWidget>(sceneRenderer->shadowMapper.get(), &shadowParams);
         lightWidget = std::make_shared<LightWidget>(&light);
         vulkanResourcesManagerWidget = std::make_shared<VulkanResourcesManagerWidget>(&resources);
@@ -540,11 +540,13 @@ public:
         sceneRenderer->mainPass(this, commandBuffer, unusedRpInfo, frameIdx, waterEnabled, vegetationEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode, profilingEnabled, queryPool,
             viewProj, uboStatic, true, false, true, 0, 0.0f, 0.0f);
 
-        // Render debug cubes for expanded octree nodes + node instances from change handlers
-        if (octreeExplorerWidget && octreeExplorerWidget->getShowDebugCubes()) {
+        // Render debug cubes for expanded octree nodes, node instances, and vegetation density centers.
+        const bool showOctreeDebug = octreeExplorerWidget && octreeExplorerWidget->getShowDebugCubes();
+        const bool showVegetationDensityDebug = debugWidget && debugWidget->getShowVegetationDensityDebug();
+        if (showOctreeDebug || showVegetationDensityDebug) {
             std::vector<DebugCubeRenderer::CubeWithColor> debugCubes;
             // Add widget-expanded cubes when explorer is visible
-            if (octreeExplorerWidget->isVisible()) {
+            if (showOctreeDebug && octreeExplorerWidget->isVisible()) {
                 const auto& widgetCubes = octreeExplorerWidget->getExpandedCubes();
                 debugCubes.reserve(widgetCubes.size());
                 for (const auto& wc : widgetCubes) {
@@ -552,10 +554,17 @@ public:
                     debugCubes.push_back({BoundingBox(wc.cube.getMin(), wc.cube.getMax()), wc.color});
                 }
             }
-            // Append node cubes produced by change handlers (post-tessellation)
-            auto nodeCubes = sceneRenderer->getDebugNodeCubes();
-            debugCubes.reserve(debugCubes.size() + nodeCubes.size());
-            for (auto &nc : nodeCubes) debugCubes.push_back(nc);
+            if (showOctreeDebug) {
+                // Append node cubes produced by change handlers (post-tessellation)
+                auto nodeCubes = sceneRenderer->getDebugNodeCubes();
+                debugCubes.reserve(debugCubes.size() + nodeCubes.size());
+                for (auto &nc : nodeCubes) debugCubes.push_back(nc);
+            }
+            if (showVegetationDensityDebug && sceneRenderer->vegetationRenderer) {
+                auto densityCubes = sceneRenderer->vegetationRenderer->getDensityDebugCubes(camera.getPosition());
+                debugCubes.reserve(debugCubes.size() + densityCubes.size());
+                for (auto &cube : densityCubes) debugCubes.push_back(cube);
+            }
 
             if (!debugCubes.empty()) {
                 sceneRenderer->debugCubeRenderer->setCubes(debugCubes);

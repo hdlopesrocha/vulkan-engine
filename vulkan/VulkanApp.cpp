@@ -2195,17 +2195,11 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
                         // layer inside that range.
                         if (baseArrayLayer >= pendingBase && baseArrayLayer < pendingBase + pendingCount) {
                             pendingOld = it->newLayout;
-                            // Only adopt a pending barrier's newLayout as the
-                            // effective old layout when the caller explicitly
-                            // passed VK_IMAGE_LAYOUT_UNDEFINED (i.e. the caller
-                            // doesn't know the current layout). Favoring a
-                            // pending barrier for callers that supplied a
-                            // concrete oldLayout can lead to validation
-                            // mismatches; prefer the caller/tracked value in
-                            // that case.
-                            if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
-                                effectiveOld = it->newLayout;
-                            }
+                            // A recorded barrier in the same command buffer is
+                            // the authoritative subresource layout for any
+                            // subsequent barrier in that command buffer.
+                            // Always prefer it over global tracked state.
+                            effectiveOld = it->newLayout;
                             foundBarrier = true;
                             break;
                         }

@@ -408,11 +408,13 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         }
     }
 
-    // mark per-mesh indirect offsets (byte offsets inside indirect buffer)
+    // Mark per-mesh indirect offsets (byte offsets inside indirect buffer).
+    // `meshes` is an unordered_map keyed by mesh id, so never index it as an array.
     VkDeviceSize offsetCursor = 0;
-    for (size_t i = 0; i < meshes.size(); ++i) {
-        if (!meshes[i].active) continue;
-        meshes[i].indirectOffset = offsetCursor;
+    for (auto& kv : meshes) {
+        MeshInfo& info = kv.second;
+        if (!info.active) continue;
+        info.indirectOffset = offsetCursor;
         offsetCursor += sizeof(VkDrawIndexedIndirectCommand);
     }
 
