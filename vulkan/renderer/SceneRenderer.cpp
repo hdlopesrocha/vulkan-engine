@@ -903,7 +903,7 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
                 // Probability per unit of world-space triangle area.
                 // Each grass triangle contributes at most one slot, sampled
                 // from area so small LOD-border triangles don't over-concentrate vegetation.
-                constexpr float kVegetationDensity = 0.04f;
+                constexpr float kVegetationDensity = 0.01f;
 
                 // Create tightly-packed position buffer (vec3[]) for the compute shader
                 std::vector<glm::vec3> positions;
