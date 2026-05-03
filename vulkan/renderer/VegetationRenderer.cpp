@@ -366,6 +366,89 @@ float VegetationRenderer::getAverageDensityFactor(const glm::vec3& cameraPos) co
 }
 
 
+void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::vec3& cameraPos) {
+    if (!app || vegetationPipeline == VK_NULL_HANDLE) {
+        if (!app) std::cerr << "[VEGETATION SHADOW DRAW ERROR] app is null!" << std::endl;
+        if (vegetationPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION SHADOW DRAW ERROR] Attempted to bind VK_NULL_HANDLE pipeline!" << std::endl;
+        return;
+    }
+
+    // Ensure vegetation descriptor set is present and up-to-date
+    if (!ensureVegDescriptorSet(app)) {
+        std::cerr << "[VEGETATION SHADOW DRAW ERROR] vegDescriptorSet not ready, skipping draw." << std::endl;
+        return;
+    }
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationPipeline);
+
+    // Bind the shadow descriptor set at set 0 and vegetation descriptor set at set 1
+    // shadowDescriptorSet contains the light-space UBO for shadow rendering
+    VkDescriptorSet sets[2] = { shadowDescriptorSet, vegDescriptorSet };
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 2, sets, 0, nullptr);
+
+    // Push constants for shadow pass: same as regular draw but with wind disabled
+    WindPushConstants pc{};
+    pc.billboardScale = billboardScale;
+    pc.windEnabled = 0.0f;  // Disable wind for shadow pass (don't distort based on time)
+    pc.windTime = windTimeSeconds;
+
+    glm::vec2 windDir = windSettings.direction;
+    const float len2 = windDir.x * windDir.x + windDir.y * windDir.y;
+    if (len2 > 1e-8f) {
+        const float invLen = 1.0f / std::sqrt(len2);
+        windDir *= invLen;
+    }
+
+    pc.windDirAndStrength = glm::vec4(windDir.x, 0.0f, windDir.y, std::max(0.0f, windSettings.strength));
+    pc.windNoise = glm::vec4(
+        std::max(0.00001f, windSettings.baseFrequency),
+        std::max(0.0f, windSettings.speed),
+        std::max(0.00001f, windSettings.gustFrequency),
+        std::max(0.0f, windSettings.gustStrength)
+    );
+    pc.windShape = glm::vec4(
+        std::max(0.0f, windSettings.skewAmount),
+        std::clamp(windSettings.trunkStiffness, 0.0f, 1.0f),
+        std::max(0.001f, windSettings.noiseScale),
+        std::max(0.0f, windSettings.verticalFlutter)
+    );
+    pc.windTurbulence = glm::vec4(std::max(0.0f, windSettings.turbulence), 0.0f, 0.0f, 0.0f);
+    
+    // Distance-based density: use camera position for LOD, NOT light position
+    const float nearDistance = std::max(0.0f, distanceDensitySettings.fullDensityDistance);
+    const float farDistance = std::max(nearDistance + 1.0f, distanceDensitySettings.minDensityDistance);
+    const float minFactor = std::clamp(distanceDensitySettings.minDensityFactor, 0.0f, 1.0f);
+    const float safeMinFactor = std::max(minFactor, 0.0001f);
+    const float falloff = (distanceDensitySettings.enabled && minFactor < 1.0f)
+        ? (-std::log(safeMinFactor) / (farDistance - nearDistance))
+        : 0.0f;
+    pc.densityParams = glm::vec4(distanceDensitySettings.enabled ? 1.0f : 0.0f, nearDistance, farDistance, minFactor);
+    pc.cameraPosAndFalloff = glm::vec4(cameraPos, falloff);  // Camera pos, not light pos
+
+    vkCmdPushConstants(
+        commandBuffer,
+        pipelineLayout,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        0,
+        sizeof(WindPushConstants),
+        &pc
+    );
+
+    // For each chunk, bind base vertex buffer + instance buffer and draw indirect.
+    // Distance-based thinning is handled in the vegetation shader using camera position.
+    for (auto& [chunkId, buf] : chunkBuffers) {
+        (void)chunkId;
+        if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
+        if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
+
+        VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
+        VkDeviceSize offsets[2] = { 0, 0 };
+        // Bind base vertex buffer at binding 0 and instance buffer at binding 1
+        vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
+        vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
+    }
+}
+
 void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
     if (!app || vegetationPipeline == VK_NULL_HANDLE) {
         if (!app) std::cerr << "[VEGETATION DRAW ERROR] app is null!" << std::endl;

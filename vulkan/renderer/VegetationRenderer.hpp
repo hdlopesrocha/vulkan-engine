@@ -75,6 +75,11 @@ public:
 
     // Draw all visible vegetation chunks (frustum culling is per-chunk, matching geometry)
     void draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos);
+    
+    // Draw vegetation to shadow map using light-space matrix in the bound UBO.
+    // Camera position is used for distance-based LOD, ensuring vegetation LOD matches
+    // what's visible from the camera, not from the light source.
+    void drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::vec3& cameraPos);
 
     // Stats helpers
     size_t getChunkCount() const { return chunkInstanceCounts.size(); }
