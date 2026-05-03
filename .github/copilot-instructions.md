@@ -8,6 +8,18 @@ and predictable performance.
 
 ---
 
+## VERSION CONTROL (MANDATORY - HIGHEST PRIORITY)
+
+**NEVER commit any changes without explicit written permission from the user.**
+
+- Do NOT use `git commit`, `git push`, or any version control commands
+- Only make code changes when requested
+- Always verify changes compile and run correctly
+- Wait for explicit user request like "commit this" or "can you commit..."
+- If you attempt to commit without permission, you will break trust and cause frustration
+
+---
+
 ## Vulkan Version & Features
 
 - Target Vulkan 1.2+.
