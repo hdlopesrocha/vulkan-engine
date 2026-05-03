@@ -161,14 +161,15 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
         }
 
-        solidRenderer->getIndirectRenderer().drawAll(commandBuffer);
-
-        // Render vegetation to shadow map with camera-based LOD (not light position)
-        // Vegetation casts shadows that affect vegetation rendering in the main pass
+        // Render vegetation FIRST to shadow map so it casts shadows on solid geometry below.
+        // Vegetation uses camera-based LOD (not light position) for consistent density.
         if (vegetationRenderer) {
             const glm::vec3 cameraPos = glm::vec3(uboStatic.viewPos);  // Use original camera position for LOD
             vegetationRenderer->drawShadow(app, commandBuffer, ds, cameraPos);
         }
+
+        // Render solid geometry after vegetation so terrain can be shadowed by vegetation
+        solidRenderer->getIndirectRenderer().drawAll(commandBuffer);
 
         shadowMapper->endShadowPass(app, commandBuffer, c);
     }
