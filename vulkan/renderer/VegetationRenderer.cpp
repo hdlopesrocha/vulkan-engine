@@ -34,6 +34,8 @@ void VegetationRenderer::cleanup() {
     // Clear local handles; central manager handles destruction of Vulkan objects
     vegetationPipeline = VK_NULL_HANDLE;
     pipelineLayout = VK_NULL_HANDLE;
+    vegetationShadowPipeline = VK_NULL_HANDLE;
+    shadowPipelineLayout = VK_NULL_HANDLE;
     descriptorSetLayout = VK_NULL_HANDLE;
     // Free and reset vegetation descriptor set handle locally
     vegDescriptorSet = VK_NULL_HANDLE;
@@ -163,7 +165,7 @@ bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
 }
 
 
-void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
+void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride, VkRenderPass shadowRenderPassOverride) {
     if (!app) return;
     // Store the app pointer for use when generating instance buffers via compute
     this->appPtr = app;
@@ -267,6 +269,39 @@ void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
         std::cerr << "[VEGETATION PIPELINE] Created pipeline=" << (void*)vegetationPipeline << " layout=" << (void*)pipelineLayout << std::endl;
     }
 
+    if (shadowRenderPassOverride != VK_NULL_HANDLE) {
+        auto [shadowPipeline, shadowLayout] = app->createGraphicsPipeline(
+            { stages[0], stages[1], stages[2] },
+            std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
+            {
+                {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
+                {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
+                {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)},
+                {3, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex)},
+                {4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}
+            },
+            setLayouts,
+            &pushConstantRange,
+            VK_POLYGON_MODE_FILL,
+            VK_CULL_MODE_NONE,
+            true,
+            true,
+            VK_COMPARE_OP_LESS,
+            VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
+            shadowRenderPassOverride
+        );
+        vegetationShadowPipeline = shadowPipeline;
+        shadowPipelineLayout = shadowLayout;
+        if (vegetationShadowPipeline == VK_NULL_HANDLE || shadowPipelineLayout == VK_NULL_HANDLE) {
+            std::cerr << "[VEGETATION SHADOW PIPELINE ERROR] Failed to create vegetation shadow pipeline/layout" << std::endl;
+        } else {
+            std::cerr << "[VEGETATION SHADOW PIPELINE] Created pipeline=" << (void*)vegetationShadowPipeline << " layout=" << (void*)shadowPipelineLayout << std::endl;
+        }
+    } else {
+        vegetationShadowPipeline = VK_NULL_HANDLE;
+        shadowPipelineLayout = VK_NULL_HANDLE;
+    }
+
     // Clear local shader module references; destruction handled by VulkanResourceManager
     vertShader = VK_NULL_HANDLE;
     geomShader = VK_NULL_HANDLE;
@@ -367,9 +402,9 @@ float VegetationRenderer::getAverageDensityFactor(const glm::vec3& cameraPos) co
 
 
 void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::vec3& cameraPos) {
-    if (!app || vegetationPipeline == VK_NULL_HANDLE) {
+    if (!app || vegetationShadowPipeline == VK_NULL_HANDLE) {
         if (!app) std::cerr << "[VEGETATION SHADOW DRAW ERROR] app is null!" << std::endl;
-        if (vegetationPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION SHADOW DRAW ERROR] Attempted to bind VK_NULL_HANDLE pipeline!" << std::endl;
+        if (vegetationShadowPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION SHADOW DRAW ERROR] Shadow pipeline is VK_NULL_HANDLE!" << std::endl;
         return;
     }
 
@@ -379,12 +414,12 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         return;
     }
 
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationPipeline);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
 
     // Bind the shadow descriptor set at set 0 and vegetation descriptor set at set 1
     // shadowDescriptorSet contains the light-space UBO for shadow rendering
     VkDescriptorSet sets[2] = { shadowDescriptorSet, vegDescriptorSet };
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 2, sets, 0, nullptr);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 2, sets, 0, nullptr);
 
     // Push constants for shadow pass: same as regular draw but with wind disabled
     WindPushConstants pc{};
@@ -427,7 +462,7 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
 
     vkCmdPushConstants(
         commandBuffer,
-        pipelineLayout,
+        shadowPipelineLayout,
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0,
         sizeof(WindPushConstants),

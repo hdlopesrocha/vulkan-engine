@@ -60,7 +60,7 @@ public:
     void onTextureArraysReallocated(VulkanApp* app);
     void init();
     void cleanup();
-    void init(VulkanApp* app, VkRenderPass renderPassOverride = VK_NULL_HANDLE);
+    void init(VulkanApp* app, VkRenderPass renderPassOverride = VK_NULL_HANDLE, VkRenderPass shadowRenderPassOverride = VK_NULL_HANDLE);
     // Generate per-chunk vegetation instances from mesh geometry using the
     // compute shader. This is the only supported instancing path now.
     // vertexBuffer/indexBuffer are device-local buffers created by the caller.
@@ -98,6 +98,8 @@ private:
     
     VkPipeline vegetationPipeline = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline vegetationShadowPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     TextureArrayManager* vegetationTextureArrayManager = nullptr;
     VkImageView billboardAlbedoView   = VK_NULL_HANDLE;

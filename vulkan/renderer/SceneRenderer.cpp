@@ -168,6 +168,16 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
             vegetationRenderer->drawShadow(app, commandBuffer, ds, cameraPos);
         }
 
+        // Vegetation shadow draw binds its own pipeline; restore solid shadow state for indexed draws.
+        VkPipeline solidShadowPipeline = shadowMapper->getShadowPipeline();
+        VkPipelineLayout solidShadowLayout = shadowMapper->getShadowPipelineLayout();
+        if (solidShadowPipeline != VK_NULL_HANDLE) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowPipeline);
+        }
+        if (solidShadowLayout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowLayout, 0, 1, &ds, 0, nullptr);
+        }
+
         // Render solid geometry after vegetation so terrain can be shadowed by vegetation
         solidRenderer->getIndirectRenderer().drawAll(commandBuffer);
 
@@ -315,7 +325,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Create offscreen sky targets so the sky can be sampled as a texture by water
     skyRenderer->createOffscreenTargets(app, app->getWidth(), app->getHeight());
     shadowMapper->init(app);
-    vegetationRenderer->init(app, solidRenderer->getRenderPass());
+    vegetationRenderer->init(app, solidRenderer->getRenderPass(), shadowMapper->getShadowRenderPass());
 
     // Initialize debug cube renderer
     if (debugCubeRenderer) {
