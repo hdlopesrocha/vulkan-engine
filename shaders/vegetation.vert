@@ -3,26 +3,27 @@ layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inTexCoord;
 layout(location = 3) in int inTexIndex;
+layout(location = 4) in vec3 instancePosition;
 
 layout(location = 0) out vec2 fragTexCoord;
-layout(location = 1) out flat int fragTexIndex;
+layout(location = 1) flat out int fragTexIndex;
+layout(location = 2) out vec3 fragWorldPos;
 
-
-layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 model;
-    mat4 viewProj;
+// Must match SolidParamsUBO — only read the first two fields.
+layout(set = 0, binding = 0) uniform SolidParamsUBO {
+    mat4 viewProjection;
+    vec4 viewPos;
 } ubo;
 
 layout(push_constant) uniform PushConstants {
     float billboardScale;
 };
 
-layout(location = 4) in vec3 instancePosition;
-
 void main() {
-    // Billboard: orient quad to face camera in geometry shader, so here just pass position
-    vec3 pos = inPosition * billboardScale + instancePosition;
-    gl_Position = ubo.viewProj * ubo.model * vec4(pos, 1.0);
+    // inPosition is always (0,0,0) for the base vertex; world position = instancePosition.
+    vec3 worldPos = instancePosition;
+    gl_Position = ubo.viewProjection * vec4(worldPos, 1.0);
     fragTexCoord = inTexCoord;
     fragTexIndex = inTexIndex;
+    fragWorldPos = worldPos;
 }
