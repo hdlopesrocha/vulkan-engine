@@ -143,12 +143,8 @@ public:
     KeyboardPublisher keyboardPublisher;
     GamepadPublisher gamepadPublisher;
     bool sceneLoading = false;
-    std::thread sceneLoadThread; // background scene-loading thread (joined in clean())
 
     ~MyApp() {
-        // Safety: if run() threw before cleanup() was called, sceneLoadThread
-        // may still be joinable. Join here to prevent std::terminate.
-        if (sceneLoadThread.joinable()) sceneLoadThread.join();
     }
 
     // setupTextures (defined out-of-line to avoid inline/member-definition issues)
@@ -300,35 +296,27 @@ public:
         brushManager.getEntries()[2].materialIndex = 2;
         brushManager.getEntries()[2].translate = glm::vec3(-512.0f, 1024.0f, 0.0f);
         brushManager.getEntries()[2].scale = glm::vec3(256.0f);
-        sceneLoadThread = std::thread([this]() {
-            try {
-                SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler(mainScene, this);
-                LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler(mainScene, this);
-                UniqueOctreeChangeHandler uniqueSolidHandler(solidHandler);
-                UniqueOctreeChangeHandler uniqueLiquidHandler(liquidHandler);
-                MainSceneLoader loader;
-                // Flush after each shape: tessellate the deduped chunks immediately and
-                // clear the handler so the next shape starts fresh. This streams chunks to
-                // the GPU queue in real time instead of batching them all at the end.
-                loader.flushCallback = [&uniqueSolidHandler, &uniqueLiquidHandler]() {
-                    uniqueSolidHandler.handleEvents();
-                    uniqueSolidHandler.clear();
-                    uniqueLiquidHandler.handleEvents();
-                    uniqueLiquidHandler.clear();
-                };
-                mainScene->loadScene(loader, uniqueSolidHandler, uniqueLiquidHandler);
-                if (octreeExplorerWidget)
-                    octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
-                std::cout << "[Main::setupScene] Background scene loading complete\n";
-            } catch (const std::exception& e) {
-                std::cerr << "[Main::setupScene] Background thread exception: " << e.what() << "\n";
-            } catch (...) {
-                std::cerr << "[Main::setupScene] Background thread unknown exception\n";
-            }
-        });
+        {
+            SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler(mainScene, this);
+            LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler(mainScene, this);
+            UniqueOctreeChangeHandler uniqueSolidHandler(solidHandler);
+            UniqueOctreeChangeHandler uniqueLiquidHandler(liquidHandler);
+            MainSceneLoader loader;
+            // Flush after each shape: tessellate deduped chunks immediately via the
+            // ThreadPool and clear the handler so the next shape starts fresh.
+            // The octree building is synchronous; tessellation jobs run in parallel.
+            loader.flushCallback = [&uniqueSolidHandler, &uniqueLiquidHandler]() {
+                uniqueSolidHandler.handleEvents();
+                uniqueSolidHandler.clear();
+                uniqueLiquidHandler.handleEvents();
+                uniqueLiquidHandler.clear();
+            };
+            mainScene->loadScene(loader, uniqueSolidHandler, uniqueLiquidHandler);
+            if (octreeExplorerWidget)
+                octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
+            std::cout << "[Main::setup] Scene loading complete\n";
+        }
 
-        // Texture and vegetation loading runs on the main thread while the scene
-        // background thread does its CPU work concurrently.
         setupVegetationTextures();
         setupTextures();
 
@@ -1085,9 +1073,6 @@ public:
     }
 
     void clean() override {
-        // Wait for the background scene-loading thread to finish before tearing
-        // down Vulkan resources it may still be accessing.
-        if (sceneLoadThread.joinable()) sceneLoadThread.join();
 
         // Free all ImGui descriptor sets owned by the widget while ImGui is still
         // alive. clean() is called before cleanupImGui(), so this is safe.
