@@ -57,9 +57,16 @@ void main() {
     // Only scatter on upward-facing surfaces (vegetation grows on top of terrain, not walls/ceilings).
     // Compute the face normal from the cross product of the two edges.
     vec3 faceNormal = cross(v1 - v0, v2 - v0);
-    // Skip degenerate triangles and any face whose normal points downward or sideways.
-    // Threshold 0.1 allows up to ~84° slopes while excluding vertical and inverted faces.
-    if (faceNormal.y <= 0.1 * length(faceNormal)) return;
+    // Skip steep triangles using a winding-order-agnostic slope test.
+    // abs(n.y) handles both CW/CCW triangle winding while enforcing max ~60° slope.
+    if (abs(faceNormal.y) <= 0.5 * length(faceNormal)) {
+        // Write sentinel so the geometry shader can discard these instances instead of
+        // rendering garbage from uninitialized device-local memory.
+        for (uint i = 0; i < push.instancesPerTriangle; ++i) {
+            outInstances[tri * push.instancesPerTriangle + i] = vec4(0.0, 0.0, 0.0, -1.0);
+        }
+        return;
+    }
 
     // For each instance to generate on this triangle
     for (uint i = 0; i < push.instancesPerTriangle; ++i) {

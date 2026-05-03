@@ -8,6 +8,7 @@
 #include "../../utils/LocalScene.hpp"
 #include "../../math/ContainmentType.hpp"
 #include <algorithm>
+#include <cmath>
 #include <mutex>
 #include <unordered_set>
 
@@ -879,20 +880,65 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
     if (layer == LAYER_OPAQUE && vegetationRenderer) {
         if (geom.indices.size() >= 3 && !geom.vertices.empty()) {
             try {
+                constexpr int kGrassBrushIndex = 3; // See LandBrush::grass
+                // Instances per unit of world-space triangle area.
+                // Each grass triangle is repeated in the index buffer proportional to its area
+                // so that instance density is uniform regardless of triangle size.
+                constexpr float kVegetationDensity = 1.5f;
+                constexpr uint32_t kMaxInstancesPerTriangle = 300u;
+
                 // Create tightly-packed position buffer (vec3[]) for the compute shader
                 std::vector<glm::vec3> positions;
                 positions.reserve(geom.vertices.size());
                 for (const auto &v : geom.vertices) positions.push_back(v.position);
 
-                VkDevice device = app->getDevice();
+                // Build area-weighted index buffer: each grass triangle is repeated
+                // ceil(area * density) times so the compute shader (1 instance per invocation)
+                // produces uniform spatial density across all triangle sizes.
+                std::vector<uint32_t> grassIndices;
+                grassIndices.reserve(geom.indices.size() * 4);
+                for (size_t i = 0; i + 2 < geom.indices.size(); i += 3) {
+                    const uint32_t i0 = geom.indices[i + 0];
+                    const uint32_t i1 = geom.indices[i + 1];
+                    const uint32_t i2 = geom.indices[i + 2];
+                    if (i0 >= geom.vertices.size() || i1 >= geom.vertices.size() || i2 >= geom.vertices.size()) continue;
+                    const bool hasGrass =
+                        geom.vertices[i0].texIndex == kGrassBrushIndex ||
+                        geom.vertices[i1].texIndex == kGrassBrushIndex ||
+                        geom.vertices[i2].texIndex == kGrassBrushIndex;
+                    if (!hasGrass) continue;
+                    const glm::vec3& v0 = geom.vertices[i0].position;
+                    const glm::vec3& v1 = geom.vertices[i1].position;
+                    const glm::vec3& v2 = geom.vertices[i2].position;
+                    // Skip steep / downward-facing triangles (same criterion as compute shader).
+                    // This avoids allocating output slots that the compute shader would discard,
+                    // preventing garbage uninitialized memory from reaching the draw call.
+                    const glm::vec3 faceNormal = glm::cross(v1 - v0, v2 - v0);
+                    if (glm::abs(faceNormal.y) <= 0.5f * glm::length(faceNormal)) continue;
+                    const float area = 0.5f * glm::length(faceNormal);
+                    const uint32_t nInstances = std::max(1u, std::min(kMaxInstancesPerTriangle,
+                        static_cast<uint32_t>(std::roundf(area * kVegetationDensity))));
+                    for (uint32_t k = 0; k < nInstances; ++k) {
+                        grassIndices.push_back(i0);
+                        grassIndices.push_back(i1);
+                        grassIndices.push_back(i2);
+                    }
+                }
+
+                // Each virtual triangle slot produces exactly 1 instance.
+                uint32_t instancesPerTriangle = 1u;
+                uint32_t seed = static_cast<uint32_t>(nid & 0xffffffffull);
+                if (grassIndices.size() < 3) {
+                    // No grass triangles in this chunk; ensure old chunk vegetation is cleared.
+                    vegetationRenderer->generateChunkInstances(nid, Buffer{}, 0, Buffer{}, 0, instancesPerTriangle, app, seed);
+                    return;
+                }
 
                 Buffer posBuf = app->createDeviceLocalBuffer(positions.data(), positions.size() * sizeof(glm::vec3), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-                Buffer idxBuf = app->createDeviceLocalBuffer(geom.indices.data(), geom.indices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                Buffer idxBuf = app->createDeviceLocalBuffer(grassIndices.data(), grassIndices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
                 uint32_t vertexCount = static_cast<uint32_t>(positions.size());
-                uint32_t indexCount = static_cast<uint32_t>(geom.indices.size());
-                uint32_t instancesPerTriangle = 2u;
-                uint32_t seed = static_cast<uint32_t>(nid & 0xffffffffull);
+                uint32_t indexCount = static_cast<uint32_t>(grassIndices.size());
 
                 // Pass Buffer objects to vegetationRenderer and let it defer destruction
                 vegetationRenderer->generateChunkInstances(nid, posBuf, vertexCount, idxBuf, indexCount, instancesPerTriangle, app, seed);
