@@ -885,7 +885,7 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
                 // Each grass triangle is repeated in the index buffer proportional to its area
                 // so that instance density is uniform regardless of triangle size.
                 constexpr float kVegetationDensity = 1.5f;
-                constexpr uint32_t kMaxInstancesPerTriangle = 300u;
+                constexpr uint32_t kMaxInstancesPerTriangle = 50u;
 
                 // Create tightly-packed position buffer (vec3[]) for the compute shader
                 std::vector<glm::vec3> positions;
