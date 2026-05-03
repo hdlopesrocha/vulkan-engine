@@ -307,11 +307,18 @@ public:
                 UniqueOctreeChangeHandler uniqueSolidHandler(solidHandler);
                 UniqueOctreeChangeHandler uniqueLiquidHandler(liquidHandler);
                 MainSceneLoader loader;
+                // Flush after each shape: tessellate the deduped chunks immediately and
+                // clear the handler so the next shape starts fresh. This streams chunks to
+                // the GPU queue in real time instead of batching them all at the end.
+                loader.flushCallback = [&uniqueSolidHandler, &uniqueLiquidHandler]() {
+                    uniqueSolidHandler.handleEvents();
+                    uniqueSolidHandler.clear();
+                    uniqueLiquidHandler.handleEvents();
+                    uniqueLiquidHandler.clear();
+                };
                 mainScene->loadScene(loader, uniqueSolidHandler, uniqueLiquidHandler);
                 if (octreeExplorerWidget)
                     octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
-                uniqueSolidHandler.handleEvents();
-                uniqueLiquidHandler.handleEvents();
                 std::cout << "[Main::setupScene] Background scene loading complete\n";
             } catch (const std::exception& e) {
                 std::cerr << "[Main::setupScene] Background thread exception: " << e.what() << "\n";
