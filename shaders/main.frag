@@ -108,9 +108,8 @@ void main() {
         vec3 n1 = texture(normalArray, vec3(uv, float(fragTexIndices.y))).rgb * 2.0 - 1.0;
         vec3 n2 = texture(normalArray, vec3(uv, float(fragTexIndices.z))).rgb * 2.0 - 1.0;
         vec3 nmap = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
-        // Build TBN matrix from undisplaced geometry for UV-space normal mapping
-        // (normal maps are in tangent space of the original surface, not the displaced one)
-        vec3 T = normalize(dFdx(fragPosWorldNotDisplaced));
+        // Build TBN matrix from geometry for UV-space normal mapping
+        vec3 T = normalize(dFdx(fragPosWorld));
         vec3 B = normalize(cross(N, T));
         T = normalize(cross(B, N)); // re-orthogonalize
         mat3 TBN = mat3(T, B, N);
@@ -123,12 +122,7 @@ void main() {
 
     // Lighting calculation
     vec3 toLight = -normalize(ubo.lightDir.xyz);
-    // Clamp NdotL by the geometric normal: a geometry back-face must receive no
-    // light even if the normal map perturbs the shading normal toward the light.
-    // Without this, normal-mapped normals cause bright specular speckles on
-    // surfaces whose geometry already faces away from the light source.
-    float geomNdotL = dot(geomN, toLight);
-    float NdotL = max(dot(worldNormal, toLight), 0.0) * step(0.0, geomNdotL);
+    float NdotL = max(dot(worldNormal, toLight), 0.0);
 
     // Shadow calculation
     vec4 adjustedPosLightSpace = fragPosLightSpace;
