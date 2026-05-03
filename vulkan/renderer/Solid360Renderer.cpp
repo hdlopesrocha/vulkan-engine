@@ -226,10 +226,11 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         // render pass so validation layers see a correct effective old
         // layout when the command buffer is submitted.
         if (app) {
-            // Do not pass a local old-layout guess; let VulkanApp determine
-            // the effective old layout (considering tracked/pending state).
+            // Use the tracked per-face layout so stale pending entries
+            // in the command buffer (from prior recordings) cannot
+            // override effectiveOld and skip the required barrier.
             app->recordTransitionImageLayoutLayer(cmd, cube360DepthImage, VK_FORMAT_D32_SFLOAT,
-                                                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                                 cube360DepthLayouts[face], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                                                  1, face, 1);
         }
         rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -279,12 +280,14 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         }
 
         vkCmdEndRenderPass(cmd);
-        // After the render pass completes the depth attachment is in the
-        // depth-stencil attachment layout (renderpass finalLayout).
-        // Record that so callers emitting later transitions use the correct
-        // oldLayout when scheduling barriers.
-        if (app) app->recordTrackedLayoutForCommandBuffer(cmd, cube360DepthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, face, 1);
-        cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        // After the render pass completes the depth attachment is in
+        // SHADER_READ_ONLY_OPTIMAL because solidRenderPass has
+        // finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL for the
+        // depth attachment. Record that so the next transition barrier
+        // uses the correct oldLayout and validation layers don't see a
+        // mismatch.
+        if (app) app->recordTrackedLayoutForCommandBuffer(cmd, cube360DepthImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, face, 1);
+        cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
     // Cubemap rendering complete; cubemap image view is available for sampling.

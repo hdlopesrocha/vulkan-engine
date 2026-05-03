@@ -277,10 +277,51 @@ public:
         }
 
 
-        // IMPORTANT: run texture setup on the main thread.
-        // Detached startup threads were racing with SceneRenderer initialization
-        // and app lifetime, causing undefined behavior and intermittent
-        // std::system_error("Invalid argument") during mesh rebuild.
+        // Create scene objects and start the CPU-heavy scene load in the background
+        // so it runs in parallel with texture and vegetation loading below.
+        // All work inside the thread is pure CPU (SDF evaluation, octree traversal,
+        // tessellation). Vulkan GPU uploads happen on the main thread via
+        // processPendingMeshes() in the render loop.
+        mainScene = new LocalScene();
+        octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
+        widgetManager.addWidget(octreeExplorerWidget);
+        brushScene = new LocalScene();
+        brushManager.getEntries().clear();
+        brushManager.getEntries().resize(3);
+        brushManager.getEntries()[0].sdfType = 0;
+        brushManager.getEntries()[0].materialIndex = 0;
+        brushManager.getEntries()[0].translate = glm::vec3(0.0f, 1024.0f, 0.0f);
+        brushManager.getEntries()[0].scale = glm::vec3(256.0f);
+        brushManager.getEntries()[1].sdfType = 1;
+        brushManager.getEntries()[1].materialIndex = 1;
+        brushManager.getEntries()[1].translate = glm::vec3(512.0f, 1024.0f, 0.0f);
+        brushManager.getEntries()[1].scale = glm::vec3(256.0f);
+        brushManager.getEntries()[2].sdfType = 3;
+        brushManager.getEntries()[2].materialIndex = 2;
+        brushManager.getEntries()[2].translate = glm::vec3(-512.0f, 1024.0f, 0.0f);
+        brushManager.getEntries()[2].scale = glm::vec3(256.0f);
+        sceneLoadThread = std::thread([this]() {
+            try {
+                SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler(mainScene, this);
+                LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler(mainScene, this);
+                UniqueOctreeChangeHandler uniqueSolidHandler(solidHandler);
+                UniqueOctreeChangeHandler uniqueLiquidHandler(liquidHandler);
+                MainSceneLoader loader;
+                mainScene->loadScene(loader, uniqueSolidHandler, uniqueLiquidHandler);
+                if (octreeExplorerWidget)
+                    octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
+                uniqueSolidHandler.handleEvents();
+                uniqueLiquidHandler.handleEvents();
+                std::cout << "[Main::setupScene] Background scene loading complete\n";
+            } catch (const std::exception& e) {
+                std::cerr << "[Main::setupScene] Background thread exception: " << e.what() << "\n";
+            } catch (...) {
+                std::cerr << "[Main::setupScene] Background thread unknown exception\n";
+            }
+        });
+
+        // Texture and vegetation loading runs on the main thread while the scene
+        // background thread does its CPU work concurrently.
         setupVegetationTextures();
         setupTextures();
 
@@ -350,10 +391,9 @@ public:
         printf("[Camera Setup] Final Position: (%.1f, %.1f, %.1f)\n", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
         printf("[Camera Setup] Forward: (%.3f, %.3f, %.3f)\n", camera.getForward().x, camera.getForward().y, camera.getForward().z);
    
-//        std::thread([this]() {
-            setupScene();
-//        }).detach();
-
+        // Create brush3dWidget after setupTextures() so loadedTextureLayers is set.
+        brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager, &eventManager);
+        widgetManager.addWidget(brush3dWidget);
     }
 
     // Move vegetation texture setup into its own method for clarity
@@ -1116,70 +1156,9 @@ int main(int argc, char** argv) {
 
 // Implementation: setup scene
 void MyApp::setupScene() {
-    // ── Main thread: allocate scene objects and set up all UI widgets ──────────
-    mainScene = new LocalScene();
-    octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene);
-    // Register the explorer widget after construction so the WidgetManager
-    // receives a valid shared_ptr (previously it was added while null).
-    widgetManager.addWidget(octreeExplorerWidget);
-
-    // --- Brush scene setup (no heavy work, stays on main thread) ---
-    brushScene = new LocalScene();
-
-    // Initialize manager-owned brush entries and create Brush3dWidget wired to the manager
-    brushManager.getEntries().clear();
-    brushManager.getEntries().resize(3);
-    // Provide distinct defaults for quick testing
-    brushManager.getEntries()[0].sdfType = 0; // Sphere
-    brushManager.getEntries()[0].materialIndex = 0;
-    brushManager.getEntries()[0].translate = glm::vec3(0.0f, 1024.0f, 0.0f);
-    brushManager.getEntries()[0].scale = glm::vec3(256.0f);
-    brushManager.getEntries()[1].sdfType = 1; // Box
-    brushManager.getEntries()[1].materialIndex = 1;
-    brushManager.getEntries()[1].translate = glm::vec3(512.0f, 1024.0f, 0.0f);
-    brushManager.getEntries()[1].scale = glm::vec3(256.0f);
-    brushManager.getEntries()[2].sdfType = 3; // Octahedron
-    brushManager.getEntries()[2].materialIndex = 2;
-    brushManager.getEntries()[2].translate = glm::vec3(-512.0f, 1024.0f, 0.0f);
-    brushManager.getEntries()[2].scale = glm::vec3(256.0f);
-
-    brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager, &eventManager);
-    widgetManager.addWidget(brush3dWidget);
-
-    // ── Background thread: heavy CPU work (SDF evaluation + octree traversal + tessellation) ──
-    // The change handlers now push CPU-generated geometry into a thread-safe
-    // pending queue.  processPendingMeshes() drains the queue each frame on the
-    // main thread and performs the Vulkan GPU uploads, so chunks appear in real
-    // time as they are generated.
-    sceneLoadThread = std::thread([this]() {
-        try {
-            SolidSpaceChangeHandler solidHandler = sceneRenderer->makeSolidSpaceChangeHandler(mainScene, this);
-            LiquidSpaceChangeHandler liquidHandler = sceneRenderer->makeLiquidSpaceChangeHandler(mainScene, this);
-            UniqueOctreeChangeHandler uniqueSolidHandler(solidHandler);
-            UniqueOctreeChangeHandler uniqueLiquidHandler(liquidHandler);
-
-            MainSceneLoader loader;
-            mainScene->loadScene(loader, uniqueSolidHandler, uniqueLiquidHandler);
-
-            // loadScene() has finished writing the octrees — signal the explorer widget
-            // that it is now safe to read them on the main thread.
-            if (octreeExplorerWidget) {
-                octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
-            }
-
-            // Dispatch deferred node events — each one tessellates the chunk (CPU)
-            // and pushes the geometry into the pending queue for main-thread upload.
-            uniqueSolidHandler.handleEvents();
-            uniqueLiquidHandler.handleEvents();
-
-            std::cout << "[Main::setupScene] Background scene loading complete\n";
-        } catch (const std::exception& e) {
-            std::cerr << "[Main::setupScene] Background thread exception: " << e.what() << "\n";
-        } catch (...) {
-            std::cerr << "[Main::setupScene] Background thread unknown exception\n";
-        }
-    });
-    // Keep the thread handle so clean() can join it before Vulkan teardown.
+    // Scene objects, background thread, and brush3dWidget are now set up
+    // directly in setup() so the CPU-heavy scene load can run in parallel
+    // with texture loading. This stub is kept for call-site compatibility.
 }
 
 // Implementation: setup vegetation textures
