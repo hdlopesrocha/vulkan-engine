@@ -306,6 +306,65 @@ size_t VegetationRenderer::getInstanceTotal() const {
     return total;
 }
 
+float VegetationRenderer::computeDensityFactor(float distanceToCamera) const {
+    if (!distanceDensitySettings.enabled) {
+        return 1.0f;
+    }
+
+    const float nearDistance = std::max(0.0f, distanceDensitySettings.fullDensityDistance);
+    const float farDistance = std::max(nearDistance + 1.0f, distanceDensitySettings.minDensityDistance);
+    const float minFactor = std::clamp(distanceDensitySettings.minDensityFactor, 0.0f, 1.0f);
+    if (distanceToCamera <= nearDistance || minFactor >= 1.0f) {
+        return 1.0f;
+    }
+
+    const float decayRange = farDistance - nearDistance;
+    const float safeMinFactor = std::max(minFactor, 0.0001f);
+    const float falloff = -std::log(safeMinFactor) / decayRange;
+    const float densityFactor = std::exp(-falloff * (distanceToCamera - nearDistance));
+    return std::clamp(densityFactor, minFactor, 1.0f);
+}
+
+std::vector<DebugCubeRenderer::CubeWithColor> VegetationRenderer::getDensityDebugCubes(const glm::vec3& cameraPos) const {
+    std::vector<DebugCubeRenderer::CubeWithColor> cubes;
+    cubes.reserve(chunkBuffers.size());
+    const float halfExtent = std::max(8.0f, billboardScale * 0.35f);
+
+    for (const auto& [chunkId, buf] : chunkBuffers) {
+        (void)chunkId;
+        if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) {
+            continue;
+        }
+
+        const float densityFactor = computeDensityFactor(glm::distance(buf.center, cameraPos));
+        const glm::vec3 color = glm::mix(glm::vec3(1.0f, 0.15f, 0.15f), glm::vec3(0.15f, 1.0f, 0.2f), densityFactor);
+        const glm::vec3 minPoint = buf.center - glm::vec3(halfExtent);
+        const glm::vec3 maxPoint = buf.center + glm::vec3(halfExtent);
+        cubes.push_back({BoundingBox(minPoint, maxPoint), color});
+    }
+
+    return cubes;
+}
+
+float VegetationRenderer::getAverageDensityFactor(const glm::vec3& cameraPos) const {
+    if (chunkBuffers.empty()) {
+        return 1.0f;
+    }
+
+    float factorSum = 0.0f;
+    size_t factorCount = 0;
+    for (const auto& [chunkId, buf] : chunkBuffers) {
+        (void)chunkId;
+        if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) {
+            continue;
+        }
+        factorSum += computeDensityFactor(glm::distance(buf.center, cameraPos));
+        ++factorCount;
+    }
+
+    return factorCount > 0 ? factorSum / static_cast<float>(factorCount) : 1.0f;
+}
+
 
 void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
     if (!app || vegetationPipeline == VK_NULL_HANDLE) {
@@ -365,6 +424,15 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         std::max(0.0f, windSettings.verticalFlutter)
     );
     pc.windTurbulence = glm::vec4(std::max(0.0f, windSettings.turbulence), 0.0f, 0.0f, 0.0f);
+    const float nearDistance = std::max(0.0f, distanceDensitySettings.fullDensityDistance);
+    const float farDistance = std::max(nearDistance + 1.0f, distanceDensitySettings.minDensityDistance);
+    const float minFactor = std::clamp(distanceDensitySettings.minDensityFactor, 0.0f, 1.0f);
+    const float safeMinFactor = std::max(minFactor, 0.0001f);
+    const float falloff = (distanceDensitySettings.enabled && minFactor < 1.0f)
+        ? (-std::log(safeMinFactor) / (farDistance - nearDistance))
+        : 0.0f;
+    pc.densityParams = glm::vec4(distanceDensitySettings.enabled ? 1.0f : 0.0f, nearDistance, farDistance, minFactor);
+    pc.cameraPosAndFalloff = glm::vec4(cameraPos, falloff);
 
     vkCmdPushConstants(
         commandBuffer,
@@ -376,36 +444,11 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
     );
 
     // For each chunk, bind base vertex buffer + instance buffer and draw indirect.
-    // Distance-based density is applied by rewriting the indirect instance count.
+    // Distance-based thinning is handled in the vegetation shader.
     for (auto& [chunkId, buf] : chunkBuffers) {
+        (void)chunkId;
         if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
         if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
-
-        uint32_t drawInstanceCount = static_cast<uint32_t>(buf.count);
-        if (distanceDensitySettings.enabled) {
-            const float nearDistance = std::max(0.0f, distanceDensitySettings.fullDensityDistance);
-            const float farDistance = std::max(nearDistance + 1.0f, distanceDensitySettings.minDensityDistance);
-            const float minFactor = std::clamp(distanceDensitySettings.minDensityFactor, 0.0f, 1.0f);
-            const float distanceToCamera = glm::distance(buf.center, cameraPos);
-
-            float densityFactor = 1.0f;
-            if (distanceToCamera > nearDistance) {
-                const float t = std::clamp((distanceToCamera - nearDistance) / (farDistance - nearDistance), 0.0f, 1.0f);
-                densityFactor = 1.0f + (minFactor - 1.0f) * t;
-            }
-
-            drawInstanceCount = std::max(1u, static_cast<uint32_t>(std::ceil(static_cast<float>(buf.count) * densityFactor)));
-        }
-
-        VkDrawIndirectCommand drawCmd{};
-        drawCmd.vertexCount = 1;
-        drawCmd.instanceCount = drawInstanceCount;
-        drawCmd.firstVertex = 0;
-        drawCmd.firstInstance = 0;
-        void* indirectData = nullptr;
-        vkMapMemory(app->getDevice(), buf.indirectMemory, 0, sizeof(VkDrawIndirectCommand), 0, &indirectData);
-        std::memcpy(indirectData, &drawCmd, sizeof(VkDrawIndirectCommand));
-        vkUnmapMemory(app->getDevice(), buf.indirectMemory);
 
         VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
         VkDeviceSize offsets[2] = { 0, 0 };

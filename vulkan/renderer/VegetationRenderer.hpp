@@ -3,6 +3,7 @@
 #include "../TextureArrayManager.hpp"
 #include "../EditableTexture.hpp"
 #include "../../math/Vertex.hpp"
+#include "DebugCubeRenderer.hpp"
 #include "../../utils/BillboardManager.hpp"
 #include "../VertexBufferObject.hpp"
 #include "../../utils/Scene.hpp" // for NodeID
@@ -38,6 +39,8 @@ public:
         glm::vec4 windNoise = glm::vec4(0.003f, 0.75f, 0.012f, 0.45f);
         glm::vec4 windShape = glm::vec4(1.75f, 0.70f, 1.0f, 0.20f);
         glm::vec4 windTurbulence = glm::vec4(0.60f, 0.0f, 0.0f, 0.0f);
+        glm::vec4 densityParams = glm::vec4(1.0f, 512.0f, 4096.0f, 0.10f);
+        glm::vec4 cameraPosAndFalloff = glm::vec4(0.0f);
     };
 
     struct DistanceDensitySettings {
@@ -82,6 +85,9 @@ public:
     DistanceDensitySettings& getDistanceDensitySettings() { return distanceDensitySettings; }
     const DistanceDensitySettings& getDistanceDensitySettings() const { return distanceDensitySettings; }
     void setWindTime(float timeSeconds) { windTimeSeconds = timeSeconds; }
+    float computeDensityFactor(float distanceToCamera) const;
+    std::vector<DebugCubeRenderer::CubeWithColor> getDensityDebugCubes(const glm::vec3& cameraPos) const;
+    float getAverageDensityFactor(const glm::vec3& cameraPos) const;
 
 private:
     
