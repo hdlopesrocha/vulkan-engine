@@ -622,6 +622,12 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 	}
 
 	VkDevice device = a->getDevice();
+	uint32_t mipLevels = 1;
+	switch (map) {
+		case 0: mipLevels = albedoArray.mipLevels; break;
+		case 1: mipLevels = normalArray.mipLevels; break;
+		case 2: mipLevels = bumpArray.mipLevels; break;
+	}
 
 	VkImage srcImage = tex.getImage();
 	VkImage dstImage = VK_NULL_HANDLE;
@@ -662,26 +668,37 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 	copyRegion.extent = { width, height, 1 };
 	vkCmdCopyImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
-	// Transition dst layer back to SHADER_READ_ONLY_OPTIMAL (record via app helper)
-	std::cerr << "[TextureArrayManager] Transitioning dst layer " << layer << " back to SHADER_READ_ONLY_OPTIMAL" << std::endl;
-	a->recordTransitionImageLayoutLayer(cmd, dstImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layer, 1);
+	// For mipmapped arrays, keep destination in TRANSFER_DST so generateMipmaps
+	// can transition subresources correctly. Single-mip images transition now.
+	if (mipLevels <= 1) {
+		std::cerr << "[TextureArrayManager] Transitioning dst layer " << layer << " back to SHADER_READ_ONLY_OPTIMAL" << std::endl;
+		a->recordTransitionImageLayoutLayer(cmd, dstImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layer, 1);
+	}
 
 	// Transition src back to SHADER_READ_ONLY_OPTIMAL
 	a->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
 	});
 
 		// Generate mipmaps for the updated layer if needed
-		{
-			uint32_t mipLevels = 1;
-			switch (map) {
-				case 0: mipLevels = albedoArray.mipLevels; break;
-				case 1: mipLevels = normalArray.mipLevels; break;
-				case 2: mipLevels = bumpArray.mipLevels; break;
-			}
-			if (mipLevels > 1) {
-				a->generateMipmaps(dstImage, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), mipLevels, 1, layer);
-			}
+		if (mipLevels > 1) {
+			a->generateMipmaps(dstImage, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), mipLevels, 1, layer);
 		}
+
+		// Safety: ensure the destination layer is explicitly returned to shader-read
+		// across all mip levels, regardless of mipmap generation path internals.
+		a->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+			a->recordTransitionImageLayoutLayer(
+				cmd,
+				dstImage,
+				VK_FORMAT_R8G8B8A8_UNORM,
+				VK_IMAGE_LAYOUT_UNDEFINED,
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				mipLevels,
+				layer,
+				1
+			);
+		});
+		setLayerLayout(map, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		std::vector<ImTextureID>* texVec = nullptr;
 		auto viewVec = &albedoLayerViews;
 		VkSampler sampler = albedoSampler;
