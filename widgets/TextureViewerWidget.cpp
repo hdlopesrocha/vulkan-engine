@@ -14,7 +14,6 @@ void TextureViewer::render() {
     size_t tc = materials->size();
     if (tc == 0) {
         ImGui::Text("No textures loaded");
-        ImGui::End();
         return;
     }
 
@@ -207,8 +206,6 @@ void TextureViewer::render() {
             if (dirty && onMaterialChanged) onMaterialChanged(currentIndex);
         }
     }
-
-    ImGui::End();
 }
 
 TextureViewer::TextureViewer() : Widget("Textures", u8"\uf03e") {}

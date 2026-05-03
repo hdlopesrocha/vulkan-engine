@@ -303,6 +303,4 @@ void VulkanResourcesManagerWidget::render() {
         }
         ImGui::TreePop();
     }
-
-    ImGui::End();
 }

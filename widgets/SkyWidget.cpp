@@ -37,7 +37,6 @@ void SkyWidget::render() {
         ImGui::SliderFloat("Sun Flare", &settings.sunFlare, 0.0f, 2.0f, "%.2f");
         ImGui::Text("Note: Light direction is controlled by Light widget");
     }
-    ImGui::End();
 }
 
 // Accessors are now inlined in the header (forward to settings)

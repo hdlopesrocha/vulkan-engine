@@ -20,6 +20,4 @@ void CameraWidget::render() {
 	if (ImGui::Button("Reset Orientation")) {
 		*camera = Camera(camera->getPosition(), camera->getOrientation());
 	}
-
-	ImGui::End();
 }

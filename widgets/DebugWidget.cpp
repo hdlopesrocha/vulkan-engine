@@ -16,6 +16,4 @@ void DebugWidget::render() {
     ImGui::Text("Camera pos: %.2f %.2f %.2f", camPos.x, camPos.y, camPos.z);
     ImGui::Text("Cube grid spacing: %.1f", 2.5f);
     ImGui::Text("Grid layout: 4x3 cubes");
-
-    ImGui::End();
 }
