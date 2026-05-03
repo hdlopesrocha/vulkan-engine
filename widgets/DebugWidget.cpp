@@ -1,8 +1,8 @@
 #include "DebugWidget.hpp"
 #include "components/ImGuiHelpers.hpp"
 
-DebugWidget::DebugWidget(std::vector<MaterialProperties>* materials, Camera* camera, size_t* cubeCount)
-    : Widget("Debug", u8"\uf188"), materials(materials), camera(camera), cubeCount(cubeCount) {
+DebugWidget::DebugWidget(std::vector<MaterialProperties>* materials, Camera* camera, size_t* cubeCount, VegetationRenderer* vegetationRenderer)
+    : Widget("Debug", u8"\uf188"), materials(materials), camera(camera), cubeCount(cubeCount), vegetationRenderer(vegetationRenderer) {
 }
 
 void DebugWidget::render() {
@@ -16,4 +16,12 @@ void DebugWidget::render() {
     ImGui::Text("Camera pos: %.2f %.2f %.2f", camPos.x, camPos.y, camPos.z);
     ImGui::Text("Cube grid spacing: %.1f", 2.5f);
     ImGui::Text("Grid layout: 4x3 cubes");
+
+    if (vegetationRenderer) {
+        ImGui::Separator();
+        ImGui::Checkbox("Show Vegetation Density Debug", &showVegetationDensityDebug);
+        ImGui::SetItemTooltip("Render colored debug cubes at vegetation chunk centers. Green = dense, red = sparse.");
+        ImGui::Text("Vegetation chunks: %zu", vegetationRenderer->getChunkCount());
+        ImGui::Text("Avg vegetation density: %.2f", vegetationRenderer->getAverageDensityFactor(camPos));
+    }
 }
