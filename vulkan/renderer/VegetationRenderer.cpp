@@ -206,7 +206,7 @@ void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
     bindingDescs[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
     bindingDescs[1].binding = 1;
     // Compute shader writes vec4 per-instance for alignment; use 16-byte stride.
-    bindingDescs[1].stride = sizeof(float) * 4; // vec4 instancePosition packed
+    bindingDescs[1].stride = sizeof(float) * 4; // vec4: xyz=position, w=billboardIndex
     bindingDescs[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
     // Attribute descriptions as initializer_list
@@ -218,7 +218,7 @@ void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
             {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},     // inNormal
             {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)},      // inTexCoord
             {3, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex)},           // inTexIndex
-            {4, 1, VK_FORMAT_R32G32B32_SFLOAT, 0}                             // instancePosition
+            {4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}                          // instanceData (xyz=pos, w=billboardIndex)
         },
         setLayouts,
         &pushConstantRange,
@@ -414,7 +414,7 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
 
     // Dispatch compute to fill instanceBuffer asynchronously on vegetation queue
     VkFence fence = VK_NULL_HANDLE;
-    uint32_t expected = app->generateVegetationInstancesComputeAsync(vertexBuffer.buffer, vertexCount, indexBuffer.buffer, indexCount, instancesPerTriangle, instanceBuffer, static_cast<uint32_t>(instanceBufferSize), &fence, seed);
+    uint32_t expected = app->generateVegetationInstancesComputeAsync(vertexBuffer.buffer, vertexCount, indexBuffer.buffer, indexCount, instancesPerTriangle, instanceBuffer, static_cast<uint32_t>(instanceBufferSize), &fence, seed, billboardCount);
     if (expected == 0 || fence == VK_NULL_HANDLE) {
         // Clean up partially created buffers if compute not dispatched
         if (app->resources.removeBuffer(instanceBuffer)) vkDestroyBuffer(device, instanceBuffer, nullptr);

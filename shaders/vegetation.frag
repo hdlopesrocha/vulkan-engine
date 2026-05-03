@@ -10,6 +10,6 @@ layout(push_constant) uniform PushConstants {
 };
 
 void main() {
-    outColor = texture(vegetationTextures, vec3(inTexCoord, inTexIndex));
+    outColor = texture(vegetationTextures, vec3(inTexCoord, float(inTexIndex)));
     if (outColor.a < 0.1) discard;
 }

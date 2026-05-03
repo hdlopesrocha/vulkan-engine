@@ -44,7 +44,7 @@ class VulkanApp {
             VkBuffer indexBuffer, uint32_t indexCount,
             uint32_t instancesPerTriangle,
             VkBuffer outputBuffer, uint32_t outputBufferSize, VkFence* outFence,
-            uint32_t seed = 1337);
+            uint32_t seed = 1337, uint32_t billboardCount = 3);
         void initWindow(); // Only one declaration, public
     GLFWwindow* window = nullptr;
 

@@ -21,6 +21,7 @@ layout(push_constant) uniform Push {
     uint indexCount;
     uint seed;
     uint baseTri;
+    uint billboardCount;
 } push;
 
 // Simple hash for random float
@@ -55,7 +56,10 @@ void main() {
         if (u + v > 1.0) { u = 1.0 - u; v = 1.0 - v; }
         float w = 1.0 - u - v;
         vec3 pos = u * v0 + v * v1 + w * v2;
+        // Assign a random billboard index to the .w component
+        uint billboardIndex = uint(rand(state) * float(push.billboardCount));
+        if (billboardIndex >= push.billboardCount) billboardIndex = push.billboardCount - 1;
         uint outIdx = tri * push.instancesPerTriangle + i;
-        outInstances[outIdx] = vec4(pos, 1.0);
+        outInstances[outIdx] = vec4(pos, float(billboardIndex));
     }
 }

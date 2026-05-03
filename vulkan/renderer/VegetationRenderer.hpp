@@ -13,6 +13,7 @@
 class VegetationRenderer {
 public:
     float billboardScale = 1.0f;
+    uint32_t billboardCount = 3; // number of billboard texture variants (3 = foliage/grass/wild)
     explicit VegetationRenderer();
     ~VegetationRenderer();
 

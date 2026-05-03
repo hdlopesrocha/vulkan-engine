@@ -384,7 +384,7 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     VkBuffer indexBuffer, uint32_t indexCount,
     uint32_t instancesPerTriangle,
     VkBuffer outputBuffer, uint32_t outputBufferSize, VkFence* outFence,
-    uint32_t seed) {
+    uint32_t seed, uint32_t billboardCount) {
     if (vertexBuffer == VK_NULL_HANDLE || indexBuffer == VK_NULL_HANDLE || outputBuffer == VK_NULL_HANDLE) return 0;
     if (indexCount < 3 || instancesPerTriangle == 0) return 0;
 
@@ -550,12 +550,13 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
 
-    uint32_t push[5];
+    uint32_t push[6];
     push[0] = instancesPerTriangle;
     push[1] = vertexCount;
     push[2] = indexCount;
     push[3] = seed;
     push[4] = 0u;
+    push[5] = (billboardCount > 0) ? billboardCount : 1u;
 
     if (triCount > 0) {
         VkPhysicalDeviceProperties props{};
@@ -841,14 +842,14 @@ void VulkanApp::initImGui() {
     ImGui::StyleColorsDark();
 
     // Ensure a default font is present, then merge an icon font (FontAwesome) into it.
-    // Place a TTF at assets/fonts/fa-solid-900.ttf (free subset) if you want icons.
+    // Place a TTF at fonts/fa-solid-900.ttf (free subset) if you want icons.
     io.Fonts->AddFontDefault();
     {
         ImFontConfig fontCfg;
         fontCfg.MergeMode = true;
         fontCfg.PixelSnapH = true;
         static const ImWchar icons_ranges[] = { 0xF000, 0xF8FF, 0 };
-        const char* iconFontPath = "assets/fonts/fa-solid-900.ttf";
+        const char* iconFontPath = "fonts/fa-solid-900.ttf";
         FILE* f = fopen(iconFontPath, "rb");
         if (f) {
             fclose(f);
