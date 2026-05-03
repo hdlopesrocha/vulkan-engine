@@ -206,11 +206,11 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
         return 0;
     }
 
-    // Push constant range matches shader Push struct (5 uints)
+    // Push constant range matches shader Push struct (6 uints)
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pushRange.offset = 0;
-    pushRange.size = sizeof(uint32_t) * 5;
+    pushRange.size = sizeof(uint32_t) * 6;
 
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipelineLayoutCreateInfo plInfo{};
@@ -328,13 +328,14 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
 
-        // Push constants: instancesPerTriangle, vertexCount, indexCount, seed, baseTri
-        uint32_t push[5];
+        // Push constants: instancesPerTriangle, vertexCount, indexCount, seed, baseTri, billboardCount
+        uint32_t push[6];
         push[0] = instancesPerTriangle;
         push[1] = vertexCount;
         push[2] = indexCount;
         push[3] = seed;
         push[4] = 0u; // will be used as base triangle offset for chunked dispatch
+        push[5] = 3u;
 
         if (triCount > 0) {
             // Query device limits for max dispatchable groups along X
@@ -426,11 +427,11 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
         return 0;
     }
 
-    // Push constant range matches shader Push struct (5 uints)
+    // Push constant range matches shader Push struct (6 uints)
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pushRange.offset = 0;
-    pushRange.size = sizeof(uint32_t) * 5;
+    pushRange.size = sizeof(uint32_t) * 6;
 
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipelineLayoutCreateInfo plInfo{};
