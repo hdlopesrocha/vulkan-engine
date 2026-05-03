@@ -11,7 +11,7 @@
 // Constructor moved from header
 BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr)
     : Widget("Billboard Creator", u8"\uf03a"), billboardManager(billboardMgr), atlasManager(atlasMgr), textureManager(textureMgr) {
-    isOpen = false; // Start closed
+    isOpen = true; // Open by default
 }
 
 void BillboardCreator::setVulkanApp(VulkanApp* app) {
@@ -649,6 +649,4 @@ void BillboardCreator::render() {
     }
 
     ImGui::EndChild();
-
-    ImGui::End();
 }
