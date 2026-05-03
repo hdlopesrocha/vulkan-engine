@@ -40,6 +40,7 @@
 #include "widgets/LightWidget.hpp"
 #include "widgets/VulkanResourcesManagerWidget.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
+#include "widgets/WindWidget.hpp"
 #include "widgets/OctreeExplorerWidget.hpp"
 #include "widgets/Brush3dWidget.hpp"
 #include "utils/MainSceneLoader.hpp"
@@ -108,6 +109,7 @@ public:
     std::shared_ptr<LightWidget> lightWidget;
     std::shared_ptr<VulkanResourcesManagerWidget> vulkanResourcesManagerWidget;
     std::shared_ptr<VegetationAtlasEditor> vegetationAtlasEditor;
+    std::shared_ptr<WindWidget> windWidget;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
     WidgetManager widgetManager;
     uint32_t loadedTextureLayers = 0;
@@ -372,6 +374,7 @@ public:
         lightWidget = std::make_shared<LightWidget>(&light);
         vulkanResourcesManagerWidget = std::make_shared<VulkanResourcesManagerWidget>(&resources);
         vulkanResourcesManagerWidget->updateWithApp(this);
+        windWidget = std::make_shared<WindWidget>(sceneRenderer->vegetationRenderer.get());
   // Create octree explorer widget bound to loaded scene
 
  
@@ -388,6 +391,7 @@ public:
         widgetManager.addWidget(renderTargetsWidget);
         widgetManager.addWidget(vulkanResourcesManagerWidget);
         widgetManager.addWidget(vegetationAtlasEditor);
+        widgetManager.addWidget(windWidget);
         widgetManager.addWidget(billboardWidget);
         widgetManager.addWidget(billboardCreator);
 
@@ -436,6 +440,9 @@ public:
         if (sceneRenderer) sceneRenderer->processPendingMeshes(this);
 
         mainTime += deltaTime;
+        if (sceneRenderer && sceneRenderer->vegetationRenderer) {
+            sceneRenderer->vegetationRenderer->setWindTime(mainTime);
+        }
     }
 
     void preRenderPass(VkCommandBuffer &commandBuffer) override {

@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <cstring>
 #include <numeric>
+#include <algorithm>
+#include <cmath>
 
 // GPU injection APIs removed. Instances must be generated via compute shader.
 
@@ -194,7 +196,7 @@ void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
     VkPushConstantRange pushConstantRange{};
     pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(float); // billboardScale
+    pushConstantRange.size = sizeof(WindPushConstants);
 
     // Load shaders
     auto vertCode = FileReader::readFile("shaders/vegetation.vert.spv");
@@ -337,8 +339,41 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
     //printf("[BIND] VegetationRenderer::draw: layout=%p firstSet=0 count=2 sets=%p %p\n", (void*)pipelineLayout, (void*)sets[0], (void*)sets[1]);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 2, sets, 0, nullptr);
 
-    // Push billboard scale as push constant
-    vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &billboardScale);
+    WindPushConstants pc{};
+    pc.billboardScale = billboardScale;
+    pc.windEnabled = windSettings.enabled ? 1.0f : 0.0f;
+    pc.windTime = windTimeSeconds;
+
+    glm::vec2 windDir = windSettings.direction;
+    const float len2 = windDir.x * windDir.x + windDir.y * windDir.y;
+    if (len2 > 1e-8f) {
+        const float invLen = 1.0f / std::sqrt(len2);
+        windDir *= invLen;
+    }
+
+    pc.windDirAndStrength = glm::vec4(windDir.x, 0.0f, windDir.y, std::max(0.0f, windSettings.strength));
+    pc.windNoise = glm::vec4(
+        std::max(0.00001f, windSettings.baseFrequency),
+        std::max(0.0f, windSettings.speed),
+        std::max(0.00001f, windSettings.gustFrequency),
+        std::max(0.0f, windSettings.gustStrength)
+    );
+    pc.windShape = glm::vec4(
+        std::max(0.0f, windSettings.skewAmount),
+        std::clamp(windSettings.trunkStiffness, 0.0f, 1.0f),
+        std::max(0.001f, windSettings.noiseScale),
+        std::max(0.0f, windSettings.verticalFlutter)
+    );
+    pc.windTurbulence = glm::vec4(std::max(0.0f, windSettings.turbulence), 0.0f, 0.0f, 0.0f);
+
+    vkCmdPushConstants(
+        commandBuffer,
+        pipelineLayout,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        0,
+        sizeof(WindPushConstants),
+        &pc
+    );
 
     // For each chunk, bind base vertex buffer + instance buffer and draw indirect
     for (const auto& [chunkId, buf] : chunkBuffers) {

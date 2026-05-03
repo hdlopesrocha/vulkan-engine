@@ -14,6 +14,32 @@
 // Per-chunk vegetation instance buffer and renderer
 class VegetationRenderer {
 public:
+    struct WindSettings {
+        bool enabled = true;
+        glm::vec2 direction = glm::vec2(1.0f, 0.0f);
+        float strength = 4.0f;
+        float baseFrequency = 0.003f;
+        float speed = 0.75f;
+        float gustFrequency = 0.012f;
+        float gustStrength = 0.45f;
+        float skewAmount = 1.75f;
+        float trunkStiffness = 0.70f;
+        float noiseScale = 1.0f;
+        float verticalFlutter = 0.20f;
+        float turbulence = 0.60f;
+    };
+
+    struct WindPushConstants {
+        float billboardScale = 1.0f;
+        float windEnabled = 1.0f;
+        float windTime = 0.0f;
+        float pad0 = 0.0f;
+        glm::vec4 windDirAndStrength = glm::vec4(1.0f, 0.0f, 0.0f, 4.0f);
+        glm::vec4 windNoise = glm::vec4(0.003f, 0.75f, 0.012f, 0.45f);
+        glm::vec4 windShape = glm::vec4(1.75f, 0.70f, 1.0f, 0.20f);
+        glm::vec4 windTurbulence = glm::vec4(0.60f, 0.0f, 0.0f, 0.0f);
+    };
+
     float billboardScale = 10.0f;
     uint32_t billboardCount = 3; // number of billboard texture variants (3 = foliage/grass/wild)
     explicit VegetationRenderer();
@@ -42,6 +68,10 @@ public:
     // Stats helpers
     size_t getChunkCount() const { return chunkInstanceCounts.size(); }
     size_t getInstanceTotal() const;
+
+    WindSettings& getWindSettings() { return windSettings; }
+    const WindSettings& getWindSettings() const { return windSettings; }
+    void setWindTime(float timeSeconds) { windTimeSeconds = timeSeconds; }
 
 private:
     
@@ -79,4 +109,7 @@ private:
     // pipeline. We use a single base vertex and expand in the shader via
     // the instance data.
     VertexBufferObject billboardVBO;
+
+    WindSettings windSettings;
+    float windTimeSeconds = 0.0f;
 };

@@ -17,6 +17,13 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
 
 layout(push_constant) uniform PushConstants {
     float billboardScale;
+    float windEnabled;
+    float windTime;
+    float pad0;
+    vec4 windDirAndStrength;
+    vec4 windNoise;
+    vec4 windShape;
+    vec4 windTurbulence;
 };
 
 void main() {
