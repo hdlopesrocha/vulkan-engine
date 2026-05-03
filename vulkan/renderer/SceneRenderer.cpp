@@ -882,22 +882,25 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
         if (geom.indices.size() >= 3 && !geom.vertices.empty()) {
             try {
                 constexpr int kGrassBrushIndex = 3; // See LandBrush::grass
-                // Instances per unit of world-space triangle area.
-                // Each grass triangle is repeated in the index buffer proportional to its area
-                // so that instance density is uniform regardless of triangle size.
-                constexpr float kVegetationDensity = 1.5f;
-                constexpr uint32_t kMaxInstancesPerTriangle = 50u;
+                // Probability per unit of world-space triangle area.
+                // Each grass triangle contributes at most one slot, sampled
+                // from area so small LOD-border triangles don't over-concentrate vegetation.
+                constexpr float kVegetationDensity = 0.04f;
 
                 // Create tightly-packed position buffer (vec3[]) for the compute shader
                 std::vector<glm::vec3> positions;
                 positions.reserve(geom.vertices.size());
                 for (const auto &v : geom.vertices) positions.push_back(v.position);
 
-                // Build area-weighted index buffer: each grass triangle is repeated
-                // ceil(area * density) times so the compute shader (1 instance per invocation)
-                // produces uniform spatial density across all triangle sizes.
+                // Build area-weighted virtual slots using unbiased stochastic rounding.
+                // expected = area * density (instances per world-space unit area)
+                // count = floor(expected) + Bernoulli(frac(expected))
+                // This preserves area-proportional density without bias.
                 std::vector<uint32_t> grassIndices;
-                grassIndices.reserve(geom.indices.size() * 4);
+                grassIndices.reserve(geom.indices.size());
+                const uint32_t chunkSeed = static_cast<uint32_t>(nid ^ (nid >> 32)) ^ 0x9e3779b9u;
+                std::mt19937 samplingRng(chunkSeed);
+                std::uniform_real_distribution<float> unitDist(0.0f, 1.0f);
                 for (size_t i = 0; i + 2 < geom.indices.size(); i += 3) {
                     const uint32_t i0 = geom.indices[i + 0];
                     const uint32_t i1 = geom.indices[i + 1];
@@ -917,23 +920,27 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
                     const glm::vec3 faceNormal = glm::cross(v1 - v0, v2 - v0);
                     if (glm::abs(faceNormal.y) <= 0.5f * glm::length(faceNormal)) continue;
                     const float area = 0.5f * glm::length(faceNormal);
-                    const uint32_t nInstances = std::max(1u, std::min(kMaxInstancesPerTriangle,
-                        static_cast<uint32_t>(std::roundf(area * kVegetationDensity))));
-                    for (uint32_t k = 0; k < nInstances; ++k) {
+                    const float expectedInstances = std::max(0.0f, area * kVegetationDensity);
+                    uint32_t slotCount = static_cast<uint32_t>(std::floor(expectedInstances));
+                    const float fractional = expectedInstances - static_cast<float>(slotCount);
+                    if (unitDist(samplingRng) < fractional) {
+                        ++slotCount;
+                    }
+                    for (uint32_t s = 0; s < slotCount; ++s) {
                         grassIndices.push_back(i0);
                         grassIndices.push_back(i1);
                         grassIndices.push_back(i2);
                     }
                 }
 
-                // Shuffle virtual triangle slots so reducing indirect instanceCount
+                // Shuffle virtual triangle slots per chunk so reducing indirect instanceCount
                 // keeps a random spatial subset instead of always dropping the tail.
                 if (grassIndices.size() >= 6) {
-                    std::mt19937 rng(static_cast<uint32_t>(nid ^ (nid >> 32)) ^ 0x9e3779b9u);
+                    std::mt19937 shuffleRng(chunkSeed ^ 0x85ebca6bu);
                     const size_t triangleCount = grassIndices.size() / 3;
                     for (size_t slot = triangleCount - 1; slot > 0; --slot) {
                         std::uniform_int_distribution<size_t> dist(0, slot);
-                        const size_t other = dist(rng);
+                        const size_t other = dist(shuffleRng);
                         if (other == slot) continue;
                         for (size_t component = 0; component < 3; ++component) {
                             std::swap(grassIndices[slot * 3 + component], grassIndices[other * 3 + component]);
