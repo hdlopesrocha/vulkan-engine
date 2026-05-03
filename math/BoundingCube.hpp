@@ -1,9 +1,12 @@
 #pragma once
 #include "AbstractBoundingBox.hpp"
 
+class Ray;
+
 class BoundingCube : public AbstractBoundingBox {
 public:
     using AbstractBoundingBox::AbstractBoundingBox;
+    using AbstractBoundingBox::intersects;
 protected:
     float length;
 public:
@@ -37,6 +40,7 @@ public:
     bool overlapsZ(const BoundingCube &o) const;
     bool isFaceAdjacent(const BoundingCube &other) const;
     bool isNeighbor(const BoundingCube &o) const;
+    bool intersects(const Ray& ray) const;
 
     bool operator<(const BoundingCube& other) const;
     bool operator==(const BoundingCube& other) const;

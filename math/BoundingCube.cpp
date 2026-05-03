@@ -1,6 +1,7 @@
 #include "BoundingCube.hpp"
 #include "AbstractBoundingBox.hpp"
 #include "Math.hpp"
+#include "Ray.hpp"
 
 BoundingCube::BoundingCube() : AbstractBoundingBox(glm::vec3(0)) {
 	this->length = 0;
@@ -123,6 +124,10 @@ bool BoundingCube::isNeighbor(const BoundingCube &o) const
 
     // larger cube: not a neighbor, but must descend only if overlapping
     return intersects(o);
+}
+
+bool BoundingCube::intersects(const Ray& ray) const {
+    return ray.intersects(*this);
 }
 
 void BoundingCube::setMinX(float v){
