@@ -24,21 +24,211 @@ void BillboardCreator::initializeTextures() {
     if (!vulkanApp || texturesInitialized) return;
 
     const uint32_t texSize = 512; // Billboard texture size
-    composedAlbedo.init(vulkanApp, texSize, texSize, VK_FORMAT_R8G8B8A8_UNORM, "Billboard Albedo");
-    composedNormal.init(vulkanApp, texSize, texSize, VK_FORMAT_R8G8B8A8_UNORM, "Billboard Normal");
-    composedOpacity.init(vulkanApp, texSize, texSize, VK_FORMAT_R8G8B8A8_UNORM, "Billboard Opacity");
+    for (size_t i = 0; i < composedAlbedo.size(); ++i) {
+        const std::string suffix = " " + std::to_string(i);
+        composedAlbedo[i].init(vulkanApp, texSize, texSize, VK_FORMAT_R8G8B8A8_UNORM, ("Billboard Albedo" + suffix).c_str());
+        composedNormal[i].init(vulkanApp, texSize, texSize, VK_FORMAT_R8G8B8A8_UNORM, ("Billboard Normal" + suffix).c_str());
+        composedOpacity[i].init(vulkanApp, texSize, texSize, VK_FORMAT_R8G8B8A8_UNORM, ("Billboard Opacity" + suffix).c_str());
+    }
     texturesInitialized = true;
 }
 
 void BillboardCreator::cleanup() {
     printf("[BillboardCreator] cleanup start: texturesInitialized=%d\n", texturesInitialized ? 1 : 0);
-    if (texturesInitialized) {
-        composedAlbedo.cleanup();
-        composedNormal.cleanup();
-        composedOpacity.cleanup();
+    if (texturesInitialized && vulkanApp) {
+        VkDevice device = vulkanApp->getDevice();
+        // Destroy array resources
+        auto destroyAR = [&](VkImage& img, VkDeviceMemory& mem, VkImageView& view) {
+            if (view != VK_NULL_HANDLE) { vulkanApp->resources.removeImageView(view); vkDestroyImageView(device, view, nullptr); view = VK_NULL_HANDLE; }
+            if (img  != VK_NULL_HANDLE) { vulkanApp->resources.removeImage(img);      vkDestroyImage(device, img, nullptr);          img  = VK_NULL_HANDLE; }
+            if (mem  != VK_NULL_HANDLE) { vulkanApp->resources.removeDeviceMemory(mem); vkFreeMemory(device, mem, nullptr);           mem  = VK_NULL_HANDLE; }
+        };
+        destroyAR(billboardAlbedoArrayImage,  billboardAlbedoArrayMemory,  billboardAlbedoArrayView);
+        destroyAR(billboardNormalArrayImage,   billboardNormalArrayMemory,  billboardNormalArrayView);
+        destroyAR(billboardOpacityArrayImage,  billboardOpacityArrayMemory, billboardOpacityArrayView);
+        if (billboardArraySampler != VK_NULL_HANDLE) {
+            vulkanApp->resources.removeSampler(billboardArraySampler);
+            vkDestroySampler(device, billboardArraySampler, nullptr);
+            billboardArraySampler = VK_NULL_HANDLE;
+        }
+        for (size_t i = 0; i < composedAlbedo.size(); ++i) {
+            composedAlbedo[i].cleanup();
+            composedNormal[i].cleanup();
+            composedOpacity[i].cleanup();
+        }
         texturesInitialized = false;
     }
     printf("[BillboardCreator] cleanup done\n");
+}
+
+size_t BillboardCreator::getComposeIndex() const {
+    if (currentBillboardIndex < 0) return 0;
+    size_t idx = static_cast<size_t>(currentBillboardIndex);
+    if (idx >= composedAlbedo.size()) idx = composedAlbedo.size() - 1;
+    return idx;
+}
+
+void BillboardCreator::bakeAllBillboards() {
+    if (!billboardManager || !vulkanApp) return;
+
+    const size_t billboardCount = billboardManager->getBillboardCount();
+    for (size_t i = 0; i < billboardCount; ++i) {
+        if (i >= composedAlbedo.size()) {
+            std::cerr << "[BillboardCreator] Skipping billboard " << i
+                      << " (only " << composedAlbedo.size() << " direct textures are available)" << std::endl;
+            break;
+        }
+        Billboard* billboard = billboardManager->getBillboard(i);
+        if (!billboard) continue;
+        currentBillboardIndex = static_cast<int>(i);
+        composeBillboard(billboard);
+    }
+
+    createBillboardArrayTextures();
+}
+
+void BillboardCreator::createBillboardArrayTextures() {
+    if (!vulkanApp || !texturesInitialized) return;
+
+    VkDevice device = vulkanApp->getDevice();
+    const uint32_t numLayers = static_cast<uint32_t>(composedAlbedo.size()); // 3
+    const uint32_t w = composedAlbedo[0].getWidth();
+    const uint32_t h = composedAlbedo[0].getHeight();
+    const VkFormat fmt = VK_FORMAT_R8G8B8A8_UNORM;
+
+    // Destroy any previously created array resources
+    auto destroyArrayResources = [&](VkImage& img, VkDeviceMemory& mem, VkImageView& view) {
+        if (view != VK_NULL_HANDLE) {
+            vulkanApp->resources.removeImageView(view);
+            vkDestroyImageView(device, view, nullptr);
+            view = VK_NULL_HANDLE;
+        }
+        if (img != VK_NULL_HANDLE) {
+            vulkanApp->resources.removeImage(img);
+            vkDestroyImage(device, img, nullptr);
+            img = VK_NULL_HANDLE;
+        }
+        if (mem != VK_NULL_HANDLE) {
+            vulkanApp->resources.removeDeviceMemory(mem);
+            vkFreeMemory(device, mem, nullptr);
+            mem = VK_NULL_HANDLE;
+        }
+    };
+    destroyArrayResources(billboardAlbedoArrayImage, billboardAlbedoArrayMemory, billboardAlbedoArrayView);
+    destroyArrayResources(billboardNormalArrayImage, billboardNormalArrayMemory, billboardNormalArrayView);
+    destroyArrayResources(billboardOpacityArrayImage, billboardOpacityArrayMemory, billboardOpacityArrayView);
+    if (billboardArraySampler != VK_NULL_HANDLE) {
+        vulkanApp->resources.removeSampler(billboardArraySampler);
+        vkDestroySampler(device, billboardArraySampler, nullptr);
+        billboardArraySampler = VK_NULL_HANDLE;
+    }
+
+    // Helper: create a VkImage (2D array, no mipmaps) + VkImageView + allocate memory
+    auto makeArrayImage = [&](VkImage& outImg, VkDeviceMemory& outMem, VkImageView& outView, const char* name) {
+        VkImageCreateInfo imgInfo{};
+        imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imgInfo.imageType = VK_IMAGE_TYPE_2D;
+        imgInfo.extent = { w, h, 1 };
+        imgInfo.mipLevels = 1;
+        imgInfo.arrayLayers = numLayers;
+        imgInfo.format = fmt;
+        imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imgInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        if (vkCreateImage(device, &imgInfo, nullptr, &outImg) != VK_SUCCESS)
+            throw std::runtime_error(std::string("BillboardCreator: failed to create array image: ") + name);
+        vulkanApp->resources.addImage(outImg, name);
+
+        VkMemoryRequirements memReq;
+        vkGetImageMemoryRequirements(device, outImg, &memReq);
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memReq.size;
+        allocInfo.memoryTypeIndex = vulkanApp->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &outMem) != VK_SUCCESS)
+            throw std::runtime_error(std::string("BillboardCreator: failed to allocate array memory: ") + name);
+        vulkanApp->resources.addDeviceMemory(outMem, name);
+        vkBindImageMemory(device, outImg, outMem, 0);
+
+        // Transition all layers UNDEFINED -> SHADER_READ_ONLY_OPTIMAL (will be overwritten per-layer below)
+        vulkanApp->transitionImageLayout(outImg, fmt, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, numLayers);
+
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = outImg;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        viewInfo.format = fmt;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = numLayers;
+        if (vkCreateImageView(device, &viewInfo, nullptr, &outView) != VK_SUCCESS)
+            throw std::runtime_error(std::string("BillboardCreator: failed to create array image view: ") + name);
+        vulkanApp->resources.addImageView(outView, name);
+    };
+
+    makeArrayImage(billboardAlbedoArrayImage,  billboardAlbedoArrayMemory,  billboardAlbedoArrayView,  "BillboardCreator: albedoArray");
+    makeArrayImage(billboardNormalArrayImage,   billboardNormalArrayMemory,  billboardNormalArrayView,  "BillboardCreator: normalArray");
+    makeArrayImage(billboardOpacityArrayImage,  billboardOpacityArrayMemory, billboardOpacityArrayView, "BillboardCreator: opacityArray");
+
+    // Copy each billboard's composed texture into the corresponding array layer
+    struct ChannelEntry { std::array<EditableTexture, 3>* src; VkImage dst; };
+    ChannelEntry channels[3] = {
+        { &composedAlbedo,  billboardAlbedoArrayImage  },
+        { &composedNormal,  billboardNormalArrayImage  },
+        { &composedOpacity, billboardOpacityArrayImage },
+    };
+    for (auto& ch : channels) {
+        for (uint32_t layer = 0; layer < numLayers; ++layer) {
+            EditableTexture& srcTex = (*ch.src)[layer];
+            VkImage srcImage = srcTex.getImage();
+            vulkanApp->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+                vulkanApp->recordTransitionImageLayoutLayer(cmd, srcImage, fmt,
+                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1);
+                VkImageCopy region{};
+                region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                region.srcOffset = {0,0,0};
+                region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1 };
+                region.dstOffset = {0,0,0};
+                region.extent = { w, h, 1 };
+                vkCmdCopyImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               ch.dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                vulkanApp->recordTransitionImageLayoutLayer(cmd, srcImage, fmt,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            });
+        }
+        // Transition entire array to SHADER_READ_ONLY_OPTIMAL
+        vulkanApp->transitionImageLayout(ch.dst, fmt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, numLayers);
+    }
+
+    // Sampler
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    if (vkCreateSampler(device, &samplerInfo, nullptr, &billboardArraySampler) != VK_SUCCESS)
+        throw std::runtime_error("BillboardCreator: failed to create array sampler");
+    vulkanApp->resources.addSampler(billboardArraySampler, "BillboardCreator: arraysampler");
+    std::cerr << "[BillboardCreator] billboard array textures created: albedo=" << (void*)billboardAlbedoArrayView
+              << " normal=" << (void*)billboardNormalArrayView
+              << " opacity=" << (void*)billboardOpacityArrayView << std::endl;
+}
+
+const EditableTexture* BillboardCreator::getComposedAlbedoTexture(size_t index) const {
+    if (index >= composedAlbedo.size()) return nullptr;
+    return &composedAlbedo[index];
 }
 
 void BillboardCreator::renderBillboardEditor(Billboard* billboard) {
@@ -305,14 +495,16 @@ void BillboardCreator::renderBillboardPreview(Billboard* billboard) {
         return;
     }
 
+    const size_t composeIndex = getComposeIndex();
+
     // Get the composed texture to display
     ImTextureID composedTexID = nullptr;
     if (previewTextureView == 0) {
-        composedTexID = (ImTextureID)composedAlbedo.getImGuiDescriptorSet();
+        composedTexID = (ImTextureID)composedAlbedo[composeIndex].getImGuiDescriptorSet();
     } else if (previewTextureView == 1) {
-        composedTexID = (ImTextureID)composedNormal.getImGuiDescriptorSet();
+        composedTexID = (ImTextureID)composedNormal[composeIndex].getImGuiDescriptorSet();
     } else {
-        composedTexID = (ImTextureID)composedOpacity.getImGuiDescriptorSet();
+        composedTexID = (ImTextureID)composedOpacity[composeIndex].getImGuiDescriptorSet();
     }
 
     if (composedTexID) {
@@ -348,7 +540,12 @@ void BillboardCreator::composeBillboard(Billboard* billboard) {
     printf("=== Composing billboard: %s ===\n", billboard->name.c_str());
     printf("Billboard has %zu layers\n", billboard->layers.size());
 
-    const uint32_t texSize = composedAlbedo.getWidth();
+    const size_t composeIndex = getComposeIndex();
+    EditableTexture& outAlbedo = composedAlbedo[composeIndex];
+    EditableTexture& outNormal = composedNormal[composeIndex];
+    EditableTexture& outOpacity = composedOpacity[composeIndex];
+
+    const uint32_t texSize = outAlbedo.getWidth();
     if (texSize == 0) {
         printf("Cannot compose billboard: invalid texture size\n");
         return;
@@ -357,9 +554,9 @@ void BillboardCreator::composeBillboard(Billboard* billboard) {
 
     // Clear all textures to default values
     printf("Clearing textures to defaults...\n");
-    clearTexture(composedAlbedo, 0, 0, 0, 0);           // Albedo: transparent
-    clearTexture(composedNormal, 128, 128, 255, 255);   // Normal: up vector
-    clearTexture(composedOpacity, 0, 0, 0, 255);        // Opacity: black
+    clearTexture(outAlbedo, 0, 0, 0, 0);           // Albedo: transparent
+    clearTexture(outNormal, 128, 128, 255, 255);   // Normal: up vector
+    clearTexture(outOpacity, 0, 0, 0, 255);        // Opacity: black
 
     // Sort layers by render order
     std::vector<std::pair<int, const BillboardLayer*>> sortedLayers;
@@ -411,7 +608,7 @@ void BillboardCreator::composeBillboard(Billboard* billboard) {
 
         printf("    Compositing tile (offset: %.2f,%.2f scale: %.2f,%.2f)...\n",
                tile->offsetX, tile->offsetY, tile->scaleX, tile->scaleY);
-        compositeLayer(layer, tile, atlas, texSize);
+        compositeLayer(layer, tile, atlas, texSize, outAlbedo, outNormal, outOpacity);
     }
 
     // Free loaded texture data
@@ -420,9 +617,9 @@ void BillboardCreator::composeBillboard(Billboard* billboard) {
     }
 
     // Update GPU textures
-    composedAlbedo.updateGPU(vulkanApp);
-    composedNormal.updateGPU(vulkanApp);
-    composedOpacity.updateGPU(vulkanApp);
+    outAlbedo.updateGPU(vulkanApp);
+    outNormal.updateGPU(vulkanApp);
+    outOpacity.updateGPU(vulkanApp);
 
     needsRecomposition = false;
     printf("Billboard composition complete\n");
@@ -484,8 +681,11 @@ void BillboardCreator::clearTexture(EditableTexture& tex, uint8_t r, uint8_t g, 
     }
 }
 
-void BillboardCreator::compositeLayer(const BillboardLayer* layer, const AtlasTile* tile, 
-                                   const AtlasTextureData& atlas, uint32_t texSize) {
+void BillboardCreator::compositeLayer(const BillboardLayer* layer, const AtlasTile* tile,
+                                   const AtlasTextureData& atlas, uint32_t texSize,
+                                   EditableTexture& outAlbedo,
+                                   EditableTexture& outNormal,
+                                   EditableTexture& outOpacity) {
     if (!layer || !tile || !atlas.albedoData || !atlas.normalData || !atlas.opacityData) return;
     if (atlas.width <= 0 || atlas.height <= 0 || texSize == 0) return;
 
@@ -553,21 +753,21 @@ void BillboardCreator::compositeLayer(const BillboardLayer* layer, const AtlasTi
             uint8_t srcR = atlas.albedoData[atlasIdx + 0];
             uint8_t srcG = atlas.albedoData[atlasIdx + 1];
             uint8_t srcB = atlas.albedoData[atlasIdx + 2];
-            blendPixel(composedAlbedo, dx, dy, srcR, srcG, srcB, finalOpacity);
+            blendPixel(outAlbedo, dx, dy, srcR, srcG, srcB, finalOpacity);
 
             // Blend normal
             uint8_t normR = atlas.normalData[atlasIdx + 0];
             uint8_t normG = atlas.normalData[atlasIdx + 1];
             uint8_t normB = atlas.normalData[atlasIdx + 2];
-            blendPixel(composedNormal, dx, dy, normR, normG, normB, finalOpacity);
+            blendPixel(outNormal, dx, dy, normR, normG, normB, finalOpacity);
 
             // Set opacity (max of current and new)
-            const uint8_t* opacityPixels = composedOpacity.getPixelData();
+            const uint8_t* opacityPixels = outOpacity.getPixelData();
             if (!opacityPixels) continue;
             uint8_t currentOp = opacityPixels[dy * texSize * 4 + dx * 4];
             uint8_t newOp = (uint8_t)(finalOpacity * 255.0f);
             if (newOp > currentOp) {
-                composedOpacity.setPixel(dx, dy, newOp, newOp, newOp, 255);
+                outOpacity.setPixel(dx, dy, newOp, newOp, newOp, 255);
             }
         }
     }

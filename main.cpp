@@ -329,10 +329,20 @@ public:
 
         sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
 
-        // sceneRenderer->init wires vegetation to the terrain texture array; override
-        // with the dedicated vegetation texture array that was loaded in setupVegetationTextures().
+        // Keep the vegetation array manager wired for editor/atlas updates.
         if (sceneRenderer->vegetationRenderer)
             sceneRenderer->vegetationRenderer->setTextureArrayManager(&vegetationTextureArrayManager, this);
+
+        // Bind billboard array textures (sampler2DArray per channel) to the vegetation renderer.
+        if (sceneRenderer->vegetationRenderer && billboardCreator) {
+            sceneRenderer->vegetationRenderer->setBillboardArrayTextures(
+                billboardCreator->getAlbedoArrayView(),
+                billboardCreator->getNormalArrayView(),
+                billboardCreator->getOpacityArrayView(),
+                billboardCreator->getArraySampler(),
+                this
+            );
+        }
 
         printf("[MyApp::setup] Created and initialized SceneRenderer\n");
 
@@ -1231,6 +1241,11 @@ void MyApp::setupVegetationTextures() {
 
             billboardManager.addLayer(bidx, layer);
         }
+    }
+
+    if (billboardCreator) {
+        // Bake authoring billboards into dedicated per-billboard GPU textures.
+        billboardCreator->bakeAllBillboards();
     }
 }
 

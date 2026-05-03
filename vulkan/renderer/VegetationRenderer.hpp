@@ -1,23 +1,26 @@
 #pragma once
 #include "../VulkanApp.hpp"
 #include "../TextureArrayManager.hpp"
+#include "../EditableTexture.hpp"
 #include "../../math/Vertex.hpp"
 #include "../../utils/BillboardManager.hpp"
 #include "../VertexBufferObject.hpp"
 #include "../../utils/Scene.hpp" // for NodeID
 #include <vector>
 #include <unordered_map>
+#include <array>
 #include <glm/glm.hpp>
 
 // Per-chunk vegetation instance buffer and renderer
 class VegetationRenderer {
 public:
-    float billboardScale = 1.0f;
+    float billboardScale = 10.0f;
     uint32_t billboardCount = 3; // number of billboard texture variants (3 = foliage/grass/wild)
     explicit VegetationRenderer();
     ~VegetationRenderer();
 
     void setTextureArrayManager(TextureArrayManager* mgr, VulkanApp* app);
+    void setBillboardArrayTextures(VkImageView albedoView, VkImageView normalView, VkImageView opacityView, VkSampler sampler, VulkanApp* app);
     void onTextureArraysReallocated(VulkanApp* app);
     void init();
     void cleanup();
@@ -46,6 +49,10 @@ private:
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     TextureArrayManager* vegetationTextureArrayManager = nullptr;
+    VkImageView billboardAlbedoView   = VK_NULL_HANDLE;
+    VkImageView billboardNormalView   = VK_NULL_HANDLE;
+    VkImageView billboardOpacityView  = VK_NULL_HANDLE;
+    VkSampler   billboardArraySampler = VK_NULL_HANDLE;
 
     // Descriptor set allocated from the app's descriptor pool and re-created when the texture arrays are (re)allocated
     VkDescriptorSet vegDescriptorSet = VK_NULL_HANDLE;

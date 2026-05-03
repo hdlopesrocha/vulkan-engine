@@ -42,6 +42,10 @@ void VegetationRenderer::cleanup() {
         vegTextureListenerId = -1;
     }
     // Clear stored app pointer and billboard VBO handles
+    billboardAlbedoView   = VK_NULL_HANDLE;
+    billboardNormalView   = VK_NULL_HANDLE;
+    billboardOpacityView  = VK_NULL_HANDLE;
+    billboardArraySampler = VK_NULL_HANDLE;
     billboardVBO.vertexBuffer.buffer = VK_NULL_HANDLE;
     billboardVBO.vertexBuffer.memory = VK_NULL_HANDLE;
     billboardVBO.indexBuffer.buffer = VK_NULL_HANDLE;
@@ -64,6 +68,26 @@ void VegetationRenderer::setTextureArrayManager(TextureArrayManager* mgr, Vulkan
     vegTextureListenerId = vegetationTextureArrayManager->addAllocationListener([this, app]() {
         this->onTextureArraysReallocated(app);
     });
+}
+
+void VegetationRenderer::setBillboardArrayTextures(VkImageView albedoView, VkImageView normalView, VkImageView opacityView, VkSampler sampler, VulkanApp* app) {
+    billboardAlbedoView   = albedoView;
+    billboardNormalView   = normalView;
+    billboardOpacityView  = opacityView;
+    billboardArraySampler = sampler;
+
+    if (!app || descriptorSetLayout == VK_NULL_HANDLE) return;
+
+    if (vegDescriptorSet != VK_NULL_HANDLE) {
+        VkDescriptorSet ds = vegDescriptorSet;
+        if (app->resources.removeDescriptorSet(ds)) {
+            vkFreeDescriptorSets(app->getDevice(), app->getDescriptorPool(), 1, &ds);
+        }
+        vegDescriptorSet = VK_NULL_HANDLE;
+        vegDescriptorVersion = 0;
+    }
+
+    ensureVegDescriptorSet(app);
 }
 
 void VegetationRenderer::onTextureArraysReallocated(VulkanApp* app) {
@@ -95,65 +119,68 @@ void VegetationRenderer::onTextureArraysReallocated(VulkanApp* app) {
 
 bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
     if (!app) return false;
-    if (!vegetationTextureArrayManager) return false;
     if (descriptorSetLayout == VK_NULL_HANDLE) {
         std::cerr << "[VEGETATION] ensureVegDescriptorSet: descriptorSetLayout not created yet, deferring allocation" << std::endl;
         return false;
     }
-    // Need valid view and sampler
-    if (vegetationTextureArrayManager->albedoArray.view == VK_NULL_HANDLE || vegetationTextureArrayManager->albedoSampler == VK_NULL_HANDLE) return false;
-    uint32_t managerVersion = vegetationTextureArrayManager->getVersion();
-    // If descriptor set missing or version changed, (re)create
-    if (vegDescriptorSet == VK_NULL_HANDLE || vegDescriptorVersion != managerVersion) {
-        // Free previous descriptor set if any
-        if (vegDescriptorSet != VK_NULL_HANDLE) {
-            VkDescriptorSet ds = vegDescriptorSet;
-            if (app->resources.removeDescriptorSet(ds)) {
-                vkFreeDescriptorSets(app->getDevice(), app->getDescriptorPool(), 1, &ds);
-            }
-            vegDescriptorSet = VK_NULL_HANDLE;
-            vegDescriptorVersion = 0;
-        }
-        // Allocate and write new descriptor set
+
+    if (billboardAlbedoView  == VK_NULL_HANDLE ||
+        billboardNormalView  == VK_NULL_HANDLE ||
+        billboardOpacityView == VK_NULL_HANDLE ||
+        billboardArraySampler == VK_NULL_HANDLE) return false;
+
+    if (vegDescriptorSet == VK_NULL_HANDLE) {
         vegDescriptorSet = app->createDescriptorSet(descriptorSetLayout);
-        VkDescriptorImageInfo texInfo{};
-        texInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        texInfo.imageView = vegetationTextureArrayManager->albedoArray.view;
-        texInfo.sampler = vegetationTextureArrayManager->albedoSampler;
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = vegDescriptorSet;
-        write.dstBinding = 0;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.descriptorCount = 1;
-        write.pImageInfo = &texInfo;
-        vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
-        vegDescriptorVersion = managerVersion;
+
+        VkDescriptorImageInfo infos[3]{};
+        infos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        infos[0].imageView   = billboardAlbedoView;
+        infos[0].sampler     = billboardArraySampler;
+        infos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        infos[1].imageView   = billboardNormalView;
+        infos[1].sampler     = billboardArraySampler;
+        infos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        infos[2].imageView   = billboardOpacityView;
+        infos[2].sampler     = billboardArraySampler;
+
+        VkWriteDescriptorSet writes[3]{};
+        for (uint32_t i = 0; i < 3; ++i) {
+            writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet          = vegDescriptorSet;
+            writes[i].dstBinding      = i;
+            writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[i].descriptorCount = 1;
+            writes[i].pImageInfo      = &infos[i];
+        }
+        vkUpdateDescriptorSets(app->getDevice(), 3, writes, 0, nullptr);
+        vegDescriptorVersion = 1;
         app->registerDescriptorSet(vegDescriptorSet);
-        std::cerr << "[VEGETATION] Allocated vegDescriptorSet=" << (void*)vegDescriptorSet << " version=" << vegDescriptorVersion << std::endl;
+        std::cerr << "[VEGETATION] Allocated vegDescriptorSet=" << (void*)vegDescriptorSet << " (3 sampler2DArray)" << std::endl;
     }
     return vegDescriptorSet != VK_NULL_HANDLE;
 }
 
 
 void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
-    if (!app || !vegetationTextureArrayManager) return;
+    if (!app) return;
     // Store the app pointer for use when generating instance buffers via compute
     this->appPtr = app;
     VkDevice device = app->getDevice();
 
-    // Descriptor set layout for vegetation textures (set=1, binding=0)
-    VkDescriptorSetLayoutBinding texArrayBinding{};
-    texArrayBinding.binding = 0;
-    texArrayBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    texArrayBinding.descriptorCount = 1;
-    texArrayBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    texArrayBinding.pImmutableSamplers = nullptr;
+    // Descriptor set layout: set=1, binding 0=albedo, 1=normal, 2=opacity (all sampler2DArray)
+    VkDescriptorSetLayoutBinding texBindings[3]{};
+    for (uint32_t i = 0; i < 3; ++i) {
+        texBindings[i].binding         = i;
+        texBindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        texBindings[i].descriptorCount = 1;
+        texBindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        texBindings[i].pImmutableSamplers = nullptr;
+    }
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &texArrayBinding;
+    layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 3;
+    layoutInfo.pBindings    = texBindings;
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create vegetation descriptor set layout");
     }
@@ -284,8 +311,11 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         if (vegetationPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION DRAW ERROR] Attempted to bind VK_NULL_HANDLE pipeline!" << std::endl;
         return;
     }
-    if (!vegetationTextureArrayManager || vegetationTextureArrayManager->albedoArray.view == VK_NULL_HANDLE || vegetationTextureArrayManager->albedoSampler == VK_NULL_HANDLE) {
-        std::cerr << "[VEGETATION DRAW ERROR] texture array not ready (view/sampler missing), skipping draw." << std::endl;
+    if (billboardAlbedoView  == VK_NULL_HANDLE ||
+        billboardNormalView  == VK_NULL_HANDLE ||
+        billboardOpacityView == VK_NULL_HANDLE ||
+        billboardArraySampler == VK_NULL_HANDLE) {
+        std::cerr << "[VEGETATION DRAW ERROR] billboard array textures not ready, skipping draw." << std::endl;
         return;
     }
 
@@ -328,6 +358,9 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
                                                uint32_t instancesPerTriangle, VulkanApp* app,
                                                uint32_t seed) {
     if (!app) return;
+
+    // Always clear any previous chunk instances before deciding whether to regenerate.
+    destroyInstanceBuffer(chunkId);
     if (indexCount < 3 || instancesPerTriangle == 0) return;
 
     uint32_t triCount = indexCount / 3;
@@ -335,9 +368,6 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
 
     VkDevice device = app->getDevice();
     VkPhysicalDevice physicalDevice = app->getPhysicalDevice();
-
-    // Destroy any existing buffer for this chunk
-    destroyInstanceBuffer(chunkId);
 
     // Create device-local storage/vertex buffer for instances (vec4 per-instance)
     VkBuffer instanceBuffer = VK_NULL_HANDLE;
