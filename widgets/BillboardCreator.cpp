@@ -12,7 +12,7 @@
 // Constructor moved from header
 BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr)
     : Widget("Billboard Creator", u8"\uf03a"), billboardManager(billboardMgr), atlasManager(atlasMgr), textureManager(textureMgr) {
-    isOpen = true;
+    isOpen = false;
 }
 
 void BillboardCreator::setVulkanApp(VulkanApp* app) {

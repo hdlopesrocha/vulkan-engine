@@ -2,7 +2,7 @@
 #include "components/ImGuiHelpers.hpp"
 
 SettingsWidget::SettingsWidget(Settings& settingsRef) : Widget("Settings", u8"\uf013"), settings(settingsRef) {
-    
+    isOpen = true;
 }
 
 void SettingsWidget::resetToDefaults() {
