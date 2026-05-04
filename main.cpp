@@ -482,7 +482,7 @@ public:
         // Shadow pass: renders solid geometry into shadow map from light's perspective
         // Must run AFTER UBO is built (needs lightSpaceMatrix, passParams, etc.)
         if (sceneRenderer) {
-            sceneRenderer->shadowPass(this, commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, settings.enableShadows);
+            sceneRenderer->shadowPass(this, commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, settings.enableShadows, settings.vegetationEnabled);
         } else {
             std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping shadow pass\n";
         }

@@ -113,7 +113,7 @@ SceneRenderer::~SceneRenderer() {
     // VulkanApp instance.
 }
 
-void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled) {
+void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool vegetationEnabled) {
     static bool firstCall = true;
     if (firstCall) {
         firstCall = false;
@@ -163,7 +163,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
 
         // Render vegetation FIRST to shadow map so it casts shadows on solid geometry below.
         // Vegetation uses camera-based LOD (not light position) for consistent density.
-        if (vegetationRenderer) {
+        if (vegetationEnabled && vegetationRenderer) {
             const glm::vec3 cameraPos = glm::vec3(uboStatic.viewPos);  // Use original camera position for LOD
             vegetationRenderer->drawShadow(app, commandBuffer, ds, cameraPos);
         }
