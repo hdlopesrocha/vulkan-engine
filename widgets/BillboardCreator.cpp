@@ -12,7 +12,6 @@
 // Constructor moved from header
 BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr)
     : Widget("Billboard Creator", u8"\uf03a"), billboardManager(billboardMgr), atlasManager(atlasMgr), textureManager(textureMgr) {
-    isOpen = false;
 }
 
 void BillboardCreator::setVulkanApp(VulkanApp* app) {
@@ -614,6 +613,56 @@ void BillboardCreator::composeBillboard(Billboard* billboard) {
     // Free loaded texture data
     for (auto& [index, atlas] : atlasData) {
         freeAtlasTextures(atlas);
+    }
+
+    // --- Opacity-weighted background fill ---
+    // Compute the opacity-weighted mean albedo and normal from all leaf pixels,
+    // then fill empty regions (opacity == 0) with that average so the billboard
+    // background matches the leaf colours rather than being black.
+    // This is the same weighted-average identity used by the GPU shader:
+    //   bg = Σ(colour_i * opacity_i) / Σ(opacity_i)  over leaf pixels.
+    {
+        const uint8_t* albedoPixels  = outAlbedo.getPixelData();
+        const uint8_t* normalPixels  = outNormal.getPixelData();
+        const uint8_t* opacityPixels = outOpacity.getPixelData();
+        if (albedoPixels && normalPixels && opacityPixels) {
+            double sumR = 0, sumG = 0, sumB = 0;
+            double sumNR = 0, sumNG = 0, sumNB = 0;
+            double totalWeight = 0;
+
+            const uint32_t numPixels = texSize * texSize;
+            for (uint32_t i = 0; i < numPixels; ++i) {
+                double w = opacityPixels[i * 4] / 255.0;
+                if (w <= 0.0) continue;
+                sumR  += albedoPixels[i * 4 + 0] * w;
+                sumG  += albedoPixels[i * 4 + 1] * w;
+                sumB  += albedoPixels[i * 4 + 2] * w;
+                sumNR += normalPixels[i * 4 + 0] * w;
+                sumNG += normalPixels[i * 4 + 1] * w;
+                sumNB += normalPixels[i * 4 + 2] * w;
+                totalWeight += w;
+            }
+
+            if (totalWeight > 0.0) {
+                uint8_t bgR  = (uint8_t)std::clamp(sumR  / totalWeight, 0.0, 255.0);
+                uint8_t bgG  = (uint8_t)std::clamp(sumG  / totalWeight, 0.0, 255.0);
+                uint8_t bgB  = (uint8_t)std::clamp(sumB  / totalWeight, 0.0, 255.0);
+                uint8_t bgNR = (uint8_t)std::clamp(sumNR / totalWeight, 0.0, 255.0);
+                uint8_t bgNG = (uint8_t)std::clamp(sumNG / totalWeight, 0.0, 255.0);
+                uint8_t bgNB = (uint8_t)std::clamp(sumNB / totalWeight, 0.0, 255.0);
+
+                for (uint32_t y = 0; y < texSize; ++y) {
+                    for (uint32_t x = 0; x < texSize; ++x) {
+                        if (opacityPixels[(y * texSize + x) * 4] == 0) {
+                            outAlbedo.setPixel(x, y, bgR,  bgG,  bgB,  255);
+                            outNormal.setPixel(x, y, bgNR, bgNG, bgNB, 255);
+                        }
+                    }
+                }
+                printf("Background fill: albedo=(%u,%u,%u) normal=(%u,%u,%u) weight=%.1f\n",
+                       bgR, bgG, bgB, bgNR, bgNG, bgNB, totalWeight);
+            }
+        }
     }
 
     // Update GPU textures
