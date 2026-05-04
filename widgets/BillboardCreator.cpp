@@ -615,53 +615,58 @@ void BillboardCreator::composeBillboard(Billboard* billboard) {
         freeAtlasTextures(atlas);
     }
 
-    // --- Opacity-weighted background fill ---
-    // Compute the opacity-weighted mean albedo and normal from all leaf pixels,
-    // then fill empty regions (opacity == 0) with that average so the billboard
-    // background matches the leaf colours rather than being black.
-    // This is the same weighted-average identity used by the GPU shader:
-    //   bg = Σ(colour_i * opacity_i) / Σ(opacity_i)  over leaf pixels.
+    // --- Nearest-leaf-pixel background fill (multi-source BFS) ---
+    // Seed the BFS with every leaf pixel.  The wavefront expands outward in
+    // 8-connectivity order, so each empty pixel is reached exactly once by
+    // its closest leaf neighbour.  The source colour is carried in the queue
+    // entry so we never re-read from the output texture mid-fill.
     {
         const uint8_t* albedoPixels  = outAlbedo.getPixelData();
         const uint8_t* normalPixels  = outNormal.getPixelData();
         const uint8_t* opacityPixels = outOpacity.getPixelData();
         if (albedoPixels && normalPixels && opacityPixels) {
-            double sumR = 0, sumG = 0, sumB = 0;
-            double sumNR = 0, sumNG = 0, sumNB = 0;
-            double totalWeight = 0;
+            struct FillPixel {
+                uint32_t x, y;
+                uint8_t r, g, b;       // leaf albedo
+                uint8_t nr, ng, nb;    // leaf normal
+            };
+            std::vector<FillPixel> queue;
+            queue.reserve(texSize * texSize);
 
-            const uint32_t numPixels = texSize * texSize;
-            for (uint32_t i = 0; i < numPixels; ++i) {
-                double w = opacityPixels[i * 4] / 255.0;
-                if (w <= 0.0) continue;
-                sumR  += albedoPixels[i * 4 + 0] * w;
-                sumG  += albedoPixels[i * 4 + 1] * w;
-                sumB  += albedoPixels[i * 4 + 2] * w;
-                sumNR += normalPixels[i * 4 + 0] * w;
-                sumNG += normalPixels[i * 4 + 1] * w;
-                sumNB += normalPixels[i * 4 + 2] * w;
-                totalWeight += w;
-            }
+            std::vector<bool> visited(texSize * texSize, false);
 
-            if (totalWeight > 0.0) {
-                uint8_t bgR  = (uint8_t)std::clamp(sumR  / totalWeight, 0.0, 255.0);
-                uint8_t bgG  = (uint8_t)std::clamp(sumG  / totalWeight, 0.0, 255.0);
-                uint8_t bgB  = (uint8_t)std::clamp(sumB  / totalWeight, 0.0, 255.0);
-                uint8_t bgNR = (uint8_t)std::clamp(sumNR / totalWeight, 0.0, 255.0);
-                uint8_t bgNG = (uint8_t)std::clamp(sumNG / totalWeight, 0.0, 255.0);
-                uint8_t bgNB = (uint8_t)std::clamp(sumNB / totalWeight, 0.0, 255.0);
-
-                for (uint32_t y = 0; y < texSize; ++y) {
-                    for (uint32_t x = 0; x < texSize; ++x) {
-                        if (opacityPixels[(y * texSize + x) * 4] == 0) {
-                            outAlbedo.setPixel(x, y, bgR,  bgG,  bgB,  255);
-                            outNormal.setPixel(x, y, bgNR, bgNG, bgNB, 255);
-                        }
+            // Seed: every leaf pixel is its own source.
+            for (uint32_t y = 0; y < texSize; ++y) {
+                for (uint32_t x = 0; x < texSize; ++x) {
+                    uint32_t i = y * texSize + x;
+                    if (opacityPixels[i * 4] > 0) {
+                        visited[i] = true;
+                        queue.push_back({x, y,
+                            albedoPixels[i*4+0], albedoPixels[i*4+1], albedoPixels[i*4+2],
+                            normalPixels[i*4+0], normalPixels[i*4+1], normalPixels[i*4+2]});
                     }
                 }
-                printf("Background fill: albedo=(%u,%u,%u) normal=(%u,%u,%u) weight=%.1f\n",
-                       bgR, bgG, bgB, bgNR, bgNG, bgNB, totalWeight);
             }
+
+            const int dx8[] = {-1, 0, 1, -1, 1, -1, 0, 1};
+            const int dy8[] = {-1,-1,-1,  0, 0,  1, 1, 1};
+
+            for (size_t head = 0; head < queue.size(); ++head) {
+                const FillPixel& fp = queue[head];
+                for (int d = 0; d < 8; ++d) {
+                    int nx = static_cast<int>(fp.x) + dx8[d];
+                    int ny = static_cast<int>(fp.y) + dy8[d];
+                    if (nx < 0 || ny < 0 || nx >= static_cast<int>(texSize) || ny >= static_cast<int>(texSize)) continue;
+                    uint32_t ni = static_cast<uint32_t>(ny) * texSize + static_cast<uint32_t>(nx);
+                    if (visited[ni]) continue;
+                    visited[ni] = true;
+                    outAlbedo.setPixel(static_cast<uint32_t>(nx), static_cast<uint32_t>(ny), fp.r,  fp.g,  fp.b,  255);
+                    outNormal.setPixel(static_cast<uint32_t>(nx), static_cast<uint32_t>(ny), fp.nr, fp.ng, fp.nb, 255);
+                    queue.push_back({static_cast<uint32_t>(nx), static_cast<uint32_t>(ny),
+                                     fp.r, fp.g, fp.b, fp.nr, fp.ng, fp.nb});
+                }
+            }
+            printf("Nearest-leaf fill: %zu pixels processed\n", queue.size());
         }
     }
 
