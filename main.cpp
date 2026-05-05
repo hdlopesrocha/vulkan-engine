@@ -139,6 +139,7 @@ public:
     // while the frame is being recorded (causes deadlock). Set by UI,
     // consumed in `postSubmit()`.
     bool brushRebuildPending = true;
+    bool generateMapPending = false;
     size_t cubeCount = 0;
 
     // Camera and input
@@ -313,21 +314,9 @@ public:
         sceneUniqueSolidHandler  = std::make_unique<UniqueOctreeChangeHandler>(*sceneSolidHandler);
         sceneUniqueLiquidHandler = std::make_unique<UniqueOctreeChangeHandler>(*sceneLiquidHandler);
 
-        {
-            // Octree building only — no tessellation here.
-            MainSceneLoader loader;
-            mainScene->loadScene(loader, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler);
-            std::cout << "[Main::setup] Octree construction complete\n";
-        }
-
-        // Tessellate chunks in a background thread so setup() continues immediately.
-        sceneProcessThread = std::thread([this]() {
-            sceneUniqueSolidHandler->handleEvents();
-            sceneUniqueLiquidHandler->handleEvents();
-            if (octreeExplorerWidget)
-                octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
-            std::cout << "[Main::setup] Scene chunk tessellation complete\n";
-        });
+        // Scene starts empty — use File > Generate Map to populate it.
+        if (octreeExplorerWidget)
+            octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
 
         setupVegetationTextures();
         setupTextures();
@@ -429,6 +418,8 @@ public:
     void setupScene();
     // Rebuild the brush preview scene from Brush3dWidget entries
     void rebuildBrushScene();
+    // Clear GPU meshes, reset octrees and regenerate via MainSceneLoader
+    void generateMap();
 
 // (setup implementation defined out-of-line below)
 
@@ -923,6 +914,8 @@ public:
 
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
+                if (ImGui::MenuItem("Generate Map")) generateMapPending = true;
+                ImGui::Separator();
                 if (ImGui::MenuItem("Save Scene...")) doSaveScene = true;
                 if (ImGui::MenuItem("Load Scene...")) doLoadScene = true;
                 ImGui::Separator();
@@ -1144,6 +1137,7 @@ public:
                 viewProj,
                 invViewProj,
                 glm::vec3(uboStatic.viewPos),
+                frameIdx,
                 false,
                 skyViewPP);
         }
@@ -1535,6 +1529,48 @@ void MyApp::rebuildBrushScene() {
 
 // Ensure pending texture generation requests are flushed after a frame is submitted
 // so array-layer transitions happen outside of active draw command buffers.
+
+void MyApp::generateMap() {
+    // Join any previous background tessellation thread
+    if (sceneProcessThread.joinable()) sceneProcessThread.join();
+
+    // Wait for the GPU to finish all in-flight work before clearing GPU resources
+    deviceWaitIdle();
+
+    // Remove all existing GPU-side meshes
+    if (sceneRenderer) {
+        sceneRenderer->removeAllRegisteredMeshes();
+        sceneRenderer->removeAllTransparentMeshes();
+        sceneRenderer->nodeDebugCubes.clear();
+    }
+
+    // Reset both octrees (frees all node memory, keeps bounds)
+    mainScene->getOpaqueOctree().reset();
+    mainScene->transparentOctree.reset();
+
+    // Discard any stale pending change events
+    sceneUniqueSolidHandler->clear();
+    sceneUniqueLiquidHandler->clear();
+
+    // Reset octree explorer ready flag
+    if (octreeExplorerWidget)
+        octreeExplorerWidget->octreeReady.store(false, std::memory_order_release);
+
+    // Build the octree (CPU only, no tessellation)
+    MainSceneLoader loader;
+    mainScene->loadScene(loader, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler);
+    std::cout << "[MyApp::generateMap] Octree construction complete\n";
+
+    // Tessellate chunks in a background thread
+    sceneProcessThread = std::thread([this]() {
+        sceneUniqueSolidHandler->handleEvents();
+        sceneUniqueLiquidHandler->handleEvents();
+        if (octreeExplorerWidget)
+            octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
+        std::cout << "[MyApp::generateMap] Scene chunk tessellation complete\n";
+    });
+}
+
 void MyApp::postSubmit() {
     if (textureMixer) {
         textureMixer->flushPendingRequests(this);
@@ -1545,8 +1581,12 @@ void MyApp::postSubmit() {
     // after the frame was submitted so GPU fences can be waited on safely.
     if (brushRebuildPending) {
         brushRebuildPending = false;
-        // std::cerr << "[MyApp::postSubmit] Performing deferred brush rebuild" << std::endl;
         rebuildBrushScene();
+    }
+
+    if (generateMapPending) {
+        generateMapPending = false;
+        generateMap();
     }
 }
 

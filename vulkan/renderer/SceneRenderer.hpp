@@ -131,6 +131,15 @@ public:
         solidChunks.clear();
     }
 
+    // Remove all registered transparent/water meshes and clear the map
+    void removeAllTransparentMeshes() {
+        if (!waterRenderer) return;
+        for (auto &entry : transparentChunks) {
+            if (entry.second.meshId != UINT32_MAX) waterRenderer->getIndirectRenderer().removeMesh(entry.second.meshId);
+        }
+        transparentChunks.clear();
+    }
+
     void shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool vegetationEnabled);
     void skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj);
     void mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
