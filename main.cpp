@@ -46,6 +46,7 @@
 #include "widgets/Brush3dWidget.hpp"
 #include "utils/MainSceneLoader.hpp"
 #include "widgets/Settings.hpp"
+#include "utils/SettingsFile.hpp"
 // ...existing includes...
 #include "widgets/BillboardWidgetManager.hpp"
 #include "widgets/WidgetManager.hpp"
@@ -916,8 +917,15 @@ public:
     }
 
     void renderImGui() override {
+        static char sceneFolderBuf[512] = "scenes/my_scene";
+        static bool doSaveScene = false;
+        static bool doLoadScene = false;
+
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
+                if (ImGui::MenuItem("Save Scene...")) doSaveScene = true;
+                if (ImGui::MenuItem("Load Scene...")) doLoadScene = true;
+                ImGui::Separator();
                 if (ImGui::MenuItem("Exit")) requestClose();
                 ImGui::EndMenu();
             }
@@ -932,6 +940,41 @@ public:
             // Widget menu
             widgetManager.renderMenu();
             ImGui::EndMainMenuBar();
+
+            // Save/Load scene popup modals
+            if (doSaveScene) { ImGui::OpenPopup("Save Scene"); doSaveScene = false; }
+            if (doLoadScene) { ImGui::OpenPopup("Load Scene"); doLoadScene = false; }
+
+            ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+            ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            if (ImGui::BeginPopupModal("Save Scene", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::Text("Folder path:");
+                ImGui::InputText("##savefolder", sceneFolderBuf, sizeof(sceneFolderBuf));
+                if (ImGui::Button("Save")) {
+                    if (mainScene) mainScene->save(sceneFolderBuf);
+                    SettingsFile settingsFile(&settings, "settings");
+                    settingsFile.save(sceneFolderBuf);
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+            }
+
+            ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            if (ImGui::BeginPopupModal("Load Scene", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::Text("Folder path:");
+                ImGui::InputText("##loadfolder", sceneFolderBuf, sizeof(sceneFolderBuf));
+                if (ImGui::Button("Load")) {
+                    if (mainScene) mainScene->load(sceneFolderBuf);
+                    SettingsFile settingsFile(&settings, "settings");
+                    settingsFile.load(sceneFolderBuf);
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+            }
 
             // Small top-left overlay under the main menu bar showing FPS and visible count
             {
