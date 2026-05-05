@@ -52,6 +52,41 @@ uint posHash(vec3 p) {
     return h;
 }
 
+// ---------------------------------------------------------------------------
+// Biome noise: smooth 2D value noise on the XZ plane used to cluster
+// vegetation types spatially so that the same species flocks together.
+// ---------------------------------------------------------------------------
+
+// 2D integer cell hash used as corner values for the value noise.
+uint cellHash(ivec2 c) {
+    uint h = uint(c.x) * 1640531513u ^ uint(c.y) * 2246822519u;
+    h ^= h >> 13;
+    h *= 0x45d9f3bu;
+    h ^= h >> 16;
+    return h;
+}
+
+// World-space distance over which one vegetation cluster spans.
+// Increase for larger, more homogeneous patches; decrease for finer mixing.
+const float kBiomeScale = 50.0;
+
+// Returns a smooth value in [0, 1) that is spatially coherent across xz.
+// Adjacent positions within ~kBiomeScale units tend to return similar values,
+// creating flocked clusters of the same vegetation type.
+float biomeNoise(vec2 xz) {
+    vec2  p = xz / kBiomeScale;
+    ivec2 i = ivec2(floor(p));
+    vec2  f = fract(p);
+    vec2  u = f * f * (3.0 - 2.0 * f); // C1-smooth Hermite
+
+    float a = float(cellHash(i + ivec2(0, 0))) / 4294967295.0;
+    float b = float(cellHash(i + ivec2(1, 0))) / 4294967295.0;
+    float c = float(cellHash(i + ivec2(0, 1))) / 4294967295.0;
+    float d = float(cellHash(i + ivec2(1, 1))) / 4294967295.0;
+
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
 void main() {
     uint tri = gl_GlobalInvocationID.x + push.baseTri;
     uint triBase = tri * 3;
@@ -100,9 +135,13 @@ void main() {
         float w = 1.0 - u - v;
         vec3 pos = u * v0 + v * v1 + w * v2;
 
-        // Assign a random billboard index
-        uint billboardIndex = uint(rand(state) * float(push.billboardCount));
-        if (billboardIndex >= push.billboardCount) billboardIndex = push.billboardCount - 1;
+        // Assign billboard index using spatially-coherent biome noise so that
+        // nearby plants cluster into the same vegetation type (flocking).
+        // biomeNoise returns a smooth [0,1) value over kBiomeScale world units,
+        // which is mapped uniformly across all available billboard slots.
+        uint billboardIndex = min(
+            uint(biomeNoise(pos.xz) * float(push.billboardCount)),
+            push.billboardCount - 1u);
 
         // Derive Y-axis rotation from the final world position so that the same
         // plant at the same spot always faces the same direction, even when the
