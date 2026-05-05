@@ -1279,7 +1279,12 @@ void MyApp::setupVegetationTextures() {
             layer.scaleX = (tile && tile->scaleX > 1e-6f)
                            ? 1.0f / (tile->scaleX * static_cast<float>(totalSlots))
                            : 1.0f;
-            layer.scaleY = 1.0f;
+            // Scale each tile to fill the full billboard height (100%).
+            // denomY = scaleY * tile->scaleY; setting scaleY = 1/tile->scaleY → denomY = 1.0,
+            // so the full [-1,+1] output range maps to the full tile height.
+            layer.scaleY = (tile && tile->scaleY > 1e-6f)
+                           ? 1.0f / tile->scaleY
+                           : 1.0f;
             layer.rotation = 0.0f;
             layer.opacity  = 1.0f;
             layer.renderOrder = static_cast<int>(slot);
