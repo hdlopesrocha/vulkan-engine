@@ -900,9 +900,7 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
         if (geom.indices.size() >= 3 && !geom.vertices.empty()) {
             try {
                 constexpr int kGrassBrushIndex = 3; // See LandBrush::grass
-                // Probability per unit of world-space triangle area.
-                // Each grass triangle contributes at most one slot, sampled
-                // from area so small LOD-border triangles don't over-concentrate vegetation.
+                // Instances per world-space unit² of triangle area.
                 constexpr float kVegetationDensity = 0.01f;
 
                 // Create tightly-packed position buffer (vec3[]) for the compute shader
