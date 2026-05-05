@@ -31,60 +31,8 @@ layout(push_constant) uniform PushConstants {
     vec4 cameraPosAndFalloff;
 };
 
-vec2 fade2(vec2 t) {
-    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-}
-
-float hash12(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
-}
-
-vec2 grad2(vec2 ip) {
-    float a = hash12(ip) * 6.28318530718;
-    return vec2(cos(a), sin(a));
-}
-
-float perlin2(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    vec2 u = fade2(f);
-
-    float n00 = dot(grad2(i + vec2(0.0, 0.0)), f - vec2(0.0, 0.0));
-    float n10 = dot(grad2(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0));
-    float n01 = dot(grad2(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0));
-    float n11 = dot(grad2(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0));
-
-    float nx0 = mix(n00, n10, u.x);
-    float nx1 = mix(n01, n11, u.x);
-    return mix(nx0, nx1, u.y);
-}
-
-// Rotate a direction vector around the world-up (Y) axis.
-vec3 rotateY(vec3 v, float c, float s) {
-    return vec3(c * v.x - s * v.z, v.y, s * v.x + c * v.z);
-}
-
-float hash13(vec3 p3) {
-    p3 = fract(p3 * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
-}
-
-float densityFactorForDistance(float distanceToCamera) {
-    if (densityParams.x < 0.5) return 1.0;
-
-    float nearDistance = max(0.0, densityParams.y);
-    float minFactor = clamp(densityParams.w, 0.0, 1.0);
-    float falloff = cameraPosAndFalloff.w;
-    if (distanceToCamera <= nearDistance || minFactor >= 1.0 || falloff <= 0.0) {
-        return 1.0;
-    }
-
-    float density = exp(-falloff * (distanceToCamera - nearDistance));
-    return clamp(density, minFactor, 1.0);
-}
+#include "includes/perlin2d.glsl"
+#include "includes/vegetation_common.glsl"
 
 vec3 applyWindSkew(vec3 basePos, vec3 right, float heightFactor) {
     if (windEnabled < 0.5) return vec3(0.0);
@@ -137,17 +85,20 @@ void main() {
 
     // If impostor rendering is enabled, skip instances that are far enough away –
     // the impostor pipeline will render them as camera-facing quads instead.
-    if (impostorDistance > 0.0 && distance(worldPos, camPos) >= impostorDistance) return;
+    // Extend 15% past impostorDistance to overlap with the impostor cross-fade zone.
+    if (impostorDistance > 0.0 && distance(worldPos, camPos) >= impostorDistance * 1.15) return;
 
     float densityFactor = densityFactorForDistance(distance(cameraPosAndFalloff.xyz, worldPos));
     if (densityFactor < 0.9999) {
-        float keep = hash13(vec3(worldPos.xz * 0.03125, fragTexCoordIn[0].z + worldPos.y * 0.0078125));
+        float keep = perlin2d_hash13(vec3(worldPos.xz * 0.03125, fragTexCoordIn[0].z + worldPos.y * 0.0078125));
         if (keep > densityFactor) return;
     }
 
     vec3 worldUp  = vec3(0.0, 1.0, 0.0);
-    float hs = billboardScale * 0.5;
-    float h = billboardScale;
+    // Per-instance height variation: Perlin noise on world XZ → scale in [0.6, 1.4]
+    float heightScale = vegetationHeightScale(worldPos.xz);
+    float hs = billboardScale * heightScale * 0.5;
+    float h  = billboardScale * heightScale;
     // 45 degree inclination: tan(45) = 1, so top offset equals height.
     float tilt = h;
     int   ti = fragTexIndexIn[0];

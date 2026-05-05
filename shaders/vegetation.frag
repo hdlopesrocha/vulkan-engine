@@ -58,7 +58,17 @@ void main() {
     float weight        = opacityWeight * normalWeight;
 
     if (weight < 0.5) discard;
-
+    // Cross-fade with impostors: dithered fade-out in the transition zone.
+    // Vegetation fades from fully opaque (at 0.85×impostorDistance) to fully gone
+    // (at 1.15×impostorDistance) using complementary Bayer 4×4 ordered dithering.
+    // The impostor shader uses the inverse condition, so together they cover 100% of pixels.
+    if (impostorDistance > 0.0) {
+        float dist       = distance(ubo.viewPos.xyz, inWorldPos);
+        float fadeAlpha  = 1.0 - smoothstep(impostorDistance * 0.85, impostorDistance * 1.15, dist);
+        const int M[16]  = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
+        float threshold  = float(M[(int(gl_FragCoord.y) & 3) * 4 + (int(gl_FragCoord.x) & 3)]) / 16.0;
+        if (threshold >= fadeAlpha) discard;
+    }
     // ---------------------------------------------------------------
     // Build TBN from billboard plane geometry.
     //
