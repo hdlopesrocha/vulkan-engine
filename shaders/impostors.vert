@@ -33,5 +33,6 @@ void main() {
     // Pass world position as clip coords placeholder; geo shader does the real projection.
     gl_Position = ubo.viewProjection * vec4(worldPos, 1.0);
     outWorldPos       = worldPos;
-    outBillboardIndex = int(round(instanceData.w));
+    // instanceData.w = float(billboardIndex) + rotFrac; strip rotFrac with floor().
+    outBillboardIndex = int(floor(instanceData.w));
 }
