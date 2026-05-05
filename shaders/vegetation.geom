@@ -8,6 +8,9 @@ layout(location = 2) in vec3 fragWorldPosIn[];
 
 layout(location = 0) out vec3 inTexCoord;
 layout(location = 1) flat out int inTexIndex;
+layout(location = 2) out      vec3 outWorldPos;    // interpolated world-space vertex position
+layout(location = 3) flat out vec3 outPlaneNormal; // face normal of the billboard plane
+layout(location = 4) flat out vec3 outTangentWS;   // tangent along billboard width
 
 // Must match SolidParamsUBO — only read the first two fields.
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
@@ -166,10 +169,15 @@ void main() {
         vec3 tl = worldPos - tangent * hs + worldUp * h + outward * tilt + applyWindSkew(worldPos, tangent, 1.0);
         vec3 tr = worldPos + tangent * hs + worldUp * h + outward * tilt + applyWindSkew(worldPos, tangent, 1.0);
 
-        gl_Position = ubo.viewProjection * vec4(bl, 1.0); inTexCoord = vec3(0.0, 1.0, layer); inTexIndex = ti; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(br, 1.0); inTexCoord = vec3(1.0, 1.0, layer); inTexIndex = ti; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(tl, 1.0); inTexCoord = vec3(0.0, 0.0, layer); inTexIndex = ti; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(tr, 1.0); inTexCoord = vec3(1.0, 0.0, layer); inTexIndex = ti; EmitVertex();
+        // Plane normal = cross(tangent, planeUpDir).
+        // For 45-degree tilt (tilt == h), planeUpDir = normalize(worldUp + outward).
+        outPlaneNormal = normalize(cross(tangent, normalize(worldUp + outward)));
+        outTangentWS   = tangent;
+
+        gl_Position = ubo.viewProjection * vec4(bl, 1.0); inTexCoord = vec3(0.0, 1.0, layer); inTexIndex = ti; outWorldPos = bl; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(br, 1.0); inTexCoord = vec3(1.0, 1.0, layer); inTexIndex = ti; outWorldPos = br; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(tl, 1.0); inTexCoord = vec3(0.0, 0.0, layer); inTexIndex = ti; outWorldPos = tl; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(tr, 1.0); inTexCoord = vec3(1.0, 0.0, layer); inTexIndex = ti; outWorldPos = tr; EmitVertex();
         EndPrimitive();
     }
 
@@ -182,10 +190,14 @@ void main() {
         vec3 tl = worldPos - tangent * hs + worldUp * h + applyWindSkew(worldPos, tangent, 1.0);
         vec3 tr = worldPos + tangent * hs + worldUp * h + applyWindSkew(worldPos, tangent, 1.0);
 
-        gl_Position = ubo.viewProjection * vec4(bl, 1.0); inTexCoord = vec3(0.0, 1.0, layer); inTexIndex = ti; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(br, 1.0); inTexCoord = vec3(1.0, 1.0, layer); inTexIndex = ti; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(tl, 1.0); inTexCoord = vec3(0.0, 0.0, layer); inTexIndex = ti; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(tr, 1.0); inTexCoord = vec3(1.0, 0.0, layer); inTexIndex = ti; EmitVertex();
+        // Vertical plane: planeUpDir = worldUp, so normal = cross(tangent, worldUp).
+        outPlaneNormal = normalize(cross(tangent, worldUp));
+        outTangentWS   = tangent;
+
+        gl_Position = ubo.viewProjection * vec4(bl, 1.0); inTexCoord = vec3(0.0, 1.0, layer); inTexIndex = ti; outWorldPos = bl; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(br, 1.0); inTexCoord = vec3(1.0, 1.0, layer); inTexIndex = ti; outWorldPos = br; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(tl, 1.0); inTexCoord = vec3(0.0, 0.0, layer); inTexIndex = ti; outWorldPos = tl; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(tr, 1.0); inTexCoord = vec3(1.0, 0.0, layer); inTexIndex = ti; outWorldPos = tr; EmitVertex();
         EndPrimitive();
     }
 }
