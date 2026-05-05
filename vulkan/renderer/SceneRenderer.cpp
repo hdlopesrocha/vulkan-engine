@@ -247,11 +247,11 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, Vk
     VkImageView sceneColorView = solidRenderer->getColorView(frameIdx);
     VkImageView sceneDepthView = solidRenderer->getDepthView(frameIdx);
 
-    // Update WaterRenderer's scene texture binding so it sees current back-face
-    // depth view and any available cubemap reflection view.
-    VkImageView backFaceDepthView = (backFaceRenderer) ? backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
-    VkImageView cubeView = cubeReflectionView;
-    if (waterRenderer) waterRenderer->updateSceneTexturesBinding(app, sceneColorView, sceneDepthView, frameIdx, skyView, backFaceDepthView, cubeView);
+    // Scene textures were already bound before the async back-face/solid360 tasks were
+    // launched (see main.cpp), so we must NOT call updateSceneTexturesBinding here.
+    // Calling it after the async tasks submit their command buffers would update a
+    // descriptor set that is already referenced by a pending command buffer
+    // (VUID-vkUpdateDescriptorSets-None-03047).
 
     if (wireframeEnabled && waterWireframe && waterWireframe->getPipeline() != VK_NULL_HANDLE) {
         // Wireframe path: use WaterRenderer for setup/pass management,

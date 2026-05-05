@@ -673,6 +673,21 @@ public:
 
             sceneRenderer->solidRenderer->endPass(commandBuffer, frameIdx, this);
 
+        // Update the water scene descriptor set BEFORE launching async tasks.
+        // The backFace async task binds waterDepthDescriptorSets[frameIdx] in its submitted
+        // command buffer. If we update it AFTER the submission, the validation layer fires
+        // VUID-vkUpdateDescriptorSets-None-03047 (updating a descriptor set in use by a
+        // pending command buffer). By updating here we guarantee the descriptor set is
+        // fully updated before any command buffer referencing it is submitted.
+        if (waterEnabled && sceneRenderer && sceneRenderer->waterRenderer) {
+            VkImageView wSceneColor = sceneRenderer->solidRenderer->getColorView(frameIdx);
+            VkImageView wSceneDepth = sceneRenderer->solidRenderer->getDepthView(frameIdx);
+            VkImageView wSky  = (sceneRenderer->skyRenderer)     ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
+            VkImageView wBack = (sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
+            VkImageView wCube = (sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
+            sceneRenderer->waterRenderer->updateSceneTexturesBinding(this, wSceneColor, wSceneDepth, frameIdx, wSky, wBack, wCube);
+        }
+
         // Launch asynchronous recording+submit for independent offscreen passes
         std::vector<std::thread> asyncTasks;
         // RAII guard: ensure any launched threads are joined if an exception
@@ -961,6 +976,12 @@ public:
                     }
                 });
             });
+        }
+
+        // Wait for any async recording/submits to complete before water pass so no two
+        // threads call vkCmdBindDescriptorSets with the same descriptor set concurrently.
+        for (auto &t : asyncTasks) {
+            if (t.joinable()) t.join();
         }
 
         // Run water geometry pass offscreen and bind scene textures for post-process
