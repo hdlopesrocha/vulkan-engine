@@ -139,7 +139,7 @@ public:
     size_t cubeCount = 0;
 
     // Camera and input
-    Camera camera = Camera(glm::vec3(3456, 915, 2000), Math::eulerToQuat(0, 0, 0));
+    Camera camera = Camera(glm::vec3(2673.0f, 125.0f, 2043.0f), Math::eulerToQuat(0.0f, 0.0f, 0.0f));
     Light light = Light(glm::vec3(0.0f, -1.0f, 0.0f));
     EventManager eventManager;
     KeyboardPublisher keyboardPublisher;
