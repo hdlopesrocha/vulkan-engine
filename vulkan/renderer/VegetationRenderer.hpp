@@ -34,7 +34,7 @@ public:
         float billboardScale = 1.0f;
         float windEnabled = 1.0f;
         float windTime = 0.0f;
-        float pad0 = 0.0f;
+        float impostorDistance = 0.0f; // formerly pad0; 0 = impostor rendering disabled
         glm::vec4 windDirAndStrength = glm::vec4(1.0f, 0.0f, 0.0f, 4.0f);
         glm::vec4 windNoise = glm::vec4(0.003f, 0.75f, 0.012f, 0.45f);
         glm::vec4 windShape = glm::vec4(1.75f, 0.70f, 1.0f, 0.20f);
@@ -94,6 +94,15 @@ public:
     std::vector<DebugCubeRenderer::CubeWithColor> getDensityDebugCubes(const glm::vec3& cameraPos) const;
     float getAverageDensityFactor(const glm::vec3& cameraPos) const;
 
+    // Impostor rendering.  Call after init() once impostor views have been captured.
+    // impostorArray60 must be a 2D_ARRAY VkImageView covering 60 layers
+    // (3 billboard types × 20 Fibonacci views).
+    void setImpostorData(VulkanApp* app, VkImageView impostorArray60, VkSampler sampler);
+
+    // Distance beyond which vegetation instances are replaced by impostor quads.
+    // Set to 0 (default) to disable impostor rendering entirely.
+    void setImpostorDistance(float dist) { impostorDistance = dist; }
+
 private:
     
     VkPipeline vegetationPipeline = VK_NULL_HANDLE;
@@ -137,4 +146,13 @@ private:
     WindSettings windSettings;
     DistanceDensitySettings distanceDensitySettings;
     float windTimeSeconds = 0.0f;
+
+    // Impostor pipeline resources (populated via setImpostorData).
+    VkPipeline            impostorPipeline       = VK_NULL_HANDLE;
+    VkPipelineLayout      impostorPipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout impostorDescSetLayout  = VK_NULL_HANDLE;
+    VkDescriptorPool      impostorDescPool       = VK_NULL_HANDLE;
+    VkDescriptorSet       impostorDescSet        = VK_NULL_HANDLE;
+    float                 impostorDistance       = 0.0f;
+    VkRenderPass          storedSolidRenderPass  = VK_NULL_HANDLE;
 };

@@ -37,6 +37,13 @@ void VegetationRenderer::cleanup() {
     vegetationShadowPipeline = VK_NULL_HANDLE;
     shadowPipelineLayout = VK_NULL_HANDLE;
     descriptorSetLayout = VK_NULL_HANDLE;
+    // Clear impostor resources (also tracked by central manager).
+    impostorPipeline       = VK_NULL_HANDLE;
+    impostorPipelineLayout = VK_NULL_HANDLE;
+    impostorDescSetLayout  = VK_NULL_HANDLE;
+    impostorDescPool       = VK_NULL_HANDLE;
+    impostorDescSet        = VK_NULL_HANDLE;
+    storedSolidRenderPass  = VK_NULL_HANDLE;
     // Free and reset vegetation descriptor set handle locally
     vegDescriptorSet = VK_NULL_HANDLE;
     vegDescriptorVersion = 0;
@@ -169,6 +176,8 @@ void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride, V
     if (!app) return;
     // Store the app pointer for use when generating instance buffers via compute
     this->appPtr = app;
+    // Store the solid render pass for later impostor pipeline creation.
+    this->storedSolidRenderPass = renderPassOverride;
     VkDevice device = app->getDevice();
 
     // Descriptor set layout: set=1, binding 0=albedo, 1=normal, 2=opacity (all sampler2DArray)
@@ -426,6 +435,7 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
     pc.billboardScale = billboardScale;
     pc.windEnabled = 0.0f;  // Disable wind for shadow pass (don't distort based on time)
     pc.windTime = windTimeSeconds;
+    pc.impostorDistance = impostorDistance; // skip far instances in shadow pass too (same as main pass)
 
     glm::vec2 windDir = windSettings.direction;
     const float len2 = windDir.x * windDir.x + windDir.y * windDir.y;
@@ -484,6 +494,148 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
     }
 }
 
+void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView impostorArray60, VkSampler sampler) {
+    if (!app || impostorArray60 == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
+    if (storedSolidRenderPass == VK_NULL_HANDLE) {
+        std::cerr << "[VegetationRenderer] setImpostorData: solid render pass not stored; call init() first\n";
+        return;
+    }
+
+    VkDevice device = app->getDevice();
+
+    // Destroy any previous impostor resources (handles are tracked in the central manager).
+    impostorPipeline       = VK_NULL_HANDLE;
+    impostorPipelineLayout = VK_NULL_HANDLE;
+    impostorDescSetLayout  = VK_NULL_HANDLE;
+    impostorDescPool       = VK_NULL_HANDLE;
+    impostorDescSet        = VK_NULL_HANDLE;
+
+    // Descriptor set layout: set 1 — one combined image sampler (60-layer array).
+    {
+        VkDescriptorSetLayoutBinding b{};
+        b.binding         = 0;
+        b.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b.descriptorCount = 1;
+        b.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo info{};
+        info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        info.bindingCount = 1;
+        info.pBindings    = &b;
+        if (vkCreateDescriptorSetLayout(device, &info, nullptr, &impostorDescSetLayout) != VK_SUCCESS)
+            throw std::runtime_error("VegetationRenderer: impostorDescSetLayout failed");
+        app->resources.addDescriptorSetLayout(impostorDescSetLayout, "VegetationRenderer: impostorDescSetLayout");
+    }
+
+    // Private descriptor pool.
+    {
+        VkDescriptorPoolSize sz{};
+        sz.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        sz.descriptorCount = 1;
+        VkDescriptorPoolCreateInfo info{};
+        info.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        info.maxSets       = 1;
+        info.poolSizeCount = 1;
+        info.pPoolSizes    = &sz;
+        if (vkCreateDescriptorPool(device, &info, nullptr, &impostorDescPool) != VK_SUCCESS)
+            throw std::runtime_error("VegetationRenderer: impostorDescPool failed");
+        app->resources.addDescriptorPool(impostorDescPool, "VegetationRenderer: impostorDescPool");
+    }
+
+    // Allocate and write descriptor set.
+    {
+        VkDescriptorSetAllocateInfo alloc{};
+        alloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc.descriptorPool     = impostorDescPool;
+        alloc.descriptorSetCount = 1;
+        alloc.pSetLayouts        = &impostorDescSetLayout;
+        if (vkAllocateDescriptorSets(device, &alloc, &impostorDescSet) != VK_SUCCESS)
+            throw std::runtime_error("VegetationRenderer: impostorDescSet alloc failed");
+
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.sampler     = sampler;
+        imgInfo.imageView   = impostorArray60;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet w{};
+        w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet          = impostorDescSet;
+        w.dstBinding      = 0;
+        w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.descriptorCount = 1;
+        w.pImageInfo      = &imgInfo;
+        vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
+    }
+
+    // Build impostor pipeline (same vertex input as vegetation, different shaders).
+    auto vertCode = FileReader::readFile("shaders/impostors.vert.spv");
+    auto geomCode = FileReader::readFile("shaders/impostors.geom.spv");
+    auto fragCode = FileReader::readFile("shaders/impostors.frag.spv");
+
+    VkShaderModule vertShader = app->createShaderModule(vertCode);
+    VkShaderModule geomShader = app->createShaderModule(geomCode);
+    VkShaderModule fragShader = app->createShaderModule(fragCode);
+
+    VkPipelineShaderStageCreateInfo vertStage{};
+    vertStage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertStage.stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    vertStage.module = vertShader;
+    vertStage.pName  = "main";
+
+    VkPipelineShaderStageCreateInfo geomStage{};
+    geomStage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    geomStage.stage  = VK_SHADER_STAGE_GEOMETRY_BIT;
+    geomStage.module = geomShader;
+    geomStage.pName  = "main";
+
+    VkPipelineShaderStageCreateInfo fragStage{};
+    fragStage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragStage.stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragStage.module = fragShader;
+    fragStage.pName  = "main";
+
+    VkVertexInputBindingDescription bindingDescs[2]{};
+    bindingDescs[0] = { 0, sizeof(Vertex),       VK_VERTEX_INPUT_RATE_VERTEX   };
+    bindingDescs[1] = { 1, sizeof(float) * 4,    VK_VERTEX_INPUT_RATE_INSTANCE };
+
+    std::vector<VkDescriptorSetLayout> impSetLayouts = {
+        app->getDescriptorSetLayout(),
+        impostorDescSetLayout
+    };
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT
+                       | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcRange.offset     = 0;
+    pcRange.size       = sizeof(WindPushConstants);
+
+    auto [impPipeline, impLayout] = app->createGraphicsPipeline(
+        { vertStage, geomStage, fragStage },
+        std::vector<VkVertexInputBindingDescription>{ bindingDescs[0], bindingDescs[1] },
+        {
+            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, position) },
+            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, normal)   },
+            { 2, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
+            { 3, 0, VK_FORMAT_R32_SINT,            (uint32_t)offsetof(Vertex, texIndex) },
+            { 4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                                    },
+        },
+        impSetLayouts,
+        &pcRange,
+        VK_POLYGON_MODE_FILL,
+        VK_CULL_MODE_NONE,
+        false, // depthWrite — impostors drawn after opaque, don't write depth
+        true,  // colorWrite — impostors must output their color
+        VK_COMPARE_OP_LESS,
+        VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
+        storedSolidRenderPass
+    );
+
+    impostorPipeline       = impPipeline;
+    impostorPipelineLayout = impLayout;
+
+    if (impostorPipeline == VK_NULL_HANDLE)
+        std::cerr << "[VegetationRenderer] WARNING: impostor pipeline creation failed\n";
+    else
+        std::cerr << "[VegetationRenderer] Impostor pipeline created: " << (void*)impostorPipeline << "\n";
+}
+
 void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
     if (!app || vegetationPipeline == VK_NULL_HANDLE) {
         if (!app) std::cerr << "[VEGETATION DRAW ERROR] app is null!" << std::endl;
@@ -517,9 +669,10 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 2, sets, 0, nullptr);
 
     WindPushConstants pc{};
-    pc.billboardScale = billboardScale;
-    pc.windEnabled = windSettings.enabled ? 1.0f : 0.0f;
-    pc.windTime = windTimeSeconds;
+    pc.billboardScale     = billboardScale;
+    pc.windEnabled        = windSettings.enabled ? 1.0f : 0.0f;
+    pc.windTime           = windTimeSeconds;
+    pc.impostorDistance   = impostorDistance; // 0 = impostor disabled (near geometry only)
 
     glm::vec2 windDir = windSettings.direction;
     const float len2 = windDir.x * windDir.x + windDir.y * windDir.y;
@@ -573,6 +726,38 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         // Bind base vertex buffer at binding 0 and instance buffer at binding 1
         vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
         vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
+    }
+
+    // ── Impostor pass ────────────────────────────────────────────────────────
+    // Draw camera-facing impostor quads for instances beyond impostorDistance.
+    // The impostor geom shader skips instances that are too close
+    // (they were already handled by the vegetation pass above).
+    if (impostorPipeline != VK_NULL_HANDLE &&
+        impostorDescSet  != VK_NULL_HANDLE &&
+        impostorDistance > 0.0f) {
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorPipeline);
+
+        VkDescriptorSet impSets[2] = { globalSet, impostorDescSet };
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                impostorPipelineLayout, 0, 2, impSets, 0, nullptr);
+
+        // Re-push the same push constants using the impostor pipeline layout.
+        vkCmdPushConstants(commandBuffer, impostorPipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT
+                           | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(WindPushConstants), &pc);
+
+        for (auto& [chunkId, buf] : chunkBuffers) {
+            (void)chunkId;
+            if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
+            if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
+
+            VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
+            VkDeviceSize offsets[2] = { 0, 0 };
+            vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
+            vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
+        }
     }
 }
 
