@@ -746,9 +746,11 @@ void BillboardCreator::compositeLayer(const BillboardLayer* layer, const AtlasTi
     // For each pixel in the output texture
     for (uint32_t dy = 0; dy < texSize; ++dy) {
         for (uint32_t dx = 0; dx < texSize; ++dx) {
-            // Convert output pixel to normalized coordinates (-1 to 1)
+            // Convert output pixel to normalized coordinates (-1 to 1).
+            // Both nx and ny increase from -1 to +1 as pixel coordinates increase,
+            // matching the UV convention where (u=0,v=0) is the top-left corner.
             float nx = (dx / (float)texSize) * 2.0f - 1.0f;
-            float ny = 1.0f - (dy / (float)texSize) * 2.0f;
+            float ny = (dy / (float)texSize) * 2.0f - 1.0f;
 
             // Apply inverse transform to get source coordinates
             float sx = nx - layer->offsetX;
