@@ -1,4 +1,5 @@
 #include "LocalScene.hpp"
+#include "../space/OctreeFile.hpp"
 #include <iostream>
 #include <chrono>
 
@@ -50,4 +51,18 @@ void LocalScene::loadScene(SceneLoaderCallback& callback, const OctreeChangeHand
     auto endTime = std::chrono::steady_clock::now();
     double elapsed = std::chrono::duration<double>(endTime - startTime).count();
     std::cout << "LocalScene::loadScene Ok! " << std::to_string(elapsed) << "s"  << std::endl;
+}
+
+void LocalScene::save(const std::string& folderPath) {
+    OctreeFile opaqueSaver(&opaqueOctree, "opaque");
+    OctreeFile transparentSaver(&transparentOctree, "transparent");
+    opaqueSaver.save(folderPath, 4096);
+    transparentSaver.save(folderPath, 4096);
+}
+
+void LocalScene::load(const std::string& folderPath) {
+    OctreeFile opaqueLoader(&opaqueOctree, "opaque");
+    OctreeFile transparentLoader(&transparentOctree, "transparent");
+    opaqueLoader.load(folderPath, 4096);
+    transparentLoader.load(folderPath, 4096);
 }
