@@ -97,6 +97,7 @@ $(OUT): $(OBJS)
 	@mkdir -p $(OUT_DIR)/shaders
 	@if [ -d textures ]; then cp -a textures $(OUT_DIR)/ || true; fi
 	@if [ -d fonts ]; then cp -a fonts $(OUT_DIR)/ || true; fi
+	@if [ -d scenes ]; then cp -a scenes $(OUT_DIR)/ || true; fi
 	@if [ -f imgui.ini ]; then cp imgui.ini $(OUT_DIR)/ || true; fi
 
 # Pattern rule: compile each .cpp into an object under $(OBJ_DIR), preserving subdirs
