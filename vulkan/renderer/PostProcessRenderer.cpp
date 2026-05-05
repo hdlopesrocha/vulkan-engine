@@ -143,18 +143,18 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
 
     VkDevice device = app->getDevice();
 
-    // Create descriptor pool
+    // Create descriptor pool for 2 frames in flight
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = 6;  // scene color + scene depth + water depth + water normal + water mask + sky color
+    poolSizes[0].descriptorCount = 6 * FRAMES_IN_FLIGHT;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[1].descriptorCount = 1;
+    poolSizes[1].descriptorCount = 1 * FRAMES_IN_FLIGHT;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = FRAMES_IN_FLIGHT;
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
 
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
@@ -162,17 +162,22 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
     }
     app->resources.addDescriptorPool(descriptorPool, "PostProcessRenderer: descriptorPool");
 
-    // Allocate descriptor set
+    // Allocate one descriptor set per frame in flight
+    std::array<VkDescriptorSetLayout, FRAMES_IN_FLIGHT> layouts;
+    layouts.fill(descriptorSetLayout);
+
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &descriptorSetLayout;
+    allocInfo.descriptorSetCount = FRAMES_IN_FLIGHT;
+    allocInfo.pSetLayouts = layouts.data();
 
-    if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate post-process descriptor set!");
+    if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data()) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to allocate post-process descriptor sets!");
     }
-    app->resources.addDescriptorSet(descriptorSet, "PostProcessRenderer: descriptorSet");
+    for (uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i) {
+        app->resources.addDescriptorSet(descriptorSets[i], "PostProcessRenderer: descriptorSet");
+    }
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
@@ -184,6 +189,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                   VkImageView waterDepthView,
                                   const glm::mat4& viewProj, const glm::mat4& invViewProj,
                                   const glm::vec3& viewPos,
+                                  uint32_t frameIdx,
                                   bool beginRenderPass, VkImageView skyView) {
     if (pipeline == VK_NULL_HANDLE) {
         std::cerr << "[PostProcessRenderer::render] pipeline is VK_NULL_HANDLE, skipping." << std::endl;
@@ -236,17 +242,16 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     skyImageInfo.imageView = skyView;
     skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+    VkDescriptorSet currentDs = descriptorSets[frameIdx % FRAMES_IN_FLIGHT];
+
     std::vector<VkWriteDescriptorSet> writes;
     for (int i = 0; i < 5; ++i) {
         if (imageInfos[i].imageView == VK_NULL_HANDLE || imageInfos[i].sampler == VK_NULL_HANDLE) {
-            /*std::cerr << "[PostProcessRenderer] Skipping binding " << i
-                      << ": imageView=" << (void*)imageInfos[i].imageView
-                      << " sampler=" << (void*)imageInfos[i].sampler << std::endl;*/
             continue;
         }
         VkWriteDescriptorSet write{};
         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = descriptorSet;
+        write.dstSet = currentDs;
         write.dstBinding = i;
         write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         write.descriptorCount = 1;
@@ -257,7 +262,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     if (bufferInfo.buffer != VK_NULL_HANDLE) {
         VkWriteDescriptorSet bufWrite{};
         bufWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        bufWrite.dstSet = descriptorSet;
+        bufWrite.dstSet = currentDs;
         bufWrite.dstBinding = 5;
         bufWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         bufWrite.descriptorCount = 1;
@@ -271,7 +276,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     if (skyImageInfo.imageView != VK_NULL_HANDLE && skyImageInfo.sampler != VK_NULL_HANDLE) {
         VkWriteDescriptorSet skyWrite{};
         skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        skyWrite.dstSet = descriptorSet;
+        skyWrite.dstSet = currentDs;
         skyWrite.dstBinding = 6;
         skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         skyWrite.descriptorCount = 1;
@@ -317,7 +322,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     // Bind pipeline and descriptor set
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
-                            0, 1, &descriptorSet, 0, nullptr);
+                            0, 1, &currentDs, 0, nullptr);
 
     // Draw fullscreen triangle (3 vertices, no vertex buffer needed)
     vkCmdDraw(cmd, 3, 1, 0, 0);

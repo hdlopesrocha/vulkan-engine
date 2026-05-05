@@ -2,6 +2,7 @@
 
 #include "../VulkanApp.hpp"
 #include <glm/glm.hpp>
+#include <array>
 
 // Forward-declare shared water types (defined in WaterRenderer.hpp)
 struct WaterParams;
@@ -24,6 +25,7 @@ public:
                 VkImageView waterDepthView,
                 const glm::mat4& viewProj, const glm::mat4& invViewProj,
                 const glm::vec3& viewPos,
+                uint32_t frameIdx,
                 bool beginRenderPass = true,
                 VkImageView skyView = VK_NULL_HANDLE);
 
@@ -42,7 +44,8 @@ private:
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    static constexpr uint32_t FRAMES_IN_FLIGHT = 2;
+    std::array<VkDescriptorSet, FRAMES_IN_FLIGHT> descriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
     Buffer uniformBuffer;
     VkSampler linearSampler = VK_NULL_HANDLE;
