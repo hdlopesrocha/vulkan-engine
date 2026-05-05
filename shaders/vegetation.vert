@@ -19,7 +19,7 @@ layout(push_constant) uniform PushConstants {
     float billboardScale;
     float windEnabled;
     float windTime;
-    float pad0;
+    float impostorDistance;
     vec4 windDirAndStrength;
     vec4 windNoise;
     vec4 windShape;

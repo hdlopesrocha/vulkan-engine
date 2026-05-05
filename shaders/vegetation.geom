@@ -22,7 +22,7 @@ layout(push_constant) uniform PushConstants {
     float billboardScale;
     float windEnabled;
     float windTime;
-    float pad0;
+    float impostorDistance;
     vec4 windDirAndStrength;
     vec4 windNoise;
     vec4 windShape;
@@ -129,6 +129,11 @@ void main() {
 
     vec3 worldPos = fragWorldPosIn[0];
     vec3 camPos   = ubo.viewPos.xyz;
+
+    // If impostor rendering is enabled, skip instances that are far enough away –
+    // the impostor pipeline will render them as camera-facing quads instead.
+    if (impostorDistance > 0.0 && distance(worldPos, camPos) >= impostorDistance) return;
+
     float densityFactor = densityFactorForDistance(distance(cameraPosAndFalloff.xyz, worldPos));
     if (densityFactor < 0.9999) {
         float keep = hash13(vec3(worldPos.xz * 0.03125, fragTexCoordIn[0].z + worldPos.y * 0.0078125));
