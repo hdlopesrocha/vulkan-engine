@@ -3724,15 +3724,29 @@ void VulkanApp::drawFrame() {
     float deltaTime = 0.0f;
     if (lastFrameTime > 0.0) deltaTime = static_cast<float>(frameNow - lastFrameTime);
     lastFrameTime = frameNow;
-    update(deltaTime);
+    if (!isLoading) {
+        update(deltaTime);
+    }
 
     // ImGui new frame (backend)
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    // call into the derived app to build the UI
-    renderImGui();
+    if (isLoading) {
+        // Draw a centered "Loading..." text with white text on black background
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
+        ImVec2 display = ImGui::GetIO().DisplaySize;
+        dl->AddRectFilled(ImVec2(0.0f, 0.0f), display, IM_COL32(0, 0, 0, 255));
+        const char* text = "Loading...";
+        ImVec2 textSize = ImGui::CalcTextSize(text);
+        float x = (display.x - textSize.x) * 0.5f;
+        float y = (display.y - textSize.y) * 0.5f;
+        dl->AddText(ImVec2(x, y), IM_COL32(255, 255, 255, 255), text);
+    } else {
+        // call into the derived app to build the UI
+        renderImGui();
+    }
 
     // update FPS (simple moving average could be added)
     double now = glfwGetTime();
@@ -3816,8 +3830,11 @@ void VulkanApp::drawFrame() {
         return;
     }
 
-    // Hook for compute/barrier operations before render pass
-    preRenderPass(commandBuffer);
+    // Only run scene hooks when the app is fully set up
+    if (!isLoading) {
+        // Hook for compute/barrier operations before render pass
+        preRenderPass(commandBuffer);
+    }
 
     // Process any completed async generation submissions and free their command buffers/fences/semaphores
     processPendingCommandBuffers();
@@ -3830,8 +3847,9 @@ void VulkanApp::drawFrame() {
     renderPassInfo.renderArea.extent = swapchainExtent;
 
     VkClearValue clearValues[2] = {};
-    // Clear swapchain to transparent black so composites come only from rendered content
-    clearValues[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+    // During loading show opaque black; afterwards transparent so scene composites through
+    clearValues[0].color = isLoading ? VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}}
+                                     : VkClearColorValue{{0.0f, 0.0f, 0.0f, 0.0f}};
     clearValues[1].depthStencil = {1.0f, 0};
     renderPassInfo.clearValueCount = 2;
     renderPassInfo.pClearValues = clearValues;
@@ -3840,7 +3858,12 @@ void VulkanApp::drawFrame() {
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
     ImGui::Render();
-    draw(commandBuffer, renderPassInfo);
+    if (!isLoading) {
+        draw(commandBuffer, renderPassInfo);
+    } else {
+        ImDrawData* drawData = ImGui::GetDrawData();
+        if (drawData) ImGui_ImplVulkan_RenderDrawData(drawData, commandBuffer);
+    }
 
     // End render pass
     vkCmdEndRenderPass(commandBuffer);
@@ -4391,7 +4414,15 @@ GLFWwindow* VulkanApp::getWindow() {
 void VulkanApp::run() {
     initWindow();
     initVulkan();
+
+    // Fonts are now loaded — render one frame showing the loading screen before
+    // the (potentially slow) setup() call so the user sees something immediately.
+    isLoading = true;
+    glfwPollEvents();
+    drawFrame();
+
     setup();
+    isLoading = false;
 
     try {
         mainLoop();

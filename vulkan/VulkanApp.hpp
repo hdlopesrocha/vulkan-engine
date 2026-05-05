@@ -147,6 +147,9 @@ protected:
     bool vsyncEnabled = true;
     bool vsyncChanged = false; // track if user toggled vsync to trigger swapchain recreation
 
+    // True between initVulkan() and the end of setup() — used to show loading screen
+    bool isLoading = false;
+
     // Allow derived classes to build ImGui UI per-frame
     virtual void renderImGui();
 
