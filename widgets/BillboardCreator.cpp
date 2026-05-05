@@ -971,3 +971,4 @@ void BillboardCreator::render() {
 
     ImGui::EndChild();
 }
+

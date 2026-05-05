@@ -29,6 +29,7 @@
 #include "widgets/RenderTargetsWidget.hpp"
 #include "widgets/BillboardWidget.hpp"
 #include "widgets/BillboardCreator.hpp"
+#include "widgets/ImpostorWidget.hpp"
 #include "widgets/TextureMixerWidget.hpp"
 #include "widgets/TextureViewerWidget.hpp"
 #include "widgets/CameraWidget.hpp"
@@ -96,6 +97,7 @@ public:
     std::shared_ptr<BillboardWidget> billboardWidget;
     std::shared_ptr<BillboardCreator> billboardCreator;
     std::unique_ptr<BillboardWidgetManager> billboardWidgetManager;
+    std::shared_ptr<ImpostorWidget> impostorWidget;
     std::shared_ptr<TextureMixerWidget> textureMixerWidget;
     // flag set by background thread when mixer widget is ready; main thread will add it safely
     bool mixerWidgetPendingAdd = false;
@@ -331,6 +333,9 @@ public:
 
         sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
 
+        // Re-wire impostors now that VegetationRenderer::init() has stored the render pass.
+        if (impostorWidget) impostorWidget->rewire();
+
         // Keep the vegetation array manager wired for editor/atlas updates.
         if (sceneRenderer->vegetationRenderer)
             sceneRenderer->vegetationRenderer->setTextureArrayManager(&vegetationTextureArrayManager, this);
@@ -394,6 +399,7 @@ public:
         widgetManager.addWidget(windWidget);
         widgetManager.addWidget(billboardWidget);
         widgetManager.addWidget(billboardCreator);
+        widgetManager.addWidget(impostorWidget);
 
       
         // Subscribe event handlers
@@ -442,6 +448,7 @@ public:
         mainTime += deltaTime;
         if (sceneRenderer && sceneRenderer->vegetationRenderer) {
             sceneRenderer->vegetationRenderer->setWindTime(mainTime);
+            sceneRenderer->vegetationRenderer->setImpostorDistance(settings.impostorDistance);
         }
     }
 
@@ -1123,6 +1130,10 @@ public:
             renderTargetsWidget->invalidateImGuiDescriptors();
         }
 
+        if (impostorWidget) {
+            impostorWidget->cleanup();
+        }
+
         // Cleanup scene renderer and all sub-renderers
         if (sceneRenderer) {
             sceneRenderer->cleanup(this);
@@ -1203,6 +1214,9 @@ void MyApp::setupVegetationTextures() {
     billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureArrayManager);
     // Provide VulkanApp to the creator so it can initialize GPU-backed preview textures
     billboardCreator->setVulkanApp(this);
+    impostorWidget = std::make_shared<ImpostorWidget>();
+    impostorWidget->setVulkanApp(this);
+    impostorWidget->setVegetationRenderer(sceneRenderer->vegetationRenderer.get());
     
     // Load the vegetation atlas textures (albedo, normal, opacity) into the texture array
     std::vector<TextureTriple> vegTriples = {
@@ -1262,6 +1276,16 @@ void MyApp::setupVegetationTextures() {
     if (billboardCreator) {
         // Bake authoring billboards into dedicated per-billboard GPU textures.
         billboardCreator->bakeAllBillboards();
+    }
+
+    // Notify ImpostorWidget about the freshly baked texture arrays.
+    if (impostorWidget && billboardCreator) {
+        impostorWidget->setSource(
+            billboardCreator->getAlbedoArrayView(),
+            billboardCreator->getNormalArrayView(),
+            billboardCreator->getOpacityArrayView(),
+            billboardCreator->getArraySampler(),
+            static_cast<int>(billboardManager.getBillboardCount()));
     }
 }
 
