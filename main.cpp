@@ -88,6 +88,7 @@ public:
     float profileImGui = 0.0f;
     float profileCpuUpdate = 0.0f;
     float profileCpuRecord = 0.0f;
+    float profileFps = 0.0f;
     VkDescriptorSet shadowPassDescriptorSet = VK_NULL_HANDLE;
     UniformObject uboStatic = {};
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
@@ -445,6 +446,7 @@ public:
 // (setup implementation defined out-of-line below)
 
     void update(float deltaTime) override {
+        if (deltaTime > 0.0f) profileFps = 1.0f / deltaTime;
         auto cpuUpdateT0 = std::chrono::high_resolution_clock::now();
         // Poll keyboard input and publish events
         keyboardPublisher.update(getWindow(), &eventManager, camera, deltaTime, &controllerManager, &brushManager, false);
@@ -1099,6 +1101,7 @@ public:
                     ImGui::Text("GPU Total:     %.2f", gpuTotal);
                     ImGui::Separator();
                     ImGui::Text("--- CPU Timing (ms) ---");
+                    ImGui::Text("FPS:           %.1f", profileFps);
                     ImGui::Text("Update:        %.2f", profileCpuUpdate);
                     ImGui::Text("Record:        %.2f", profileCpuRecord);
                 }
