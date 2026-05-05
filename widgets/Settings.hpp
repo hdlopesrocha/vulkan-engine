@@ -29,6 +29,7 @@ public:
         showBoundingBoxes = false;
         nearPlane = 0.1f;
         farPlane = 8092.0f;
+        impostorDistance = 256.0f;
     }
 
     // Global toggles
@@ -70,4 +71,8 @@ public:
     // Camera clip planes
     float nearPlane = 0.1f;
     float farPlane = 8092.0f;
+
+    // Impostor rendering: vegetation beyond this distance is drawn as a pre-captured
+    // camera-facing quad.  Set to 0 to disable (default: disabled).
+    float impostorDistance = 100.0f;
 };

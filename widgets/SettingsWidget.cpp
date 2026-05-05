@@ -43,6 +43,14 @@ void SettingsWidget::render() {
 
         ImGui::Separator();
 
+        ImGui::Text("Vegetation Impostors");
+        ImGui::Separator();
+        ImGui::DragFloat("Impostor Distance", &settings.impostorDistance, 5.0f, 0.0f, 5000.0f, "%.0f m");
+        ImGuiHelpers::SetTooltipIfHovered("Beyond this distance vegetation is replaced by pre-captured impostors.\nSet to 0 to disable impostor rendering.");
+        if (settings.impostorDistance < 0.0f) settings.impostorDistance = 0.0f;
+
+        ImGui::Separator();
+
         ImGui::Text("Input");
         ImGui::Separator();
             ImGui::Text("Rendering");
