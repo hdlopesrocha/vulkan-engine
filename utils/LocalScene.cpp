@@ -1,5 +1,7 @@
 #include "LocalScene.hpp"
 #include "../space/OctreeFile.hpp"
+#include "../space/OctreeNode.hpp"
+#include "../space/OctreeAllocator.hpp"
 #include <iostream>
 #include <chrono>
 
@@ -65,4 +67,27 @@ void LocalScene::load(const std::string& folderPath) {
     OctreeFile transparentLoader(&transparentOctree, "transparent");
     opaqueLoader.load(folderPath, 4096);
     transparentLoader.load(folderPath, 4096);
+}
+
+static void notifyChunkNodes(OctreeNode* node, const BoundingCube& cube, uint level,
+                             OctreeAllocator& allocator, const OctreeChangeHandler& handler) {
+    if (!node) return;
+    if (node->isChunk()) {
+        handler.onNodeAdded(OctreeNodeData(level, node, cube, ContainmentType::Intersects, nullptr));
+        return;
+    }
+    OctreeNode* children[8] = {};
+    node->getChildren(allocator, children);
+    for (int i = 0; i < 8; ++i) {
+        if (children[i])
+            notifyChunkNodes(children[i], cube.getChild(i), level + 1, allocator, handler);
+    }
+}
+
+void LocalScene::load(const std::string& folderPath, const OctreeChangeHandler& opaqueHandler, const OctreeChangeHandler& transparentHandler) {
+    load(folderPath);
+    if (opaqueOctree.root)
+        notifyChunkNodes(opaqueOctree.root, opaqueOctree, 0, *opaqueOctree.allocator, opaqueHandler);
+    if (transparentOctree.root)
+        notifyChunkNodes(transparentOctree.root, transparentOctree, 0, *transparentOctree.allocator, transparentHandler);
 }

@@ -35,7 +35,7 @@ OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> 
 			break;
 		}
 	}
-	ChildBlock * block = isLeaf ? NULL : node->allocate(*tree->allocator);
+	ChildBlock * block = isLeaf ? NULL : node->allocate(*tree->allocator)->init();
 	if(cube.getLengthX() > chunkSize) {
 		for(int j=0 ; j <8 ; ++j){
 			int index = serialized.children[j];

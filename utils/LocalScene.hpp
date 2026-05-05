@@ -30,4 +30,5 @@ public:
     void loadScene(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) override;
     void save(const std::string& folderPath);
     void load(const std::string& folderPath);
+    void load(const std::string& folderPath, const OctreeChangeHandler& opaqueHandler, const OctreeChangeHandler& transparentHandler);
 };
