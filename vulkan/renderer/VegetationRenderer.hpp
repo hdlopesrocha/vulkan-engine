@@ -95,9 +95,9 @@ public:
     float getAverageDensityFactor(const glm::vec3& cameraPos) const;
 
     // Impostor rendering.  Call after init() once impostor views have been captured.
-    // impostorArray60 must be a 2D_ARRAY VkImageView covering 60 layers
+    // albedoArray60 and normalArray60 must be VkImageView covering 60 layers
     // (3 billboard types × 20 Fibonacci views).
-    void setImpostorData(VulkanApp* app, VkImageView impostorArray60, VkSampler sampler);
+    void setImpostorData(VulkanApp* app, VkImageView albedoArray60, VkImageView normalArray60, VkSampler sampler);
 
     // Distance beyond which vegetation instances are replaced by impostor quads.
     // Set to 0 (default) to disable impostor rendering entirely.

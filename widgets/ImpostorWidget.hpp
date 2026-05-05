@@ -51,6 +51,7 @@ private:
     // Preview orbit state
     float previewYaw        = 0.0f;
     float previewPitch      = 0.3f;
+    bool  previewNormals    = false; // toggle normal map preview in widget
 
     ImpostorCapture capture;
 };

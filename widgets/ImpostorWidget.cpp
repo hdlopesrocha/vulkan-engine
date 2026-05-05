@@ -33,6 +33,7 @@ void ImpostorWidget::setSource(VkImageView albedo, VkImageView normal,
         if (vegRenderer && capture.getCaptureArrayView() != VK_NULL_HANDLE) {
             vegRenderer->setImpostorData(vulkanApp,
                                          capture.getCaptureArrayView(),
+                                         capture.getCaptureNormalArrayView(),
                                          capture.getCaptureArraySampler());
         }
     }
@@ -43,6 +44,7 @@ void ImpostorWidget::rewire() {
         capture.getCaptureArrayView() != VK_NULL_HANDLE) {
         vegRenderer->setImpostorData(vulkanApp,
                                      capture.getCaptureArrayView(),
+                                     capture.getCaptureNormalArrayView(),
                                      capture.getCaptureArraySampler());
     }
 }
@@ -95,10 +97,11 @@ void ImpostorWidget::render() {
         capture.captureAll(vulkanApp,
                            srcAlbedo, srcNormal, srcOpacity, srcSampler,
                            captureScale);
-        // Wire captured array to VegetationRenderer if available.
+        // Wire captured arrays to VegetationRenderer if available.
         if (vegRenderer && capture.getCaptureArrayView() != VK_NULL_HANDLE) {
             vegRenderer->setImpostorData(vulkanApp,
                                          capture.getCaptureArrayView(),
+                                         capture.getCaptureNormalArrayView(),
                                          capture.getCaptureArraySampler());
         }
     }
@@ -114,13 +117,17 @@ void ImpostorWidget::render() {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Text("Captured views (%u, Fibonacci sphere):", ImpostorCapture::NUM_VIEWS);
+    ImGui::SameLine();
+    ImGui::Checkbox("Show normals", &previewNormals);
     ImGui::Spacing();
 
     const float thumbSize = 48.0f;
     const int   columns   = 5;
     for (uint32_t i = 0; i < ImpostorCapture::NUM_VIEWS; ++i) {
         if (i % columns != 0) ImGui::SameLine();
-        VkDescriptorSet ds = capture.getImGuiDescSet(static_cast<uint32_t>(selectedBillboard), i);
+        VkDescriptorSet ds = previewNormals
+            ? capture.getImGuiNormalDescSet(static_cast<uint32_t>(selectedBillboard), i)
+            : capture.getImGuiDescSet(static_cast<uint32_t>(selectedBillboard), i);
         if (ds != VK_NULL_HANDLE) {
             ImGui::PushID(static_cast<int>(i));
             ImGui::Image((ImTextureID)ds, ImVec2(thumbSize, thumbSize));
@@ -135,7 +142,7 @@ void ImpostorWidget::render() {
     // ── Rotatable preview ────────────────────────────────────────────
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::Text("Preview  (drag to rotate):");
+    ImGui::Text("Preview  (drag to rotate)  [%s]:", previewNormals ? "Normals" : "Albedo");
     ImGui::Spacing();
 
     const float cosP = std::cos(previewPitch);
@@ -144,8 +151,9 @@ void ImpostorWidget::render() {
                                 cosP * std::cos(previewYaw));
     const uint32_t closestIdx = capture.closestView(glm::normalize(previewDir));
 
-    VkDescriptorSet previewDs = capture.getImGuiDescSet(
-        static_cast<uint32_t>(selectedBillboard), closestIdx);
+    VkDescriptorSet previewDs = previewNormals
+        ? capture.getImGuiNormalDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx)
+        : capture.getImGuiDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
     if (previewDs != VK_NULL_HANDLE) {
         const float previewSize = 256.0f;
         ImGui::Image((ImTextureID)previewDs, ImVec2(previewSize, previewSize));

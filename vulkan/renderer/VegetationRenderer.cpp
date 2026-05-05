@@ -494,12 +494,17 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
     }
 }
 
-void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView impostorArray60, VkSampler sampler) {
-    if (!app || impostorArray60 == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
+void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView albedoArray60, VkImageView normalArray60, VkSampler sampler) {
+    if (!app || albedoArray60 == VK_NULL_HANDLE || normalArray60 == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
     if (storedSolidRenderPass == VK_NULL_HANDLE) {
         std::cerr << "[VegetationRenderer] setImpostorData: solid render pass not stored; call init() first\n";
         return;
     }
+
+    // Wait for all in-flight work to complete before recreating descriptor sets.
+    // This prevents handle-reuse collisions between pending command buffers and
+    // freshly-allocated descriptor set handles. setImpostorData is an init-time call.
+    vkDeviceWaitIdle(app->getDevice());
 
     VkDevice device = app->getDevice();
 
@@ -510,27 +515,31 @@ void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView impostorArr
     impostorDescPool       = VK_NULL_HANDLE;
     impostorDescSet        = VK_NULL_HANDLE;
 
-    // Descriptor set layout: set 1 — one combined image sampler (60-layer array).
+    // Descriptor set layout: set 1 — binding 0=albedo array, binding 1=normal array.
     {
-        VkDescriptorSetLayoutBinding b{};
-        b.binding         = 0;
-        b.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        b.descriptorCount = 1;
-        b.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutBinding bindings[2]{};
+        bindings[0].binding         = 0;
+        bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[1].binding         = 1;
+        bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo info{};
         info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        info.bindingCount = 1;
-        info.pBindings    = &b;
+        info.bindingCount = 2;
+        info.pBindings    = bindings;
         if (vkCreateDescriptorSetLayout(device, &info, nullptr, &impostorDescSetLayout) != VK_SUCCESS)
             throw std::runtime_error("VegetationRenderer: impostorDescSetLayout failed");
         app->resources.addDescriptorSetLayout(impostorDescSetLayout, "VegetationRenderer: impostorDescSetLayout");
     }
 
-    // Private descriptor pool.
+    // Private descriptor pool (2 combined image samplers).
     {
         VkDescriptorPoolSize sz{};
         sz.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        sz.descriptorCount = 1;
+        sz.descriptorCount = 2;
         VkDescriptorPoolCreateInfo info{};
         info.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         info.maxSets       = 1;
@@ -541,7 +550,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView impostorArr
         app->resources.addDescriptorPool(impostorDescPool, "VegetationRenderer: impostorDescPool");
     }
 
-    // Allocate and write descriptor set.
+    // Allocate and write descriptor set (albedo + normal array).
     {
         VkDescriptorSetAllocateInfo alloc{};
         alloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -551,18 +560,19 @@ void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView impostorArr
         if (vkAllocateDescriptorSets(device, &alloc, &impostorDescSet) != VK_SUCCESS)
             throw std::runtime_error("VegetationRenderer: impostorDescSet alloc failed");
 
-        VkDescriptorImageInfo imgInfo{};
-        imgInfo.sampler     = sampler;
-        imgInfo.imageView   = impostorArray60;
-        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet w{};
-        w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w.dstSet          = impostorDescSet;
-        w.dstBinding      = 0;
-        w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        w.descriptorCount = 1;
-        w.pImageInfo      = &imgInfo;
-        vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
+        VkDescriptorImageInfo imgInfos[2]{};
+        imgInfos[0] = { sampler, albedoArray60, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        imgInfos[1] = { sampler, normalArray60, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet ws[2]{};
+        for (uint32_t i = 0; i < 2; ++i) {
+            ws[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            ws[i].dstSet          = impostorDescSet;
+            ws[i].dstBinding      = i;
+            ws[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            ws[i].descriptorCount = 1;
+            ws[i].pImageInfo      = &imgInfos[i];
+        }
+        vkUpdateDescriptorSets(device, 2, ws, 0, nullptr);
     }
 
     // Build impostor pipeline (same vertex input as vegetation, different shaders).
