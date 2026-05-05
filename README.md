@@ -1,5 +1,7 @@
 # Vulkan Engine
 
+![Screenshot](screenshot.png)
+
 A real-time 3D terrain and scene rendering engine built with Vulkan 1.2+ and C++23. It combines procedural geometry generation through Signed Distance Functions and Surface Nets meshing with a full rendering pipeline covering terrain, water, vegetation, shadows, and atmospheric sky.
 
 ---
