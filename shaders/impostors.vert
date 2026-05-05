@@ -8,6 +8,7 @@ layout(location = 4) in vec4 instanceData; // xyz=world pos, w=billboard index
 
 layout(location = 0) out vec3 outWorldPos;
 layout(location = 1) flat out int outBillboardIndex;
+layout(location = 2) out float outRotFrac;  // per-instance Y-rotation fraction [0,1)
 
 // Must match SolidParamsUBO — only read the first two fields.
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
@@ -35,4 +36,5 @@ void main() {
     outWorldPos       = worldPos;
     // instanceData.w = float(billboardIndex) + rotFrac; strip rotFrac with floor().
     outBillboardIndex = int(floor(instanceData.w));
+    outRotFrac        = fract(instanceData.w);
 }

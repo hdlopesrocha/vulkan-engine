@@ -4,6 +4,7 @@
 layout(location = 0) in vec3 inTexCoord;
 layout(location = 1) in vec3 inWorldPos;
 layout(location = 2) flat in vec3 inFaceNormal;
+layout(location = 3) flat in float inRotFrac;
 
 layout(location = 0) out vec4 outColor;
 
@@ -15,15 +16,49 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
     vec4 lightColor;
 } ubo;
 
-// 60-layer impostor array: 3 billboard types × 20 Fibonacci views.
+// 60-layer impostor arrays: 3 billboard types × 20 Fibonacci views.
 layout(set = 1, binding = 0) uniform sampler2DArray impostorArray;
+layout(set = 1, binding = 1) uniform sampler2DArray impostorNormalArray;
+
+layout(push_constant) uniform PushConstants {
+    float billboardScale;
+    float windEnabled;
+    float windTime;
+    float impostorDistance;
+    vec4 windDirAndStrength;
+    vec4 windNoise;
+    vec4 windShape;
+    vec4 windTurbulence;
+    vec4 densityParams;
+    vec4 cameraPosAndFalloff;
+};
 
 void main() {
     vec4 color = texture(impostorArray, inTexCoord);
     if (color.a < 0.5) discard;
 
-    // ── Lighting — same model as vegetation.frag ──────────────────────────
-    vec3 N     = normalize(inFaceNormal);
+    // Cross-fade with vegetation: dithered fade-in in the transition zone.
+    // This is the complement of vegetation.frag's fade-out: together they cover
+    // 100% of pixels so the transition is seamless without gaps or doubles.
+    if (impostorDistance > 0.0) {
+        float dist      = distance(ubo.viewPos.xyz, inWorldPos);
+        float fadeAlpha = 1.0 - smoothstep(impostorDistance * 0.85, impostorDistance * 1.15, dist);
+        const int M[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
+        float threshold = float(M[(int(gl_FragCoord.y) & 3) * 4 + (int(gl_FragCoord.x) & 3)]) / 16.0;
+        if (threshold < fadeAlpha) discard;   // complementary: keep where vegetation discards
+    }
+
+    // Decode baked world-space normal from the normal capture array.
+    // The capture was done for a canonical (theta=0) plant orientation, so we must
+    // rotate the decoded normal by the per-instance Y-axis rotation to match the
+    // actual plant orientation at runtime (same rotateY convention as vegetation_common.glsl).
+    vec3 N_raw = normalize(texture(impostorNormalArray, inTexCoord).rgb * 2.0 - 1.0);
+    float theta = inRotFrac * 6.28318530718;
+    float cosT  = cos(theta);
+    float sinT  = sin(theta);
+    vec3 N = normalize(vec3(cosT * N_raw.x - sinT * N_raw.z,
+                            N_raw.y,
+                            sinT * N_raw.x + cosT * N_raw.z));
     vec3 L     = normalize(-ubo.lightDir.xyz);
     float NdotL = max(dot(N, L), 0.0);
 
