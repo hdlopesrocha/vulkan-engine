@@ -1,7 +1,18 @@
 #version 450
 layout(location = 0) in vec3 inTexCoord;  // xy=uv, z=array layer
 layout(location = 1) in flat int inTexIndex;
+layout(location = 2) in      vec3 inWorldPos;    // interpolated vertex world position
+layout(location = 3) in flat vec3 inPlaneNormal; // billboard face normal (world space)
+layout(location = 4) in flat vec3 inTangentWS;   // billboard tangent (world space)
 layout(location = 0) out vec4 outColor;
+
+// Scene UBO — only the fields needed for lighting.
+layout(set = 0, binding = 0) uniform SolidParamsUBO {
+    mat4 viewProjection;
+    vec4 viewPos;
+    vec4 lightDir;   // direction FROM light source toward scene
+    vec4 lightColor;
+} ubo;
 
 layout(set = 1, binding = 0) uniform sampler2DArray albedoArray;
 layout(set = 1, binding = 1) uniform sampler2DArray normalArray;
@@ -28,39 +39,64 @@ void main() {
     float opacity     = texture(opacityArray, coord).r;
     vec3  leafNormEnc = texture(normalArray,  coord).rgb;
 
-    // ---------------------------------------------------------------
-    // Background colour from a high mip-level sample.
-    // The CPU compositor pre-fills empty billboard pixels with the
-    // opacity-weighted average leaf colour, so a high-mip sample
-    // already returns a spatially-averaged, leaf-derived background
-    // without needing the division trick.
-    // ---------------------------------------------------------------
+    // Background: nearest-leaf-filled by CPU compositor; high-mip gives spatial blend.
     const float kAvgMip = 5.0;
     vec3 bgAlbedo  = textureLod(albedoArray, coord, kAvgMip).rgb;
     vec3 bgNormEnc = textureLod(normalArray, coord, kAvgMip).rgb;
 
-    // Decode normals from [0,1] to [-1,1] tangent space.
-    vec3  leafNorm = normalize(leafNormEnc * 2.0 - 1.0);
-    vec3  bgNorm   = normalize(bgNormEnc   * 2.0 - 1.0);
+    // Decode tangent-space normals from [0,1] to [-1,1].
+    vec3 leafNorm = normalize(leafNormEnc * 2.0 - 1.0);
+    vec3 bgNorm   = normalize(bgNormEnc   * 2.0 - 1.0);
 
-    // Normal confidence: Z in tangent space — 1 = facing viewer (leaf interior),
-    // 0 = grazing / edge pixel.
+    // Normal confidence: Z in tangent space — 1 = facing viewer, 0 = grazing.
     float leafNConf = clamp(leafNorm.z, 0.0, 1.0);
-    float bgNConf   = clamp(bgNorm.z,  0.0, 1.0);
+    float bgNConf   = clamp(bgNorm.z,   0.0, 1.0);
 
-    // Opacity mask: steep sigmoid kills fringe pixels.
+    // Compositing weight: opacity sigmoid + normal confidence.
     float opacityWeight = smoothstep(0.35, 0.65, opacity);
+    float normalWeight  = mix(bgNConf, leafNConf, opacityWeight);
+    float weight        = opacityWeight * normalWeight;
 
-    // Normal weight: at fringe pixels fall back to the background normal
-    // confidence so the fill colour stays surface-coherent.
-    float normalWeight = mix(bgNConf, leafNConf, opacityWeight);
+    if (weight < 0.5) discard;
 
-    // Combined alpha — both maps gate the edge.
-    float weight = opacityWeight * normalWeight;
+    // ---------------------------------------------------------------
+    // Build TBN from billboard plane geometry.
+    //
+    // T = tangent (along billboard width, from geometry shader).
+    // N = plane face normal (flipped for back-faces via gl_FrontFacing).
+    // B = cross(T, N)  =>  bitangent == dWorldPos/dV (top-to-bottom).
+    //
+    // TBN * tangentNormal  =>  world-space normal.
+    // ---------------------------------------------------------------
+    vec3 T     = normalize(inTangentWS);
+    vec3 faceN = gl_FrontFacing ? normalize(inPlaneNormal) : -normalize(inPlaneNormal);
+    vec3 B     = normalize(cross(T, faceN));
+    mat3 TBN   = mat3(T, B, faceN);
 
-    // Compose: pure leaf colour in the interior, smooth fill at the fringe.
-    outColor.rgb = mix(bgAlbedo, leafAlbedo.rgb, weight);
+    // World-space normal derived from the per-pixel tangent-space normal map.
+    vec3 worldNormal = normalize(TBN * leafNorm);
+
+    // ---------------------------------------------------------------
+    // Lighting: ambient + Lambertian diffuse + Blinn-Phong specular.
+    // ubo.lightDir points FROM the light source toward the scene.
+    // ---------------------------------------------------------------
+    vec3  L     = normalize(-ubo.lightDir.xyz);
+    float NdotL = max(dot(worldNormal, L), 0.0);
+
+    vec3  V     = normalize(ubo.viewPos.xyz - inWorldPos);
+    vec3  H     = normalize(L + V);
+    float NdotH = (NdotL > 0.0) ? max(dot(worldNormal, H), 0.0) : 0.0;
+
+    const float kAmbient  = 0.30;
+    const float kSpecular = 0.08;
+    const float kShine    = 16.0;
+    vec3 ambient  = kAmbient            * ubo.lightColor.rgb;
+    vec3 diffuse  = NdotL               * ubo.lightColor.rgb;
+    vec3 specular = pow(NdotH, kShine) * kSpecular * ubo.lightColor.rgb;
+
+    vec3 lighting = ambient + diffuse + specular;
+
+    // Final colour: leaf over nearest-leaf background, lit by world-space normal.
+    outColor.rgb = mix(bgAlbedo, leafAlbedo.rgb, weight) * lighting;
     outColor.a   = weight;
-
-    if (outColor.a < 0.5) discard;
 }
