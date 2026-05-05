@@ -1255,19 +1255,34 @@ void MyApp::setupVegetationTextures() {
         }
 
         const size_t tileCount = vegetationAtlasManager.getTileCount(atlasIndex);
-        for (size_t tileIndex = 0; tileIndex < tileCount; ++tileIndex) {
+        if (tileCount == 0) continue;
+
+        // Repeat tiles until there are at least minSlots to fill the full width.
+        const size_t minSlots   = 5;
+        const size_t repeats    = (minSlots + tileCount - 1) / tileCount;
+        const size_t totalSlots = repeats * tileCount;
+
+        for (size_t slot = 0; slot < totalSlots; ++slot) {
+            const size_t tileIndex = slot % tileCount;
+            const AtlasTile* tile  = vegetationAtlasManager.getTile(atlasIndex, static_cast<int>(tileIndex));
+
             BillboardLayer layer;
             layer.atlasIndex = atlasIndex;
-            layer.tileIndex = static_cast<int>(tileIndex);
-            layer.offsetX = (tileCount > 0)
-                ? (static_cast<float>(tileIndex) / static_cast<float>(tileCount))
-                : 0.0f;
+            layer.tileIndex  = static_cast<int>(tileIndex);
+            // Distribute slots uniformly left-to-right in normalised [-1,+1] space.
+            // Centre of slot s of n: (2s+1)/n − 1
+            layer.offsetX = (2.0f * static_cast<float>(slot) + 1.0f)
+                            / static_cast<float>(totalSlots) - 1.0f;
             layer.offsetY = 0.0f;
-            layer.scaleX = 1.0f;
+            // Scale each tile to exactly fill its 1/totalSlots slot of billboard width.
+            // In compositeLayer: visible_width = 2 * scaleX * tile->scaleX, desired = 2/totalSlots.
+            layer.scaleX = (tile && tile->scaleX > 1e-6f)
+                           ? 1.0f / (tile->scaleX * static_cast<float>(totalSlots))
+                           : 1.0f;
             layer.scaleY = 1.0f;
             layer.rotation = 0.0f;
-            layer.opacity = 1.0f;
-            layer.renderOrder = static_cast<int>(tileIndex);
+            layer.opacity  = 1.0f;
+            layer.renderOrder = static_cast<int>(slot);
 
             billboardManager.addLayer(bidx, layer);
         }
