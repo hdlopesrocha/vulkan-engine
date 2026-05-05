@@ -39,6 +39,19 @@ float rand(inout uint state) {
     return float(state & 0x00FFFFFFu) / float(0x01000000u);
 }
 
+// Hash a world-space position (quantised to 1/8-unit grid) into a seed.
+// Using the centre of a triangle as input makes the instance placement
+// independent of triangle index order: if geometry elsewhere in the chunk
+// changes (SDF operations), the same triangle at the same world position
+// always produces the same random sequence.
+uint posHash(vec3 p) {
+    ivec3 qi = ivec3(round(p * 8.0));
+    uint h = uint(qi.x) * 1640531513u;
+    h ^= uint(qi.y) * 2246822519u;
+    h ^= uint(qi.z) * 3266489917u;
+    return h;
+}
+
 void main() {
     uint tri = gl_GlobalInvocationID.x + push.baseTri;
     uint triBase = tri * 3;
@@ -68,19 +81,39 @@ void main() {
         return;
     }
 
+    // Seed from the triangle centre position so that instances are stable
+    // across geometry changes: if the triangle hasn't moved, the same instances
+    // are generated regardless of what other triangles exist in the buffer.
+    vec3 triCenter = (v0 + v1 + v2) / 3.0;
+    uint triCenterHash = posHash(triCenter);
+
     // For each instance to generate on this triangle
     for (uint i = 0; i < push.instancesPerTriangle; ++i) {
-        // Barycentric random point
-        uint state = push.seed ^ (tri * 73856093u) ^ (i * 19349663u);
+        // Barycentric random point.
+        // Mix in `tri` (global invocation index) alongside the triangle centre hash so
+        // that duplicate virtual slots for the same large triangle each sample a
+        // different point and never coincide.
+        uint state = push.seed ^ triCenterHash ^ (tri * 2654435761u) ^ (i * 19349663u);
         float u = rand(state);
         float v = rand(state);
         if (u + v > 1.0) { u = 1.0 - u; v = 1.0 - v; }
         float w = 1.0 - u - v;
         vec3 pos = u * v0 + v * v1 + w * v2;
-        // Assign a random billboard index to the .w component
+
+        // Assign a random billboard index
         uint billboardIndex = uint(rand(state) * float(push.billboardCount));
         if (billboardIndex >= push.billboardCount) billboardIndex = push.billboardCount - 1;
+
+        // Derive Y-axis rotation from the final world position so that the same
+        // plant at the same spot always faces the same direction, even when the
+        // chunk is regenerated after SDF edits elsewhere.
+        uint rotState = push.seed ^ posHash(pos);
+        float rotFrac = rand(rotState); // [0, 1) → full 360° range
+
+        // Pack rotation into the fractional part of .w:
+        //   floor(w) = billboardIndex   (extracted in vertex shader with floor())
+        //   fract(w) = rotFrac          (extracted in geometry shader with fract())
         uint outIdx = tri * push.instancesPerTriangle + i;
-        outInstances[outIdx] = vec4(pos, float(billboardIndex));
+        outInstances[outIdx] = vec4(pos, float(billboardIndex) + rotFrac);
     }
 }

@@ -61,6 +61,11 @@ float perlin2(vec2 p) {
     return mix(nx0, nx1, u.y);
 }
 
+// Rotate a direction vector around the world-up (Y) axis.
+vec3 rotateY(vec3 v, float c, float s) {
+    return vec3(c * v.x - s * v.z, v.y, s * v.x + c * v.z);
+}
+
 float hash13(vec3 p3) {
     p3 = fract(p3 * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
@@ -146,7 +151,12 @@ void main() {
     // 45 degree inclination: tan(45) = 1, so top offset equals height.
     float tilt = h;
     int   ti = fragTexIndexIn[0];
-    float layer = fragTexCoordIn[0].z;
+
+    // Extract per-instance Y-axis rotation packed in fract(instanceData.w).
+    // fract is in [0,1) → theta in [0, 2*PI) for full random rotation.
+    float theta = fract(fragTexCoordIn[0].z) * 6.28318530718;
+    float cosT  = cos(theta);
+    float sinT  = sin(theta);
 
     vec3 outwardDirs[4] = vec3[4](
         vec3( 1.0, 0.0, 0.0),
@@ -155,7 +165,7 @@ void main() {
         vec3( 0.0, 0.0,-1.0)
     );
 
-    vec3 tangents[6] = vec3[6](
+    vec3 baseTangents[6] = vec3[6](
         vec3( 0.0, 0.0, 1.0),
         vec3(-1.0, 0.0, 0.0),
         vec3( 0.0, 0.0,-1.0),
@@ -166,8 +176,8 @@ void main() {
 
     // 4 planes with 45-degree inclination rotated laterally.
     for (int p = 0; p < 4; ++p) {
-        vec3 tangent = tangents[p];
-        vec3 outward = outwardDirs[p];
+        vec3 tangent = rotateY(baseTangents[p], cosT, sinT);
+        vec3 outward = rotateY(outwardDirs[p],  cosT, sinT);
 
         vec3 bl = worldPos - tangent * hs + applyWindSkew(worldPos, tangent, 0.0);
         vec3 br = worldPos + tangent * hs + applyWindSkew(worldPos, tangent, 0.0);
@@ -179,16 +189,16 @@ void main() {
         outPlaneNormal = normalize(cross(tangent, normalize(worldUp + outward)));
         outTangentWS   = tangent;
 
-        gl_Position = ubo.viewProjection * vec4(bl, 1.0); inTexCoord = vec3(0.0, 1.0, layer); inTexIndex = ti; outWorldPos = bl; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(br, 1.0); inTexCoord = vec3(1.0, 1.0, layer); inTexIndex = ti; outWorldPos = br; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(tl, 1.0); inTexCoord = vec3(0.0, 0.0, layer); inTexIndex = ti; outWorldPos = tl; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(tr, 1.0); inTexCoord = vec3(1.0, 0.0, layer); inTexIndex = ti; outWorldPos = tr; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(bl, 1.0); inTexCoord = vec3(0.0, 1.0, float(ti)); inTexIndex = ti; outWorldPos = bl; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(br, 1.0); inTexCoord = vec3(1.0, 1.0, float(ti)); inTexIndex = ti; outWorldPos = br; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(tl, 1.0); inTexCoord = vec3(0.0, 0.0, float(ti)); inTexIndex = ti; outWorldPos = tl; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(tr, 1.0); inTexCoord = vec3(1.0, 0.0, float(ti)); inTexIndex = ti; outWorldPos = tr; EmitVertex();
         EndPrimitive();
     }
 
     // 2 vertical planes perpendicular to ground and perpendicular to each other.
     for (int p = 4; p < 6; ++p) {
-        vec3 tangent = tangents[p];
+        vec3 tangent = rotateY(baseTangents[p], cosT, sinT);
 
         vec3 bl = worldPos - tangent * hs + applyWindSkew(worldPos, tangent, 0.0);
         vec3 br = worldPos + tangent * hs + applyWindSkew(worldPos, tangent, 0.0);
@@ -199,10 +209,10 @@ void main() {
         outPlaneNormal = normalize(cross(tangent, worldUp));
         outTangentWS   = tangent;
 
-        gl_Position = ubo.viewProjection * vec4(bl, 1.0); inTexCoord = vec3(0.0, 1.0, layer); inTexIndex = ti; outWorldPos = bl; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(br, 1.0); inTexCoord = vec3(1.0, 1.0, layer); inTexIndex = ti; outWorldPos = br; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(tl, 1.0); inTexCoord = vec3(0.0, 0.0, layer); inTexIndex = ti; outWorldPos = tl; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(tr, 1.0); inTexCoord = vec3(1.0, 0.0, layer); inTexIndex = ti; outWorldPos = tr; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(bl, 1.0); inTexCoord = vec3(0.0, 1.0, float(ti)); inTexIndex = ti; outWorldPos = bl; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(br, 1.0); inTexCoord = vec3(1.0, 1.0, float(ti)); inTexIndex = ti; outWorldPos = br; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(tl, 1.0); inTexCoord = vec3(0.0, 0.0, float(ti)); inTexIndex = ti; outWorldPos = tl; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(tr, 1.0); inTexCoord = vec3(1.0, 0.0, float(ti)); inTexIndex = ti; outWorldPos = tr; EmitVertex();
         EndPrimitive();
     }
 }

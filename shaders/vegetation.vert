@@ -33,7 +33,10 @@ void main() {
     vec3 worldPos = instanceData.xyz;
     gl_Position = ubo.viewProjection * vec4(worldPos, 1.0);
     // Pass layer index as z component of texcoord; xy will be set in geometry shader
+    // instanceData.w = float(billboardIndex) + rotFrac, where:
+    //   floor(w) = billboard index
+    //   fract(w) = Y-axis rotation fraction in [0,1) → angle = fract * 2*PI in geometry shader
     fragTexCoord = vec3(0.0, 0.0, instanceData.w);
-    fragTexIndex = int(round(instanceData.w)); // per-instance billboard index
+    fragTexIndex = int(floor(instanceData.w)); // billboard index (strip rotation fraction)
     fragWorldPos = worldPos;
 }
