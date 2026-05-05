@@ -23,9 +23,6 @@ public:
     void endPass(VkCommandBuffer cmd, uint32_t frameIndex, VulkanApp* app);
     void cleanup(VulkanApp* app);
 
-    // Depth pre-pass that binds depthPrePassPipeline and draws indirect only
-    void depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VulkanApp* app);
-
     // Draw main solid geometry: bind pipeline and draw
     void render(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet);
 

@@ -300,32 +300,6 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     vertexShader.info.module = VK_NULL_HANDLE;
 }
 
-void SolidRenderer::depthPrePass(VkCommandBuffer &commandBuffer, VkQueryPool queryPool, VulkanApp* app) {
-    if (!app) {
-        std::cerr << "[SolidRenderer::depthPrePass] app is nullptr, skipping." << std::endl;
-        return;
-    }
-    if (depthPrePassPipeline == VK_NULL_HANDLE) {
-        std::cerr << "[SolidRenderer::depthPrePass] depthPrePassPipeline is VK_NULL_HANDLE, skipping." << std::endl;
-        return;
-    }
-
-    //printf("[SolidRenderer] vkCmdBindPipeline: depthPrePassPipeline=%p\n", (void*)depthPrePassPipeline);
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
-    // Bind the main descriptor set (UBO/samplers/materials) at set 0 for the depth pre-pass.
-    VkDescriptorSet mainDs = app->getMainDescriptorSet();
-    if (mainDs != VK_NULL_HANDLE) {
-            //printf("[BIND] SolidRenderer::depthPrePass: layout=%p firstSet=0 count=1 sets=%p\n", (void*)depthPrePassPipelineLayout, (void*)mainDs);
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipelineLayout, 0, 1, &mainDs, 0, nullptr);
-        }
-    // Bind vertex and index buffers before issuing draw commands
-    indirectRenderer.bindBuffers(commandBuffer);
-    indirectRenderer.drawIndirectOnly(commandBuffer, app);
-    if (queryPool != VK_NULL_HANDLE) {
-        vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, queryPool, 5);
-    }
-}
-
 void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet) {
     static int frameCount = 0;
     if (frameCount++ == 0) {

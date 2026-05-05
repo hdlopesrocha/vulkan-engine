@@ -198,7 +198,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
     }
 }
 
-void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
+void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, const glm::mat4 &viewProj,
                   const UniformObject &uboStatic, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent) {
     if (commandBuffer == VK_NULL_HANDLE) {
         std::cerr << "[SceneRenderer::mainPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
@@ -212,11 +212,8 @@ void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkR
     }
     if (wireframeEnabled && solidWireframe) {
         solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, solidRenderer->getIndirectRenderer());
-    }else {
+    } else {
         solidRenderer->render(commandBuffer, app, perTextureDescriptorSet);
-    }
-    if (vegetationEnabled && vegetationRenderer) {
-        vegetationRenderer->draw(app, commandBuffer, perTextureDescriptorSet, viewProj, glm::vec3(uboStatic.viewPos));
     }
 }
 
@@ -229,7 +226,7 @@ void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDe
     skyRenderer->render(app, commandBuffer, perTextureDescriptorSet, mainUniformBuffer, uboStatic, viewProj, mode);
 }
 
-void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, float waterTime, bool skipBackFace, VkImageView skyView, VkImageView cubeReflectionView) {
+void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, float waterTime, bool skipBackFace, VkImageView skyView, VkImageView cubeReflectionView) {
     if (commandBuffer == VK_NULL_HANDLE) {
         std::cerr << "[SceneRenderer::waterPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
         return;

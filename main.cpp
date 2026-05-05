@@ -74,18 +74,18 @@ public:
     std::shared_ptr<Brush3dWidget> brush3dWidget;
     // Shared brush entries edited by Brush3dWidget (owned by MyApp)
     Brush3dManager brushManager;
-    VkQueryPool queryPool = VK_NULL_HANDLE;
-    static constexpr uint32_t QUERY_COUNT = 12;
+    static constexpr uint32_t QUERY_COUNT = 14; // 7 intervals × 2 timestamps each
+    std::array<VkQueryPool, 2> queryPools = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    bool queryPoolReady[2] = {false, false};
     float timestampPeriod = 0.0f;
     bool profilingEnabled = true;
-    float profileShadowCull = 0.0f;
-    float profileShadowDraw = 0.0f;
+    float profileShadow = 0.0f;
     float profileMainCull = 0.0f;
-    float profileDepthPrepass = 0.0f;
-    float profileMainDraw = 0.0f;
     float profileSky = 0.0f;
-    float profileImGui = 0.0f;
+    float profileSolidDraw = 0.0f;
+    float profileVegetation = 0.0f;
     float profileWater = 0.0f;
+    float profileImGui = 0.0f;
     float profileCpuUpdate = 0.0f;
     float profileCpuRecord = 0.0f;
     VkDescriptorSet shadowPassDescriptorSet = VK_NULL_HANDLE;
@@ -412,6 +412,23 @@ public:
         // Create brush3dWidget after setupTextures() so loadedTextureLayers is set.
         brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager, &eventManager);
         widgetManager.addWidget(brush3dWidget);
+
+        // Create per-frame timestamp query pools for GPU profiling
+        {
+            VkPhysicalDeviceProperties physProps{};
+            vkGetPhysicalDeviceProperties(getPhysicalDevice(), &physProps);
+            timestampPeriod = physProps.limits.timestampPeriod;
+            if (timestampPeriod > 0.0f) {
+                VkQueryPoolCreateInfo qpci{};
+                qpci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+                qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+                qpci.queryCount = QUERY_COUNT;
+                for (uint32_t f = 0; f < 2; ++f) {
+                    if (vkCreateQueryPool(getDevice(), &qpci, nullptr, &queryPools[f]) != VK_SUCCESS)
+                        throw std::runtime_error("Failed to create timestamp query pool");
+                }
+            }
+        }
     }
 
     // Move vegetation texture setup into its own method for clarity
@@ -428,6 +445,7 @@ public:
 // (setup implementation defined out-of-line below)
 
     void update(float deltaTime) override {
+        auto cpuUpdateT0 = std::chrono::high_resolution_clock::now();
         // Poll keyboard input and publish events
         keyboardPublisher.update(getWindow(), &eventManager, camera, deltaTime, &controllerManager, &brushManager, false);
         // Poll gamepad input and publish events (if a controller is connected)
@@ -446,9 +464,38 @@ public:
             sceneRenderer->vegetationRenderer->setWindTime(mainTime);
             sceneRenderer->vegetationRenderer->setImpostorDistance(settings.impostorDistance);
         }
+        profileCpuUpdate = std::chrono::duration<float, std::milli>(
+            std::chrono::high_resolution_clock::now() - cpuUpdateT0).count();
     }
 
     void preRenderPass(VkCommandBuffer &commandBuffer) override {
+        uint32_t frameIdx = getCurrentFrame();
+
+        // Profiling: read previous frame's query results (fence guaranteed signaled), then reset for this frame
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE) {
+            if (queryPoolReady[frameIdx]) {
+                uint64_t ts[QUERY_COUNT] = {};
+                if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 0, QUERY_COUNT,
+                        sizeof(ts), ts, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS
+                        && timestampPeriod > 0.0f) {
+                    auto ms = [&](uint32_t a, uint32_t b) -> float {
+                        return static_cast<float>(ts[b] - ts[a]) * timestampPeriod * 1e-6f;
+                    };
+                    profileShadow     = ms(0,  1);
+                    profileMainCull   = ms(2,  3);
+                    profileSky        = ms(4,  5);
+                    profileSolidDraw  = ms(6,  7);
+                    profileVegetation = ms(8,  9);
+                    profileWater      = ms(10, 11);
+                    profileImGui      = ms(12, 13);
+                }
+            }
+            vkCmdResetQueryPool(commandBuffer, queryPools[frameIdx], 0, QUERY_COUNT);
+            queryPoolReady[frameIdx] = true;
+        }
+
+        auto cpuRecordT0 = std::chrono::high_resolution_clock::now();
+
         // Rebuild projection matrix FIRST so viewProj below reflects current near/far settings
         {
             float aspectRatio = static_cast<float>(getWidth()) / static_cast<float>(getHeight());
@@ -484,11 +531,15 @@ public:
 
         // Shadow pass: renders solid geometry into shadow map from light's perspective
         // Must run AFTER UBO is built (needs lightSpaceMatrix, passParams, etc.)
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 0);
         if (sceneRenderer) {
             sceneRenderer->shadowPass(this, commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, settings.enableShadows, settings.vegetationEnabled);
         } else {
             std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping shadow pass\n";
         }
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 1);
 
         // Upload UBO to GPU
         if (sceneRenderer) {
@@ -501,15 +552,20 @@ public:
         }
 
 
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
         sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
 
         const bool waterEnabled = settings.waterEnabled;
         const bool vegetationEnabled = settings.vegetationEnabled;
 
         // Render sky + solids/vegetation into the solid offscreen framebuffer (one per frame)
-        uint32_t frameIdx = getCurrentFrame();
 
         // Render sky to its own offscreen FBO so it can be sampled as a texture by the water shader
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 4);
         if (sceneRenderer->skyRenderer) {
             SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
             sceneRenderer->skyRenderer->renderOffscreen(this, commandBuffer, frameIdx,
@@ -537,11 +593,25 @@ public:
             memcpy(data, &uboStatic, sizeof(UniformObject));
             vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory);
         }
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 5);
 
         VkRenderPassBeginInfo unusedRpInfo{};
         // Sky is now rendered inside the solid pass above, before solid geometry.
-        sceneRenderer->mainPass(this, commandBuffer, unusedRpInfo, frameIdx, waterEnabled, vegetationEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode, profilingEnabled, queryPool,
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
+        sceneRenderer->mainPass(this, commandBuffer, unusedRpInfo, frameIdx, waterEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode,
             viewProj, uboStatic, true, false, true, 0, 0.0f, 0.0f);
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
+
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 8);
+        if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
+            sceneRenderer->vegetationRenderer->draw(this, commandBuffer, getMainDescriptorSet(), viewProj, camera.getPosition());
+        }
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 9);
 
         // Render debug cubes for expanded octree nodes, node instances, and vegetation density centers.
         const bool showOctreeDebug = octreeExplorerWidget && octreeExplorerWidget->getShowDebugCubes();
@@ -900,15 +970,21 @@ public:
             if (sceneRenderer && sceneRenderer->solid360Renderer) cubeReflectionView = sceneRenderer->solid360Renderer->getSolid360View();
             VkImageView skyView = (sceneRenderer && sceneRenderer->skyRenderer) ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
             // If we launched an async back-face submission, tell waterPass to skip issuing it again.
-            sceneRenderer->waterPass(this, commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), settings.wireframeMode, profilingEnabled, queryPool,
+            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 10);
+            sceneRenderer->waterPass(this, commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), settings.wireframeMode,
                 mainTime, launchedBackFace, skyView, cubeReflectionView);
+            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 11);
         }
 
         // Wait for any async recording/submits to complete their submit calls so semaphores are registered
         for (auto &t : asyncTasks) {
             if (t.joinable()) t.join();
         }
-        
+
+        profileCpuRecord = std::chrono::duration<float, std::milli>(
+            std::chrono::high_resolution_clock::now() - cpuRecordT0).count();
     }
 
     void renderImGui() override {
@@ -1011,14 +1087,14 @@ public:
                 if (profilingEnabled) {
                     ImGui::Separator();
                     ImGui::Text("--- GPU Timing (ms) ---");
-                    float gpuTotal = profileShadowCull + profileShadowDraw + profileMainCull +
-                                     profileDepthPrepass + profileMainDraw + profileSky + profileImGui;
-                    ImGui::Text("Shadow Cull:   %.2f", profileShadowCull);
-                    ImGui::Text("Shadow Draw:   %.2f", profileShadowDraw);
+                    float gpuTotal = profileShadow + profileMainCull + profileSky +
+                                     profileSolidDraw + profileVegetation + profileWater + profileImGui;
+                    ImGui::Text("Shadow:        %.2f", profileShadow);
                     ImGui::Text("Main Cull:     %.2f", profileMainCull);
-                    ImGui::Text("Depth Prepass: %.2f", profileDepthPrepass);
-                    ImGui::Text("Main Draw:     %.2f", profileMainDraw);
                     ImGui::Text("Sky:           %.2f", profileSky);
+                    ImGui::Text("Solid Draw:    %.2f", profileSolidDraw);
+                    ImGui::Text("Vegetation:    %.2f", profileVegetation);
+                    ImGui::Text("Water:         %.2f", profileWater);
                     ImGui::Text("ImGui:         %.2f", profileImGui);
                     ImGui::Text("GPU Total:     %.2f", gpuTotal);
                     ImGui::Separator();
@@ -1155,7 +1231,12 @@ public:
             std::cerr << "[MyApp::draw] Error: commandBuffer is VK_NULL_HANDLE before ImGui rendering, skipping ImGui." << std::endl;
         } else {
             //std::cerr << "[MyApp::draw] ImGui::GetDrawData() valid, calling ImGui_ImplVulkan_RenderDrawData..." << std::endl;
+            VkQueryPool qp = queryPools[getCurrentFrame()];
+            if (profilingEnabled && qp != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, qp, 12);
             ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
+            if (profilingEnabled && qp != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp, 13);
         }
     }
 
@@ -1179,6 +1260,14 @@ public:
         // Cleanup scene renderer and all sub-renderers
         if (sceneRenderer) {
             sceneRenderer->cleanup(this);
+        }
+
+        // Destroy timestamp query pools
+        for (uint32_t f = 0; f < 2; ++f) {
+            if (queryPools[f] != VK_NULL_HANDLE) {
+                vkDestroyQueryPool(getDevice(), queryPools[f], nullptr);
+                queryPools[f] = VK_NULL_HANDLE;
+            }
         }
         // NOTE: Vulkan-owned objects for global managers are now cleaned up by
         // `VulkanResourceManager::cleanup(device)`. Avoid calling manager-level

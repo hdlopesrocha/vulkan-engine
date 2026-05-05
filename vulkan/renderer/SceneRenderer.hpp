@@ -142,9 +142,9 @@ public:
 
     void shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool vegetationEnabled);
     void skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj);
-    void mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, bool vegetationEnabled, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, const glm::mat4 &viewProj,
+    void mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, const glm::mat4 &viewProj,
                   const UniformObject &uboStatic, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent);
-    void waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, bool profilingEnabled, VkQueryPool queryPool, float waterTime, bool skipBackFace = false, VkImageView skyView = VK_NULL_HANDLE, VkImageView cubeReflectionView = VK_NULL_HANDLE);
+    void waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, float waterTime, bool skipBackFace = false, VkImageView skyView = VK_NULL_HANDLE, VkImageView cubeReflectionView = VK_NULL_HANDLE);
     void init(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterParams>& waterParams);
     // Re-update main descriptor set when texture arrays are (re)allocated
     void updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager);
