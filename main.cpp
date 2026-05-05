@@ -140,6 +140,8 @@ public:
     // consumed in `postSubmit()`.
     bool brushRebuildPending = true;
     bool generateMapPending = false;
+    bool loadScenePending = false;
+    std::string pendingLoadPath;
     size_t cubeCount = 0;
 
     // Camera and input
@@ -420,6 +422,8 @@ public:
     void rebuildBrushScene();
     // Clear GPU meshes, reset octrees and regenerate via MainSceneLoader
     void generateMap();
+    // Clear GPU meshes, reset octrees, load from file and tessellate
+    void loadSceneFromFile(const std::string& path);
 
 // (setup implementation defined out-of-line below)
 
@@ -959,7 +963,8 @@ public:
                 ImGui::Text("Folder path:");
                 ImGui::InputText("##loadfolder", sceneFolderBuf, sizeof(sceneFolderBuf));
                 if (ImGui::Button("Load")) {
-                    if (mainScene) mainScene->load(sceneFolderBuf);
+                    pendingLoadPath = sceneFolderBuf;
+                    loadScenePending = true;
                     SettingsFile settingsFile(&settings, "settings");
                     settingsFile.load(sceneFolderBuf);
                     ImGui::CloseCurrentPopup();
@@ -1571,6 +1576,38 @@ void MyApp::generateMap() {
     });
 }
 
+void MyApp::loadSceneFromFile(const std::string& path) {
+    if (sceneProcessThread.joinable()) sceneProcessThread.join();
+
+    deviceWaitIdle();
+
+    if (sceneRenderer) {
+        sceneRenderer->removeAllRegisteredMeshes();
+        sceneRenderer->removeAllTransparentMeshes();
+        sceneRenderer->nodeDebugCubes.clear();
+    }
+
+    mainScene->getOpaqueOctree().reset();
+    mainScene->transparentOctree.reset();
+
+    sceneUniqueSolidHandler->clear();
+    sceneUniqueLiquidHandler->clear();
+
+    if (octreeExplorerWidget)
+        octreeExplorerWidget->octreeReady.store(false, std::memory_order_release);
+
+    mainScene->load(path, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler);
+    std::cout << "[MyApp::loadSceneFromFile] Octree loaded from '" << path << "'\n";
+
+    sceneProcessThread = std::thread([this]() {
+        sceneUniqueSolidHandler->handleEvents();
+        sceneUniqueLiquidHandler->handleEvents();
+        if (octreeExplorerWidget)
+            octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
+        std::cout << "[MyApp::loadSceneFromFile] Scene tessellation complete\n";
+    });
+}
+
 void MyApp::postSubmit() {
     if (textureMixer) {
         textureMixer->flushPendingRequests(this);
@@ -1587,6 +1624,11 @@ void MyApp::postSubmit() {
     if (generateMapPending) {
         generateMapPending = false;
         generateMap();
+    }
+
+    if (loadScenePending) {
+        loadScenePending = false;
+        loadSceneFromFile(pendingLoadPath);
     }
 }
 
