@@ -759,13 +759,20 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 // Drain whatever CPU-generated mesh data the background loading thread has
 // queued since the last frame, and perform the actual Vulkan GPU uploads.
 // Must be called from the main (render) thread each frame.
-void SceneRenderer::processPendingMeshes(VulkanApp* app) {
+void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
     // Cap uploads per frame so the render loop stays responsive.
     // Remaining entries stay in the queue for subsequent frames.
     static constexpr size_t kMaxPerFrame = 4;
     std::deque<PendingMeshData> batch;
     {
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
+        // Sort by ascending distance so chunks closest to the camera are uploaded first.
+        std::sort(pendingMeshQueue.begin(), pendingMeshQueue.end(),
+            [&cameraPos](const PendingMeshData& a, const PendingMeshData& b) {
+                glm::vec3 da = cameraPos - a.nodeData.cube.getCenter();
+                glm::vec3 db = cameraPos - b.nodeData.cube.getCenter();
+                return glm::dot(da, da) < glm::dot(db, db);
+            });
         size_t n = std::min(pendingMeshQueue.size(), kMaxPerFrame);
         batch.insert(batch.end(),
                      std::make_move_iterator(pendingMeshQueue.begin()),

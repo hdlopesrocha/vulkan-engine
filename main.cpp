@@ -443,7 +443,7 @@ public:
         // Drain the pending mesh queue populated by the background scene-loading
         // thread.  GPU uploads happen here on the main thread so newly generated
         // chunks become visible progressively without blocking the render loop.
-        if (sceneRenderer) sceneRenderer->processPendingMeshes(this);
+        if (sceneRenderer) sceneRenderer->processPendingMeshes(this, camera.getPosition());
 
         mainTime += deltaTime;
         if (sceneRenderer && sceneRenderer->vegetationRenderer) {

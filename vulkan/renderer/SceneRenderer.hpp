@@ -180,7 +180,7 @@ public:
     };
     // Drain the pending mesh queue on the main (render) thread.
     // Call once per frame from update() before recording command buffers.
-    void processPendingMeshes(VulkanApp* app);
+    void processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos);
 
 private:
     // Callbacks stored here so handler references remain valid
