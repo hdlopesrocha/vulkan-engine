@@ -59,6 +59,9 @@ void ImpostorCapture::init(VulkanApp* app) {
         app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             1, 0, TOTAL_LAYERS);
+        app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            1, 0, TOTAL_LAYERS);
     });
 
     initDone = true;
@@ -171,6 +174,18 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
     if (captureImage  != VK_NULL_HANDLE) { app->resources.removeImage(captureImage);       vkDestroyImage(device, captureImage, nullptr);  captureImage  = VK_NULL_HANDLE; }
     if (captureMemory != VK_NULL_HANDLE) { app->resources.removeDeviceMemory(captureMemory); vkFreeMemory(device, captureMemory, nullptr); captureMemory = VK_NULL_HANDLE; }
 
+    // Normal capture image views.
+    for (auto& v : captureNormalLayerViews) {
+        if (v != VK_NULL_HANDLE) { app->resources.removeImageView(v); vkDestroyImageView(device, v, nullptr); v = VK_NULL_HANDLE; }
+    }
+    if (captureNormalArrayView != VK_NULL_HANDLE) {
+        app->resources.removeImageView(captureNormalArrayView);
+        vkDestroyImageView(device, captureNormalArrayView, nullptr);
+        captureNormalArrayView = VK_NULL_HANDLE;
+    }
+    if (captureNormalImage  != VK_NULL_HANDLE) { app->resources.removeImage(captureNormalImage);       vkDestroyImage(device, captureNormalImage, nullptr);  captureNormalImage  = VK_NULL_HANDLE; }
+    if (captureNormalMemory != VK_NULL_HANDLE) { app->resources.removeDeviceMemory(captureNormalMemory); vkFreeMemory(device, captureNormalMemory, nullptr); captureNormalMemory = VK_NULL_HANDLE; }
+
     capturedTypes = 0;
     initDone = false;
 }
@@ -196,10 +211,9 @@ void ImpostorCapture::capture(VulkanApp* app,
     // Remove old ImGui descriptors for this type before overwriting images.
     for (uint32_t v = 0; v < NUM_VIEWS; ++v) {
         VkDescriptorSet& ds = imguiDescSets[layerBase + v];
-        if (ds != VK_NULL_HANDLE) {
-            ImGui_ImplVulkan_RemoveTexture(ds);
-            ds = VK_NULL_HANDLE;
-        }
+        if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); ds = VK_NULL_HANDLE; }
+        VkDescriptorSet& dsN = imguiNormalDescSets[layerBase + v];
+        if (dsN != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(dsN); dsN = VK_NULL_HANDLE; }
     }
 
     // Update the texture descriptor set with current billboard arrays.
@@ -266,9 +280,10 @@ void ImpostorCapture::capture(VulkanApp* app,
         for (uint32_t viewIdx = 0; viewIdx < NUM_VIEWS; ++viewIdx) {
             const uint32_t layerIdx = layerBase + viewIdx;
 
-            VkClearValue clearVals[2]{};
+            VkClearValue clearVals[3]{};
             clearVals[0].color        = { 0.0f, 0.0f, 0.0f, 0.0f };
-            clearVals[1].depthStencil = { 1.0f, 0 };
+            clearVals[1].color        = { 0.5f, 0.5f, 1.0f, 0.0f }; // flat-up normal encoded
+            clearVals[2].depthStencil = { 1.0f, 0 };
 
             VkRenderPassBeginInfo rpBegin{};
             rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -276,7 +291,7 @@ void ImpostorCapture::capture(VulkanApp* app,
             rpBegin.framebuffer       = framebuffers[layerIdx];
             rpBegin.renderArea.offset = { 0, 0 };
             rpBegin.renderArea.extent = { TEX_SIZE, TEX_SIZE };
-            rpBegin.clearValueCount   = 2;
+            rpBegin.clearValueCount   = 3;
             rpBegin.pClearValues      = clearVals;
 
             vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
@@ -326,6 +341,11 @@ void ImpostorCapture::captureAll(VulkanApp* app,
 VkDescriptorSet ImpostorCapture::getImGuiDescSet(uint32_t billboardType, uint32_t viewIdx) const {
     if (billboardType >= NUM_BILLBOARD_TYPES || viewIdx >= NUM_VIEWS) return VK_NULL_HANDLE;
     return imguiDescSets[billboardType * NUM_VIEWS + viewIdx];
+}
+
+VkDescriptorSet ImpostorCapture::getImGuiNormalDescSet(uint32_t billboardType, uint32_t viewIdx) const {
+    if (billboardType >= NUM_BILLBOARD_TYPES || viewIdx >= NUM_VIEWS) return VK_NULL_HANDLE;
+    return imguiNormalDescSets[billboardType * NUM_VIEWS + viewIdx];
 }
 
 uint32_t ImpostorCapture::closestView(const glm::vec3& dir) const {
@@ -399,6 +419,62 @@ void ImpostorCapture::createCaptureImages(VulkanApp* app) {
             throw std::runtime_error("ImpostorCapture: captureLayerView failed");
         app->resources.addImageView(captureLayerViews[i], "ImpostorCapture: captureLayerView");
     }
+
+    // ── Normal capture image (world-space normals, same dimensions/format) ──
+    {
+        VkImageCreateInfo imgInfo{};
+        imgInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imgInfo.imageType     = VK_IMAGE_TYPE_2D;
+        imgInfo.format        = fmt;
+        imgInfo.extent        = { TEX_SIZE, TEX_SIZE, 1 };
+        imgInfo.mipLevels     = 1;
+        imgInfo.arrayLayers   = TOTAL_LAYERS;
+        imgInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        imgInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        imgInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(device, &imgInfo, nullptr, &captureNormalImage) != VK_SUCCESS)
+            throw std::runtime_error("ImpostorCapture: captureNormalImage creation failed");
+        app->resources.addImage(captureNormalImage, "ImpostorCapture: captureNormalImage");
+
+        VkMemoryRequirements memReq;
+        vkGetImageMemoryRequirements(device, captureNormalImage, &memReq);
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize  = memReq.size;
+        allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits,
+                                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &captureNormalMemory) != VK_SUCCESS)
+            throw std::runtime_error("ImpostorCapture: captureNormalMemory allocation failed");
+        app->resources.addDeviceMemory(captureNormalMemory, "ImpostorCapture: captureNormalMemory");
+        vkBindImageMemory(device, captureNormalImage, captureNormalMemory, 0);
+    }
+
+    // All-layers normal view.
+    {
+        VkImageViewCreateInfo v{};
+        v.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        v.image            = captureNormalImage;
+        v.viewType         = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        v.format           = fmt;
+        v.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, TOTAL_LAYERS };
+        if (vkCreateImageView(device, &v, nullptr, &captureNormalArrayView) != VK_SUCCESS)
+            throw std::runtime_error("ImpostorCapture: captureNormalArrayView failed");
+        app->resources.addImageView(captureNormalArrayView, "ImpostorCapture: captureNormalArrayView");
+    }
+
+    // Per-layer normal views.
+    for (uint32_t i = 0; i < TOTAL_LAYERS; ++i) {
+        VkImageViewCreateInfo v{};
+        v.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        v.image            = captureNormalImage;
+        v.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+        v.format           = fmt;
+        v.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, i, 1 };
+        if (vkCreateImageView(device, &v, nullptr, &captureNormalLayerViews[i]) != VK_SUCCESS)
+            throw std::runtime_error("ImpostorCapture: captureNormalLayerView failed");
+        app->resources.addImageView(captureNormalLayerViews[i], "ImpostorCapture: captureNormalLayerView");
+    }
 }
 
 void ImpostorCapture::createDepth(VulkanApp* app) {
@@ -444,9 +520,11 @@ void ImpostorCapture::createDepth(VulkanApp* app) {
 }
 
 void ImpostorCapture::createCaptureRenderPass(VulkanApp* app) {
-    // Color: SHADER_READ_ONLY_OPTIMAL → COLOR_ATTACHMENT → SHADER_READ_ONLY_OPTIMAL.
-    // All 60 layers are pre-transitioned to SHADER_READ_ONLY in init() so this
-    // initial layout is always valid, even on the very first capture.
+    // Attachment 0: albedo color  SHADER_READ_ONLY → COLOR_ATTACHMENT → SHADER_READ_ONLY.
+    // Attachment 1: normal color  SHADER_READ_ONLY → COLOR_ATTACHMENT → SHADER_READ_ONLY.
+    // Attachment 2: depth         DEPTH_STENCIL → DEPTH_STENCIL (reused).
+    // All 60 layers are pre-transitioned to SHADER_READ_ONLY in init() so the
+    // initial layout is always valid even on the very first capture.
     VkAttachmentDescription colorAtt{};
     colorAtt.format         = VK_FORMAT_R8G8B8A8_UNORM;
     colorAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
@@ -457,8 +535,9 @@ void ImpostorCapture::createCaptureRenderPass(VulkanApp* app) {
     colorAtt.initialLayout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     colorAtt.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Depth: DEPTH_STENCIL_ATTACHMENT → DEPTH_STENCIL_ATTACHMENT (reused every pass).
-    // The first transition (UNDEFINED → DEPTH_STENCIL) is done explicitly before the loop.
+    // Normal attachment — identical settings.
+    VkAttachmentDescription normalAtt = colorAtt;
+
     VkAttachmentDescription depthAtt{};
     depthAtt.format         = VK_FORMAT_D32_SFLOAT;
     depthAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
@@ -469,38 +548,38 @@ void ImpostorCapture::createCaptureRenderPass(VulkanApp* app) {
     depthAtt.initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     depthAtt.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-    VkAttachmentReference colorRef{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
-    VkAttachmentReference depthRef{ 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference colorRefs[2]{};
+    colorRefs[0] = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    colorRefs[1] = { 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depthRef{ 2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
 
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount    = 1;
-    subpass.pColorAttachments       = &colorRef;
+    subpass.colorAttachmentCount    = 2;
+    subpass.pColorAttachments       = colorRefs;
     subpass.pDepthStencilAttachment = &depthRef;
 
     VkSubpassDependency deps[2]{};
-    // Synchronize with previous pass's shader reads of the same image layer.
-    deps[0].srcSubpass      = VK_SUBPASS_EXTERNAL;
-    deps[0].dstSubpass      = 0;
-    deps[0].srcStageMask    = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    deps[0].dstStageMask    = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-                            | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    deps[0].srcAccessMask   = VK_ACCESS_SHADER_READ_BIT;
-    deps[0].dstAccessMask   = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
-                            | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+    deps[0].dstSubpass    = 0;
+    deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                          | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                          | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
-    // Make the written layer visible to subsequent shader reads.
-    deps[1].srcSubpass      = 0;
-    deps[1].dstSubpass      = VK_SUBPASS_EXTERNAL;
-    deps[1].srcStageMask    = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[1].dstStageMask    = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    deps[1].srcAccessMask   = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[1].dstAccessMask   = VK_ACCESS_SHADER_READ_BIT;
+    deps[1].srcSubpass    = 0;
+    deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+    deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-    VkAttachmentDescription atts[2] = { colorAtt, depthAtt };
+    VkAttachmentDescription atts[3] = { colorAtt, normalAtt, depthAtt };
     VkRenderPassCreateInfo rpInfo{};
     rpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpInfo.attachmentCount = 2;
+    rpInfo.attachmentCount = 3;
     rpInfo.pAttachments    = atts;
     rpInfo.subpassCount    = 1;
     rpInfo.pSubpasses      = &subpass;
@@ -514,11 +593,11 @@ void ImpostorCapture::createCaptureRenderPass(VulkanApp* app) {
 void ImpostorCapture::createFramebuffers(VulkanApp* app) {
     VkDevice device = app->getDevice();
     for (uint32_t i = 0; i < TOTAL_LAYERS; ++i) {
-        VkImageView atts[2] = { captureLayerViews[i], depthView };
+        VkImageView atts[3] = { captureLayerViews[i], captureNormalLayerViews[i], depthView };
         VkFramebufferCreateInfo fbInfo{};
         fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         fbInfo.renderPass      = captureRenderPass;
-        fbInfo.attachmentCount = 2;
+        fbInfo.attachmentCount = 3;
         fbInfo.pAttachments    = atts;
         fbInfo.width           = TEX_SIZE;
         fbInfo.height          = TEX_SIZE;
@@ -570,69 +649,133 @@ void ImpostorCapture::createDescSetLayouts(VulkanApp* app) {
 }
 
 void ImpostorCapture::createPipeline(VulkanApp* app) {
+    VkDevice device = app->getDevice();
+
     auto vertCode = FileReader::readFile("shaders/vegetation.vert.spv");
     auto geomCode = FileReader::readFile("shaders/vegetation.geom.spv");
-    // capture.frag stores raw composite albedo without baked lighting so that
-    // impostors.frag can apply real-time per-frame lighting at render time.
     auto fragCode = FileReader::readFile("shaders/capture.frag.spv");
 
     VkShaderModule vertShader = app->createShaderModule(vertCode);
     VkShaderModule geomShader = app->createShaderModule(geomCode);
     VkShaderModule fragShader = app->createShaderModule(fragCode);
 
-    VkPipelineShaderStageCreateInfo vertStage{};
-    vertStage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vertStage.stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    vertStage.module = vertShader;
-    vertStage.pName  = "main";
-
-    VkPipelineShaderStageCreateInfo geomStage{};
-    geomStage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    geomStage.stage  = VK_SHADER_STAGE_GEOMETRY_BIT;
-    geomStage.module = geomShader;
-    geomStage.pName  = "main";
-
-    VkPipelineShaderStageCreateInfo fragStage{};
-    fragStage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fragStage.stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragStage.module = fragShader;
-    fragStage.pName  = "main";
+    VkPipelineShaderStageCreateInfo stages[3]{};
+    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertShader;
+    stages[0].pName  = "main";
+    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage  = VK_SHADER_STAGE_GEOMETRY_BIT;
+    stages[1].module = geomShader;
+    stages[1].pName  = "main";
+    stages[2].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[2].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[2].module = fragShader;
+    stages[2].pName  = "main";
 
     VkVertexInputBindingDescription bindingDescs[2]{};
     bindingDescs[0] = { 0, sizeof(Vertex),    VK_VERTEX_INPUT_RATE_VERTEX   };
     bindingDescs[1] = { 1, sizeof(float) * 4, VK_VERTEX_INPUT_RATE_INSTANCE };
 
+    VkVertexInputAttributeDescription attrs[5]{};
+    attrs[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, position) };
+    attrs[1] = { 1, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, normal)   };
+    attrs[2] = { 2, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) };
+    attrs[3] = { 3, 0, VK_FORMAT_R32_SINT,            (uint32_t)offsetof(Vertex, texIndex) };
+    attrs[4] = { 4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                                    };
+
+    VkPipelineVertexInputStateCreateInfo vertexInput{};
+    vertexInput.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInput.vertexBindingDescriptionCount   = 2;
+    vertexInput.pVertexBindingDescriptions      = bindingDescs;
+    vertexInput.vertexAttributeDescriptionCount = 5;
+    vertexInput.pVertexAttributeDescriptions    = attrs;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount  = 1;
+
+    VkDynamicState dynStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynState{};
+    dynState.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynState.dynamicStateCount = 2;
+    dynState.pDynamicStates    = dynStates;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.cullMode    = VK_CULL_MODE_NONE;
+    rasterizer.frontFace   = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.lineWidth   = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo multisample{};
+    multisample.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    // Two color blend attachments to match the 2-attachment render pass (albedo + normal).
+    VkPipelineColorBlendAttachmentState blendAtts[2]{};
+    for (auto& b : blendAtts) {
+        b.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+                         | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        b.blendEnable    = VK_FALSE;
+    }
+    VkPipelineColorBlendStateCreateInfo colorBlend{};
+    colorBlend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlend.attachmentCount = 2;
+    colorBlend.pAttachments    = blendAtts;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable  = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp   = VK_COMPARE_OP_LESS;
+
     VkPushConstantRange pcRange{};
     pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT
                        | VK_SHADER_STAGE_FRAGMENT_BIT;
-    pcRange.offset     = 0;
     pcRange.size       = sizeof(CapturePC);
 
-    std::vector<VkDescriptorSetLayout> setLayouts = { uboDescSetLayout, texDescSetLayout };
+    VkDescriptorSetLayout layouts[2] = { uboDescSetLayout, texDescSetLayout };
+    VkPipelineLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.setLayoutCount         = 2;
+    layoutInfo.pSetLayouts            = layouts;
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges    = &pcRange;
+    if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &capturePipelineLayout) != VK_SUCCESS)
+        throw std::runtime_error("ImpostorCapture: pipelineLayout creation failed");
+    app->resources.addPipelineLayout(capturePipelineLayout, "ImpostorCapture: capturePipelineLayout");
 
-    auto [pipeline, layout] = app->createGraphicsPipeline(
-        { vertStage, geomStage, fragStage },
-        std::vector<VkVertexInputBindingDescription>{ bindingDescs[0], bindingDescs[1] },
-        {
-            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, position) },
-            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, normal)   },
-            { 2, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
-            { 3, 0, VK_FORMAT_R32_SINT,            (uint32_t)offsetof(Vertex, texIndex) },
-            { 4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                                    },
-        },
-        setLayouts,
-        &pcRange,
-        VK_POLYGON_MODE_FILL,
-        VK_CULL_MODE_NONE,
-        true,   // depthWrite
-        true,   // colorWrite
-        VK_COMPARE_OP_LESS,
-        VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
-        captureRenderPass
-    );
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount          = 3;
+    pipelineInfo.pStages             = stages;
+    pipelineInfo.pVertexInputState   = &vertexInput;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState      = &viewportState;
+    pipelineInfo.pDynamicState       = &dynState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState   = &multisample;
+    pipelineInfo.pColorBlendState    = &colorBlend;
+    pipelineInfo.pDepthStencilState  = &depthStencil;
+    pipelineInfo.layout              = capturePipelineLayout;
+    pipelineInfo.renderPass          = captureRenderPass;
+    pipelineInfo.subpass             = 0;
+    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &capturePipeline) != VK_SUCCESS)
+        throw std::runtime_error("ImpostorCapture: pipeline creation failed");
+    app->resources.addPipeline(capturePipeline, "ImpostorCapture: capturePipeline");
 
-    capturePipeline       = pipeline;
-    capturePipelineLayout = layout;
+    app->resources.removeShaderModule(vertShader);
+    vkDestroyShaderModule(device, vertShader, nullptr);
+    app->resources.removeShaderModule(geomShader);
+    vkDestroyShaderModule(device, geomShader, nullptr);
+    app->resources.removeShaderModule(fragShader);
+    vkDestroyShaderModule(device, fragShader, nullptr);
 }
 
 void ImpostorCapture::createUBO(VulkanApp* app) {
@@ -767,14 +910,16 @@ void ImpostorCapture::createImGuiDescSetsForType(VulkanApp* app, uint32_t billbo
         const uint32_t layerIdx = layerBase + v;
         imguiDescSets[layerIdx] = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
             imguiSampler, captureLayerViews[layerIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        imguiNormalDescSets[layerIdx] = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
+            imguiSampler, captureNormalLayerViews[layerIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 }
 
 void ImpostorCapture::destroyImGuiDescSets() {
     for (auto& ds : imguiDescSets) {
-        if (ds != VK_NULL_HANDLE) {
-            ImGui_ImplVulkan_RemoveTexture(ds);
-            ds = VK_NULL_HANDLE;
-        }
+        if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); ds = VK_NULL_HANDLE; }
+    }
+    for (auto& ds : imguiNormalDescSets) {
+        if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); ds = VK_NULL_HANDLE; }
     }
 }

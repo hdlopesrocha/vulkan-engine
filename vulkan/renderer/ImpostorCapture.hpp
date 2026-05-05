@@ -46,21 +46,31 @@ public:
     // Return the view index whose direction has the greatest dot-product with dir.
     uint32_t closestView(const glm::vec3& dir) const;
 
-    // Full 60-layer array view – usable as sampler2DArray in scene shaders.
-    VkImageView getCaptureArrayView() const { return captureArrayView; }
+    // Full 60-layer array views – usable as sampler2DArray in scene shaders.
+    VkImageView getCaptureArrayView()       const { return captureArrayView; }
+    VkImageView getCaptureNormalArrayView() const { return captureNormalArrayView; }
 
     // Sampler suitable for scene use (created at init).
     VkSampler   getCaptureArraySampler() const { return sceneSampler; }
+
+    // ImGui-compatible descriptor set for normal map view (billboardType, viewIdx).
+    VkDescriptorSet getImGuiNormalDescSet(uint32_t billboardType, uint32_t viewIdx) const;
 
 private:
     // Fibonacci sphere directions (unit vectors pointing FROM camera TO center).
     std::array<glm::vec3, NUM_VIEWS> viewDirs{};
 
-    // Capture texture array (TOTAL_LAYERS=60 layers, VK_FORMAT_R8G8B8A8_UNORM).
+    // Albedo capture texture array (TOTAL_LAYERS=60 layers, VK_FORMAT_R8G8B8A8_UNORM).
     VkImage        captureImage      = VK_NULL_HANDLE;
     VkDeviceMemory captureMemory     = VK_NULL_HANDLE;
     VkImageView    captureArrayView  = VK_NULL_HANDLE;          // 60-layer 2D_ARRAY view
     std::array<VkImageView, TOTAL_LAYERS> captureLayerViews{};  // per-layer 2D views
+
+    // Normal capture texture array (world-space normals encoded in [0,1]).
+    VkImage        captureNormalImage      = VK_NULL_HANDLE;
+    VkDeviceMemory captureNormalMemory     = VK_NULL_HANDLE;
+    VkImageView    captureNormalArrayView  = VK_NULL_HANDLE;
+    std::array<VkImageView, TOTAL_LAYERS> captureNormalLayerViews{};
 
     // Depth image (single non-array, reused across all views in one submit).
     VkImage        depthImage  = VK_NULL_HANDLE;
@@ -115,10 +125,11 @@ private:
         glm::vec4 cameraPosAndFalloff;
     };
 
-    // ImGui display resources (TOTAL_LAYERS descriptor sets).
+    // ImGui display resources (TOTAL_LAYERS descriptor sets each for albedo and normals).
     VkSampler imguiSampler = VK_NULL_HANDLE;
     VkSampler sceneSampler = VK_NULL_HANDLE;  // for scene rendering (created at init)
     std::array<VkDescriptorSet, TOTAL_LAYERS> imguiDescSets{};
+    std::array<VkDescriptorSet, TOTAL_LAYERS> imguiNormalDescSets{};
 
     // Bitmask of which billboard types have been captured.
     uint32_t capturedTypes = 0;

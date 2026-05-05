@@ -9,6 +9,7 @@ layout(location = 3) flat in vec3 inPlaneNormal;
 layout(location = 4) flat in vec3 inTangentWS;
 
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outNormal; // world-space normal, encoded to [0,1]
 
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
     mat4 viewProjection;
@@ -59,4 +60,18 @@ void main() {
     // Raw composite albedo — no lighting baked in.
     outColor.rgb = mix(bgAlbedo, leafAlbedo.rgb, weight);
     outColor.a   = 1.0; // cleared areas stay 0,0,0,0 → discarded at render time
+
+    // World-space composite normal for real-time lighting in impostors.frag.
+    // Build TBN from the billboard plane geometry — identical to vegetation.frag,
+    // including the gl_FrontFacing flip so back-facing plane pixels get the correct
+    // inward-pointing normal instead of the outward one (which would make impostors
+    // appear systematically brighter than real vegetation for an overhead sun).
+    vec3 T     = normalize(inTangentWS);
+    vec3 faceN = gl_FrontFacing ? normalize(inPlaneNormal) : -normalize(inPlaneNormal);
+    vec3 B     = normalize(cross(T, faceN));
+    mat3 TBN   = mat3(T, B, faceN);
+    vec3 wsLeaf = normalize(TBN * leafNorm);
+    vec3 wsBg   = normalize(TBN * bgNorm);
+    vec3 wsNorm = normalize(mix(wsBg, wsLeaf, weight));
+    outNormal   = vec4(wsNorm * 0.5 + 0.5, 1.0);
 }
