@@ -82,11 +82,14 @@ void main() {
 
     vec3 worldPos = fragWorldPosIn[0];
     vec3 camPos   = ubo.viewPos.xyz;
+    bool shadowPass = windEnabled < 0.0;
 
     // If impostor rendering is enabled, skip instances that are far enough away –
     // the impostor pipeline will render them as camera-facing quads instead.
-    // Extend 15% past impostorDistance to overlap with the impostor cross-fade zone.
-    if (impostorDistance > 0.0 && distance(worldPos, camPos) >= impostorDistance * 1.15) return;
+    // The main pass keeps a small overlap for cross-fading. The shadow pass uses a
+    // strict cutoff so impostor-only regions do not keep casting vegetation shadows.
+    float shadowCutoffDistance = shadowPass ? impostorDistance : (impostorDistance * 1.15);
+    if (impostorDistance > 0.0 && distance(worldPos, camPos) >= shadowCutoffDistance) return;
 
     float densityFactor = densityFactorForDistance(distance(cameraPosAndFalloff.xyz, worldPos));
     if (densityFactor < 0.9999) {

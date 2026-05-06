@@ -430,7 +430,7 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
     // Push constants for shadow pass: same as regular draw but with wind disabled
     WindPushConstants pc{};
     pc.billboardScale = billboardScale;
-    pc.windEnabled = 0.0f;  // Disable wind for shadow pass (don't distort based on time)
+    pc.windEnabled = -1.0f;  // Negative means shadow pass: disable wind and tighten impostor cutoff.
     pc.windTime = windTimeSeconds;
     pc.impostorDistance = impostorDistance; // skip far instances in shadow pass too (same as main pass)
 
