@@ -11,6 +11,7 @@
 #include <thread>
 #include <filesystem>
 #include <cstring>
+#include <cstdlib>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -43,6 +44,7 @@
 #include "widgets/WindWidget.hpp"
 #include "widgets/OctreeExplorerWidget.hpp"
 #include "widgets/Brush3dWidget.hpp"
+#include "widgets/MusicWidget.hpp"
 #include "utils/MainSceneLoader.hpp"
 #include "widgets/Settings.hpp"
 #include "widgets/WidgetManager.hpp"
@@ -106,6 +108,7 @@ public:
     std::shared_ptr<VulkanResourcesManagerWidget> vulkanResourcesManagerWidget;
     std::shared_ptr<VegetationAtlasEditor> vegetationAtlasEditor;
     std::shared_ptr<WindWidget> windWidget;
+    std::shared_ptr<MusicWidget> mp3Widget;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
     WidgetManager widgetManager;
     uint32_t loadedTextureLayers = 0;
@@ -363,6 +366,7 @@ public:
         vulkanResourcesManagerWidget = std::make_shared<VulkanResourcesManagerWidget>(&resources);
         vulkanResourcesManagerWidget->updateWithApp(this);
         windWidget = std::make_shared<WindWidget>(sceneRenderer->vegetationRenderer.get());
+        mp3Widget = std::make_shared<MusicWidget>();
   // Create octree explorer widget bound to loaded scene
 
  
@@ -378,6 +382,7 @@ public:
         widgetManager.addWidget(vulkanResourcesManagerWidget);
         widgetManager.addWidget(vegetationAtlasEditor);
         widgetManager.addWidget(windWidget);
+        widgetManager.addWidget(mp3Widget);
         widgetManager.addWidget(billboardCreator);
         widgetManager.addWidget(impostorWidget);
 
@@ -1031,7 +1036,10 @@ public:
             if (baseDir.empty()) {
                 baseDir = std::filesystem::current_path(ec);
             }
-            pickerDir = baseDir;
+            pickerDir = std::filesystem::absolute(baseDir, ec);
+            if (ec) {
+                pickerDir = baseDir;
+            }
 
             std::string filename = initialPath.filename().string();
             if (filename.empty()) {
@@ -1085,6 +1093,17 @@ public:
 
                 if (ImGui::Button("Up") && pickerDir.has_parent_path()) {
                     pickerDir = pickerDir.parent_path();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Root")) {
+                    pickerDir = std::filesystem::path("/");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Home")) {
+                    const char* home = std::getenv("HOME");
+                    if (home && *home) {
+                        pickerDir = std::filesystem::path(home);
+                    }
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Home Scenes")) {
