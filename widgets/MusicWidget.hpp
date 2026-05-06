@@ -1,10 +1,9 @@
 #pragma once
 
 #include "Widget.hpp"
-#include <chrono>
+#include "../third_party/miniaudio/miniaudio.h"
 #include <filesystem>
 #include <string>
-#include <sys/types.h>
 
 class MusicWidget : public Widget {
 public:
@@ -26,22 +25,27 @@ private:
     bool pickerOpenPending;
     std::string pickerError;
 
-    pid_t playerPid;
     PlaybackState playbackState;
+    bool audioInitialized;
+    bool soundLoaded;
     bool repeatEnabled;
     float trackDurationSec;
-    float playbackOffsetSec;
-    std::chrono::steady_clock::time_point playbackStartTime;
+    ma_engine engine;
+    ma_sound sound;
+    bool engineReady;
+    bool soundReady;
 
     void openFilePicker();
     void renderFilePickerPopup();
     void executePickerSelection();
-    float queryDurationSeconds(const std::string& filePath) const;
+
+    bool initAudio();
+    void unloadSound();
+    bool loadSelectedTrack();
     float currentPlaybackPositionSeconds() const;
     void seekTo(float seconds);
-    void terminatePlayerProcess();
+    void applyRepeatSetting();
 
-    bool launchPlayerProcess(const std::string& filePath, float startSeconds = 0.0f);
     void play();
     void pause();
     void stop();

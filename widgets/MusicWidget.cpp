@@ -2,31 +2,11 @@
 #include "components/ImGuiHelpers.hpp"
 
 #include <algorithm>
-#include <cerrno>
-#include <csignal>
-#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <cstdlib>
 #include <imgui.h>
-#include <sys/wait.h>
-#include <unistd.h>
 #include <vector>
-
-namespace {
-std::string shellEscapeSingleQuoted(const std::string& value) {
-    std::string escaped;
-    escaped.reserve(value.size() + 8);
-    for (char c : value) {
-        if (c == '\'') {
-            escaped += "'\\''";
-        } else {
-            escaped += c;
-        }
-    }
-    return escaped;
-}
-}
 
 MusicWidget::MusicWidget()
     : Widget("Music Player", u8"\uf001"),
@@ -35,20 +15,26 @@ MusicWidget::MusicWidget()
       pickerNameBuf(),
       pickerOpenPending(false),
       pickerError(),
-      playerPid(-1),
-    playbackState(PlaybackState::Stopped),
-    repeatEnabled(false),
-    trackDurationSec(0.0f),
-    playbackOffsetSec(0.0f),
-    playbackStartTime(std::chrono::steady_clock::now()) {
+      playbackState(PlaybackState::Stopped),
+      audioInitialized(false),
+      soundLoaded(false),
+      repeatEnabled(false),
+            trackDurationSec(0.0f),
+            engine(),
+            sound(),
+            engineReady(false),
+            soundReady(false) {
     const char* defaultName = "music.mp3";
     std::memcpy(pickerNameBuf, defaultName, std::strlen(defaultName));
     pickerNameBuf[std::strlen(defaultName)] = '\0';
 }
 
 MusicWidget::~MusicWidget() {
-    stop();
-    pollPlayerState();
+    unloadSound();
+    if (engineReady) {
+        ma_engine_uninit(&engine);
+        engineReady = false;
+    }
 }
 
 void MusicWidget::openFilePicker() {
@@ -94,62 +80,90 @@ void MusicWidget::executePickerSelection() {
     }
 
     selectedFile = selected.string();
-    trackDurationSec = queryDurationSeconds(selectedFile);
-    playbackOffsetSec = 0.0f;
+    if (!loadSelectedTrack()) {
+        return;
+    }
     pickerError.clear();
     ImGui::CloseCurrentPopup();
 }
 
-float MusicWidget::queryDurationSeconds(const std::string& filePath) const {
-    std::string cmd = "ffprobe -v error -show_entries format=duration "
-                      "-of default=noprint_wrappers=1:nokey=1 '" +
-                      shellEscapeSingleQuoted(filePath) + "' 2>/dev/null";
+bool MusicWidget::initAudio() {
+    if (audioInitialized) {
+        return true;
+    }
+    ma_result result = ma_engine_init(nullptr, &engine);
+    if (result != MA_SUCCESS) {
+        pickerError = "Failed to initialize audio engine.";
+        return false;
+    }
+    engineReady = true;
+    audioInitialized = true;
+    return true;
+}
 
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) {
-        return 0.0f;
+void MusicWidget::unloadSound() {
+    if (soundReady) {
+        ma_sound_uninit(&sound);
+        soundReady = false;
+    }
+    soundLoaded = false;
+    playbackState = PlaybackState::Stopped;
+    trackDurationSec = 0.0f;
+}
+
+bool MusicWidget::loadSelectedTrack() {
+    if (selectedFile.empty()) {
+        return false;
+    }
+    if (!initAudio()) {
+        return false;
     }
 
-    char buffer[128] = {0};
-    std::string output;
-    while (fgets(buffer, sizeof(buffer), pipe)) {
-        output += buffer;
-    }
-    pclose(pipe);
+    unloadSound();
 
-    try {
-        const double duration = std::stod(output);
-        return duration > 0.0 ? static_cast<float>(duration) : 0.0f;
-    } catch (...) {
-        return 0.0f;
+    ma_result result = ma_sound_init_from_file(&engine, selectedFile.c_str(), 0, nullptr, nullptr, &sound);
+    if (result != MA_SUCCESS) {
+        pickerError = "Failed to load audio file with miniaudio.";
+        return false;
     }
+
+    soundReady = true;
+    soundLoaded = true;
+    applyRepeatSetting();
+
+    ma_uint64 lengthFrames = 0;
+    if (ma_sound_get_length_in_pcm_frames(&sound, &lengthFrames) == MA_SUCCESS) {
+        ma_uint32 sampleRate = 0;
+        ma_sound_get_data_format(&sound, nullptr, nullptr, &sampleRate, nullptr, 0);
+        if (sampleRate > 0) {
+            trackDurationSec = static_cast<float>(static_cast<double>(lengthFrames) / static_cast<double>(sampleRate));
+        }
+    }
+
+    return true;
 }
 
 float MusicWidget::currentPlaybackPositionSeconds() const {
-    float pos = playbackOffsetSec;
-    if (playbackState == PlaybackState::Playing && playerPid > 0) {
-        const auto now = std::chrono::steady_clock::now();
-        const auto elapsed = std::chrono::duration<float>(now - playbackStartTime).count();
-        pos += elapsed;
+    if (!soundReady) {
+        return 0.0f;
     }
-    if (trackDurationSec > 0.0f && pos > trackDurationSec) {
-        pos = trackDurationSec;
-    }
-    if (pos < 0.0f) {
-        pos = 0.0f;
-    }
-    return pos;
-}
 
-void MusicWidget::terminatePlayerProcess() {
-    if (playerPid > 0) {
-        kill(playerPid, SIGTERM);
-        waitpid(playerPid, nullptr, WNOHANG);
+    ma_uint64 cursorFrames = 0;
+    ma_uint32 sampleRate = 0;
+    if (ma_sound_get_cursor_in_pcm_frames(&sound, &cursorFrames) != MA_SUCCESS) {
+        return 0.0f;
     }
-    playerPid = -1;
+    ma_sound_get_data_format(&sound, nullptr, nullptr, &sampleRate, nullptr, 0);
+    if (sampleRate == 0) {
+        return 0.0f;
+    }
+    return static_cast<float>(static_cast<double>(cursorFrames) / static_cast<double>(sampleRate));
 }
 
 void MusicWidget::seekTo(float seconds) {
+    if (!soundReady) {
+        return;
+    }
     if (seconds < 0.0f) {
         seconds = 0.0f;
     }
@@ -157,41 +171,19 @@ void MusicWidget::seekTo(float seconds) {
         seconds = trackDurationSec;
     }
 
-    playbackOffsetSec = seconds;
-    if (playbackState == PlaybackState::Playing || playbackState == PlaybackState::Paused) {
-        terminatePlayerProcess();
-        playbackState = PlaybackState::Stopped;
-        if (!launchPlayerProcess(selectedFile, playbackOffsetSec)) {
-            pickerError = "Failed to seek with current audio backend.";
-        }
+    ma_uint32 sampleRate = 0;
+    ma_sound_get_data_format(&sound, nullptr, nullptr, &sampleRate, nullptr, 0);
+    if (sampleRate == 0) {
+        return;
     }
+    ma_uint64 targetFrame = static_cast<ma_uint64>(seconds * static_cast<float>(sampleRate));
+    ma_sound_seek_to_pcm_frame(&sound, targetFrame);
 }
 
-bool MusicWidget::launchPlayerProcess(const std::string& filePath, float startSeconds) {
-    pid_t pid = fork();
-    if (pid < 0) {
-        return false;
+void MusicWidget::applyRepeatSetting() {
+    if (soundReady) {
+        ma_sound_set_looping(&sound, repeatEnabled ? MA_TRUE : MA_FALSE);
     }
-
-    if (pid == 0) {
-        char secbuf[32] = {0};
-        std::snprintf(secbuf, sizeof(secbuf), "%.3f", startSeconds);
-
-        if (startSeconds > 0.0f) {
-            execlp("ffplay", "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", "-ss", secbuf, filePath.c_str(), static_cast<char*>(nullptr));
-            execlp("mpv", "mpv", "--no-video", "--really-quiet", "--start", secbuf, filePath.c_str(), static_cast<char*>(nullptr));
-        } else {
-            execlp("ffplay", "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", filePath.c_str(), static_cast<char*>(nullptr));
-            execlp("mpv", "mpv", "--no-video", "--really-quiet", filePath.c_str(), static_cast<char*>(nullptr));
-            execlp("mpg123", "mpg123", "-q", filePath.c_str(), static_cast<char*>(nullptr));
-        }
-        _exit(127);
-    }
-
-    playerPid = pid;
-    playbackState = PlaybackState::Playing;
-    playbackStartTime = std::chrono::steady_clock::now();
-    return true;
 }
 
 void MusicWidget::play() {
@@ -201,32 +193,22 @@ void MusicWidget::play() {
         return;
     }
 
-    if (playbackState == PlaybackState::Paused && playerPid > 0) {
-        if (kill(playerPid, SIGCONT) == 0) {
-            playbackState = PlaybackState::Playing;
-            playbackStartTime = std::chrono::steady_clock::now();
-            pickerError.clear();
-            return;
-        }
-        stop();
-    }
-
-    if (playbackState == PlaybackState::Playing) {
+    if (!soundLoaded && !loadSelectedTrack()) {
         return;
     }
 
-    if (!launchPlayerProcess(selectedFile, playbackOffsetSec)) {
-        pickerError = "Failed to launch audio player (ffplay/mpg123/mpv).";
-    } else {
+    if (ma_sound_start(&sound) == MA_SUCCESS) {
+        playbackState = PlaybackState::Playing;
         pickerError.clear();
+    } else {
+        pickerError = "Failed to start playback.";
     }
 }
 
 void MusicWidget::pause() {
     pollPlayerState();
-    if (playbackState == PlaybackState::Playing && playerPid > 0) {
-        if (kill(playerPid, SIGSTOP) == 0) {
-            playbackOffsetSec = currentPlaybackPositionSeconds();
+    if (playbackState == PlaybackState::Playing && soundReady) {
+        if (ma_sound_stop(&sound) == MA_SUCCESS) {
             playbackState = PlaybackState::Paused;
             pickerError.clear();
         }
@@ -235,29 +217,29 @@ void MusicWidget::pause() {
 
 void MusicWidget::stop() {
     pollPlayerState();
-    terminatePlayerProcess();
+    if (soundReady) {
+        ma_sound_stop(&sound);
+        ma_sound_seek_to_pcm_frame(&sound, 0);
+    }
     playbackState = PlaybackState::Stopped;
-    playbackOffsetSec = 0.0f;
 }
 
 void MusicWidget::pollPlayerState() {
-    if (playerPid <= 0) {
+    if (!soundReady || playbackState != PlaybackState::Playing) {
         return;
     }
 
-    int status = 0;
-    pid_t r = waitpid(playerPid, &status, WNOHANG);
-    if (r == playerPid) {
-        playerPid = -1;
-        if (repeatEnabled && !selectedFile.empty()) {
-            playbackOffsetSec = 0.0f;
-            if (!launchPlayerProcess(selectedFile, 0.0f)) {
-                playbackState = PlaybackState::Stopped;
-                pickerError = "Failed to restart track in repeat mode.";
-            }
+    ma_uint64 cursor = 0;
+    ma_uint64 length = 0;
+    if (ma_sound_get_cursor_in_pcm_frames(&sound, &cursor) == MA_SUCCESS &&
+        ma_sound_get_length_in_pcm_frames(&sound, &length) == MA_SUCCESS &&
+        length > 0 && cursor >= length) {
+        if (repeatEnabled) {
+            ma_sound_seek_to_pcm_frame(&sound, 0);
+            ma_sound_start(&sound);
         } else {
             playbackState = PlaybackState::Stopped;
-            playbackOffsetSec = 0.0f;
+            ma_sound_seek_to_pcm_frame(&sound, 0);
         }
     }
 }
@@ -279,20 +261,23 @@ void MusicWidget::renderFilePickerPopup() {
     }
 
     ImGui::TextWrapped("Current directory: %s", pickerDir.string().c_str());
-    if (ImGui::Button("Up") && pickerDir.has_parent_path()) {
+    if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf062##mp3_up")) && pickerDir.has_parent_path()) {
         pickerDir = pickerDir.parent_path();
     }
+    ImGuiHelpers::SetTooltipIfHovered("Up one folder");
     ImGui::SameLine();
-    if (ImGui::Button("Root##mp3")) {
+    if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf0ac##mp3_root"))) {
         pickerDir = std::filesystem::path("/");
     }
+    ImGuiHelpers::SetTooltipIfHovered("Go to root (/)");
     ImGui::SameLine();
-    if (ImGui::Button("Home##mp3")) {
+    if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf015##mp3_home"))) {
         const char* home = std::getenv("HOME");
         if (home && *home) {
             pickerDir = std::filesystem::path(home);
         }
     }
+    ImGuiHelpers::SetTooltipIfHovered("Go to home folder");
 
     std::vector<std::filesystem::directory_entry> dirs;
     std::vector<std::filesystem::directory_entry> files;
@@ -341,14 +326,16 @@ void MusicWidget::renderFilePickerPopup() {
     ImGui::Text("File name:");
     ImGui::InputText("##mp3_picker_name", pickerNameBuf, sizeof(pickerNameBuf));
 
-    if (ImGui::Button("Select")) {
+    if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf00c##mp3_select"))) {
         executePickerSelection();
     }
+    ImGuiHelpers::SetTooltipIfHovered("Select file");
     ImGui::SameLine();
-    if (ImGui::Button("Cancel##mp3_picker")) {
+    if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf00d##mp3_cancel"))) {
         pickerError.clear();
         ImGui::CloseCurrentPopup();
     }
+    ImGuiHelpers::SetTooltipIfHovered("Cancel");
 
     if (!pickerError.empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", pickerError.c_str());
@@ -388,31 +375,41 @@ void MusicWidget::render() {
         ImGui::EndDisabled();
     }
 
-    ImGui::Checkbox("Repeat", &repeatEnabled);
-
-    if (ImGui::Button("Open MP3...")) {
-        openFilePicker();
+        if (ImGui::Button(repeatEnabled
+            ? reinterpret_cast<const char*>(u8"\uf01e##repeat_on")
+            : reinterpret_cast<const char*>(u8"\uf01e##repeat_off"))) {
+        repeatEnabled = !repeatEnabled;
+        applyRepeatSetting();
     }
-
-    ImGui::BeginDisabled(selectedFile.empty());
-    if (ImGui::Button(playbackState == PlaybackState::Paused ? "Resume" : "Play")) {
-        play();
-    }
-    ImGui::EndDisabled();
+    ImGuiHelpers::SetTooltipIfHovered(repeatEnabled ? "Repeat: ON" : "Repeat: OFF");
 
     ImGui::SameLine();
-    ImGui::BeginDisabled(playbackState != PlaybackState::Playing);
-    if (ImGui::Button("Pause")) {
-        pause();
+    if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf07c##open_mp3"))) {
+        openFilePicker();
+    }
+    ImGuiHelpers::SetTooltipIfHovered("Open MP3 file");
+
+    ImGui::SameLine();
+    ImGui::BeginDisabled(selectedFile.empty());
+        if (ImGui::Button(playbackState == PlaybackState::Playing
+            ? reinterpret_cast<const char*>(u8"\uf04c##toggle_play_pause")
+            : reinterpret_cast<const char*>(u8"\uf04b##toggle_play_pause"))) {
+        if (playbackState == PlaybackState::Playing) {
+            pause();
+        } else {
+            play();
+        }
     }
     ImGui::EndDisabled();
+    ImGuiHelpers::SetTooltipIfHovered(playbackState == PlaybackState::Playing ? "Pause" : "Play");
 
     ImGui::SameLine();
     ImGui::BeginDisabled(playbackState == PlaybackState::Stopped);
-    if (ImGui::Button("Stop")) {
+    if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf04d##stop"))) {
         stop();
     }
     ImGui::EndDisabled();
+    ImGuiHelpers::SetTooltipIfHovered("Stop");
 
     if (!pickerError.empty()) {
         ImGui::Spacing();
