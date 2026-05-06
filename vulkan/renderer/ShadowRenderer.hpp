@@ -20,8 +20,8 @@ public:
     uint32_t getShadowMapSize() const { return shadowMapSize; }
     VkDescriptorSetLayout getShadowDescriptorSetLayout(VulkanApp* app) const;
     // Public getters for internal Vulkan handles
-    VkRenderPass getShadowRenderPass() const { return shadowRenderPass; }
-    VkFramebuffer getShadowFramebuffer(uint32_t cascade = 0) const { return cascades[cascade].framebuffer; }
+    VkRenderPass getShadowRenderPass() const { return VK_NULL_HANDLE; }
+    VkFramebuffer getShadowFramebuffer(uint32_t cascade = 0) const { return VK_NULL_HANDLE; }
     VkPipeline getShadowPipeline() const { return shadowPipeline; }
     VkPipelineLayout getShadowPipelineLayout() const { return shadowPipelineLayout; }
     VkImageView getDummyDepthView() const { return dummyDepthView; }
@@ -42,10 +42,6 @@ private:
         VkImage depthImage = VK_NULL_HANDLE;
         VkDeviceMemory depthMemory = VK_NULL_HANDLE;
         VkImageView depthView = VK_NULL_HANDLE;
-        VkImage colorImage = VK_NULL_HANDLE;
-        VkDeviceMemory colorMemory = VK_NULL_HANDLE;
-        VkImageView colorView = VK_NULL_HANDLE;
-        VkFramebuffer framebuffer = VK_NULL_HANDLE;
         VkDescriptorSet imguiDescSet = VK_NULL_HANDLE;
     };
     CascadeResources cascades[SHADOW_CASCADE_COUNT];
@@ -56,8 +52,7 @@ private:
     VkImage dummyDepthImage = VK_NULL_HANDLE;
     VkDeviceMemory dummyDepthMemory = VK_NULL_HANDLE;
     VkImageView dummyDepthView = VK_NULL_HANDLE;
-    // Shared render pass and pipeline (same for all cascades, different framebuffer)
-    VkRenderPass shadowRenderPass = VK_NULL_HANDLE;
+    // Shared render pass removed (dynamic rendering)
     VkPipeline shadowPipeline = VK_NULL_HANDLE;
     VkPipeline shadowPipelineWire = VK_NULL_HANDLE;
     VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
@@ -69,8 +64,6 @@ private:
     bool performingWireframeReadback = false;
     
     void createShadowMaps(VulkanApp* app);
-    void createShadowRenderPass(VulkanApp* app);
-    void createShadowFramebuffers(VulkanApp* app);
     void createShadowPipeline(VulkanApp* app);
     // Request next shadow pass be rendered in wireframe and read back
     void requestWireframeReadback();

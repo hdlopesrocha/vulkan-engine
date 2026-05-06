@@ -65,10 +65,7 @@ public:
     VkImageView getSceneColorView(uint32_t frameIndex) const { return sceneColorImageViews[frameIndex]; }
     VkImage getSceneDepthImage(uint32_t frameIndex) const { return sceneDepthImages[frameIndex]; }
     VkImageView getSceneDepthView(uint32_t frameIndex) const { return sceneDepthImageViews[frameIndex]; }
-    VkFramebuffer getSceneFramebuffer(uint32_t frameIndex) const { return sceneFramebuffers[frameIndex]; }
-    VkRenderPass getSceneRenderPass() const { return sceneRenderPass; }
-        void beginScenePass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear);
-        void endScenePass(VkCommandBuffer cmd);
+
 
 
     void updateGPUParamsForLayer(uint32_t layer, const WaterParams& params);
@@ -79,9 +76,6 @@ public:
     
     // Get the water geometry pipeline layout
     VkPipelineLayout getWaterGeometryPipelineLayout() const { return waterGeometryPipelineLayout; }
-
-    // Get the water geometry render pass (for creating compatible wireframe pipelines)
-    VkRenderPass getWaterRenderPass() const { return waterRenderPass; }
 
     // Get the descriptor set layout for scene textures (set 2)
     VkDescriptorSetLayout getWaterDepthDescriptorSetLayout() const { return waterDepthDescriptorSetLayout; }
@@ -130,8 +124,7 @@ public:
     }
 
 private:
-    void createWaterRenderPass(VulkanApp* app);
-    void createSceneRenderPass(VulkanApp* app);
+
     void createWaterPipelines(VulkanApp* app, const std::vector<WaterParams>& waterParams);
     void initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams);
     void createSamplers(VulkanApp* app);
@@ -148,8 +141,7 @@ private:
     std::array<VkImage, 2> sceneDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkDeviceMemory, 2> sceneDepthMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkImageView, 2> sceneDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkFramebuffer, 2> sceneFramebuffers = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    VkRenderPass sceneRenderPass = VK_NULL_HANDLE;
+
 
     // Offscreen render targets for water geometry pass
     std::array<VkImage, 2> waterDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
@@ -165,8 +157,7 @@ private:
     std::array<VkDeviceMemory, 2> waterGeomDepthMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkImageView, 2> waterGeomDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
-    std::array<VkFramebuffer, 2> waterFramebuffers = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    VkRenderPass waterRenderPass = VK_NULL_HANDLE;
+
 
     // Pipelines
     VkPipeline waterGeometryPipeline = VK_NULL_HANDLE;
@@ -198,6 +189,9 @@ private:
 
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
+
+    // Cached frame index set by beginWaterGeometryPass, used by endWaterGeometryPass
+    uint32_t activeWaterFrameIndex = 0;
 
     // Map of node -> model version for water geometry managed here
     std::unordered_map<NodeID, Model3DVersion> waterNodeModelVersions;

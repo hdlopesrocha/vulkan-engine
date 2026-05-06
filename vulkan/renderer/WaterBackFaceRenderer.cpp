@@ -15,68 +15,10 @@ void WaterBackFaceRenderer::cleanup(VulkanApp* app) {
     (void)app;
     appPtr = nullptr;
     // VulkanResourceManager owns actual Vulkan objects; just clear handles
-    backFaceRenderPass = VK_NULL_HANDLE;
     backFacePipeline = VK_NULL_HANDLE;
     for (auto &v : backFaceDepthImages) v = VK_NULL_HANDLE;
     for (auto &m : backFaceDepthMemories) m = VK_NULL_HANDLE;
     for (auto &v : backFaceDepthImageViews) v = VK_NULL_HANDLE;
-    for (auto &fb : backFaceFramebuffers) fb = VK_NULL_HANDLE;
-}
-
-void WaterBackFaceRenderer::createRenderPass(VulkanApp* app) {
-    if (!app) return;
-    VkDevice device = app->getDevice();
-
-    VkAttachmentDescription bfDepthAtt{};
-    bfDepthAtt.format = VK_FORMAT_D32_SFLOAT;
-    bfDepthAtt.samples = VK_SAMPLE_COUNT_1_BIT;
-    // Clear the back-face depth each frame so the buffer contains only
-    // water back-face geometry (do not initialize from scene depth).
-    bfDepthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    bfDepthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    bfDepthAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    bfDepthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    // Start in depth-attachment layout so implicit render-pass transitions
-    // align with the explicit pre-pass barrier we record (no fallback).
-    bfDepthAtt.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    bfDepthAtt.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkAttachmentReference bfDepthRef{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-
-    VkSubpassDescription bfSubpass{};
-    bfSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    bfSubpass.colorAttachmentCount = 0;
-    bfSubpass.pColorAttachments = nullptr;
-    bfSubpass.pDepthStencilAttachment = &bfDepthRef;
-
-    std::array<VkSubpassDependency, 2> bfDeps{};
-    bfDeps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-    bfDeps[0].dstSubpass = 0;
-    bfDeps[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    bfDeps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    bfDeps[0].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    bfDeps[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-    bfDeps[1].srcSubpass = 0;
-    bfDeps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-    bfDeps[1].srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    bfDeps[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    bfDeps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    bfDeps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-    VkRenderPassCreateInfo bfRPInfo{};
-    bfRPInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    bfRPInfo.attachmentCount = 1;
-    bfRPInfo.pAttachments = &bfDepthAtt;
-    bfRPInfo.subpassCount = 1;
-    bfRPInfo.pSubpasses = &bfSubpass;
-    bfRPInfo.dependencyCount = static_cast<uint32_t>(bfDeps.size());
-    bfRPInfo.pDependencies = bfDeps.data();
-
-    if (vkCreateRenderPass(device, &bfRPInfo, nullptr, &backFaceRenderPass) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create back-face depth render pass!");
-    }
-    app->resources.addRenderPass(backFaceRenderPass, "WaterBackFaceRenderer: backFaceRenderPass");
 }
 
 void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pipelineLayout) {
@@ -202,8 +144,15 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
         tessState.patchControlPoints = 3;
     }
 
+    VkPipelineRenderingCreateInfo pipelineRenderingInfo{};
+    pipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    pipelineRenderingInfo.colorAttachmentCount = 0;
+    pipelineRenderingInfo.pColorAttachmentFormats = nullptr;
+    pipelineRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+
     VkGraphicsPipelineCreateInfo bfPipeInfo{};
     bfPipeInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    bfPipeInfo.pNext = &pipelineRenderingInfo;
     bfPipeInfo.stageCount = static_cast<uint32_t>(bfStages.size());
     bfPipeInfo.pStages = bfStages.data();
     bfPipeInfo.pVertexInputState = &vertexInputInfo;
@@ -215,7 +164,7 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
     bfPipeInfo.pDepthStencilState = &depthStencil;
     bfPipeInfo.pColorBlendState = &bfBlend;
     bfPipeInfo.layout = pipelineLayout;
-    bfPipeInfo.renderPass = backFaceRenderPass;
+    bfPipeInfo.renderPass = VK_NULL_HANDLE;
     bfPipeInfo.subpass = 0;
     if (bfHasTess) bfPipeInfo.pTessellationState = &tessState;
 
@@ -230,7 +179,7 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
 
 void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
     if (!app) return;
-    if (renderWidth == width && renderHeight == height && backFaceFramebuffers[0] != VK_NULL_HANDLE) return;
+    if (renderWidth == width && renderHeight == height && backFaceDepthImages[0] != VK_NULL_HANDLE) return;
     destroyRenderTargets(app);
     renderWidth = width;
     renderHeight = height;
@@ -306,29 +255,12 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
         // that disagreed with the app-tracked authoritative layout.
     }
 
-    // Create framebuffers
-    for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
-        VkImageView bfAttachments[1] = { backFaceDepthImageViews[frameIdx] };
-        VkFramebufferCreateInfo bfFbInfo{};
-        bfFbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        bfFbInfo.renderPass = backFaceRenderPass;
-        bfFbInfo.attachmentCount = 1;
-        bfFbInfo.pAttachments = bfAttachments;
-        bfFbInfo.width = width;
-        bfFbInfo.height = height;
-        bfFbInfo.layers = 1;
-
-        if (vkCreateFramebuffer(device, &bfFbInfo, nullptr, &backFaceFramebuffers[frameIdx]) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create back-face depth framebuffer!");
-        }
-        app->resources.addFramebuffer(backFaceFramebuffers[frameIdx], "WaterBackFaceRenderer: backFaceFramebuffer");
-    }
+    // Create framebuffers removed - using dynamic rendering
 }
 
 void WaterBackFaceRenderer::destroyRenderTargets(VulkanApp* app) {
     (void)app;
     for (int i = 0; i < 2; ++i) {
-        backFaceFramebuffers[i] = VK_NULL_HANDLE;
         backFaceDepthImages[i] = VK_NULL_HANDLE;
         backFaceDepthMemories[i] = VK_NULL_HANDLE;
         backFaceDepthImageViews[i] = VK_NULL_HANDLE;
@@ -342,12 +274,9 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
                                               VkImage sceneDepthImage,
                                               VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer) {
     if (!app || cmd == VK_NULL_HANDLE) return;
-    if (backFaceRenderPass == VK_NULL_HANDLE || backFacePipeline == VK_NULL_HANDLE) return;
-    if (frameIndex >= backFaceFramebuffers.size()) return;
-    if (backFaceFramebuffers[frameIndex] == VK_NULL_HANDLE) return;
-
-    VkClearValue bfClear{};
-    bfClear.depthStencil = {1.0f, 0};
+    if (backFacePipeline == VK_NULL_HANDLE) return;
+    if (frameIndex >= backFaceDepthImages.size()) return;
+    if (backFaceDepthImages[frameIndex] == VK_NULL_HANDLE) return;
 
     // Ensure the back-face depth image is in the depth-stencil-attachment layout
     // so the render pass's clear will initialize it to 1.0 (far plane). Do not
@@ -367,22 +296,29 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
         app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
                              VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                              1, 0, 1);
-        // Also record the expected render-pass layout as a tracked update
-        // for this command buffer so submit-time pre-apply can promote the
-        // authoritative layout and avoid validation mismatches.
-        app->recordTrackedLayoutForCommandBuffer(cmd, backFaceDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
         backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
-    VkRenderPassBeginInfo bfRPInfo{};
-    bfRPInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    bfRPInfo.renderPass = backFaceRenderPass;
-    bfRPInfo.framebuffer = backFaceFramebuffers[frameIndex];
-    bfRPInfo.renderArea.offset = {0, 0};
-    bfRPInfo.renderArea.extent = {renderWidth, renderHeight};
-    bfRPInfo.clearValueCount = 1;
-    bfRPInfo.pClearValues = &bfClear;
-    vkCmdBeginRenderPass(cmd, &bfRPInfo, VK_SUBPASS_CONTENTS_INLINE);
+    VkClearValue bfClear{};
+    bfClear.depthStencil = {1.0f, 0};
+
+    VkRenderingAttachmentInfo depthAtt{};
+    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAtt.imageView = backFaceDepthImageViews[frameIndex];
+    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAtt.clearValue = bfClear;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = {renderWidth, renderHeight};
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 0;
+    renderingInfo.pDepthAttachment = &depthAtt;
+
+    vkCmdBeginRendering(cmd, &renderingInfo);
 
     VkViewport viewport{};
     viewport.x = 0.0f;
@@ -418,54 +354,21 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
         indirect.drawPrepared(cmd);
     }
 
-    vkCmdEndRenderPass(cmd);
+    vkCmdEndRendering(cmd);
 
-    // Barrier to make depth writes visible to shader reads
-    if (backFaceDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            /*std::cerr << "[WaterBackFaceRenderer::renderBackFacePass] post-render promotion: cmd=" << (void*)cmd
-                      << " image=" << (void*)backFaceDepthImages[frameIndex]
-                      << " frame=" << (unsigned)frameIndex
-                      << " old=" << (int)backFaceDepthImageLayouts[frameIndex]
-                      << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;*/
-            if (!app) {
-                throw std::runtime_error("WaterBackFaceRenderer::renderBackFacePass requires VulkanApp for tracked promotion (no fallback allowed)");
-            }
-            // Let the centralized tracker know the render pass leaves the
-            // image in SHADER_READ_ONLY_OPTIMAL. Do not emit an extra
-            // barrier here — the render pass performed the implicit
-            // transition to the final layout.
-            app->recordTrackedLayoutForCommandBuffer(cmd, backFaceDepthImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-            backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        }
+    // Transition depth: DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    if (app) {
+        app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            1, 0, 1);
     }
+    backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 void WaterBackFaceRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex) {
-    if (cmd == VK_NULL_HANDLE) return;
-    if (frameIndex >= backFaceDepthImages.size()) return;
-    if (backFaceDepthImages[frameIndex] == VK_NULL_HANDLE) return;
-
-    // Use tracked layout when available to avoid mismatches with the
-    // validation layer's known layout state at record time.
-    VkImageLayout trackedOld = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (frameIndex < backFaceDepthImageLayouts.size()) trackedOld = backFaceDepthImageLayouts[frameIndex];
-
-    /* std::cerr << "[WaterBackFaceRenderer::postRenderBarrier] cmd=" << (void*)cmd
-              << " image=" << (void*)backFaceDepthImages[frameIndex]
-              << " frame=" << (unsigned)frameIndex
-              << " trackedOld=" << (int)trackedOld
-              << " new=" << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl; */
-
-    VulkanApp* app = this->appPtr ? this->appPtr : getImGuiVulkanApp();
-    if (!app) {
-        throw std::runtime_error("WaterBackFaceRenderer::postRenderBarrier requires VulkanApp (no fallback allowed)");
-    }
-            // Use UNDEFINED so VulkanApp consults its authoritative layout
-            // and any pending updates for this command buffer.
-            app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
-                                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                         1, 0, 1);
+    // Transition already performed inside renderBackFacePass; this is a no-op.
+    (void)cmd;
+    (void)frameIndex;
 }
 
 // getBackFaceDepthLayout is defined inline in the header (maps indices via modulo).

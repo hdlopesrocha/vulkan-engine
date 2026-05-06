@@ -26,8 +26,6 @@ void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer, const std::v
     waterParamsCount = layerCount;
     waterIndirectRenderer.init();
     createSamplers(app);
-    createWaterRenderPass(app);
-    createSceneRenderPass(app);
 
     // Create water pipelines and initialize the water params SSBO from the provided vector.
     createWaterPipelines(app, waterParams);
@@ -75,8 +73,6 @@ void WaterRenderer::cleanup(VulkanApp* app) {
     waterDepthDescriptorPool = VK_NULL_HANDLE;
     waterDepthDescriptorSetLayout = VK_NULL_HANDLE;
     waterGeometryPipelineLayout = VK_NULL_HANDLE;
-    waterRenderPass = VK_NULL_HANDLE;
-    sceneRenderPass = VK_NULL_HANDLE;
     linearSampler = VK_NULL_HANDLE;
     nearestSampler = VK_NULL_HANDLE;
 }
@@ -112,183 +108,8 @@ void WaterRenderer::createSamplers(VulkanApp* app) {
     app->resources.addSampler(nearestSampler, "WaterRenderer: nearestSampler");
 }
 
-void WaterRenderer::createSceneRenderPass(VulkanApp* app) {
-    // Scene render pass outputs color + depth to offscreen targets
-    std::array<VkAttachmentDescription, 2> attachments{};
-    
-    // Scene color - use same format as swapchain for pipeline compatibility
-    VkFormat swapchainFormat = app->getSwapchainImageFormat();
-    attachments[0].format = swapchainFormat;
-    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    
-    // Scene depth
-    attachments[1].format = VK_FORMAT_D32_SFLOAT;
-    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    
-    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorRef;
-    subpass.pDepthStencilAttachment = &depthRef;
-    
-    // Match swapchain render pass dependencies for pipeline compatibility
-    VkSubpassDependency dependency{};
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dependency.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    
-    VkRenderPassCreateInfo renderPassInfo{};
-    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-    renderPassInfo.pAttachments = attachments.data();
-    renderPassInfo.subpassCount = 1;
-    renderPassInfo.pSubpasses = &subpass;
-    renderPassInfo.dependencyCount = 1;
-    renderPassInfo.pDependencies = &dependency;
-    
-    if (vkCreateRenderPass(app->getDevice(), &renderPassInfo, nullptr, &sceneRenderPass) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create scene offscreen render pass!");
-    }
-    // Register scene render pass
-    app->resources.addRenderPass(sceneRenderPass, "WaterRenderer: sceneRenderPass");
-}
-
-void WaterRenderer::beginScenePass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear) {
-    if (cmd == VK_NULL_HANDLE || sceneRenderPass == VK_NULL_HANDLE || sceneFramebuffers[frameIndex] == VK_NULL_HANDLE) {
-        std::cerr << "[WaterRenderer::beginScenePass] Missing cmd/renderPass/framebuffer, skipping." << std::endl;
-        return;
-    }
-    std::array<VkClearValue, 2> clears{colorClear, depthClear};
-    VkRenderPassBeginInfo rpInfo{};
-    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpInfo.renderPass = sceneRenderPass;
-    rpInfo.framebuffer = sceneFramebuffers[frameIndex];
-    rpInfo.renderArea.offset = {0, 0};
-    rpInfo.renderArea.extent = {renderWidth, renderHeight};
-    rpInfo.clearValueCount = static_cast<uint32_t>(clears.size());
-    rpInfo.pClearValues = clears.data();
-    // Record the expected render-pass layouts for the attachments so
-    // submit-time promotion can make the authoritative map reflect the
-    // layouts that the render pass will assume. This avoids validation
-    // mismatches at vkQueueSubmit when other threads query tracked state.
-    if (appPtr) {
-        if (sceneColorImages[frameIndex] != VK_NULL_HANDLE) {
-            appPtr->recordTrackedLayoutForCommandBuffer(cmd, sceneColorImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-        }
-        if (sceneDepthImages[frameIndex] != VK_NULL_HANDLE) {
-            appPtr->recordTrackedLayoutForCommandBuffer(cmd, sceneDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
-        }
-    }
-
-    vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
-}
-
-void WaterRenderer::endScenePass(VkCommandBuffer cmd) {
-    if (cmd == VK_NULL_HANDLE) return;
-    vkCmdEndRenderPass(cmd);
-}
-
-void WaterRenderer::createWaterRenderPass(VulkanApp* app) {
-    // Water geometry pass outputs:
-    // 0: Water color (RGBA32_SFLOAT) - final composited water color
-    // 1: Depth attachment (per-frame)
-
-    std::array<VkAttachmentDescription, 2> attachments{};
-
-    // Water color (attachment 0)
-    attachments[0].format = VK_FORMAT_R32G32B32A32_SFLOAT;
-    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    // Depth buffer - use a dedicated depth buffer for water geometry pass
-    attachments[1].format = VK_FORMAT_D32_SFLOAT;
-    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    // Allow implicit render-pass transition from UNDEFINED -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    std::array<VkAttachmentReference, 1> colorRefs{};
-    colorRefs[0] = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-
-    VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = static_cast<uint32_t>(colorRefs.size());
-    subpass.pColorAttachments = colorRefs.data();
-    subpass.pDepthStencilAttachment = &depthRef;
-    
-    // Two subpass dependencies:
-    // [0] EXTERNAL → 0: Ensure solid pass color/depth writes are visible
-    //     before the water subpass's fragment shader samples the scene textures
-    //     AND before color/depth attachment ops begin.
-    // [1] 0 → EXTERNAL: Flush water color attachment writes so the post-process
-    //     fragment shader (in the swapchain render pass) can read them.
-    std::array<VkSubpassDependency, 2> dependencies{};
-
-    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[0].dstSubpass = 0;
-    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    dependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependencies[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
-                                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-    dependencies[1].srcSubpass = 0;
-    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    
-    VkRenderPassCreateInfo renderPassInfo{};
-    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-    renderPassInfo.pAttachments = attachments.data();
-    renderPassInfo.subpassCount = 1;
-    renderPassInfo.pSubpasses = &subpass;
-    renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
-    renderPassInfo.pDependencies = dependencies.data();
-    
-    if (vkCreateRenderPass(app->getDevice(), &renderPassInfo, nullptr, &waterRenderPass) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create water render pass!");
-    }
-    // Register water render pass
-    app->resources.addRenderPass(waterRenderPass, "WaterRenderer: waterRenderPass");
-
-}
-
 void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
-    if (renderWidth == width && renderHeight == height && waterFramebuffers[0] != VK_NULL_HANDLE) {
+    if (renderWidth == width && renderHeight == height && waterDepthImages[0] != VK_NULL_HANDLE) {
         return; // Already created at this size
     }
     
@@ -348,26 +169,6 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
                 sceneDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             } catch (...) { /* best-effort */ }
         }
-
-        std::array<VkImageView, 2> sceneAttachments = {
-            sceneColorImageViews[frameIdx],
-            sceneDepthImageViews[frameIdx]
-        };
-
-        VkFramebufferCreateInfo sceneFbInfo{};
-        sceneFbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        sceneFbInfo.renderPass = sceneRenderPass;
-        sceneFbInfo.attachmentCount = static_cast<uint32_t>(sceneAttachments.size());
-        sceneFbInfo.pAttachments = sceneAttachments.data();
-        sceneFbInfo.width = width;
-        sceneFbInfo.height = height;
-        sceneFbInfo.layers = 1;
-
-        if (vkCreateFramebuffer(device, &sceneFbInfo, nullptr, &sceneFramebuffers[frameIdx]) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create scene offscreen framebuffer!");
-        }
-        // Register framebuffer
-        app->resources.addFramebuffer(sceneFramebuffers[frameIdx], "WaterRenderer: sceneFramebuffer");
     }
 
     for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
@@ -446,29 +247,6 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         transitionImageLayout(waterGeomDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, waterGeomDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
     }
 
-    // Create per-frame water framebuffers using the dedicated water geometry depth buffer
-    for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
-        std::array<VkImageView, 2> waterAttachments = {
-            waterDepthImageViews[frameIdx],
-            waterGeomDepthImageViews[frameIdx]  // Use dedicated water geometry depth buffer
-        };
-        
-        VkFramebufferCreateInfo fbInfo{};
-        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fbInfo.renderPass = waterRenderPass;
-        fbInfo.attachmentCount = static_cast<uint32_t>(waterAttachments.size());
-        fbInfo.pAttachments = waterAttachments.data();
-        fbInfo.width = width;
-        fbInfo.height = height;
-        fbInfo.layers = 1;
-        
-        if (vkCreateFramebuffer(device, &fbInfo, nullptr, &waterFramebuffers[frameIdx]) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create water framebuffer!");
-        }
-        // Register water framebuffer
-        app->resources.addFramebuffer(waterFramebuffers[frameIdx], "WaterRenderer: waterFramebuffer");
-    }
-    
     // Allocate and update per-frame descriptor sets for scene textures
     if (waterDepthDescriptorSetLayout != VK_NULL_HANDLE && linearSampler != VK_NULL_HANDLE) {
         std::vector<VkDescriptorSetLayout> layouts(2, waterDepthDescriptorSetLayout);
@@ -498,14 +276,8 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
 void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
     VkDevice device = app->getDevice();
     VulkanApp* appPtr = app;
-    // Clear per-frame framebuffer/image handles; actual Vulkan destruction
+    // Clear per-frame image handles; actual Vulkan destruction
     // will be performed by the VulkanResourceManager.
-    for (int i = 0; i < 2; ++i) {
-        waterFramebuffers[i] = VK_NULL_HANDLE;
-    }
-    for (int i = 0; i < 2; ++i) {
-        sceneFramebuffers[i] = VK_NULL_HANDLE;
-    }
     for (int i = 0; i < 2; ++i) {
         sceneColorImages[i] = VK_NULL_HANDLE;
         sceneColorMemories[i] = VK_NULL_HANDLE;
@@ -735,7 +507,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     }
     app->resources.addPipelineLayout(waterGeometryPipelineLayout, "WaterRenderer: waterGeometryPipelineLayout");
 
-    // --- Create pipeline manually (waterRenderPass has 1 color attachment) ---
+    // --- Create pipeline (dynamic rendering, 1 color attachment VK_FORMAT_R32G32B32A32_SFLOAT) ---
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputInfo.vertexBindingDescriptionCount = 1;
@@ -804,6 +576,17 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
 
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+
+    // Dynamic rendering (no render pass)
+    VkFormat waterColorFmt = VK_FORMAT_R32G32B32A32_SFLOAT;
+    VkPipelineRenderingCreateInfo pipelineRenderingInfo{};
+    pipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    pipelineRenderingInfo.colorAttachmentCount = 1;
+    pipelineRenderingInfo.pColorAttachmentFormats = &waterColorFmt;
+    pipelineRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+    pipelineInfo.pNext = &pipelineRenderingInfo;
+    pipelineInfo.renderPass = VK_NULL_HANDLE;
+
     pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
     pipelineInfo.pStages = shaderStages.data();
     pipelineInfo.pVertexInputState = &vertexInputInfo;
@@ -815,7 +598,6 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.layout = waterGeometryPipelineLayout;
-    pipelineInfo.renderPass = waterRenderPass;  // MUST match the render pass used at draw time
     pipelineInfo.subpass = 0;
     if (hasTessellation) pipelineInfo.pTessellationState = &tessState;
 
@@ -824,7 +606,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
         waterGeometryPipeline = VK_NULL_HANDLE;
     } else {
         app->resources.addPipeline(waterGeometryPipeline, "WaterRenderer: waterGeometryPipeline");
-        std::cout << "[WaterRenderer] Created water geometry pipeline for waterRenderPass (1 color attachment)" << std::endl;
+        std::cout << "[WaterRenderer] Created water geometry pipeline (dynamic rendering, 1 color attachment)" << std::endl;
     }
 
     // Clear local shader module references; destruction handled by VulkanResourceManager
@@ -837,42 +619,53 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
 }
 
 void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex) {
-    if (waterRenderPass == VK_NULL_HANDLE) {
-        std::cerr << "[WaterRenderer::beginWaterGeometryPass] waterRenderPass is VK_NULL_HANDLE, skipping." << std::endl;
-        return;
-    }
-    if (waterFramebuffers[frameIndex] == VK_NULL_HANDLE) {
-        std::cerr << "[WaterRenderer::beginWaterGeometryPass] waterFramebuffers[" << frameIndex << "] is VK_NULL_HANDLE, skipping." << std::endl;
-        return;
-    }
-    std::array<VkClearValue, 2> clearValues{};
-    clearValues[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-    clearValues[1].depthStencil = {1.0f, 0};
-    VkRenderPassBeginInfo renderPassInfo{};
-    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderPassInfo.renderPass = waterRenderPass;
-    renderPassInfo.framebuffer = waterFramebuffers[frameIndex];
-    renderPassInfo.renderArea.offset = {0, 0};
-    renderPassInfo.renderArea.extent = {renderWidth, renderHeight};
-    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-    renderPassInfo.pClearValues = clearValues.data();
-    // Record expected layouts for water attachments so submit-time promotion
-    // will make the authoritative state match the render pass assumptions.
-    if (appPtr) {
-        if (waterDepthImages[frameIndex] != VK_NULL_HANDLE) {
-            // waterDepthImages stores linear depth in an RGBA color image
-            // (VK_FORMAT_R32G32B32A32_SFLOAT). Record the render-pass FINAL
-            // layout (SHADER_READ_ONLY_OPTIMAL) so the authoritative tracked
-            // map reflects the post-render-pass state at submit time.
-            appPtr->recordTrackedLayoutForCommandBuffer(cmd, waterDepthImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-        }
-        if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
-            appPtr->recordTrackedLayoutForCommandBuffer(cmd, waterGeomDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
-        }
+    if (waterGeometryPipeline == VK_NULL_HANDLE) return;
+    if (frameIndex >= 2) return;
+    if (waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
+
+    activeWaterFrameIndex = frameIndex;
+
+    // Transition water color image: tracked → COLOR_ATTACHMENT_OPTIMAL
+    appPtr->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex],
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        1, 0, 1);
+
+    // Transition water geometry depth: tracked → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
+        appPtr->recordTransitionImageLayoutLayer(cmd, waterGeomDepthImages[frameIndex],
+            VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            1, 0, 1);
     }
 
-    vkCmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    // Set viewport and scissor
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = waterDepthImageViews[frameIndex];
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+
+    VkRenderingAttachmentInfo depthAttachment{};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.imageView = waterGeomDepthImageViews[frameIndex];
+    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.clearValue.depthStencil = {1.0f, 0};
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = {renderWidth, renderHeight};
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.pDepthAttachment = &depthAttachment;
+
+    vkCmdBeginRendering(cmd, &renderingInfo);
+
     VkViewport viewport{};
     viewport.x = 0.0f;
     viewport.y = 0.0f;
@@ -888,12 +681,17 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
 }
 
 void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
-    if (cmd == VK_NULL_HANDLE) {
-        std::cerr << "[WaterRenderer::endWaterGeometryPass] cmd is VK_NULL_HANDLE, skipping." << std::endl;
-        return;
+    if (cmd == VK_NULL_HANDLE) return;
+    vkCmdEndRendering(cmd);
+
+    uint32_t frameIndex = activeWaterFrameIndex;
+    if (waterDepthImages[frameIndex] != VK_NULL_HANDLE && appPtr) {
+        appPtr->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex],
+            VK_FORMAT_R32G32B32A32_SFLOAT,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            1, 0, 1);
+        waterDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
-    // Properly end the water geometry render pass recorded on the provided command buffer
-    vkCmdEndRenderPass(cmd);
 }
 
 // Back-face pass is owned and executed by SceneRenderer via its WaterBackFaceRenderer.
