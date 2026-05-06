@@ -89,17 +89,19 @@ struct FullscreenPipelineOpts {
 
 // Build a simple graphics pipeline with no vertex-input state and dynamic
 // viewport/scissor.  The caller is responsible for providing a pre-created
-// pipelineLayout and renderPass.  Returns the created VkPipeline and
+// pipelineLayout and attachment formats. Returns the created VkPipeline and
 // registers it with the VulkanResourceManager.
 // Throws std::runtime_error on failure.
 inline VkPipeline buildFullscreenPipeline(
     VkDevice                    device,
     VulkanApp*                  app,
-    VkRenderPass                renderPass,
+    VkFormat                    colorFormat,
+    VkFormat                    depthFormat,
     VkPipelineLayout            layout,
     const std::vector<VkPipelineShaderStageCreateInfo>& stages,
     const FullscreenPipelineOpts& opts,
-    const char*                 name)
+    const char*                 name,
+    VkRenderPass                legacyRenderPass = VK_NULL_HANDLE)
 {
     VkPipelineVertexInputStateCreateInfo vi{};
     vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -160,8 +162,22 @@ inline VkPipeline buildFullscreenPipeline(
     pi.pColorBlendState    = &cb;
     pi.pDynamicState       = &dyn;
     pi.layout              = layout;
-    pi.renderPass          = renderPass;
     pi.subpass             = 0;
+
+    VkPipelineRenderingCreateInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    renderingInfo.colorAttachmentCount = opts.colorAttachmentCount;
+    renderingInfo.pColorAttachmentFormats = (opts.colorAttachmentCount > 0) ? &colorFormat : nullptr;
+    renderingInfo.depthAttachmentFormat = depthFormat;
+    renderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+
+    if (legacyRenderPass != VK_NULL_HANDLE) {
+        pi.pNext = nullptr;
+        pi.renderPass = legacyRenderPass;
+    } else {
+        pi.pNext = &renderingInfo;
+        pi.renderPass = VK_NULL_HANDLE;
+    }
 
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &pipeline) != VK_SUCCESS)

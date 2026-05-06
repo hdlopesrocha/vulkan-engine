@@ -24,7 +24,7 @@ class VulkanApp {
         // Main UBO/sampler descriptor set (allocated from descriptorSetLayout)
         VkDescriptorSet mainDescriptorSet = VK_NULL_HANDLE;
         VkDescriptorSet getMainDescriptorSet() const { return mainDescriptorSet; }
-        void createRenderPasses();
+
         // Utility: Generate vegetation instances using a compute shader
         // vertexBuffer: input triangle mesh (positions, 3 floats per vertex)
         // vertexCount: number of vertices in the buffer
@@ -63,9 +63,7 @@ class VulkanApp {
     VkFormat swapchainImageFormat;
     VkExtent2D swapchainExtent;
     std::vector<VkImageView> swapchainImageViews;
-    VkRenderPass renderPass = VK_NULL_HANDLE;
-    VkRenderPass continuationRenderPass = VK_NULL_HANDLE;  // Render pass that loads existing color/depth
-    std::vector<VkFramebuffer> swapchainFramebuffers;
+
     VkCommandPool commandPool = VK_NULL_HANDLE;            // primary pool for framebuffers and main-thread work
     VkCommandPool transientCommandPool = VK_NULL_HANDLE;   // separate pool for asynchronous / short-lived operations
     // Dedicated command pools for subsystem queues
@@ -173,7 +171,6 @@ protected:
         VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
         void createSwapchain();
         void createImageViews();
-        void createFramebuffers();
         void createCommandPool();
         void createDepthResources();
 
@@ -308,8 +305,11 @@ protected:
         bool colorWrite = true,
         VkCompareOp depthCompare = VK_COMPARE_OP_LESS,
         VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        VkRenderPass renderPassOverride = VK_NULL_HANDLE,
-        bool depthClampEnable = false);
+        bool depthClampEnable = false,
+        const std::vector<VkFormat>& colorFormats = {},
+        VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
+        bool noColorAttachment = false,
+        VkRenderPass legacyRenderPass = VK_NULL_HANDLE);
         std::vector<VkCommandBuffer> createCommandBuffers();
 
         VkDevice getDevice() const;
@@ -325,11 +325,8 @@ protected:
         VkExtent2D getSwapchainExtent() const { return swapchainExtent; }
         const std::vector<VkImage>& getSwapchainImages() const { return swapchainImages; }
         const std::vector<VkImageView>& getSwapchainImageViews() const { return swapchainImageViews; }
-        const std::vector<VkFramebuffer>& getSwapchainFramebuffers() const { return swapchainFramebuffers; }
         VkDescriptorPool getDescriptorPool() const { return descriptorPool; }
         VkDescriptorPool getImGuiDescriptorPool() const { return imguiDescriptorPool; }
-        VkRenderPass getSwapchainRenderPass() const { return renderPass; }
-        VkRenderPass getContinuationRenderPass() const { return continuationRenderPass; }
 
         VkImage getDepthImage() const { return depthImage; }
         VkImageView getDepthImageView() const { return depthImageView; }
@@ -384,8 +381,8 @@ protected:
     void requestClose();
         virtual void setup() = 0;
         virtual void update(float deltaTime) = 0;
-        virtual void preRenderPass(VkCommandBuffer &commandBuffer) {} // Called after vkBeginCommandBuffer but before vkCmdBeginRenderPass
-        virtual void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) = 0;
+        virtual void preRenderPass(VkCommandBuffer &commandBuffer) {} // Called after vkBeginCommandBuffer but before rendering begins
+        virtual void draw(VkCommandBuffer &commandBuffer) = 0;
         virtual void clean() = 0;
         // Called after swapchain recreation so derived apps can resize their offscreen resources
         virtual void onSwapchainResized(uint32_t /*width*/, uint32_t /*height*/) {}
