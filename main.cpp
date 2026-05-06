@@ -1091,23 +1091,35 @@ public:
                 ImGui::Text("Mode: %s", pickerForSave ? "Save" : "Load");
                 ImGui::TextWrapped("Current directory: %s", pickerDir.string().c_str());
 
-                if (ImGui::Button("Up") && pickerDir.has_parent_path()) {
+                if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf062##scene_picker_up")) && pickerDir.has_parent_path()) {
                     pickerDir = pickerDir.parent_path();
                 }
-                ImGui::SameLine();
-                if (ImGui::Button("Root")) {
-                    pickerDir = std::filesystem::path("/");
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Up one folder");
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Home")) {
+                if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf0ac##scene_picker_root"))) {
+                    pickerDir = std::filesystem::path("/");
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Go to root (/)");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf015##scene_picker_home"))) {
                     const char* home = std::getenv("HOME");
                     if (home && *home) {
                         pickerDir = std::filesystem::path(home);
                     }
                 }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Go to home folder");
+                }
                 ImGui::SameLine();
-                if (ImGui::Button("Home Scenes")) {
+                if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf07c##scene_picker_home_scenes"))) {
                     pickerDir = std::filesystem::path("scenes");
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Go to project scenes folder");
                 }
 
                 std::vector<std::filesystem::directory_entry> dirs;
@@ -1183,13 +1195,19 @@ public:
                 ImGui::Text("File name:");
                 ImGui::InputText("##picker_name", pickerNameBuf, sizeof(pickerNameBuf));
 
-                if (ImGui::Button("Select")) {
+                if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf00c##scene_picker_select"))) {
                     executePickerSelection();
                 }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Select file");
+                }
                 ImGui::SameLine();
-                if (ImGui::Button("Cancel##picker")) {
+                if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf00d##scene_picker_cancel"))) {
                     pickerError.clear();
                     ImGui::CloseCurrentPopup();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Cancel");
                 }
 
                 if (!pickerError.empty()) {
