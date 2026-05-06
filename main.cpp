@@ -997,8 +997,6 @@ public:
 
     void renderImGui() override {
         static char sceneFolderBuf[512] = "scenes/my_scene.scene";
-        static bool doSaveScene = false;
-        static bool doLoadScene = false;
         static bool pickerForSave = false;
         static bool pickerOpenPending = false;
         static std::filesystem::path pickerDir = std::filesystem::path("scenes");
@@ -1050,8 +1048,8 @@ public:
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Generate Map")) generateMapPending = true;
                 ImGui::Separator();
-                if (ImGui::MenuItem("Save Scene...")) doSaveScene = true;
-                if (ImGui::MenuItem("Load Scene...")) doLoadScene = true;
+                if (ImGui::MenuItem("Save Scene...")) openScenePicker(true);
+                if (ImGui::MenuItem("Load Scene...")) openScenePicker(false);
                 ImGui::Separator();
                 if (ImGui::MenuItem("Exit")) requestClose();
                 ImGui::EndMenu();
@@ -1068,45 +1066,7 @@ public:
             widgetManager.renderMenu();
             ImGui::EndMainMenuBar();
 
-            // Save/Load scene popup modals
-            if (doSaveScene) { ImGui::OpenPopup("Save Scene"); doSaveScene = false; }
-            if (doLoadScene) { ImGui::OpenPopup("Load Scene"); doLoadScene = false; }
-
             ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-            ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-            if (ImGui::BeginPopupModal("Save Scene", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-                ImGui::Text("Scene file path:");
-                ImGui::InputText("##savefolder", sceneFolderBuf, sizeof(sceneFolderBuf));
-                ImGui::SameLine();
-                if (ImGui::Button("Browse##save")) {
-                    openScenePicker(true);
-                }
-                if (ImGui::Button("Save")) {
-                    if (mainScene) mainScene->save(sceneFolderBuf, &settings);
-                    ImGui::CloseCurrentPopup();
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
-            }
-
-            ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-            if (ImGui::BeginPopupModal("Load Scene", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-                ImGui::Text("Scene file path:");
-                ImGui::InputText("##loadfolder", sceneFolderBuf, sizeof(sceneFolderBuf));
-                ImGui::SameLine();
-                if (ImGui::Button("Browse##load")) {
-                    openScenePicker(false);
-                }
-                if (ImGui::Button("Load")) {
-                    pendingLoadPath = sceneFolderBuf;
-                    loadScenePending = true;
-                    ImGui::CloseCurrentPopup();
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
-            }
 
             ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
             ImGui::SetNextWindowSize(ImVec2(700.0f, 420.0f), ImGuiCond_Appearing);
@@ -1186,6 +1146,14 @@ public:
 
                     if (pickerForSave || std::filesystem::exists(selected, ec)) {
                         copyPathToBuffer(selected, sceneFolderBuf, sizeof(sceneFolderBuf));
+                        if (pickerForSave) {
+                            if (mainScene) {
+                                mainScene->save(sceneFolderBuf, &settings);
+                            }
+                        } else {
+                            pendingLoadPath = sceneFolderBuf;
+                            loadScenePending = true;
+                        }
                         pickerError.clear();
                         ImGui::CloseCurrentPopup();
                     } else {
