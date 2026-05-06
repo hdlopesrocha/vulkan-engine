@@ -2,12 +2,13 @@
 
 #include "Widget.hpp"
 #include "Settings.hpp"
+#include "../utils/ShadowParams.hpp"
 #include <imgui.h>
 #include <functional>
 
 class SettingsWidget : public Widget {
 public:
-    explicit SettingsWidget(Settings& settings);
+    explicit SettingsWidget(Settings& settings, ShadowParams* shadowParams = nullptr);
     
     void render() override;
     
@@ -30,6 +31,7 @@ public:
     
 private:
     Settings& settings;
+    ShadowParams* shadowParams;
     std::function<void()> onDumpShadowDepth;
 
     void resetToDefaults();
