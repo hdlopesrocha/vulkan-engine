@@ -1,7 +1,11 @@
 #include "WidgetManager.hpp"
+#include <algorithm>
 
 void WidgetManager::addWidget(std::shared_ptr<Widget> widget) {
 	widgets.push_back(widget);
+	std::sort(widgets.begin(), widgets.end(), [](const std::shared_ptr<Widget>& a, const std::shared_ptr<Widget>& b) {
+		return a->getTitle() < b->getTitle();
+	});
 }
 
 void WidgetManager::renderAll() {
