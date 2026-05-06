@@ -4255,12 +4255,20 @@ void VulkanApp::createLogicalDevice() {
     vulkan11Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
     vulkan11Features.shaderDrawParameters = VK_TRUE;
 
-    // Enable Vulkan 1.3 dynamic rendering
-    VkPhysicalDeviceVulkan13Features vulkan13Features{};
-    vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-    vulkan13Features.pNext = nullptr;
-    vulkan13Features.dynamicRendering = VK_TRUE;
-    vulkan11Features.pNext = &vulkan13Features;
+    // Mesa RADV ignores VkPhysicalDeviceVulkan13Features — use KHR extension structs instead.
+    // Both synchronization2 and dynamicRendering are promoted to Vulkan 1.3 core, but
+    // Mesa RADV only honours the KHR extension feature structs when chained in pNext.
+    VkPhysicalDeviceSynchronization2FeaturesKHR sync2Features{};
+    sync2Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR;
+    sync2Features.pNext = nullptr;
+    sync2Features.synchronization2 = VK_TRUE;
+
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dynRenderFeatures{};
+    dynRenderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+    dynRenderFeatures.pNext = &sync2Features;
+    dynRenderFeatures.dynamicRendering = VK_TRUE;
+
+    vulkan11Features.pNext = &dynRenderFeatures;
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
