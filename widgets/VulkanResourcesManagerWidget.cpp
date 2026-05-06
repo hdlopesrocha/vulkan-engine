@@ -96,7 +96,13 @@ void VulkanResourcesManagerWidget::render() {
     
     // Device memories
     if (ImGui::TreeNode("Device Memories")) {
-        const auto &m = mgr->getDeviceMemoryMap();
+        const auto m = mgr->getDeviceMemorySnapshot();
+        size_t transientCount = 0;
+        for (const auto &p : m) {
+            const auto &desc = p.second.second;
+            if (desc.rfind("Temp:", 0) == 0) ++transientCount;
+        }
+        ImGui::Text("Tracked: %zu (transient: %zu)", m.size(), transientCount);
         if (m.empty()) ImGui::TextUnformatted("(none)");
         size_t i = 0;
         for (const auto &p : m) {
