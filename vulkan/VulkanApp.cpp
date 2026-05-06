@@ -1478,9 +1478,26 @@ void VulkanApp::processPendingCommandBuffers() {
 
         // Free the command buffer using the correct originating pool (may destroy the pool)
         freeCommandBuffer(cmd);
-        // Destroy and unregister the fence
-        resources.removeFence(fence);
-        vkDestroyFence(device, fence, nullptr);
+        // Destroy and unregister the fence.  Hold deferredDestroyMutex to:
+        //  1) run and remove any deferred callbacks registered for this fence,
+        //     so that no future processPendingCommandBuffers call will call
+        //     vkGetFenceStatus on a fence we are about to destroy, and
+        //  2) make the removeFence+vkDestroyFence pair atomic with respect
+        //     to the deferred-destroy loop which also calls vkGetFenceStatus.
+        {
+            std::lock_guard<std::mutex> dd(deferredDestroyMutex);
+            for (auto dit = deferredDestroys.begin(); dit != deferredDestroys.end(); ) {
+                if (dit->first == fence) {
+                    auto fn = dit->second;
+                    try { fn(); } catch (...) {}
+                    dit = deferredDestroys.erase(dit);
+                } else {
+                    ++dit;
+                }
+            }
+            resources.removeFence(fence);
+            vkDestroyFence(device, fence, nullptr);
+        }
     }
 }
 
