@@ -80,7 +80,7 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
         if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, width, height);
         if (solid360Renderer) {
             solid360Renderer->destroySolid360Targets(app);
-            solid360Renderer->createSolid360Targets(app, solidRenderer->getRenderPass(), waterRenderer->getLinearSampler());
+            solid360Renderer->createSolid360Targets(app, waterRenderer->getLinearSampler());
         }
     }
     if (postProcessRenderer) {
@@ -198,7 +198,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
     }
 }
 
-void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &mainPassInfo, uint32_t frameIdx, bool hasWater, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, const glm::mat4 &viewProj,
+void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, bool hasWater, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, const glm::mat4 &viewProj,
                   const UniformObject &uboStatic, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent) {
     if (commandBuffer == VK_NULL_HANDLE) {
         std::cerr << "[SceneRenderer::mainPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
@@ -226,7 +226,7 @@ void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDe
     skyRenderer->render(app, commandBuffer, perTextureDescriptorSet, mainUniformBuffer, uboStatic, viewProj, mode);
 }
 
-void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, float waterTime, bool skipBackFace, VkImageView skyView, VkImageView cubeReflectionView) {
+void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, float waterTime, bool skipBackFace, VkImageView skyView, VkImageView cubeReflectionView) {
     if (commandBuffer == VK_NULL_HANDLE) {
         std::cerr << "[SceneRenderer::waterPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
         return;
@@ -318,19 +318,19 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     solidRenderer->createPipelines(app);
 
     // Create pipelines for all renderers (solid renderer now has its render pass ready)
-    skyRenderer->init(app, solidRenderer->getRenderPass());
+    skyRenderer->init(app);
     // Create offscreen sky targets so the sky can be sampled as a texture by water
     skyRenderer->createOffscreenTargets(app, app->getWidth(), app->getHeight());
     shadowMapper->init(app);
-    vegetationRenderer->init(app, solidRenderer->getRenderPass(), shadowMapper->getShadowRenderPass());
+    vegetationRenderer->init(app);
 
     // Initialize debug cube renderer
     if (debugCubeRenderer) {
-        debugCubeRenderer->init(app, solidRenderer->getRenderPass());
+        debugCubeRenderer->init(app);
     }
     // Initialize bounding box renderer (reuses cube wireframe pipeline)
     if (boundingBoxRenderer) {
-        boundingBoxRenderer->init(app, solidRenderer->getRenderPass());
+        boundingBoxRenderer->init(app);
     }
     
     // Create main uniform buffer (TRANSFER_DST for vkCmdUpdateBuffer in cubemap 360 render)
@@ -435,7 +435,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // before water pipelines are created, so create it first.
     backFaceRenderer = std::make_unique<WaterBackFaceRenderer>();
     solid360Renderer = std::make_unique<Solid360Renderer>();
-    if (backFaceRenderer) backFaceRenderer->createRenderPass(app);
 
     // Initialize WaterRenderer (creates its pipeline layout and initializes the param SSBO)
     waterRenderer->init(app, waterParamsBuffer_, waterParams, layerCount);
@@ -589,12 +588,12 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
 
     // Create cubemap → equirect 360° reflection targets for water (owned by SceneRenderer)
-    if (solid360Renderer) solid360Renderer->createSolid360Targets(app, solidRenderer->getRenderPass(), waterRenderer->getLinearSampler());
+    if (solid360Renderer) solid360Renderer->createSolid360Targets(app, waterRenderer->getLinearSampler());
 
     // Create wireframe pipelines for solid and water passes
     if (solidWireframe) {
         std::vector<VkDescriptorSetLayout> solidSetLayouts = { app->getDescriptorSetLayout() };
-        solidWireframe->createPipeline(app, solidRenderer->getRenderPass(), 1,
+        solidWireframe->createPipeline(app, {app->getSwapchainImageFormat()},
             solidSetLayouts,
             "shaders/main.vert.spv", "shaders/main.frag.spv",
             "shaders/main.tesc.spv", "shaders/main.tese.spv",
@@ -606,7 +605,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             app->getMaterialDescriptorSetLayout(),
             waterRenderer->getWaterDepthDescriptorSetLayout()
         };
-        waterWireframe->createPipeline(app, waterRenderer->getWaterRenderPass(), 1,
+        waterWireframe->createPipeline(app, {VK_FORMAT_R32G32B32A32_SFLOAT},
             waterSetLayouts,
             "shaders/water.vert.spv", "shaders/water.frag.spv",
             "shaders/water.tesc.spv", "shaders/water.tese.spv",

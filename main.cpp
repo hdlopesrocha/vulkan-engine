@@ -598,11 +598,10 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 5);
 
-        VkRenderPassBeginInfo unusedRpInfo{};
         // Sky is now rendered inside the solid pass above, before solid geometry.
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
-        sceneRenderer->mainPass(this, commandBuffer, unusedRpInfo, frameIdx, waterEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode,
+        sceneRenderer->mainPass(this, commandBuffer, frameIdx, waterEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode,
             viewProj, uboStatic, true, false, true, 0, 0.0f, 0.0f);
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
@@ -813,7 +812,6 @@ public:
                 SkySettings::Mode skyMode360 = this->sceneRenderer->getSkySettings().mode;
                 this->sceneRenderer->solid360Renderer->renderSolid360(
                     app, cmd,
-                    this->sceneRenderer->solidRenderer->getRenderPass(),
                     this->sceneRenderer->skyRenderer.get(), skyMode360,
                     this->sceneRenderer->solidRenderer.get(),
                     app->getMainDescriptorSet(),
@@ -995,7 +993,7 @@ public:
             // If we launched an async back-face submission, tell waterPass to skip issuing it again.
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 10);
-            sceneRenderer->waterPass(this, commandBuffer, unusedRpInfo, frameIdx, getMainDescriptorSet(), settings.wireframeMode,
+            sceneRenderer->waterPass(this, commandBuffer, frameIdx, getMainDescriptorSet(), settings.wireframeMode,
                 mainTime, launchedBackFace, skyView, cubeReflectionView);
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 11);
@@ -1199,7 +1197,7 @@ public:
         widgetManager.renderAll();
     }
 
-    void draw(VkCommandBuffer &commandBuffer, VkRenderPassBeginInfo &renderPassInfo) override {
+    void draw(VkCommandBuffer &commandBuffer) override {
         // Only record draw commands; command buffer and render pass are already active
         if (commandBuffer == VK_NULL_HANDLE) {
             std::cerr << "[MyApp::draw] Error: commandBuffer is VK_NULL_HANDLE, skipping draw." << std::endl;
@@ -1234,8 +1232,6 @@ public:
             sceneRenderer->postProcessRenderer->render(
                 this,
                 commandBuffer,
-                renderPassInfo.framebuffer,
-                renderPassInfo.renderPass,
                 sceneRenderer->solidRenderer->getColorView(frameIdx),
                 sceneRenderer->solidRenderer->getDepthView(frameIdx),
                 sceneRenderer->waterRenderer->getWaterDepthView(frameIdx),
@@ -1243,7 +1239,6 @@ public:
                 invViewProj,
                 glm::vec3(uboStatic.viewPos),
                 frameIdx,
-                false,
                 skyViewPP);
         }
         //std::cout << "[MyApp::draw] waterPass returned. Rendering ImGui..." << std::endl;
