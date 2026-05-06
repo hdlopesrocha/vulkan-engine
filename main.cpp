@@ -1110,6 +1110,29 @@ public:
                 std::sort(dirs.begin(), dirs.end(), byName);
                 std::sort(files.begin(), files.end(), byName);
 
+                auto executePickerSelection = [&]() {
+                    std::filesystem::path selected = pickerDir / pickerNameBuf;
+                    if (selected.extension() != ".scene") {
+                        selected += ".scene";
+                    }
+
+                    if (pickerForSave || std::filesystem::exists(selected, ec)) {
+                        copyPathToBuffer(selected, sceneFolderBuf, sizeof(sceneFolderBuf));
+                        if (pickerForSave) {
+                            if (mainScene) {
+                                mainScene->save(sceneFolderBuf, &settings);
+                            }
+                        } else {
+                            pendingLoadPath = sceneFolderBuf;
+                            loadScenePending = true;
+                        }
+                        pickerError.clear();
+                        ImGui::CloseCurrentPopup();
+                    } else {
+                        pickerError = "Selected file does not exist.";
+                    }
+                };
+
                 ImGui::BeginChild("##picker_entries", ImVec2(0.0f, 260.0f), true);
                 for (const auto& d : dirs) {
                     std::string label = "[DIR] " + d.path().filename().string();
@@ -1132,6 +1155,9 @@ public:
                         std::memcpy(pickerNameBuf, clipped.c_str(), clipped.size());
                         pickerNameBuf[clipped.size()] = '\0';
                     }
+                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                        executePickerSelection();
+                    }
                 }
                 ImGui::EndChild();
 
@@ -1139,26 +1165,7 @@ public:
                 ImGui::InputText("##picker_name", pickerNameBuf, sizeof(pickerNameBuf));
 
                 if (ImGui::Button("Select")) {
-                    std::filesystem::path selected = pickerDir / pickerNameBuf;
-                    if (selected.extension() != ".scene") {
-                        selected += ".scene";
-                    }
-
-                    if (pickerForSave || std::filesystem::exists(selected, ec)) {
-                        copyPathToBuffer(selected, sceneFolderBuf, sizeof(sceneFolderBuf));
-                        if (pickerForSave) {
-                            if (mainScene) {
-                                mainScene->save(sceneFolderBuf, &settings);
-                            }
-                        } else {
-                            pendingLoadPath = sceneFolderBuf;
-                            loadScenePending = true;
-                        }
-                        pickerError.clear();
-                        ImGui::CloseCurrentPopup();
-                    } else {
-                        pickerError = "Selected file does not exist.";
-                    }
+                    executePickerSelection();
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Cancel##picker")) {
