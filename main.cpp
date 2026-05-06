@@ -27,7 +27,6 @@
 #include "widgets/SkySettings.hpp"
 #include "widgets/WaterWidget.hpp"
 #include "widgets/RenderTargetsWidget.hpp"
-#include "widgets/BillboardWidget.hpp"
 #include "widgets/BillboardCreator.hpp"
 #include "widgets/ImpostorWidget.hpp"
 #include "widgets/TextureMixerWidget.hpp"
@@ -35,9 +34,7 @@
 #include "widgets/CameraWidget.hpp"
 #include "events/ControllerManager.hpp"
 #include "widgets/ControllerParametersWidget.hpp"
-#include "widgets/DebugWidget.hpp"
 #include "widgets/GamepadWidget.hpp"
-#include "widgets/ShadowMapWidget.hpp"
 #include "widgets/LightWidget.hpp"
 #include "widgets/VulkanResourcesManagerWidget.hpp"
 #include "widgets/VegetationAtlasEditor.hpp"
@@ -47,8 +44,6 @@
 #include "utils/MainSceneLoader.hpp"
 #include "widgets/Settings.hpp"
 #include "utils/SettingsFile.hpp"
-// ...existing includes...
-#include "widgets/BillboardWidgetManager.hpp"
 #include "widgets/WidgetManager.hpp"
 #include "math/Camera.hpp"
 #include "math/Light.hpp"
@@ -96,9 +91,7 @@ public:
     std::shared_ptr<SkyWidget> skyWidget;
     std::shared_ptr<WaterWidget> waterWidget;
     std::shared_ptr<RenderTargetsWidget> renderTargetsWidget;
-    std::shared_ptr<BillboardWidget> billboardWidget;
     std::shared_ptr<BillboardCreator> billboardCreator;
-    std::unique_ptr<BillboardWidgetManager> billboardWidgetManager;
     std::shared_ptr<ImpostorWidget> impostorWidget;
     std::shared_ptr<TextureMixerWidget> textureMixerWidget;
     // flag set by background thread when mixer widget is ready; main thread will add it safely
@@ -108,8 +101,6 @@ public:
     ControllerManager controllerManager;
     std::shared_ptr<ControllerParametersWidget> controllerParametersWidget;
     std::shared_ptr<GamepadWidget> gamepadWidget;
-    std::shared_ptr<DebugWidget> debugWidget;
-    std::shared_ptr<ShadowMapWidget> shadowWidget;
     std::shared_ptr<LightWidget> lightWidget;
     std::shared_ptr<VulkanResourcesManagerWidget> vulkanResourcesManagerWidget;
     std::shared_ptr<VegetationAtlasEditor> vegetationAtlasEditor;
@@ -354,7 +345,7 @@ public:
 
         skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
         // Create settings widget (was missing previously)
-        settingsWidget = std::make_shared<SettingsWidget>(settings);
+        settingsWidget = std::make_shared<SettingsWidget>(settings, &shadowParams);
         // Water UI uses the application-owned water params vector and updates GPU state explicitly.
         waterWidget = std::make_shared<WaterWidget>(sceneRenderer->waterRenderer.get(), &waterParams);
 
@@ -367,8 +358,6 @@ public:
         cameraWidget = std::make_shared<CameraWidget>(&camera);
         controllerParametersWidget = std::make_shared<ControllerParametersWidget>(controllerManager.getParameters(), &brushManager);
         gamepadWidget = std::make_shared<GamepadWidget>(controllerManager.getParameters());
-        debugWidget = std::make_shared<DebugWidget>(&materials, &camera, &cubeCount, sceneRenderer->vegetationRenderer.get());
-        shadowWidget = std::make_shared<ShadowMapWidget>(sceneRenderer->shadowMapper.get(), &shadowParams);
         lightWidget = std::make_shared<LightWidget>(&light);
         vulkanResourcesManagerWidget = std::make_shared<VulkanResourcesManagerWidget>(&resources);
         vulkanResourcesManagerWidget->updateWithApp(this);
@@ -380,8 +369,6 @@ public:
         widgetManager.addWidget(cameraWidget);
         widgetManager.addWidget(controllerParametersWidget);
         widgetManager.addWidget(gamepadWidget);
-        widgetManager.addWidget(debugWidget);
-        widgetManager.addWidget(shadowWidget);
         widgetManager.addWidget(settingsWidget);
         widgetManager.addWidget(lightWidget);
         widgetManager.addWidget(skyWidget);
@@ -390,7 +377,6 @@ public:
         widgetManager.addWidget(vulkanResourcesManagerWidget);
         widgetManager.addWidget(vegetationAtlasEditor);
         widgetManager.addWidget(windWidget);
-        widgetManager.addWidget(billboardWidget);
         widgetManager.addWidget(billboardCreator);
         widgetManager.addWidget(impostorWidget);
 
@@ -616,7 +602,7 @@ public:
 
         // Render debug cubes for expanded octree nodes, node instances, and vegetation density centers.
         const bool showOctreeDebug = octreeExplorerWidget && octreeExplorerWidget->getShowDebugCubes();
-        const bool showVegetationDensityDebug = debugWidget && debugWidget->getShowVegetationDensityDebug();
+        const bool showVegetationDensityDebug = false;
         if (showOctreeDebug || showVegetationDensityDebug) {
             std::vector<DebugCubeRenderer::CubeWithColor> debugCubes;
             // Add widget-expanded cubes when explorer is visible
@@ -1359,8 +1345,6 @@ void MyApp::setupVegetationTextures() {
     // Allocate 3-layer texture arrays for vegetation (foliage, grass, wild)
     vegetationTextureArrayManager.allocate(3, 512, 512, this);
     vegetationAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
-    billboardWidget = std::make_shared<BillboardWidget>();
-    billboardWidgetManager = std::make_unique<BillboardWidgetManager>(billboardWidget, sceneRenderer->vegetationRenderer.get() , &billboardManager.getBillboardPositions());
     billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureArrayManager);
     // Provide VulkanApp to the creator so it can initialize GPU-backed preview textures
     billboardCreator->setVulkanApp(this);
