@@ -75,6 +75,7 @@ public:
     const ResourceMap<VkSemaphore> &getSemaphoreMap() const;
     const ResourceMap<VkFence> &getFenceMap() const;
     const ResourceMap<VkCommandPool> &getCommandPoolMap() const;
+    std::vector<std::pair<uintptr_t, std::pair<VkDeviceMemory, std::string>>> getDeviceMemorySnapshot() const;
 
     // Cleanup all resources in a safe deterministic order. The device must be valid.
     void cleanup(VkDevice device);

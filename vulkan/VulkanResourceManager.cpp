@@ -227,6 +227,19 @@ const VulkanResourceManager::ResourceMap<VkSemaphore> &VulkanResourceManager::ge
 const VulkanResourceManager::ResourceMap<VkFence> &VulkanResourceManager::getFenceMap() const { return fences; }
 const VulkanResourceManager::ResourceMap<VkCommandPool> &VulkanResourceManager::getCommandPoolMap() const { return commandPools; }
 
+std::vector<std::pair<uintptr_t, std::pair<VkDeviceMemory, std::string>>> VulkanResourceManager::getDeviceMemorySnapshot() const {
+    std::vector<std::pair<uintptr_t, std::pair<VkDeviceMemory, std::string>>> out;
+    {
+        std::lock_guard<std::mutex> lk(mtx);
+        out.reserve(deviceMemories.size());
+        for (const auto &p : deviceMemories) out.push_back(p);
+    }
+    std::sort(out.begin(), out.end(), [](const auto &a, const auto &b) {
+        return a.first < b.first;
+    });
+    return out;
+}
+
 
 
 
