@@ -31,7 +31,7 @@ IMGUI_CORE_OBJS := $(patsubst third_party/imgui/%.cpp,$(OBJ_DIR)/imgui/%.o,$(IMG
 IMGUI_BACKEND_OBJS := $(patsubst third_party/imgui/backends/%.cpp,$(OBJ_DIR)/imgui/backends/%.o,$(IMGUI_BACKEND_SRCS))
 IMGUI_OBJS := $(IMGUI_CORE_OBJS) $(IMGUI_BACKEND_OBJS)
 # shader sources and generated SPIR-V
-SRCS := $(wildcard main.cpp utils/*.cpp vulkan/*.cpp vulkan/renderer/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp space/*.cpp)
+SRCS := $(wildcard main.cpp utils/*.cpp vulkan/*.cpp vulkan/renderer/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp space/*.cpp) third_party/miniaudio/miniaudio_impl.cpp
 # Exclude legacy utils Camera implementation (migrated to math/Camera)
 SRCS := $(filter-out utils/Camera.cpp,$(SRCS))
 OBJ_DIR := $(OUT_DIR)/obj
@@ -184,6 +184,13 @@ install:
 						libgdal-dev
 	# 2. Clone Dear ImGui
 	mkdir -p third_party
+	mkdir -p third_party/miniaudio
+	@if [ ! -f third_party/miniaudio/miniaudio.h ]; then \
+		curl -L https://raw.githubusercontent.com/mackron/miniaudio/master/miniaudio.h -o third_party/miniaudio/miniaudio.h; \
+	fi
+	@if [ ! -f third_party/miniaudio/miniaudio_impl.cpp ]; then \
+		printf '#define MINIAUDIO_IMPLEMENTATION\n#include "miniaudio.h"\n' > third_party/miniaudio/miniaudio_impl.cpp; \
+	fi
 	cd third_party
 	git clone https://github.com/ocornut/imgui.git
 	cd imgui
