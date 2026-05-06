@@ -8,13 +8,11 @@ layout(location = 3) flat in float inRotFrac;
 
 layout(location = 0) out vec4 outColor;
 
-// Full SolidParamsUBO — same layout as vegetation.frag.
-layout(set = 0, binding = 0) uniform SolidParamsUBO {
-    mat4 viewProjection;
-    vec4 viewPos;
-    vec4 lightDir;   // direction FROM light source toward scene
-    vec4 lightColor;
-} ubo;
+#include "includes/ubo.glsl"
+
+layout(set = 0, binding = 4) uniform sampler2D shadowMap;
+layout(set = 0, binding = 8) uniform sampler2D shadowMap1;
+layout(set = 0, binding = 9) uniform sampler2D shadowMap2;
 
 // 60-layer impostor arrays: 3 billboard types × 20 Fibonacci views.
 layout(set = 1, binding = 0) uniform sampler2DArray impostorArray;
@@ -33,9 +31,14 @@ layout(push_constant) uniform PushConstants {
     vec4 cameraPosAndFalloff;
 };
 
+vec3 fragPosWorld; // set in main() — required by shadows.glsl cascades 1 & 2
+
+#include "includes/shadows.glsl"
+
 void main() {
     vec4 color = texture(impostorArray, inTexCoord);
     if (color.a < 0.5) discard;
+    fragPosWorld = inWorldPos; // must be set before any ShadowCalculation call
 
     // Cross-fade with vegetation: dithered fade-in in the transition zone.
     // This is the complement of vegetation.frag's fade-out: together they cover
@@ -73,7 +76,18 @@ void main() {
     vec3 diffuse  = NdotL               * ubo.lightColor.rgb;
     vec3 specular = pow(NdotH, kShine) * kSpecular * ubo.lightColor.rgb;
 
-    vec3 lighting = ambient + diffuse + specular;
+    float shadow = 0.0;
+    if (ubo.shadowEffects.w > 0.5) {
+        if (NdotL > 0.01) {
+            float bias = max(0.003 * (1.0 - NdotL), 0.001);
+            vec4 fragPosLightSpace = ubo.lightSpaceMatrix * vec4(inWorldPos, 1.0);
+            shadow = ShadowCalculation(fragPosLightSpace, bias);
+        } else {
+            shadow = 1.0;
+        }
+    }
+
+    vec3 lighting = ambient + (diffuse + specular) * (1.0 - shadow);
 
     outColor = vec4(color.rgb * lighting, 1.0);
 }
