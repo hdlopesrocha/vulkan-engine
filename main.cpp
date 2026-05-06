@@ -43,7 +43,6 @@
 #include "widgets/Brush3dWidget.hpp"
 #include "utils/MainSceneLoader.hpp"
 #include "widgets/Settings.hpp"
-#include "utils/SettingsFile.hpp"
 #include "widgets/WidgetManager.hpp"
 #include "math/Camera.hpp"
 #include "math/Light.hpp"
@@ -995,7 +994,7 @@ public:
     }
 
     void renderImGui() override {
-        static char sceneFolderBuf[512] = "scenes/my_scene";
+        static char sceneFolderBuf[512] = "scenes/my_scene.scene";
         static bool doSaveScene = false;
         static bool doLoadScene = false;
 
@@ -1028,12 +1027,10 @@ public:
             ImVec2 center = ImGui::GetMainViewport()->GetCenter();
             ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
             if (ImGui::BeginPopupModal("Save Scene", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-                ImGui::Text("Folder path:");
+                ImGui::Text("Scene file path:");
                 ImGui::InputText("##savefolder", sceneFolderBuf, sizeof(sceneFolderBuf));
                 if (ImGui::Button("Save")) {
-                    if (mainScene) mainScene->save(sceneFolderBuf);
-                    SettingsFile settingsFile(&settings, "settings");
-                    settingsFile.save(sceneFolderBuf);
+                    if (mainScene) mainScene->save(sceneFolderBuf, &settings);
                     ImGui::CloseCurrentPopup();
                 }
                 ImGui::SameLine();
@@ -1043,13 +1040,11 @@ public:
 
             ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
             if (ImGui::BeginPopupModal("Load Scene", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-                ImGui::Text("Folder path:");
+                ImGui::Text("Scene file path:");
                 ImGui::InputText("##loadfolder", sceneFolderBuf, sizeof(sceneFolderBuf));
                 if (ImGui::Button("Load")) {
                     pendingLoadPath = sceneFolderBuf;
                     loadScenePending = true;
-                    SettingsFile settingsFile(&settings, "settings");
-                    settingsFile.load(sceneFolderBuf);
                     ImGui::CloseCurrentPopup();
                 }
                 ImGui::SameLine();
@@ -1688,7 +1683,7 @@ void MyApp::loadSceneFromFile(const std::string& path) {
     if (octreeExplorerWidget)
         octreeExplorerWidget->octreeReady.store(false, std::memory_order_release);
 
-    mainScene->load(path, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler);
+    mainScene->load(path, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler, &settings);
     std::cout << "[MyApp::loadSceneFromFile] Octree loaded from '" << path << "'\n";
 
     sceneProcessThread = std::thread([this]() {
