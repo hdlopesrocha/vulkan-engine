@@ -41,46 +41,6 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
         }
     }
 
-    // Create a tiny renderpass for the linearize write (color output)
-    if (linearizeRenderPass == VK_NULL_HANDLE) {
-        VkAttachmentDescription att{};
-        att.format = VK_FORMAT_R8G8B8A8_UNORM;
-        att.samples = VK_SAMPLE_COUNT_1_BIT;
-        att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        att.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-        VkSubpassDescription subpass{};
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &colorRef;
-
-        VkSubpassDependency dep{};
-        dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dep.dstSubpass = 0;
-        dep.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        dep.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-        VkRenderPassCreateInfo rpci{};
-        rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        rpci.attachmentCount = 1;
-        rpci.pAttachments = &att;
-        rpci.subpassCount = 1;
-        rpci.pSubpasses = &subpass;
-        rpci.dependencyCount = 1;
-        rpci.pDependencies = &dep;
-
-        if (vkCreateRenderPass(device, &rpci, nullptr, &linearizeRenderPass) == VK_SUCCESS) {
-            app->resources.addRenderPass(linearizeRenderPass, "RenderTargetsWidget: linearizeRenderPass");
-        } else linearizeRenderPass = VK_NULL_HANDLE;
-    }
-
     // Descriptor set layout for combined sampler (binding 0)
     if (linearizeDescriptorSetLayout == VK_NULL_HANDLE) {
         VkDescriptorSetLayoutBinding b{};
@@ -115,7 +75,7 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
     }
 
     // Create graphics pipeline from SPV files (if available)
-    if (linearizePipeline == VK_NULL_HANDLE && linearizePipelineLayout != VK_NULL_HANDLE && linearizeRenderPass != VK_NULL_HANDLE) {
+    if (linearizePipeline == VK_NULL_HANDLE && linearizePipelineLayout != VK_NULL_HANDLE) {
         std::vector<char> vertCode, fragCode;
         try { vertCode = FileReader::readFile("shaders/depth_linearize.vert.spv"); } catch (...) { }
         try { fragCode = FileReader::readFile("shaders/depth_linearize.frag.spv"); } catch (...) { }
@@ -193,12 +153,19 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
             pi.pColorBlendState = &cb;
             pi.pDynamicState = &dynInfo;
             pi.layout = linearizePipelineLayout;
-            pi.renderPass = linearizeRenderPass;
-            pi.subpass = 0;
+            pi.renderPass = VK_NULL_HANDLE;
+
+            VkFormat colorFmt = VK_FORMAT_R8G8B8A8_UNORM;
+            VkPipelineRenderingCreateInfo pri{};
+            pri.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+            pri.colorAttachmentCount = 1;
+            pri.pColorAttachmentFormats = &colorFmt;
+            pri.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
+            pi.pNext = &pri;
 
             if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &linearizePipeline) == VK_SUCCESS) {
                 app->resources.addPipeline(linearizePipeline, "RenderTargetsWidget: linearizePipeline");
-                std::cout << "[RenderTargetsWidget] Created linearizePipeline=" << (void*)linearizePipeline << " layout=" << (void*)linearizePipelineLayout << " renderPass=" << (void*)linearizeRenderPass << std::endl;
+                std::cout << "[RenderTargetsWidget] Created linearizePipeline=" << (void*)linearizePipeline << " layout=" << (void*)linearizePipelineLayout << std::endl;
             } else linearizePipeline = VK_NULL_HANDLE;
         }
     }
@@ -251,35 +218,7 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
             } else linearBackFaceDepthView = VK_NULL_HANDLE;
         }
 
-        // Create framebuffers for the two linearized targets
-        if (linearSceneFramebuffer == VK_NULL_HANDLE && linearSceneDepthView != VK_NULL_HANDLE && linearizeRenderPass != VK_NULL_HANDLE) {
-            VkImageView atts[] = { linearSceneDepthView };
-            VkFramebufferCreateInfo fb{};
-            fb.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            fb.renderPass = linearizeRenderPass;
-            fb.attachmentCount = 1;
-            fb.pAttachments = atts;
-            fb.width = static_cast<uint32_t>(width);
-            fb.height = static_cast<uint32_t>(height);
-            fb.layers = 1;
-            if (vkCreateFramebuffer(device, &fb, nullptr, &linearSceneFramebuffer) == VK_SUCCESS) {
-                app->resources.addFramebuffer(linearSceneFramebuffer, "RenderTargetsWidget: linearSceneFramebuffer");
-            } else linearSceneFramebuffer = VK_NULL_HANDLE;
-        }
-        if (linearBackFaceFramebuffer == VK_NULL_HANDLE && linearBackFaceDepthView != VK_NULL_HANDLE && linearizeRenderPass != VK_NULL_HANDLE) {
-            VkImageView atts[] = { linearBackFaceDepthView };
-            VkFramebufferCreateInfo fb{};
-            fb.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            fb.renderPass = linearizeRenderPass;
-            fb.attachmentCount = 1;
-            fb.pAttachments = atts;
-            fb.width = static_cast<uint32_t>(width);
-            fb.height = static_cast<uint32_t>(height);
-            fb.layers = 1;
-            if (vkCreateFramebuffer(device, &fb, nullptr, &linearBackFaceFramebuffer) == VK_SUCCESS) {
-                app->resources.addFramebuffer(linearBackFaceFramebuffer, "RenderTargetsWidget: linearBackFaceFramebuffer");
-            } else linearBackFaceFramebuffer = VK_NULL_HANDLE;
-        }
+        // Framebuffers are no longer needed - using dynamic rendering
 
         // Create per-face linearized targets for cubemap depth previews
         for (int face = 0; face < 6; ++face) {
@@ -302,25 +241,12 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
                 } else linearCubeFaceDepthView[face] = VK_NULL_HANDLE;
             }
 
-            if (linearCubeFaceFramebuffer[face] == VK_NULL_HANDLE && linearCubeFaceDepthView[face] != VK_NULL_HANDLE && linearizeRenderPass != VK_NULL_HANDLE) {
-                VkImageView atts[] = { linearCubeFaceDepthView[face] };
-                VkFramebufferCreateInfo fb{};
-                fb.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-                fb.renderPass = linearizeRenderPass;
-                fb.attachmentCount = 1;
-                fb.pAttachments = atts;
-                fb.width = static_cast<uint32_t>(width);
-                fb.height = static_cast<uint32_t>(height);
-                fb.layers = 1;
-                if (vkCreateFramebuffer(device, &fb, nullptr, &linearCubeFaceFramebuffer[face]) == VK_SUCCESS) {
-                    app->resources.addFramebuffer(linearCubeFaceFramebuffer[face], "RenderTargetsWidget: linearCubeFaceFramebuffer");
-                } else linearCubeFaceFramebuffer[face] = VK_NULL_HANDLE;
-            }
+            // No framebuffer needed with dynamic rendering
         }
     }
 
     // Create per-cascade linear shadow targets if a shadow mapper exists.
-    if (shadowMapper && linearizeRenderPass != VK_NULL_HANDLE) {
+    if (shadowMapper) {
         uint32_t shadowSize = shadowMapper->getShadowMapSize();
         for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
             if (linearShadowDepthImage[c] == VK_NULL_HANDLE) {
@@ -343,31 +269,18 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
                 linearShadowSize[c] = static_cast<int>(shadowSize);
             }
 
-            if (linearShadowFramebuffer[c] == VK_NULL_HANDLE && linearShadowDepthView[c] != VK_NULL_HANDLE && linearizeRenderPass != VK_NULL_HANDLE) {
-                VkImageView atts[] = { linearShadowDepthView[c] };
-                VkFramebufferCreateInfo fb{};
-                fb.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-                fb.renderPass = linearizeRenderPass;
-                fb.attachmentCount = 1;
-                fb.pAttachments = atts;
-                fb.width = shadowSize;
-                fb.height = shadowSize;
-                fb.layers = 1;
-                if (vkCreateFramebuffer(device, &fb, nullptr, &linearShadowFramebuffer[c]) == VK_SUCCESS) {
-                    app->resources.addFramebuffer(linearShadowFramebuffer[c], "RenderTargetsWidget: linearShadowFramebuffer");
-                } else linearShadowFramebuffer[c] = VK_NULL_HANDLE;
-            }
+            // No framebuffer needed with dynamic rendering
         }
     }
 }
 
 bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkImageView srcView, VkSampler srcSampler, VkSampler previewSampler,
-                                          VkImageView dstView, VkFramebuffer dstFb,
+                                          VkImageView dstView,
                                           VkDescriptorSet &dstDescriptor, bool &dstDescriptorOwned,
                                           uint32_t width, uint32_t height,
                                           float zNear, float zFar, float mode,
                                           uint32_t srcBaseArrayLayer) {
-    if (!app || srcView == VK_NULL_HANDLE || dstView == VK_NULL_HANDLE || dstFb == VK_NULL_HANDLE) return false;
+    if (!app || srcView == VK_NULL_HANDLE || dstView == VK_NULL_HANDLE) return false;
     if (linearizePipeline == VK_NULL_HANDLE || linearizeDescriptorSet == VK_NULL_HANDLE || linearizePipelineLayout == VK_NULL_HANDLE) return false;
 
     // std::cerr << "[RenderTargetsWidget] runLinearizePass: src=" << (void*)srcView << " dst=" << (void*)dstView << " fb=" << (void*)dstFb << " size=" << width << "x" << height << " mode=" << mode << std::endl;
@@ -481,16 +394,58 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
         app->recordTransitionImageLayoutLayer(cmd, srcImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, srcBaseArrayLayer, 1);
     }
 
-    VkClearValue clr{}; clr.color = {{0.0f,0.0f,0.0f,1.0f}};
-    VkRenderPassBeginInfo rbi{};
-    rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rbi.renderPass = linearizeRenderPass;
-    rbi.framebuffer = dstFb;
-    rbi.renderArea.offset = {0,0};
-    rbi.renderArea.extent = { width, height };
-    rbi.clearValueCount = 1;
-    rbi.pClearValues = &clr;
-    vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+    // Transition dst to COLOR_ATTACHMENT_OPTIMAL before rendering
+    // We need to find the VkImage for this view - look it up from our known images
+    VkImage dstImage = VK_NULL_HANDLE;
+    for (int i = 0; i < 2; ++i) {
+        if (dstView == linearSceneDepthView) { dstImage = linearSceneDepthImage; break; }
+        if (dstView == linearBackFaceDepthView) { dstImage = linearBackFaceDepthImage; break; }
+    }
+    if (dstImage == VK_NULL_HANDLE) {
+        for (int i = 0; i < 6; ++i) {
+            if (dstView == linearCubeFaceDepthView[i]) { dstImage = linearCubeFaceDepthImage[i]; break; }
+        }
+    }
+    if (dstImage == VK_NULL_HANDLE) {
+        for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
+            if (dstView == linearShadowDepthView[i]) { dstImage = linearShadowDepthImage[i]; break; }
+        }
+    }
+    if (dstImage != VK_NULL_HANDLE) {
+        VkImageMemoryBarrier2 dstBarrier{};
+        dstBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        dstBarrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+        dstBarrier.srcAccessMask = VK_ACCESS_2_NONE;
+        dstBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dstBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        dstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        dstBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        dstBarrier.image = dstImage;
+        dstBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.imageMemoryBarrierCount = 1;
+        depInfo.pImageMemoryBarriers = &dstBarrier;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
+
+    VkRenderingAttachmentInfo colorAtt{};
+    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAtt.imageView = dstView;
+    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAtt.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = {width, height};
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAtt;
+
+    vkCmdBeginRendering(cmd, &renderingInfo);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, linearizePipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, linearizePipelineLayout, 0, 1, &dsToUse, 0, nullptr);
     VkViewport vp{}; vp.x = 0.0f; vp.y = 0.0f; vp.width = static_cast<float>(width); vp.height = static_cast<float>(height); vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
@@ -500,7 +455,26 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
     float pc[3] = { zNear, zFar, mode };
     vkCmdPushConstants(cmd, linearizePipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
-    vkCmdEndRenderPass(cmd);
+    vkCmdEndRendering(cmd);
+
+    // Transition dst back to SHADER_READ_ONLY_OPTIMAL for sampling by ImGui
+    if (dstImage != VK_NULL_HANDLE) {
+        VkImageMemoryBarrier2 readBarrier{};
+        readBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        readBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        readBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        readBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        readBarrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        readBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        readBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        readBarrier.image = dstImage;
+        readBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.imageMemoryBarrierCount = 1;
+        depInfo.pImageMemoryBarriers = &readBarrier;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
 
     // Revert source depth image back to its pre-linearization layout.
     // Using trackedOld as desiredFinal ensures we restore the exact layout the
@@ -726,11 +700,7 @@ void RenderTargetsWidget::destroyLinearTargets() {
         fb = VK_NULL_HANDLE;
     };
 
-    destroyFramebuffer(linearSceneFramebuffer);
-    destroyFramebuffer(linearBackFaceFramebuffer);
-    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) destroyFramebuffer(linearShadowFramebuffer[i]);
     for (int i = 0; i < 6; ++i) destroyFramebuffer(linearCubeFaceFramebuffer[i]);
-
     destroyImageAndMemory(linearSceneDepthView, linearSceneDepthImage, linearSceneDepthMemory);
     destroyImageAndMemory(linearBackFaceDepthView, linearBackFaceDepthImage, linearBackFaceDepthMemory);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
@@ -901,35 +871,7 @@ void RenderTargetsWidget::cleanup() {
         handle = VK_NULL_HANDLE;
     };
 
-    // Framebuffers
-    if (linearSceneFramebuffer != VK_NULL_HANDLE) {
-        VkFramebuffer tmp = linearSceneFramebuffer;
-        if (a && a->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [tmp, a]() {
-                if (a->resources.removeFramebuffer(tmp)) vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
-            });
-        } else {
-            if (a->resources.removeFramebuffer(tmp)) vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
-        }
-        linearSceneFramebuffer = VK_NULL_HANDLE;
-    }
-    if (linearBackFaceFramebuffer != VK_NULL_HANDLE) {
-        VkFramebuffer tmp = linearBackFaceFramebuffer;
-        if (a && a->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [tmp, a]() {
-                if (a->resources.removeFramebuffer(tmp)) vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
-            });
-        } else {
-            if (a->resources.removeFramebuffer(tmp)) vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
-        }
-        linearBackFaceFramebuffer = VK_NULL_HANDLE;
-    }
+    // Framebuffers removed - using dynamic rendering
 
     // Pipeline
     if (linearizePipeline != VK_NULL_HANDLE) {
@@ -994,21 +936,7 @@ void RenderTargetsWidget::cleanup() {
         linearizeDescriptorSetLayout = VK_NULL_HANDLE;
     }
 
-    // Render pass
-    if (linearizeRenderPass != VK_NULL_HANDLE) {
-        VkRenderPass tmp = linearizeRenderPass;
-        if (a && a->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [tmp, a]() {
-                if (a->resources.removeRenderPass(tmp)) vkDestroyRenderPass(a->getDevice(), tmp, nullptr);
-            });
-        } else {
-            if (a->resources.removeRenderPass(tmp)) vkDestroyRenderPass(a->getDevice(), tmp, nullptr);
-        }
-        linearizeRenderPass = VK_NULL_HANDLE;
-    }
+    // Render pass removed - using dynamic rendering
 
     // Destroy widget-owned sampler
     if (widgetSampler != VK_NULL_HANDLE) {
@@ -1135,7 +1063,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
                 // Linearize the depth for this cubemap face into its own per-face linear target
                 runLinearizePass(app, sceneRenderer->solid360Renderer->getCube360DepthImage(), depthView, widgetSampler, widgetSampler,
-                                 linearCubeFaceDepthView[f], linearCubeFaceFramebuffer[f],
+                                 linearCubeFaceDepthView[f],
                                  cube360FaceDepthDescriptor[f], cube360FaceDepthDescriptorOwned[f],
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f, f);
             }
@@ -1183,7 +1111,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         VkSampler depthSampler = widgetSampler;
 
         // Run the pass for scene depth (use perspective linearization)
-        if (solidRenderer && linearizePipeline != VK_NULL_HANDLE && linearSceneFramebuffer != VK_NULL_HANDLE) {
+        if (solidRenderer && linearizePipeline != VK_NULL_HANDLE && linearSceneDepthView != VK_NULL_HANDLE) {
             // Sample the previously-produced frame's depth (one-frame latency)
             // to avoid sampling an attachment that will be written later in
             // the same frame while ImGui is being built.
@@ -1193,7 +1121,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
                 if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, solidRenderer->getDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearSceneDepthView, linearSceneFramebuffer,
+                runLinearizePass(app, solidRenderer->getDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearSceneDepthView,
                                  linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
                 // std::cerr << "[RenderTargetsWidget] Scene linearize: pass completed" << std::endl;
@@ -1202,7 +1130,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         // Back-face depth pass
         // Back-face depth pass (use perspective linearization)
-        if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE && linearBackFaceFramebuffer != VK_NULL_HANDLE) {
+        if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE) {
             // Use previous producer frame for the back-face source to avoid
             // sampling images that may still be in-flight.
             uint32_t producerFrame = (frameIndex + 1) % 2;
@@ -1211,7 +1139,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
                 if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, sceneRenderer->backFaceRenderer->getBackFaceDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearBackFaceDepthView, linearBackFaceFramebuffer,
+                runLinearizePass(app, sceneRenderer->backFaceRenderer->getBackFaceDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearBackFaceDepthView,
                                  linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
                 // std::cerr << "[RenderTargetsWidget] Backface linearize: pass completed" << std::endl;
@@ -1220,7 +1148,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         // Water front-face depth pass (linearize the water geometry depth buffer)
         // Water front-face depth pass (linearize the water geometry depth buffer)
-        if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE && linearSceneFramebuffer != VK_NULL_HANDLE) {
+        if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE) {
             // The water geometry depth is written during the main render pass for
             // the current CPU frame. The widget runs its linearize pass while
             // building ImGui (before the main render pass is submitted), so
@@ -1233,7 +1161,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, sceneRenderer->waterRenderer->getWaterGeomDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearSceneDepthView, linearSceneFramebuffer,
+                runLinearizePass(app, sceneRenderer->waterRenderer->getWaterGeomDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearSceneDepthView,
                                  linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 1.0f);
                 // std::cerr << "[RenderTargetsWidget] Water linearize: pass completed" << std::endl;
@@ -1249,13 +1177,13 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         // Shadow cascade linearization: create per-cascade RGBA targets and
         // run the same linearize pass used for scene/backface/water so all
         // depth previews are produced consistently.
-        if (shadowMapper && linearizePipeline != VK_NULL_HANDLE && linearizeRenderPass != VK_NULL_HANDLE) {
+        if (shadowMapper && linearizePipeline != VK_NULL_HANDLE) {
             uint32_t shadowSize = shadowMapper->getShadowMapSize();
             for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
                 VkImageView src = shadowMapper->getShadowMapView(c);
-                if (src != VK_NULL_HANDLE && linearShadowFramebuffer[c] != VK_NULL_HANDLE) {
+                if (src != VK_NULL_HANDLE && linearShadowDepthView[c] != VK_NULL_HANDLE) {
                     float nearP = 0.0f, farP = 1.0f;
-                    runLinearizePass(app, shadowMapper->getDepthImage(c), src, widgetSampler, widgetSampler, linearShadowDepthView[c], linearShadowFramebuffer[c],
+                    runLinearizePass(app, shadowMapper->getDepthImage(c), src, widgetSampler, widgetSampler, linearShadowDepthView[c],
                                      linearShadowDepthDescriptor[c], linearShadowDepthDescriptorOwned[c], shadowSize, shadowSize, nearP, farP, 1.0f);
                     // std::cerr << "[RenderTargetsWidget] Shadow linearize: cascade=" << c << " done" << std::endl;
                 }
@@ -1286,12 +1214,12 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         if (sceneDepthView != VK_NULL_HANDLE) {
             bool linearized = false;
             // Only attempt linearize if we have the pipeline and target framebuffer
-            if (linearizePipeline != VK_NULL_HANDLE && linearSceneFramebuffer != VK_NULL_HANDLE && sceneDepthImage != VK_NULL_HANDLE) {
+            if (linearizePipeline != VK_NULL_HANDLE && linearSceneDepthView != VK_NULL_HANDLE && sceneDepthImage != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
                 // runLinearizePass will set `linearSceneDepthDescriptor` on success
                 linearized = runLinearizePass(app, sceneDepthImage, sceneDepthView, widgetSampler, widgetSampler,
-                                              linearSceneDepthView, linearSceneFramebuffer,
+                                              linearSceneDepthView,
                                               linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
                                               static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
             }

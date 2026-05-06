@@ -70,20 +70,15 @@ private:
     VkImage linearCubeFaceDepthImage[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
     VkDeviceMemory linearCubeFaceDepthMemory[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
     VkImageView linearCubeFaceDepthView[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
-    VkFramebuffer linearCubeFaceFramebuffer[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkFramebuffer linearCubeFaceFramebuffer[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE }; // unused - dynamic rendering
 
     // GPU linearization pass resources
-    VkRenderPass linearizeRenderPass = VK_NULL_HANDLE;
     VkPipeline linearizePipeline = VK_NULL_HANDLE;
     VkPipelineLayout linearizePipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout linearizeDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorSet linearizeDescriptorSet = VK_NULL_HANDLE;
     // Widget sampler (widget no longer creates its own fallback sampler; it requires an app-provided sampler)
     VkSampler widgetSampler = VK_NULL_HANDLE;
-    
-    VkFramebuffer linearSceneFramebuffer = VK_NULL_HANDLE;
-    VkFramebuffer linearBackFaceFramebuffer = VK_NULL_HANDLE;
-    VkFramebuffer linearShadowFramebuffer[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
 
     // Single preview descriptor (widget displays one texture at a time)
     VkDescriptorSet previewDescriptor = VK_NULL_HANDLE;
@@ -170,11 +165,11 @@ public:
     // with the new DSL on the next frame.
     void invalidateImGuiDescriptors();
     // Run a small fullscreen pass that samples a depth image and writes a
-    // normalized RGBA preview into `dstView`/`dstFb`. `dstDescriptor` will be
+    // normalized RGBA preview into `dstView`. `dstDescriptor` will be
     // created via ImGui_ImplVulkan_AddTexture if needed. `mode` selects
     // linearization mode: 0.0 = perspective linearize, 1.0 = passthrough.
     bool runLinearizePass(VulkanApp* app, VkImage srcImage, VkImageView srcView, VkSampler srcSampler, VkSampler previewSampler,
-                          VkImageView dstView, VkFramebuffer dstFb,
+                          VkImageView dstView,
                           VkDescriptorSet &dstDescriptor, bool &dstDescriptorOwned,
                           uint32_t width, uint32_t height,
                           float zNear, float zFar, float mode,
