@@ -10,7 +10,7 @@ DebugCubeRenderer::DebugCubeRenderer() {}
 
 DebugCubeRenderer::~DebugCubeRenderer() { cleanup(); }
 
-void DebugCubeRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
+void DebugCubeRenderer::init(VulkanApp* app) {
     // Create cube VBO
     createCubeVBO(app);
     
@@ -53,8 +53,11 @@ void DebugCubeRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
         true,                      // Enable blending
         true,                      // Depth test enabled
         VK_COMPARE_OP_LESS_OR_EQUAL,
-        VK_PRIMITIVE_TOPOLOGY_LINE_LIST,  // Lines for wireframe
-        renderPassOverride
+        VK_PRIMITIVE_TOPOLOGY_LINE_LIST, // Lines for wireframe
+        false,
+        {},
+        VK_FORMAT_D32_SFLOAT,
+        false
     );
     
     pipeline = pipelineHandle;

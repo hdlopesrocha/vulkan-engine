@@ -15,8 +15,8 @@ public:
     explicit SkyRenderer();
     ~SkyRenderer();
 
-    // Create sky pipelines; renderPassOverride lets callers supply a compatible render pass
-    void init(VulkanApp* app, VkRenderPass renderPassOverride = VK_NULL_HANDLE);
+    // Create sky pipelines using dynamic rendering
+    void init(VulkanApp* app);
 
     // Render sky sphere using internal VBO/descriptor/uniform
     void render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkySettings::Mode skyMode);
@@ -42,7 +42,6 @@ public:
 
     // Access offscreen sky color view for sampling
     VkImageView getSkyView(uint32_t frameIndex) const { return skyColorImageViews[frameIndex]; }
-    VkRenderPass getSkyRenderPass() const { return skyOffscreenRenderPass; }
 
     // Accessors for external renderers (cubemap 360 uses sky VBO + pipeline)
     VkPipeline getSkyPipeline() const { return skyPipeline; }
@@ -64,11 +63,10 @@ private:
     VertexBufferObject skyVBO;
 
     // --- Offscreen equirectangular sky resources (2 frames in flight) ---
-    VkRenderPass skyOffscreenRenderPass = VK_NULL_HANDLE;
     std::array<VkImage, 2> skyColorImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkDeviceMemory, 2> skyColorMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkImageView, 2> skyColorImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkFramebuffer, 2> skyFramebuffers = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkImageLayout, 2> skyColorLayouts = {VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
 
     // Equirect pipeline (fullscreen triangle, no vertex input, no depth)
     VkPipeline skyEquirectPipeline = VK_NULL_HANDLE;

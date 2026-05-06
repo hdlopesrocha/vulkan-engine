@@ -34,7 +34,6 @@ public:
     VkImageView getColorView(uint32_t frameIndex) const { return solidColorImageViews[frameIndex]; }
     VkImageView getDepthView(uint32_t frameIndex) const { return solidDepthImageViews[frameIndex]; }
     VkImage getDepthImage(uint32_t frameIndex) const { return solidDepthImages[frameIndex]; }
-    VkRenderPass getRenderPass() const { return solidRenderPass; }
 
 public:
     // Public accessor for nodeModelVersions (read-only)
@@ -69,8 +68,6 @@ private:
     std::array<VkDeviceMemory, 2> solidDepthMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkImageView, 2> solidDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkImageLayout, 2> solidDepthImageLayouts = {};
-    std::array<VkFramebuffer, 2> solidFramebuffers = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    VkRenderPass solidRenderPass = VK_NULL_HANDLE;
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
 };

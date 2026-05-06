@@ -12,7 +12,7 @@ SkyRenderer::SkyRenderer() {}
 
 SkyRenderer::~SkyRenderer() { cleanup(); }
 
-void SkyRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
+void SkyRenderer::init(VulkanApp* app) {
     // create sky gradient pipeline (vertex + fragment)
     skyVertModule = app->createShaderModule(FileReader::readFile("shaders/sky.vert.spv"));
     skyFragModule = app->createShaderModule(FileReader::readFile("shaders/sky.frag.spv"));
@@ -35,7 +35,10 @@ void SkyRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
         nullptr,
         VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true, VK_COMPARE_OP_LESS_OR_EQUAL,
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        renderPassOverride
+        false,
+        {},
+        VK_FORMAT_D32_SFLOAT,
+        false
     );
     skyPipeline = pipeline;
     skyPipelineLayout = layout;
@@ -60,7 +63,10 @@ void SkyRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride) {
         nullptr,
         VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true, VK_COMPARE_OP_LESS_OR_EQUAL,
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        renderPassOverride
+        false,
+        {},
+        VK_FORMAT_D32_SFLOAT,
+        false
     );
     skyGridPipeline = gridPipeline;
     skyGridPipelineLayout = gridLayout;
@@ -191,47 +197,8 @@ void SkyRenderer::createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_
                                      "SkyRenderer: equirect image", image, memory, view);
     };
 
-    // --- Render pass: color only (no depth needed for fullscreen equirect) ---
-    VkAttachmentDescription colorAtt{};
+    // Remove render pass creation - using dynamic rendering
     VkFormat colorFormat = app->getSwapchainImageFormat();
-    colorAtt.format = colorFormat;
-    colorAtt.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAtt.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorRef;
-    subpass.pDepthStencilAttachment = nullptr;
-
-    // 0→EXTERNAL dependency: flush color writes so downstream shaders can sample
-    VkSubpassDependency dependency{};
-    dependency.srcSubpass = 0;
-    dependency.dstSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dependency.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-    VkRenderPassCreateInfo rpInfo{};
-    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpInfo.attachmentCount = 1;
-    rpInfo.pAttachments = &colorAtt;
-    rpInfo.subpassCount = 1;
-    rpInfo.pSubpasses = &subpass;
-    rpInfo.dependencyCount = 1;
-    rpInfo.pDependencies = &dependency;
-
-    if (vkCreateRenderPass(device, &rpInfo, nullptr, &skyOffscreenRenderPass) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create sky equirect render pass!");
-    app->resources.addRenderPass(skyOffscreenRenderPass, "SkyRenderer: skyEquirectRenderPass");
 
     // --- Load equirect shaders ---
     skyEquirectVertModule = app->createShaderModule(FileReader::readFile("shaders/fullscreen.vert.spv"));
@@ -263,42 +230,31 @@ void SkyRenderer::createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_
         app->resources.addPipelineLayout(skyEquirectPipelineLayout, "SkyRenderer: skyEquirectPipelineLayout");
 
         skyEquirectPipeline = RendererUtils::buildFullscreenPipeline(
-            device, app, skyOffscreenRenderPass, skyEquirectPipelineLayout, stages,
+            device, app, colorFormat, VK_FORMAT_UNDEFINED, skyEquirectPipelineLayout, stages,
             RendererUtils::FullscreenPipelineOpts{}, "SkyRenderer: skyEquirectPipeline");
     }
 
-    // --- Per-frame color images + framebuffers (no depth) ---
+    // --- Per-frame color images (no depth, no framebuffers needed for dynamic rendering) ---
     for (int i = 0; i < 2; ++i) {
         createImage(colorFormat,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
                     offscreenWidth, offscreenHeight,
                     skyColorImages[i], skyColorMemories[i], skyColorImageViews[i]);
-
-        VkFramebufferCreateInfo fbInfo{};
-        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fbInfo.renderPass = skyOffscreenRenderPass;
-        fbInfo.attachmentCount = 1;
-        fbInfo.pAttachments = &skyColorImageViews[i];
-        fbInfo.width = offscreenWidth;
-        fbInfo.height = offscreenHeight;
-        fbInfo.layers = 1;
-        if (vkCreateFramebuffer(device, &fbInfo, nullptr, &skyFramebuffers[i]) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create sky equirect framebuffer!");
-        app->resources.addFramebuffer(skyFramebuffers[i], "SkyRenderer: skyEquirectFramebuffer");
+        skyColorLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     std::cerr << "[SkyRenderer] Created equirectangular sky targets " << offscreenWidth << "x" << offscreenHeight << std::endl;
 }
 
 void SkyRenderer::destroyOffscreenTargets(VulkanApp* app) {
+    (void)app;
     for (int i = 0; i < 2; ++i) {
-        skyFramebuffers[i] = VK_NULL_HANDLE;
         skyColorImageViews[i] = VK_NULL_HANDLE;
         skyColorImages[i] = VK_NULL_HANDLE;
         skyColorMemories[i] = VK_NULL_HANDLE;
+        skyColorLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
-    skyOffscreenRenderPass = VK_NULL_HANDLE;
     skyEquirectPipeline = VK_NULL_HANDLE;
     skyEquirectPipelineLayout = VK_NULL_HANDLE;
     skyEquirectVertModule = VK_NULL_HANDLE;
@@ -309,7 +265,7 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
                                    VkDescriptorSet descriptorSet, Buffer &uniformBuffer,
                                    const UniformObject &ubo, const glm::mat4 &viewProjection,
                                    SkySettings::Mode skyMode) {
-    if (skyOffscreenRenderPass == VK_NULL_HANDLE || skyFramebuffers[frameIndex] == VK_NULL_HANDLE)
+    if (skyColorImageViews[frameIndex] == VK_NULL_HANDLE)
         return;
     if (skyEquirectPipeline == VK_NULL_HANDLE || skyEquirectPipelineLayout == VK_NULL_HANDLE)
         return;
@@ -319,24 +275,44 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     skyUbo.passParams = glm::vec4(0.0f);
     app->updateUniformBuffer(uniformBuffer, &skyUbo, sizeof(UniformObject));
 
-    // Begin render pass (single color attachment, no depth)
-    VkClearValue clear{};
-    clear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-    VkRenderPassBeginInfo rpBegin{};
-    rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpBegin.renderPass = skyOffscreenRenderPass;
-    rpBegin.framebuffer = skyFramebuffers[frameIndex];
-    rpBegin.renderArea.offset = {0, 0};
-    rpBegin.renderArea.extent = {offscreenWidth, offscreenHeight};
-    rpBegin.clearValueCount = 1;
-    rpBegin.pClearValues = &clear;
-    // Record the expected layout for the sky color attachment so pre-apply
-    // promotion has the authoritative layout available at submit time.
-    if (app && skyColorImages[frameIndex] != VK_NULL_HANDLE) {
-        app->recordTrackedLayoutForCommandBuffer(cmd, skyColorImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+    // Transition color image: tracked layout → COLOR_ATTACHMENT_OPTIMAL
+    {
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = skyColorLayouts[frameIndex];
+        barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = skyColorImages[frameIndex];
+        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        barrier.srcAccessMask = (skyColorLayouts[frameIndex] == VK_IMAGE_LAYOUT_UNDEFINED) ? 0 : VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
 
-    vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+    VkClearValue clear{};
+    clear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+
+    VkRenderingAttachmentInfo colorAtt{};
+    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAtt.imageView = skyColorImageViews[frameIndex];
+    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAtt.clearValue = clear;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = {offscreenWidth, offscreenHeight};
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAtt;
+
+    vkCmdBeginRendering(cmd, &renderingInfo);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyEquirectPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyEquirectPipelineLayout,
@@ -354,5 +330,24 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     // Fullscreen triangle (3 vertices, no vertex buffer)
     vkCmdDraw(cmd, 3, 1, 0, 0);
 
-    vkCmdEndRenderPass(cmd);
+    vkCmdEndRendering(cmd);
+
+    // Transition color: COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    {
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = skyColorImages[frameIndex];
+        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &barrier);
+    }
+    skyColorLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }

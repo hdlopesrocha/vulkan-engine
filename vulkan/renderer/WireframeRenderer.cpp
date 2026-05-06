@@ -4,16 +4,16 @@
 #include <array>
 
 void WireframeRenderer::createPipeline(VulkanApp* app,
-                                       VkRenderPass renderPass,
-                                       uint32_t colorAttachmentCount,
+                                       const std::vector<VkFormat>& colorFormats,
                                        const std::vector<VkDescriptorSetLayout>& setLayouts,
                                        const char* vertPath,
                                        const char* fragPath,
                                        const char* tescPath,
                                        const char* tesePath,
                                        const char* label) {
-    if (!app || renderPass == VK_NULL_HANDLE) return;
+    if (!app) return;
     VkDevice device = app->getDevice();
+    uint32_t colorAttachmentCount = static_cast<uint32_t>(colorFormats.size());
 
     // Load shaders
     auto vertCode = FileReader::readFile(vertPath);
@@ -165,8 +165,15 @@ void WireframeRenderer::createPipeline(VulkanApp* app,
     }
     app->resources.addPipelineLayout(wireframePipelineLayout, (std::string("WireframeRenderer: ") + label + " layout").c_str());
 
+    VkPipelineRenderingCreateInfo pipelineRenderingInfo{};
+    pipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    pipelineRenderingInfo.colorAttachmentCount = static_cast<uint32_t>(colorFormats.size());
+    pipelineRenderingInfo.pColorAttachmentFormats = colorFormats.empty() ? nullptr : colorFormats.data();
+    pipelineRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.pNext = &pipelineRenderingInfo;
     pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
     pipelineInfo.pStages = shaderStages.data();
     pipelineInfo.pVertexInputState = &vertexInputInfo;
@@ -178,7 +185,7 @@ void WireframeRenderer::createPipeline(VulkanApp* app,
     pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.layout = wireframePipelineLayout;
-    pipelineInfo.renderPass = renderPass;
+    pipelineInfo.renderPass = VK_NULL_HANDLE;
     pipelineInfo.subpass = 0;
     if (hasTessellation) pipelineInfo.pTessellationState = &tessState;
 

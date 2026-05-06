@@ -43,7 +43,6 @@ void VegetationRenderer::cleanup() {
     impostorDescSetLayout  = VK_NULL_HANDLE;
     impostorDescPool       = VK_NULL_HANDLE;
     impostorDescSet        = VK_NULL_HANDLE;
-    storedSolidRenderPass  = VK_NULL_HANDLE;
     // Free and reset vegetation descriptor set handle locally
     vegDescriptorSet = VK_NULL_HANDLE;
     vegDescriptorVersion = 0;
@@ -172,12 +171,10 @@ bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
 }
 
 
-void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride, VkRenderPass shadowRenderPassOverride) {
+void VegetationRenderer::init(VulkanApp* app) {
     if (!app) return;
     // Store the app pointer for use when generating instance buffers via compute
     this->appPtr = app;
-    // Store the solid render pass for later impostor pipeline creation.
-    this->storedSolidRenderPass = renderPassOverride;
     VkDevice device = app->getDevice();
 
     // Descriptor set layout: set=1, binding 0=albedo, 1=normal, 2=opacity (all sampler2DArray)
@@ -268,7 +265,10 @@ void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride, V
         true, // depthWrite
         VK_COMPARE_OP_LESS,
         VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
-        renderPassOverride
+        false,
+        {},
+        VK_FORMAT_D32_SFLOAT,
+        false
     );
     vegetationPipeline = pipeline;
     pipelineLayout = layout;
@@ -278,37 +278,34 @@ void VegetationRenderer::init(VulkanApp* app, VkRenderPass renderPassOverride, V
         std::cerr << "[VEGETATION PIPELINE] Created pipeline=" << (void*)vegetationPipeline << " layout=" << (void*)pipelineLayout << std::endl;
     }
 
-    if (shadowRenderPassOverride != VK_NULL_HANDLE) {
-        auto [shadowPipeline, shadowLayout] = app->createGraphicsPipeline(
-            { stages[0], stages[1], stages[2] },
-            std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
-            {
-                {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
-                {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
-                {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)},
-                {3, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex)},
-                {4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}
-            },
-            setLayouts,
-            &pushConstantRange,
-            VK_POLYGON_MODE_FILL,
-            VK_CULL_MODE_NONE,
-            true,
-            true,
-            VK_COMPARE_OP_LESS,
-            VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
-            shadowRenderPassOverride
-        );
-        vegetationShadowPipeline = shadowPipeline;
-        shadowPipelineLayout = shadowLayout;
-        if (vegetationShadowPipeline == VK_NULL_HANDLE || shadowPipelineLayout == VK_NULL_HANDLE) {
-            std::cerr << "[VEGETATION SHADOW PIPELINE ERROR] Failed to create vegetation shadow pipeline/layout" << std::endl;
-        } else {
-            std::cerr << "[VEGETATION SHADOW PIPELINE] Created pipeline=" << (void*)vegetationShadowPipeline << " layout=" << (void*)shadowPipelineLayout << std::endl;
-        }
+    auto [shadowPipeline, shadowLayout] = app->createGraphicsPipeline(
+        { stages[0], stages[1], stages[2] },
+        std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
+        {
+            {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
+            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
+            {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)},
+            {3, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex)},
+            {4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}
+        },
+        setLayouts,
+        &pushConstantRange,
+        VK_POLYGON_MODE_FILL,
+        VK_CULL_MODE_NONE,
+        true,
+        true,
+        VK_COMPARE_OP_LESS,
+        VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
+        false,
+        {},
+        VK_FORMAT_D32_SFLOAT,
+        true   // noColorAttachment: depth-only shadow pass
+    );
+    vegetationShadowPipeline = shadowPipeline;    shadowPipelineLayout = shadowLayout;
+    if (vegetationShadowPipeline == VK_NULL_HANDLE || shadowPipelineLayout == VK_NULL_HANDLE) {
+        std::cerr << "[VEGETATION SHADOW PIPELINE ERROR] Failed to create vegetation shadow pipeline/layout" << std::endl;
     } else {
-        vegetationShadowPipeline = VK_NULL_HANDLE;
-        shadowPipelineLayout = VK_NULL_HANDLE;
+        std::cerr << "[VEGETATION SHADOW PIPELINE] Created pipeline=" << (void*)vegetationShadowPipeline << " layout=" << (void*)shadowPipelineLayout << std::endl;
     }
 
     // Clear local shader module references; destruction handled by VulkanResourceManager
@@ -496,11 +493,6 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
 
 void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView albedoArray60, VkImageView normalArray60, VkSampler sampler) {
     if (!app || albedoArray60 == VK_NULL_HANDLE || normalArray60 == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
-    if (storedSolidRenderPass == VK_NULL_HANDLE) {
-        std::cerr << "[VegetationRenderer] setImpostorData: solid render pass not stored; call init() first\n";
-        return;
-    }
-
     // Wait for all in-flight work to complete before recreating descriptor sets.
     // This prevents handle-reuse collisions between pending command buffers and
     // freshly-allocated descriptor set handles. setImpostorData is an init-time call.
@@ -634,7 +626,10 @@ void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView albedoArray
         true,  // colorWrite — impostors must output their color
         VK_COMPARE_OP_LESS,
         VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
-        storedSolidRenderPass
+        false,
+        {},
+        VK_FORMAT_D32_SFLOAT,
+        false
     );
 
     impostorPipeline       = impPipeline;

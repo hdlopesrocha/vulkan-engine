@@ -23,85 +23,12 @@ void SolidRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
                                      "SolidRenderer: image", image, memory, view);
     };
 
-    // Create simple render pass for solid offscreen (color+depth)
-    VkAttachmentDescription colorAttachment{};
-    colorAttachment.format = app->getSwapchainImageFormat();
-    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkAttachmentDescription depthAttachment{};
-    depthAttachment.format = VK_FORMAT_D32_SFLOAT;
-    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorRef;
-    subpass.pDepthStencilAttachment = &depthRef;
-
-    std::array<VkAttachmentDescription, 2> attachments{colorAttachment, depthAttachment};
-
-    // Subpass dependency: flush color + depth writes so that the layout
-    // transition (→ SHADER_READ_ONLY_OPTIMAL) carries visible data and
-    // external consumers (water pass, post-process) can sample the images.
-    VkSubpassDependency dependency{};
-    dependency.srcSubpass = 0;
-    dependency.dstSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dependency.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-    VkRenderPassCreateInfo rpInfo{};
-    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-    rpInfo.pAttachments = attachments.data();
-    rpInfo.subpassCount = 1;
-    rpInfo.pSubpasses = &subpass;
-    rpInfo.dependencyCount = 1;
-    rpInfo.pDependencies = &dependency;
-
-    if (vkCreateRenderPass(device, &rpInfo, nullptr, &solidRenderPass) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create solid render pass!");
-    }
-    // Register solid render pass
-    app->resources.addRenderPass(solidRenderPass, "SolidRenderer: solidRenderPass");
-
     for (int i = 0; i < 2; ++i) {
         createImage(app->getSwapchainImageFormat(), VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
                     solidColorImages[i], solidColorMemories[i], solidColorImageViews[i]);
         createImage(VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
                     solidDepthImages[i], solidDepthMemories[i], solidDepthImageViews[i]);
-        // Initially unknown layout until first transition; widget will consult this
         solidDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
-
-        std::array<VkImageView, 2> attachmentsViews = {solidColorImageViews[i], solidDepthImageViews[i]};
-        VkFramebufferCreateInfo fbInfo{};
-        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fbInfo.renderPass = solidRenderPass;
-        fbInfo.attachmentCount = static_cast<uint32_t>(attachmentsViews.size());
-        fbInfo.pAttachments = attachmentsViews.data();
-        fbInfo.width = width;
-        fbInfo.height = height;
-        fbInfo.layers = 1;
-        if (vkCreateFramebuffer(device, &fbInfo, nullptr, &solidFramebuffers[i]) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create solid framebuffer!");
-        }
-        app->resources.addFramebuffer(solidFramebuffers[i], "SolidRenderer: framebuffer");
     }
 
     // Ensure created images have authoritative GPU/tracked layouts before
@@ -140,7 +67,6 @@ void SolidRenderer::destroyRenderTargets(VulkanApp* app) {
     VkDevice device = app->getDevice();
     // Clear local handles; destruction is centralized in VulkanResourceManager
     for (int i = 0; i < 2; ++i) {
-        solidFramebuffers[i] = VK_NULL_HANDLE;
         solidColorImageViews[i] = VK_NULL_HANDLE;
         solidColorImages[i] = VK_NULL_HANDLE;
         solidColorMemories[i] = VK_NULL_HANDLE;
@@ -148,65 +74,99 @@ void SolidRenderer::destroyRenderTargets(VulkanApp* app) {
         solidDepthImages[i] = VK_NULL_HANDLE;
         solidDepthMemories[i] = VK_NULL_HANDLE;
     }
-    solidRenderPass = VK_NULL_HANDLE;
 }
 
 void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearValue colorClear, VkClearValue depthClear, VulkanApp* app) {
-    if (cmd == VK_NULL_HANDLE || solidRenderPass == VK_NULL_HANDLE || solidFramebuffers[frameIndex] == VK_NULL_HANDLE) {
-        std::cerr << "[SolidRenderer::beginPass] Missing cmd/renderPass/framebuffer, skipping." << std::endl;
+    if (cmd == VK_NULL_HANDLE) {
+        std::cerr << "[SolidRenderer::beginPass] Missing cmd, skipping." << std::endl;
         return;
     }
-    // Ensure the depth image for this frame is in the depth-stencil-attachment
-    // layout so the render pass clear can initialize it. Use the tracked
-    // layout to record a correct barrier at record time.
+    if (!app) throw std::runtime_error("SolidRenderer::beginPass requires valid VulkanApp");
+
+    // Transition color image: SHADER_READ_ONLY_OPTIMAL → COLOR_ATTACHMENT_OPTIMAL
+    if (solidColorImages[frameIndex] != VK_NULL_HANDLE) {
+        VkImageMemoryBarrier colorBarrier{};
+        colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        colorBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        colorBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        colorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        colorBarrier.image = solidColorImages[frameIndex];
+        colorBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        colorBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        colorBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &colorBarrier);
+        app->setImageLayoutTracked(solidColorImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
+    }
+
+    // Transition depth image: tracked layout → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
     if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
         if (solidDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-            // Use centralized app helper so recorded oldLayout matches the app's transition logic
-            //std::cerr << "[SolidRenderer::beginPass] transition: cmd=" << (void*)cmd << " image=" << (void*)solidDepthImages[frameIndex] << " frame=" << (unsigned)frameIndex << " trackedOld=" << (int)solidDepthImageLayouts[frameIndex] << " new=" << (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL << std::endl;
-            if (!app) {
-                throw std::runtime_error("SolidRenderer::beginPass requires valid VulkanApp to record layout transitions");
-            }
-            // Pass the actual tracked layout (not UNDEFINED) so stale pending entries
-            // from the previous frame's recording cannot override effectiveOld and
-            // incorrectly skip this barrier (which leaves the image in SHADER_READ_ONLY
-            // when the render pass expects DEPTH_STENCIL_ATTACHMENT_OPTIMAL).
             app->recordTransitionImageLayoutLayer(cmd, solidDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, solidDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
-            // Also record the expected render-pass layout as a tracked update for
-            // this command buffer so submit-time pre-apply can make the
-            // authoritative map reflect the transition the render pass will
-            // perform. This avoids validation mismatches at submit time.
             app->recordTrackedLayoutForCommandBuffer(cmd, solidDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
             solidDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         }
     }
-    std::array<VkClearValue, 2> clears{colorClear, depthClear};
-    VkRenderPassBeginInfo rpInfo{};
-    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpInfo.renderPass = solidRenderPass;
-    rpInfo.framebuffer = solidFramebuffers[frameIndex];
-    rpInfo.renderArea.offset = {0, 0};
-    rpInfo.renderArea.extent = {renderWidth, renderHeight};
-    rpInfo.clearValueCount = static_cast<uint32_t>(clears.size());
-    rpInfo.pClearValues = clears.data();
-    vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = solidColorImageViews[frameIndex];
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue = colorClear;
+
+    VkRenderingAttachmentInfo depthAttachment{};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.imageView = solidDepthImageViews[frameIndex];
+    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAttachment.clearValue = depthClear;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = {renderWidth, renderHeight};
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.pDepthAttachment = &depthAttachment;
+
+    vkCmdBeginRendering(cmd, &renderingInfo);
 }
 
 void SolidRenderer::endPass(VkCommandBuffer cmd, uint32_t frameIndex, VulkanApp* app) {
     if (cmd == VK_NULL_HANDLE) return;
-    vkCmdEndRenderPass(cmd);
+    vkCmdEndRendering(cmd);
 
-    // After render pass ends, transition depth image to SHADER_READ_ONLY_OPTIMAL
-    // and update tracked layout so external recorders see the correct state.
+    // Transition color: COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    if (solidColorImages[frameIndex] != VK_NULL_HANDLE) {
+        VkImageMemoryBarrier colorBarrier{};
+        colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        colorBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        colorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        colorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        colorBarrier.image = solidColorImages[frameIndex];
+        colorBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        colorBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        colorBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &colorBarrier);
+        if (app) app->setImageLayoutTracked(solidColorImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+    }
+
+    // Transition depth: DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
     if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        VkImageLayout trackedOld = solidDepthImageLayouts[frameIndex];
-        if (trackedOld != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            // The render pass has finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            // so the layout transition is performed implicitly by the render pass.
-            // Avoid emitting an extra barrier here (which can conflict with the
-            // renderpass transition) — just update the authoritative tracked
-            // layout so later record-time callers see the correct state.
-            //std::cerr << "[SolidRenderer::endPass] updating tracked layout: image=" << (void*)solidDepthImages[frameIndex] << " frame=" << (unsigned)frameIndex << " -> " << (int)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL << std::endl;
+        if (solidDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             if (app) {
+                app->recordTransitionImageLayoutLayer(cmd, solidDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, solidDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
                 app->recordTrackedLayoutForCommandBuffer(cmd, solidDepthImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
             }
             solidDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -260,7 +220,11 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         },
         setLayouts,
         nullptr,
-        VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, solidRenderPass
+        VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        false,
+        {},
+        VK_FORMAT_D32_SFLOAT,
+        false
     );
     graphicsPipeline = pipeline;
     graphicsPipelineLayout = layout;
@@ -288,7 +252,11 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         },
         setLayouts,
         nullptr,
-        VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, false, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, solidRenderPass
+        VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, false, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        false,
+        {},
+        VK_FORMAT_D32_SFLOAT,
+        false
     );
     depthPrePassPipeline = depthPipeline;
     depthPrePassPipelineLayout = depthLayout;

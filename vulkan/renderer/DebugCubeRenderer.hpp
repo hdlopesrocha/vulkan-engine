@@ -18,7 +18,7 @@ public:
     ~DebugCubeRenderer();
 
     // Initialize pipeline and load grid texture
-    void init(VulkanApp* app, VkRenderPass renderPassOverride = VK_NULL_HANDLE);
+    void init(VulkanApp* app);
 
     // Set which cubes to render this frame
     void setCubes(const std::vector<CubeWithColor>& cubes);

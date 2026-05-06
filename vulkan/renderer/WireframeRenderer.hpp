@@ -13,13 +13,12 @@ public:
     WireframeRenderer() = default;
     ~WireframeRenderer() = default;
 
-    // Create a wireframe pipeline compatible with the given render pass.
-    // `colorAttachmentCount` must match the render pass (1 for solid, 3 for water).
+    // Create a wireframe pipeline using dynamic rendering.
+    // `colorFormats` must list the color attachment formats (matches the pass).
     // `setLayouts` are the descriptor set layouts the pipeline needs.
     // `hasTessellation` enables patch-list topology + tess shaders.
     void createPipeline(VulkanApp* app,
-                        VkRenderPass renderPass,
-                        uint32_t colorAttachmentCount,
+                        const std::vector<VkFormat>& colorFormats,
                         const std::vector<VkDescriptorSetLayout>& setLayouts,
                         const char* vertPath,
                         const char* fragPath,
