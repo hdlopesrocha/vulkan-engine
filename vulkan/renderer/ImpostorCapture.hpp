@@ -77,11 +77,6 @@ private:
     VkDeviceMemory depthMemory = VK_NULL_HANDLE;
     VkImageView    depthView   = VK_NULL_HANDLE;
 
-    // Render pass (color SHADER_READ_ONLY→STORE finalLayout=SHADER_READ_ONLY,
-    //              depth  CLEAR→DONT_CARE  reused between passes).
-    VkRenderPass captureRenderPass = VK_NULL_HANDLE;
-    std::array<VkFramebuffer, TOTAL_LAYERS> framebuffers{};
-
     // Pipeline (vegetation vert/geom/frag with simple 2-set layout).
     VkPipeline            capturePipeline       = VK_NULL_HANDLE;
     VkPipelineLayout      capturePipelineLayout = VK_NULL_HANDLE;

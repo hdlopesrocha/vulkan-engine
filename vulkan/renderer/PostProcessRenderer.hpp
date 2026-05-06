@@ -19,14 +19,11 @@ public:
     /// Composite scene + water into the swapchain framebuffer.
     /// Water depth/normal/mask views come from WaterRenderer's offscreen targets.
     void render(VulkanApp* app, VkCommandBuffer cmd,
-                VkFramebuffer swapchainFramebuffer,
-                VkRenderPass swapchainRenderPass,
                 VkImageView sceneColorView, VkImageView sceneDepthView,
                 VkImageView waterDepthView,
                 const glm::mat4& viewProj, const glm::mat4& invViewProj,
                 const glm::vec3& viewPos,
                 uint32_t frameIdx,
-                bool beginRenderPass = true,
                 VkImageView skyView = VK_NULL_HANDLE);
 
     bool isReady() const { return pipeline != VK_NULL_HANDLE; }

@@ -14,7 +14,6 @@ public:
     VkDescriptorSet getDescriptor() const { return cube360EquirectSampleDescriptorSet; }
 private:
     void ensureResources(VulkanApp* app);
-    void createRenderPass(VulkanApp* app);
     void createPipeline(VulkanApp* app);
     void createOutputTarget(VulkanApp* app);
     void createDescriptorResources(VulkanApp* app, VkSampler sampler, VkImageView cubeMapView);
@@ -22,8 +21,6 @@ private:
     VkImage cube360EquirectImage = VK_NULL_HANDLE;
     VkDeviceMemory cube360EquirectMemory = VK_NULL_HANDLE;
     VkImageView cube360EquirectView = VK_NULL_HANDLE;
-    VkFramebuffer cube360EquirectFramebuffer = VK_NULL_HANDLE;
-    VkRenderPass cube360EquirectRenderPass = VK_NULL_HANDLE;
     VkPipeline cube360EquirectPipeline = VK_NULL_HANDLE;
     VkPipelineLayout cube360EquirectPipelineLayout = VK_NULL_HANDLE;
     VkShaderModule cube360EquirectVertModule = VK_NULL_HANDLE;

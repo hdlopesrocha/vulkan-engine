@@ -41,8 +41,6 @@ void ImpostorCapture::init(VulkanApp* app) {
 
     createCaptureImages(app);
     createDepth(app);
-    createCaptureRenderPass(app);
-    createFramebuffers(app);
     createDescSetLayouts(app);
     createPipeline(app);
     createUBO(app);
@@ -110,21 +108,9 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
     destroyBuf(captureVertBuf, captureVertMem);
     destroyBuf(captureInstBuf, captureInstMem);
 
-    // Framebuffers.
-    for (auto& fb : framebuffers) {
-        if (fb != VK_NULL_HANDLE) {
-            app->resources.removeFramebuffer(fb);
-            vkDestroyFramebuffer(device, fb, nullptr);
-            fb = VK_NULL_HANDLE;
-        }
-    }
+    // Framebuffers removed - using dynamic rendering
 
-    // Render pass.
-    if (captureRenderPass != VK_NULL_HANDLE) {
-        app->resources.removeRenderPass(captureRenderPass);
-        vkDestroyRenderPass(device, captureRenderPass, nullptr);
-        captureRenderPass = VK_NULL_HANDLE;
-    }
+    // Render pass removed - using dynamic rendering
 
     // Pipeline + layout.
     if (capturePipeline != VK_NULL_HANDLE) {
@@ -269,32 +255,53 @@ void ImpostorCapture::capture(VulkanApp* app,
     pc.cameraPosAndFalloff = glm::vec4(center, 0.0f);
 
     app->runSingleTimeCommands([&](VkCommandBuffer cb) {
-        // Transition depth buffer UNDEFINED → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-        app->recordTransitionImageLayoutLayer(cb, depthImage, VK_FORMAT_D32_SFLOAT,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            1, 0, 1);
-
         VkBuffer     vbs[2]     = { captureVertBuf, captureInstBuf };
         VkDeviceSize offsets[2] = { 0, 0 };
 
         for (uint32_t viewIdx = 0; viewIdx < NUM_VIEWS; ++viewIdx) {
             const uint32_t layerIdx = layerBase + viewIdx;
 
-            VkClearValue clearVals[3]{};
-            clearVals[0].color        = { 0.0f, 0.0f, 0.0f, 0.0f };
-            clearVals[1].color        = { 0.5f, 0.5f, 1.0f, 0.0f }; // flat-up normal encoded
-            clearVals[2].depthStencil = { 1.0f, 0 };
+            // Transition color layers to COLOR_ATTACHMENT_OPTIMAL
+            app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
+            app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
+            // Transition depth UNDEFINED → DEPTH_STENCIL_ATTACHMENT (reuse each view)
+            app->recordTransitionImageLayoutLayer(cb, depthImage, VK_FORMAT_D32_SFLOAT,
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
 
-            VkRenderPassBeginInfo rpBegin{};
-            rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-            rpBegin.renderPass        = captureRenderPass;
-            rpBegin.framebuffer       = framebuffers[layerIdx];
-            rpBegin.renderArea.offset = { 0, 0 };
-            rpBegin.renderArea.extent = { TEX_SIZE, TEX_SIZE };
-            rpBegin.clearValueCount   = 3;
-            rpBegin.pClearValues      = clearVals;
+            VkRenderingAttachmentInfo colorAtts[2]{};
+            colorAtts[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            colorAtts[0].imageView = captureLayerViews[layerIdx];
+            colorAtts[0].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorAtts[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            colorAtts[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            colorAtts[0].clearValue.color = { 0.0f, 0.0f, 0.0f, 0.0f };
+            colorAtts[1].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            colorAtts[1].imageView = captureNormalLayerViews[layerIdx];
+            colorAtts[1].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorAtts[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            colorAtts[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            colorAtts[1].clearValue.color = { 0.5f, 0.5f, 1.0f, 0.0f };
 
-            vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+            VkRenderingAttachmentInfo depthAtt{};
+            depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            depthAtt.imageView = depthView;
+            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depthAtt.clearValue.depthStencil = { 1.0f, 0 };
+
+            VkRenderingInfo renderingInfo{};
+            renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            renderingInfo.renderArea.offset = {0, 0};
+            renderingInfo.renderArea.extent = {TEX_SIZE, TEX_SIZE};
+            renderingInfo.layerCount = 1;
+            renderingInfo.colorAttachmentCount = 2;
+            renderingInfo.pColorAttachments = colorAtts;
+            renderingInfo.pDepthAttachment = &depthAtt;
+
+            vkCmdBeginRendering(cb, &renderingInfo);
 
             VkViewport vp{ 0.0f, 0.0f, float(TEX_SIZE), float(TEX_SIZE), 0.0f, 1.0f };
             VkRect2D   sci{ { 0, 0 }, { TEX_SIZE, TEX_SIZE } };
@@ -316,7 +323,13 @@ void ImpostorCapture::capture(VulkanApp* app,
             vkCmdBindVertexBuffers(cb, 0, 2, vbs, offsets);
             vkCmdDraw(cb, 1, NUM_INSTANCES, 0, 0);
 
-            vkCmdEndRenderPass(cb);
+            vkCmdEndRendering(cb);
+
+            // Transition color layers back to SHADER_READ_ONLY_OPTIMAL
+            app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
+            app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
         }
     });
 
@@ -519,94 +532,8 @@ void ImpostorCapture::createDepth(VulkanApp* app) {
     app->resources.addImageView(depthView, "ImpostorCapture: depthView");
 }
 
-void ImpostorCapture::createCaptureRenderPass(VulkanApp* app) {
-    // Attachment 0: albedo color  SHADER_READ_ONLY → COLOR_ATTACHMENT → SHADER_READ_ONLY.
-    // Attachment 1: normal color  SHADER_READ_ONLY → COLOR_ATTACHMENT → SHADER_READ_ONLY.
-    // Attachment 2: depth         DEPTH_STENCIL → DEPTH_STENCIL (reused).
-    // All 60 layers are pre-transitioned to SHADER_READ_ONLY in init() so the
-    // initial layout is always valid even on the very first capture.
-    VkAttachmentDescription colorAtt{};
-    colorAtt.format         = VK_FORMAT_R8G8B8A8_UNORM;
-    colorAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
-    colorAtt.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAtt.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAtt.initialLayout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    colorAtt.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    // Normal attachment — identical settings.
-    VkAttachmentDescription normalAtt = colorAtt;
-
-    VkAttachmentDescription depthAtt{};
-    depthAtt.format         = VK_FORMAT_D32_SFLOAT;
-    depthAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
-    depthAtt.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAtt.storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depthAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    depthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depthAtt.initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depthAtt.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkAttachmentReference colorRefs[2]{};
-    colorRefs[0] = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
-    colorRefs[1] = { 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
-    VkAttachmentReference depthRef{ 2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
-
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount    = 2;
-    subpass.pColorAttachments       = colorRefs;
-    subpass.pDepthStencilAttachment = &depthRef;
-
-    VkSubpassDependency deps[2]{};
-    deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
-    deps[0].dstSubpass    = 0;
-    deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-                          | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
-                          | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-    deps[1].srcSubpass    = 0;
-    deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
-    deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-    VkAttachmentDescription atts[3] = { colorAtt, normalAtt, depthAtt };
-    VkRenderPassCreateInfo rpInfo{};
-    rpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpInfo.attachmentCount = 3;
-    rpInfo.pAttachments    = atts;
-    rpInfo.subpassCount    = 1;
-    rpInfo.pSubpasses      = &subpass;
-    rpInfo.dependencyCount = 2;
-    rpInfo.pDependencies   = deps;
-    if (vkCreateRenderPass(app->getDevice(), &rpInfo, nullptr, &captureRenderPass) != VK_SUCCESS)
-        throw std::runtime_error("ImpostorCapture: vkCreateRenderPass failed");
-    app->resources.addRenderPass(captureRenderPass, "ImpostorCapture: captureRenderPass");
-}
-
-void ImpostorCapture::createFramebuffers(VulkanApp* app) {
-    VkDevice device = app->getDevice();
-    for (uint32_t i = 0; i < TOTAL_LAYERS; ++i) {
-        VkImageView atts[3] = { captureLayerViews[i], captureNormalLayerViews[i], depthView };
-        VkFramebufferCreateInfo fbInfo{};
-        fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fbInfo.renderPass      = captureRenderPass;
-        fbInfo.attachmentCount = 3;
-        fbInfo.pAttachments    = atts;
-        fbInfo.width           = TEX_SIZE;
-        fbInfo.height          = TEX_SIZE;
-        fbInfo.layers          = 1;
-        if (vkCreateFramebuffer(device, &fbInfo, nullptr, &framebuffers[i]) != VK_SUCCESS)
-            throw std::runtime_error("ImpostorCapture: vkCreateFramebuffer failed");
-        app->resources.addFramebuffer(framebuffers[i], "ImpostorCapture: framebuffer");
-    }
-}
+void ImpostorCapture::createCaptureRenderPass(VulkanApp* /*app*/) {}
+void ImpostorCapture::createFramebuffers(VulkanApp* /*app*/) {}
 
 void ImpostorCapture::createDescSetLayouts(VulkanApp* app) {
     VkDevice device = app->getDevice();
@@ -764,7 +691,17 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     pipelineInfo.pColorBlendState    = &colorBlend;
     pipelineInfo.pDepthStencilState  = &depthStencil;
     pipelineInfo.layout              = capturePipelineLayout;
-    pipelineInfo.renderPass          = captureRenderPass;
+
+    // Dynamic rendering (no render pass)
+    VkFormat colorFormats[2] = { VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM };
+    VkPipelineRenderingCreateInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    renderingInfo.colorAttachmentCount = 2;
+    renderingInfo.pColorAttachmentFormats = colorFormats;
+    renderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+    pipelineInfo.pNext = &renderingInfo;
+    pipelineInfo.renderPass = VK_NULL_HANDLE;
+
     pipelineInfo.subpass             = 0;
     if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &capturePipeline) != VK_SUCCESS)
         throw std::runtime_error("ImpostorCapture: pipeline creation failed");

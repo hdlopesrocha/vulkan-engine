@@ -128,7 +128,7 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
 
     // No vertex input (fullscreen triangle generated in shader)
     pipeline = RendererUtils::buildFullscreenPipeline(
-        device, app, app->getSwapchainRenderPass(), pipelineLayout, stages,
+        device, app, app->getSwapchainImageFormat(), VK_FORMAT_D32_SFLOAT, pipelineLayout, stages,
         RendererUtils::FullscreenPipelineOpts{}, "PostProcessRenderer: pipeline");
 
     // Clear local shader module references; destruction handled by VulkanResourceManager
@@ -183,14 +183,12 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
 // ─── Render ───────────────────────────────────────────────────────────────────
 
 void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
-                                  VkFramebuffer swapchainFramebuffer,
-                                  VkRenderPass swapchainRenderPass,
                                   VkImageView sceneColorView, VkImageView sceneDepthView,
                                   VkImageView waterDepthView,
                                   const glm::mat4& viewProj, const glm::mat4& invViewProj,
                                   const glm::vec3& viewPos,
                                   uint32_t frameIdx,
-                                  bool beginRenderPass, VkImageView skyView) {
+                                  VkImageView skyView) {
     if (pipeline == VK_NULL_HANDLE) {
         std::cerr << "[PostProcessRenderer::render] pipeline is VK_NULL_HANDLE, skipping." << std::endl;
         return;
@@ -199,15 +197,6 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
         std::cerr << "[PostProcessRenderer::render] cmd is VK_NULL_HANDLE, skipping." << std::endl;
         return;
     }
-    if (swapchainFramebuffer == VK_NULL_HANDLE) {
-        std::cerr << "[PostProcessRenderer::render] swapchainFramebuffer is VK_NULL_HANDLE, skipping." << std::endl;
-        return;
-    }
-    if (swapchainRenderPass == VK_NULL_HANDLE) {
-        std::cerr << "[PostProcessRenderer::render] swapchainRenderPass is VK_NULL_HANDLE, skipping." << std::endl;
-        return;
-    }
-
     VkDevice device = app->getDevice();
 
     // Update water UBO
@@ -286,25 +275,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
 
     if (!writes.empty()) vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
-    if (beginRenderPass) {
-        // Begin render pass (output to swapchain)
-        std::array<VkClearValue, 2> clearValues{};
-        clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        clearValues[1].depthStencil = {1.0f, 0};
-
-        VkRenderPassBeginInfo renderPassInfo{};
-        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        renderPassInfo.renderPass = swapchainRenderPass;
-        renderPassInfo.framebuffer = swapchainFramebuffer;
-        renderPassInfo.renderArea.offset = {0, 0};
-        renderPassInfo.renderArea.extent = {renderWidth, renderHeight};
-        renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-        renderPassInfo.pClearValues = clearValues.data();
-
-        vkCmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    }
-
-    // Set viewport and scissor (safe to call inside already-open render pass)
+    // Set viewport and scissor (safe to call inside already-open dynamic rendering scope)
     VkViewport viewport{};
     viewport.x = 0.0f;
     viewport.y = 0.0f;
@@ -326,6 +297,4 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
 
     // Draw fullscreen triangle (3 vertices, no vertex buffer needed)
     vkCmdDraw(cmd, 3, 1, 0, 0);
-    // NOTE: Render pass is NOT ended here – caller is responsible for ending it
-    // This allows ImGui or other overlays to be rendered in the same pass
 }

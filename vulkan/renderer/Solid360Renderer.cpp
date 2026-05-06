@@ -20,11 +20,10 @@ void Solid360Renderer::cleanup(VulkanApp* app) {
     cube360DepthImage = VK_NULL_HANDLE;
     cube360DepthMemory = VK_NULL_HANDLE;
     for (auto &dv : cube360DepthViews) dv = VK_NULL_HANDLE;
-    for (auto& fb : cube360Framebuffers) fb = VK_NULL_HANDLE;
 }
 
-void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidRenderPass, VkSampler linearSampler) {
-    if (!app || solidRenderPass == VK_NULL_HANDLE) return;
+void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSampler) {
+    if (!app) return;
     VkDevice device = app->getDevice();
     VkFormat colorFormat = app->getSwapchainImageFormat();
 
@@ -132,23 +131,10 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkRenderPass solidR
                    cube360DepthViews[face], "Solid360Renderer: cube360 depth view");
     }
 
-    // Initialize per-face tracked layouts to SHADER_READ_ONLY (initial state)
-    for (uint32_t face = 0; face < 6; ++face) cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    // --- 3. Per-face framebuffers (reuse solidRenderPass: color + depth) ---
+    // Initialize per-face tracked layouts
     for (uint32_t face = 0; face < 6; ++face) {
-        std::array<VkImageView, 2> attachments = {cube360FaceViews[face], cube360DepthViews[face]};
-        VkFramebufferCreateInfo fbInfo{};
-        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fbInfo.renderPass = solidRenderPass;
-        fbInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-        fbInfo.pAttachments = attachments.data();
-        fbInfo.width = CUBE360_FACE_SIZE;
-        fbInfo.height = CUBE360_FACE_SIZE;
-        fbInfo.layers = 1;
-        if (vkCreateFramebuffer(device, &fbInfo, nullptr, &cube360Framebuffers[face]) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create cube360 framebuffer!");
-        app->resources.addFramebuffer(cube360Framebuffers[face], "Solid360Renderer: cube360 framebuffer");
+        cube360ColorLayouts[face] = VK_IMAGE_LAYOUT_UNDEFINED;
+        cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
     // NOTE: equirectangular conversion removed. Use the cubemap directly as the
@@ -167,21 +153,22 @@ void Solid360Renderer::destroySolid360Targets(VulkanApp* app) {
     cube360DepthImage = VK_NULL_HANDLE;
     cube360DepthMemory = VK_NULL_HANDLE;
     for (auto &dv : cube360DepthViews) dv = VK_NULL_HANDLE;
-    for (auto& fb : cube360Framebuffers) fb = VK_NULL_HANDLE;
 
     // Reset tracked layouts
-    for (uint32_t face = 0; face < 6; ++face) cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_UNDEFINED;
+    for (uint32_t face = 0; face < 6; ++face) {
+        cube360ColorLayouts[face] = VK_IMAGE_LAYOUT_UNDEFINED;
+        cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
 }
 
 void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
-                                     VkRenderPass solidRenderPass,
                                      SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
                                      SolidRenderer* solidRenderer,
                                      VkDescriptorSet mainDescriptorSet,
                                      Buffer& uniformBuffer, const UniformObject& ubo,
                                      VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer) {
     if (!app || cmd == VK_NULL_HANDLE) return;
-    if (cube360Framebuffers[0] == VK_NULL_HANDLE) return;
+    if (cube360FaceViews[0] == VK_NULL_HANDLE) return;
 
     glm::vec3 camPos = glm::vec3(ubo.viewPos);
     struct FaceInfo { glm::vec3 target; glm::vec3 up; };
@@ -216,31 +203,62 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             0, 1, &memBarrier, 0, nullptr, 0, nullptr);
 
-        VkClearValue clears[2];
-        clears[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-        clears[1].depthStencil = {1.0f, 0};
+        // Transition color layer: tracked layout → COLOR_ATTACHMENT_OPTIMAL
+        {
+            VkImageMemoryBarrier colorBarrier{};
+            colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            colorBarrier.oldLayout = cube360ColorLayouts[face];
+            colorBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            colorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            colorBarrier.image = cube360ColorImage;
+            colorBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, face, 1 };
+            colorBarrier.srcAccessMask = (cube360ColorLayouts[face] == VK_IMAGE_LAYOUT_UNDEFINED)
+                ? 0 : VK_ACCESS_SHADER_READ_BIT;
+            colorBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &colorBarrier);
+        }
 
-        VkRenderPassBeginInfo rpInfo{};
-        // Ensure the depth attachment layer for this face is transitioned
-        // into the depth-stencil attachment layout before beginning the
-        // render pass so validation layers see a correct effective old
-        // layout when the command buffer is submitted.
+        // Transition depth layer: tracked layout → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
         if (app) {
-            // Use the tracked per-face layout so stale pending entries
-            // in the command buffer (from prior recordings) cannot
-            // override effectiveOld and skip the required barrier.
             app->recordTransitionImageLayoutLayer(cmd, cube360DepthImage, VK_FORMAT_D32_SFLOAT,
                                                  cube360DepthLayouts[face], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                                                  1, face, 1);
         }
-        rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rpInfo.renderPass = solidRenderPass;
-        rpInfo.framebuffer = cube360Framebuffers[face];
-        rpInfo.renderArea.offset = {0, 0};
-        rpInfo.renderArea.extent = {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE};
-        rpInfo.clearValueCount = 2;
-        rpInfo.pClearValues = clears;
-        vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+        VkClearValue clears[2];
+        clears[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        clears[1].depthStencil = {1.0f, 0};
+
+        VkRenderingAttachmentInfo colorAtt{};
+        colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colorAtt.imageView = cube360FaceViews[face];
+        colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAtt.clearValue = clears[0];
+
+        VkRenderingAttachmentInfo depthAtt{};
+        depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depthAtt.imageView = cube360DepthViews[face];
+        depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAtt.clearValue = clears[1];
+
+        VkRenderingInfo renderingInfo{};
+        renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        renderingInfo.renderArea.offset = {0, 0};
+        renderingInfo.renderArea.extent = {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE};
+        renderingInfo.layerCount = 1;
+        renderingInfo.colorAttachmentCount = 1;
+        renderingInfo.pColorAttachments = &colorAtt;
+        renderingInfo.pDepthAttachment = &depthAtt;
+
+        vkCmdBeginRendering(cmd, &renderingInfo);
 
         VkViewport viewport{0.0f, 0.0f, (float)CUBE360_FACE_SIZE, (float)CUBE360_FACE_SIZE, 0.0f, 1.0f};
         vkCmdSetViewport(cmd, 0, 1, &viewport);
@@ -279,14 +297,30 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             }
         }
 
-        vkCmdEndRenderPass(cmd);
-        // After the render pass completes the depth attachment is in
-        // SHADER_READ_ONLY_OPTIMAL because solidRenderPass has
-        // finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL for the
-        // depth attachment. Record that so the next transition barrier
-        // uses the correct oldLayout and validation layers don't see a
-        // mismatch.
-        if (app) app->recordTrackedLayoutForCommandBuffer(cmd, cube360DepthImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, face, 1);
+        vkCmdEndRendering(cmd);
+
+        // Transition color: COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+        {
+            VkImageMemoryBarrier colorBarrier{};
+            colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            colorBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            colorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            colorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            colorBarrier.image = cube360ColorImage;
+            colorBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, face, 1 };
+            colorBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            colorBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &colorBarrier);
+        }
+        cube360ColorLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        // Transition depth: DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+        if (app) app->recordTransitionImageLayoutLayer(cmd, cube360DepthImage, VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, face, 1);
         cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 

@@ -65,8 +65,6 @@ void CubeToEquirectRenderer::cleanup(VulkanApp* app) {
     };
 
     destroyImageAndMemory(cube360EquirectView, cube360EquirectImage, cube360EquirectMemory);
-    destroyVkObject(cube360EquirectFramebuffer, &VulkanResourceManager::removeFramebuffer, vkDestroyFramebuffer);
-    destroyVkObject(cube360EquirectRenderPass, &VulkanResourceManager::removeRenderPass, vkDestroyRenderPass);
     destroyVkObject(cube360EquirectPipeline, &VulkanResourceManager::removePipeline, vkDestroyPipeline);
     destroyVkObject(cube360EquirectPipelineLayout, &VulkanResourceManager::removePipelineLayout, vkDestroyPipelineLayout);
     destroyVkObject(cube360EquirectVertModule, &VulkanResourceManager::removeShaderModule, vkDestroyShaderModule);
@@ -87,48 +85,6 @@ void CubeToEquirectRenderer::cleanup(VulkanApp* app) {
         }
         cube360EquirectSampleDescriptorSet = VK_NULL_HANDLE;
     }
-}
-
-void CubeToEquirectRenderer::createRenderPass(VulkanApp* app) {
-    if (cube360EquirectRenderPass != VK_NULL_HANDLE) return;
-    VkDevice device = app->getDevice();
-
-    VkAttachmentDescription colorAtt{};
-    colorAtt.format = VK_FORMAT_R8G8B8A8_UNORM; // must match the image format used by createOutputTarget
-    colorAtt.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAtt.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorRef;
-
-    VkSubpassDependency dep{};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dep.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-    VkRenderPassCreateInfo rpci{};
-    rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpci.attachmentCount = 1;
-    rpci.pAttachments = &colorAtt;
-    rpci.subpassCount = 1;
-    rpci.pSubpasses = &subpass;
-    rpci.dependencyCount = 1;
-    rpci.pDependencies = &dep;
-
-    if (vkCreateRenderPass(device, &rpci, nullptr, &cube360EquirectRenderPass) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create cube360 equirect render pass!");
-    app->resources.addRenderPass(cube360EquirectRenderPass, "CubeToEquirectRenderer: renderPass");
 }
 
 void CubeToEquirectRenderer::createPipeline(VulkanApp* app) {
@@ -177,7 +133,7 @@ void CubeToEquirectRenderer::createPipeline(VulkanApp* app) {
     };
 
     cube360EquirectPipeline = RendererUtils::buildFullscreenPipeline(
-        device, app, cube360EquirectRenderPass, cube360EquirectPipelineLayout, stages,
+        device, app, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED, cube360EquirectPipelineLayout, stages,
         RendererUtils::FullscreenPipelineOpts{}, "CubeToEquirectRenderer: pipeline");
 }
 
@@ -203,17 +159,10 @@ void CubeToEquirectRenderer::createOutputTarget(VulkanApp* app) {
         throw std::runtime_error("Failed to create cube360 equirect image view!");
     app->resources.addImageView(cube360EquirectView, "CubeToEquirectRenderer: imageView");
 
-    VkFramebufferCreateInfo fb{};
-    fb.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fb.renderPass = cube360EquirectRenderPass;
-    fb.attachmentCount = 1;
-    fb.pAttachments = &cube360EquirectView;
-    fb.width = EQ_WIDTH;
-    fb.height = EQ_HEIGHT;
-    fb.layers = 1;
-    if (vkCreateFramebuffer(device, &fb, nullptr, &cube360EquirectFramebuffer) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create cube360 equirect framebuffer!");
-    app->resources.addFramebuffer(cube360EquirectFramebuffer, "CubeToEquirectRenderer: framebuffer");
+    // Transition to SHADER_READ_ONLY_OPTIMAL as initial layout
+    app->transitionImageLayoutLayer(cube360EquirectImage, VK_FORMAT_R8G8B8A8_UNORM,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+    app->setImageLayoutTracked(cube360EquirectImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
 }
 
 void CubeToEquirectRenderer::createDescriptorResources(VulkanApp* app, VkSampler sampler, VkImageView cubeMapView) {
@@ -239,7 +188,6 @@ void CubeToEquirectRenderer::createDescriptorResources(VulkanApp* app, VkSampler
 }
 
 void CubeToEquirectRenderer::ensureResources(VulkanApp* app) {
-    createRenderPass(app);
     createPipeline(app);
     createOutputTarget(app);
 }
@@ -250,17 +198,27 @@ void CubeToEquirectRenderer::render(VulkanApp* app, VkSampler sampler, VkImageVi
     createDescriptorResources(app, sampler, cubeMapView);
 
     app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-        VkClearValue clear{};
-        clear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        VkRenderPassBeginInfo rp{};
-        rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rp.renderPass = cube360EquirectRenderPass;
-        rp.framebuffer = cube360EquirectFramebuffer;
-        rp.renderArea.offset = {0, 0};
-        rp.renderArea.extent = { EQ_WIDTH, EQ_HEIGHT };
-        rp.clearValueCount = 1;
-        rp.pClearValues = &clear;
-        vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+        // Transition equirect image: SHADER_READ_ONLY → COLOR_ATTACHMENT
+        app->recordTransitionImageLayoutLayer(cmd, cube360EquirectImage, VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
+
+        VkRenderingAttachmentInfo colorAtt{};
+        colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colorAtt.imageView = cube360EquirectView;
+        colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAtt.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+
+        VkRenderingInfo renderingInfo{};
+        renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        renderingInfo.renderArea.offset = {0, 0};
+        renderingInfo.renderArea.extent = {EQ_WIDTH, EQ_HEIGHT};
+        renderingInfo.layerCount = 1;
+        renderingInfo.colorAttachmentCount = 1;
+        renderingInfo.pColorAttachments = &colorAtt;
+
+        vkCmdBeginRendering(cmd, &renderingInfo);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cube360EquirectPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cube360EquirectPipelineLayout,
@@ -272,6 +230,10 @@ void CubeToEquirectRenderer::render(VulkanApp* app, VkSampler sampler, VkImageVi
         VkRect2D scissor{{0, 0}, { EQ_WIDTH, EQ_HEIGHT }};
         vkCmdSetScissor(cmd, 0, 1, &scissor);
         vkCmdDraw(cmd, 3, 1, 0, 0);
-        vkCmdEndRenderPass(cmd);
+        vkCmdEndRendering(cmd);
+
+        // Transition equirect image: COLOR_ATTACHMENT → SHADER_READ_ONLY
+        app->recordTransitionImageLayoutLayer(cmd, cube360EquirectImage, VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
     });
 }

@@ -12,11 +12,10 @@ public:
     void init(VulkanApp* app);
     void cleanup(VulkanApp* app);
 
-    void createSolid360Targets(VulkanApp* app, VkRenderPass solidRenderPass, VkSampler linearSampler);
+    void createSolid360Targets(VulkanApp* app, VkSampler linearSampler);
     void destroySolid360Targets(VulkanApp* app);
 
     void renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
-                        VkRenderPass solidRenderPass,
                         SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
                         SolidRenderer* solidRenderer,
                         VkDescriptorSet mainDescriptorSet,
@@ -54,10 +53,8 @@ private:
     VkDeviceMemory cube360DepthMemory = VK_NULL_HANDLE;
     std::array<VkImageView, 6> cube360DepthViews = {};
 
-    std::array<VkFramebuffer, 6> cube360Framebuffers = {};
-
-    // Track per-face depth image layouts so callers can record correct
-    // pipeline barriers when transitioning individual array layers.
+    // Track per-face color and depth image layouts
+    std::array<VkImageLayout, 6> cube360ColorLayouts = {};
     std::array<VkImageLayout, 6> cube360DepthLayouts = {};
 
     // Equirectangular conversion removed: use cubemap directly for sampling
