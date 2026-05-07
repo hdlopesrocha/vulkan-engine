@@ -11,23 +11,17 @@
 MusicWidget::MusicWidget()
     : Widget("Music Player", u8"\uf001"),
       selectedFile(),
-      pickerDir("."),
-      pickerNameBuf(),
-      pickerOpenPending(false),
+      filePicker_("Select MP3 File", ".mp3"),
       pickerError(),
       playbackState(PlaybackState::Stopped),
       audioInitialized(false),
       soundLoaded(false),
       repeatEnabled(false),
-            trackDurationSec(0.0f),
-            engine(),
-            sound(),
-            engineReady(false),
-            soundReady(false) {
-    const char* defaultName = "music.mp3";
-    std::memcpy(pickerNameBuf, defaultName, std::strlen(defaultName));
-    pickerNameBuf[std::strlen(defaultName)] = '\0';
-}
+      trackDurationSec(0.0f),
+      engine(),
+      sound(),
+      engineReady(false),
+      soundReady(false) {}
 
 MusicWidget::~MusicWidget() {
     unloadSound();
@@ -35,56 +29,6 @@ MusicWidget::~MusicWidget() {
         ma_engine_uninit(&engine);
         engineReady = false;
     }
-}
-
-void MusicWidget::openFilePicker() {
-    pickerOpenPending = true;
-    pickerError.clear();
-
-    std::filesystem::path current = selectedFile.empty() ? std::filesystem::path(".") : std::filesystem::path(selectedFile);
-    std::error_code ec;
-    if (std::filesystem::is_directory(current, ec)) {
-        pickerDir = current;
-    } else if (current.has_parent_path()) {
-        pickerDir = current.parent_path();
-    } else {
-        pickerDir = std::filesystem::current_path(ec);
-    }
-
-    std::filesystem::path absoluteDir = std::filesystem::absolute(pickerDir, ec);
-    if (!ec) {
-        pickerDir = absoluteDir;
-    }
-
-    std::string base = current.filename().string();
-    if (base.empty()) {
-        base = "music.mp3";
-    }
-    if (base.size() >= sizeof(pickerNameBuf)) {
-        base.resize(sizeof(pickerNameBuf) - 1);
-    }
-    std::memcpy(pickerNameBuf, base.c_str(), base.size());
-    pickerNameBuf[base.size()] = '\0';
-}
-
-void MusicWidget::executePickerSelection() {
-    std::filesystem::path selected = pickerDir / pickerNameBuf;
-    if (selected.extension() != ".mp3") {
-        selected += ".mp3";
-    }
-
-    std::error_code ec;
-    if (!std::filesystem::exists(selected, ec) || !std::filesystem::is_regular_file(selected, ec)) {
-        pickerError = "Selected file does not exist.";
-        return;
-    }
-
-    selectedFile = selected.string();
-    if (!loadSelectedTrack()) {
-        return;
-    }
-    pickerError.clear();
-    ImGui::CloseCurrentPopup();
 }
 
 bool MusicWidget::initAudio() {
@@ -244,106 +188,6 @@ void MusicWidget::pollPlayerState() {
     }
 }
 
-void MusicWidget::renderFilePickerPopup() {
-    if (pickerOpenPending) {
-        ImGui::OpenPopup("Select MP3 File");
-        pickerOpenPending = false;
-    }
-
-    ImGui::SetNextWindowSize(ImVec2(700.0f, 420.0f), ImGuiCond_Appearing);
-    if (!ImGui::BeginPopupModal("Select MP3 File", nullptr, ImGuiWindowFlags_NoCollapse)) {
-        return;
-    }
-
-    std::error_code ec;
-    if (!std::filesystem::exists(pickerDir, ec) || !std::filesystem::is_directory(pickerDir, ec)) {
-        pickerDir = std::filesystem::current_path(ec);
-    }
-
-    ImGui::TextWrapped("Current directory: %s", pickerDir.string().c_str());
-    if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf062##mp3_up")) && pickerDir.has_parent_path()) {
-        pickerDir = pickerDir.parent_path();
-    }
-    ImGuiHelpers::SetTooltipIfHovered("Up one folder");
-    ImGui::SameLine();
-    if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf0ac##mp3_root"))) {
-        pickerDir = std::filesystem::path("/");
-    }
-    ImGuiHelpers::SetTooltipIfHovered("Go to root (/)");
-    ImGui::SameLine();
-    if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf015##mp3_home"))) {
-        const char* home = std::getenv("HOME");
-        if (home && *home) {
-            pickerDir = std::filesystem::path(home);
-        }
-    }
-    ImGuiHelpers::SetTooltipIfHovered("Go to home folder");
-
-    std::vector<std::filesystem::directory_entry> dirs;
-    std::vector<std::filesystem::directory_entry> files;
-    for (const auto& entry : std::filesystem::directory_iterator(pickerDir, ec)) {
-        if (ec) {
-            break;
-        }
-        if (entry.is_directory(ec)) {
-            dirs.push_back(entry);
-        } else if (entry.is_regular_file(ec)) {
-            files.push_back(entry);
-        }
-    }
-
-    auto byName = [](const std::filesystem::directory_entry& a, const std::filesystem::directory_entry& b) {
-        return a.path().filename().string() < b.path().filename().string();
-    };
-    std::sort(dirs.begin(), dirs.end(), byName);
-    std::sort(files.begin(), files.end(), byName);
-
-    ImGui::BeginChild("##mp3_picker_entries", ImVec2(0.0f, 260.0f), true);
-    for (const auto& d : dirs) {
-        std::string label = "[DIR] " + d.path().filename().string();
-        if (ImGui::Selectable(label.c_str(), false)) {
-            pickerDir = d.path();
-        }
-    }
-    for (const auto& f : files) {
-        if (f.path().extension() != ".mp3") {
-            continue;
-        }
-        std::string name = f.path().filename().string();
-        if (ImGui::Selectable(name.c_str(), false)) {
-            if (name.size() >= sizeof(pickerNameBuf)) {
-                name.resize(sizeof(pickerNameBuf) - 1);
-            }
-            std::memcpy(pickerNameBuf, name.c_str(), name.size());
-            pickerNameBuf[name.size()] = '\0';
-        }
-        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-            executePickerSelection();
-        }
-    }
-    ImGui::EndChild();
-
-    ImGui::Text("File name:");
-    ImGui::InputText("##mp3_picker_name", pickerNameBuf, sizeof(pickerNameBuf));
-
-    if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf00c##mp3_select"))) {
-        executePickerSelection();
-    }
-    ImGuiHelpers::SetTooltipIfHovered("Select file");
-    ImGui::SameLine();
-    if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf00d##mp3_cancel"))) {
-        pickerError.clear();
-        ImGui::CloseCurrentPopup();
-    }
-    ImGuiHelpers::SetTooltipIfHovered("Cancel");
-
-    if (!pickerError.empty()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", pickerError.c_str());
-    }
-
-    ImGui::EndPopup();
-}
-
 void MusicWidget::render() {
     pollPlayerState();
 
@@ -385,7 +229,7 @@ void MusicWidget::render() {
 
     ImGui::SameLine();
     if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf07c##open_mp3"))) {
-        openFilePicker();
+        filePicker_.open(selectedFile.empty() ? std::filesystem::path("music.mp3") : std::filesystem::path(selectedFile));
     }
     ImGuiHelpers::SetTooltipIfHovered("Open MP3 file");
 
@@ -416,5 +260,10 @@ void MusicWidget::render() {
         ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", pickerError.c_str());
     }
 
-    renderFilePickerPopup();
+    std::filesystem::path chosenFile;
+    if (filePicker_.render(chosenFile)) {
+        selectedFile = chosenFile.string();
+        pickerError.clear();
+        loadSelectedTrack();
+    }
 }

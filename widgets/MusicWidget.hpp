@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
+#include "components/FilePicker.hpp"
 #include "../third_party/miniaudio/miniaudio.h"
 #include <filesystem>
 #include <string>
@@ -20,9 +21,7 @@ private:
     };
 
     std::string selectedFile;
-    std::filesystem::path pickerDir;
-    char pickerNameBuf[256];
-    bool pickerOpenPending;
+    FilePicker filePicker_;
     std::string pickerError;
 
     PlaybackState playbackState;
@@ -34,10 +33,6 @@ private:
     ma_sound sound;
     bool engineReady;
     bool soundReady;
-
-    void openFilePicker();
-    void renderFilePickerPopup();
-    void executePickerSelection();
 
     bool initAudio();
     void unloadSound();

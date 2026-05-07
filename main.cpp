@@ -45,6 +45,7 @@
 #include "widgets/OctreeExplorerWidget.hpp"
 #include "widgets/Brush3dWidget.hpp"
 #include "widgets/MusicWidget.hpp"
+#include "widgets/components/FilePicker.hpp"
 #include "utils/MainSceneLoader.hpp"
 #include "widgets/Settings.hpp"
 #include "widgets/WidgetManager.hpp"
@@ -111,6 +112,7 @@ public:
     std::shared_ptr<MusicWidget> mp3Widget;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
     WidgetManager widgetManager;
+    FilePicker scenePicker_{"Scene File Picker", ".scene"};
     uint32_t loadedTextureLayers = 0;
 
     // Billboard editing / vegetation resources
@@ -289,6 +291,10 @@ public:
         // Create scene objects and build the octree synchronously in setup().
         // Chunk tessellation is deferred and processed on a background thread.
         // Vulkan GPU uploads happen on the main thread via processPendingMeshes().
+        scenePicker_.addBookmark(
+            reinterpret_cast<const char*>(u8"\uf07c##scene_bm_scenes"),
+            "Go to project scenes folder",
+            std::filesystem::path("scenes"));
         mainScene = new LocalScene();
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(mainScene, &camera);
         widgetManager.addWidget(octreeExplorerWidget);
@@ -1002,62 +1008,13 @@ public:
 
     void renderImGui() override {
         static char sceneFolderBuf[512] = "scenes/my_scene.scene";
-        static bool pickerForSave = false;
-        static bool pickerOpenPending = false;
-        static std::filesystem::path pickerDir = std::filesystem::path("scenes");
-        static char pickerNameBuf[256] = "my_scene.scene";
-        static std::string pickerError;
-
-        auto copyPathToBuffer = [](const std::filesystem::path& p, char* dst, size_t dstSize) {
-            std::string s = p.string();
-            if (s.size() >= dstSize) {
-                s.resize(dstSize - 1);
-            }
-            std::memcpy(dst, s.c_str(), s.size());
-            dst[s.size()] = '\0';
-        };
-
-        auto openScenePicker = [&](bool forSave) {
-            pickerForSave = forSave;
-            pickerOpenPending = true;
-            pickerError.clear();
-            std::filesystem::path initialPath(sceneFolderBuf);
-            if (initialPath.empty()) {
-                initialPath = std::filesystem::path("scenes/my_scene.scene");
-            }
-
-            std::error_code ec;
-            std::filesystem::path baseDir;
-            if (std::filesystem::is_directory(initialPath, ec)) {
-                baseDir = initialPath;
-            } else {
-                baseDir = initialPath.has_parent_path() ? initialPath.parent_path() : std::filesystem::path("scenes");
-            }
-            if (baseDir.empty()) {
-                baseDir = std::filesystem::current_path(ec);
-            }
-            pickerDir = std::filesystem::absolute(baseDir, ec);
-            if (ec) {
-                pickerDir = baseDir;
-            }
-
-            std::string filename = initialPath.filename().string();
-            if (filename.empty()) {
-                filename = "my_scene.scene";
-            }
-            if (filename.size() >= sizeof(pickerNameBuf)) {
-                filename.resize(sizeof(pickerNameBuf) - 1);
-            }
-            std::memcpy(pickerNameBuf, filename.c_str(), filename.size());
-            pickerNameBuf[filename.size()] = '\0';
-        };
 
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Generate Map")) generateMapPending = true;
                 ImGui::Separator();
-                if (ImGui::MenuItem("Save Scene...")) openScenePicker(true);
-                if (ImGui::MenuItem("Load Scene...")) openScenePicker(false);
+                if (ImGui::MenuItem("Save Scene...")) scenePicker_.open(sceneFolderBuf, true,  "Mode: Save");
+                if (ImGui::MenuItem("Load Scene...")) scenePicker_.open(sceneFolderBuf, false, "Mode: Load");
                 ImGui::Separator();
                 if (ImGui::MenuItem("Exit")) requestClose();
                 ImGui::EndMenu();
@@ -1074,147 +1031,19 @@ public:
             widgetManager.renderMenu();
             ImGui::EndMainMenuBar();
 
-            ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-
-            ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-            ImGui::SetNextWindowSize(ImVec2(700.0f, 420.0f), ImGuiCond_Appearing);
-            if (pickerOpenPending) {
-                ImGui::OpenPopup("Scene File Picker");
-                pickerOpenPending = false;
-            }
-            if (ImGui::BeginPopupModal("Scene File Picker", NULL, ImGuiWindowFlags_NoCollapse)) {
-                std::error_code ec;
-                if (!std::filesystem::exists(pickerDir, ec) || !std::filesystem::is_directory(pickerDir, ec)) {
-                    pickerDir = std::filesystem::current_path(ec);
+            std::filesystem::path chosenScene;
+            if (scenePicker_.render(chosenScene)) {
+                std::string s = chosenScene.string();
+                if (s.size() < sizeof(sceneFolderBuf)) {
+                    std::memcpy(sceneFolderBuf, s.c_str(), s.size());
+                    sceneFolderBuf[s.size()] = '\0';
                 }
-
-                ImGui::Text("Mode: %s", pickerForSave ? "Save" : "Load");
-                ImGui::TextWrapped("Current directory: %s", pickerDir.string().c_str());
-
-                if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf062##scene_picker_up")) && pickerDir.has_parent_path()) {
-                    pickerDir = pickerDir.parent_path();
+                if (scenePicker_.isSaveMode()) {
+                    if (mainScene) mainScene->save(sceneFolderBuf, &settings);
+                } else {
+                    pendingLoadPath = sceneFolderBuf;
+                    loadScenePending = true;
                 }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Up one folder");
-                }
-                ImGui::SameLine();
-                if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf0ac##scene_picker_root"))) {
-                    pickerDir = std::filesystem::path("/");
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Go to root (/)");
-                }
-                ImGui::SameLine();
-                if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf015##scene_picker_home"))) {
-                    const char* home = std::getenv("HOME");
-                    if (home && *home) {
-                        pickerDir = std::filesystem::path(home);
-                    }
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Go to home folder");
-                }
-                ImGui::SameLine();
-                if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf07c##scene_picker_home_scenes"))) {
-                    pickerDir = std::filesystem::path("scenes");
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Go to project scenes folder");
-                }
-
-                std::vector<std::filesystem::directory_entry> dirs;
-                std::vector<std::filesystem::directory_entry> files;
-                for (const auto& entry : std::filesystem::directory_iterator(pickerDir, ec)) {
-                    if (ec) {
-                        break;
-                    }
-                    if (entry.is_directory(ec)) {
-                        dirs.push_back(entry);
-                    } else if (entry.is_regular_file(ec)) {
-                        files.push_back(entry);
-                    }
-                }
-
-                auto byName = [](const std::filesystem::directory_entry& a, const std::filesystem::directory_entry& b) {
-                    return a.path().filename().string() < b.path().filename().string();
-                };
-                std::sort(dirs.begin(), dirs.end(), byName);
-                std::sort(files.begin(), files.end(), byName);
-
-                auto executePickerSelection = [&]() {
-                    std::filesystem::path selected = pickerDir / pickerNameBuf;
-                    if (selected.extension() != ".scene") {
-                        selected += ".scene";
-                    }
-
-                    if (pickerForSave || std::filesystem::exists(selected, ec)) {
-                        copyPathToBuffer(selected, sceneFolderBuf, sizeof(sceneFolderBuf));
-                        if (pickerForSave) {
-                            if (mainScene) {
-                                mainScene->save(sceneFolderBuf, &settings);
-                            }
-                        } else {
-                            pendingLoadPath = sceneFolderBuf;
-                            loadScenePending = true;
-                        }
-                        pickerError.clear();
-                        ImGui::CloseCurrentPopup();
-                    } else {
-                        pickerError = "Selected file does not exist.";
-                    }
-                };
-
-                ImGui::BeginChild("##picker_entries", ImVec2(0.0f, 260.0f), true);
-                for (const auto& d : dirs) {
-                    std::string label = "[DIR] " + d.path().filename().string();
-                    if (ImGui::Selectable(label.c_str(), false)) {
-                        pickerDir = d.path();
-                    }
-                }
-                for (const auto& f : files) {
-                    const std::string name = f.path().filename().string();
-                    const bool isSceneFile = f.path().extension() == ".scene";
-                    if (!pickerForSave && !isSceneFile) {
-                        continue;
-                    }
-                    std::string label = name;
-                    if (ImGui::Selectable(label.c_str(), false)) {
-                        std::string clipped = name;
-                        if (clipped.size() >= sizeof(pickerNameBuf)) {
-                            clipped.resize(sizeof(pickerNameBuf) - 1);
-                        }
-                        std::memcpy(pickerNameBuf, clipped.c_str(), clipped.size());
-                        pickerNameBuf[clipped.size()] = '\0';
-                    }
-                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                        executePickerSelection();
-                    }
-                }
-                ImGui::EndChild();
-
-                ImGui::Text("File name:");
-                ImGui::InputText("##picker_name", pickerNameBuf, sizeof(pickerNameBuf));
-
-                if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf00c##scene_picker_select"))) {
-                    executePickerSelection();
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Select file");
-                }
-                ImGui::SameLine();
-                if (ImGui::Button(reinterpret_cast<const char*>(u8"\uf00d##scene_picker_cancel"))) {
-                    pickerError.clear();
-                    ImGui::CloseCurrentPopup();
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Cancel");
-                }
-
-                if (!pickerError.empty()) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", pickerError.c_str());
-                }
-
-                ImGui::EndPopup();
             }
 
             // Small top-left overlay under the main menu bar showing FPS and visible count
