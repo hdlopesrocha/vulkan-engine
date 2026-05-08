@@ -365,43 +365,28 @@ void Octree::expand(const ShapeArgs &args) {
     }
 }
 
-void Octree::add(
-        WrappedSignedDistanceFunction *function, 
-        const Transformation model, 
+
+void Octree::apply(
+        float (*operation)(float, float),
+        WrappedSignedDistanceFunction *function,
+        const Transformation model,
         glm::vec4 translate,
         glm::vec4 scale,
         const TexturePainter &painter,
-        float minSize, 
-        Simplifier &simplifier, 
+        float minSize,
+        Simplifier &simplifier,
         const OctreeChangeHandler &changeHandler
     ) {
     threadsCreated = 0;
     *shapeCounter = 0;
-    ShapeArgs args = ShapeArgs(SDF::opUnion, function, painter, model, translate, scale, simplifier, changeHandler, minSize);	
+    ShapeArgs args = ShapeArgs(operation, function, painter, model, translate, scale, simplifier, changeHandler, minSize);	
   	expand(args);
     OctreeNodeFrame frame = OctreeNodeFrame(root, *this, 0, root->sdf, DISCARD_BRUSH_INDEX, false, *this);
     ThreadContext localChunkContext = ThreadContext(*this);
     shape(frame, args, &localChunkContext, ContainmentType::Intersects);
-    std::cout << "\t\tOctree::add Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << std::endl; 
+    std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << std::endl; 
 }
 
-void Octree::del(
-        WrappedSignedDistanceFunction * function, 
-        const Transformation model, 
-        glm::vec4 translate,
-        glm::vec4 scale,
-        const TexturePainter &painter,
-        float minSize, Simplifier &simplifier, 
-        const OctreeChangeHandler  &changeHandler
-    ) {
-    threadsCreated = 0;
-    *shapeCounter = 0;
-    ShapeArgs args = ShapeArgs(SDF::opSubtraction, function, painter, model, translate, scale, simplifier, changeHandler, minSize);
-    OctreeNodeFrame frame = OctreeNodeFrame(root, *this, 0, root->sdf, DISCARD_BRUSH_INDEX, false, *this);
-    ThreadContext localChunkContext = ThreadContext(*this);
-    shape(frame, args, &localChunkContext, ContainmentType::Intersects);
-    std::cout << "\t\tOctree::del Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << std::endl; 
-}
 
 SpaceType childToParent(bool childSolid, bool childEmpty) {
     if(childSolid) {
