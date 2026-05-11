@@ -27,6 +27,7 @@ public:
         vsyncEnabled = true;
         showDebugCubes = false;
         showBoundingBoxes = false;
+        showSDFDebug = false;
         nearPlane = 0.1f;
         farPlane = 8092.0f;
     }
@@ -41,6 +42,7 @@ public:
     // Debug visuals
     bool showDebugCubes = false;
     bool showBoundingBoxes = false;
+    bool showSDFDebug = false;
 
     // Input settings
     bool flipKeyboardRotation = false;

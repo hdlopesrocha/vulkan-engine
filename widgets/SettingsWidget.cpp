@@ -196,4 +196,9 @@ void SettingsWidget::render() {
         }
         ImGuiHelpers::SetTooltipIfHovered("Render bounding boxes for meshes currently uploaded to the GPU");
 
+        if (ImGui::Checkbox("Show SDF Leaf Cubes", &settings.showSDFDebug)) {
+            // toggled SDF leaf cube overlay
+        }
+        ImGuiHelpers::SetTooltipIfHovered("Render leaf-node cube faces colored by SDF sign; faces outside +/-10 are discarded");
+
     }
