@@ -323,7 +323,7 @@ public:
         }
         flush();
 
-        /*
+        
         {
             std::cout << "\topaqueLayer.add(box)"<< std::endl;
             glm::vec3 min = glm::vec3(1500+128,256+128,-1000+128);
@@ -335,7 +335,7 @@ public:
             opaqueLayer.apply(SDF::opIntersection, &wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*0.25, simplifier, opaqueHandler);
         }
         flush();
-        */
+        
 
         {
             std::cout << "\topaqueLayer.add(box)"<< std::endl;
