@@ -668,6 +668,15 @@ public:
             }
         }
 
+        // Render leaf-node SDF cube faces (if enabled in settings)
+        if (settings.showSDFDebug && sceneRenderer && sceneRenderer->debugSDFRenderer) {
+            auto sdfCubes = sceneRenderer->getDebugSDFCubes();
+            if (!sdfCubes.empty()) {
+                sceneRenderer->debugSDFRenderer->setCubes(sdfCubes);
+                sceneRenderer->debugSDFRenderer->render(this, commandBuffer, getMainDescriptorSet());
+            }
+        }
+
             sceneRenderer->solidRenderer->endPass(commandBuffer, frameIdx, this);
 
         // Update the water scene descriptor set BEFORE launching async tasks.
@@ -1628,6 +1637,7 @@ void MyApp::generateMap() {
         sceneRenderer->removeAllRegisteredMeshes();
         sceneRenderer->removeAllTransparentMeshes();
         sceneRenderer->nodeDebugCubes.clear();
+        sceneRenderer->clearDebugSDFCubes();
     }
 
     // Reset both octrees (frees all node memory, keeps bounds)
@@ -1666,6 +1676,7 @@ void MyApp::loadSceneFromFile(const std::string& path) {
         sceneRenderer->removeAllRegisteredMeshes();
         sceneRenderer->removeAllTransparentMeshes();
         sceneRenderer->nodeDebugCubes.clear();
+        sceneRenderer->clearDebugSDFCubes();
     }
 
     mainScene->getOpaqueOctree().reset();
@@ -1712,5 +1723,3 @@ void MyApp::postSubmit() {
         loadSceneFromFile(pendingLoadPath);
     }
 }
-
-

@@ -5,6 +5,7 @@
 #include "SkyRenderer.hpp"
 #include "ShadowRenderer.hpp"
 #include "DebugCubeRenderer.hpp"
+#include "DebugSDFRenderer.hpp"
 #include "WireframeRenderer.hpp"
 #include "WaterBackFaceRenderer.hpp"
 #include "Solid360Renderer.hpp"
@@ -13,6 +14,7 @@
 // Forward declarations for change handler types
 class SolidSpaceChangeHandler;
 class LiquidSpaceChangeHandler;
+class Octree;
 
 #include <vulkan/vulkan.h>
 #include "../VulkanApp.hpp"
@@ -75,6 +77,7 @@ public:
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
     std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;
     std::unique_ptr<DebugCubeRenderer> boundingBoxRenderer;
+    std::unique_ptr<DebugSDFRenderer> debugSDFRenderer;
     std::unique_ptr<WireframeRenderer> solidWireframe;
     std::unique_ptr<WireframeRenderer> waterWireframe;
     // Sky settings owned by this renderer
@@ -116,6 +119,12 @@ public:
         for (const auto &p : nodeDebugCubes) out.push_back(p.second);
         return out;
     }
+
+    // SDF face debug cubes for leaf nodes under each chunk.
+    std::unordered_map<NodeID, std::vector<DebugSDFRenderer::CubeSDF>> nodeDebugSDFCubes;
+    void removeDebugSDFCubesForNode(NodeID id);
+    void clearDebugSDFCubes();
+    std::vector<DebugSDFRenderer::CubeSDF> getDebugSDFCubes();
 
     // Register/inspect opaque model versions (moved from SolidRenderer)
     void registerModelVersion(NodeID id, const Model3DVersion& ver) { solidChunks[id] = ver; }
@@ -192,6 +201,8 @@ public:
     void processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos);
 
 private:
+    void updateDebugSDFCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree);
+
     // Callbacks stored here so handler references remain valid
     NodeDataCallback solidNodeEventCallback;
     NodeDataCallback solidNodeEraseCallback;
@@ -210,4 +221,3 @@ private:
 };
 
 // ...existing code...
-

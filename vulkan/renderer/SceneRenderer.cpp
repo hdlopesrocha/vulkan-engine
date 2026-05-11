@@ -8,10 +8,75 @@
 #include "../../utils/LocalScene.hpp"
 #include "../../math/ContainmentType.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cfloat>
 #include <mutex>
 #include <random>
 #include <unordered_set>
+
+namespace {
+constexpr float kDebugSDFClip = 10.0f;
+
+const uint32_t kDebugSDFFaces[6][4] = {
+    {0, 1, 3, 2},
+    {4, 6, 7, 5},
+    {0, 4, 5, 1},
+    {2, 3, 7, 6},
+    {0, 2, 6, 4},
+    {1, 5, 7, 3}
+};
+
+bool isDrawableSDF(float v) {
+    return std::isfinite(v) && std::abs(v) <= kDebugSDFClip;
+}
+
+bool hasDrawableSDFFace(const std::array<float, 8>& sdf) {
+    for (const auto& face : kDebugSDFFaces) {
+        for (uint32_t corner : face) {
+            if (isDrawableSDF(sdf[corner])) {
+                return true;
+            }
+        }
+
+        for (uint32_t edge = 0; edge < 4; ++edge) {
+            const float a = sdf[face[edge]];
+            const float b = sdf[face[(edge + 1) % 4]];
+            if (std::isfinite(a) && std::isfinite(b) && ((a <= 0.0f && b >= 0.0f) || (a >= 0.0f && b <= 0.0f))) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void collectLeafSDFCubes(OctreeNode* node, const BoundingCube& cube, OctreeAllocator& allocator,
+                         std::vector<DebugSDFRenderer::CubeSDF>& out) {
+    if (!node) return;
+
+    const bool noChildren = node->blockId == UINT_MAX;
+    if (node->isLeaf() || noChildren) {
+        DebugSDFRenderer::CubeSDF debugCube{};
+        debugCube.cube = cube;
+        for (size_t i = 0; i < debugCube.sdf.size(); ++i) {
+            debugCube.sdf[i] = node->sdf[i];
+        }
+        if (hasDrawableSDFFace(debugCube.sdf)) {
+            out.push_back(debugCube);
+        }
+        return;
+    }
+
+    ChildBlock* block = node->getBlock(allocator);
+    if (!block) return;
+    for (uint32_t i = 0; i < 8; ++i) {
+        OctreeNode* child = block->get(i, allocator);
+        if (child && child != node) {
+            collectLeafSDFCubes(child, cube.getChild(i), allocator, out);
+        }
+    }
+}
+}
 
 void SceneRenderer::cleanup(VulkanApp* app) {
     // Cleanup all sub-renderers to properly destroy GPU resources (app may be null)
@@ -45,6 +110,9 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     }
     if (boundingBoxRenderer) {
         boundingBoxRenderer->cleanup();
+    }
+    if (debugSDFRenderer) {
+        debugSDFRenderer->cleanup();
     }
     if (solidWireframe) {
         solidWireframe->cleanup();
@@ -100,6 +168,7 @@ SceneRenderer::SceneRenderer() :
     vegetationRenderer(std::make_unique<VegetationRenderer>()),
     debugCubeRenderer(std::make_unique<DebugCubeRenderer>()),
     boundingBoxRenderer(std::make_unique<DebugCubeRenderer>()),
+    debugSDFRenderer(std::make_unique<DebugSDFRenderer>()),
     solidWireframe(std::make_unique<WireframeRenderer>()),
     waterWireframe(std::make_unique<WireframeRenderer>()),
       skySettings(std::make_unique<SkySettings>())
@@ -331,6 +400,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Initialize bounding box renderer (reuses cube wireframe pipeline)
     if (boundingBoxRenderer) {
         boundingBoxRenderer->init(app);
+    }
+    if (debugSDFRenderer) {
+        debugSDFRenderer->init(app);
     }
     
     // Create main uniform buffer (TRANSFER_DST for vkCmdUpdateBuffer in cubemap 360 render)
@@ -807,6 +879,9 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
         // CPU tessellation runs here (background thread); result is queued for
         // main-thread GPU upload via processPendingMeshes().
         if (nd.containmentType != ContainmentType::Disjoint) {
+            if (auto* localScene = dynamic_cast<LocalScene*>(scene)) {
+                this->updateDebugSDFCubesForChunk(nid, nd, localScene->getOpaqueOctree());
+            }
             OctreeNodeData nodeCopy = nd;
             this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
                 [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
@@ -827,8 +902,9 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
                 solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
             }
             solidChunks.erase(it);
-            removeDebugCubeForNode(nid);
         }
+        removeDebugCubeForNode(nid);
+        removeDebugSDFCubesForNode(nid);
     };
     
     return SolidSpaceChangeHandler(solidNodeEventCallback, solidNodeEraseCallback);
@@ -841,6 +917,9 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
         // CPU tessellation runs here (background thread); result is queued for
         // main-thread GPU upload via processPendingMeshes().
         if (nd.containmentType != ContainmentType::Disjoint) {
+            if (auto* localScene = dynamic_cast<LocalScene*>(scene)) {
+                this->updateDebugSDFCubesForChunk(nid, nd, localScene->transparentOctree);
+            }
             OctreeNodeData nodeCopy = nd;
             this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
                 [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
@@ -861,8 +940,9 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
                 waterRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
             }
             transparentChunks.erase(it);
-            removeDebugCubeForNode(nid);
         }
+        removeDebugCubeForNode(nid);
+        removeDebugSDFCubesForNode(nid);
     };
 
 
@@ -1010,6 +1090,44 @@ bool SceneRenderer::hasModelForNode(Layer layer, NodeID nid) const {
     } else {
         return transparentChunks.find(nid) != transparentChunks.end();
     }
+}
+
+void SceneRenderer::updateDebugSDFCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree) {
+    if (!debugSDFRenderer || !nd.node || !tree.allocator) return;
+
+    std::vector<DebugSDFRenderer::CubeSDF> cubes;
+    collectLeafSDFCubes(nd.node, nd.cube, *tree.allocator, cubes);
+
+    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+    if (cubes.empty()) {
+        nodeDebugSDFCubes.erase(nid);
+    } else {
+        nodeDebugSDFCubes[nid] = std::move(cubes);
+    }
+}
+
+void SceneRenderer::removeDebugSDFCubesForNode(NodeID id) {
+    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+    nodeDebugSDFCubes.erase(id);
+}
+
+void SceneRenderer::clearDebugSDFCubes() {
+    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+    nodeDebugSDFCubes.clear();
+}
+
+std::vector<DebugSDFRenderer::CubeSDF> SceneRenderer::getDebugSDFCubes() {
+    std::lock_guard<std::recursive_mutex> lock(chunksMutex);
+    std::vector<DebugSDFRenderer::CubeSDF> out;
+    size_t total = 0;
+    for (const auto& entry : nodeDebugSDFCubes) {
+        total += entry.second.size();
+    }
+    out.reserve(total);
+    for (const auto& entry : nodeDebugSDFCubes) {
+        out.insert(out.end(), entry.second.begin(), entry.second.end());
+    }
+    return out;
 }
 
 void SceneRenderer::addDebugCubeForGeometry(Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
