@@ -605,20 +605,17 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
 
         // Notify change handler only after the node and all subnodes are up to date
         if (isChunk) {
-            if(isUpdate) {
-                args.changeHandler.onNodeAdded(
-                    OctreeNodeData(frame.level, node, frame.cube, check, nullptr)
-                );
-            } else {
-                args.changeHandler.onNodeDeleted(
-                    OctreeNodeData(frame.level, node, frame.cube, check, nullptr)
-                );
-                ChildBlock * block = node ? node->getBlock(*allocator) : NULL;
-                if(block) {
-                    block = node->clear(*allocator, block, frame.cube);
-                } 
-            }
+            OctreeNodeData nodeData(frame.level, node, frame.cube, check, nullptr);
+            isUpdate ? args.changeHandler.onNodeAdded(nodeData) : args.changeHandler.onNodeDeleted(nodeData);
         }
+
+        if(!isUpdate) {
+            ChildBlock * block = node ? node->getBlock(*allocator) : NULL;
+            if(block) {
+                block = node->clear(*allocator, block, frame.cube);
+            } 
+        }
+        
     }
 
     return NodeOperationResult(node, shapeType, shapeSDF, resultType, resultSDF, process, isSimplified, brushIndex);
