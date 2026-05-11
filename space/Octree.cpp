@@ -350,9 +350,9 @@ float Octree::evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float
     return d;
 }
 
-void Octree::buildSDF(const ShapeArgs &args, BoundingCube &cube, float shapeSDF[8], float resultSDF[8], float existingResultSDF[8], ThreadContext * threadContext) const {
-    const glm::vec3 min = cube.getMin();
-    const glm::vec3 length = cube.getLength();
+void Octree::buildSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], float resultSDF[8], ThreadContext * threadContext) const {
+    const glm::vec3 min = frame.cube.getMin();
+    const glm::vec3 length = frame.cube.getLength();
     tsl::robin_map<glm::vec3, float> * shapeSdfCache = &threadContext->shapeSdfCache;
 
     for (uint i = 0; i < 8; ++i) {
@@ -360,7 +360,7 @@ void Octree::buildSDF(const ShapeArgs &args, BoundingCube &cube, float shapeSDF[
             shapeSDF[i] = evaluateSDF(args, shapeSdfCache, min + length * Octree::getShift(i));
         }
         if(resultSDF[i] == INFINITY) {
-            resultSDF[i] = args.operation(existingResultSDF[i], shapeSDF[i]);
+            resultSDF[i] = args.operation(frame.sdf[i], shapeSDF[i]);
         }
     }
 }
@@ -524,7 +524,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     // ------------------------------
     // Build SDFs based on inheritance/execution
     // ------------------------------
-    buildSDF(args, frame.cube, shapeSDF, resultSDF, frame.sdf, threadContext);
+    buildSDF(args, frame, shapeSDF, resultSDF, threadContext);
     
     SpaceType shapeType = isLeaf ? SDF::eval(shapeSDF) : childToParent(childShapeSolid, childShapeEmpty);
     SpaceType resultType = isLeaf ? SDF::eval(resultSDF) : childToParent(childResultSolid, childResultEmpty);

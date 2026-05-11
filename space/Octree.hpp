@@ -66,7 +66,7 @@ public:
     void exportOctreeSerialization(OctreeSerialized * octree);
     void exportNodesSerialization(std::vector<OctreeNodeCubeSerialized> * nodes);
 private:
-    void buildSDF(const ShapeArgs &args, BoundingCube &cube, float shapeSDF[8], float resultSDF[8], float existingResultSDF[8], ThreadContext * threadContext) const;
+    void buildSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], float resultSDF[8], ThreadContext * threadContext) const;
     float evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float> * threadContext, glm::vec3 p) const;
 };
 
