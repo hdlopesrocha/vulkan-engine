@@ -9,7 +9,7 @@ NodeOperationResult::NodeOperationResult()
     for(int i=0;i<8;++i){ resultSDF[i]=INFINITY; shapeSDF[i]=INFINITY; }
 }
 
-NodeOperationResult::NodeOperationResult(OctreeNode * node, SpaceType shapeType, SpaceType resultType, const float * resultSDF, const float * shapeSDF, bool process, bool isSimplified, int brushIndex)
+NodeOperationResult::NodeOperationResult(OctreeNode * node, SpaceType shapeType, const float * shapeSDF, SpaceType resultType, const float * resultSDF, bool process, bool isSimplified, int brushIndex)
     : node(node), shapeType(shapeType), resultType(resultType), process(process), isSimplified(isSimplified), brushIndex(brushIndex)
 {
     if (resultSDF) std::memcpy(this->resultSDF, resultSDF, sizeof(this->resultSDF)); else for(int i=0;i<8;++i) this->resultSDF[i]=INFINITY;
