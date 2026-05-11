@@ -528,10 +528,10 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     
     SpaceType shapeType = isLeaf ? SDF::eval(shapeSDF) : childToParent(childShapeSolid, childShapeEmpty);
     SpaceType resultType = isLeaf ? SDF::eval(resultSDF) : childToParent(childResultSolid, childResultEmpty);
-    bool wasCreated = false;
+    bool isUpdate = false;
+
     if(shapeType == SpaceType::Empty && !frame.interpolated) {
-        // Do nothing
-        process = false;
+        process = false; 
     }
     else if(resultType == SpaceType::Surface) {
         // ------------------------------
@@ -539,10 +539,10 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         // ------------------------------     
         if(node == NULL) {
             node = allocator->allocate()->init(Vertex(frame.cube.getCenter()));   
-            wasCreated = true;
         }
 
         if(node!= NULL) {
+            isUpdate = true;
             node->vertex.position = SDF::getAveragePosition(resultSDF, frame.cube);
             node->vertex.normal = SDF::getNormalFromPosition(resultSDF, frame.cube, node->vertex.position);
             
@@ -551,6 +551,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             // ------------------------------
             if(isLeaf) {
                 if(shapeType != SpaceType::Empty) {
+                    isSimplified = true; // leaf nodes are always simplified (no children to differ from)
                     brushIndex = args.painter.paint(node->vertex, args.translate, args.scale);
                 }        
             } else {
@@ -590,46 +591,33 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                 }
                 node->setChildren(*allocator, childNodes);
             }
-            node->vertex.texIndex = brushIndex;
-            // Set chunk flag before final bookkeeping
-            if(node != NULL && process) {
-                node->setChunk(isChunk);
-            }
         }
-    } else {
-        isSimplified = true;
-        if(node != NULL && isChunk && node->getType() != resultType) {
-            args.changeHandler.onNodeDeleted(
-                OctreeNodeData(frame.level, node, frame.cube, check, nullptr)
-            );
-        }
-
-        // ------------------------------
-        // Delete nodes if result is Empty
-        // ------------------------------
-        ChildBlock * block = node ? node->getBlock(*allocator) : NULL;
-        if(block) {
-            node->clear(*allocator, block, frame.cube);
-        } 
-        /*if(resultType == SpaceType::Empty) {
-            node = node ? allocator->deallocate(node) : NULL;
-        }
-        */
-    }
+    } 
 
     if(node!= NULL && process) {
         node->setSDF(resultSDF);
         node->setType(resultType);
         node->setChunk(isChunk);
-        ++node->version;
         node->setSimplified(isSimplified);
         node->setLeaf(isLeaf);
+        node->vertex.texIndex = brushIndex;
+        ++node->version;
 
         // Notify change handler only after the node and all subnodes are up to date
         if (isChunk) {
-            args.changeHandler.onNodeAdded(
-                OctreeNodeData(frame.level, node, frame.cube, check, nullptr)
-            );
+            if(isUpdate) {
+                args.changeHandler.onNodeAdded(
+                    OctreeNodeData(frame.level, node, frame.cube, check, nullptr)
+                );
+            } else {
+                args.changeHandler.onNodeDeleted(
+                    OctreeNodeData(frame.level, node, frame.cube, check, nullptr)
+                );
+                ChildBlock * block = node ? node->getBlock(*allocator) : NULL;
+                if(block) {
+                    block = node->clear(*allocator, block, frame.cube);
+                } 
+            }
         }
     }
 
