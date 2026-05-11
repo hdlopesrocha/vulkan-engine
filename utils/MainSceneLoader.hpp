@@ -350,6 +350,18 @@ public:
         flush();
 
 
+        {
+            std::cout << "\topaqueLayer.add(box)"<< std::endl;
+            glm::vec3 min = glm::vec3(2500+128,256+128,-1000+128);
+            glm::vec3 len = glm::vec3(256.0f);
+            BoundingBox box = BoundingBox(min,min+len);
+            BoxDistanceFunction function = BoxDistanceFunction();
+            Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
+            WrappedBox wrappedFunction = WrappedBox(&function);
+            opaqueLayer.apply(SDF::opIntersection, &wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*4.0, simplifier, opaqueHandler);
+        }
+        flush();
+
         //brushContext->model.scale = glm::vec3(256.0f);
 
 
