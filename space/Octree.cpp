@@ -284,7 +284,7 @@ void Octree::handleQuadNodes(const BoundingCube &cube, uint level, const float s
                 if(childNode != NULL && childNode->getType() == SpaceType::Surface) {
                     vertices[i] = childNode->vertex;
                 } else {
-                    vertices[i].texIndex = DISCARD_BRUSH_INDEX;
+                    vertices[i].brushIndex = DISCARD_BRUSH_INDEX;
                 }
 			}
 	
@@ -446,10 +446,10 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             }
 
             float childSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
-            int childBrushIndex = node != NULL ? node->vertex.texIndex : frame.brushIndex;
+            int childBrushIndex = node != NULL ? node->vertex.brushIndex : frame.brushIndex;
 
             if(child != NULL) {
-                childBrushIndex = child->vertex.texIndex;
+                childBrushIndex = child->vertex.brushIndex;
                 SDF::copySDF(child->sdf, childSDF);
             } else {
                 SDF::getChildSDF(frame.sdf, i, childSDF);
@@ -547,7 +547,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                     bool childIsChunk = isChunkNode(childCube.getLengthX()) && sameCube(childCube, frame.chunkCube);
                            
                     if(child.process) {
-                        if(child.resultType != SpaceType::Surface) {
+                        if(child.resultType != SpaceType::Surface || childNode == NULL) {
                             if(childNode == NULL) {
                                 childNode = allocator->allocate()->init(Vertex(childCube.getCenter()));
                                 childResult[i].node = childNode;
