@@ -4,6 +4,7 @@ layout(location = 0) in vec3 inPosition;
 layout(location = 1) in uint inCornerIndex;
 
 layout(location = 0) out float fragSdf;
+layout(location = 1) flat out int fragBrushIndex;
 
 #include "includes/ubo.glsl"
 
@@ -11,6 +12,7 @@ struct InstanceData {
     mat4 model;
     vec4 sdf0;
     vec4 sdf1;
+    vec4 meta; // meta.x = brushIndex (stored as float)
 };
 
 layout(set = 1, binding = 0, std430) readonly buffer InstanceBuffer {
@@ -33,4 +35,5 @@ void main() {
     vec4 worldPos = inst.model * vec4(inPosition, 1.0);
     gl_Position = ubo.viewProjection * worldPos;
     fragSdf = getCornerSdf(inst, inCornerIndex);
+    fragBrushIndex = int(inst.meta.x + 0.5);
 }
