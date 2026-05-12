@@ -12,10 +12,9 @@ struct OctreeNodeFrame {
     uint level;
     float sdf[8];
     int brushIndex;
-    bool interpolated;
     BoundingCube chunkCube;
     OctreeNodeFrame();
     OctreeNodeFrame(const OctreeNodeFrame &t);
-    OctreeNodeFrame(OctreeNode* node, BoundingCube cube, uint level, float * sdf, int brushIndex, bool interpolated, BoundingCube chunkCube);
+    OctreeNodeFrame(OctreeNode* node, BoundingCube cube, uint level, float * sdf, int brushIndex, BoundingCube chunkCube);
 };
 
