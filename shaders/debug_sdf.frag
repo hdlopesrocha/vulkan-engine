@@ -6,12 +6,12 @@ layout(location = 1) flat in int fragBrushIndex;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    if (isnan(fragSdf) || isinf(fragSdf) || abs(fragSdf) > 10.0) {
+    if (abs(fragSdf) > 10.0) {
         discard;
     }
 
     float normalizedMagnitude = clamp(abs(fragSdf) / 10.0, 0.0, 1.0);
-    vec3 negativeColor = vec3(1.0, 0.0, 0.0);
+    vec3 negativeColor = vec3(0.0, 0.0, 0.0);
 
     // Palette copied from main.frag debug palette (16 colors)
     const int PALETTE_SIZE = 16;
