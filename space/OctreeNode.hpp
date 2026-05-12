@@ -38,6 +38,8 @@ public:
     bool isLeaf() const ;
     void setLeaf(bool value);
 
+    void setBrush(int brushIndex);
+    int getBrush() const;
     SpaceType getType() const ;
 
     void setSDF(float value[8]);

@@ -188,3 +188,9 @@ uint OctreeNode::exportSerialization(OctreeAllocator &allocator, std::vector<Oct
 	return index;
 }
 
+void OctreeNode::setBrush(int brushIndex) {
+	vertex.texIndex = brushIndex;
+}
+int OctreeNode::getBrush() const {
+	return this->vertex.texIndex;
+}

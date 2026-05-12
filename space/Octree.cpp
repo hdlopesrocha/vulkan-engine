@@ -513,19 +513,18 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     
     SpaceType shapeType = isLeaf ? SDF::eval(shapeSDF) : childToParent(childShapeSolid, childShapeEmpty);
     SpaceType resultType = isLeaf ? SDF::eval(resultSDF) : childToParent(childResultSolid, childResultEmpty);
-    bool isUpdate = false;
+    bool isResultSurface = resultType == SpaceType::Surface;
 
     if(shapeType == SpaceType::Empty && node != NULL) {
         process = false; 
     }
-    else if(resultType == SpaceType::Surface) {
+    else if(isResultSurface) {
         // Create nodes for surface results if they don't exist
         if(node == NULL) {
             node = allocator->allocate()->init(Vertex(frame.cube.getCenter()));   
         }
 
         if(node!= NULL) {
-            isUpdate = true;
             node->vertex.position = SDF::getAveragePosition(resultSDF, frame.cube);
             node->vertex.normal = SDF::getNormalFromPosition(resultSDF, frame.cube, node->vertex.position);
             // Simplification & Painting
@@ -558,6 +557,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                             childNode->setLeaf(true);
                             childNode->setSimplified(true);
                             childNode->setChunk(childIsChunk);
+                            childNode->setBrush(brushIndex);
                         }
                     }
                     childNodes[i] = allocator->nodeAllocator.getIndex(childNode);
@@ -576,14 +576,14 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         node->setChunk(isChunk);
         node->setSimplified(isSimplified);
         node->setLeaf(isLeaf);
-        node->vertex.texIndex = brushIndex;
+        node->setBrush(brushIndex);
         ++node->version;
 
         if (isChunk) {
             OctreeNodeData nodeData(frame.level, node, frame.cube, check, nullptr);
-            isUpdate ? args.changeHandler.onNodeAdded(nodeData) : args.changeHandler.onNodeDeleted(nodeData);
+            isResultSurface ? args.changeHandler.onNodeAdded(nodeData) : args.changeHandler.onNodeDeleted(nodeData);
         }
-        if(!isUpdate) {
+        if(!isResultSurface) {
             ChildBlock * block = node ? node->getBlock(*allocator) : NULL;
             if(block) {
                 block = node->clear(*allocator, block, frame.cube);
