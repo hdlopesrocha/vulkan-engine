@@ -93,7 +93,7 @@ A unified descriptor layout with fixed bindings used across all passes:
 
 ### Texture Arrays
 
-All scene textures are stored as `VK_IMAGE_VIEW_TYPE_2D_ARRAY`. The `TextureArrayManager` handles allocation, per-layer staging uploads, and layout tracking. Barriers specify `baseArrayLayer` and `layerCount` precisely — no blanket all-layer barriers unless necessary. Fragment shaders select the active layer through a `texIndex` vertex attribute.
+All scene textures are stored as `VK_IMAGE_VIEW_TYPE_2D_ARRAY`. The `TextureArrayManager` handles allocation, per-layer staging uploads, and layout tracking. Barriers specify `baseArrayLayer` and `layerCount` precisely — no blanket all-layer barriers unless necessary. Fragment shaders select the active layer through a `brushIndex` vertex attribute.
 
 ### Indirect Rendering and GPU Frustum Culling
 
