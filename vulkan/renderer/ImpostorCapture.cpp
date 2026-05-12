@@ -301,6 +301,12 @@ void ImpostorCapture::capture(VulkanApp* app,
             renderingInfo.pColorAttachments = colorAtts;
             renderingInfo.pDepthAttachment = &depthAtt;
 
+            // Defensive: ensure descriptor sets are allocated before starting render
+            if (uboDescSet == VK_NULL_HANDLE || texDescSet == VK_NULL_HANDLE) {
+                std::cerr << "[ImpostorCapture] descriptor sets not ready, skipping capture for this view." << std::endl;
+                continue;
+            }
+
             vkCmdBeginRendering(cb, &renderingInfo);
 
             VkViewport vp{ 0.0f, 0.0f, float(TEX_SIZE), float(TEX_SIZE), 0.0f, 1.0f };

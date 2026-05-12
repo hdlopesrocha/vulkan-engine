@@ -420,6 +420,16 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         return;
     }
 
+    // Defensive checks: ensure both descriptor sets are valid before binding
+    if (shadowDescriptorSet == VK_NULL_HANDLE) {
+        std::cerr << "[VEGETATION SHADOW DRAW ERROR] shadowDescriptorSet is VK_NULL_HANDLE, skipping draw." << std::endl;
+        return;
+    }
+    if (vegDescriptorSet == VK_NULL_HANDLE) {
+        std::cerr << "[VEGETATION SHADOW DRAW ERROR] vegDescriptorSet is VK_NULL_HANDLE, skipping draw." << std::endl;
+        return;
+    }
+
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
 
     // Bind the shadow descriptor set at set 0 and vegetation descriptor set at set 1
@@ -667,6 +677,10 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
     VkDescriptorSet globalSet = app->getMainDescriptorSet();
     if (globalSet == VK_NULL_HANDLE) {
         std::cerr << "[VEGETATION DRAW ERROR] globalSet (main descriptor set) is VK_NULL_HANDLE!" << std::endl;
+        return;
+    }
+    if (vegDescriptorSet == VK_NULL_HANDLE) {
+        std::cerr << "[VEGETATION DRAW ERROR] vegDescriptorSet is VK_NULL_HANDLE, skipping draw." << std::endl;
         return;
     }
     VkDescriptorSet sets[2] = { globalSet, vegDescriptorSet };
