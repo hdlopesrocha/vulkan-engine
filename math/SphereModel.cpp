@@ -2,7 +2,7 @@
 #include <vector>
 #include <cmath>
 
-SphereModel::SphereModel(float radius, int longitudes, int latitudes, float texIndex) : Geometry() {
+SphereModel::SphereModel(float radius, int longitudes, int latitudes, float brushIndex) : Geometry() {
 
     for (int y = 0; y <= latitudes; ++y) {
         for (int x = 0; x <= longitudes; ++x) {
@@ -25,7 +25,7 @@ SphereModel::SphereModel(float radius, int longitudes, int latitudes, float texI
             vert.color = glm::vec3(1.0f);
             vert.texCoord = glm::vec2(u, v);
             vert.normal = glm::vec3(px / radius, py / radius, pz / radius);
-            vert.texIndex = static_cast<int>(texIndex);
+            vert.brushIndex = static_cast<int>(brushIndex);
             vertices.push_back(vert);
         }
     }

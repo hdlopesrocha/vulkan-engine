@@ -33,28 +33,28 @@ public:
     glm::vec2 texCoord;
     glm::vec3 normal;
     // per-vertex tangent removed: compute in fragment shader for triplanar mapping
-    int texIndex;
+    int brushIndex;
     int _pad0;
 
-    Vertex(glm::vec3 pos, glm::vec3 normal, glm::vec2 texCoord, int texIndex)
-        : position(pos), color(glm::vec3(1.0f)), texCoord(texCoord), normal(normal), texIndex(texIndex), _pad0(0) {
+    Vertex(glm::vec3 pos, glm::vec3 normal, glm::vec2 texCoord, int brushIndex)
+        : position(pos), color(glm::vec3(1.0f)), texCoord(texCoord), normal(normal), brushIndex(brushIndex), _pad0(0) {
     }
 
     // Compatibility constructor to allow aggregate-style initialization used across the codebase
-    Vertex(std::array<float,3> posArr, std::array<float,3> colorArr, std::array<float,2> texArr, std::array<float,3> normalArr, float texIndexF)
+    Vertex(std::array<float,3> posArr, std::array<float,3> colorArr, std::array<float,2> texArr, std::array<float,3> normalArr, float brushIndexF)
         : position(posArr[0], posArr[1], posArr[2]),
           color(colorArr[0], colorArr[1], colorArr[2]),
           texCoord(texArr[0], texArr[1]),
           normal(normalArr[0], normalArr[1], normalArr[2]),
-          texIndex(static_cast<int>(texIndexF)), _pad0(0) {}
+          brushIndex(static_cast<int>(brushIndexF)), _pad0(0) {}
 
-    Vertex() : position(glm::vec3(0.0f)), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), texIndex(0), _pad0(0) {}
+    Vertex() : position(glm::vec3(0.0f)), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), _pad0(0) {}
 
-    Vertex(glm::vec3 pos) : position(pos), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), texIndex(0), _pad0(0) {}
+    Vertex(glm::vec3 pos) : position(pos), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), _pad0(0) {}
 
     bool operator<(const Vertex& other) const {
-           return std::tie(position.x, position.y, position.z, normal.x, normal.y, normal.z, texCoord.x, texCoord.y, texIndex)
-               < std::tie(other.position.x, other.position.y, other.position.z, other.normal.x, other.normal.y, other.normal.z, other.texCoord.x, other.texCoord.y, other.texIndex);
+           return std::tie(position.x, position.y, position.z, normal.x, normal.y, normal.z, texCoord.x, texCoord.y, brushIndex)
+               < std::tie(other.position.x, other.position.y, other.position.z, other.normal.x, other.normal.y, other.normal.z, other.texCoord.x, other.texCoord.y, other.brushIndex);
     }
 
     bool operator==(const Vertex& o) const {
@@ -68,7 +68,7 @@ public:
 
                /* tangent removed */
 
-               texIndex == o.texIndex;
+               brushIndex == o.brushIndex;
     }
 
     bool operator!=(const Vertex& other) const {

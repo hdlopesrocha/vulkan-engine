@@ -8,7 +8,7 @@ struct VertexHasher {
         h = hashCombine(h, std::hash<glm::vec3>{}(v.position));
         h = hashCombine(h, std::hash<glm::vec3>{}(v.normal));
         h = hashCombine(h, std::hash<glm::vec2>{}(v.texCoord));
-        h = hashCombine(h, std::hash<int>{}(v.texIndex));
+        h = hashCombine(h, std::hash<int>{}(v.brushIndex));
         return h;
     }
 };
