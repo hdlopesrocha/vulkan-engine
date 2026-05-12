@@ -599,7 +599,7 @@ public:
         // Sky is now rendered inside the solid pass above, before solid geometry.
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
-        sceneRenderer->mainPass(this, commandBuffer, frameIdx, waterEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.wireframeMode,
+        sceneRenderer->mainPass(this, commandBuffer, frameIdx, waterEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.renderSolid, settings.wireframeMode,
             viewProj, uboStatic, true, false, true, 0, 0.0f, 0.0f);
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
@@ -692,6 +692,13 @@ public:
             VkImageView wBack = (sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
             VkImageView wCube = (sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
             sceneRenderer->waterRenderer->updateSceneTexturesBinding(this, wSceneColor, wSceneDepth, frameIdx, wSky, wBack, wCube);
+        }
+
+        // If water is disabled, clear its offscreen targets here (outside any active
+        // dynamic rendering instance) so the post-process compositor won't sample
+        // stale content.
+        if (!waterEnabled && sceneRenderer && sceneRenderer->waterRenderer) {
+            sceneRenderer->waterRenderer->clearRenderTargets(this, commandBuffer, frameIdx);
         }
 
         // Launch asynchronous recording+submit for independent offscreen passes
@@ -1213,6 +1220,7 @@ public:
         // Composite offscreen scene + water into the swapchain
         if (sceneRenderer && sceneRenderer->postProcessRenderer) {
             VkImageView skyViewPP = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
+            // Post-process will sample water targets; they are cleared in preRenderPass when disabled
             sceneRenderer->postProcessRenderer->render(
                 this,
                 commandBuffer,
