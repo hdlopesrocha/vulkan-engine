@@ -380,7 +380,7 @@ void Octree::apply(
     *shapeCounter = 0;
     ShapeArgs args = ShapeArgs(operation, function, painter, model, translate, scale, simplifier, changeHandler, minSize);	
   	expand(args);
-    OctreeNodeFrame frame = OctreeNodeFrame(root, *this, 0, root->sdf, DISCARD_BRUSH_INDEX, false, *this);
+    OctreeNodeFrame frame = OctreeNodeFrame(root, *this, 0, root->sdf, DISCARD_BRUSH_INDEX, *this);
     ThreadContext localChunkContext = ThreadContext(*this);
     shape(frame, args, &localChunkContext, ContainmentType::Intersects);
     std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << std::endl; 
@@ -420,7 +420,6 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     };
 
     float length = frame.cube.getLengthX();
-    // Treat node as chunk root when it hits the chunk size heuristic or matches the tracked chunk cube
     bool isChunk = isChunkNode(length) || sameCube(frame.cube, frame.chunkCube);
     bool isShapeLeaf = length <= args.minSize;
     bool isNodeLeaf = node == NULL || node->isLeaf();
@@ -439,10 +438,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             node->getChildren(*allocator, children);
         }
 
-        // --------------------------------
         // Iterate nodes and spawn threads for child processing
-        // --------------------------------
-
         for (uint i = 0; i < 8; ++i) {
             OctreeNode * child = children[i];
             if(node!=NULL && child == node) {
@@ -451,13 +447,11 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
 
             float childSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
             int childBrushIndex = node != NULL ? node->vertex.texIndex : frame.brushIndex;
-            bool isChildInterpolated = frame.interpolated;
 
             if(child != NULL) {
                 childBrushIndex = child->vertex.texIndex;
                 SDF::copySDF(child->sdf, childSDF);
             } else {
-                isChildInterpolated = true;
                 SDF::getChildSDF(frame.sdf, i, childSDF);
             }
             BoundingCube childCube = frame.cube.getChild(i);
@@ -467,8 +461,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                 frame.level + 1, 
                 childSDF,
                 childBrushIndex,
-                isChildInterpolated,
-                isChildChunk ? childCube : frame.chunkCube // latch chunk cube at first chunk-sized node
+                isChildChunk ? childCube : frame.chunkCube 
             );
 
             if(isChildThread) {
@@ -484,17 +477,12 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
 
             (*shapeCounter)++;
         }
-
-        // Join spawned threads before continuing (ensures neighbors available for tessellation)
         for(std::thread &t : threads) {
             if(t.joinable()) t.join();
         }
-    } // end if (!isLeaf)
+    } 
  
-    // ------------------------------
     // Inherit SDFs from children
-    // ------------------------------
-
     float shapeSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
     float resultSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
     bool childResultSolid = true;
@@ -508,7 +496,6 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     if(!isLeaf) {
         for(uint i = 0; i < 8; ++i) {
             NodeOperationResult & result = childResult[i];   
-
             childResultEmpty &= result.resultType == SpaceType::Empty;
             childResultSolid &= result.resultType == SpaceType::Solid;
             childShapeEmpty &= result.shapeType == SpaceType::Empty;
@@ -521,22 +508,18 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         }
     }
 
-    // ------------------------------
     // Build SDFs based on inheritance/execution
-    // ------------------------------
     buildSDF(args, frame, shapeSDF, resultSDF, threadContext);
     
     SpaceType shapeType = isLeaf ? SDF::eval(shapeSDF) : childToParent(childShapeSolid, childShapeEmpty);
     SpaceType resultType = isLeaf ? SDF::eval(resultSDF) : childToParent(childResultSolid, childResultEmpty);
     bool isUpdate = false;
 
-    if(shapeType == SpaceType::Empty && !frame.interpolated) {
+    if(shapeType == SpaceType::Empty && node != NULL) {
         process = false; 
     }
     else if(resultType == SpaceType::Surface) {
-        // ------------------------------
-        // Created nodes if the shape is not Empty
-        // ------------------------------     
+        // Create nodes for surface results if they don't exist
         if(node == NULL) {
             node = allocator->allocate()->init(Vertex(frame.cube.getCenter()));   
         }
@@ -545,13 +528,10 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             isUpdate = true;
             node->vertex.position = SDF::getAveragePosition(resultSDF, frame.cube);
             node->vertex.normal = SDF::getNormalFromPosition(resultSDF, frame.cube, node->vertex.position);
-            
-            // ------------------------------
             // Simplification & Painting
-            // ------------------------------
             if(isLeaf) {
                 if(shapeType != SpaceType::Empty) {
-                    isSimplified = true; // leaf nodes are always simplified (no children to differ from)
+                    isSimplified = true; 
                     brushIndex = args.painter.paint(node->vertex, args.translate, args.scale);
                 }        
             } else {
@@ -560,10 +540,6 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                     isSimplified = simplificationResult.first;
                     brushIndex = simplificationResult.second;
                 }
-                // ------------------------------
-                // Created at least one solid child
-                // ------------------------------
-                // Children belong to the chunk if they sit inside the same chunk cube
                 uint childNodes[8] = {UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX};
                 for(uint i =0 ; i < 8 ; ++i) {
                     NodeOperationResult & child = childResult[i];
@@ -603,21 +579,17 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         node->vertex.texIndex = brushIndex;
         ++node->version;
 
-        // Notify change handler only after the node and all subnodes are up to date
         if (isChunk) {
             OctreeNodeData nodeData(frame.level, node, frame.cube, check, nullptr);
             isUpdate ? args.changeHandler.onNodeAdded(nodeData) : args.changeHandler.onNodeDeleted(nodeData);
         }
-
         if(!isUpdate) {
             ChildBlock * block = node ? node->getBlock(*allocator) : NULL;
             if(block) {
                 block = node->clear(*allocator, block, frame.cube);
             } 
         }
-        
     }
-
     return NodeOperationResult(node, shapeType, shapeSDF, resultType, resultSDF, process, isSimplified, brushIndex);
 }
 
