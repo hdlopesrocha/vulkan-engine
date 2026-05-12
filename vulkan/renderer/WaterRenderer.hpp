@@ -108,6 +108,11 @@ public:
     // are not present; SceneRenderer should pass them when available.
     void updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView = VK_NULL_HANDLE, VkImageView backFaceDepthView = VK_NULL_HANDLE, VkImageView cube360View = VK_NULL_HANDLE);
 
+    // Clear per-frame render targets (color/depth) into default values.
+    // Call this each frame when water rendering is disabled to avoid sampling
+    // stale content from previous frames.
+    void clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex);
+
     // Solid 360° cubemap reflection and back-face rendering are owned by SceneRenderer.
     // SceneRenderer must call `updateSceneTexturesBinding` to provide any required
     // views (back-face depth, cubemap/equirect) to WaterRenderer.
