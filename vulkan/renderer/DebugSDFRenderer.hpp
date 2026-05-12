@@ -14,6 +14,7 @@ public:
     struct CubeSDF {
         BoundingCube cube;
         std::array<float, 8> sdf;
+        int brushIndex;
     };
 
     DebugSDFRenderer();

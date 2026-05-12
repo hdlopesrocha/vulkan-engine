@@ -61,6 +61,7 @@ void collectLeafSDFCubes(OctreeNode* node, const BoundingCube& cube, OctreeAlloc
         for (size_t i = 0; i < debugCube.sdf.size(); ++i) {
             debugCube.sdf[i] = node->sdf[i];
         }
+        debugCube.brushIndex = node->vertex.texIndex;
         if (hasDrawableSDFFace(debugCube.sdf)) {
             out.push_back(debugCube);
         }

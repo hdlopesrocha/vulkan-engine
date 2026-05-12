@@ -129,7 +129,7 @@ void DebugSDFRenderer::createDescriptorSet(VulkanApp* app) {
 
     instanceBufferCapacity = 128;
     instanceBuffer = app->createBuffer(
-        instanceBufferCapacity * (sizeof(glm::mat4) + sizeof(glm::vec4) * 2),
+        instanceBufferCapacity * (sizeof(glm::mat4) + sizeof(glm::vec4) * 3),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
@@ -158,13 +158,14 @@ void DebugSDFRenderer::updateInstanceBuffer(VulkanApp* app) {
         glm::mat4 model;
         glm::vec4 sdf0;
         glm::vec4 sdf1;
+        glm::vec4 meta; // meta.x = brushIndex
     };
 
     if (activeCubes.size() > instanceBufferCapacity) {
         instanceBuffer = {};
         instanceBufferCapacity = static_cast<uint32_t>(activeCubes.size() * 2);
         instanceBuffer = app->createBuffer(
-            instanceBufferCapacity * sizeof(InstanceData),
+            instanceBufferCapacity * (sizeof(glm::mat4) + sizeof(glm::vec4) * 3),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
         );
@@ -194,6 +195,7 @@ void DebugSDFRenderer::updateInstanceBuffer(VulkanApp* app) {
                    * glm::scale(glm::mat4(1.0f), cube.cube.getLength());
         inst.sdf0 = glm::vec4(cube.sdf[0], cube.sdf[1], cube.sdf[2], cube.sdf[3]);
         inst.sdf1 = glm::vec4(cube.sdf[4], cube.sdf[5], cube.sdf[6], cube.sdf[7]);
+        inst.meta = glm::vec4(static_cast<float>(cube.brushIndex), 0.0f, 0.0f, 0.0f);
         instanceData.push_back(inst);
     }
 
