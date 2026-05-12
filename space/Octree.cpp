@@ -554,7 +554,6 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                             }
                             childNode->setType(child.resultType);
                             childNode->setSDF(child.resultSDF);
-                            childNode->setLeaf(true);
                             childNode->setSimplified(true);
                             childNode->setChunk(childIsChunk);
                             childNode->setBrush(brushIndex);
@@ -575,7 +574,6 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         node->setType(resultType);
         node->setChunk(isChunk);
         node->setSimplified(isSimplified);
-        node->setLeaf(isLeaf);
         node->setBrush(brushIndex);
         ++node->version;
 

@@ -54,8 +54,7 @@ void collectLeafSDFCubes(OctreeNode* node, const BoundingCube& cube, OctreeAlloc
                          std::vector<DebugSDFRenderer::CubeSDF>& out) {
     if (!node) return;
 
-    const bool noChildren = node->blockId == UINT_MAX;
-    if (node->isLeaf() || noChildren) {
+    if (node->isSimplified()) {
         DebugSDFRenderer::CubeSDF debugCube{};
         debugCube.cube = cube;
         for (size_t i = 0; i < debugCube.sdf.size(); ++i) {
@@ -268,7 +267,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
     }
 }
 
-void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, bool hasWater, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool wireframeEnabled, const glm::mat4 &viewProj,
+void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, bool hasWater, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, bool renderSolid, bool wireframeEnabled, const glm::mat4 &viewProj,
                   const UniformObject &uboStatic, bool normalMappingEnabled, bool tessellationEnabled, bool shadowsEnabled, int debugMode, float triplanarThreshold, float triplanarExponent) {
     if (commandBuffer == VK_NULL_HANDLE) {
         std::cerr << "[SceneRenderer::mainPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
@@ -280,10 +279,16 @@ void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uin
                   << " skyRenderer=" << (void*)skyRenderer.get() << std::endl;
         printedOnce = true;
     }
-    if (wireframeEnabled && solidWireframe) {
-        solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, solidRenderer->getIndirectRenderer());
+    if (renderSolid) {
+        if (wireframeEnabled && solidWireframe) {
+            solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, solidRenderer->getIndirectRenderer());
+        } else {
+            solidRenderer->render(commandBuffer, app, perTextureDescriptorSet);
+        }
     } else {
-        solidRenderer->render(commandBuffer, app, perTextureDescriptorSet);
+        // Solid rendering is disabled by settings; skip drawing solid meshes.
+        // The render pass is still active (beginPass was called by the application)
+        // so sky and other overlays can still be rendered into the same pass.
     }
 }
 

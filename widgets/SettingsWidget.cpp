@@ -63,6 +63,10 @@ void SettingsWidget::render() {
         ImGui::Separator();
             ImGui::Text("Rendering");
             ImGui::Separator();
+            if (ImGui::Checkbox("Render Solid", &settings.renderSolid)) {
+                // toggled
+            }
+            ImGuiHelpers::SetTooltipIfHovered("Toggle rendering of the main solid scene (terrain/meshes)");
             if (ImGui::Checkbox("Render Water", &settings.waterEnabled)) {
                 // toggled
             }

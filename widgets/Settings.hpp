@@ -35,6 +35,8 @@ public:
 
     // Global toggles
     bool enableShadows = true;
+    // Toggle rendering of the main solid scene (terrain/meshes)
+    bool renderSolid = true;
     bool waterEnabled = true;
     bool vegetationEnabled = true;
     bool wireframeMode = false;
