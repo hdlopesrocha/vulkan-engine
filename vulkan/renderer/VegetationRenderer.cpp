@@ -254,7 +254,7 @@ void VegetationRenderer::init(VulkanApp* app) {
             {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},   // inPosition
             {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},     // inNormal
             {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)},      // inTexCoord
-            {3, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex)},           // inTexIndex
+            {3, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex)},           // inBrushIndex
             {4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}                          // instanceData (xyz=pos, w=billboardIndex)
         },
         setLayouts,
@@ -285,7 +285,7 @@ void VegetationRenderer::init(VulkanApp* app) {
             {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
             {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
             {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)},
-            {3, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex)},
+            {3, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex)},
             {4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}
         },
         setLayouts,
@@ -321,7 +321,7 @@ void VegetationRenderer::init(VulkanApp* app) {
         baseVertex.position = glm::vec3(0.0f, 0.0f, 0.0f);
         baseVertex.normal = glm::vec3(0.0f, 1.0f, 0.0f);
         baseVertex.texCoord = glm::vec2(0.5f, 0.5f);
-        baseVertex.texIndex = 0;
+        baseVertex.brushIndex = 0;
         std::vector<Vertex> baseVerts = { baseVertex };
         billboardVBO.vertexBuffer = app->createVertexBuffer(baseVerts);
         billboardVBO.indexCount = 0;
@@ -615,7 +615,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView albedoArray
             { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, position) },
             { 1, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, normal)   },
             { 2, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
-            { 3, 0, VK_FORMAT_R32_SINT,            (uint32_t)offsetof(Vertex, texIndex) },
+            { 3, 0, VK_FORMAT_R32_SINT,            (uint32_t)offsetof(Vertex, brushIndex) },
             { 4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                                    },
         },
         impSetLayouts,

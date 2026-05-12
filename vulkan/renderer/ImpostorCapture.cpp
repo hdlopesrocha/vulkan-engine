@@ -608,7 +608,7 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     attrs[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, position) };
     attrs[1] = { 1, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, normal)   };
     attrs[2] = { 2, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) };
-    attrs[3] = { 3, 0, VK_FORMAT_R32_SINT,            (uint32_t)offsetof(Vertex, texIndex) };
+    attrs[3] = { 3, 0, VK_FORMAT_R32_SINT,            (uint32_t)offsetof(Vertex, brushIndex) };
     attrs[4] = { 4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                                    };
 
     VkPipelineVertexInputStateCreateInfo vertexInput{};
@@ -733,7 +733,7 @@ void ImpostorCapture::createCaptureBuffers(VulkanApp* app) {
     v.position = glm::vec3(0.0f);
     v.normal   = glm::vec3(0.0f, 1.0f, 0.0f);
     v.texCoord = glm::vec2(0.5f);
-    v.texIndex = 0;
+    v.brushIndex = 0;
     Buffer vb = app->createDeviceLocalBuffer(&v, sizeof(Vertex),
                                               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     captureVertBuf = vb.buffer;

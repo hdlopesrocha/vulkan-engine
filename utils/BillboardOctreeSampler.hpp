@@ -8,6 +8,6 @@
 // Utility to sample billboard positions from an octree where brushIndex == 4 (grass)
 class BillboardOctreeSampler {
 public:
-    // Collects positions of all leaf nodes in the octree where texIndex == 4 (grass)
+    // Collects positions of all leaf nodes in the octree where brushIndex == 4 (grass)
     static std::vector<glm::vec3> collectGrassPositions(Octree& octree);
 };

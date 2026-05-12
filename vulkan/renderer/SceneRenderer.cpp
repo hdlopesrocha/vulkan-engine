@@ -61,7 +61,7 @@ void collectLeafSDFCubes(OctreeNode* node, const BoundingCube& cube, OctreeAlloc
         for (size_t i = 0; i < debugCube.sdf.size(); ++i) {
             debugCube.sdf[i] = node->sdf[i];
         }
-        debugCube.brushIndex = node->vertex.texIndex;
+        debugCube.brushIndex = node->vertex.brushIndex;
         if (hasDrawableSDFFace(debugCube.sdf)) {
             out.push_back(debugCube);
         }
@@ -1007,9 +1007,9 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
                     const uint32_t i2 = geom.indices[i + 2];
                     if (i0 >= geom.vertices.size() || i1 >= geom.vertices.size() || i2 >= geom.vertices.size()) continue;
                     const bool hasGrass =
-                        geom.vertices[i0].texIndex == kGrassBrushIndex ||
-                        geom.vertices[i1].texIndex == kGrassBrushIndex ||
-                        geom.vertices[i2].texIndex == kGrassBrushIndex;
+                        geom.vertices[i0].brushIndex == kGrassBrushIndex ||
+                        geom.vertices[i1].brushIndex == kGrassBrushIndex ||
+                        geom.vertices[i2].brushIndex == kGrassBrushIndex;
                     if (!hasGrass) continue;
                     const glm::vec3& v0 = geom.vertices[i0].position;
                     const glm::vec3& v1 = geom.vertices[i1].position;

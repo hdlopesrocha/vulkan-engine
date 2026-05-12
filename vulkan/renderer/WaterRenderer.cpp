@@ -492,7 +492,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     attrDescs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)};
     attrDescs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)};
     attrDescs[3] = {3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)};
-    attrDescs[4] = {5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, texIndex)};
+    attrDescs[4] = {5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex)};
 
     // --- Create pipeline layout manually ---
     VkPipelineLayoutCreateInfo waterLayoutInfo{};

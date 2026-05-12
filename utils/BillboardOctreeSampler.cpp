@@ -10,7 +10,7 @@ public:
         return params.node && params.node->isLeaf();
     }
     void before(const Octree &tree, OctreeNodeData &params) override {
-        if (params.node && params.node->vertex.texIndex == 4) {
+        if (params.node && params.node->vertex.brushIndex == 4) {
             positions.push_back(params.node->vertex.position);
         }
     }
