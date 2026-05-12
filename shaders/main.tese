@@ -9,7 +9,7 @@ layout(location = 0) in vec3 tc_fragColor[];
 layout(location = 1) in vec2 tc_fragUV[];
 layout(location = 2) in vec3 tc_fragNormal[]; // keep for compatibility (world-space if provided)
 layout(location = 4) in vec3 tc_fragPosWorld[]; // world pos passed through by TCS (not used for displacement)
-layout(location = 5) flat in ivec3 tc_fragTexIndex[];
+layout(location = 5) flat in ivec3 tc_fragBrushIndex[];
 layout(location = 7) in vec3 tc_fragLocalPos[]; // local-space position
 layout(location = 8) in vec3 tc_fragLocalNormal[];
 layout(location = 11) in vec3 tc_fragTexWeights[];
@@ -44,7 +44,7 @@ void main() {
     vec3 localPos = tc_fragLocalPos[0] * bc.x + tc_fragLocalPos[1] * bc.y + tc_fragLocalPos[2] * bc.z;
     vec3 localNormal = normalize(tc_fragLocalNormal[0] * bc.x + tc_fragLocalNormal[1] * bc.y + tc_fragLocalNormal[2] * bc.z);
     vec2 uv = tc_fragUV[0] * bc.x + tc_fragUV[1] * bc.y + tc_fragUV[2] * bc.z;
-    ivec3 texIndices = tc_fragTexIndex[0];
+    ivec3 texIndices = tc_fragBrushIndex[0];
     vec3 weights = tc_fragTexWeights[0] * bc.x + tc_fragTexWeights[1] * bc.y + tc_fragTexWeights[2] * bc.z;
 
 

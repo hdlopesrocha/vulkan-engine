@@ -3,8 +3,8 @@
 // Compute triplanar UVs from world-space position using triplanarParams.x/y as scale
 // Compute triplanar UVs from world-space position using triplanarParams.x/y as scale.
 // Uses the geometric normal sign to match CPU-side orientation.
-void computeTriplanarUVs(in vec3 fragPosWorld, in int texIndex, in vec3 geomN, out vec2 uvX, out vec2 uvY, out vec2 uvZ) {
-    vec2 scale = vec2(materials[texIndex].triplanarParams.x, materials[texIndex].triplanarParams.y);
+void computeTriplanarUVs(in vec3 fragPosWorld, in int brushIndex, in vec3 geomN, out vec2 uvX, out vec2 uvY, out vec2 uvZ) {
+    vec2 scale = vec2(materials[brushIndex].triplanarParams.x, materials[brushIndex].triplanarParams.y);
     // X projection -> sample YZ. Match CPU mapping: positive X => (-z, -y), negative X => (z, -y)
     if (geomN.x >= 0.0) uvX = vec2(-fragPosWorld.z, -fragPosWorld.y) * scale;
     else               uvX = vec2( fragPosWorld.z, -fragPosWorld.y) * scale;
@@ -19,12 +19,12 @@ void computeTriplanarUVs(in vec3 fragPosWorld, in int texIndex, in vec3 geomN, o
 }
 
 // Sample albedo using triplanar blending weights
-vec3 computeTriplanarAlbedo(in vec3 fragPosWorld, in vec3 triW, in int texIndex, in vec3 geomN) {
+vec3 computeTriplanarAlbedo(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN) {
     vec2 uvX, uvY, uvZ;
-    computeTriplanarUVs(fragPosWorld, texIndex, geomN, uvX, uvY, uvZ);
-    vec3 cX = triW.x > 0.0 ? texture(albedoArray, vec3(uvX, float(texIndex))).rgb : vec3(0.0);
-    vec3 cY = triW.y > 0.0 ? texture(albedoArray, vec3(uvY, float(texIndex))).rgb : vec3(0.0);
-    vec3 cZ = triW.z > 0.0 ? texture(albedoArray, vec3(uvZ, float(texIndex))).rgb : vec3(0.0);
+    computeTriplanarUVs(fragPosWorld, brushIndex, geomN, uvX, uvY, uvZ);
+    vec3 cX = triW.x > 0.0 ? texture(albedoArray, vec3(uvX, float(brushIndex))).rgb : vec3(0.0);
+    vec3 cY = triW.y > 0.0 ? texture(albedoArray, vec3(uvY, float(brushIndex))).rgb : vec3(0.0);
+    vec3 cZ = triW.z > 0.0 ? texture(albedoArray, vec3(uvZ, float(brushIndex))).rgb : vec3(0.0);
    
     return cX * triW.x + cY * triW.y + cZ * triW.z;
 }
@@ -38,9 +38,9 @@ vec3 reorientNormal(in vec3 blendedWorld, in vec3 geomN) {
 }
 
 // Helper: compute normal from a single projection with given tangent basis
-vec3 computeProjectionNormal(vec2 uv, int texIndex, vec3 surfaceN) {
-    vec3 nSample = texture(normalArray, vec3(uv, float(texIndex))).rgb * 2.0 - 1.0;
-    nSample = normalize(applyNormalConvention(nSample, materials[texIndex].normalParams));
+vec3 computeProjectionNormal(vec2 uv, int brushIndex, vec3 surfaceN) {
+    vec3 nSample = texture(normalArray, vec3(uv, float(brushIndex))).rgb * 2.0 - 1.0;
+    nSample = normalize(applyNormalConvention(nSample, materials[brushIndex].normalParams));
     vec3 axis = surfaceN;
     vec3 up = abs(axis.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 T = normalize(cross(up, axis));
@@ -50,9 +50,9 @@ vec3 computeProjectionNormal(vec2 uv, int texIndex, vec3 surfaceN) {
 
 // Compute triplanar normal by sampling the normal map for each projection and transforming each to world-space.
 // `geomN` is the geometric world-space normal (for UV computation), `surfaceN` is the smooth interpolated normal (TBN base).
-vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex, in vec3 geomN, in vec3 surfaceN) {
+vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN, in vec3 surfaceN) {
     vec2 uvX, uvY, uvZ;
-    computeTriplanarUVs(fragPosWorld, texIndex, geomN, uvX, uvY, uvZ);
+    computeTriplanarUVs(fragPosWorld, brushIndex, geomN, uvX, uvY, uvZ);
     vec3 nmX = vec3(0.0);
     vec3 nmY = vec3(0.0);
     vec3 nmZ = vec3(0.0);
@@ -63,17 +63,17 @@ vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int texIndex,
 
     // X projection
     if (triW.x > 0.0) {
-        nmX = computeProjectionNormal(uvX, texIndex, surfaceN);
+        nmX = computeProjectionNormal(uvX, brushIndex, surfaceN);
     }
 
     // Y projection
     if (triW.y > 0.0) {
-        nmY = computeProjectionNormal(uvY, texIndex, surfaceN);
+        nmY = computeProjectionNormal(uvY, brushIndex, surfaceN);
     }
 
     // Z projection
     if (triW.z > 0.0) {
-        nmZ = computeProjectionNormal(uvZ, texIndex, surfaceN);
+        nmZ = computeProjectionNormal(uvZ, brushIndex, surfaceN);
     }
 
     // Blend the per-projection world-space normals using the normalized triW weights

@@ -10,7 +10,7 @@ layout(location = 3) in vec4 fragPosClip;  // clip-space position for scene samp
 layout(location = 4) in vec3 fragDebug;   // debug visual (displacement)
 layout(location = 5) in vec3 fragPosWorld;  // world-space position for shadow cascades
 layout(location = 6) in vec4 fragPosLightSpace; // light-space pos (cascade 0)
-layout(location = 7) flat in int fragTexIndex;
+layout(location = 7) flat in int fragBrushIndex;
 
 layout(location = 0) out vec4 outColor;
 
@@ -44,8 +44,8 @@ float linearizeDepth(float depth) {
 #include "includes/voronoi.glsl"
 
 void main() {
-    // Get water parameters from SSBO indexed by fragment texIndex
-    WaterParamsGPU wp = waterParams[fragTexIndex];
+    // Get water parameters from SSBO indexed by fragment brushIndex
+    WaterParamsGPU wp = waterParams[fragBrushIndex];
     float time = waterRenderUBO.timeParams.x;
 
     // Water rendering parameters from selected water params

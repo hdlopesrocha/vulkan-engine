@@ -3,11 +3,11 @@ layout(points) in;
 layout(triangle_strip, max_vertices = 24) out;
 
 layout(location = 0) in vec3 fragTexCoordIn[];
-layout(location = 1) flat in int fragTexIndexIn[];
+layout(location = 1) flat in int fragBrushIndexIn[];
 layout(location = 2) in vec3 fragWorldPosIn[];
 
 layout(location = 0) out vec3 inTexCoord;
-layout(location = 1) flat out int inTexIndex;
+layout(location = 1) flat out int inBrushIndex;
 layout(location = 2) out      vec3 outWorldPos;    // interpolated world-space vertex position
 layout(location = 3) flat out vec3 outPlaneNormal; // face normal of the billboard plane
 layout(location = 4) flat out vec3 outTangentWS;   // tangent along billboard width
@@ -78,7 +78,7 @@ vec3 applyWindSkew(vec3 basePos, vec3 right, float heightFactor) {
 void main() {
     // Sentinel: w=-1 means this instance was skipped by the compute shader (slope filter).
     // Discard rather than rendering garbage geometry from uninitialized memory.
-    if (fragTexIndexIn[0] < 0) return;
+    if (fragBrushIndexIn[0] < 0) return;
 
     vec3 worldPos = fragWorldPosIn[0];
     vec3 camPos   = ubo.viewPos.xyz;
@@ -104,7 +104,7 @@ void main() {
     float h  = billboardScale * heightScale;
     // 45 degree inclination: tan(45) = 1, so top offset equals height.
     float tilt = h;
-    int   ti = fragTexIndexIn[0];
+    int   ti = fragBrushIndexIn[0];
 
     // Extract per-instance Y-axis rotation packed in fract(instanceData.w).
     // fract is in [0,1) → theta in [0, 2*PI) for full random rotation.
@@ -143,10 +143,10 @@ void main() {
         outPlaneNormal = normalize(cross(tangent, normalize(worldUp + outward)));
         outTangentWS   = tangent;
 
-        gl_Position = ubo.viewProjection * vec4(bl, 1.0); inTexCoord = vec3(0.0, 1.0, float(ti)); inTexIndex = ti; outWorldPos = bl; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(br, 1.0); inTexCoord = vec3(1.0, 1.0, float(ti)); inTexIndex = ti; outWorldPos = br; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(tl, 1.0); inTexCoord = vec3(0.0, 0.0, float(ti)); inTexIndex = ti; outWorldPos = tl; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(tr, 1.0); inTexCoord = vec3(1.0, 0.0, float(ti)); inTexIndex = ti; outWorldPos = tr; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(bl, 1.0); inTexCoord = vec3(0.0, 1.0, float(ti)); inBrushIndex = ti; outWorldPos = bl; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(br, 1.0); inTexCoord = vec3(1.0, 1.0, float(ti)); inBrushIndex = ti; outWorldPos = br; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(tl, 1.0); inTexCoord = vec3(0.0, 0.0, float(ti)); inBrushIndex = ti; outWorldPos = tl; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(tr, 1.0); inTexCoord = vec3(1.0, 0.0, float(ti)); inBrushIndex = ti; outWorldPos = tr; EmitVertex();
         EndPrimitive();
     }
 
@@ -163,10 +163,10 @@ void main() {
         outPlaneNormal = normalize(cross(tangent, worldUp));
         outTangentWS   = tangent;
 
-        gl_Position = ubo.viewProjection * vec4(bl, 1.0); inTexCoord = vec3(0.0, 1.0, float(ti)); inTexIndex = ti; outWorldPos = bl; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(br, 1.0); inTexCoord = vec3(1.0, 1.0, float(ti)); inTexIndex = ti; outWorldPos = br; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(tl, 1.0); inTexCoord = vec3(0.0, 0.0, float(ti)); inTexIndex = ti; outWorldPos = tl; EmitVertex();
-        gl_Position = ubo.viewProjection * vec4(tr, 1.0); inTexCoord = vec3(1.0, 0.0, float(ti)); inTexIndex = ti; outWorldPos = tr; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(bl, 1.0); inTexCoord = vec3(0.0, 1.0, float(ti)); inBrushIndex = ti; outWorldPos = bl; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(br, 1.0); inTexCoord = vec3(1.0, 1.0, float(ti)); inBrushIndex = ti; outWorldPos = br; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(tl, 1.0); inTexCoord = vec3(0.0, 0.0, float(ti)); inBrushIndex = ti; outWorldPos = tl; EmitVertex();
+        gl_Position = ubo.viewProjection * vec4(tr, 1.0); inTexCoord = vec3(1.0, 0.0, float(ti)); inBrushIndex = ti; outWorldPos = tr; EmitVertex();
         EndPrimitive();
     }
 }

@@ -3,7 +3,7 @@
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inTexCoord;
-layout(location = 3) in int  inTexIndex;
+layout(location = 3) in int  inBrushIndex;
 layout(location = 4) in vec4 instanceData; // xyz=world pos, w=billboard index
 
 layout(location = 0) out vec3 outWorldPos;

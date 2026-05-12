@@ -3,7 +3,7 @@
 // Real-time ambient + diffuse + specular is applied in impostors.frag.
 
 layout(location = 0) in vec3 inTexCoord;
-layout(location = 1) flat in int inTexIndex;
+layout(location = 1) flat in int inBrushIndex;
 layout(location = 2) in      vec3 inWorldPos;
 layout(location = 3) flat in vec3 inPlaneNormal;
 layout(location = 4) flat in vec3 inTangentWS;

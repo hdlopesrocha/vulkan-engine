@@ -8,7 +8,7 @@ layout(triangles, equal_spacing, cw) in;
 layout(location = 0) in vec3 inPos[];
 layout(location = 1) in vec3 inNormal[];
 layout(location = 2) in vec2 inTexCoord[];
-layout(location = 5) in ivec3 tc_fragTexIndex[];
+layout(location = 5) in ivec3 tc_fragBrushIndex[];
 layout(location = 11) in vec3 tc_fragTexWeights[];
 
 layout(location = 0) out vec3 fragPos;
@@ -18,7 +18,7 @@ layout(location = 3) out vec4 fragPosClip;  // clip-space position for depth loo
 layout(location = 4) out vec3 fragDebug;   // debug visual (displacement)
 layout(location = 5) out vec3 fragPosWorld;  // world-space position for shadow cascades
 layout(location = 6) out vec4 fragPosLightSpace; // light-space pos (cascade 0)
-layout(location = 7) flat out int fragTexIndex;
+layout(location = 7) flat out int fragBrushIndex;
 
 #include "includes/ubo.glsl"
 
@@ -67,15 +67,15 @@ void main() {
                        bary.y * inTexCoord[1] +
                        bary.z * inTexCoord[2];
     
-    // Select per-patch texIndex from compressed TCS outputs (tc_fragTexIndex / tc_fragTexWeights)
-    ivec3 texIndices = tc_fragTexIndex[0];
+    // Select per-patch brushIndex from compressed TCS outputs (tc_fragBrushIndex / tc_fragTexWeights)
+    ivec3 texIndices = tc_fragBrushIndex[0];
     vec3 weights = tc_fragTexWeights[0] * bary.x + tc_fragTexWeights[1] * bary.y + tc_fragTexWeights[2] * bary.z;
     int chosenIdx = texIndices.x;
     if (texIndices.y >= 0 && weights.y > weights.x) chosenIdx = texIndices.y;
     if (texIndices.z >= 0 && weights.z > max(weights.x, weights.y)) chosenIdx = texIndices.z;
     if (chosenIdx < 0) chosenIdx = 0;
-    // Expose the chosen texIndex to the fragment stage
-    fragTexIndex = chosenIdx;
+    // Expose the chosen brushIndex to the fragment stage
+    fragBrushIndex = chosenIdx;
 
     // Load selected WaterParams from SSBO
     WaterParamsGPU wp = waterParams[chosenIdx];

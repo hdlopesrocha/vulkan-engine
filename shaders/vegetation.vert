@@ -2,11 +2,11 @@
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inTexCoord;
-layout(location = 3) in int inTexIndex;
+layout(location = 3) in int inBrushIndex;
 layout(location = 4) in vec4 instanceData; // .xyz = world pos, .w = billboard index
 
 layout(location = 0) out vec3 fragTexCoord;
-layout(location = 1) flat out int fragTexIndex;
+layout(location = 1) flat out int fragBrushIndex;
 layout(location = 2) out vec3 fragWorldPos;
 
 // Must match SolidParamsUBO — only read the first two fields.
@@ -37,6 +37,6 @@ void main() {
     //   floor(w) = billboard index
     //   fract(w) = Y-axis rotation fraction in [0,1) → angle = fract * 2*PI in geometry shader
     fragTexCoord = vec3(0.0, 0.0, instanceData.w);
-    fragTexIndex = int(floor(instanceData.w)); // billboard index (strip rotation fraction)
+    fragBrushIndex = int(floor(instanceData.w)); // billboard index (strip rotation fraction)
     fragWorldPos = worldPos;
 }

@@ -17,7 +17,7 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
 } ubo;
 
 // Packed material data uploaded once to GPU. Matches the CPU-side MaterialGPU (4 vec4s).
-// Access this as `materials[texIndex]` from shaders. Uses std430 for tightly-packed vec4 alignment.
+// Access this as `materials[brushIndex]` from shaders. Uses std430 for tightly-packed vec4 alignment.
 struct MaterialGPU {
     vec4 materialFlags;   // .z = ambientFactor
     vec4 mappingParams;   // x = mappingEnabled (0/1), y = tessLevel, z = invertHeight (0/1), w = tessHeightScale

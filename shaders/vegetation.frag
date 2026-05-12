@@ -1,6 +1,6 @@
 #version 450
 layout(location = 0) in vec3 inTexCoord;  // xy=uv, z=array layer
-layout(location = 1) in flat int inTexIndex;
+layout(location = 1) in flat int inBrushIndex;
 layout(location = 2) in      vec3 inWorldPos;    // interpolated vertex world position
 layout(location = 3) in flat vec3 inPlaneNormal; // billboard face normal (world space)
 layout(location = 4) in flat vec3 inTangentWS;   // billboard tangent (world space)

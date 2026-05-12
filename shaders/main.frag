@@ -232,7 +232,7 @@ void main() {
     }
 
     if (debugMode == 14) {
-        // Map each corner texIndex to a distinct color from a small palette, then blend by barycentric weights
+        // Map each corner brushIndex to a distinct color from a small palette, then blend by barycentric weights
         const int PALETTE_SIZE = 16;
         const vec3 palette[PALETTE_SIZE] = vec3[](
             vec3(0.90, 0.10, 0.10), // red

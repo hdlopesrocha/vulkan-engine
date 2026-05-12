@@ -9,7 +9,7 @@ layout(location = 0) in vec3 pc_inFragColor[];
 layout(location = 1) in vec2 pc_inUV[];
 layout(location = 2) in vec3 pc_inNormal[];
 layout(location = 4) in vec3 pc_inPosWorld[];
-layout(location = 5) flat in int pc_inTexIndex[];
+layout(location = 5) flat in int pc_inBrushIndex[];
 layout(location = 7) in vec3 pc_inLocalPos[];
 layout(location = 8) in vec3 pc_inLocalNormal[];
 
@@ -18,7 +18,7 @@ layout(location = 0) out vec3 tc_fragColor[];
 layout(location = 1) out vec2 tc_fragUV[];
 layout(location = 2) out vec3 tc_fragNormal[];
 layout(location = 4) out vec3 tc_fragPosWorld[];
-layout(location = 5) flat out ivec3 tc_fragTexIndex[];
+layout(location = 5) flat out ivec3 tc_fragBrushIndex[];
 layout(location = 11) out vec3 tc_fragTexWeights[];
 layout(location = 7) out vec3 tc_fragLocalPos[];
 layout(location = 8) out vec3 tc_fragLocalNormal[];
@@ -42,9 +42,9 @@ void main() {
 
 
     // Compress the patch's texture indices into up to three unique slots
-    int i0 = pc_inTexIndex[0];
-    int i1 = pc_inTexIndex[1];
-    int i2 = pc_inTexIndex[2];
+    int i0 = pc_inBrushIndex[0];
+    int i1 = pc_inBrushIndex[1];
+    int i2 = pc_inBrushIndex[2];
 
     int u0 = i0;
     int u1 = (i1 == u0) ? -1 : i1;
@@ -53,10 +53,10 @@ void main() {
     else u2 = i2;
 
     // Store the unique indices (use -1 for empty slots)
-    tc_fragTexIndex[gl_InvocationID] = ivec3(u0, u1, u2);
+    tc_fragBrushIndex[gl_InvocationID] = ivec3(u0, u1, u2);
 
     // Map this corner's barycentric basis into the matching unique-slot
-    int myIdx = pc_inTexIndex[gl_InvocationID];
+    int myIdx = pc_inBrushIndex[gl_InvocationID];
     vec3 texWeights = vec3(0.0);
     if (myIdx == u0) texWeights.x = 1.0;
     else if (myIdx == u1) texWeights.y = 1.0;
@@ -68,9 +68,9 @@ void main() {
     // tangents are computed in the fragment shader for triplanar mapping
 
     // Compute tessellation level on GPU based on camera distance (adaptive)
-    int patchTexIndex = pc_inTexIndex[0];
-    float materialLevel = materials[patchTexIndex].mappingParams.y;
-    bool tessEnabled = ubo.passParams.y > 0.5 && (materials[patchTexIndex].mappingParams.x > 0.5);
+    int patchBrushIndex = pc_inBrushIndex[0];
+    float materialLevel = materials[patchBrushIndex].mappingParams.y;
+    bool tessEnabled = ubo.passParams.y > 0.5 && (materials[patchBrushIndex].mappingParams.x > 0.5);
 
 
     // Compute patch center in world space and distance to camera

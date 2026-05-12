@@ -13,7 +13,7 @@ layout(location = 3) in vec4 fragPosClip;
 layout(location = 4) in vec3 fragDebug;
 layout(location = 5) in vec3 fragPosWorld;
 layout(location = 6) in vec4 fragPosLightSpace;
-layout(location = 7) flat in int fragTexIndex;
+layout(location = 7) flat in int fragBrushIndex;
 
 void main() {
     // Intentionally empty — depth is recorded automatically.
