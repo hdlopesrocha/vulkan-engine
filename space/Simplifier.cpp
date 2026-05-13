@@ -11,10 +11,11 @@ Simplifier::Simplifier(float angle, float distance, bool texturing) {
 }	
 
 
-std::pair<bool,int> Simplifier::simplify(const BoundingCube chunkCube, const BoundingCube cube, const float * sdf, NodeOperationResult * children){	
+SimplificationResult Simplifier::simplify(const BoundingCube chunkCube, const BoundingCube cube, const float * sdf, NodeOperationResult * children){
+	SimplificationResult res(false, DISCARD_BRUSH_INDEX);
 	int brushIndex = DISCARD_BRUSH_INDEX;
 	if(!chunkCube.contains(BoundingCube(cube.getMin() - cube.getLength(), cube.getLengthX()))) {
-		return {false, brushIndex};
+		return res;
 	}
 
 	//uint mask = 0xff;
@@ -23,16 +24,16 @@ std::pair<bool,int> Simplifier::simplify(const BoundingCube chunkCube, const Bou
 		NodeOperationResult * child = &children[i];
 		if(child && child->resultType == SpaceType::Surface) {
 			if(!child->isSimplified) {
-				return {false, brushIndex};	
+				return res;
 			}
 			if(texturing && brushIndex != DISCARD_BRUSH_INDEX && child->brushIndex != brushIndex) {
-				return {false, brushIndex};	
+				return res;    
 			}
 			brushIndex = child->brushIndex;
 			break;
 		}
 	}
-
+	res.brushIndex = brushIndex;
 
 	// for leaf nodes shouldn't loop
 	for(uint i=0; i < 8 ; ++i) {
@@ -46,7 +47,7 @@ std::pair<bool,int> Simplifier::simplify(const BoundingCube chunkCube, const Bou
 				float dif = glm::abs(d - child->resultSDF[j]);
 
 				if(dif > cube.getLengthX() * 0.05) {
-					return {false, brushIndex};
+					return res;
 				}
 			}
 
@@ -56,8 +57,8 @@ std::pair<bool,int> Simplifier::simplify(const BoundingCube chunkCube, const Bou
 	}
 	
 	if(nodeCount > 0) {	
-		return {true, brushIndex};
+		res.isSimplified = true;
 	}
 	
-	return {false, brushIndex};
+	return res;
 }

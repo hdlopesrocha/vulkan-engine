@@ -4,13 +4,24 @@
 
 struct NodeOperationResult;
 
+// Result of attempting to simplify eight child nodes into their parent.
+// `isSimplified` indicates whether simplification succeeded.
+// `brushIndex` is the brush/material index to assign when simplified.
+struct SimplificationResult {
+    bool isSimplified;
+    int brushIndex;
+    SimplificationResult(bool isSimplified, int brushIndex) : isSimplified(isSimplified), brushIndex(brushIndex) {
+        
+    }
+};
+
 class Simplifier {
     float angle;
     float distance;
     bool texturing;
 public:
     Simplifier(float angle, float distance, bool texturing);
-    std::pair<bool,int> simplify(const BoundingCube chunkCube, const BoundingCube cube, const float * sdf, NodeOperationResult * children);
+    SimplificationResult simplify(const BoundingCube chunkCube, const BoundingCube cube, const float * sdf, NodeOperationResult * children);
 };
 
  
