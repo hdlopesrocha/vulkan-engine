@@ -535,9 +535,9 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                 }        
             } else {
                 if(childSimplified && !isChunk) {
-                    std::pair<bool,int> simplificationResult = args.simplifier.simplify(frame.chunkCube, frame.cube, resultSDF, childResult);
-                    isSimplified = simplificationResult.first;
-                    brushIndex = simplificationResult.second;
+                    SimplificationResult simplificationResult = args.simplifier.simplify(frame.chunkCube, frame.cube, resultSDF, childResult);
+                    isSimplified = simplificationResult.isSimplified;
+                    brushIndex = simplificationResult.brushIndex;
                 }
                 uint childNodes[8] = {UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX};
                 for(uint i =0 ; i < 8 ; ++i) {
