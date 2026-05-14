@@ -143,33 +143,30 @@ void Octree::iterateBorder(
     // LEAF / SIMPLIFIED CASE
     // ----------------------
     if (to->isSimplified()) {
-        context->nodeCache[glm::vec4(toCube.getMin(), toLevel)] = OctreeNodeLevel((OctreeNode*)to, toLevel);
+        //glm::vec4 toKey = glm::vec4(toCube.getMin(), toLevel);
+        //context->nodeCache[toKey] = OctreeNodeLevel((OctreeNode*)to, toLevel);
         
         if (toCube.getLengthX() < fromCube.getLengthX()) {
         
-            int axis = -1;
+            // Determine which face (if any) of `toCube` touches `fromCube`.
+            bool touchX = (toCube.getMinX() == fromCube.getMaxX());
+            bool touchY = (toCube.getMinY() == fromCube.getMaxY());
+            bool touchZ = (toCube.getMinZ() == fromCube.getMaxZ());
 
-            if (toCube.getMinX() == fromCube.getMaxX())
-                axis = 0;
-            else if (toCube.getMinY() == fromCube.getMaxY())
-                axis = 1;
-            else if (toCube.getMinZ() == fromCube.getMaxZ())
-                axis = 2;
-            
-
-            if (axis != -1) {
+            if (touchX || touchY || touchZ) {
                 BoundingCube toCubeShifted = toCube;
-                if (axis == 0) toCubeShifted.setMaxX(fromCube.getMaxX());
-                if (axis == 1) toCubeShifted.setMaxY(fromCube.getMaxY());
-                if (axis == 2) toCubeShifted.setMaxZ(fromCube.getMaxZ());
+                // Preserve original priority: X, then Y, then Z.
+                if (touchX) toCubeShifted.setMaxX(fromCube.getMaxX());
+                else if (touchY) toCubeShifted.setMaxY(fromCube.getMaxY());
+                else if (touchZ) toCubeShifted.setMaxZ(fromCube.getMaxZ());
 
                 if (fromCube.intersects(toCubeShifted)) {
                     // Use the shifted cube min + level as a stable key to prevent
                     // calling the border handler twice for the exact same region.
-                    glm::vec4 invokedKey = glm::vec4(toCubeShifted.getMin(), toLevel);                        
+                    glm::vec4 invokedKey = glm::vec4(toCubeShifted.getMin(), toLevel);
                     auto res = context->invokedCubeCalls.emplace(invokedKey);
                     bool shouldInvoke = res.second; // true if inserted (wasn't present)
-                    
+
                     if (shouldInvoke) {
                         float toSdfShifted[8];
                         for (uint i = 0; i < 8; ++i) {
@@ -195,26 +192,21 @@ void Octree::iterateBorder(
 
         for (uint i = 0; i < 8; ++i) {
             OctreeNode * to = children[i];
+            BoundingCube childCube = toCube.getChild(i);
+            bool childIntersects = fromCube.intersects(childCube);
+
             if (to != NULL 
                 && to->getType() == SpaceType::Surface
-                && (toCube.contains(fromCube) || toCube.getChild(i).intersects(fromCube))) {
-                BoundingCube childCube = toCube.getChild(i);
-                int axis = -1;
+                && (toCube.contains(fromCube) || childIntersects)) {
+                // Determine whether the child overlaps the `from` cube along any axis
+                bool overlapsX = ( fromCube.getMaxX() < childCube.getMaxX() && childCube.getMinX() <= fromCube.getMaxX());
+                bool overlapsY = ( fromCube.getMaxY() < childCube.getMaxY() && childCube.getMinY() <= fromCube.getMaxY());
+                bool overlapsZ = ( fromCube.getMaxZ() < childCube.getMaxZ() && childCube.getMinZ() <= fromCube.getMaxZ());
 
-                if (childCube.getMinX() <= fromCube.getMaxX() && childCube.getMaxX() > fromCube.getMaxX())
-                    axis = 0;
-                else if (childCube.getMinY() <= fromCube.getMaxY() && childCube.getMaxY() > fromCube.getMaxY())
-                    axis = 1;
-                else if (childCube.getMinZ() <= fromCube.getMaxZ() && childCube.getMaxZ() > fromCube.getMaxZ())
-                    axis = 2;
+                // If cubes merely touch at a face without overlapping, ignore them.
+                bool touchesAtBorder = (fromCube.getMinX() == childCube.getMaxX() || fromCube.getMinY() == childCube.getMaxY() || fromCube.getMinZ() == childCube.getMaxZ());
 
-                if(fromCube.getMinX() == childCube.getMaxX()
-                || fromCube.getMinY() == childCube.getMaxY()
-                || fromCube.getMinZ() == childCube.getMaxZ()) {
-                    axis = -1; // if cubes touch at the border but do not overlap, do not treat as intersecting
-                }
-
-                if (axis != -1 && fromCube.intersects(childCube)) {
+                if ((overlapsX || overlapsY || overlapsZ) && !touchesAtBorder && childIntersects) {
                     iterateBorder(from, fromCube, fromSDF, fromLevel, to, childCube, to->sdf, toLevel + 1, func, context);
                 }
             }
@@ -281,7 +273,9 @@ void Octree::handleQuadNodes(const BoundingCube &cube, uint level, const float s
                     *neighbor = fetch(pos, level, simplification, context);
                 }
                 OctreeNode * childNode = neighbor->node;
-                if(childNode != NULL && childNode->getType() == SpaceType::Surface) {
+                if(childNode != NULL && 
+                    childNode->getType() == SpaceType::Surface && 
+                    childNode->isSimplified()) {
                     vertices[i] = childNode->vertex;
                 } else {
                     vertices[i].brushIndex = DISCARD_BRUSH_INDEX;
@@ -409,11 +403,12 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     ContainmentType check = parentContainment == ContainmentType::Intersects ? args.function->check(frame.cube, args.model, args.minSize) : parentContainment;
     OctreeNode * node = frame.node;
     bool process = true;
+    int brushIndex = frame.brushIndex;
 
     if(check == ContainmentType::Disjoint) {
         process = false;
         SpaceType resultType = node ? node->getType() : SDF::eval(frame.sdf);
-        return NodeOperationResult(node, SpaceType::Empty, INFINITY_ARRAY, resultType, frame.sdf, process, node ? node->isSimplified() : true, DISCARD_BRUSH_INDEX);  // Skip this node
+        return NodeOperationResult(node, SpaceType::Empty, INFINITY_ARRAY, resultType, frame.sdf, process, node ? node->isSimplified() : true, brushIndex);  // Skip this node
     }
     auto sameCube = [](const BoundingCube &a, const BoundingCube &b) {
         return a.getMin() == b.getMin() && a.getLengthX() == b.getLengthX();
@@ -446,7 +441,8 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             }
 
             float childSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
-            int childBrushIndex = node != NULL ? node->vertex.brushIndex : frame.brushIndex;
+            int childBrushIndex = child != NULL ? child->vertex.brushIndex 
+                                : node != NULL ? node->vertex.brushIndex : frame.brushIndex;
 
             if(child != NULL) {
                 childBrushIndex = child->vertex.brushIndex;
@@ -491,7 +487,6 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     bool childShapeEmpty = true;
     bool childSimplified = true;
     bool isSimplified = isLeaf;
-    int brushIndex = frame.brushIndex;
 
     if(!isLeaf) {
         for(uint i = 0; i < 8; ++i) {
@@ -537,7 +532,9 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                 if(childSimplified && !isChunk) {
                     SimplificationResult simplificationResult = args.simplifier.simplify(frame.chunkCube, frame.cube, resultSDF, childResult);
                     isSimplified = simplificationResult.isSimplified;
-                    brushIndex = simplificationResult.brushIndex;
+                    if(isSimplified) {
+                        brushIndex = simplificationResult.brushIndex;
+                    } 
                 }
                 uint childNodes[8] = {UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX};
                 for(uint i =0 ; i < 8 ; ++i) {
