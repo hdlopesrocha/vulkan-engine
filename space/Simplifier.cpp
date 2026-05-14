@@ -33,7 +33,6 @@ SimplificationResult Simplifier::simplify(const BoundingCube chunkCube, const Bo
 			break;
 		}
 	}
-	res.brushIndex = brushIndex;
 
 	// for leaf nodes shouldn't loop
 	for(uint i=0; i < 8 ; ++i) {
@@ -58,6 +57,7 @@ SimplificationResult Simplifier::simplify(const BoundingCube chunkCube, const Bo
 	
 	if(nodeCount > 0) {	
 		res.isSimplified = true;
+		res.brushIndex = brushIndex;
 	}
 	
 	return res;
