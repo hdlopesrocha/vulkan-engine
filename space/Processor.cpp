@@ -41,13 +41,6 @@ void Processor::after(const Octree &tree, OctreeNodeData &params) {
         // Iterate triangles and forward them to the registered handlers
         tree.iterateTriangles(params.node, params.cube, params.level, fh, context);
 
-        // Also ensure the source cube is invoked once (dedup)
-        glm::vec4 invokedKey = glm::vec4(params.cube.getMin(), params.level);
-        auto res = context->invokedCubeCalls.emplace(invokedKey);
-        bool shouldInvoke = res.second; // true if inserted (wasn't present)
-        if (shouldInvoke) {
-            tree.handleQuadNodes(params.cube, params.level, params.node->sdf, handlers, true, context);
-        }
     }
 }
 

@@ -246,53 +246,6 @@ bool allDifferent(const T& first, const Args&... args) {
     return true;
 }
 
-void Octree::handleQuadNodes(const BoundingCube &cube, uint level, const float sdf[8], std::vector<OctreeNodeTriangleHandler*> * handlers, bool simplification, ThreadContext * context) const {
-    OctreeNodeLevel neighbors[8] = {
-        OctreeNodeLevel(),OctreeNodeLevel(),OctreeNodeLevel(),OctreeNodeLevel(),
-        OctreeNodeLevel(),OctreeNodeLevel(),OctreeNodeLevel(),OctreeNodeLevel()
-    };
-    for(size_t k =0 ; k < TESSELATION_EDGES.size(); ++k) {
-		glm::ivec2 &edge = TESSELATION_EDGES[k];
-		bool sign0 = sdf[edge[0]] < 0.0f;
-		bool sign1 = sdf[edge[1]] < 0.0f;
-
-		if(sign0 != sign1) {
-			glm::ivec4 &quad = TESSELATION_ORDERS[k];
-            Vertex vertices[4] = { Vertex(), Vertex(), Vertex(), Vertex() };
-			for(uint i =0; i < 4 ; ++i) {
-                uint neighborIndex = quad[i];
-				OctreeNodeLevel * neighbor = &neighbors[neighborIndex];
-                if(neighbor->node == NULL) {
-                    // Use the cube corner (min + shift*length) as the sample point
-                    // — previous code used center + length*shift which could sample
-                    // outside the cube and fail to locate neighbor nodes.
-                    glm::vec3 pos = cube.getCorner(neighborIndex);
-                    *neighbor = fetch(pos, level, simplification, context);
-                }
-                OctreeNode * childNode = neighbor->node;
-                if(childNode != NULL && 
-                    childNode->getType() == SpaceType::Surface && 
-                    childNode->isSimplified()) {
-                    vertices[i] = childNode->vertex;
-                } else {
-                    vertices[i].brushIndex = DISCARD_BRUSH_INDEX;
-                }
-			}
-	
-            if(allDifferent(vertices[0], vertices[2], vertices[1])) {
-                for(auto handler : *handlers) {
-                    handler->handle(vertices[0], vertices[2], vertices[1]);
-                }
-			}
-            if(allDifferent(vertices[0], vertices[3], vertices[2])) {
-                for(auto handler : *handlers) {
-                    handler->handle(vertices[0], vertices[3], vertices[2]);
-                }
-            }
-		}
-	}
-}
-
 void Octree::expand(const ShapeArgs &args) {
     while (!args.function->isContained(*this, args.model, args.minSize)) {
         glm::vec3 point = args.function->getCenter(args.model);

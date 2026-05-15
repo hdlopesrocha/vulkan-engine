@@ -48,7 +48,6 @@ public:
     OctreeNodeLevel getNodeAt(const glm::vec3 &pos, int level, bool simplification) const;
     OctreeNode* getNodeAt(const glm::vec3 &pos, bool simplification) const;
     float getSdfAt(const glm::vec3 &pos);
-    void handleQuadNodes(const BoundingCube &cube, uint level, const float sdf[8], std::vector<OctreeNodeTriangleHandler*> * handlers, bool simplification, ThreadContext * context) const;
     OctreeNodeLevel fetch(glm::vec3 pos, uint level, bool simplification, ThreadContext * context) const;
 
         void iterateTriangles(OctreeNode * from,
