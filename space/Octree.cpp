@@ -126,23 +126,35 @@ float Octree::getSdfAt(const glm::vec3 &pos) {
     std::cerr << "Not interpolated" << std::endl;
     return INFINITY;
 }
-void Octree::iterateBorder(
-            const OctreeNode * from,
-            const BoundingCube &fromCube,
-            const float fromSDF[8],
-            const uint fromLevel,
 
-            const OctreeNode *to,
+void Octree::iterateTriangles(
+        OctreeNode * from,
+            const BoundingCube &fromCube,
+            const uint fromLevel,
+            OctreeNodeTriangleHandler &func,
+            ThreadContext * context) const {
+    Vertex * tempVertex = NULL;
+    iterateTrianglesInternal(from, fromCube, fromLevel, from->sdf, root, *this, 0, root->sdf, &tempVertex, func, context);
+}
+
+
+void Octree::iterateTrianglesInternal(
+            OctreeNode * from,
+            const BoundingCube &fromCube,
+            const uint fromLevel,
+            const float fromSDF[8],
+            OctreeNode * to,
             const BoundingCube &toCube,
-            const float toSDF[8],
             const uint toLevel,
-            const IterateBorderHandler &func,
-            ThreadContext * context) const
-{
+            const float toSDF[8],
+            Vertex ** tempVertex,
+            OctreeNodeTriangleHandler &func,
+            ThreadContext * context) const {
+
     // ----------------------
     // LEAF / SIMPLIFIED CASE
     // ----------------------
-    if (to->isSimplified()) {
+    if (to->isSimplified() || to->isLeaf() ) {
         //glm::vec4 toKey = glm::vec4(toCube.getMin(), toLevel);
         //context->nodeCache[toKey] = OctreeNodeLevel((OctreeNode*)to, toLevel);
         
@@ -154,27 +166,11 @@ void Octree::iterateBorder(
             bool touchZ = (toCube.getMinZ() == fromCube.getMaxZ());
 
             if (touchX || touchY || touchZ) {
-                BoundingCube toCubeShifted = toCube;
-                // Preserve original priority: X, then Y, then Z.
-                if (touchX) toCubeShifted.setMaxX(fromCube.getMaxX());
-                else if (touchY) toCubeShifted.setMaxY(fromCube.getMaxY());
-                else if (touchZ) toCubeShifted.setMaxZ(fromCube.getMaxZ());
-
-                if (fromCube.intersects(toCubeShifted)) {
-                    // Use the shifted cube min + level as a stable key to prevent
-                    // calling the border handler twice for the exact same region.
-                    glm::vec4 invokedKey = glm::vec4(toCubeShifted.getMin(), toLevel);
-                    auto res = context->invokedCubeCalls.emplace(invokedKey);
-                    bool shouldInvoke = res.second; // true if inserted (wasn't present)
-
-                    if (shouldInvoke) {
-                        float toSdfShifted[8];
-                        for (uint i = 0; i < 8; ++i) {
-                            toSdfShifted[i] = SDF::interpolate(toSDF, toCubeShifted.getCorner(i), toCube);
-                        }
-                        func(toCubeShifted, toSdfShifted, toLevel);
-                    }
+                // call func
+                if(*tempVertex != NULL) {
+                    func.handle(from->vertex, **tempVertex, to->vertex); // sign doesn't matter for simplified nodes, but we can use it to pass the dominant axis if needed
                 }
+                *tempVertex = &(to->vertex);
             }
         }
 
@@ -207,12 +203,13 @@ void Octree::iterateBorder(
                 bool touchesAtBorder = (fromCube.getMinX() == childCube.getMaxX() || fromCube.getMinY() == childCube.getMaxY() || fromCube.getMinZ() == childCube.getMaxZ());
 
                 if ((overlapsX || overlapsY || overlapsZ) && !touchesAtBorder && childIntersects) {
-                    iterateBorder(from, fromCube, fromSDF, fromLevel, to, childCube, to->sdf, toLevel + 1, func, context);
+                    iterateTrianglesInternal(from, fromCube, fromLevel, fromSDF, to, childCube, toLevel + 1, toSDF, tempVertex, func, context);
                 }
             }
         }
     }
-    
+
+            
 }
 
 
@@ -284,12 +281,12 @@ void Octree::handleQuadNodes(const BoundingCube &cube, uint level, const float s
 	
             if(allDifferent(vertices[0], vertices[2], vertices[1])) {
                 for(auto handler : *handlers) {
-                    handler->handle(vertices[0], vertices[2], vertices[1], sign1);
+                    handler->handle(vertices[0], vertices[2], vertices[1]);
                 }
 			}
             if(allDifferent(vertices[0], vertices[3], vertices[2])) {
                 for(auto handler : *handlers) {
-                    handler->handle(vertices[0], vertices[3], vertices[2], sign1);
+                    handler->handle(vertices[0], vertices[3], vertices[2]);
                 }
             }
 		}

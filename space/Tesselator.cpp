@@ -33,7 +33,7 @@ glm::vec2 triplanarMapping(glm::vec3 position, int plane) {
 }
 
 
-void Tesselator::handle(Vertex &v0, Vertex &v1, Vertex &v2, bool reverse) {
+void Tesselator::handle(Vertex &v0, Vertex &v1, Vertex &v2) {
     if(v0.brushIndex>DISCARD_BRUSH_INDEX && 
         v1.brushIndex>DISCARD_BRUSH_INDEX && 
         v2.brushIndex>DISCARD_BRUSH_INDEX) {
@@ -45,7 +45,7 @@ void Tesselator::handle(Vertex &v0, Vertex &v1, Vertex &v2, bool reverse) {
         // Ensure normal follows the (v1 - v0) x (v2 - v0) convention to match Geometry::getNormal and the TES face normal
         glm::vec3 n = glm::cross(d1, d2);
 
-
+        bool reverse = (glm::dot(n, v0.normal) < 0.0f);
         if (triplanar) {
             int plane = triplanarPlane(n);
             v0.texCoord = triplanarMapping(v0.position, plane)*triplanarScale;

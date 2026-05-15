@@ -9,7 +9,8 @@ class Processor : public IteratorHandler {
     ThreadPool &threadPool;
     ThreadContext * context;
     std::vector<OctreeNodeTriangleHandler*> * handlers;
-    std::unordered_set<BoundingCube,BoundingCubeHasher> iteratedCubes;
+    long * count;
+    
 
 public:
     Processor(long * count, ThreadPool &threadPool, ThreadContext * context, std::vector<OctreeNodeTriangleHandler*> * handlers);

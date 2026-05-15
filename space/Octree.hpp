@@ -50,17 +50,25 @@ public:
     float getSdfAt(const glm::vec3 &pos);
     void handleQuadNodes(const BoundingCube &cube, uint level, const float sdf[8], std::vector<OctreeNodeTriangleHandler*> * handlers, bool simplification, ThreadContext * context) const;
     OctreeNodeLevel fetch(glm::vec3 pos, uint level, bool simplification, ThreadContext * context) const;
-    void iterateBorder(
-        const OctreeNode * from,
-        const BoundingCube &fromCube,
-        const float fromSDF[8],
-        const uint fromLevel,
-        const OctreeNode *to,
-        const BoundingCube &toCube,
-        const float toSDF[8],
-        const uint toLevel,
-        const IterateBorderHandler &func,
-        ThreadContext * context) const;
+
+        void iterateTriangles(OctreeNode * from,
+            const BoundingCube &fromCube,
+            const uint fromLevel,
+            OctreeNodeTriangleHandler &func,
+            ThreadContext * context) const;
+
+        void iterateTrianglesInternal(OctreeNode * from,
+            const BoundingCube &fromCube,
+            const uint fromLevel,
+            const float fromSDF[8],
+            OctreeNode * to,
+            const BoundingCube &toCube,
+            const uint toLevel,
+            const float toSDF[8],
+            Vertex ** tempVertex,
+            OctreeNodeTriangleHandler &func,
+            ThreadContext * context) const;
+
     bool isChunkNode(float length) const;
     bool isThreadNode(float length, float minSize, int threadSize) const;
     void exportOctreeSerialization(OctreeSerialized * octree);

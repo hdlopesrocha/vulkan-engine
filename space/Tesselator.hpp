@@ -9,7 +9,7 @@ class Tesselator : public OctreeNodeTriangleHandler{
 public:
     Geometry geometry;
     Tesselator(long * count);
-    void handle(Vertex &v0, Vertex &v1, Vertex &v2, bool sign) override;
+    void handle(Vertex &v0, Vertex &v1, Vertex &v2) override;
 };
 
  
