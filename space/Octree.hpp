@@ -64,7 +64,8 @@ public:
             const BoundingCube &toCube,
             const uint toLevel,
             const float toSDF[8],
-            Vertex ** tempVertex,
+            Vertex ** tempVertex1,
+            long * triangleCount,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const;
 

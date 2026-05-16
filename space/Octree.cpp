@@ -22,14 +22,13 @@ const float INFINITY_ARRAY [8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,I
 //    0-----1x
 
 static std::vector<glm::ivec4> TESSELATION_ORDERS;
-static std::vector<glm::ivec2> TESSELATION_EDGES;
 static bool initialized = false;
 
 static void initialize() {
     if(!initialized) {
-        TESSELATION_ORDERS.push_back(glm::ivec4(0,1,3,2));TESSELATION_EDGES.push_back(SDF_EDGES[11]);
-        TESSELATION_ORDERS.push_back(glm::ivec4(0,2,6,4));TESSELATION_EDGES.push_back(SDF_EDGES[6]);
-        TESSELATION_ORDERS.push_back(glm::ivec4(0,4,5,1));TESSELATION_EDGES.push_back(SDF_EDGES[5]);
+        TESSELATION_ORDERS.push_back(glm::ivec4(0,1,2,3));
+        TESSELATION_ORDERS.push_back(glm::ivec4(0,1,4,5));
+        TESSELATION_ORDERS.push_back(glm::ivec4(0,2,4,6));
         initialized = true;
     }
 }
@@ -133,8 +132,9 @@ void Octree::iterateTriangles(
             const uint fromLevel,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const {
-    Vertex * tempVertex = NULL;
-    iterateTrianglesInternal(from, fromCube, fromLevel, from->sdf, root, *this, 0, root->sdf, &tempVertex, func, context);
+    long triangleCount = 0l;
+    Vertex * tempVertex1 = NULL;
+    iterateTrianglesInternal(from, fromCube, fromLevel, from->sdf, root, *this, 0, root->sdf, &tempVertex1, &triangleCount, func, context);
 }
 
 
@@ -147,14 +147,15 @@ void Octree::iterateTrianglesInternal(
             const BoundingCube &toCube,
             const uint toLevel,
             const float toSDF[8],
-            Vertex ** tempVertex,
+            Vertex ** tempVertex1,
+            long * triangleCount,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const {
 
     // ----------------------
     // LEAF / SIMPLIFIED CASE
     // ----------------------
-    if (to->isSimplified() || to->isLeaf() ) {
+    if (to->isSimplified()) {
         //glm::vec4 toKey = glm::vec4(toCube.getMin(), toLevel);
         //context->nodeCache[toKey] = OctreeNodeLevel((OctreeNode*)to, toLevel);
         
@@ -166,11 +167,13 @@ void Octree::iterateTrianglesInternal(
             bool touchZ = (toCube.getMinZ() == fromCube.getMaxZ());
 
             if (touchX || touchY || touchZ) {
-                // call func
-                if(*tempVertex != NULL) {
-                    func.handle(from->vertex, **tempVertex, to->vertex); // sign doesn't matter for simplified nodes, but we can use it to pass the dominant axis if needed
+                if(*tempVertex1 == NULL) {
+                    *tempVertex1 = &(to->vertex);
+                } else {
+                    func.handle(from->vertex, **tempVertex1, to->vertex); // sign doesn't matter for simplified nodes, but we can use it to pass the dominant axis if needed
+                    ++(*triangleCount);
+                    *tempVertex1 = (*triangleCount) % 2 ? &(to->vertex) : NULL;          
                 }
-                *tempVertex = &(to->vertex);
             }
         }
 
@@ -178,7 +181,7 @@ void Octree::iterateTrianglesInternal(
     } else {
 
         // ----------------------
-        // INTERNAL NODE: recurse into children of `to`
+        // INTERNAL NODE: depth-first iteration (stack-based)
         // ----------------------
         OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
         to->getChildren(*allocator, children);
@@ -186,26 +189,26 @@ void Octree::iterateTrianglesInternal(
         // decide a threshold for treating `to` as "similar size" to `from`
         // (kept your original heuristic, but you can tune or replace it)
 
-        static const uint mortonOrder[8] = { 0u, 1u, 3u, 2u, 4u, 5u, 7u, 6u };
-        for (uint oi = 0; oi < 8; ++oi) {
+        std::vector<uint> mortonOrder = { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u };
+        for (uint oi = 0; oi < mortonOrder.size(); ++oi) {
             uint i = mortonOrder[oi];
             OctreeNode * toChild = children[i];
             BoundingCube childCube = toCube.getChild(i);
             bool childIntersects = fromCube.intersects(childCube);
+            bool childContains = toCube.contains(fromCube);
+            bool isNeighbor = !childContains && childIntersects; // if the child intersects but doesn't contain `from`, it's a neighbor that we do want to iterate into, even if it's smaller than `from`
+
 
             if (toChild != NULL 
                 && toChild->getType() == SpaceType::Surface
-                && (toCube.contains(fromCube) || childIntersects)) {
+                && (childContains || childIntersects)) {
                 // Determine whether the child overlaps the `from` cube along any axis
                 bool overlapsX = ( fromCube.getMaxX() < childCube.getMaxX() && childCube.getMinX() <= fromCube.getMaxX());
                 bool overlapsY = ( fromCube.getMaxY() < childCube.getMaxY() && childCube.getMinY() <= fromCube.getMaxY());
                 bool overlapsZ = ( fromCube.getMaxZ() < childCube.getMaxZ() && childCube.getMinZ() <= fromCube.getMaxZ());
 
-                // If cubes merely touch at a face without overlapping, ignore them.
-                bool touchesAtBorder = (fromCube.getMinX() == childCube.getMaxX() || fromCube.getMinY() == childCube.getMaxY() || fromCube.getMinZ() == childCube.getMaxZ());
-
-                if ((overlapsX || overlapsY || overlapsZ) && !touchesAtBorder && childIntersects) {
-                    iterateTrianglesInternal(from, fromCube, fromLevel, fromSDF, toChild, childCube, toLevel + 1, toSDF, tempVertex, func, context);
+                if (childContains || (childIntersects && (overlapsX || overlapsY || overlapsZ))) {
+                    iterateTrianglesInternal(from, fromCube, fromLevel, fromSDF, toChild, childCube, toLevel + 1, toSDF, tempVertex1, triangleCount, func, context);
                 }
             }
         }
