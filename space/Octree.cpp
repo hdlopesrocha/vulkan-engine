@@ -158,7 +158,7 @@ void Octree::iterateTrianglesInternal(
         //glm::vec4 toKey = glm::vec4(toCube.getMin(), toLevel);
         //context->nodeCache[toKey] = OctreeNodeLevel((OctreeNode*)to, toLevel);
         
-        if (toCube.getLengthX() < fromCube.getLengthX()) {
+            if (toCube.getLengthX() <= fromCube.getLengthX()) {
         
             // Determine which face (if any) of `toCube` touches `fromCube`.
             bool touchX = (toCube.getMinX() == fromCube.getMaxX());
@@ -186,13 +186,15 @@ void Octree::iterateTrianglesInternal(
         // decide a threshold for treating `to` as "similar size" to `from`
         // (kept your original heuristic, but you can tune or replace it)
 
-        for (uint i = 0; i < 8; ++i) {
-            OctreeNode * to = children[i];
+        static const uint mortonOrder[8] = { 0u, 1u, 3u, 2u, 4u, 5u, 7u, 6u };
+        for (uint oi = 0; oi < 8; ++oi) {
+            uint i = mortonOrder[oi];
+            OctreeNode * toChild = children[i];
             BoundingCube childCube = toCube.getChild(i);
             bool childIntersects = fromCube.intersects(childCube);
 
-            if (to != NULL 
-                && to->getType() == SpaceType::Surface
+            if (toChild != NULL 
+                && toChild->getType() == SpaceType::Surface
                 && (toCube.contains(fromCube) || childIntersects)) {
                 // Determine whether the child overlaps the `from` cube along any axis
                 bool overlapsX = ( fromCube.getMaxX() < childCube.getMaxX() && childCube.getMinX() <= fromCube.getMaxX());
@@ -203,7 +205,7 @@ void Octree::iterateTrianglesInternal(
                 bool touchesAtBorder = (fromCube.getMinX() == childCube.getMaxX() || fromCube.getMinY() == childCube.getMaxY() || fromCube.getMinZ() == childCube.getMaxZ());
 
                 if ((overlapsX || overlapsY || overlapsZ) && !touchesAtBorder && childIntersects) {
-                    iterateTrianglesInternal(from, fromCube, fromLevel, fromSDF, to, childCube, toLevel + 1, toSDF, tempVertex, func, context);
+                    iterateTrianglesInternal(from, fromCube, fromLevel, fromSDF, toChild, childCube, toLevel + 1, toSDF, tempVertex, func, context);
                 }
             }
         }
