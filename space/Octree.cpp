@@ -22,17 +22,22 @@ const float INFINITY_ARRAY [8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,I
 //    0-----1x
 
 static std::vector<glm::ivec4> TESSELATION_ORDERS;
+static std::vector<glm::ivec2> TESSELATION_EDGES;
 static bool initialized = false;
 
 static void initialize() {
     if(!initialized) {
-        TESSELATION_ORDERS.push_back(glm::ivec4(0,1,2,3));
-        TESSELATION_ORDERS.push_back(glm::ivec4(0,1,4,5));
-        TESSELATION_ORDERS.push_back(glm::ivec4(0,2,4,6));
+        TESSELATION_ORDERS.push_back(glm::ivec4(0,1,3,2));
+        TESSELATION_EDGES.push_back(SDF_EDGES[11]);
+        
+        TESSELATION_ORDERS.push_back(glm::ivec4(0,2,6,4));
+        TESSELATION_EDGES.push_back(SDF_EDGES[6]);
+        
+        TESSELATION_ORDERS.push_back(glm::ivec4(0,4,5,1));
+        TESSELATION_EDGES.push_back(SDF_EDGES[5]);
         initialized = true;
     }
 }
-
 Octree::Octree(BoundingCube minCube, float chunkSize) : BoundingCube(minCube), allocator(new OctreeAllocator()) {
     this->chunkSize = chunkSize;
 	this->root = allocator->allocate()->init(glm::vec3(minCube.getCenter()));
@@ -126,109 +131,6 @@ float Octree::getSdfAt(const glm::vec3 &pos) {
     return INFINITY;
 }
 
-void Octree::iterateTriangles(
-        OctreeNode * from,
-            const BoundingCube &fromCube,
-            const uint fromLevel,
-            OctreeNodeTriangleHandler &func,
-            ThreadContext * context) const {
-    long triangleCount = 0l;
-    Vertex * tempVertex1 = NULL;
-    iterateTrianglesInternal(from, fromCube, fromLevel, from->sdf, root, *this, 0, root->sdf, &tempVertex1, &triangleCount, func, context);
-}
-
-
-void Octree::iterateTrianglesInternal(
-            OctreeNode * from,
-            const BoundingCube &fromCube,
-            const uint fromLevel,
-            const float fromSDF[8],
-            OctreeNode * to,
-            const BoundingCube &toCube,
-            const uint toLevel,
-            const float toSDF[8],
-            Vertex ** tempVertex1,
-            long * triangleCount,
-            OctreeNodeTriangleHandler &func,
-            ThreadContext * context) const {
-
-    // ----------------------
-    // LEAF / SIMPLIFIED CASE
-    // ----------------------
-    if (to->isSimplified()) {
-        //glm::vec4 toKey = glm::vec4(toCube.getMin(), toLevel);
-        //context->nodeCache[toKey] = OctreeNodeLevel((OctreeNode*)to, toLevel);
-        
-            if (toCube.getLengthX() <= fromCube.getLengthX()) {
-        
-            // Determine which face (if any) of `toCube` touches `fromCube`.
-            bool touchX = (toCube.getMinX() == fromCube.getMaxX());
-            bool touchY = (toCube.getMinY() == fromCube.getMaxY());
-            bool touchZ = (toCube.getMinZ() == fromCube.getMaxZ());
-
-            if (touchX || touchY || touchZ) {
-                if(*tempVertex1 == NULL) {
-                    *tempVertex1 = &(to->vertex);
-                } else {
-                    func.handle(from->vertex, **tempVertex1, to->vertex); // sign doesn't matter for simplified nodes, but we can use it to pass the dominant axis if needed
-                    ++(*triangleCount);
-                    *tempVertex1 = (*triangleCount) % 2 ? &(to->vertex) : NULL;          
-                }
-            }
-        }
-
-
-    } else {
-
-        // ----------------------
-        // INTERNAL NODE: depth-first iteration (stack-based)
-        // ----------------------
-        OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-        to->getChildren(*allocator, children);
-
-        // decide a threshold for treating `to` as "similar size" to `from`
-        // (kept your original heuristic, but you can tune or replace it)
-
-        std::vector<uint> mortonOrder = { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u };
-        for (uint oi = 0; oi < mortonOrder.size(); ++oi) {
-            uint i = mortonOrder[oi];
-            OctreeNode * toChild = children[i];
-            BoundingCube childCube = toCube.getChild(i);
-            bool childIntersects = fromCube.intersects(childCube);
-            bool childContains = toCube.contains(fromCube);
-            bool isNeighbor = !childContains && childIntersects; // if the child intersects but doesn't contain `from`, it's a neighbor that we do want to iterate into, even if it's smaller than `from`
-
-
-            if (toChild != NULL 
-                && toChild->getType() == SpaceType::Surface
-                && (childContains || childIntersects)) {
-                // Determine whether the child overlaps the `from` cube along any axis
-                bool overlapsX = ( fromCube.getMaxX() < childCube.getMaxX() && childCube.getMinX() <= fromCube.getMaxX());
-                bool overlapsY = ( fromCube.getMaxY() < childCube.getMaxY() && childCube.getMinY() <= fromCube.getMaxY());
-                bool overlapsZ = ( fromCube.getMaxZ() < childCube.getMaxZ() && childCube.getMinZ() <= fromCube.getMaxZ());
-
-                if (childContains || (childIntersects && (overlapsX || overlapsY || overlapsZ))) {
-                    iterateTrianglesInternal(from, fromCube, fromLevel, fromSDF, toChild, childCube, toLevel + 1, toSDF, tempVertex1, triangleCount, func, context);
-                }
-            }
-        }
-    }
-
-            
-}
-
-
-OctreeNodeLevel Octree::fetch(glm::vec3 pos, uint level, bool simplification, ThreadContext * context) const {
-    glm::vec4 key = glm::vec4(pos, level);
-    if(context->nodeCache.find(key) != context->nodeCache.end()) {
-        return context->nodeCache[key];
-    } else {
-        OctreeNodeLevel nodeLevel = getNodeAt(pos, level, simplification);
-        context->nodeCache[key] = nodeLevel;
-        return nodeLevel;
-    }
-}
-
 template <typename T, std::size_t N> 
 bool allDifferent(const T (&arr)[N]) {
     for (std::size_t i = 0; i < N; ++i) {
@@ -250,6 +152,77 @@ bool allDifferent(const T& first, const Args&... args) {
     }
     return true;
 }
+
+void Octree::iterateTriangles(
+        OctreeNode * from,
+            const BoundingCube &fromCube,
+            OctreeNodeTriangleHandler &func,
+            ThreadContext * context) const {
+    OctreeNode * previous = NULL;
+    iterateTrianglesInternal(from, fromCube, from->sdf, root, *this, root->sdf, &previous, func, context);
+}
+
+
+void Octree::iterateTrianglesInternal(
+            OctreeNode * from,
+            const BoundingCube &fromCube,
+            const float fromSDF[8],
+            OctreeNode * to,
+            const BoundingCube &toCube,
+            const float toSDF[8],
+            OctreeNode ** previous,
+            OctreeNodeTriangleHandler &func,
+            ThreadContext * context) const {
+
+    // ----------------------
+    // INTERNAL NODE: depth-first iteration (stack-based)
+    // ----------------------
+    if (to == NULL) return;
+    OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+    to->getChildren(*allocator, children);
+
+    for (uint i = 0; i < 8; ++i) {
+        OctreeNode * child = children[i];
+        if(child != NULL) {
+            if(child->isSimplified() || child->isLeaf()) {
+                if (*previous != NULL) {
+                    Vertex * v1 = &from->vertex;
+                    Vertex * v2 = &child->vertex;
+                    Vertex * v3 = &(*previous)->vertex;
+                    func.handle(*v1, *v2, *v3);
+                }
+                *previous = child;
+            }
+            else {
+                BoundingCube childCube = toCube.getChild(i);
+                bool overlapsX = (childCube.getMinX() <= fromCube.getMaxX() && childCube.getMaxX() >= fromCube.getMinX());
+                bool overlapsY = (childCube.getMinY() <= fromCube.getMaxY() && childCube.getMaxY() >= fromCube.getMinY());
+                bool overlapsZ = (childCube.getMinZ() <= fromCube.getMaxZ() && childCube.getMaxZ() >= fromCube.getMinZ());
+                bool intersects = overlapsX && overlapsY && overlapsZ;
+                bool contains = childCube.contains(fromCube);
+
+                if(contains || intersects) {
+                    iterateTrianglesInternal(from, fromCube, fromSDF, child, childCube, child->sdf, previous, func, context);
+                }
+            }
+        }
+    }
+}
+
+
+
+OctreeNodeLevel Octree::fetch(glm::vec3 pos, uint level, bool simplification, ThreadContext * context) const {
+    glm::vec4 key = glm::vec4(pos, level);
+    if(context->nodeCache.find(key) != context->nodeCache.end()) {
+        return context->nodeCache[key];
+    } else {
+        OctreeNodeLevel nodeLevel = getNodeAt(pos, level, simplification);
+        context->nodeCache[key] = nodeLevel;
+        return nodeLevel;
+    }
+}
+
+
 
 void Octree::expand(const ShapeArgs &args) {
     while (!args.function->isContained(*this, args.model, args.minSize)) {

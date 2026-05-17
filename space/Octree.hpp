@@ -52,20 +52,16 @@ public:
 
         void iterateTriangles(OctreeNode * from,
             const BoundingCube &fromCube,
-            const uint fromLevel,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const;
 
         void iterateTrianglesInternal(OctreeNode * from,
             const BoundingCube &fromCube,
-            const uint fromLevel,
             const float fromSDF[8],
             OctreeNode * to,
             const BoundingCube &toCube,
-            const uint toLevel,
             const float toSDF[8],
-            Vertex ** tempVertex1,
-            long * triangleCount,
+            OctreeNode ** previous,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const;
 

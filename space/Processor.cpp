@@ -39,8 +39,7 @@ void Processor::after(const Octree &tree, OctreeNodeData &params) {
         } fh(this->count, handlers);
 
         // Iterate triangles and forward them to the registered handlers
-        tree.iterateTriangles(params.node, params.cube, params.level, fh, context);
-
+        tree.iterateTriangles(params.node, params.cube, fh, context);
     }
 }
 
