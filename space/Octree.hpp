@@ -55,7 +55,7 @@ public:
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const;
 
-        void iterateTrianglesInternal(OctreeNode * from,
+        OctreeNode * iterateTrianglesInternal(OctreeNode * from,
             const BoundingCube &fromCube,
             const float fromSDF[8],
             OctreeNode * to,
