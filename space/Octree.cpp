@@ -192,7 +192,7 @@ OctreeNode *Octree::iterateTrianglesInternal(
             } 
             currentSpanning = to;
         } else {
-            uint order[8] = {7,6,5,4,3,2,1,0};
+            uint order[8] = {0,1,2,3,4,5,6,7};
             for (uint o = 0; o < 8; ++o) {
                 int i = order[o];
                 OctreeNode * child = children[i];
