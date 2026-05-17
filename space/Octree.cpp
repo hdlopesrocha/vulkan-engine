@@ -159,7 +159,9 @@ void Octree::iterateTriangles(
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const {
     OctreeNode * previous = NULL;
-    iterateTrianglesInternal(from, fromCube, from->sdf, root, *this, root->sdf, previous, func, context);
+    if(from->getType() == SpaceType::Surface) {
+        iterateTrianglesInternal(from, fromCube, from->sdf, root, *this, root->sdf, previous, func, context);
+    }
 }
 
 
@@ -179,22 +181,21 @@ OctreeNode *Octree::iterateTrianglesInternal(
     OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
     to->getChildren(*allocator, children);
 
-    uint order[8] = {7,6,5,4,3,2,1,0};
-    OctreeNode * currentSpanning = NULL;
-    for (uint o = 0; o < 8; ++o) {
-        int i = order[o];
-        OctreeNode * child = children[i];
-        if(child != NULL && child->getType() == SpaceType::Surface) {
-            if(child->isSimplified()) {
-                if(currentSpanning != NULL) {
-                    Vertex * v0 = &from->vertex;
-                    Vertex * v1 = &currentSpanning->vertex;
-                    Vertex * v2 = &child->vertex;
-                    func.handle(*v0, *v1, *v2);
-                }
-                currentSpanning = child;            
-            }
-            else {
+    OctreeNode * currentSpanning = previous;
+    if(to->isSimplified()) {
+        if(currentSpanning != NULL) {
+            Vertex * v0 = &from->vertex;
+            Vertex * v1 = &currentSpanning->vertex;
+            Vertex * v2 = &to->vertex;
+            func.handle(*v0, *v1, *v2);
+        } 
+        currentSpanning = to;
+    } else {
+        uint order[8] = {0,1,2,3,4,5,6,7};
+        for (uint o = 0; o < 8; ++o) {
+            int i = order[o];
+            OctreeNode * child = children[i];
+            if(child != NULL && child->getType() == SpaceType::Surface) {
 
                 BoundingCube childCube = toCube.getChild(i);
                 bool overlapsX = (fromCube.getMinX() <= childCube.getMaxX() && childCube.getMinX() <= fromCube.getMaxX());
@@ -210,7 +211,8 @@ OctreeNode *Octree::iterateTrianglesInternal(
                     }
                 }
             
-           }
+            
+            }
         }
     }
     return currentSpanning;
