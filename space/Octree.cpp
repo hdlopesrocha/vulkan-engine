@@ -183,7 +183,7 @@ void Octree::iterateTrianglesInternal(
 
     for (uint i = 0; i < 8; ++i) {
         OctreeNode * child = children[i];
-        if(child != NULL) {
+        if(child != NULL && child->getType() == SpaceType::Surface) {
             if(child->isSimplified() || child->isLeaf()) {
                 if (*previous != NULL) {
                     Vertex * v1 = &from->vertex;
@@ -195,9 +195,9 @@ void Octree::iterateTrianglesInternal(
             }
             else {
                 BoundingCube childCube = toCube.getChild(i);
-                bool overlapsX = (childCube.getMinX() <= fromCube.getMaxX() && childCube.getMaxX() >= fromCube.getMinX());
-                bool overlapsY = (childCube.getMinY() <= fromCube.getMaxY() && childCube.getMaxY() >= fromCube.getMinY());
-                bool overlapsZ = (childCube.getMinZ() <= fromCube.getMaxZ() && childCube.getMaxZ() >= fromCube.getMinZ());
+                bool overlapsX = (fromCube.getMinX() <= childCube.getMaxX() && childCube.getMinX() <= fromCube.getMaxX());
+                bool overlapsY = (fromCube.getMinY() <= childCube.getMaxY() && childCube.getMinY() <= fromCube.getMaxY());
+                bool overlapsZ = (fromCube.getMinZ() <= childCube.getMaxZ() && childCube.getMinZ() <= fromCube.getMaxZ());
                 bool intersects = overlapsX && overlapsY && overlapsZ;
                 bool contains = childCube.contains(fromCube);
 
