@@ -176,11 +176,6 @@ OctreeNode *Octree::iterateTrianglesInternal(
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const {
 
-
-    if (to == NULL) return NULL;
-    OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-    to->getChildren(*allocator, children);
-
     OctreeNode * currentSpanning = previous;
     if(to->getType() == SpaceType::Surface) {
         if(to->isSimplified()) {
@@ -192,6 +187,8 @@ OctreeNode *Octree::iterateTrianglesInternal(
             } 
             currentSpanning = to;
         } else {
+            OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+            to->getChildren(*allocator, children);
             uint order[8] = {0,1,2,3,4,5,6,7};
             for (uint o = 0; o < 8; ++o) {
                 int i = order[o];
