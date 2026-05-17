@@ -182,38 +182,36 @@ OctreeNode *Octree::iterateTrianglesInternal(
     to->getChildren(*allocator, children);
 
     OctreeNode * currentSpanning = previous;
-    if(to->isSimplified()) {
-        if(to->getType() == SpaceType::Surface) {
-             if(currentSpanning != NULL) {
+    if(to->getType() == SpaceType::Surface) {
+        if(to->isSimplified()) {
+            if(currentSpanning != NULL) {
                 Vertex * v0 = &from->vertex;
                 Vertex * v1 = &to->vertex;
                 Vertex * v2 = &currentSpanning->vertex;
                 func.handle(*v0, *v1, *v2);
             } 
             currentSpanning = to;
-        }
-    } else {
-        uint order[8] = {0,1,2,3,4,5,6,7};
-        for (uint o = 0; o < 8; ++o) {
-            int i = order[o];
-            OctreeNode * child = children[i];
-            if(child != NULL && child->getType() == SpaceType::Surface) {
+        } else {
+            uint order[8] = {7,6,5,4,3,2,1,0};
+            for (uint o = 0; o < 8; ++o) {
+                int i = order[o];
+                OctreeNode * child = children[i];
+                if(child != NULL && child->getType() == SpaceType::Surface) {
 
-                BoundingCube childCube = toCube.getChild(i);
-                bool overlapsX = (fromCube.getMinX() <= childCube.getMaxX() && childCube.getMinX() <= fromCube.getMaxX());
-                bool overlapsY = (fromCube.getMinY() <= childCube.getMaxY() && childCube.getMinY() <= fromCube.getMaxY());
-                bool overlapsZ = (fromCube.getMinZ() <= childCube.getMaxZ() && childCube.getMinZ() <= fromCube.getMaxZ());
-                bool intersects = fromCube.intersects(childCube) && (overlapsX || overlapsY || overlapsZ);
-                bool contains = childCube.contains(fromCube);
+                    BoundingCube childCube = toCube.getChild(i);
+                    bool overlapsX = (fromCube.getMinX() <= childCube.getMaxX() && childCube.getMinX() <= fromCube.getMaxX());
+                    bool overlapsY = (fromCube.getMinY() <= childCube.getMaxY() && childCube.getMinY() <= fromCube.getMaxY());
+                    bool overlapsZ = (fromCube.getMinZ() <= childCube.getMaxZ() && childCube.getMinZ() <= fromCube.getMaxZ());
+                    bool intersects = fromCube.intersects(childCube) && (overlapsX || overlapsY || overlapsZ);
+                    bool contains = childCube.contains(fromCube);
 
-                if(contains || intersects) {
-                    OctreeNode * result = iterateTrianglesInternal(from, fromCube, fromSDF, child, childCube, child->sdf, currentSpanning, func, context);
-                    if(result != NULL) {
-                        currentSpanning = result;
+                    if(contains || intersects) {
+                        OctreeNode * result = iterateTrianglesInternal(from, fromCube, fromSDF, child, childCube, child->sdf, currentSpanning, func, context);
+                        if(intersects && result != NULL) {
+                            currentSpanning = result;
+                        }
                     }
                 }
-            
-            
             }
         }
     }
