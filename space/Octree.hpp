@@ -61,7 +61,7 @@ public:
             OctreeNode * to,
             const BoundingCube &toCube,
             const float toSDF[8],
-            OctreeNode ** previous,
+            OctreeNode * previous,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const;
 
