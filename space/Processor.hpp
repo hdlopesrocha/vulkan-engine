@@ -2,14 +2,16 @@
 #include "IteratorHandler.hpp"
 #include "Octree.hpp"
 #include "ThreadPool.hpp"
+#include "ForwardingHandler.hpp"
+#include <vector>
 #include <unordered_set>
 #include "../math/BoundingCubeHasher.hpp"
 
 class Processor : public IteratorHandler {
     ThreadPool &threadPool;
     ThreadContext * context;
-    std::vector<OctreeNodeTriangleHandler*> * handlers;
     long * count;
+    ForwardingHandler fh;
     
 
 public:
