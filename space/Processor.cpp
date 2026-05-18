@@ -14,10 +14,7 @@ bool Processor::test(const Octree &tree, OctreeNodeData &params) {
         return false;
     }
     else if(params.node->getType() == SpaceType::Surface) {    
-        // Set context for leaf nodes OR chunk nodes (chunks are tessellation boundaries)
         if(params.node->isSimplified()) {
-            // Forwarding handler: forwards triangle calls to the provided handlers vector
-            // Iterate triangles and forward them to the registered handlers
             tree.iterateTriangles(params.node, params.cube, fh, context);
             return false;
         }

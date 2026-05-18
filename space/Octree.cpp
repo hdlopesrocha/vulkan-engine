@@ -158,34 +158,41 @@ void Octree::iterateTriangles(
             const BoundingCube &fromCube,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const {
-    OctreeNode * previous = NULL;
     if(from->getType() == SpaceType::Surface) {
-        iterateTrianglesInternal(from, fromCube, from->sdf, root, *this, root->sdf, previous, func, context);
+        std::vector<Vertex> vertices;
+        vertices.reserve(8);
+        iterateTrianglesInternal(from, fromCube, from->sdf, root, *this, root->sdf, func, context, &vertices);
+    
+        std::sort(vertices.begin(), vertices.end(), [&fromCube](const Vertex &a, const Vertex &b) {
+            glm::vec3 corner = fromCube.getCorner(1);
+            float distA = glm::distance(a.position, corner);
+            float distB = glm::distance(b.position, corner);
+            return distA < distB;
+        });
+
+        for (size_t i = 1; i < vertices.size(); i++) {
+            Vertex &v0 = vertices[i-1];
+            Vertex &v1 = vertices[i];
+            func.handle(from->vertex, v0, v1);
+        }
     }
 }
 
 
-OctreeNode *Octree::iterateTrianglesInternal(
+void Octree::iterateTrianglesInternal(
             OctreeNode * from,
             const BoundingCube &fromCube,
             const float fromSDF[8],
             OctreeNode * to,
             const BoundingCube &toCube,
             const float toSDF[8],
-            OctreeNode * previous,
             OctreeNodeTriangleHandler &func,
-            ThreadContext * context) const {
+            ThreadContext * context,
+            std::vector<Vertex> * vertices) const {
 
-    OctreeNode * currentSpanning = previous;
     if(to->getType() == SpaceType::Surface) {
         if(to->isSimplified()) {
-            if(currentSpanning != NULL) {
-                Vertex * v0 = &from->vertex;
-                Vertex * v1 = &to->vertex;
-                Vertex * v2 = &currentSpanning->vertex;
-                func.handle(*v0, *v1, *v2);
-            } 
-            currentSpanning = to;
+            vertices->push_back(to->vertex);
         } else {
             OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
             to->getChildren(*allocator, children);
@@ -194,7 +201,6 @@ OctreeNode *Octree::iterateTrianglesInternal(
                 int i = order[o];
                 OctreeNode * child = children[i];
                 if(child != NULL && child->getType() == SpaceType::Surface) {
-
                     BoundingCube childCube = toCube.getChild(i);
                     bool overlapsX = (fromCube.getMinX() <= childCube.getMaxX() && childCube.getMinX() <= fromCube.getMaxX());
                     bool overlapsY = (fromCube.getMinY() <= childCube.getMaxY() && childCube.getMinY() <= fromCube.getMaxY());
@@ -203,16 +209,12 @@ OctreeNode *Octree::iterateTrianglesInternal(
                     bool contains = childCube.contains(fromCube);
 
                     if(contains || intersects) {
-                        OctreeNode * result = iterateTrianglesInternal(from, fromCube, fromSDF, child, childCube, child->sdf, currentSpanning, func, context);
-                        if(intersects && result != NULL) {
-                            currentSpanning = result;
-                        }
+                        iterateTrianglesInternal(from, fromCube, fromSDF, child, childCube, child->sdf, func, context, vertices);
                     }
                 }
             }
         }
     }
-    return currentSpanning;
 }
 
 

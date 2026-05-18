@@ -55,15 +55,15 @@ public:
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const;
 
-        OctreeNode * iterateTrianglesInternal(OctreeNode * from,
+        void iterateTrianglesInternal(OctreeNode * from,
             const BoundingCube &fromCube,
             const float fromSDF[8],
             OctreeNode * to,
             const BoundingCube &toCube,
             const float toSDF[8],
-            OctreeNode * previous,
             OctreeNodeTriangleHandler &func,
-            ThreadContext * context) const;
+            ThreadContext * context,
+            std::vector<Vertex> * vertices) const;
 
     bool isChunkNode(float length) const;
     bool isThreadNode(float length, float minSize, int threadSize) const;
