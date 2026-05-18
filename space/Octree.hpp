@@ -13,6 +13,7 @@
 #include "../sdf/WrappedSignedDistanceFunction.hpp"
 #include <functional>
 #include "../math/BoundingCube.hpp"
+#include <string>
 
 class IteratorHandler;
 
@@ -72,6 +73,7 @@ public:
     bool isThreadNode(float length, float minSize, int threadSize) const;
     void exportOctreeSerialization(OctreeSerialized * octree);
     void exportNodesSerialization(std::vector<OctreeNodeCubeSerialized> * nodes);
+    void exportToJson(const std::string &filename) const;
 private:
     void buildSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], float resultSDF[8], ThreadContext * threadContext) const;
     float evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float> * threadContext, glm::vec3 p) const;

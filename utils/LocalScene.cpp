@@ -69,6 +69,8 @@ void LocalScene::loadScene(SceneLoaderCallback& callback, const OctreeChangeHand
     auto endTime = std::chrono::steady_clock::now();
     double elapsed = std::chrono::duration<double>(endTime - startTime).count();
     std::cout << "LocalScene::loadScene Ok! " << std::to_string(elapsed) << "s"  << std::endl;
+    // Export opaque (solid) octree to JSON after loading the scene
+    //opaqueOctree.exportToJson("solid.json");
 }
 
 void LocalScene::save(const std::string& filePath, const Settings* settings) {

@@ -5,6 +5,8 @@
 #include "NodeOperationResult.hpp"
 #include "OctreeNodeCubeSerialized.hpp"
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 
 const float INFINITY_ARRAY [8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
 #include "OctreeAllocator.hpp"
@@ -584,4 +586,55 @@ void Octree::reset() {
         allocator->nodeAllocator.reset();
         this->root = allocator->allocate()->init(glm::vec3(getCenter()));
     }
+}
+
+void Octree::exportToJson(const std::string &filename) const {
+    std::ofstream file(filename);
+    if (!file) {
+        std::cerr << "Octree::exportToJson() Error opening file: " << filename << std::endl;
+        return;
+    }
+    file.setf(std::ios::fixed);
+    file << std::setprecision(6);
+
+    std::function<void(const OctreeNode*, const BoundingCube&)> writeNode;
+    writeNode = [&](const OctreeNode* node, const BoundingCube &cube) {
+        if (node == NULL) {
+            file << "null";
+            return;
+        }
+        file << "{";
+        const Vertex &v = node->vertex;
+        file << "\"position\":[" << v.position.x << "," << v.position.y << "," << v.position.z << "],";
+        file << "\"normal\":[" << v.normal.x << "," << v.normal.y << "," << v.normal.z << "],";
+        file << "\"texCoord\":[" << v.texCoord.x << "," << v.texCoord.y << "],";
+        file << "\"brushIndex\":" << v.brushIndex << ",";
+        file << "\"bits\":" << (int)node->bits << ",";
+        glm::vec3 min = cube.getMin();
+        glm::vec3 len = cube.getLength();
+        file << "\"min\":[" << min.x << "," << min.y << "," << min.z << "],";
+        file << "\"length\":[" << len.x << "," << len.y << "," << len.z << "],";
+
+        ChildBlock * block = node->getBlock(*allocator);
+        if (block == NULL) {
+            file << "\"children\": null";
+        } else {
+            OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+            node->getChildren(*allocator, children);
+            file << "\"children\":";
+            file << "[";
+            for (int i = 0; i < 8; ++i) {
+                writeNode(children[i], cube.getChild(i));
+                if (i < 7) file << ",";
+            }
+            file << "]";
+        }
+        file << "}";
+    };
+
+    file << "{ \"root\": ";
+    writeNode(root, *this);
+    file << " }\n";
+    file.close();
+    std::cout << "Octree exported to JSON: " << filename << std::endl;
 }
