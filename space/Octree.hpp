@@ -52,15 +52,18 @@ public:
 
         void iterateTriangles(OctreeNode * from,
             const BoundingCube &fromCube,
+            int fromLevel,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const;
 
         void iterateTrianglesInternal(OctreeNode * from,
             const BoundingCube &fromCube,
             const float fromSDF[8],
+            int fromLevel,
             OctreeNode * to,
             const BoundingCube &toCube,
             const float toSDF[8],
+            int toLevel,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context,
             std::vector<Vertex> * vertices) const;

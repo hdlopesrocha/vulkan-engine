@@ -15,7 +15,7 @@ bool Processor::test(const Octree &tree, OctreeNodeData &params) {
     }
     else if(params.node->getType() == SpaceType::Surface) {    
         if(params.node->isSimplified()) {
-            tree.iterateTriangles(params.node, params.cube, fh, context);
+            tree.iterateTriangles(params.node, params.cube, params.level, fh, context);
             return false;
         }
         return true;

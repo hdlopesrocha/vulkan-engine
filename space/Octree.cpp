@@ -156,15 +156,16 @@ bool allDifferent(const T& first, const Args&... args) {
 void Octree::iterateTriangles(
         OctreeNode * from,
             const BoundingCube &fromCube,
+            int fromLevel,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const {
     if(from->getType() == SpaceType::Surface) {
         std::vector<Vertex> vertices;
         vertices.reserve(8);
-        iterateTrianglesInternal(from, fromCube, from->sdf, root, *this, root->sdf, func, context, &vertices);
+        iterateTrianglesInternal(from, fromCube, from->sdf, fromLevel, root, *this, root->sdf, 0, func, context, &vertices);
+        glm::vec3 corner = fromCube.getCorner(1);
     
-        std::sort(vertices.begin(), vertices.end(), [&fromCube](const Vertex &a, const Vertex &b) {
-            glm::vec3 corner = fromCube.getCorner(1);
+        std::sort(vertices.begin(), vertices.end(), [corner](const Vertex &a, const Vertex &b) {
             float distA = glm::distance(a.position, corner);
             float distB = glm::distance(b.position, corner);
             return distA < distB;
@@ -183,9 +184,11 @@ void Octree::iterateTrianglesInternal(
             OctreeNode * from,
             const BoundingCube &fromCube,
             const float fromSDF[8],
+            int fromLevel,
             OctreeNode * to,
             const BoundingCube &toCube,
             const float toSDF[8],
+            int toLevel,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context,
             std::vector<Vertex> * vertices) const {
@@ -209,7 +212,7 @@ void Octree::iterateTrianglesInternal(
                     bool contains = childCube.contains(fromCube);
 
                     if(contains || intersects) {
-                        iterateTrianglesInternal(from, fromCube, fromSDF, child, childCube, child->sdf, func, context, vertices);
+                        iterateTrianglesInternal(from, fromCube, fromSDF, fromLevel, child, childCube, child->sdf, toLevel + 1, func, context, vertices);
                     }
                 }
             }
