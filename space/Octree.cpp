@@ -168,17 +168,55 @@ void Octree::iterateTriangles(
         std::vector<Vertex> vertices;
         vertices.reserve(8);
         iterateTrianglesInternal(from, fromCube, from->sdf, fromLevel, root, *this, root->sdf, 0, func, context, &vertices);
-        glm::vec3 corner = fromCube.getCorner(1);
-    
-        std::sort(vertices.begin(), vertices.end(), [corner](const Vertex &a, const Vertex &b) {
-            float distA = glm::distance(a.position, corner);
-            float distB = glm::distance(b.position, corner);
-            return distA < distB;
-        });
+        // Order vertices around the `from` vertex by angle projected on the plane
+        // orthogonal to the `from` normal. Sorting by distance to a corner produced
+        // non-circular ordering and can create crossing/overlapping triangles.
+        glm::vec3 center = from->vertex.position;
+        glm::vec3 normal = from->vertex.normal;
+        if (glm::length(normal) < 1e-8f) {
+            // fallback: use vector from cube center to vertex
+            normal = glm::normalize(center - fromCube.getCenter());
+            if (glm::length(normal) < 1e-8f) {
+                normal = glm::vec3(0.0f, 1.0f, 0.0f);
+            }
+        } else {
+            normal = glm::normalize(normal);
+        }
 
-        for (size_t i = 1; i < vertices.size(); i++) {
-            Vertex &v0 = vertices[i-1];
-            Vertex &v1 = vertices[i];
+        glm::vec3 ref = (std::fabs(normal.x) < 0.9f) ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+        glm::vec3 u = glm::normalize(glm::cross(normal, ref));
+        glm::vec3 v = glm::cross(normal, u);
+
+        std::vector<std::pair<float, Vertex>> angled;
+        angled.reserve(vertices.size());
+        for (const Vertex &vert : vertices) {
+            glm::vec3 p = vert.position - center;
+            glm::vec3 proj = p - normal * glm::dot(p, normal);
+            float x = glm::dot(proj, u);
+            float y = glm::dot(proj, v);
+            float angle = std::atan2(y, x);
+            angled.emplace_back(angle, vert);
+        }
+
+        std::sort(angled.begin(), angled.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+
+        // Deduplicate by position (small epsilon) while preserving angular order
+        const float EPS = 1e-6f;
+        std::vector<Vertex> ordered;
+        ordered.reserve(angled.size());
+        for (size_t i = 0; i < angled.size(); ++i) {
+            const Vertex &vert = angled[i].second;
+            bool dup = false;
+            for (const Vertex &ov : ordered) {
+                glm::vec3 dpos = ov.position - vert.position;
+                if (glm::dot(dpos, dpos) < EPS * EPS) { dup = true; break; }
+            }
+            if (!dup) ordered.push_back(vert);
+        }
+
+        for (size_t i = 1; i < ordered.size(); i++) {
+            Vertex &v0 = ordered[i-1];
+            Vertex &v1 = ordered[i];
             func.handle(from->vertex, v0, v1);
         }
     }
