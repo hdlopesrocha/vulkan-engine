@@ -706,8 +706,6 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     bool childResultEmpty = true;
     bool childShapeSolid = true;
     bool childShapeEmpty = true;
-    bool childSimplified = true;
-    bool isSimplified = isLeaf;
 
     if(!isLeaf) {
         for(uint i = 0; i < 8; ++i) {
@@ -716,7 +714,6 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             childResultSolid &= result.resultType == SpaceType::Solid;
             childShapeEmpty &= result.shapeType == SpaceType::Empty;
             childShapeSolid &= result.shapeType == SpaceType::Solid;
-            childSimplified &= result.isSimplified;
             // Disjoint children still carry valid existing/interpolated result SDF.
             if(result.resultSDF[i] != INFINITY) {
                 resultSDF[i] = result.resultSDF[i];
@@ -733,6 +730,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     SpaceType shapeType = isLeaf ? SDF::eval(shapeSDF) : childToParent(childShapeSolid, childShapeEmpty);
     SpaceType resultType = isLeaf ? SDF::eval(resultSDF) : childToParent(childResultSolid, childResultEmpty);
     bool isResultSurface = resultType == SpaceType::Surface;
+    bool isSimplified = isLeaf;
 
     if(shapeType == SpaceType::Empty && node != NULL) {
         process = false; 
@@ -753,7 +751,6 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                     brushIndex = args.painter.paint(node->vertex, args.translate, args.scale);
                 }        
             } else {
-                if(childSimplified) {
                     if(isChunk) {
                         isSimplified = false;
                         brushIndex = DISCARD_BRUSH_INDEX;
@@ -764,7 +761,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                             brushIndex = simplificationResult.brushIndex;
                         } 
                     }
-                }
+                
                 uint childNodes[8] = {UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX};
                 for(uint i =0 ; i < 8 ; ++i) {
                     NodeOperationResult & child = childResult[i];
