@@ -8,6 +8,7 @@ typedef unsigned int uint;
 
 struct OctreeNodeFrame {
     OctreeNode* node;
+    OctreeNode * iteratedNode; // used for iteration to keep track of the current node being processed, can be different from node when iterating children
     BoundingCube cube;
     uint level;
     float sdf[8];
@@ -15,6 +16,6 @@ struct OctreeNodeFrame {
     BoundingCube chunkCube;
     OctreeNodeFrame();
     OctreeNodeFrame(const OctreeNodeFrame &t);
-    OctreeNodeFrame(OctreeNode* node, BoundingCube cube, uint level, float * sdf, int brushIndex, BoundingCube chunkCube);
+    OctreeNodeFrame(OctreeNode* node, OctreeNode* iteratedNode, BoundingCube cube, uint level, float * sdf, int brushIndex, BoundingCube chunkCube);
 };
 

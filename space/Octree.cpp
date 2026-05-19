@@ -560,7 +560,7 @@ void Octree::apply(
     *shapeCounter = 0;
     ShapeArgs args = ShapeArgs(operation, function, painter, model, translate, scale, simplifier, changeHandler, minSize);	
   	expand(args);
-    OctreeNodeFrame frame = OctreeNodeFrame(root, *this, 0, root->sdf, DISCARD_BRUSH_INDEX, *this);
+    OctreeNodeFrame frame = OctreeNodeFrame(root, NULL, *this, 0, root->sdf, DISCARD_BRUSH_INDEX, *this);
     ThreadContext localChunkContext = ThreadContext(*this);
     shape(frame, args, &localChunkContext, ContainmentType::Intersects);
     std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << std::endl; 
@@ -638,6 +638,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             BoundingCube childCube = frame.cube.getChild(i);
             OctreeNodeFrame childFrame = OctreeNodeFrame(
                 child, 
+                child ? frame.iteratedNode : frame.node,
                 childCube, 
                 frame.level + 1, 
                 childSDF,
@@ -695,8 +696,9 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     SpaceType resultType = isLeaf ? SDF::eval(resultSDF) : childToParent(childResultSolid, childResultEmpty);
     bool isResultSurface = resultType == SpaceType::Surface;
     bool isSimplified = isLeaf;
+    bool interpolated = frame.iteratedNode != NULL;
 
-    if(shapeType == SpaceType::Empty && node != NULL) {
+    if(shapeType == SpaceType::Empty && node != NULL && !interpolated) {
         process = false; 
     }
     else if(isResultSurface) {
