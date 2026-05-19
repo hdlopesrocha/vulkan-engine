@@ -14,9 +14,6 @@ Simplifier::Simplifier(float angle, float distance, bool texturing) {
 SimplificationResult Simplifier::simplify(const BoundingCube chunkCube, const BoundingCube cube, const float * sdf, NodeOperationResult * children){
 	SimplificationResult res(false, DISCARD_BRUSH_INDEX);
 	int brushIndex = DISCARD_BRUSH_INDEX;
-	if(!chunkCube.contains(BoundingCube(cube.getMin() - cube.getLength(), cube.getLengthX()))) {
-		return res;
-	}
 
 	//uint mask = 0xff;
 	int nodeCount=0;
