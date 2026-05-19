@@ -683,7 +683,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             if(result.resultSDF[i] != INFINITY) {
                 resultSDF[i] = result.resultSDF[i];
             }
-            if(result.process && result.shapeSDF[i] != INFINITY) {
+            if(result.shapeSDF[i] != INFINITY) {
                 shapeSDF[i] = result.shapeSDF[i];
             } 
         }
@@ -698,7 +698,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     bool isSimplified = isLeaf;
     bool interpolated = frame.iteratedNode != NULL;
 
-    if(shapeType == SpaceType::Empty && node != NULL && !interpolated) {
+    if(resultType == SpaceType::Empty && !interpolated) {
         process = false; 
     }
     else if(isResultSurface) {
