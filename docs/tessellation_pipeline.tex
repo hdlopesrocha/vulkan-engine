@@ -1,0 +1,1056 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+
+\geometry{margin=1in}
+\setlength{\emergencystretch}{3em}
+\setlist{nosep}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black
+}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    columns=fullflexible,
+    keepspaces=true,
+    frame=single,
+    breaklines=true,
+    backgroundcolor=\color{black!3}
+}
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\sdf}{\operatorname{SDF}}
+\newcommand{\interp}{\operatorname{interp}}
+
+\title{Octree Surface-Nets Tessellation, LOD, and Stitching}
+\author{Henrique Rocha}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document describes the SDF octree meshing path in this project. The terrain and solid geometry pipeline is a surface-nets style extractor: every simplified surface cell stores one representative vertex, and triangles are emitted around cube edges whose signed distance samples cross the zero isosurface. The document follows the implementation from \code{Octree::apply} and \code{Octree::shape}, through simplification-based LOD, into \code{Octree::iterateTriangles}, the adaptive per-edge stitching algorithm, and finally \code{Tesselator::handle}.
+\end{abstract}
+
+\tableofcontents
+
+\section{Scope}
+
+This document is about the CPU octree tessellation path used for SDF-backed scene geometry. It is not primarily about the Vulkan hardware tessellation shaders used by water rendering. In this codebase the name \code{Tesselator} refers to a CPU-side triangle handler that receives triangles from the octree and appends them to \code{Geometry}.
+
+The relevant files are:
+
+\begin{center}
+\begin{tabular}{p{0.30\linewidth}p{0.60\linewidth}}
+\toprule
+\textbf{File} & \textbf{Responsibility} \\
+\midrule
+\code{space/Octree.cpp} & SDF application, octree shaping, simplification integration, triangle extraction, adaptive edge stitching \\
+\code{space/Simplifier.cpp} & Criteria for collapsing eight child results into one coarser LOD cell \\
+\code{space/Processor.cpp} & Traversal policy that stops at simplified surface nodes and starts tessellation \\
+\code{space/Tesselator.cpp} & Material filtering, winding correction, triplanar UV generation, geometry emission \\
+\code{sdf/SDF.cpp} & Corner interpolation, SDF classification, surface vertex placement, SDF gradients \\
+\code{math/Geometry.cpp} & Vertex compaction and indexed triangle storage \\
+\code{utils/LocalScene.cpp} & Entry point for building chunk geometry \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Pipeline Overview}
+
+The pipeline has two separate phases.
+
+\subsection{Shape/Update Phase}
+
+\code{Octree::apply} changes the octree by applying one SDF operation over the current tree. The operation can be union, subtraction, intersection, xor, or any function with the same signature:
+
+\[
+d_\text{result} = \texttt{operation}(d_\text{existing}, d_\text{shape})
+\]
+
+The update phase recursively visits octree cells through \code{Octree::shape}. It computes or inherits SDF corner values, classifies cells as empty, solid, or surface, allocates and clears nodes, computes representative surface vertices, assigns material brushes, and marks nodes as simplified or unsimplified.
+
+\subsection{Mesh Extraction Phase}
+
+\code{LocalScene::requestModel3D} builds render geometry for a chunk:
+
+\begin{lstlisting}
+LocalScene::requestModel3D
+  create ThreadContext for chunk
+  create Tesselator
+  create Processor with the Tesselator as handler
+  tree->iterateFlat(processor, chunkData)
+  if geometry is not empty, return it through callback
+\end{lstlisting}
+
+\code{Processor::test} walks the chunk subtree. When it finds an unsimplified surface node, traversal continues into children. When it finds a simplified surface node, it calls \code{Octree::iterateTriangles} and stops below that node.
+
+\begin{lstlisting}
+Processor::test(node):
+  if node is not a surface:
+    return false
+  if node is simplified:
+    tree.iterateTriangles(node, cube, level, handler, context)
+    return false
+  return true
+\end{lstlisting}
+
+\section{Coordinate and Topology Conventions}
+
+\subsection{Cube Corners}
+
+Every octree node is an axis-aligned cube. Its SDF values are stored in \code{sdf[8]}, one value for each corner. The corner order is inherited from \code{CUBE_CORNERS}:
+
+\begin{center}
+\begin{tabular}{cccc}
+\toprule
+\textbf{Index} & \textbf{x} & \textbf{y} & \textbf{z} \\
+\midrule
+0 & 0 & 0 & 0 \\
+1 & 0 & 0 & 1 \\
+2 & 0 & 1 & 0 \\
+3 & 0 & 1 & 1 \\
+4 & 1 & 0 & 0 \\
+5 & 1 & 0 & 1 \\
+6 & 1 & 1 & 0 \\
+7 & 1 & 1 & 1 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+For a cube with minimum \(m\) and edge length \(L\), corner \(i\) is:
+
+\[
+p_i = m + L \cdot c_i
+\]
+
+where \(c_i\) is the \((0,1)^3\) corner vector from the table.
+
+\subsection{Child Indices}
+
+The function \code{getNodeIndex(pos, cube)} maps a point to one of the eight children by comparing it against the cube center:
+
+\[
+\texttt{index} =
+    (x \ge c_x ? 4 : 0) +
+    (y \ge c_y ? 2 : 0) +
+    (z \ge c_z ? 1 : 0)
+\]
+
+This bit layout matches the corner convention. The \(x\) side is the high bit, \(y\) is the middle bit, and \(z\) is the low bit.
+
+\subsection{SDF Edges}
+
+The twelve cube edges are stored in \code{SDF_EDGES}. An edge is a pair of corner indices:
+
+\begin{center}
+\begin{tabular}{cl}
+\toprule
+\textbf{Edge} & \textbf{Corners} \\
+\midrule
+0 & \((0,1)\) \\
+1 & \((1,3)\) \\
+2 & \((2,3)\) \\
+3 & \((0,2)\) \\
+4 & \((4,5)\) \\
+5 & \((5,7)\) \\
+6 & \((6,7)\) \\
+7 & \((4,6)\) \\
+8 & \((0,4)\) \\
+9 & \((1,5)\) \\
+10 & \((2,6)\) \\
+11 & \((3,7)\) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\code{Octree::iterateTriangles} loops over all twelve edges of each simplified surface cell. An edge is active when the two endpoint signs differ.
+
+\section{SDF Values, Classification, and Interpolation}
+
+\subsection{Sign Convention}
+
+The signed distance convention is:
+
+\begin{itemize}
+    \item \(d < 0\): inside solid material;
+    \item \(d \ge 0\): outside, empty space;
+    \item mixed signs on a cube: the zero isosurface crosses the cube.
+\end{itemize}
+
+\code{SDF::eval} implements this classification:
+
+\begin{lstlisting}
+eval(sdf[8]):
+  if any value is INFINITY:
+    return Empty
+  hasPositive = any sdf[i] >= 0
+  hasNegative = any sdf[i] < 0
+  if hasPositive and hasNegative: return Surface
+  if hasPositive: return Empty
+  return Solid
+\end{lstlisting}
+
+\subsection{Trilinear Interpolation}
+
+Given local coordinates \((x,y,z)\) inside a cube, \code{SDF::interpolate} performs trilinear interpolation. Using the corner naming implied by \code{sdf[8]}:
+
+\[
+\begin{aligned}
+v_{000} &= d_0, & v_{001} &= d_1, \\
+v_{010} &= d_2, & v_{011} &= d_3, \\
+v_{100} &= d_4, & v_{101} &= d_5, \\
+v_{110} &= d_6, & v_{111} &= d_7.
+\end{aligned}
+\]
+
+The implementation first interpolates along \(z\), then \(y\), then \(x\):
+
+\[
+\begin{aligned}
+a_0 &= \operatorname{mix}(d_0,d_1,z), &
+a_1 &= \operatorname{mix}(d_2,d_3,z), \\
+a_2 &= \operatorname{mix}(d_4,d_5,z), &
+a_3 &= \operatorname{mix}(d_6,d_7,z), \\
+b_0 &= \operatorname{mix}(a_0,a_1,y), &
+b_1 &= \operatorname{mix}(a_2,a_3,y), \\
+d(x,y,z) &= \operatorname{mix}(b_0,b_1,x).
+\end{aligned}
+\]
+
+\subsection{Child SDF Inheritance}
+
+When a node does not yet have an explicit child, \code{shape} still needs child corner SDF values to recurse. It uses \code{SDF::getChildSDF}, which treats the parent as a canonical cube and samples the parent interpolation at the child corners.
+
+Conceptually:
+
+\begin{lstlisting}
+getChildSDF(parentSDF, childIndex):
+  childCube = canonicalCube.getChild(childIndex)
+  for each child corner j:
+    result[j] = interpolate(parentSDF, childCube.corner(j), canonicalCube)
+\end{lstlisting}
+
+This lets the tree refine an existing coarse field without first allocating every intermediate child.
+
+\section{Surface-Nets Vertex Placement}
+
+This project uses a surface-nets representation. A surface cell stores one vertex. It does not emit a Marching Cubes polygon inside the cell. Triangles are later formed by connecting the vertices of cells around active edges.
+
+\subsection{Average Edge Crossing Position}
+
+\code{SDF::getAveragePosition} examines all twelve cube edges. For each edge \((i,j)\) whose signs differ, it computes the zero crossing:
+
+\[
+t = \frac{d_i}{d_i - d_j}
+\]
+
+\[
+p_\text{cross} = p_i + t(p_j - p_i)
+\]
+
+The representative position is the average of all such crossing points:
+
+\[
+p_\text{vertex} =
+    \frac{1}{N}\sum_{k=1}^{N} p_{\text{cross},k}
+\]
+
+where \(N\) is the number of sign-changing edges.
+
+\subsection{Normal From Trilinear Gradient}
+
+\code{SDF::getNormalFromPosition} computes a gradient of the trilinear SDF at the representative vertex. The code evaluates partial derivatives of the trilinear field and normalizes:
+
+\[
+n = \operatorname{normalize}\left(
+    \nabla d(p_\text{vertex})
+\right)
+\]
+
+The resulting normal is stored in \code{node->vertex.normal}. Later, \code{Tesselator::handle} uses this normal to decide whether the emitted triangle winding should be reversed.
+
+\section{The Shape Method in Detail}
+
+\code{Octree::shape} is the recursive update function. It receives:
+
+\begin{itemize}
+    \item \code{OctreeNodeFrame frame}: the current node pointer, cube, level, inherited SDF, inherited brush, and owning chunk cube;
+    \item \code{ShapeArgs args}: SDF operation, wrapped SDF function, painter, transform, simplifier, change handler, and minimum size;
+    \item \code{ThreadContext}: caches for shape SDF values and fetched nodes;
+    \item \code{parentContainment}: containment result inherited from the parent.
+\end{itemize}
+
+It returns \code{NodeOperationResult}, which carries:
+
+\begin{itemize}
+    \item the resulting node pointer;
+    \item the shape classification;
+    \item the result classification;
+    \item shape and result SDF arrays;
+    \item whether the frame was processed;
+    \item whether the result is simplified;
+    \item the resulting brush index.
+\end{itemize}
+
+\subsection{Apply Entry Point}
+
+\code{Octree::apply} constructs \code{ShapeArgs}, expands the root if necessary, and starts shaping at the root:
+
+\begin{lstlisting}
+Octree::apply(operation, function, model, translate, scale,
+              painter, minSize, simplifier, changeHandler):
+  reset counters
+  args = ShapeArgs(...)
+  expand(args)
+  frame = OctreeNodeFrame(root, rootCube, level=0, root->sdf,
+                          DISCARD_BRUSH_INDEX, rootCube)
+  context = ThreadContext(rootCube)
+  shape(frame, args, context, Intersects)
+\end{lstlisting}
+
+\subsection{Root Expansion}
+
+\code{expand} doubles the root cube until the incoming SDF shape is contained. The old root is inserted as one child of the new root. The child index is chosen from the shape center and xor'ed with \code{0x7} so the root expands away from the shape direction while preserving the old tree in the correct octant.
+
+This matters because CSG operations can introduce geometry outside the existing root bounds. Without expansion, later SDF interpolation and child lookup would silently miss the new surface.
+
+\subsection{Containment Test}
+
+At every frame:
+
+\begin{lstlisting}
+check = parentContainment == Intersects
+      ? args.function->check(frame.cube, args.model, args.minSize)
+      : parentContainment
+\end{lstlisting}
+
+If the check is \code{Disjoint}, \code{shape} does not recurse. It returns a result that preserves existing node information where possible. This is the main edit-locality optimization.
+
+\subsection{Leaf and Thread Decisions}
+
+The code uses three related size decisions:
+
+\[
+\texttt{isChunk} =
+    \texttt{isChunkNode(length)}
+    \lor
+    \texttt{sameCube(frame.cube, frame.chunkCube)}
+\]
+
+\[
+\texttt{isShapeLeaf} = \texttt{length} \le \texttt{args.minSize}
+\]
+
+\[
+\texttt{isLeaf} =
+    \texttt{isShapeLeaf}
+    \land
+    \texttt{isNodeLeaf}
+\]
+
+\code{isNodeLeaf} is true when there is no existing node or the existing node is flagged as a leaf. This distinction lets an edit continue into pre-existing detail even when the new shape's requested minimum size has already been reached.
+
+Threading is coarse-grained:
+
+\[
+\texttt{isThreadNode(length, minSize, 16)}
+    \equiv
+    \texttt{minSize} \cdot 16 < \texttt{length}
+\]
+
+Large child frames may be processed on separate threads, each with its own local \code{ThreadContext}.
+
+\subsection{Recursive Child Processing}
+
+For non-leaf frames, \code{shape} visits all eight children:
+
+\begin{lstlisting}
+for child i in 0..7:
+  if existing child exists:
+    childSDF = child->sdf
+    childBrush = child->vertex.brushIndex
+  else:
+    childSDF = getChildSDF(frame.sdf, i)
+    childBrush = inherited brush
+
+  childFrame = OctreeNodeFrame(child, childCube, level+1,
+                               childSDF, childBrush,
+                               childChunkCube)
+  childResult[i] = shape(childFrame, args, context, check)
+\end{lstlisting}
+
+The parent then aggregates child results:
+
+\begin{itemize}
+    \item \code{childResultEmpty}: all children returned empty result type;
+    \item \code{childResultSolid}: all children returned solid result type;
+    \item \code{childShapeEmpty}: all children were empty for the incoming shape;
+    \item \code{childShapeSolid}: all children were solid for the incoming shape;
+    \item \code{childSimplified}: all children are simplified.
+\end{itemize}
+
+For processed children, the child's corner value at the parent's corner is copied upward:
+
+\[
+d_\text{parent result}[i] = d_{\text{child } i,\text{ result}}[i]
+\]
+
+This works because child \(i\)'s local corner \(i\) lies at the matching parent corner under this corner/index convention.
+
+\subsection{buildSDF}
+
+After child aggregation, some parent corner values may still be \code{INFINITY}. \code{buildSDF} fills them:
+
+\begin{lstlisting}
+for corner i in 0..7:
+  if shapeSDF[i] == INFINITY:
+    shapeSDF[i] = evaluateSDF(args, cornerPosition)
+  if resultSDF[i] == INFINITY:
+    resultSDF[i] = args.operation(frame.sdf[i], shapeSDF[i])
+\end{lstlisting}
+
+\code{evaluateSDF} uses \code{ThreadContext::shapeSdfCache} keyed by world-space position. That avoids repeated shape-distance evaluations at shared corners.
+
+\subsection{Parent Classification}
+
+Leaf classification uses direct SDF signs:
+
+\[
+\texttt{resultType} = \texttt{SDF::eval(resultSDF)}
+\]
+
+Internal classification uses child classifications:
+
+\begin{lstlisting}
+childToParent(allSolid, allEmpty):
+  if allSolid: return Solid
+  if allEmpty: return Empty
+  return Surface
+\end{lstlisting}
+
+Thus an internal cell can become a surface even if its own eight result corners alone would not reveal all detail. The tree preserves child topology through the aggregate result.
+
+\subsection{Surface Node Creation and Painting}
+
+When \code{resultType == Surface}, the code ensures there is a node:
+
+\begin{lstlisting}
+if node == NULL:
+  node = allocator->allocate()->init(Vertex(frame.cube.getCenter()))
+\end{lstlisting}
+
+Then it computes:
+
+\begin{lstlisting}
+node->vertex.position = SDF::getAveragePosition(resultSDF, frame.cube)
+node->vertex.normal =
+    SDF::getNormalFromPosition(resultSDF, frame.cube,
+                               node->vertex.position)
+\end{lstlisting}
+
+If the frame is a leaf and the incoming shape is not empty, the painter assigns the material:
+
+\begin{lstlisting}
+brushIndex = args.painter.paint(node->vertex,
+                                args.translate,
+                                args.scale)
+\end{lstlisting}
+
+\subsection{Child Pointer Installation}
+
+For internal surface nodes, \code{shape} stores child pointers in the node's \code{ChildBlock}. If a child result is non-surface or has no node, the function creates or updates a compact child node that stores that child result:
+
+\begin{lstlisting}
+if child.process:
+  if child.resultType != Surface or childNode == NULL:
+    if childNode == NULL:
+      childNode = allocate node at child cube center
+    childNode->setType(child.resultType)
+    childNode->setSDF(child.resultSDF)
+    childNode->setSimplified(true)
+    childNode->setChunk(childIsChunk)
+    childNode->setBrush(brushIndex)
+\end{lstlisting}
+
+This means empty and solid regions can still be represented by nodes when needed for child arrays, but they do not participate in mesh extraction.
+
+\subsection{Final Node State}
+
+At the end of a processed frame:
+
+\begin{lstlisting}
+node->setSDF(resultSDF)
+node->setType(resultType)
+node->setChunk(isChunk)
+node->setSimplified(isSimplified)
+node->setBrush(brushIndex)
+++node->version
+\end{lstlisting}
+
+If the node is a chunk node, the change handler is notified. If the result is not a surface, existing children are cleared because there is no longer any surface topology below this cell.
+
+\section{LOD Through Simplification}
+
+\subsection{Meaning of LOD}
+
+LOD is not selected by the renderer during mesh extraction. It is stored directly in the octree as \code{node->isSimplified()}.
+
+\begin{itemize}
+    \item A simplified surface node is a mesh leaf. It contributes one vertex and participates in edge stitching.
+    \item An unsimplified surface node is a traversal node. The mesh extractor descends into its children.
+    \item Empty and solid nodes do not emit mesh triangles.
+\end{itemize}
+
+Therefore the visible mesh resolution is the frontier of simplified surface nodes.
+
+\subsection{Chunk Boundary Rule}
+
+\code{Octree::isChunkNode} marks chunk-scale nodes:
+
+\[
+\frac{\texttt{chunkSize}}{2} < \texttt{length} \le \texttt{chunkSize}
+\]
+
+In \code{shape}, chunk surface nodes are kept unsimplified:
+
+\begin{lstlisting}
+if childSimplified:
+  if isChunk:
+    isSimplified = false
+    brushIndex = DISCARD_BRUSH_INDEX
+  else:
+    simplificationResult = simplifier.simplify(...)
+\end{lstlisting}
+
+This preserves chunk rebuild boundaries. A chunk node can own update notifications while still containing simplified descendants that produce the actual mesh.
+
+\subsection{Simplifier Preconditions}
+
+\code{Simplifier::simplify} can simplify a parent only when all required conditions pass.
+
+\paragraph{Chunk containment margin.}
+The candidate cube must be safely inside the chunk cube:
+
+\[
+\texttt{chunkCube.contains(BoundingCube(cube.min - cube.length, cube.length))}
+\]
+
+This is a conservative margin check. It prevents simplification too close to chunk boundaries, where neighboring chunks need compatible detail for stitching and rebuild ownership.
+
+\paragraph{Child simplification.}
+Every child that is a surface must already be simplified. If a child is still detailed, collapsing the parent would discard unresolved detail.
+
+\paragraph{Brush compatibility.}
+When \code{texturing} is enabled, surface children must agree on a brush index. If child materials differ, simplifying the parent would lose the material boundary.
+
+\paragraph{SDF approximation error.}
+For each surface child and each child corner:
+
+\[
+\left|
+\interp(d_\text{parent}, p_\text{child corner})
+- d_\text{child corner}
+\right|
+\le 0.05 \cdot L_\text{parent}
+\]
+
+The parent's trilinear SDF must approximate each simplified child. This is the geometric LOD error metric used by the current code.
+
+\subsection{Simplification Result}
+
+If at least one child is a surface and all checks pass, the parent becomes simplified:
+
+\begin{lstlisting}
+res.isSimplified = true
+res.brushIndex = brushIndex
+\end{lstlisting}
+
+The parent now replaces the child surface frontier during mesh extraction. The children still exist in the tree, but traversal stops at the parent while it remains simplified.
+
+\subsection{Why Stitching Is Required}
+
+Because simplification can succeed in some places and fail in others, adjacent mesh cells may have different sizes. A coarse simplified cell may share a surface edge with several smaller simplified cells. Without stitching, a coarse vertex fan can create cracks, overlaps, duplicate triangles, or inconsistent winding. The per-edge stitching algorithm exists specifically to make this mixed-LOD frontier meshable.
+
+\section{Mesh Extraction}
+
+\subsection{Chunk Mesh Request}
+
+\code{LocalScene::requestModel3D} builds one chunk mesh. It creates:
+
+\begin{itemize}
+    \item a triangle count;
+    \item a \code{ThreadContext} for caches;
+    \item a \code{Tesselator};
+    \item a vector of \code{OctreeNodeTriangleHandler*};
+    \item a \code{Processor}.
+\end{itemize}
+
+Then it calls:
+
+\begin{lstlisting}
+tree->iterateFlat(processor, data)
+\end{lstlisting}
+
+If the resulting index list is non-empty, it returns the geometry to the renderer through the callback.
+
+\subsection{Traversal Frontier}
+
+The mesh frontier is defined by \code{Processor::test}:
+
+\begin{lstlisting}
+if params.node->getType() == Surface:
+  if params.node->isSimplified():
+    tree.iterateTriangles(params.node, params.cube, params.level, ...)
+    return false
+  return true
+return false
+\end{lstlisting}
+
+The traversal never asks the renderer to mesh an unsimplified parent. It descends until it reaches simplified surface nodes.
+
+\section{Surface-Nets Triangle Rule}
+
+\subsection{Uniform Grid Case}
+
+In a uniform surface-nets grid, every active grid edge is surrounded by up to four cells. If all four cells are surface cells, their representative vertices form a quad around that edge. The quad is split into two triangles.
+
+In this project, the same idea is applied to an adaptive octree:
+
+\begin{itemize}
+    \item the active edge comes from one simplified surface cell;
+    \item the four incident cells may have different sizes;
+    \item the edge may need to be subdivided into multiple smaller edge segments before emission.
+\end{itemize}
+
+\subsection{Active Edge Test}
+
+For every edge \((i,j)\) of the current simplified cell:
+
+\[
+\operatorname{active}(i,j) =
+    (d_i < 0) \ne (d_j < 0)
+\]
+
+Only active edges can emit triangles. This ties every emitted triangle to an actual SDF zero crossing.
+
+\section{Adaptive Per-Edge Stitching}
+
+\subsection{Why the Old Angular Fan Was Insufficient}
+
+A simple approach is to gather nearby vertices and sort them around the current vertex by angle. That can work for uniform neighborhoods, but it has structural problems:
+
+\begin{itemize}
+    \item it does not know which cube edge owns a triangle;
+    \item it can connect vertices that are close in angle but not actually adjacent around a sign-changing edge;
+    \item it has no natural way to split one coarse edge against multiple fine cells;
+    \item it can produce overlapping or crossing triangles when the neighborhood is not circular.
+\end{itemize}
+
+The current implementation instead emits geometry from active cube edge segments. The edge, not the central vertex, is the primitive that owns topology.
+
+\subsection{EdgeCell}
+
+Inside \code{Octree::iterateTriangles}, an \code{EdgeCell} stores:
+
+\begin{itemize}
+    \item \code{node}: the octree node containing a sample point;
+    \item \code{cube}: the world-space cube bounds for that node;
+    \item \code{level}: the octree level.
+\end{itemize}
+
+It is valid for emission only when:
+
+\[
+\texttt{node != NULL}
+\land
+\texttt{node->getType() == Surface}
+\land
+\texttt{node->isSimplified()}
+\]
+
+\subsection{EdgeSpan}
+
+An \code{EdgeSpan} converts a 3D cube edge into a one-dimensional interval:
+
+\begin{itemize}
+    \item \code{axis}: the axis along which the edge varies;
+    \item \code{u}, \code{v}: the two fixed axes;
+    \item \code{fixedU}, \code{fixedV}: fixed coordinates for those axes;
+    \item \code{start}, \code{end}: interval bounds along \code{axis};
+    \item \code{eps}: coordinate tolerance.
+\end{itemize}
+
+For an edge parameter \(t\):
+
+\[
+p(t)_\texttt{axis} = t,
+\qquad
+p(t)_u = \texttt{fixedU},
+\qquad
+p(t)_v = \texttt{fixedV}
+\]
+
+\subsection{Finding the Cell Around an Edge}
+
+Sampling exactly on a cube edge is ambiguous because several cells share that edge. The code resolves this by sampling four quadrants around the edge. For each quadrant, the two fixed coordinates are nudged by one representable float with \code{std::nextafter}. This gives a point just inside one of the adjacent cells.
+
+\begin{lstlisting}
+edgeSamplePoint(edge, t, quadrant):
+  choose signs (su, sv) for quadrant around edge
+  p[axis] = t
+  p[u] = nextafter(fixedU, +/-infinity according to su)
+  p[v] = nextafter(fixedV, +/-infinity according to sv)
+  return p
+\end{lstlisting}
+
+\code{findCellAt} then descends from the root:
+
+\begin{lstlisting}
+findCellAt(pos):
+  if pos outside root: return empty EdgeCell
+  node = root
+  cube = rootCube
+  while node is not simplified and not leaf:
+    block = node->getBlock()
+    if block is null: return empty EdgeCell
+    childIndex = getNodeIndex(pos, cube)
+    child = block->get(childIndex)
+    if child is null: return empty EdgeCell
+    cube = cube.getChild(childIndex)
+    node = child
+  return EdgeCell(node, cube, level)
+\end{lstlisting}
+
+This query is simplification-aware because it stops at simplified nodes.
+
+\subsection{Collecting Breakpoints}
+
+A coarse edge may cross several LOD cells. \code{collectBreaks} recursively inserts breakpoints where incident cells begin or end along the edge axis.
+
+\begin{lstlisting}
+collectBreaks(edge, start, end, breaks, depth):
+  if depth too high or interval too small:
+    return
+
+  mid = (start + end) / 2
+  localBreaks = { start, end }
+
+  for quadrant in 0..3:
+    cell = findCellAt(edgeSamplePoint(edge, mid, quadrant))
+    if cell exists:
+      add cell.cube.min[edge.axis] as a break
+      add cell.cube.max[edge.axis] as a break
+
+  sort and unique localBreaks
+  add interior localBreaks to global breaks
+
+  for each local subinterval:
+    collectBreaks(edge, subStart, subEnd, breaks, depth + 1)
+\end{lstlisting}
+
+This converts the original interval \([t_0,t_1]\) into smaller intervals where the four incident cells are stable enough to emit a local surface-net polygon.
+
+\subsection{Segment Ownership}
+
+Each edge segment is sampled at its midpoint. The four incident cells are compared using \code{ownerLess}. The owner is the minimum under this ordering:
+
+\begin{enumerate}
+    \item smaller cube length;
+    \item smaller cube minimum \(x\);
+    \item smaller cube minimum \(y\);
+    \item smaller cube minimum \(z\);
+    \item smaller node pointer.
+\end{enumerate}
+
+Only the owner cell emits the segment:
+
+\begin{lstlisting}
+owner = min(cells[0..3], ownerLess)
+if owner.node != from:
+  return
+\end{lstlisting}
+
+This is the duplicate-prevention mechanism. Every incident cell can discover the same segment, but only one cell is allowed to emit it.
+
+\subsection{Owner Sign Validation}
+
+Even if the original \code{from} edge is active, a subsegment still verifies a crossing against the owner cell's SDF:
+
+\[
+d_0 = \interp(d_\text{owner}, p_\text{segment start})
+\]
+
+\[
+d_1 = \interp(d_\text{owner}, p_\text{segment end})
+\]
+
+If \(d_0\) and \(d_1\) have the same sign, the segment is skipped. This keeps emission tied to the local owner's field and avoids producing triangles for segments that do not cross the isosurface after subdivision.
+
+\subsection{Polygon Construction}
+
+For an accepted segment, the four incident surface cells are collected in cyclic quadrant order. Their representative vertices form a local polygon around the edge.
+
+The code removes:
+
+\begin{itemize}
+    \item consecutive duplicate nodes;
+    \item consecutive vertices with the same position within epsilon;
+    \item the closing duplicate between the first and last polygon vertex.
+\end{itemize}
+
+Then it rejects any remaining non-consecutive duplicate. This conservative rejection avoids ambiguous polygons.
+
+\subsection{Triangle Emission Cases}
+
+After duplicate collapse:
+
+\begin{itemize}
+    \item three unique vertices produce one triangle;
+    \item four unique vertices produce two triangles;
+    \item any other count is skipped.
+\end{itemize}
+
+In code:
+
+\begin{lstlisting}
+if polygon.size() == 3:
+  emitTriangle(v0, v1, v2)
+else if polygon.size() == 4:
+  emitTriangle(v0, v1, v2)
+  emitTriangle(v0, v2, v3)
+\end{lstlisting}
+
+\subsection{Coarse-to-Fine Bridge Example}
+
+Assume one coarse cell \(C\) spans two fine cells \(F_0\) and \(F_1\) along an active edge. The initial coarse edge interval is split at the fine-cell boundary:
+
+\[
+[t_0,t_2] \rightarrow [t_0,t_1] \cup [t_1,t_2]
+\]
+
+On each subsegment, the four incident cells are sampled independently. If \(C\) appears in two adjacent quadrants, its representative vertex appears twice in the raw cyclic polygon. Duplicate collapse turns the local quad into a triangle that bridges from the coarse vertex to the fine-side vertices.
+
+The important property is that the bridge is emitted per subsegment, not once for the entire coarse edge. This lets the fine side contribute the number of triangles it needs while the coarse side still contributes only its single representative vertex.
+
+\subsection{Degenerate Filtering}
+
+\code{emitTriangle} rejects a triangle when any two vertex positions are equal within epsilon:
+
+\[
+\|p_a - p_b\|^2 \le \epsilon^2
+\]
+
+This prevents zero-area triangles caused by duplicate representative vertices, fully collapsed polygons, or pathological SDF configurations.
+
+\section{Tesselator::handle}
+
+\code{Tesselator::handle} is the final CPU-side triangle consumer.
+
+\subsection{Material Filtering}
+
+The current implementation only emits a triangle if all three vertices have valid brush indices:
+
+\begin{lstlisting}
+if v0.brushIndex > DISCARD_BRUSH_INDEX &&
+   v1.brushIndex > DISCARD_BRUSH_INDEX &&
+   v2.brushIndex > DISCARD_BRUSH_INDEX:
+  emit
+\end{lstlisting}
+
+This avoids drawing triangles made from placeholder or deliberately discarded nodes. Because chunk surface nodes can carry \code{DISCARD_BRUSH_INDEX}, valid render geometry normally comes from simplified descendants with real brush indices.
+
+\subsection{Winding Correction}
+
+The incoming octree triangle order is treated as topological. The tessellator corrects winding against the first vertex normal.
+
+\[
+n_\triangle = (v_1 - v_0) \times (v_2 - v_0)
+\]
+
+\[
+\texttt{reverse} =
+    (n_\triangle \cdot v_0.\texttt{normal}) < 0
+\]
+
+If \code{reverse} is true, \code{Geometry::addTriangle} receives \((v_0,v_1,v_2)\). Otherwise it receives \((v_2,v_1,v_0)\). This centralizes orientation handling in the tessellator.
+
+\subsection{Triplanar UV Projection}
+
+\code{triplanarPlane} selects a projection plane from the dominant component of the triangle normal:
+
+\begin{center}
+\begin{tabular}{cll}
+\toprule
+\textbf{Dominant axis} & \textbf{Normal sign} & \textbf{UV mapping} \\
+\midrule
+\(x\) & positive & \((-z,-y)\) \\
+\(x\) & negative & \(( z,-y)\) \\
+\(y\) & positive & \(( x, z)\) \\
+\(y\) & negative & \(( x,-z)\) \\
+\(z\) & positive & \(( x,-y)\) \\
+\(z\) & negative & \((-x,-y)\) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The mapping is scaled by \code{triplanarScale = 0.1f}. Tangents are not stored in \code{Vertex}; shader code computes tangent information for triplanar mapping.
+
+\subsection{Indexed Geometry}
+
+\code{Geometry::addTriangle} appends the three vertices. \code{Geometry::addVertex} compacts them through \code{compactMap}:
+
+\begin{lstlisting}
+auto [it, inserted] = compactMap.try_emplace(vertex, compactMap.size())
+if inserted:
+  vertices.push_back(vertex)
+indices.push_back(it->second)
+\end{lstlisting}
+
+The hash/equality includes position, normal, texture coordinate, and brush index. Two vertices at the same position can still remain distinct if their material, normal, or UV differs.
+
+\section{End-to-End Example}
+
+Consider adding a sphere into an empty tree.
+
+\begin{enumerate}
+    \item \code{Octree::apply(SDF::opUnion, sphere, ...)} starts at the root.
+    \item \code{expand} grows the root if the sphere does not fit.
+    \item \code{shape} recursively visits cubes that intersect the sphere bounds.
+    \item At leaf size, corner SDF values are computed from the sphere function.
+    \item Leaf cubes with mixed signs become surface nodes.
+    \item Their representative vertices are averages of sphere edge crossings.
+    \item The painter assigns brush indices.
+    \item Parent nodes try to simplify once all surface children are simplified.
+    \item Chunk nodes remain unsimplified, but smoother regions below them may collapse to coarser nodes.
+    \item Later, chunk mesh extraction traverses to the simplified surface frontier.
+    \item Each simplified cell checks its active edges, splits them against neighboring LOD cells, and emits owned triangles.
+    \item \code{Tesselator::handle} filters, orients, texture-maps, and stores those triangles.
+\end{enumerate}
+
+\section{Debugging and Failure Modes}
+
+\subsection{Cracks Between LODs}
+
+Likely causes:
+
+\begin{itemize}
+    \item a segment has an incident quadrant that resolves to a null node or non-surface node;
+    \item neighboring chunks disagree about simplification near a boundary;
+    \item \code{collectBreaks} did not discover a required split because the cell boundary was not visible at the sampled midpoint;
+    \item the owner sign validation skipped a segment after subdivision.
+\end{itemize}
+
+Useful places to inspect are \code{collectBreaks}, \code{findCellAt}, and the chunk containment margin in \code{Simplifier::simplify}.
+
+\subsection{Overlapping or Duplicate Triangles}
+
+The owner rule should prevent duplicates. If duplicates appear, verify that all incident cells compute identical segment intervals and that the tie-breaker order is stable. Differences in epsilon, cube bounds, or root containment can cause disagreement.
+
+\subsection{Missing Materials}
+
+If geometry disappears, check \code{Tesselator::handle}. It currently requires all three vertices to have brush indices greater than \code{DISCARD_BRUSH_INDEX}. Any triangle touching a discarded placeholder vertex is skipped.
+
+\subsection{Wrong Normals or Backfaces}
+
+Winding is corrected against \code{v0.normal}. Bad normals can flip triangles incorrectly. Check:
+
+\begin{itemize}
+    \item whether \code{SDF::getNormalFromPosition} returns a valid normalized vector;
+    \item whether the surface vertex position lies inside the cube;
+    \item whether the SDF corner values are stale or inherited from the wrong cube.
+\end{itemize}
+
+\section{Important Invariants}
+
+\begin{itemize}
+    \item A simplified surface node must have valid SDF values, a representative position, a normal, and a brush if it should render.
+    \item Mesh extraction stops at simplified surface nodes.
+    \item Unsimplified surface nodes are traversal nodes, not mesh nodes.
+    \item Every emitted triangle must come from an active edge segment.
+    \item Every edge segment must have exactly one emitting owner.
+    \item Chunk surface nodes are preserved as unsimplified ownership boundaries.
+    \item Simplification must not erase material boundaries when texturing is enabled.
+    \item Degenerate triangles are rejected before they reach \code{Tesselator::handle}.
+\end{itemize}
+
+\section{Compact Algorithm Summary}
+
+\subsection{Shape}
+
+\begin{lstlisting}
+shape(frame):
+  containment = classify frame cube against incoming SDF
+  if disjoint:
+    return existing result without recursion
+
+  if not leaf:
+    for each child:
+      derive child SDF from existing child or parent interpolation
+      childResult = shape(childFrame)
+    aggregate child types and inherited corner SDFs
+
+  build missing shape/result SDF corners
+  classify shape and result
+
+  if result is Surface:
+    allocate node if needed
+    compute representative vertex position and normal
+    if leaf:
+      paint brush
+      mark simplified
+    else if all children simplified and not chunk:
+      try Simplifier::simplify
+    install child pointers
+  else:
+    clear stale children
+
+  store node SDF/type/chunk/simplified/brush/version
+  notify change handler for chunk nodes
+  return NodeOperationResult
+\end{lstlisting}
+
+\subsection{Tessellation}
+
+\begin{lstlisting}
+iterateTriangles(from):
+  for each cube edge e:
+    if from.sdf endpoints do not change sign:
+      continue
+
+    edge = makeEdgeSpan(e)
+    breaks = collectBreaks(edge)
+
+    for each segment in breaks:
+      cells = find four simplified surface cells around segment midpoint
+      if any cell is invalid:
+        continue
+
+      owner = deterministic minimum cell
+      if owner is not from:
+        continue
+
+      if owner SDF does not cross zero on this segment:
+        continue
+
+      polygon = incident cell vertices in cyclic order
+      collapse duplicate vertices
+      emit one triangle for 3 vertices or two triangles for 4 vertices
+\end{lstlisting}
+
+\section{Summary}
+
+The project builds renderable terrain and solid meshes by storing an adaptive SDF in an octree and extracting a surface-nets mesh from the simplified surface frontier. \code{Octree::shape} creates and maintains that frontier: it applies CSG operations, classifies cells, creates representative vertices, paints materials, and simplifies compatible child surfaces into coarser LOD cells. Mesh extraction then walks only to simplified surface nodes. For each active SDF edge, \code{Octree::iterateTriangles} splits the edge at neighboring LOD boundaries, samples the four incident cells, chooses one deterministic owner, and emits a local triangle or quad split. \code{Tesselator::handle} performs the final material filter, winding correction, UV generation, and indexed geometry insertion.
+
+\end{document}
