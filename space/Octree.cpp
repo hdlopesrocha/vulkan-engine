@@ -768,22 +768,12 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                     OctreeNode * childNode = child.node;
                     BoundingCube childCube = frame.cube.getChild(i);
                     bool childIsChunk = isChunkNode(childCube.getLengthX()) && sameCube(childCube, frame.chunkCube);
-                           
-                    // Unsimplified parents need real child surface nodes even when
-                    // that child came only from interpolating the parent's SDF.
-                    bool needsInterpolatedSurfaceChild = !isSimplified
-                        && childNode == NULL
-                        && child.resultType == SpaceType::Surface;
-
-                    if(child.process || needsInterpolatedSurfaceChild) {
-                        if(child.resultType != SpaceType::Surface || childNode == NULL) {
+       
+                    if(child.process) {
+                        if(child.resultType != SpaceType::Surface) {
                             if(childNode == NULL) {
                                 childNode = allocator->allocate()->init(Vertex(childCube.getCenter()));
                                 childResult[i].node = childNode;
-                            }
-                            if(child.resultType == SpaceType::Surface) {
-                                childNode->vertex.position = SDF::getAveragePosition(child.resultSDF, childCube);
-                                childNode->vertex.normal = SDF::getNormalFromPosition(child.resultSDF, childCube, childNode->vertex.position);
                             }
                             childNode->setType(child.resultType);
                             childNode->setSDF(child.resultSDF);
