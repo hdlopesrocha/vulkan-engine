@@ -7,6 +7,9 @@
 #include <cmath>
 #include <fstream>
 #include <iomanip>
+#include <vector>
+#include <cstdint>
+#include <cstring>
 
 const float INFINITY_ARRAY [8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
 #include "OctreeAllocator.hpp"
@@ -637,4 +640,159 @@ void Octree::exportToJson(const std::string &filename) const {
     file << " }\n";
     file.close();
     std::cout << "Octree exported to JSON: " << filename << std::endl;
+}
+
+void Octree::exportToBson(const std::string &filename) const {
+    std::ofstream file(filename, std::ios::binary);
+    if (!file) {
+        std::cerr << "Octree::exportToBson() Error opening file: " << filename << std::endl;
+        return;
+    }
+
+    OctreeAllocator * alloc = this->allocator;
+
+    auto appendInt32 = [](std::vector<uint8_t> &buf, int32_t v) {
+        buf.push_back((uint8_t)(v & 0xff));
+        buf.push_back((uint8_t)((v >> 8) & 0xff));
+        buf.push_back((uint8_t)((v >> 16) & 0xff));
+        buf.push_back((uint8_t)((v >> 24) & 0xff));
+    };
+    auto appendInt64 = [](std::vector<uint8_t> &buf, int64_t v) {
+        for (int i = 0; i < 8; ++i) buf.push_back((uint8_t)((v >> (8*i)) & 0xff));
+    };
+    auto appendDouble = [&](std::vector<uint8_t> &buf, double d) {
+        uint64_t u = 0;
+        std::memcpy(&u, &d, sizeof(double));
+        for (int i = 0; i < 8; ++i) buf.push_back((uint8_t)((u >> (8*i)) & 0xff));
+    };
+    auto appendCString = [&](std::vector<uint8_t> &buf, const std::string &s) {
+        buf.insert(buf.end(), s.begin(), s.end());
+        buf.push_back(0x00);
+    };
+
+    std::function<std::vector<uint8_t>(const std::vector<double>&)> makeDoubleArrayDoc;
+    makeDoubleArrayDoc = [&](const std::vector<double> &arr) -> std::vector<uint8_t> {
+        std::vector<uint8_t> doc;
+        appendInt32(doc, 0); // placeholder
+        for (size_t i = 0; i < arr.size(); ++i) {
+            doc.push_back(0x01); // double
+            appendCString(doc, std::to_string(i));
+            appendDouble(doc, arr[i]);
+        }
+        doc.push_back(0x00); // terminator
+        int32_t size = (int32_t)doc.size();
+        doc[0] = (uint8_t)(size & 0xff);
+        doc[1] = (uint8_t)((size >> 8) & 0xff);
+        doc[2] = (uint8_t)((size >> 16) & 0xff);
+        doc[3] = (uint8_t)((size >> 24) & 0xff);
+        return doc;
+    };
+
+    std::function<std::vector<uint8_t>(const OctreeNode*, const BoundingCube&)> buildNodeDoc;
+    buildNodeDoc = [&](const OctreeNode* node, const BoundingCube &cube) -> std::vector<uint8_t> {
+        std::vector<uint8_t> doc;
+        appendInt32(doc, 0); // placeholder
+
+        if (node == nullptr) {
+            // empty document
+            doc.push_back(0x00);
+            int32_t size = (int32_t)doc.size();
+            doc[0] = (uint8_t)(size & 0xff);
+            doc[1] = (uint8_t)((size >> 8) & 0xff);
+            doc[2] = (uint8_t)((size >> 16) & 0xff);
+            doc[3] = (uint8_t)((size >> 24) & 0xff);
+            return doc;
+        }
+
+        // position (array)
+        std::vector<double> pos = { node->vertex.position.x, node->vertex.position.y, node->vertex.position.z };
+        std::vector<uint8_t> posArr = makeDoubleArrayDoc(pos);
+        doc.push_back(0x04); appendCString(doc, "position"); doc.insert(doc.end(), posArr.begin(), posArr.end());
+
+        // normal
+        std::vector<double> nrm = { node->vertex.normal.x, node->vertex.normal.y, node->vertex.normal.z };
+        std::vector<uint8_t> nrmArr = makeDoubleArrayDoc(nrm);
+        doc.push_back(0x04); appendCString(doc, "normal"); doc.insert(doc.end(), nrmArr.begin(), nrmArr.end());
+
+        // texCoord
+        std::vector<double> tex = { node->vertex.texCoord.x, node->vertex.texCoord.y };
+        std::vector<uint8_t> texArr = makeDoubleArrayDoc(tex);
+        doc.push_back(0x04); appendCString(doc, "texCoord"); doc.insert(doc.end(), texArr.begin(), texArr.end());
+
+        // brushIndex (int32)
+        doc.push_back(0x10); appendCString(doc, "brushIndex"); appendInt32(doc, node->vertex.brushIndex);
+
+        // bits (int32)
+        doc.push_back(0x10); appendCString(doc, "bits"); appendInt32(doc, (int32_t)node->bits);
+
+        // min
+        glm::vec3 minv = cube.getMin();
+        std::vector<double> minArr = { minv.x, minv.y, minv.z };
+        std::vector<uint8_t> minDoc = makeDoubleArrayDoc(minArr);
+        doc.push_back(0x04); appendCString(doc, "min"); doc.insert(doc.end(), minDoc.begin(), minDoc.end());
+
+        // length
+        glm::vec3 lenv = cube.getLength();
+        std::vector<double> lenArr = { lenv.x, lenv.y, lenv.z };
+        std::vector<uint8_t> lenDoc = makeDoubleArrayDoc(lenArr);
+        doc.push_back(0x04); appendCString(doc, "length"); doc.insert(doc.end(), lenDoc.begin(), lenDoc.end());
+
+        // children
+        ChildBlock * block = node->getBlock(*alloc);
+        if (block == NULL) {
+            doc.push_back(0x0A); appendCString(doc, "children"); // null
+        } else {
+            OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+            node->getChildren(*alloc, children);
+            std::vector<uint8_t> arr;
+            appendInt32(arr, 0); // placeholder
+            for (int i = 0; i < 8; ++i) {
+                OctreeNode *child = children[i];
+                std::string key = std::to_string(i);
+                if (child == NULL) {
+                    arr.push_back(0x0A); appendCString(arr, key); // null
+                } else {
+                    std::vector<uint8_t> childDoc = buildNodeDoc(child, cube.getChild(i));
+                    arr.push_back(0x03); appendCString(arr, key); // embedded document
+                    arr.insert(arr.end(), childDoc.begin(), childDoc.end());
+                }
+            }
+            arr.push_back(0x00);
+            int32_t arrSize = (int32_t)arr.size();
+            arr[0] = (uint8_t)(arrSize & 0xff);
+            arr[1] = (uint8_t)((arrSize >> 8) & 0xff);
+            arr[2] = (uint8_t)((arrSize >> 16) & 0xff);
+            arr[3] = (uint8_t)((arrSize >> 24) & 0xff);
+
+            doc.push_back(0x04); appendCString(doc, "children"); doc.insert(doc.end(), arr.begin(), arr.end());
+        }
+
+        doc.push_back(0x00);
+        int32_t size = (int32_t)doc.size();
+        doc[0] = (uint8_t)(size & 0xff);
+        doc[1] = (uint8_t)((size >> 8) & 0xff);
+        doc[2] = (uint8_t)((size >> 16) & 0xff);
+        doc[3] = (uint8_t)((size >> 24) & 0xff);
+        return doc;
+    };
+
+    // top-level document
+    std::vector<uint8_t> top;
+    appendInt32(top, 0);
+    if (root == NULL) {
+        top.push_back(0x0A); appendCString(top, "root");
+    } else {
+        std::vector<uint8_t> rootDoc = buildNodeDoc(root, *this);
+        top.push_back(0x03); appendCString(top, "root"); top.insert(top.end(), rootDoc.begin(), rootDoc.end());
+    }
+    top.push_back(0x00);
+    int32_t topSize = (int32_t)top.size();
+    top[0] = (uint8_t)(topSize & 0xff);
+    top[1] = (uint8_t)((topSize >> 8) & 0xff);
+    top[2] = (uint8_t)((topSize >> 16) & 0xff);
+    top[3] = (uint8_t)((topSize >> 24) & 0xff);
+
+    file.write(reinterpret_cast<const char*>(top.data()), top.size());
+    file.close();
+    std::cout << "Octree exported to BSON: " << filename << std::endl;
 }
