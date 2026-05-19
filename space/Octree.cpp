@@ -10,6 +10,8 @@
 #include <vector>
 #include <cstdint>
 #include <cstring>
+#include <algorithm>
+#include <limits>
 
 const float INFINITY_ARRAY [8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
 #include "OctreeAllocator.hpp"
@@ -164,100 +166,302 @@ void Octree::iterateTriangles(
             int fromLevel,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const {
-    if(from->getType() == SpaceType::Surface) {
-        std::vector<Vertex> vertices;
-        vertices.reserve(8);
-        iterateTrianglesInternal(from, fromCube, from->sdf, fromLevel, root, *this, root->sdf, 0, func, context, &vertices);
-        // Order vertices around the `from` vertex by angle projected on the plane
-        // orthogonal to the `from` normal. Sorting by distance to a corner produced
-        // non-circular ordering and can create crossing/overlapping triangles.
-        glm::vec3 center = from->vertex.position;
-        glm::vec3 normal = from->vertex.normal;
-        if (glm::length(normal) < 1e-8f) {
-            // fallback: use vector from cube center to vertex
-            normal = glm::normalize(center - fromCube.getCenter());
-            if (glm::length(normal) < 1e-8f) {
-                normal = glm::vec3(0.0f, 1.0f, 0.0f);
-            }
+    (void)fromLevel;
+    (void)context;
+
+    struct EdgeCell {
+        OctreeNode *node = NULL;
+        BoundingCube cube;
+        int level = 0;
+
+        bool isSurface() const {
+            return node != NULL && node->getType() == SpaceType::Surface && node->isSimplified();
+        }
+    };
+
+    struct EdgeSpan {
+        int axis = 0;
+        int u = 1;
+        int v = 2;
+        float fixedU = 0.0f;
+        float fixedV = 0.0f;
+        float start = 0.0f;
+        float end = 0.0f;
+        float eps = 1e-6f;
+    };
+
+    auto samePosition = [](const glm::vec3 &a, const glm::vec3 &b, float eps) {
+        glm::vec3 d = a - b;
+        return glm::dot(d, d) <= eps * eps;
+    };
+
+    auto edgeAxes = [](int axis, int &u, int &v) {
+        if (axis == 0) {
+            u = 1; v = 2;
+        } else if (axis == 1) {
+            u = 0; v = 2;
         } else {
-            normal = glm::normalize(normal);
+            u = 0; v = 1;
+        }
+    };
+
+    auto findCellAt = [this](const glm::vec3 &pos) {
+        EdgeCell result;
+        if(root == NULL || !contains(pos)) {
+            return result;
         }
 
-        glm::vec3 ref = (std::fabs(normal.x) < 0.9f) ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
-        glm::vec3 u = glm::normalize(glm::cross(normal, ref));
-        glm::vec3 v = glm::cross(normal, u);
+        OctreeNode *node = root;
+        BoundingCube cube = *this;
+        int level = 0;
 
-        std::vector<std::pair<float, Vertex>> angled;
-        angled.reserve(vertices.size());
-        for (const Vertex &vert : vertices) {
-            glm::vec3 p = vert.position - center;
-            glm::vec3 proj = p - normal * glm::dot(p, normal);
-            float x = glm::dot(proj, u);
-            float y = glm::dot(proj, v);
-            float angle = std::atan2(y, x);
-            angled.emplace_back(angle, vert);
-        }
-
-        std::sort(angled.begin(), angled.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
-
-        // Deduplicate by position (small epsilon) while preserving angular order
-        const float EPS = 1e-6f;
-        std::vector<Vertex> ordered;
-        ordered.reserve(angled.size());
-        for (size_t i = 0; i < angled.size(); ++i) {
-            const Vertex &vert = angled[i].second;
-            bool dup = false;
-            for (const Vertex &ov : ordered) {
-                glm::vec3 dpos = ov.position - vert.position;
-                if (glm::dot(dpos, dpos) < EPS * EPS) { dup = true; break; }
+        while(node != NULL && !node->isSimplified() && !node->isLeaf()) {
+            ChildBlock *block = node->getBlock(*allocator);
+            if(block == NULL) {
+                node = NULL;
+                break;
             }
-            if (!dup) ordered.push_back(vert);
+
+            int childIndex = getNodeIndex(pos, cube);
+            OctreeNode *child = block->get(childIndex, *allocator);
+            if(child == NULL) {
+                node = NULL;
+                break;
+            }
+
+            cube = cube.getChild(childIndex);
+            node = child;
+            ++level;
         }
 
-        for (size_t i = 1; i < ordered.size(); i++) {
-            Vertex &v0 = ordered[i-1];
-            Vertex &v1 = ordered[i];
-            func.handle(from->vertex, v0, v1);
+        if(node != NULL) {
+            result.node = node;
+            result.cube = cube;
+            result.level = level;
         }
-    }
-}
+        return result;
+    };
 
+    auto sideCoordinate = [](float value, int side) {
+        return std::nextafter(value, side < 0 ? -std::numeric_limits<float>::infinity()
+                                               :  std::numeric_limits<float>::infinity());
+    };
 
-void Octree::iterateTrianglesInternal(
-            OctreeNode * from,
-            const BoundingCube &fromCube,
-            const float fromSDF[8],
-            int fromLevel,
-            OctreeNode * to,
-            const BoundingCube &toCube,
-            const float toSDF[8],
-            int toLevel,
-            OctreeNodeTriangleHandler &func,
-            ThreadContext * context,
-            std::vector<Vertex> * vertices) const {
+    auto quadrantSigns = [](int axis, int quadrant, int &su, int &sv) {
+        static const int SIGNS[3][4][2] = {
+            {{-1, -1}, {-1,  1}, { 1,  1}, { 1, -1}},
+            {{-1, -1}, { 1, -1}, { 1,  1}, {-1,  1}},
+            {{-1, -1}, {-1,  1}, { 1,  1}, { 1, -1}}
+        };
+        su = SIGNS[axis][quadrant][0];
+        sv = SIGNS[axis][quadrant][1];
+    };
 
-    if(to->getType() == SpaceType::Surface) {
-        if(to->isSimplified()) {
-            vertices->push_back(to->vertex);
+    auto edgePoint = [](const EdgeSpan &edge, float t) {
+        glm::vec3 p(0.0f);
+        p[edge.axis] = t;
+        p[edge.u] = edge.fixedU;
+        p[edge.v] = edge.fixedV;
+        return p;
+    };
+
+    auto edgeSamplePoint = [&](const EdgeSpan &edge, float t, int quadrant) {
+        int su, sv;
+        quadrantSigns(edge.axis, quadrant, su, sv);
+
+        glm::vec3 p(0.0f);
+        p[edge.axis] = t;
+        p[edge.u] = sideCoordinate(edge.fixedU, su);
+        p[edge.v] = sideCoordinate(edge.fixedV, sv);
+        return p;
+    };
+
+    auto addBreak = [](std::vector<float> &breaks, float value, float start, float end, float eps) {
+        if(value <= start + eps || value >= end - eps) {
+            return false;
+        }
+        for(float existing : breaks) {
+            if(std::fabs(existing - value) <= eps) {
+                return false;
+            }
+        }
+        breaks.push_back(value);
+        return true;
+    };
+
+    auto sortUnique = [](std::vector<float> &values, float eps) {
+        std::sort(values.begin(), values.end());
+        values.erase(std::unique(values.begin(), values.end(), [eps](float a, float b) {
+            return std::fabs(a - b) <= eps;
+        }), values.end());
+    };
+
+    std::function<void(const EdgeSpan&, float, float, std::vector<float>&, int)> collectBreaks;
+    collectBreaks = [&](const EdgeSpan &edge, float start, float end, std::vector<float> &breaks, int depth) {
+        if(depth > 64 || end - start <= edge.eps * 2.0f) {
+            return;
+        }
+
+        float mid = start + (end - start) * 0.5f;
+        std::vector<float> localBreaks = {start, end};
+
+        for(int q = 0; q < 4; ++q) {
+            EdgeCell cell = findCellAt(edgeSamplePoint(edge, mid, q));
+            if(cell.node == NULL) {
+                continue;
+            }
+
+            addBreak(localBreaks, cell.cube.getMin()[edge.axis], start, end, edge.eps);
+            addBreak(localBreaks, cell.cube.getMax()[edge.axis], start, end, edge.eps);
+        }
+
+        sortUnique(localBreaks, edge.eps);
+        if(localBreaks.size() <= 2) {
+            return;
+        }
+
+        for(size_t i = 1; i + 1 < localBreaks.size(); ++i) {
+            addBreak(breaks, localBreaks[i], start, end, edge.eps);
+        }
+
+        for(size_t i = 1; i < localBreaks.size(); ++i) {
+            collectBreaks(edge, localBreaks[i - 1], localBreaks[i], breaks, depth + 1);
+        }
+    };
+
+    auto makeEdgeSpan = [&](int edgeIndex) {
+        glm::ivec2 edgeCorners = SDF_EDGES[edgeIndex];
+        glm::vec3 p0 = fromCube.getCorner(edgeCorners.x);
+        glm::vec3 p1 = fromCube.getCorner(edgeCorners.y);
+        glm::vec3 d = glm::abs(p1 - p0);
+
+        EdgeSpan edge;
+        if(d.x >= d.y && d.x >= d.z) {
+            edge.axis = 0;
+        } else if(d.y >= d.x && d.y >= d.z) {
+            edge.axis = 1;
         } else {
-            OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-            to->getChildren(*allocator, children);
-            uint order[8] = {0,1,2,3,4,5,6,7};
-            for (uint o = 0; o < 8; ++o) {
-                int i = order[o];
-                OctreeNode * child = children[i];
-                if(child != NULL && child->getType() == SpaceType::Surface) {
-                    BoundingCube childCube = toCube.getChild(i);
-                    bool overlapsX = (fromCube.getMinX() <= childCube.getMaxX() && childCube.getMinX() <= fromCube.getMaxX());
-                    bool overlapsY = (fromCube.getMinY() <= childCube.getMaxY() && childCube.getMinY() <= fromCube.getMaxY());
-                    bool overlapsZ = (fromCube.getMinZ() <= childCube.getMaxZ() && childCube.getMinZ() <= fromCube.getMaxZ());
-                    bool intersects = fromCube.intersects(childCube) && (overlapsX || overlapsY || overlapsZ);
-                    bool contains = childCube.contains(fromCube);
+            edge.axis = 2;
+        }
+        edgeAxes(edge.axis, edge.u, edge.v);
+        edge.fixedU = p0[edge.u];
+        edge.fixedV = p0[edge.v];
+        edge.start = glm::min(p0[edge.axis], p1[edge.axis]);
+        edge.end = glm::max(p0[edge.axis], p1[edge.axis]);
+        edge.eps = glm::max(getLengthX(), fromCube.getLengthX()) * 1e-6f;
+        return edge;
+    };
 
-                    if(contains || intersects) {
-                        iterateTrianglesInternal(from, fromCube, fromSDF, fromLevel, child, childCube, child->sdf, toLevel + 1, func, context, vertices);
-                    }
+    auto ownerLess = [](const EdgeCell &a, const EdgeCell &b) {
+        float al = a.cube.getLengthX();
+        float bl = b.cube.getLengthX();
+        if(al != bl) return al < bl;
+
+        glm::vec3 amin = a.cube.getMin();
+        glm::vec3 bmin = b.cube.getMin();
+        if(amin.x != bmin.x) return amin.x < bmin.x;
+        if(amin.y != bmin.y) return amin.y < bmin.y;
+        if(amin.z != bmin.z) return amin.z < bmin.z;
+        return std::less<OctreeNode*>()(a.node, b.node);
+    };
+
+    auto emitTriangle = [&](Vertex *a, Vertex *b, Vertex *c, float eps) {
+        if(a == NULL || b == NULL || c == NULL) return;
+        if(samePosition(a->position, b->position, eps)) return;
+        if(samePosition(b->position, c->position, eps)) return;
+        if(samePosition(c->position, a->position, eps)) return;
+        func.handle(*a, *b, *c);
+    };
+
+    auto emitSegment = [&](const EdgeSpan &edge, float start, float end) {
+        float mid = start + (end - start) * 0.5f;
+        EdgeCell cells[4];
+        for(int q = 0; q < 4; ++q) {
+            cells[q] = findCellAt(edgeSamplePoint(edge, mid, q));
+            if(!cells[q].isSurface()) {
+                return;
+            }
+        }
+
+        EdgeCell owner = cells[0];
+        for(int q = 1; q < 4; ++q) {
+            if(ownerLess(cells[q], owner)) {
+                owner = cells[q];
+            }
+        }
+
+        if(owner.node != from) {
+            return;
+        }
+
+        glm::vec3 p0 = edgePoint(edge, start);
+        glm::vec3 p1 = edgePoint(edge, end);
+        float d0 = SDF::interpolate(owner.node->sdf, p0, owner.cube);
+        float d1 = SDF::interpolate(owner.node->sdf, p1, owner.cube);
+        if((d0 < 0.0f) == (d1 < 0.0f)) {
+            return;
+        }
+
+        std::vector<EdgeCell> polygon;
+        polygon.reserve(4);
+        for(int q = 0; q < 4; ++q) {
+            bool duplicate = !polygon.empty()
+                && (polygon.back().node == cells[q].node
+                    || samePosition(polygon.back().node->vertex.position, cells[q].node->vertex.position, edge.eps));
+            if(!duplicate) {
+                polygon.push_back(cells[q]);
+            }
+        }
+
+        if(polygon.size() > 1) {
+            const EdgeCell &first = polygon.front();
+            const EdgeCell &last = polygon.back();
+            if(first.node == last.node || samePosition(first.node->vertex.position, last.node->vertex.position, edge.eps)) {
+                polygon.pop_back();
+            }
+        }
+
+        for(size_t i = 0; i < polygon.size(); ++i) {
+            for(size_t j = i + 1; j < polygon.size(); ++j) {
+                if(polygon[i].node == polygon[j].node
+                    || samePosition(polygon[i].node->vertex.position, polygon[j].node->vertex.position, edge.eps)) {
+                    return;
                 }
+            }
+        }
+
+        if(polygon.size() == 3) {
+            emitTriangle(&polygon[0].node->vertex, &polygon[1].node->vertex, &polygon[2].node->vertex, edge.eps);
+        } else if(polygon.size() == 4) {
+            emitTriangle(&polygon[0].node->vertex, &polygon[1].node->vertex, &polygon[2].node->vertex, edge.eps);
+            emitTriangle(&polygon[0].node->vertex, &polygon[2].node->vertex, &polygon[3].node->vertex, edge.eps);
+        }
+    };
+
+    if(from == NULL || from->getType() != SpaceType::Surface || !from->isSimplified()) {
+        return;
+    }
+
+    for(int edgeIndex = 0; edgeIndex < 12; ++edgeIndex) {
+        glm::ivec2 edgeCorners = SDF_EDGES[edgeIndex];
+        bool sign0 = from->sdf[edgeCorners.x] < 0.0f;
+        bool sign1 = from->sdf[edgeCorners.y] < 0.0f;
+        if(sign0 == sign1) {
+            continue;
+        }
+
+        EdgeSpan edge = makeEdgeSpan(edgeIndex);
+        if(edge.end - edge.start <= edge.eps * 2.0f) {
+            continue;
+        }
+
+        std::vector<float> breaks = {edge.start, edge.end};
+        collectBreaks(edge, edge.start, edge.end, breaks, 0);
+        sortUnique(breaks, edge.eps);
+
+        for(size_t i = 1; i < breaks.size(); ++i) {
+            if(breaks[i] - breaks[i - 1] > edge.eps * 2.0f) {
+                emitSegment(edge, breaks[i - 1], breaks[i]);
             }
         }
     }
