@@ -17,20 +17,26 @@ SimplificationResult Simplifier::simplify(const BoundingCube chunkCube, const Bo
 
 	//uint mask = 0xff;
 	int nodeCount=0;
-	for(uint i=0; i < 8 ; ++i) {
-		NodeOperationResult * child = &children[i];
-		if(child && child->resultType == SpaceType::Surface) {
-			if(!child->isSimplified) {
-				return res;
+	if(texturing) {
+		for(uint i=0; i < 8 ; ++i) {
+			NodeOperationResult * child = &children[i];
+			if(child) {
+				
+				if(child->resultType == SpaceType::Surface) {
+					if(brushIndex == DISCARD_BRUSH_INDEX) {
+						brushIndex = child->brushIndex;
+					} else if(child->brushIndex != DISCARD_BRUSH_INDEX 
+						&& child->brushIndex != brushIndex) {
+						return res;    
+					}
+				}
+								
+				if(!child->isSimplified) {
+					return res;
+				}
 			}
-			if(texturing && brushIndex != DISCARD_BRUSH_INDEX && child->brushIndex != brushIndex) {
-				return res;    
-			}
-			brushIndex = child->brushIndex;
-			break;
 		}
 	}
-
 	// for leaf nodes shouldn't loop
 	for(uint i=0; i < 8 ; ++i) {
 		NodeOperationResult * child = &children[i];
