@@ -589,14 +589,8 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     ContainmentType check = parentContainment == ContainmentType::Intersects ? args.function->check(frame.cube, args.model, args.minSize) : parentContainment;
     OctreeNode * node = frame.node;
     bool process = true;
-    auto isValidBrushIndex = [](int value) {
-        return value > DISCARD_BRUSH_INDEX;
-    };
-    auto chooseBrushIndex = [&](int preferred, int fallback) {
-        return isValidBrushIndex(preferred) ? preferred : fallback;
-    };
-    int sourceBrushIndex = chooseBrushIndex(node != NULL ? node->vertex.brushIndex : DISCARD_BRUSH_INDEX, frame.brushIndex);
-    int brushIndex = sourceBrushIndex;
+ 
+    int brushIndex = node ? node->vertex.brushIndex : frame.brushIndex;
 
     if(check == ContainmentType::Disjoint) {
         process = false;
@@ -625,34 +619,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         if(node != NULL) {
             node->getChildren(*allocator, children);
         }
-        auto nearestChildBrushIndex = [&](uint targetIndex, int fallback) {
-            if(isValidBrushIndex(fallback)) {
-                return fallback;
-            }
-
-            int nearestBrushIndex = fallback;
-            int nearestDistance = 4;
-            for(uint j = 0; j < 8; ++j) {
-                OctreeNode * candidate = children[j];
-                if(candidate == NULL || !isValidBrushIndex(candidate->vertex.brushIndex)) {
-                    continue;
-                }
-
-                uint bits = targetIndex ^ j;
-                int distance = ((bits & 0x1) ? 1 : 0)
-                    + ((bits & 0x2) ? 1 : 0)
-                    + ((bits & 0x4) ? 1 : 0);
-                if(distance < nearestDistance) {
-                    nearestDistance = distance;
-                    nearestBrushIndex = candidate->vertex.brushIndex;
-                    if(distance == 0) {
-                        break;
-                    }
-                }
-            }
-            return nearestBrushIndex;
-        };
-
+ 
         // Iterate nodes and spawn threads for child processing
         for (uint i = 0; i < 8; ++i) {
             OctreeNode * child = children[i];
@@ -661,10 +628,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             }
 
             float childSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
-            int inheritedChildBrushIndex = nearestChildBrushIndex(i, sourceBrushIndex);
-            int childBrushIndex = child != NULL
-                ? chooseBrushIndex(child->vertex.brushIndex, inheritedChildBrushIndex)
-                : inheritedChildBrushIndex;
+            int childBrushIndex = child ? child->vertex.brushIndex : brushIndex;
 
             if(child != NULL) {
                 SDF::copySDF(child->sdf, childSDF);
@@ -779,11 +743,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                             childNode->setSDF(child.resultSDF);
                             childNode->setSimplified(true);
                             childNode->setChunk(childIsChunk);
-                            // Interpolated children inherit a real brush from the
-                            // child result or nearest parent/source brush; chunk
-                            // parents may deliberately carry DISCARD_BRUSH_INDEX.
-                            int childNodeBrushIndex = chooseBrushIndex(child.brushIndex, chooseBrushIndex(brushIndex, sourceBrushIndex));
-                            childNode->setBrush(childNodeBrushIndex);
+                            childNode->setBrush(child.brushIndex);
                         }
                     }
                     childNodes[i] = allocator->nodeAllocator.getIndex(childNode);
