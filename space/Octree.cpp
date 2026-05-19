@@ -589,7 +589,14 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     ContainmentType check = parentContainment == ContainmentType::Intersects ? args.function->check(frame.cube, args.model, args.minSize) : parentContainment;
     OctreeNode * node = frame.node;
     bool process = true;
-    int brushIndex = frame.brushIndex;
+    auto isValidBrushIndex = [](int value) {
+        return value > DISCARD_BRUSH_INDEX;
+    };
+    auto chooseBrushIndex = [&](int preferred, int fallback) {
+        return isValidBrushIndex(preferred) ? preferred : fallback;
+    };
+    int sourceBrushIndex = chooseBrushIndex(node != NULL ? node->vertex.brushIndex : DISCARD_BRUSH_INDEX, frame.brushIndex);
+    int brushIndex = sourceBrushIndex;
 
     if(check == ContainmentType::Disjoint) {
         process = false;
@@ -618,6 +625,33 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         if(node != NULL) {
             node->getChildren(*allocator, children);
         }
+        auto nearestChildBrushIndex = [&](uint targetIndex, int fallback) {
+            if(isValidBrushIndex(fallback)) {
+                return fallback;
+            }
+
+            int nearestBrushIndex = fallback;
+            int nearestDistance = 4;
+            for(uint j = 0; j < 8; ++j) {
+                OctreeNode * candidate = children[j];
+                if(candidate == NULL || !isValidBrushIndex(candidate->vertex.brushIndex)) {
+                    continue;
+                }
+
+                uint bits = targetIndex ^ j;
+                int distance = ((bits & 0x1) ? 1 : 0)
+                    + ((bits & 0x2) ? 1 : 0)
+                    + ((bits & 0x4) ? 1 : 0);
+                if(distance < nearestDistance) {
+                    nearestDistance = distance;
+                    nearestBrushIndex = candidate->vertex.brushIndex;
+                    if(distance == 0) {
+                        break;
+                    }
+                }
+            }
+            return nearestBrushIndex;
+        };
 
         // Iterate nodes and spawn threads for child processing
         for (uint i = 0; i < 8; ++i) {
@@ -627,11 +661,12 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             }
 
             float childSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
-            int childBrushIndex = child != NULL ? child->vertex.brushIndex 
-                                : node != NULL ? node->vertex.brushIndex : frame.brushIndex;
+            int inheritedChildBrushIndex = nearestChildBrushIndex(i, sourceBrushIndex);
+            int childBrushIndex = child != NULL
+                ? chooseBrushIndex(child->vertex.brushIndex, inheritedChildBrushIndex)
+                : inheritedChildBrushIndex;
 
             if(child != NULL) {
-                childBrushIndex = child->vertex.brushIndex;
                 SDF::copySDF(child->sdf, childSDF);
             } else {
                 SDF::getChildSDF(frame.sdf, i, childSDF);
@@ -682,8 +717,11 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             childShapeEmpty &= result.shapeType == SpaceType::Empty;
             childShapeSolid &= result.shapeType == SpaceType::Solid;
             childSimplified &= result.isSimplified;
-            if(result.process) {
+            // Disjoint children still carry valid existing/interpolated result SDF.
+            if(result.resultSDF[i] != INFINITY) {
                 resultSDF[i] = result.resultSDF[i];
+            }
+            if(result.process && result.shapeSDF[i] != INFINITY) {
                 shapeSDF[i] = result.shapeSDF[i];
             } 
         }
@@ -734,17 +772,31 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                     BoundingCube childCube = frame.cube.getChild(i);
                     bool childIsChunk = isChunkNode(childCube.getLengthX()) && sameCube(childCube, frame.chunkCube);
                            
-                    if(child.process) {
+                    // Unsimplified parents need real child surface nodes even when
+                    // that child came only from interpolating the parent's SDF.
+                    bool needsInterpolatedSurfaceChild = !isSimplified
+                        && childNode == NULL
+                        && child.resultType == SpaceType::Surface;
+
+                    if(child.process || needsInterpolatedSurfaceChild) {
                         if(child.resultType != SpaceType::Surface || childNode == NULL) {
                             if(childNode == NULL) {
                                 childNode = allocator->allocate()->init(Vertex(childCube.getCenter()));
                                 childResult[i].node = childNode;
                             }
+                            if(child.resultType == SpaceType::Surface) {
+                                childNode->vertex.position = SDF::getAveragePosition(child.resultSDF, childCube);
+                                childNode->vertex.normal = SDF::getNormalFromPosition(child.resultSDF, childCube, childNode->vertex.position);
+                            }
                             childNode->setType(child.resultType);
                             childNode->setSDF(child.resultSDF);
                             childNode->setSimplified(true);
                             childNode->setChunk(childIsChunk);
-                            childNode->setBrush(brushIndex);
+                            // Interpolated children inherit a real brush from the
+                            // child result or nearest parent/source brush; chunk
+                            // parents may deliberately carry DISCARD_BRUSH_INDEX.
+                            int childNodeBrushIndex = chooseBrushIndex(child.brushIndex, chooseBrushIndex(brushIndex, sourceBrushIndex));
+                            childNode->setBrush(childNodeBrushIndex);
                         }
                     }
                     childNodes[i] = allocator->nodeAllocator.getIndex(childNode);
