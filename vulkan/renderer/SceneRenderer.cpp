@@ -318,6 +318,14 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
     // command buffer so the solid pass outputs are available for sampling.
     VkImageView sceneColorView = solidRenderer->getColorView(frameIdx);
     VkImageView sceneDepthView = solidRenderer->getDepthView(frameIdx);
+    VkImage sceneDepthImage = solidRenderer->getDepthImage(frameIdx);
+
+    // Initialize water geometry depth from the scene depth so water geometry
+    // rasterization can depth-test against solid geometry and avoid rendering
+    // water where it is occluded by solids.
+    if (waterRenderer) {
+        waterRenderer->initializeGeomDepthFromSceneDepth(app, commandBuffer, frameIdx, sceneDepthImage);
+    }
 
     // Scene textures were already bound before the async back-face/solid360 tasks were
     // launched (see main.cpp), so we must NOT call updateSceneTexturesBinding here.
@@ -340,6 +348,30 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
         }
         waterRenderer->beginWaterGeometryPass(commandBuffer, frameIdx);
 
+        // First render filled water geometry to populate the water depth
+        // buffer so the wireframe can depth-test against actual water depth.
+        VkPipeline waterPipe = waterRenderer->getWaterGeometryPipeline();
+        VkPipelineLayout waterLayout = waterRenderer->getWaterGeometryPipelineLayout();
+        if (waterPipe != VK_NULL_HANDLE && waterLayout != VK_NULL_HANDLE) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipe);
+            VkDescriptorSet mainDs = app->getMainDescriptorSet();
+            if (mainDs != VK_NULL_HANDLE) {
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 0, 1, &mainDs, 0, nullptr);
+            }
+            VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
+            if (materialDs != VK_NULL_HANDLE) {
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 1, 1, &materialDs, 0, nullptr);
+            }
+            VkDescriptorSet sceneDs = waterRenderer->getWaterDepthDescriptorSet(frameIdx);
+            if (sceneDs != VK_NULL_HANDLE) {
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 2, 1, &sceneDs, 0, nullptr);
+            }
+            // Draw filled water geometry (will update depth buffer)
+            waterRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
+        }
+
+        // Now draw the wireframe overlay; it will depth-test against the
+        // water depth written by the filled pass above.
         waterWireframe->draw(commandBuffer, app,
             {app->getMainDescriptorSet(),
              app->getMaterialDescriptorSet(),

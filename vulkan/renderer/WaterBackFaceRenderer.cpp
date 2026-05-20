@@ -278,25 +278,53 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     if (frameIndex >= backFaceDepthImages.size()) return;
     if (backFaceDepthImages[frameIndex] == VK_NULL_HANDLE) return;
 
-    // Ensure the back-face depth image is in the depth-stencil-attachment layout
-    // so the render pass's clear will initialize it to 1.0 (far plane). Do not
-    // initialize from the scene depth here - the back-face preview must show
-    // only water back-face geometry (no solid occluders).
-    if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-        /* std::cerr << "[WaterBackFaceRenderer::renderBackFacePass] pre-pass transition: cmd=" << (void*)cmd
-                  << " image=" << (void*)backFaceDepthImages[frameIndex]
-                  << " frame=" << (unsigned)frameIndex
-                  << " old=" << (int)backFaceDepthImageLayouts[frameIndex]
-                  << " new=" << (int)VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL << std::endl; */
-        if (!app) {
-            throw std::runtime_error("WaterBackFaceRenderer::renderBackFacePass requires VulkanApp (no fallback allowed)");
-        }
-        // Let VulkanApp determine the effective old layout (pass UNDEFINED)
-        // so the centralized tracker can consider pending/tracked state.
-        app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
-                             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                             1, 0, 1);
+    // If a scene depth image is provided, copy its depth values into the
+    // back-face depth target so the back-face pass depth-tests against solid
+    // geometry and will only write where the water is visible in front of
+    // solids. Otherwise fall back to clearing to 1.0 as before.
+    bool copiedFromScene = false;
+    if (sceneDepthImage != VK_NULL_HANDLE) {
+        // Transition scene depth -> TRANSFER_SRC and back-face depth -> TRANSFER_DST
+        try { app->recordTransitionImageLayoutLayer(cmd, sceneDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1); } catch (...) {}
+        try { app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1); } catch (...) {}
+
+        VkImageCopy copyRegion{};
+        copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        copyRegion.srcSubresource.mipLevel = 0;
+        copyRegion.srcSubresource.baseArrayLayer = 0;
+        copyRegion.srcSubresource.layerCount = 1;
+        copyRegion.srcOffset = {0,0,0};
+        copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        copyRegion.dstSubresource.mipLevel = 0;
+        copyRegion.dstSubresource.baseArrayLayer = 0;
+        copyRegion.dstSubresource.layerCount = 1;
+        copyRegion.dstOffset = {0,0,0};
+        copyRegion.extent = { renderWidth, renderHeight, 1 };
+
+        vkCmdCopyImage(cmd, sceneDepthImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       backFaceDepthImages[frameIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &copyRegion);
+
+        // Transition back-face depth -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL for rendering
+        try { app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1); } catch (...) {}
         backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        // Transition scene depth back to shader-read for sampling by water shaders
+        try { app->recordTransitionImageLayoutLayer(cmd, sceneDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1); } catch (...) {}
+
+        copiedFromScene = true;
+    } else {
+        if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+            if (!app) {
+                throw std::runtime_error("WaterBackFaceRenderer::renderBackFacePass requires VulkanApp (no fallback allowed)");
+            }
+            // Let VulkanApp determine the effective old layout (pass UNDEFINED)
+            // so the centralized tracker can consider pending/tracked state.
+            app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
+                                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                 1, 0, 1);
+            backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        }
     }
 
     VkClearValue bfClear{};
@@ -306,7 +334,7 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     depthAtt.imageView = backFaceDepthImageViews[frameIndex];
     depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAtt.loadOp = copiedFromScene ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     depthAtt.clearValue = bfClear;
 
