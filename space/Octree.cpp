@@ -608,10 +608,11 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     bool isLeaf = isShapeLeaf && isNodeLeaf;
 
     NodeOperationResult childResult[8];
-    std::vector<std::thread> threads;
-    threads.reserve(8);
 
     if (!isLeaf) {
+        std::vector<std::thread> threads;
+        threads.reserve(8);
+
         bool isChildThread = isThreadNode(length*0.5f, args.minSize, 16);
         bool isChildChunk = isChunkNode(length*0.5f);
 
@@ -667,12 +668,21 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     // Inherit SDFs from children
     float shapeSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
     float resultSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
-    bool childResultSolid = true;
-    bool childResultEmpty = true;
-    bool childShapeSolid = true;
-    bool childShapeEmpty = true;
 
-    if(!isLeaf) {
+    SpaceType shapeType;
+    SpaceType resultType;
+   
+    if(isLeaf) {
+        buildSDF(args, frame, shapeSDF, resultSDF, threadContext);
+        shapeType = SDF::eval(shapeSDF);
+        resultType = SDF::eval(resultSDF);
+    }
+    else {
+   
+        bool childResultSolid = true;
+        bool childResultEmpty = true;
+        bool childShapeSolid = true;
+        bool childShapeEmpty = true;
         for(uint i = 0; i < 8; ++i) {
             NodeOperationResult & result = childResult[i];   
             childResultEmpty &= result.resultType == SpaceType::Empty;
@@ -687,20 +697,16 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                 shapeSDF[i] = result.shapeSDF[i];
             } 
         }
+        shapeType = childToParent(childShapeSolid, childShapeEmpty);
+        resultType = childToParent(childResultSolid, childResultEmpty);
     }
 
-    // Build SDFs based on inheritance/execution
-    buildSDF(args, frame, shapeSDF, resultSDF, threadContext);
-    
-    SpaceType shapeType = isLeaf ? SDF::eval(shapeSDF) : childToParent(childShapeSolid, childShapeEmpty);
-    SpaceType resultType = isLeaf ? SDF::eval(resultSDF) : childToParent(childResultSolid, childResultEmpty);
     bool isResultSurface = resultType == SpaceType::Surface;
     bool isSimplified = isLeaf;
     bool interpolated = frame.iteratedNode != NULL;
-
-    if(resultType == SpaceType::Empty && !interpolated) {
-        process = false; 
-    }
+    if(shapeType == SpaceType::Empty && node != NULL) {
+        process = false; // Skip empty nodes that are not interpolated (no valid SDF)
+    } 
     else if(isResultSurface) {
         // Create nodes for surface results if they don't exist
         if(node == NULL) {
@@ -712,8 +718,8 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             node->vertex.normal = SDF::getNormalFromPosition(resultSDF, frame.cube, node->vertex.position);
             // Simplification & Painting
             if(isLeaf) {
+                isSimplified = true; 
                 if(shapeType != SpaceType::Empty) {
-                    isSimplified = true; 
                     brushIndex = args.painter.paint(node->vertex, args.translate, args.scale);
                 }        
             } else {    
