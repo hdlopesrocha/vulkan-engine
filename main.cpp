@@ -677,6 +677,10 @@ public:
             }
         }
 
+            // If wireframe overlay mode is enabled, draw wireframe last so it appears on top
+            if (settings.wireframeMode && sceneRenderer) {
+                sceneRenderer->drawSolidWireframeOverlay(this, commandBuffer, frameIdx, getMainDescriptorSet(), settings.wireframeMode);
+            }
             sceneRenderer->solidRenderer->endPass(commandBuffer, frameIdx, this);
 
         // Update the water scene descriptor set BEFORE launching async tasks.

@@ -338,6 +338,42 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
     //printf("[SolidRenderer::draw] drawPrepared returned\n");
 }
 
+void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet) {
+    if (!appArg) {
+        std::cerr << "[SolidRenderer::renderDepthPrepass] appArg is nullptr, skipping." << std::endl;
+        return;
+    }
+    if (depthPrePassPipeline == VK_NULL_HANDLE) {
+        std::cerr << "[SolidRenderer::renderDepthPrepass] depth pre-pass pipeline is VK_NULL_HANDLE, skipping." << std::endl;
+        return;
+    }
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
+
+    // Set dynamic viewport and scissor
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(appArg->getWidth());
+    viewport.height = static_cast<float>(appArg->getHeight());
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = {static_cast<uint32_t>(appArg->getWidth()), static_cast<uint32_t>(appArg->getHeight())};
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+    // Bind descriptor set using the depth pre-pass pipeline layout
+    if (perTextureDescriptorSet != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipelineLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
+    }
+
+    // Draw all meshes using GPU-culled indirect commands (depth-only)
+    indirectRenderer.drawPrepared(commandBuffer);
+}
+
 void SolidRenderer::cleanup(VulkanApp* app) {
     if (app == nullptr) return;
     // Ensure render targets (images, views, framebuffers) are released

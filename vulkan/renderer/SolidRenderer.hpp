@@ -25,6 +25,8 @@ public:
 
     // Draw main solid geometry: bind pipeline and draw
     void render(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet);
+    // Draw depth-only pre-pass to populate depth buffer without writing color
+    void renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet);
 
     // Access for adding meshes
     IndirectRenderer& getIndirectRenderer() { return indirectRenderer; }

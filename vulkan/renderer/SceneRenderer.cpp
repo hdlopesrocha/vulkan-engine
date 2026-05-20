@@ -280,25 +280,22 @@ void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uin
         printedOnce = true;
     }
     if (renderSolid) {
-        if (wireframeEnabled && solidWireframe) {
+        solidRenderer->renderDepthPrepass(commandBuffer, app, perTextureDescriptorSet);
+        solidRenderer->render(commandBuffer, app, perTextureDescriptorSet);
+        if (wireframeEnabled) {
             solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, solidRenderer->getIndirectRenderer());
-        } else {
-            solidRenderer->render(commandBuffer, app, perTextureDescriptorSet);
-        }
-    } else {
-        // Solid rendering is disabled by settings; skip drawing solid meshes.
-        // The render pass is still active (beginPass was called by the application)
-        // so sky and other overlays can still be rendered into the same pass.
+        } 
     }
+    
 }
 
 void SceneRenderer::skyPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet perTextureDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, const glm::mat4 &viewProj) {
-    if (!skyRenderer) {
-        std::cerr << "[SceneRenderer::skyPass] skyRenderer is nullptr, skipping." << std::endl;
-        return;
-    }
     SkySettings::Mode mode = skySettings->mode;
     skyRenderer->render(app, commandBuffer, perTextureDescriptorSet, mainUniformBuffer, uboStatic, viewProj, mode);
+}
+
+void SceneRenderer::drawSolidWireframeOverlay(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled) {
+    solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, solidRenderer->getIndirectRenderer());
 }
 
 void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, float waterTime, bool skipBackFace, VkImageView skyView, VkImageView cubeReflectionView) {
@@ -673,7 +670,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         std::vector<VkDescriptorSetLayout> solidSetLayouts = { app->getDescriptorSetLayout() };
         solidWireframe->createPipeline(app, {app->getSwapchainImageFormat()},
             solidSetLayouts,
-            "shaders/main.vert.spv", "shaders/main.frag.spv",
+            "shaders/main.vert.spv", "shaders/wireframe.frag.spv",
             "shaders/main.tesc.spv", "shaders/main.tese.spv",
             "solid wireframe");
     }
@@ -685,7 +682,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         };
         waterWireframe->createPipeline(app, {VK_FORMAT_R32G32B32A32_SFLOAT},
             waterSetLayouts,
-            "shaders/water.vert.spv", "shaders/water.frag.spv",
+            "shaders/water.vert.spv", "shaders/wireframe.frag.spv",
             "shaders/water.tesc.spv", "shaders/water.tese.spv",
             "water wireframe");
     }

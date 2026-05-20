@@ -4249,6 +4249,10 @@ void VulkanApp::createLogicalDevice() {
     if (supportedFeatures.fillModeNonSolid) {
         deviceFeatures.fillModeNonSolid = VK_TRUE;
     }
+    // Enable wide lines if supported so pipelines can use line widths > 1.0
+    if (supportedFeatures.wideLines) {
+        deviceFeatures.wideLines = VK_TRUE;
+    }
     // Enable geometry shader if supported
     if (supportedFeatures.geometryShader) {
         deviceFeatures.geometryShader = VK_TRUE;
