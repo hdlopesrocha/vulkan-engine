@@ -11,9 +11,8 @@ public:
     uint level;
     OctreeNode * node;
     BoundingCube cube;
-    ContainmentType containmentType;
     void * context;
-    OctreeNodeData(uint level, OctreeNode * node, BoundingCube cube, ContainmentType containmentType, void * context);
+    OctreeNodeData(uint level, OctreeNode * node, BoundingCube cube, void * context);
     OctreeNodeData(const OctreeNodeData &data);
     OctreeNodeData();
 };

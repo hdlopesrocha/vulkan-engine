@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <fstream>
 #include <limits>
+#include "../includes/locations.hpp"
+#include "../includes/vertex_layouts.hpp"
 
 ShadowRenderer::ShadowRenderer(uint32_t shadowMapSize)
     : shadowMapSize(shadowMapSize) {}
@@ -139,13 +141,7 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
         std::vector<VkVertexInputBindingDescription>{
             VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX }
         },
-        {
-            VkVertexInputAttributeDescription{ 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-            VkVertexInputAttributeDescription{ 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-            VkVertexInputAttributeDescription{ 2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(Vertex, texCoord) },
-            VkVertexInputAttributeDescription{ 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-            VkVertexInputAttributeDescription{ 5, 0, VK_FORMAT_R32_SINT,         offsetof(Vertex, brushIndex) }
-        },
+        vk_layouts::defaultAttributes(),
         setLayouts,
         nullptr,
         VK_POLYGON_MODE_FILL,
@@ -270,7 +266,7 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer,
     if (shadowPipelineLayout != VK_NULL_HANDLE) layout = shadowPipelineLayout;
     if (descriptorSet != VK_NULL_HANDLE) {
         //printf("[BIND] ShadowRenderer::render: layout=%p firstSet=0 count=1 sets=%p\n", (void*)layout, (void*)descriptorSet);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptorSet, 0, nullptr);
+        logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptorSet, 0, nullptr);
     }
     
     // Bind vertex/index buffers

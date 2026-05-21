@@ -1,24 +1,26 @@
 #version 450
 
+#include "includes/locations.glsl"
+
 // Water tessellation evaluation shader
 // Applies wave displacement using Perlin noise
 
 layout(triangles, equal_spacing, cw) in;
 
-layout(location = 0) in vec3 inPos[];
-layout(location = 1) in vec3 inNormal[];
-layout(location = 2) in vec2 inTexCoord[];
-layout(location = 5) in ivec3 tc_fragBrushIndex[];
-layout(location = 11) in vec3 tc_fragTexWeights[];
+layout(location = VARY_LOCALPOS) in vec3 inPos[];
+layout(location = VARY_NORMAL) in vec3 inNormal[];
+layout(location = VARY_UV) in vec2 inTexCoord[];
+layout(location = VARY_BRUSHPATCH) in ivec3 tc_fragBrushIndex[];
+layout(location = VARY_TEXWEIGHTS) in vec3 tc_fragTexWeights[];
 
-layout(location = 0) out vec3 fragPos;
-layout(location = 1) out vec3 fragNormal;
-layout(location = 2) out vec2 fragTexCoord;
-layout(location = 3) out vec4 fragPosClip;  // clip-space position for depth lookup
-layout(location = 4) out vec3 fragDebug;   // debug visual (displacement)
-layout(location = 5) out vec3 fragPosWorld;  // world-space position for shadow cascades
-layout(location = 6) out vec4 fragPosLightSpace; // light-space pos (cascade 0)
-layout(location = 7) flat out int fragBrushIndex;
+layout(location = VARY_LOCALPOS) out vec3 fragPos;
+layout(location = VARY_NORMAL) out vec3 fragNormal;
+layout(location = VARY_UV) out vec2 fragTexCoord;
+layout(location = VARY_POSCLIP) out vec4 fragPosClip;  // clip-space position for depth lookup
+layout(location = VARY_DEBUG) out vec3 fragDebug;   // debug visual (displacement)
+layout(location = VARY_POSWORLD) out vec3 fragPosWorld;  // world-space position for shadow cascades
+layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace; // light-space pos (cascade 0)
+layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
 
 #include "includes/ubo.glsl"
 

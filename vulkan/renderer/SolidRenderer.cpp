@@ -4,6 +4,8 @@
 #include "../../utils/FileReader.hpp"
 #include "../ShaderStage.hpp"
 #include <glm/gtc/matrix_transform.hpp>
+#include "../includes/locations.hpp"
+#include "../includes/vertex_layouts.hpp"
 
 SolidRenderer::SolidRenderer() : indirectRenderer() {}
 SolidRenderer::~SolidRenderer() { cleanup(nullptr); }
@@ -211,13 +213,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             fragmentShader.info
         },
         std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
-        {
-            VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-            VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-            VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
-            VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-            VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex) }
-        },
+        vk_layouts::defaultAttributes(),
         setLayouts,
         nullptr,
         VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
@@ -243,13 +239,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             fragmentShader.info
         },
         std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
-        {
-            VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-            VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
-            VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
-            VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-            VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex) }
-        },
+        vk_layouts::defaultAttributes(),
         setLayouts,
         nullptr,
         VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, false, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
@@ -327,7 +317,7 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
     
     if (perTextureDescriptorSet != VK_NULL_HANDLE) {
         //printf("[BIND] SolidRenderer::draw: layout=%p firstSet=0 count=1 sets=%p\n", (void*)usedLayout, (void*)perTextureDescriptorSet);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, usedLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
+        logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, usedLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
     } else {
         std::cerr << "[SolidRenderer::draw] ERROR: perTextureDescriptorSet is NULL!" << std::endl;
     }
@@ -367,7 +357,7 @@ void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp
 
     // Bind descriptor set using the depth pre-pass pipeline layout
     if (perTextureDescriptorSet != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipelineLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
+        logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipelineLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
     }
 
     // Draw all meshes using GPU-culled indirect commands (depth-only)

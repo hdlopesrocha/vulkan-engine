@@ -4,6 +4,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstring>
 #include <iostream>
+#include "../includes/locations.hpp"
 
 DebugSDFRenderer::DebugSDFRenderer() {}
 
@@ -30,8 +31,8 @@ void DebugSDFRenderer::init(VulkanApp* app) {
             VkVertexInputBindingDescription{0, sizeof(CubeVertex), VK_VERTEX_INPUT_RATE_VERTEX}
         },
         {
-            VkVertexInputAttributeDescription{0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(CubeVertex, position)},
-            VkVertexInputAttributeDescription{1, 0, VK_FORMAT_R32_UINT, offsetof(CubeVertex, cornerIndex)}
+            VkVertexInputAttributeDescription{ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(CubeVertex, position)},
+            VkVertexInputAttributeDescription{ATTR_COLOR, 0, VK_FORMAT_R32_UINT, offsetof(CubeVertex, cornerIndex)}
         },
         setLayouts,
         nullptr,
@@ -109,7 +110,7 @@ void DebugSDFRenderer::createDescriptorSet(VulkanApp* app) {
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = &poolSize;
     poolInfo.maxSets = 1;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
 
     if (vkCreateDescriptorPool(app->getDevice(), &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("DebugSDFRenderer: failed to create descriptor pool");
@@ -148,7 +149,7 @@ void DebugSDFRenderer::createDescriptorSet(VulkanApp* app) {
     write.descriptorCount = 1;
     write.pBufferInfo = &bufferInfo;
 
-    vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
+    logged_vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
 }
 
 void DebugSDFRenderer::updateInstanceBuffer(VulkanApp* app) {
@@ -184,7 +185,7 @@ void DebugSDFRenderer::updateInstanceBuffer(VulkanApp* app) {
         write.descriptorCount = 1;
         write.pBufferInfo = &bufferInfo;
 
-        vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
+        logged_vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
     }
 
     std::vector<InstanceData> instanceData;
@@ -236,7 +237,7 @@ void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptor
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
     VkDescriptorSet descriptorSets[] = {mainDescriptorSet, descriptorSet};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+    logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
         0, 2, descriptorSets, 0, nullptr);
 
     const VkBuffer vertexBuffers[] = {vertexBuffer.buffer};

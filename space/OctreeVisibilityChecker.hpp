@@ -14,9 +14,7 @@ public:
     std::mutex mutex;
     OctreeVisibilityChecker();
     void update(glm::mat4 m);
-    void before(const Octree &tree, OctreeNodeData &params) override;
-    void after(const Octree &tree, OctreeNodeData &params) override;
-    bool test(const Octree &tree, OctreeNodeData &params) override;
+    bool iterate(const Octree &tree, OctreeNodeData &params) override;
     void getOrder(const Octree &tree, OctreeNodeData &params, uint8_t order[8]) override;
 };
 

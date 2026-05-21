@@ -1,5 +1,7 @@
 #version 450
 
+#include "includes/locations.glsl"
+
 // Converts a cubemap texture to an equirectangular 2D projection.
 // Samples from a cubemap (set 0, binding 0) using direction vectors
 // derived from the equirect UV convention matching water.frag / postprocess.frag:
@@ -12,7 +14,7 @@ layout(push_constant) uniform PushConstants {
     vec2 resolution; // width, height of equirect target
 } pc;
 
-layout(location = 0) out vec4 outColor;
+layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 const float PI = 3.14159265358979323846;
 

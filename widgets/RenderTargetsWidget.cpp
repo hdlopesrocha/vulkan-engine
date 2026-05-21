@@ -447,7 +447,7 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
 
     vkCmdBeginRendering(cmd, &renderingInfo);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, linearizePipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, linearizePipelineLayout, 0, 1, &dsToUse, 0, nullptr);
+    logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, linearizePipelineLayout, 0, 1, &dsToUse, 0, nullptr);
     VkViewport vp{}; vp.x = 0.0f; vp.y = 0.0f; vp.width = static_cast<float>(width); vp.height = static_cast<float>(height); vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
     vkCmdSetViewport(cmd, 0, 1, &vp);
     VkRect2D sc{}; sc.offset = {0,0}; sc.extent = { width, height };

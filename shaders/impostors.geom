@@ -1,15 +1,18 @@
 #version 450
+
+#include "includes/locations.glsl"
+
 layout(points) in;
 layout(triangle_strip, max_vertices = 4) out;
 
-layout(location = 0) in vec3 inWorldPos[];
-layout(location = 1) flat in int inBillboardIndex[];
-layout(location = 2) in float inRotFrac[];
+layout(location = VARY_POSWORLD) in vec3 inWorldPos[];
+layout(location = VARY_BRUSHPATCH) flat in int inBillboardIndex[];
+layout(location = VARY_ROTFRAC) in float inRotFrac[];
 
-layout(location = 0) out vec3 outTexCoord;    // xy=UV, z=float(layerIdx)
-layout(location = 1) out vec3 outWorldPos;    // world-space vertex position (for specular)
-layout(location = 2) flat out vec3 outFaceNormal; // world-space face normal (toward camera in XZ)
-layout(location = 3) flat out float outRotFrac;   // per-instance Y-rotation fraction [0,1)
+layout(location = VARY_UV) out vec3 outTexCoord;    // xy=UV, z=float(layerIdx)
+layout(location = VARY_POSWORLD) out vec3 outWorldPos;    // world-space vertex position (for specular)
+layout(location = VARY_FACE_NORMAL) flat out vec3 outFaceNormal; // world-space face normal (toward camera in XZ)
+layout(location = VARY_ROTFRAC) flat out float outRotFrac;   // per-instance Y-rotation fraction [0,1)
 
 // Must match SolidParamsUBO — only read the first two fields.
 layout(set = 0, binding = 0) uniform SolidParamsUBO {

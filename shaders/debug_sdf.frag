@@ -1,9 +1,11 @@
 #version 450
 
-layout(location = 0) in float fragSdf;
-layout(location = 1) flat in int fragBrushIndex;
+#include "includes/locations.glsl"
 
-layout(location = 0) out vec4 outColor;
+layout(location = VARY_SDF) in float fragSdf;
+layout(location = VARY_BRUSHPATCH) flat in int fragBrushIndex;
+
+layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 void main() {
     if (abs(fragSdf) > 10.0) {

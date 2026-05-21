@@ -14,11 +14,9 @@ class IteratorHandler {
     std::stack<StackFrameOut> stackOut;
 
 public:
-    virtual bool test(const Octree &tree, OctreeNodeData &params) = 0;
-    virtual void before(const Octree &tree, OctreeNodeData &params) = 0;
-    virtual void after(const Octree &tree, OctreeNodeData &params) = 0;
+    virtual bool iterate(const Octree &tree, OctreeNodeData &params) = 0;
     virtual void getOrder(const Octree &tree, OctreeNodeData &params, uint8_t order[8]) = 0;
-    void iterate(const Octree &tree, OctreeNodeData &params);
+    void iterateOctree(const Octree &tree, OctreeNodeData &params);
     void iterateMultiThreaded(const Octree &tree, OctreeNodeData &params);
 
     void iterateFlatIn(const Octree &tree, OctreeNodeData &params);

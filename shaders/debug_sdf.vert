@@ -1,10 +1,12 @@
 #version 450
 
-layout(location = 0) in vec3 inPosition;
-layout(location = 1) in uint inCornerIndex;
+#include "includes/locations.glsl"
 
-layout(location = 0) out float fragSdf;
-layout(location = 1) flat out int fragBrushIndex;
+layout(location = ATTR_POS) in vec3 inPosition;
+layout(location = ATTR_COLOR) in uint inCornerIndex;
+
+layout(location = VARY_SDF) out float fragSdf;
+layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
 
 #include "includes/ubo.glsl"
 

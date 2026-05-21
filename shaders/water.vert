@@ -1,20 +1,22 @@
 #version 450
 
+#include "includes/locations.glsl"
+
 // Water vertex shader
 
-layout(location = 0) in vec3 inPosition;
-layout(location = 1) in vec3 inColor;
-layout(location = 2) in vec2 inTexCoord;
-layout(location = 3) in vec3 inNormal;
-layout(location = 5) in int inBrushIndex;
+layout(location = ATTR_POS) in vec3 inPosition;
+layout(location = ATTR_COLOR) in vec3 inColor;
+layout(location = ATTR_UV) in vec2 inTexCoord;
+layout(location = ATTR_NORMAL) in vec3 inNormal;
+layout(location = ATTR_BRUSH_INDEX) in int inBrushIndex;
 
-layout(location = 0) out vec3 fragPos;
-layout(location = 1) out vec3 fragNormal;
-layout(location = 2) out vec2 fragTexCoord;
-layout(location = 3) out vec4 fragPosClip;  // clip-space position for depth lookup
-layout(location = 5) out vec3 fragPosWorld;  // world-space position for shadow cascades
-layout(location = 6) out vec4 fragPosLightSpace; // light-space pos (cascade 0)
-layout(location = 7) flat out int fragBrushIndex;
+layout(location = VARY_LOCALPOS) out vec3 fragPos;
+layout(location = VARY_NORMAL) out vec3 fragNormal;
+layout(location = VARY_UV) out vec2 fragTexCoord;
+layout(location = VARY_POSCLIP) out vec4 fragPosClip;  // clip-space position for depth lookup
+layout(location = VARY_POSWORLD) out vec3 fragPosWorld;  // world-space position for shadow cascades
+layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace; // light-space pos (cascade 0)
+layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
 
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 viewProjection;

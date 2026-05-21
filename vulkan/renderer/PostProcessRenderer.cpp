@@ -155,7 +155,7 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
     poolInfo.maxSets = FRAMES_IN_FLIGHT;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
 
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create post-process descriptor pool!");
@@ -273,7 +273,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
         writes.push_back(skyWrite);
     }
 
-    if (!writes.empty()) vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    if (!writes.empty()) logged_vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
     // Set viewport and scissor (safe to call inside already-open dynamic rendering scope)
     VkViewport viewport{};
@@ -292,7 +292,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
 
     // Bind pipeline and descriptor set
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+    logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
                             0, 1, &currentDs, 0, nullptr);
 
     // Draw fullscreen triangle (3 vertices, no vertex buffer needed)

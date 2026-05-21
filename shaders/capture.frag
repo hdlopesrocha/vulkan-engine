@@ -2,14 +2,16 @@
 // Impostor capture — stores composite albedo WITHOUT baked lighting.
 // Real-time ambient + diffuse + specular is applied in impostors.frag.
 
-layout(location = 0) in vec3 inTexCoord;
-layout(location = 1) flat in int inBrushIndex;
-layout(location = 2) in      vec3 inWorldPos;
-layout(location = 3) flat in vec3 inPlaneNormal;
-layout(location = 4) flat in vec3 inTangentWS;
+#include "includes/locations.glsl"
 
-layout(location = 0) out vec4 outColor;
-layout(location = 1) out vec4 outNormal; // world-space normal, encoded to [0,1]
+layout(location = VARY_UV) in vec3 inTexCoord;
+layout(location = VARY_BRUSHPATCH) flat in int inBrushIndex;
+layout(location = VARY_POSWORLD) in      vec3 inWorldPos;
+layout(location = VARY_PLANE_NORMAL) flat in vec3 inPlaneNormal;
+layout(location = VARY_POSLIGHT) flat in vec3 inTangentWS;
+
+layout(location = FRAG_OUT_COLOR) out vec4 outColor;
+layout(location = FRAG_OUT_NORMAL) out vec4 outNormal; // world-space normal, encoded to [0,1]
 
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
     mat4 viewProjection;

@@ -1,16 +1,19 @@
 #version 450
+
+#include "includes/locations.glsl"
+
 layout(points) in;
 layout(triangle_strip, max_vertices = 24) out;
 
-layout(location = 0) in vec3 fragTexCoordIn[];
-layout(location = 1) flat in int fragBrushIndexIn[];
-layout(location = 2) in vec3 fragWorldPosIn[];
+layout(location = VARY_UV) in vec3 fragTexCoordIn[];
+layout(location = VARY_BRUSHPATCH) flat in int fragBrushIndexIn[];
+layout(location = VARY_POSWORLD) in vec3 fragWorldPosIn[];
 
-layout(location = 0) out vec3 inTexCoord;
-layout(location = 1) flat out int inBrushIndex;
-layout(location = 2) out      vec3 outWorldPos;    // interpolated world-space vertex position
-layout(location = 3) flat out vec3 outPlaneNormal; // face normal of the billboard plane
-layout(location = 4) flat out vec3 outTangentWS;   // tangent along billboard width
+layout(location = VARY_UV) out vec3 inTexCoord;
+layout(location = VARY_BRUSHPATCH) flat out int inBrushIndex;
+layout(location = VARY_POSWORLD) out      vec3 outWorldPos;    // interpolated world-space vertex position
+layout(location = VARY_PLANE_NORMAL) flat out vec3 outPlaneNormal; // face normal of the billboard plane
+layout(location = VARY_POSLIGHT) flat out vec3 outTangentWS;   // tangent along billboard width
 
 // Must match SolidParamsUBO — only read the first two fields.
 layout(set = 0, binding = 0) uniform SolidParamsUBO {

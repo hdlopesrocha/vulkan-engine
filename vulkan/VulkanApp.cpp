@@ -1,6 +1,23 @@
 #include "Buffer.hpp"
 #include "VulkanApp.hpp"
 #include <cstring>
+#include <thread>
+
+static const char* layoutName(VkImageLayout l) {
+    switch (l) {
+        case VK_IMAGE_LAYOUT_UNDEFINED: return "UNDEFINED";
+        case VK_IMAGE_LAYOUT_GENERAL: return "GENERAL";
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: return "COLOR_ATTACHMENT_OPTIMAL";
+        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL: return "DEPTH_STENCIL_ATTACHMENT_OPTIMAL";
+        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL: return "DEPTH_STENCIL_READ_ONLY_OPTIMAL";
+        case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: return "SHADER_READ_ONLY_OPTIMAL";
+        case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: return "TRANSFER_SRC_OPTIMAL";
+        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: return "TRANSFER_DST_OPTIMAL";
+        case VK_IMAGE_LAYOUT_PREINITIALIZED: return "PREINITIALIZED";
+        case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: return "PRESENT_SRC_KHR";
+        default: return "UNKNOWN";
+    }
+}
 
 Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkFence* outFence) {
     // Create staging buffer (host-visible)
@@ -13,17 +30,12 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
     // Create device-local buffer
     Buffer gpuBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    // Allocate command buffer for async transfer
-    VkCommandBuffer cmd = allocatePrimaryCommandBuffer();
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &beginInfo);
-    VkBufferCopy copyRegion{};
-    copyRegion.size = size;
-    vkCmdCopyBuffer(cmd, stagingBuffer.buffer, gpuBuffer.buffer, 1, &copyRegion);
-    // End and submit to geometry queue
-    VkFence fence = submitCommandBufferAsyncToQueue(cmd, geometryQueue, nullptr);
+    // Submit copy asynchronously to the transfer queue
+    VkFence fence = runSingleTimeCommandsAsyncOnTransfer([&](VkCommandBuffer cmd) {
+        VkBufferCopy copyRegion{};
+        copyRegion.size = size;
+        vkCmdCopyBuffer(cmd, stagingBuffer.buffer, gpuBuffer.buffer, 1, &copyRegion);
+    });
     // Defer destruction of staging buffer until transfer completes
     deferDestroyUntilFence(fence, [dev = device, sb = stagingBuffer, this]() {
         if (sb.buffer != VK_NULL_HANDLE) {
@@ -37,6 +49,7 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
     return gpuBuffer;
 }
 #include <cstdint>
+#include <atomic>
 
 #include <vulkan/vulkan.h>
 #include <vector>
@@ -53,6 +66,9 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
 // Async submission bookkeeping
 std::mutex pendingCmdMutex;
 std::vector<std::pair<VkCommandBuffer,VkFence>> pendingCommandBuffers;
+// Global submit counter and mapping to correlate vkQueueSubmit failures with commandbuffers
+std::atomic<uint64_t> g_submitCounter{1};
+std::unordered_map<VkCommandBuffer, uint64_t> g_cmdSubmitMap;
 // Map command buffers to the command pool they were allocated from.
 // This allows allocating per-thread temporary pools for async recording
 // and freeing/destroying the correct pool when work completes.
@@ -116,6 +132,67 @@ extern "C" void ImGui_RecordTransitionImageLayoutLayer_C(void* appPtr,
     } catch (...) {
         // swallow exceptions coming from integration calls to avoid crashing third-party code
     }
+}
+
+// --- Logging wrapper implementations ---
+// These live in this translation unit so they can access internal helpers
+// such as `layoutName()` and the global `g_cmdSubmitMap`.
+void logged_vkUpdateDescriptorSets(VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites, uint32_t descriptorCopyCount, const VkCopyDescriptorSet* pDescriptorCopies) {
+    try {
+        std::thread::id tid = std::this_thread::get_id();
+        uint64_t lastSubmit = 0;
+        try { lastSubmit = g_submitCounter.load() - 1; } catch(...) { lastSubmit = 0; }
+        std::cerr << "[VulkanApp] vkUpdateDescriptorSets thread=" << tid << " lastSubmitId=" << lastSubmit << " writes=" << descriptorWriteCount << " copies=" << descriptorCopyCount << std::endl;
+        for (uint32_t i = 0; i < descriptorWriteCount; ++i) {
+            const VkWriteDescriptorSet &w = pDescriptorWrites[i];
+            std::cerr << "  dstSet=" << (void*)w.dstSet << " dstBinding=" << w.dstBinding << " dstArray=" << w.dstArrayElement << " type=" << w.descriptorType << " count=" << w.descriptorCount << std::endl;
+            if (w.pImageInfo) {
+                for (uint32_t j = 0; j < w.descriptorCount; ++j) {
+                    const VkDescriptorImageInfo &ii = w.pImageInfo[j];
+                    std::cerr << "    imageView=" << (void*)ii.imageView << " sampler=" << (void*)ii.sampler << " layout=" << layoutName(ii.imageLayout) << std::endl;
+                }
+            }
+            if (w.pBufferInfo) {
+                for (uint32_t j = 0; j < w.descriptorCount; ++j) {
+                    const VkDescriptorBufferInfo &bi = w.pBufferInfo[j];
+                    std::cerr << "    buffer=" << (void*)bi.buffer << " offset=" << bi.offset << " range=" << bi.range << std::endl;
+                }
+            }
+        }
+    } catch (...) {
+        // Never let logging crash the app.
+    }
+    // Forward to the real Vulkan call
+    vkUpdateDescriptorSets(device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
+}
+
+void logged_vkCmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets, uint32_t dynamicOffsetCount, const uint32_t* pDynamicOffsets) {
+    uint64_t submitId = 0;
+    {
+        std::lock_guard<std::mutex> lk(pendingCmdMutex);
+        auto it = g_cmdSubmitMap.find(commandBuffer);
+        if (it != g_cmdSubmitMap.end()) submitId = it->second;
+    }
+    try {
+        std::cerr << "[VulkanApp] vkCmdBindDescriptorSets cmd=" << (void*)commandBuffer << " submitId=" << submitId << " layout=" << (void*)layout << " firstSet=" << firstSet << " count=" << descriptorSetCount << std::endl;
+        for (uint32_t i = 0; i < descriptorSetCount; ++i) {
+            std::cerr << "    set[" << i << "]=" << (void*)pDescriptorSets[i] << std::endl;
+        }
+    } catch (...) {}
+    vkCmdBindDescriptorSets(commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
+}
+
+void logged_vkCmdDispatch(VkCommandBuffer commandBuffer, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) {
+    uint64_t submitId = 0;
+    {
+        std::lock_guard<std::mutex> lk(pendingCmdMutex);
+        auto it = g_cmdSubmitMap.find(commandBuffer);
+        if (it != g_cmdSubmitMap.end()) submitId = it->second;
+    }
+    try {
+        std::cerr << "[VulkanApp] vkCmdDispatch cmd=" << (void*)commandBuffer << " submitId=" << submitId << " groups=(" << groupCountX << "," << groupCountY << "," << groupCountZ << ")" << std::endl;
+    } catch (...) {}
+    vkCmdDispatch(commandBuffer, groupCountX, groupCountY, groupCountZ);
 }
 
 void VulkanApp::initVulkan() {
@@ -254,7 +331,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     poolInfo.pPoolSizes = &poolSize;
     poolInfo.maxSets = 1;
     // Allow freeing individual descriptor sets from this pool
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     VkDescriptorPool descPool = VK_NULL_HANDLE;
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool) != VK_SUCCESS) {
         std::cerr << "[VulkanApp] Failed to create descriptor pool for vegetation compute" << std::endl;
@@ -309,12 +386,12 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     writes[2].descriptorCount = 1;
     writes[2].pBufferInfo = &outInfo;
 
-    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+    logged_vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
 
     // Record and submit a single-time command buffer for compute dispatch
     runSingleTimeCommands([&](VkCommandBuffer cmd) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
+        logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
 
         // Push constants: instancesPerTriangle, vertexCount, indexCount, seed, baseTri, billboardCount
         uint32_t push[6];
@@ -337,7 +414,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
                 uint32_t thisGroups = remaining > maxGroupsX ? maxGroupsX : remaining;
                 push[4] = baseTri;
                 vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
-                vkCmdDispatch(cmd, thisGroups, 1, 1);
+                logged_vkCmdDispatch(cmd, thisGroups, 1, 1);
                 baseTri += thisGroups;
                 remaining -= thisGroups;
             }
@@ -473,7 +550,7 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = &poolSize;
     poolInfo.maxSets = 1;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     VkDescriptorPool descPool = VK_NULL_HANDLE;
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool) != VK_SUCCESS) {
         std::cerr << "[VulkanApp] Failed to create descriptor pool for vegetation compute (async)" << std::endl;
@@ -483,6 +560,9 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
         return 0;
     }
+    // Register and log descriptor pool
+    resources.addDescriptorPool(descPool, "VulkanApp: vegetation compute descPool");
+    std::cerr << "[VulkanApp] descriptorPool created: " << (void*)descPool << " maxSets=" << poolInfo.maxSets << " poolSizeCount=" << poolInfo.poolSizeCount << std::endl;
 
     VkDescriptorSetAllocateInfo ainfo{};
     ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -499,6 +579,8 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
         return 0;
     }
+    resources.addDescriptorSet(descSet, "VulkanApp: vegetation compute descSet");
+    std::cerr << "[VulkanApp] descriptorSet allocated: " << (void*)descSet << std::endl;
 
     VkDescriptorBufferInfo vbInfo{ vertexBuffer, 0, VK_WHOLE_SIZE };
     VkDescriptorBufferInfo ibInfo{ indexBuffer, 0, VK_WHOLE_SIZE };
@@ -526,7 +608,7 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     writes[2].descriptorCount = 1;
     writes[2].pBufferInfo = &outInfo;
 
-    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+    logged_vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
 
     // Allocate a command buffer (temporary pool) for async dispatch
     VkCommandBuffer cmd = allocatePrimaryCommandBuffer();
@@ -537,7 +619,7 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     vkBeginCommandBuffer(cmd, &beginInfo);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
+    logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
 
     uint32_t push[6];
     push[0] = instancesPerTriangle;
@@ -558,7 +640,7 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
             uint32_t thisGroups = remaining > maxGroupsX ? maxGroupsX : remaining;
             push[4] = baseTri;
             vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
-            vkCmdDispatch(cmd, thisGroups, 1, 1);
+            logged_vkCmdDispatch(cmd, thisGroups, 1, 1);
             baseTri += thisGroups;
             remaining -= thisGroups;
         }
@@ -637,7 +719,8 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 std::vector<const char*> deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
     VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME,  // For GPU-driven indirect draw count
-    VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME
+    VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME,
+    VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME
 };
 
 
@@ -696,7 +779,14 @@ void VulkanApp::mainLoop() {
 
 void VulkanApp::cleanup() {
     printf("[VulkanApp] cleanup start - device=%p\n", (void*)device);
-    if (device != VK_NULL_HANDLE) deviceWaitIdle();
+    bool deviceLost = false;
+    if (device != VK_NULL_HANDLE) {
+        VkResult waitRes = deviceWaitIdle();
+        if (waitRes == VK_ERROR_DEVICE_LOST) {
+            deviceLost = true;
+            std::cerr << "[VulkanApp] cleanup: device lost detected, skipping explicit destroy callbacks\n";
+        }
+    }
 
     // Allow the derived app to release manager-owned Vulkan resources now while
     // the device, descriptor pools and command pool are still valid. This
@@ -716,7 +806,7 @@ void VulkanApp::cleanup() {
     {
         std::lock_guard<std::mutex> dd(deferredDestroyMutex);
         for (auto &p : deferredDestroys) {
-            try { p.second(); } catch (...) {}
+            try { if (!deviceLost) p.second(); } catch (...) {}
         }
         deferredDestroys.clear();
     }
@@ -763,7 +853,7 @@ void VulkanApp::cleanup() {
     {
         std::lock_guard<std::mutex> dd(deferredDestroyMutex);
         for (auto &p : deferredDestroys) {
-            try { p.second(); } catch (...) {}
+            try { if (!deviceLost) p.second(); } catch (...) {}
         }
         deferredDestroys.clear();
     }
@@ -812,7 +902,7 @@ void VulkanApp::initImGui() {
 
     VkDescriptorPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     pool_info.maxSets = 1000 * (uint32_t)std::size(pool_sizes);
     pool_info.poolSizeCount = static_cast<uint32_t>(std::size(pool_sizes));
     pool_info.pPoolSizes = pool_sizes;
@@ -1073,6 +1163,17 @@ void VulkanApp::createCommandPool() {
     }
     resources.addCommandPool(geometryCommandPool, "VulkanApp: geometryCommandPool");
 
+    // Create a dedicated command pool for the transfer queue if available
+    if (queueFamilyIndices.transferFamily.has_value()) {
+        VkCommandPoolCreateInfo transferPoolInfo = poolInfo;
+        transferPoolInfo.queueFamilyIndex = queueFamilyIndices.transferFamily.value();
+        transferPoolInfo.flags |= VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        if (vkCreateCommandPool(device, &transferPoolInfo, nullptr, &transferCommandPool) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create transfer command pool!");
+        }
+        resources.addCommandPool(transferCommandPool, "VulkanApp: transferCommandPool");
+    }
+
     // initialize async bookkeeping containers
     // pendingCommandBuffers and extraWaitSemaphores are guarded by mutexes
     pendingCommandBuffers.clear();
@@ -1114,13 +1215,7 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
             throw std::runtime_error("failed to begin command buffer in runSingleTimeCommands");
         }
 
-        // Execute user recording while holding the pool lock to prevent other
-        // threads from allocating/recording from the same pool concurrently.
-        try {
-            fn(cmd);
-        } catch (...) {
-            // fall through to proper cleanup
-        }
+        fn(cmd);
 
         if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
             vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
@@ -1158,6 +1253,220 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
         std::lock_guard<std::mutex> poolLock(transientPoolMutex);
         vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
     }
+}
+
+VkFence VulkanApp::runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn) {
+    if (transientCommandPool == VK_NULL_HANDLE) {
+        throw std::runtime_error("transientCommandPool not initialized in runSingleTimeCommandsAsync");
+    }
+
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = transientCommandPool;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    {
+        std::lock_guard<std::mutex> poolLock(transientPoolMutex);
+        if (vkAllocateCommandBuffers(device, &allocInfo, &cmd) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate command buffer in runSingleTimeCommandsAsync");
+        }
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+            vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
+            throw std::runtime_error("failed to begin command buffer in runSingleTimeCommandsAsync");
+        }    
+        fn(cmd);
+        // Do NOT call vkEndCommandBuffer here; submitCommandBufferAsync will end and submit it.
+    }
+
+    // Record mapping so pending processing knows which pool to free from
+    {
+        std::lock_guard<std::mutex> lk(pendingCmdMutex);
+        commandBufferPoolMap[cmd] = transientCommandPool;
+    }
+
+    // Submit asynchronously and return the fence so the caller may track completion.
+    VkFence fence = submitCommandBufferAsync(cmd, nullptr);
+    return fence;
+}
+
+VkFence VulkanApp::runSingleTimeCommandsAsyncOnTransfer(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore) {
+    // If no dedicated transfer pool/queue is available, fallback to the
+    // generic async helper which submits to the graphics queue. In that
+    // case we cannot produce a separate semaphore for cross-queue sync,
+    // so ensure outSemaphore is set to VK_NULL_HANDLE.
+    if (transferCommandPool == VK_NULL_HANDLE || transferQueue == VK_NULL_HANDLE || transferQueue == graphicsQueue) {
+        if (outSemaphore) *outSemaphore = VK_NULL_HANDLE;
+        return runSingleTimeCommandsAsync(fn);
+    }
+
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = transferCommandPool;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    {
+        std::lock_guard<std::mutex> poolLock(transferPoolMutex);
+        if (vkAllocateCommandBuffers(device, &allocInfo, &cmd) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate command buffer in runSingleTimeCommandsAsyncOnTransfer");
+        }
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+            vkFreeCommandBuffers(device, transferCommandPool, 1, &cmd);
+            throw std::runtime_error("failed to begin command buffer in runSingleTimeCommandsAsyncOnTransfer");
+        }
+
+        fn(cmd);
+        // Do NOT call vkEndCommandBuffer here; submitCommandBufferAsyncToQueue will end and submit it.
+    }
+
+    // Record mapping so pending processing knows which pool to free from
+    {
+        std::lock_guard<std::mutex> lk(pendingCmdMutex);
+        commandBufferPoolMap[cmd] = transferCommandPool;
+    }
+
+    // Submit asynchronously to transfer queue and return fence. Optionally
+    // obtain a semaphore that will be signaled on completion so the graphics
+    // submission can wait on the transfer completion without CPU-side stalls.
+    VkFence fence = submitCommandBufferAsyncToQueue(cmd, transferQueue, outSemaphore);
+    return fence;
+}
+
+void VulkanApp::runSingleTimeCommandsOnTransfer(const std::function<void(VkCommandBuffer)>& fn) {
+    // If no dedicated transfer command pool/queue is available, fallback
+    // to the generic `runSingleTimeCommands` which executes synchronously
+    // on the main graphics queue. This preserves correctness on devices
+    // without a separate transfer family.
+    if (transferCommandPool == VK_NULL_HANDLE || transferQueue == VK_NULL_HANDLE || transferQueue == graphicsQueue) {
+        runSingleTimeCommands(fn);
+        return;
+    }
+
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = transferCommandPool;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    {
+        std::lock_guard<std::mutex> poolLock(transferPoolMutex);
+        if (vkAllocateCommandBuffers(device, &allocInfo, &cmd) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate command buffer in runSingleTimeCommandsOnTransfer");
+        }
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+            vkFreeCommandBuffers(device, transferCommandPool, 1, &cmd);
+            throw std::runtime_error("failed to begin command buffer in runSingleTimeCommandsOnTransfer");
+        }
+
+        try {
+            fn(cmd);
+        } catch (...) {
+            // fall through to cleanup
+        }
+
+        if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+            vkFreeCommandBuffers(device, transferCommandPool, 1, &cmd);
+            throw std::runtime_error("failed to end command buffer in runSingleTimeCommandsOnTransfer");
+        }
+    }
+
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = 0;
+    VkFence fence = VK_NULL_HANDLE;
+    if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+        vkFreeCommandBuffers(device, transferCommandPool, 1, &cmd);
+        throw std::runtime_error("failed to create fence for transfer submit");
+    }
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+
+    {
+        std::lock_guard<std::mutex> lock(queueSubmitMutex);
+        // Assign a submit id for this transfer submission
+        uint64_t submitId = g_submitCounter.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+            g_cmdSubmitMap[cmd] = submitId;
+        }
+        std::cerr << "[VulkanApp] transfer submit id=" << submitId << " cmd=" << (void*)cmd << " fence=" << (void*)fence << std::endl;
+        // Debug: print pending layout updates for this transfer command buffer
+        {
+            std::lock_guard<std::mutex> plk(pendingLayoutMutex);
+            auto pit = commandBufferPendingLayouts.find(cmd);
+            if (pit != commandBufferPendingLayouts.end()) {
+                std::cerr << "[VulkanApp] transfer submit id=" << submitId << " cmd=" << (void*)cmd << " has " << pit->second.size() << " pending layout updates" << std::endl;
+                for (const auto &u : pit->second) {
+                    auto entry = resources.find((uintptr_t)u.image);
+                    std::string desc = entry ? entry->desc : std::string("(unknown)");
+                    std::cerr << "[VulkanApp] transfer submit id=" << submitId << " pendingLayout: image=" << (void*)u.image
+                              << " desc=" << desc
+                              << " new=" << layoutName(u.newLayout)
+                              << " baseLayer=" << u.baseArrayLayer
+                              << " layerCount=" << u.layerCount
+                              << " isBarrier=" << u.isBarrier << std::endl;
+                }
+            } else {
+                std::cerr << "[VulkanApp] transfer submit id=" << submitId << " cmd=" << (void*)cmd << " has no pending layout updates" << std::endl;
+            }
+        }
+        preApplyPendingLayoutsBeforeSubmit(cmd);
+        VkResult submitRes = vkQueueSubmit(transferQueue, 1, &submitInfo, fence);
+        if (submitRes != VK_SUCCESS) {
+            if (submitRes == VK_ERROR_DEVICE_LOST) {
+                deviceLost.store(true);
+                std::cerr << "[VulkanApp] runSingleTimeCommandsOnTransfer: vkQueueSubmit returned VK_ERROR_DEVICE_LOST; registering fence and deferring command-buffer cleanup\n";
+                // Register the fence with the resource tracker and enqueue the
+                // command buffer+fence for centralized cleanup instead of freeing
+                // the command buffer while it may still be pending. This avoids
+                // VUID-vkFreeCommandBuffers-pCommandBuffers-00047 validation
+                // failures when the driver still considers the command buffer in use.
+                resources.addFence(fence, "VulkanApp::runSingleTimeCommandsOnTransfer: fence");
+                {
+                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+                    if (commandBufferPoolMap.find(cmd) == commandBufferPoolMap.end()) {
+                        commandBufferPoolMap[cmd] = transferCommandPool;
+                    }
+                    pendingCommandBuffers.emplace_back(cmd, fence);
+                }
+                return;
+            } else {
+                vkDestroyFence(device, fence, nullptr);
+                vkFreeCommandBuffers(device, transferCommandPool, 1, &cmd);
+                throw std::runtime_error("failed to submit transfer command buffer");
+            }
+        }
+    }
+
+    // Wait for transfer completion
+    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+
+    // Apply pending layout updates and free the command buffer
+    applyPendingLayoutUpdatesForCommandBuffer(cmd);
+    {
+        std::lock_guard<std::mutex> poolLock(commandPoolMutex);
+        vkFreeCommandBuffers(device, transferCommandPool, 1, &cmd);
+    }
+    vkDestroyFence(device, fence, nullptr);
 }
 
 void VulkanApp::submitAndWait(const VkSubmitInfo* submits, uint32_t submitCount, VkFence fence) {
@@ -1213,7 +1522,17 @@ void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, Vk
     imageInfo.tiling = tiling;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = usage;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    // If transfer and graphics use different families, create image with
+    // CONCURRENT sharing to avoid explicit ownership transfer barriers.
+    QueueFamilyIndices qfi = findQueueFamilies(physicalDevice);
+    if (qfi.transferFamily.has_value() && qfi.transferFamily.value() != qfi.graphicsFamily.value()) {
+        uint32_t families[2] = { qfi.graphicsFamily.value(), qfi.transferFamily.value() };
+        imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+        imageInfo.queueFamilyIndexCount = 2;
+        imageInfo.pQueueFamilyIndices = families;
+    } else {
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    }
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
     if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
@@ -1236,8 +1555,10 @@ void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, Vk
     if (vkAllocateMemory(device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
         throw std::runtime_error("failed to allocate image memory!");
     }
-
     vkBindImageMemory(device, image, imageMemory, 0);
+    // Debug: log allocated image memory size and handle to help map GPUVM faults
+    std::cerr << "[VulkanApp::createImage] image=" << (void*)image << " mem=" << (void*)imageMemory
+              << " allocSize=" << (size_t)memRequirements.size << " debugName=" << (debugName ? debugName : "(null)") << std::endl;
     // Register image and its memory for final-sweep safety (use debug name if provided)
     resources.addImage(image, debugName ? debugName : "VulkanApp: image");
     if (debugName) {
@@ -1415,9 +1736,27 @@ void VulkanApp::processPendingCommandBuffers() {
             auto fn = it->second; // copy the function so we can call it safely
             bool canRun = false;
             if (f == VK_NULL_HANDLE) {
-                // run when no pending command buffers are outstanding
-                std::lock_guard<std::mutex> lk(pendingCmdMutex);
-                if (pendingCommandBuffers.empty()) canRun = true;
+                // run when no pending async command buffers are outstanding
+                // AND when all per-frame inFlight fences are signaled. This
+                // prevents destroying resources that may still be referenced
+                // by submitted render command buffers (which use inFlightFences).
+                bool pendingEmpty = false;
+                {
+                    std::lock_guard<std::mutex> lk(pendingCmdMutex);
+                    pendingEmpty = pendingCommandBuffers.empty();
+                }
+                if (pendingEmpty) {
+                    bool allFramesIdle = true;
+                    for (const VkFence &frameFence : inFlightFences) {
+                        if (frameFence == VK_NULL_HANDLE) continue;
+                        // If resource manager no longer tracks this fence the
+                        // fence was destroyed elsewhere; treat it as signaled.
+                        if (!resources.find((uintptr_t)frameFence).has_value()) continue;
+                        VkResult st = vkGetFenceStatus(device, frameFence);
+                        if (st != VK_SUCCESS) { allFramesIdle = false; break; }
+                    }
+                    if (allFramesIdle) canRun = true;
+                }
             } else {
                 // If the resource manager no longer tracks this fence the
                 // fence has been destroyed out-of-band; treat the callback as
@@ -1426,7 +1765,7 @@ void VulkanApp::processPendingCommandBuffers() {
                     canRun = true;
                 } else {
                     VkResult st = vkGetFenceStatus(device, f);
-                    if (st == VK_SUCCESS || st == VK_ERROR_DEVICE_LOST) canRun = true;
+                    if (st == VK_SUCCESS) canRun = true;
                 }
             }
             if (canRun) {
@@ -1443,6 +1782,10 @@ void VulkanApp::processPendingCommandBuffers() {
     // Now process pending command buffers and free their command buffers when fences signal.
     // We first collect signaled entries while holding the pendingCmdMutex, then
     // perform frees/destroys without holding that mutex to avoid lock reentrancy.
+    // To avoid long CPU spikes while still preventing unbounded resource buildup,
+    // process up to `MAX_PENDING_FREE_PER_FRAME` signaled entries per-frame. If a
+    // very large number of signaled entries appears at once, fall back to processing
+    // them all to avoid allowing growth to spiral out of control.
     std::vector<std::pair<VkCommandBuffer, VkFence>> toFree;
     {
         std::lock_guard<std::mutex> lk(pendingCmdMutex);
@@ -1455,9 +1798,9 @@ void VulkanApp::processPendingCommandBuffers() {
             bool signaledOrGone = false;
             if (!resources.find((uintptr_t)fence).has_value()) {
                 signaledOrGone = true;
-            } else {
+                } else {
                 VkResult st = vkGetFenceStatus(device, fence);
-                if (st == VK_SUCCESS || st == VK_ERROR_DEVICE_LOST) signaledOrGone = true;
+                if (st == VK_SUCCESS) signaledOrGone = true;
             }
             if (signaledOrGone) {
                 toFree.emplace_back(cmd, fence);
@@ -1468,9 +1811,25 @@ void VulkanApp::processPendingCommandBuffers() {
         }
     }
 
-    for (auto &p : toFree) {
-        VkCommandBuffer cmd = p.first;
-        VkFence fence = p.second;
+    const size_t MAX_PENDING_FREE_PER_FRAME = 4; // user-requested cap
+    const size_t FORCE_PROCESS_ALL_THRESHOLD = 64; // if many signaled, clear backlog
+    size_t processCount = toFree.size();
+    if (processCount > MAX_PENDING_FREE_PER_FRAME && processCount <= FORCE_PROCESS_ALL_THRESHOLD) {
+        processCount = MAX_PENDING_FREE_PER_FRAME;
+    }
+
+    // If we won't process all signaled entries this frame, re-insert the remainder
+    // back into the pending list so they'll be handled in subsequent frames.
+    if (processCount < toFree.size()) {
+        std::lock_guard<std::mutex> lk(pendingCmdMutex);
+        for (size_t i = processCount; i < toFree.size(); ++i) {
+            pendingCommandBuffers.emplace_back(toFree[i]);
+        }
+    }
+
+    for (size_t i = 0; i < processCount; ++i) {
+        VkCommandBuffer cmd = toFree[i].first;
+        VkFence fence = toFree[i].second;
         // Apply any pending layout updates recorded for this command buffer
         // before freeing it so the authoritative tracked layout matches what
         // the GPU has actually executed.
@@ -1649,17 +2008,32 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
         // `queueSubmitMutex` first to maintain consistent lock ordering.
         std::lock_guard<std::mutex> lock(queueSubmitMutex);
 
+        // Assign a submit id for this submission to aid post-mortem correlation
+        uint64_t submitId = g_submitCounter.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+            g_cmdSubmitMap[commandBuffer] = submitId;
+        }
+        std::cerr << "[VulkanApp] submit id=" << submitId << " cmd=" << (void*)commandBuffer << " fence=" << (void*)fence << " sem=" << (void*)semaphore << std::endl;
+
         // Debug: print any pending layout updates recorded for this command buffer
         {
             std::lock_guard<std::mutex> plk(pendingLayoutMutex);
             auto pit = commandBufferPendingLayouts.find(commandBuffer);
             if (pit != commandBufferPendingLayouts.end()) {
-                // std::cerr << "[VulkanApp] submitCommandBufferAsync: cmd=" << (void*)commandBuffer << " has " << pit->second.size() << " pending layout updates" << std::endl;
+                std::cerr << "[VulkanApp] submit id=" << submitId << " cmd=" << (void*)commandBuffer << " has " << pit->second.size() << " pending layout updates" << std::endl;
                 for (const auto &u : pit->second) {
-                    // std::cerr << "[VulkanApp] submitCommandBufferAsync: cmd=" << (void*)commandBuffer << " pending image=" << (void*)u.image << " new=" << (int)u.newLayout << " baseLayer=" << (unsigned)u.baseArrayLayer << " layerCount=" << (unsigned)u.layerCount << std::endl;
+                    auto entry = resources.find((uintptr_t)u.image);
+                    std::string desc = entry ? entry->desc : std::string("(unknown)");
+                    std::cerr << "[VulkanApp] submit id=" << submitId << " pendingLayout: image=" << (void*)u.image
+                              << " desc=" << desc
+                              << " new=" << layoutName(u.newLayout)
+                              << " baseLayer=" << u.baseArrayLayer
+                              << " layerCount=" << u.layerCount
+                              << " isBarrier=" << u.isBarrier << std::endl;
                 }
             } else {
-                // std::cerr << "[VulkanApp] submitCommandBufferAsync: cmd=" << (void*)commandBuffer << " has no pending layout updates" << std::endl;
+                std::cerr << "[VulkanApp] submit id=" << submitId << " cmd=" << (void*)commandBuffer << " has no pending layout updates" << std::endl;
             }
         }
 
@@ -1667,7 +2041,15 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
         // a populated authoritative layout for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
-        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence) != VK_SUCCESS) {
+        VkResult submitRes = vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence);
+        if (submitRes != VK_SUCCESS) {
+            if (submitRes == VK_ERROR_DEVICE_LOST) {
+                // Mark global device lost state so other subsystems can adapt.
+                deviceLost.store(true);
+                std::cerr << "[VulkanApp] submitCommandBufferAsync: vkQueueSubmit returned VK_ERROR_DEVICE_LOST\n";
+                // Keep semaphore and fence registered; centralized cleanup handles them.
+                return fence;
+            }
             if (semaphore != VK_NULL_HANDLE) {
                 resources.removeSemaphore(semaphore);
                 vkDestroySemaphore(device, semaphore, nullptr);
@@ -1681,6 +2063,11 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
     // Track command buffer+fence ownership so we can free command buffers later when fence signals
     {
         std::lock_guard<std::mutex> lk(pendingCmdMutex);
+        // If there is no explicit mapping for which pool the command buffer
+        // came from, assume it was allocated from the transient pool.
+        if (commandBufferPoolMap.find(commandBuffer) == commandBufferPoolMap.end()) {
+            commandBufferPoolMap[commandBuffer] = transientCommandPool;
+        }
         pendingCommandBuffers.emplace_back(commandBuffer, fence);
     }
 
@@ -1733,17 +2120,57 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         // Serialize pre-apply and submission to maintain consistent ordering
         std::lock_guard<std::mutex> lock(queueSubmitMutex);
 
+        // Assign a submit id for this submission to aid post-mortem correlation
+        uint64_t submitId = g_submitCounter.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+            g_cmdSubmitMap[commandBuffer] = submitId;
+        }
+        std::cerr << "[VulkanApp] submitToQueue id=" << submitId << " cmd=" << (void*)commandBuffer << " fence=" << (void*)fence << " sem=" << (void*)semaphore << " targetQueue=" << (void*)targetQueue << std::endl;
+
+        // Debug: print any pending layout updates recorded for this command buffer
+        {
+            std::lock_guard<std::mutex> plk(pendingLayoutMutex);
+            auto pit = commandBufferPendingLayouts.find(commandBuffer);
+            if (pit != commandBufferPendingLayouts.end()) {
+                std::cerr << "[VulkanApp] submitToQueue id=" << submitId << " cmd=" << (void*)commandBuffer << " has " << pit->second.size() << " pending layout updates" << std::endl;
+                for (const auto &u : pit->second) {
+                    auto entry = resources.find((uintptr_t)u.image);
+                    std::string desc = entry ? entry->desc : std::string("(unknown)");
+                    std::cerr << "[VulkanApp] submitToQueue id=" << submitId << " pendingLayout: image=" << (void*)u.image
+                              << " desc=" << desc
+                              << " new=" << layoutName(u.newLayout)
+                              << " baseLayer=" << u.baseArrayLayer
+                              << " layerCount=" << u.layerCount
+                              << " isBarrier=" << u.isBarrier << std::endl;
+                }
+            } else {
+                std::cerr << "[VulkanApp] submitToQueue id=" << submitId << " cmd=" << (void*)commandBuffer << " has no pending layout updates" << std::endl;
+            }
+        }
+
         // Promote pending layout updates for this submission
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
-        if (vkQueueSubmit(targetQueue, 1, &submitInfo, fence) != VK_SUCCESS) {
+        VkResult submitRes = vkQueueSubmit(targetQueue, 1, &submitInfo, fence);
+        if (submitRes != VK_SUCCESS) {
             if (semaphore != VK_NULL_HANDLE) {
-                resources.removeSemaphore(semaphore);
-                vkDestroySemaphore(device, semaphore, nullptr);
+                if (submitRes == VK_ERROR_DEVICE_LOST) {
+                    std::cerr << "[VulkanApp] submitCommandBufferAsyncToQueue: vkQueueSubmit returned VK_ERROR_DEVICE_LOST\n";
+                } else {
+                    resources.removeSemaphore(semaphore);
+                    vkDestroySemaphore(device, semaphore, nullptr);
+                }
             }
-            resources.removeFence(fence);
-            vkDestroyFence(device, fence, nullptr);
-            throw std::runtime_error("failed to submit async command buffer to target queue");
+            if (submitRes == VK_ERROR_DEVICE_LOST) {
+                deviceLost.store(true);
+                // Leave fence registered for centralized cleanup and return the fence so caller can still defer destroys.
+                return fence;
+            } else {
+                resources.removeFence(fence);
+                vkDestroyFence(device, fence, nullptr);
+                throw std::runtime_error("failed to submit async command buffer to target queue");
+            }
         }
     }
 
@@ -1974,6 +2401,16 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         {
             std::lock_guard<std::mutex> lock(commandPoolMutex);
             vkFreeCommandBuffers(dev, pool, 1, &cmd);
+        }
+
+        // Remove any submit mapping for this command buffer (cleanup trace state)
+        {
+            std::lock_guard<std::mutex> lk(pendingCmdMutex);
+            auto it = g_cmdSubmitMap.find(cmd);
+            if (it != g_cmdSubmitMap.end()) {
+                std::cerr << "[VulkanApp] freeCommandBuffer: cmd=" << (void*)cmd << " submitId=" << it->second << std::endl;
+                g_cmdSubmitMap.erase(it);
+            }
         }
 
         // If this was a temporary pool we created, destroy it now
@@ -2515,17 +2952,15 @@ void VulkanApp::recordTrackedLayoutForCommandBuffer(VkCommandBuffer commandBuffe
 
 // Deferred-destruction helpers
 void VulkanApp::deferDestroyUntilAllPending(std::function<void()> destroyFn) {
-    // If no pending command buffers, run immediately to avoid delaying cleanup unnecessarily
-    {
-        std::lock_guard<std::mutex> lk(pendingCmdMutex);
-        if (pendingCommandBuffers.empty()) {
-            try { destroyFn(); } catch (...) {}
-            return;
-        }
-    }
-    // Otherwise enqueue with a VK_NULL_HANDLE fence meaning 'wait for all pending'
+    // Always enqueue a VK_NULL_HANDLE deferred destroy which means "wait
+    // for all pending command buffers AND for in-flight frame fences to
+    // signal". Running the callback immediately when no transfer command
+    // buffers are outstanding risks destroying resources that are still
+    // referenced by submitted render command buffers; defer to the
+    // centralized processor to make the destruction decision.
     std::lock_guard<std::mutex> dd(deferredDestroyMutex);
     deferredDestroys.emplace_back(VK_NULL_HANDLE, destroyFn);
+    std::cerr << "[VulkanApp] deferDestroyUntilAllPending: scheduled wait-for-all destroy (queue size=" << deferredDestroys.size() << ")" << std::endl;
 }
 
 void VulkanApp::deferDestroyUntilFence(VkFence fence, std::function<void()> destroyFn) {
@@ -2545,7 +2980,8 @@ bool VulkanApp::hasPendingCommandBuffers() {
 
 
 void VulkanApp::copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
-    runSingleTimeCommands([&](VkCommandBuffer commandBuffer){
+    // Perform buffer->image copy on the transfer queue to avoid blocking graphics.
+    runSingleTimeCommandsOnTransfer([&](VkCommandBuffer commandBuffer){
         VkBufferImageCopy region{};
         region.bufferOffset = 0;
         region.bufferRowLength = 0;
@@ -2760,9 +3196,15 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
     // generate mipmaps for the array texture (per-layer)
     generateMipmaps(textureImage.image, chosenFormat, texWidth, texHeight, textureImage.mipLevels, layerCount);
 
-    // Defer destruction to VulkanResourceManager; clear local handles
-    stagingBuffer.buffer = VK_NULL_HANDLE;
-    stagingBuffer.memory = VK_NULL_HANDLE;
+    // Transfer completed synchronously; destroy staging resources now.
+    if (stagingBuffer.buffer != VK_NULL_HANDLE) {
+        if (resources.removeBuffer(stagingBuffer.buffer)) vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
+        stagingBuffer.buffer = VK_NULL_HANDLE;
+    }
+    if (stagingBuffer.memory != VK_NULL_HANDLE) {
+        if (resources.removeDeviceMemory(stagingBuffer.memory)) vkFreeMemory(device, stagingBuffer.memory, nullptr);
+        stagingBuffer.memory = VK_NULL_HANDLE;
+    }
 
     // create view for array texture
     VkImageViewCreateInfo viewInfo{};
@@ -3084,7 +3526,7 @@ void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
     // Allow freeing individual descriptor sets (vegetation, etc.)
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     // Increase maxSets to support many compute/graphics allocations
     poolInfo.maxSets = uboCount * 16;
 
@@ -3152,7 +3594,7 @@ void VulkanApp::updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &des
         }
     }
     if (filtered.empty()) return;
-    vkUpdateDescriptorSets(device, static_cast<uint32_t>(filtered.size()), filtered.data(), 0, nullptr);
+    logged_vkUpdateDescriptorSets(device, static_cast<uint32_t>(filtered.size()), filtered.data(), 0, nullptr);
 }
 
 void VulkanApp::updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> descriptors) {
@@ -3178,7 +3620,7 @@ void VulkanApp::updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> 
         }
     }
     if (filtered.empty()) return;
-    vkUpdateDescriptorSets(device, static_cast<uint32_t>(filtered.size()), filtered.data(), 0, nullptr);
+    logged_vkUpdateDescriptorSets(device, static_cast<uint32_t>(filtered.size()), filtered.data(), 0, nullptr);
 }
 
 
@@ -3208,7 +3650,7 @@ VkPipelineLayout VulkanApp::getPipelineLayout() const {
 std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
     const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
-    std::initializer_list<VkVertexInputAttributeDescription> descriptions,
+    const std::vector<VkVertexInputAttributeDescription>& descriptions,
     const std::vector<VkDescriptorSetLayout>& setLayouts,
     const VkPushConstantRange* pushConstantRange,
     VkPolygonMode polygonMode,
@@ -3224,7 +3666,7 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     VkRenderPass legacyRenderPass) {
 
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages(stages);
-    std::vector<VkVertexInputAttributeDescription> attributeDescriptions(descriptions);
+    const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions = descriptions;
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -3409,7 +3851,18 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size;
     bufferInfo.usage = usage;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    // If a dedicated transfer queue family exists and is different from
+    // the graphics family, create the buffer in CONCURRENT mode so both
+    // queues can access it without explicit ownership transfers.
+    QueueFamilyIndices qfi = findQueueFamilies(physicalDevice);
+    if (qfi.transferFamily.has_value() && qfi.transferFamily.value() != qfi.graphicsFamily.value()) {
+        uint32_t families[2] = { qfi.graphicsFamily.value(), qfi.transferFamily.value() };
+        bufferInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+        bufferInfo.queueFamilyIndexCount = 2;
+        bufferInfo.pQueueFamilyIndices = families;
+    } else {
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    }
 
     if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer.buffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to create buffer!");
@@ -3430,6 +3883,11 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     // Register buffer and its memory so the VulkanResourceManager tracks them
     resources.addBuffer(buffer.buffer, "VulkanApp: buffer.buffer");
     resources.addDeviceMemory(buffer.memory, "VulkanApp: buffer.memory");
+    // Debug: record allocation sizes and mapping to help trace GPUVM faults
+    std::cerr << "[VulkanApp] createBuffer: buf=" << (void*)buffer.buffer
+              << " requestedSize=" << (size_t)size
+              << " allocSize=" << (size_t)memRequirements.size
+              << " mem=" << (void*)buffer.memory << std::endl;
     /*std::cerr << "[VulkanApp::createBuffer] buffer=" << (void*)buffer.buffer << " size=" << (size_t)size << " usage=0x" << std::hex << (unsigned)usage << " mem=" << (void*)buffer.memory << " buffers=" << resources.getBufferMap().size() << " memories=" << resources.getDeviceMemoryMap().size() << std::endl;*/
     return buffer;
 }
@@ -3468,16 +3926,22 @@ Buffer VulkanApp::createVertexBuffer(const std::vector<Vertex> &vertices) {
         VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     
-    // Copy from staging to device-local buffer
-    runSingleTimeCommands([&](VkCommandBuffer cmd){
+    // Copy from staging to device-local buffer on transfer queue
+    runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd){
         VkBufferCopy copyRegion{};
         copyRegion.size = bufferSize;
         vkCmdCopyBuffer(cmd, stagingBuffer.buffer, vertexBuffer.buffer, 1, &copyRegion);
     });
     
-    // Defer actual destruction to VulkanResourceManager; clear local handles
-    stagingBuffer.buffer = VK_NULL_HANDLE;
-    stagingBuffer.memory = VK_NULL_HANDLE;
+    // Transfer completed synchronously; destroy staging resources now.
+    if (stagingBuffer.buffer != VK_NULL_HANDLE) {
+        if (resources.removeBuffer(stagingBuffer.buffer)) vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
+        stagingBuffer.buffer = VK_NULL_HANDLE;
+    }
+    if (stagingBuffer.memory != VK_NULL_HANDLE) {
+        if (resources.removeDeviceMemory(stagingBuffer.memory)) vkFreeMemory(device, stagingBuffer.memory, nullptr);
+        stagingBuffer.memory = VK_NULL_HANDLE;
+    }
     
     return vertexBuffer;
 }
@@ -3506,16 +3970,22 @@ Buffer VulkanApp::createIndexBuffer(const std::vector<uint> &indices) {
         VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, 
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     
-    // Copy from staging to device-local buffer
-    runSingleTimeCommands([&](VkCommandBuffer cmd){
+    // Copy from staging to device-local buffer on transfer queue
+    runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd){
         VkBufferCopy copyRegion{};
         copyRegion.size = bufferSize;
         vkCmdCopyBuffer(cmd, stagingBuffer.buffer, indexBuffer.buffer, 1, &copyRegion);
     });
     
-    // Defer actual destruction to VulkanResourceManager; clear local handles
-    stagingBuffer.buffer = VK_NULL_HANDLE;
-    stagingBuffer.memory = VK_NULL_HANDLE;
+    // Transfer completed synchronously; destroy staging resources now.
+    if (stagingBuffer.buffer != VK_NULL_HANDLE) {
+        if (resources.removeBuffer(stagingBuffer.buffer)) vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
+        stagingBuffer.buffer = VK_NULL_HANDLE;
+    }
+    if (stagingBuffer.memory != VK_NULL_HANDLE) {
+        if (resources.removeDeviceMemory(stagingBuffer.memory)) vkFreeMemory(device, stagingBuffer.memory, nullptr);
+        stagingBuffer.memory = VK_NULL_HANDLE;
+    }
     
     return indexBuffer;
 }
@@ -3536,16 +4006,22 @@ Buffer VulkanApp::createDeviceLocalBuffer(const void* data, VkDeviceSize size, V
         VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, 
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     
-    // Copy from staging to device-local buffer
-    runSingleTimeCommands([&](VkCommandBuffer cmd){
+    // Copy from staging to device-local buffer on transfer queue
+    runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd){
         VkBufferCopy copyRegion{};
         copyRegion.size = size;
         vkCmdCopyBuffer(cmd, stagingBuffer.buffer, gpuBuffer.buffer, 1, &copyRegion);
     });
     
-    // Defer actual destruction to VulkanResourceManager; clear local handles
-    stagingBuffer.buffer = VK_NULL_HANDLE;
-    stagingBuffer.memory = VK_NULL_HANDLE;
+    // Transfer completed synchronously; destroy staging resources now.
+    if (stagingBuffer.buffer != VK_NULL_HANDLE) {
+        if (resources.removeBuffer(stagingBuffer.buffer)) vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
+        stagingBuffer.buffer = VK_NULL_HANDLE;
+    }
+    if (stagingBuffer.memory != VK_NULL_HANDLE) {
+        if (resources.removeDeviceMemory(stagingBuffer.memory)) vkFreeMemory(device, stagingBuffer.memory, nullptr);
+        stagingBuffer.memory = VK_NULL_HANDLE;
+    }
     
     return gpuBuffer;
 }
@@ -4149,6 +4625,25 @@ QueueFamilyIndices VulkanApp::findQueueFamilies(VkPhysicalDevice device) {
         ++i;
     }
 
+    // Prefer a dedicated transfer-only queue family if available (has TRANSFER bit but not GRAPHICS)
+    for (uint32_t j = 0; j < queueFamilies.size(); ++j) {
+        const auto &qf = queueFamilies[j];
+        if ((qf.queueFlags & VK_QUEUE_TRANSFER_BIT) && !(qf.queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+            indices.transferFamily = j;
+            break;
+        }
+    }
+    // If no dedicated transfer-only family found, fall back to any family that supports transfer
+    if (!indices.transferFamily.has_value()) {
+        for (uint32_t j = 0; j < queueFamilies.size(); ++j) {
+            const auto &qf = queueFamilies[j];
+            if (qf.queueFlags & VK_QUEUE_TRANSFER_BIT) {
+                indices.transferFamily = j;
+                break;
+            }
+        }
+    }
+
     // If no family has both, find separate
     i = 0;
     for (const auto& queueFamily : queueFamilies) {
@@ -4202,6 +4697,7 @@ void VulkanApp::createLogicalDevice() {
     QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
 
     std::set<uint32_t> uniqueQueueFamilies = {indices.graphicsFamily.value(), indices.presentFamily.value()};
+    if (indices.transferFamily.has_value()) uniqueQueueFamilies.insert(indices.transferFamily.value());
 
     // Query available queue counts for families so we don't request more queues than supported
     uint32_t familyCount = 0;
@@ -4291,9 +4787,23 @@ void VulkanApp::createLogicalDevice() {
 
     vulkan11Features.pNext = &dynRenderFeatures;
 
+    // Enable descriptor indexing feature required for updating descriptor bindings
+    // while descriptor sets may be in-use by pending command buffers.
+    VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{};
+    descriptorIndexingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+    descriptorIndexingFeatures.pNext = &vulkan11Features; // chain into existing pNext chain
+    descriptorIndexingFeatures.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+    // Allow descriptor updates after bind for the descriptor types we use
+    descriptorIndexingFeatures.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+    descriptorIndexingFeatures.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+    descriptorIndexingFeatures.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
+    descriptorIndexingFeatures.descriptorBindingUniformBufferUpdateAfterBind = VK_TRUE;
+    descriptorIndexingFeatures.descriptorBindingUniformTexelBufferUpdateAfterBind = VK_TRUE;
+    descriptorIndexingFeatures.descriptorBindingStorageTexelBufferUpdateAfterBind = VK_TRUE;
+
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pNext = &vulkan11Features;  // Chain Vulkan 1.1 features
+    createInfo.pNext = &descriptorIndexingFeatures;  // Chain descriptor indexing + Vulkan 1.1 features
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
     createInfo.pEnabledFeatures = &deviceFeatures;
@@ -4321,7 +4831,7 @@ void VulkanApp::createLogicalDevice() {
 
     // retrieve queue handles. If we requested multiple queues from the
     // graphics family, obtain them; otherwise fall back to the main
-    // graphics queue for vegetation/geometry work.
+    // graphics queue for vegetation/geometry work. Also obtain transferQueue if available.
     vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
     uint32_t gfxRequested = 1;
     auto it = requestedQueueCount.find(indices.graphicsFamily.value());
@@ -4333,6 +4843,15 @@ void VulkanApp::createLogicalDevice() {
         presentQueue = graphicsQueue;
     } else {
         vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
+    }
+    if (indices.transferFamily.has_value()) {
+        if (indices.transferFamily.value() == indices.graphicsFamily.value()) {
+            transferQueue = graphicsQueue;
+        } else {
+            vkGetDeviceQueue(device, indices.transferFamily.value(), 0, &transferQueue);
+        }
+    } else {
+        transferQueue = graphicsQueue;
     }
     // debug: print queue family indices and whether the two queue handles are equal
     std::cerr << "createLogicalDevice: graphicsFamily=" << indices.graphicsFamily.value() << " presentFamily=" << indices.presentFamily.value() << "\n";

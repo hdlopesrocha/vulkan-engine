@@ -275,6 +275,9 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 		app->resources.addDeviceMemory(out.memory, "TextureArrayManager: out.memory");
 		app->resources.addDeviceMemory(out.memory, "TextureArrayManager::createArray memory");
 
+		// Debug: log allocated memory size for texture array
+		std::cerr << "[TextureArrayManager] createArray: image=" << (void*)out.image << " mem=" << (void*)out.memory << " allocSize=" << (size_t)memRequirements.size << " layers=" << imageInfo.arrayLayers << " mipLevels=" << imageInfo.mipLevels << std::endl;
+
 		vkBindImageMemory(device, out.image, out.memory, 0);
 
 		// Create image view for 2D array
@@ -411,8 +414,8 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 		if (resized) delete[] uploadData;
 		stbi_image_free(pixels);
 
-		// Build command buffer and perform per-layer copy with barriers
-		a->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+		// Build command buffer and perform per-layer copy with barriers on transfer queue
+		a->runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd) {
 
 		// Transition this layer to TRANSFER_DST_OPTIMAL using the app helper
 		// pass VK_IMAGE_LAYOUT_UNDEFINED so the app resolves the effective
@@ -445,8 +448,8 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 			setLayerLayout(i, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		} else {
 			// single-level: transition layer to SHADER_READ_ONLY_OPTIMAL
-			// Use the app helper so the recorded oldLayout matches the authoritative tracked layout.
-			a->runSingleTimeCommands([&](VkCommandBuffer cmd2) {
+			// Use the transfer queue so the transfer work does not block graphics.
+			a->runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd2) {
 				a->recordTransitionImageLayoutLayer(
 					cmd2,
 					imgs[i].dstImage->image,

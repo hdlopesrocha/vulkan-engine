@@ -11,6 +11,8 @@
 #include <numeric>
 #include <algorithm>
 #include <cmath>
+#include "../includes/locations.hpp"
+#include "../includes/vertex_layouts.hpp"
 
 // GPU injection APIs removed. Instances must be generated via compute shader.
 
@@ -162,7 +164,7 @@ bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
             writes[i].descriptorCount = 1;
             writes[i].pImageInfo      = &infos[i];
         }
-        vkUpdateDescriptorSets(app->getDevice(), 3, writes, 0, nullptr);
+        logged_vkUpdateDescriptorSets(app->getDevice(), 3, writes, 0, nullptr);
         vegDescriptorVersion = 1;
         app->registerDescriptorSet(vegDescriptorSet);
         std::cerr << "[VEGETATION] Allocated vegDescriptorSet=" << (void*)vegDescriptorSet << " (3 sampler2DArray)" << std::endl;
@@ -250,12 +252,12 @@ void VegetationRenderer::init(VulkanApp* app) {
     auto [pipeline, layout] = app->createGraphicsPipeline(
         { stages[0], stages[1], stages[2] },
         std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
-        {
-            {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},   // inPosition
-            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},     // inNormal
-            {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)},      // inTexCoord
-            {3, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex)},           // inBrushIndex
-            {4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}                          // instanceData (xyz=pos, w=billboardIndex)
+        std::vector<VkVertexInputAttributeDescription>{
+            VkVertexInputAttributeDescription{ ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+            VkVertexInputAttributeDescription{ ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+            VkVertexInputAttributeDescription{ ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
+            VkVertexInputAttributeDescription{ ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex) },
+            VkVertexInputAttributeDescription{ ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 },
         },
         setLayouts,
         &pushConstantRange,
@@ -281,12 +283,12 @@ void VegetationRenderer::init(VulkanApp* app) {
     auto [shadowPipeline, shadowLayout] = app->createGraphicsPipeline(
         { stages[0], stages[1], stages[2] },
         std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
-        {
-            {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
-            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
-            {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)},
-            {3, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex)},
-            {4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}
+        std::vector<VkVertexInputAttributeDescription>{
+            VkVertexInputAttributeDescription{ ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+            VkVertexInputAttributeDescription{ ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+            VkVertexInputAttributeDescription{ ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
+            VkVertexInputAttributeDescription{ ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex) },
+            VkVertexInputAttributeDescription{ ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 },
         },
         setLayouts,
         &pushConstantRange,
@@ -435,7 +437,7 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
     // Bind the shadow descriptor set at set 0 and vegetation descriptor set at set 1
     // shadowDescriptorSet contains the light-space UBO for shadow rendering
     VkDescriptorSet sets[2] = { shadowDescriptorSet, vegDescriptorSet };
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 2, sets, 0, nullptr);
+    logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 2, sets, 0, nullptr);
 
     // Push constants for shadow pass: same as regular draw but with wind disabled
     WindPushConstants pc{};
@@ -547,6 +549,8 @@ void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView albedoArray
         info.maxSets       = 1;
         info.poolSizeCount = 1;
         info.pPoolSizes    = &sz;
+        // Support update-after-bind allocations if needed by set layouts
+        info.flags         = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
         if (vkCreateDescriptorPool(device, &info, nullptr, &impostorDescPool) != VK_SUCCESS)
             throw std::runtime_error("VegetationRenderer: impostorDescPool failed");
         app->resources.addDescriptorPool(impostorDescPool, "VegetationRenderer: impostorDescPool");
@@ -574,7 +578,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView albedoArray
             ws[i].descriptorCount = 1;
             ws[i].pImageInfo      = &imgInfos[i];
         }
-        vkUpdateDescriptorSets(device, 2, ws, 0, nullptr);
+        logged_vkUpdateDescriptorSets(device, 2, ws, 0, nullptr);
     }
 
     // Build impostor pipeline (same vertex input as vegetation, different shaders).
@@ -622,11 +626,11 @@ void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView albedoArray
         { vertStage, geomStage, fragStage },
         std::vector<VkVertexInputBindingDescription>{ bindingDescs[0], bindingDescs[1] },
         {
-            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, position) },
-            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, normal)   },
-            { 2, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
-            { 3, 0, VK_FORMAT_R32_SINT,            (uint32_t)offsetof(Vertex, brushIndex) },
-            { 4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                                    },
+            { ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, position) },
+            { ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, normal)   },
+            { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
+            { ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT,            (uint32_t)offsetof(Vertex, brushIndex) },
+            { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                                    },
         },
         impSetLayouts,
         &pcRange,
@@ -685,7 +689,7 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
     }
     VkDescriptorSet sets[2] = { globalSet, vegDescriptorSet };
     //printf("[BIND] VegetationRenderer::draw: layout=%p firstSet=0 count=2 sets=%p %p\n", (void*)pipelineLayout, (void*)sets[0], (void*)sets[1]);
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 2, sets, 0, nullptr);
+    logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 2, sets, 0, nullptr);
 
     WindPushConstants pc{};
     pc.billboardScale     = billboardScale;
@@ -758,8 +762,8 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorPipeline);
 
         VkDescriptorSet impSets[2] = { globalSet, impostorDescSet };
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                impostorPipelineLayout, 0, 2, impSets, 0, nullptr);
+        logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    impostorPipelineLayout, 0, 2, impSets, 0, nullptr);
 
         // Re-push the same push constants using the impostor pipeline layout.
         vkCmdPushConstants(commandBuffer, impostorPipelineLayout,

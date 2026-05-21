@@ -12,36 +12,21 @@ void OctreeVisibilityChecker::update(glm::mat4 m) {
 	viewDir = glm::normalize(-glm::vec3(m[2]));
 }
 
-void OctreeVisibilityChecker::before(const Octree &tree, OctreeNodeData &params) {		
+bool OctreeVisibilityChecker::iterate(const Octree &tree, OctreeNodeData &params) {
+	ContainmentType containmentType = frustum.test(params.cube);
+	if(containmentType == ContainmentType::Disjoint) {
+		return false;
+	}
+
+	if(params.node->isChunk() || params.node->isSimplified()) {
+		if(params.node->getType() == SpaceType::Surface) {
+			std::lock_guard<std::mutex> lock(mutex);
+			visibleNodes.push_back(params);
+		} 
+		return false;
+	}
+	return true;
 	
-}
-
-void OctreeVisibilityChecker::after(const Octree &tree, OctreeNodeData &params) {			
-	if(params.context != NULL) {
-		params.context = NULL;
-		std::lock_guard<std::mutex> lock(mutex);
-		visibleNodes.push_back(params);
-	}
-}
-
-bool OctreeVisibilityChecker::test(const Octree &tree, OctreeNodeData &params) {
-	if(params.context == NULL) {	
-		ContainmentType containmentType = params.containmentType == ContainmentType::Contains ? params.containmentType : frustum.test(params.cube);
-		if(containmentType == ContainmentType::Disjoint) {
-			return false;
-		}
-
-		if(params.node->isChunk()) {
-			if(params.node->getType() == SpaceType::Surface) {
-				params.context = params.node;
-			} else {
-				return false;
-			}
-		}
-		params.containmentType = containmentType;
-		return true;
-	}
-	return false;
 }
 
 void OctreeVisibilityChecker::getOrder(const Octree &tree, OctreeNodeData &params, uint8_t order[8]){

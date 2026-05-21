@@ -1,13 +1,16 @@
 #version 450
-layout(location = 0) in vec3 inPosition;
-layout(location = 1) in vec3 inNormal;
-layout(location = 2) in vec2 inTexCoord;
-layout(location = 3) in int inBrushIndex;
-layout(location = 4) in vec4 instanceData; // .xyz = world pos, .w = billboard index
 
-layout(location = 0) out vec3 fragTexCoord;
-layout(location = 1) flat out int fragBrushIndex;
-layout(location = 2) out vec3 fragWorldPos;
+#include "includes/locations.glsl"
+
+layout(location = ATTR_POS) in vec3 inPosition;
+layout(location = ATTR_NORMAL) in vec3 inNormal;
+layout(location = ATTR_UV) in vec2 inTexCoord;
+layout(location = ATTR_BRUSH_INDEX) in int inBrushIndex;
+layout(location = ATTR_INSTANCE) in vec4 instanceData; // .xyz = world pos, .w = billboard index
+
+layout(location = VARY_UV) out vec3 fragTexCoord;
+layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
+layout(location = VARY_POSWORLD) out vec3 fragWorldPos;
 
 // Must match SolidParamsUBO — only read the first two fields.
 layout(set = 0, binding = 0) uniform SolidParamsUBO {

@@ -3,6 +3,8 @@
 #include "../../utils/FileReader.hpp"
 #include <stdexcept>
 #include <iostream>
+#include "../includes/locations.hpp"
+#include "../includes/vertex_layouts.hpp"
 
 WaterBackFaceRenderer::WaterBackFaceRenderer() {}
 WaterBackFaceRenderer::~WaterBackFaceRenderer() {}
@@ -83,12 +85,7 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
     bindingDesc.stride = sizeof(Vertex);
     bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    std::array<VkVertexInputAttributeDescription, 5> attrDescs{};
-    attrDescs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)};
-    attrDescs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)};
-    attrDescs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)};
-    attrDescs[3] = {3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)};
-    attrDescs[4] = {5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex)};
+    auto attrDescs = vk_layouts::defaultAttributes();
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -365,15 +362,15 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
 
     if (mainDs != VK_NULL_HANDLE) {
         //printf("[BIND] WaterBackFaceRenderer::renderBackFacePass: layout=%p firstSet=0 count=1 sets=%p\n", (void*)pipelineLayout, (void*)mainDs);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &mainDs, 0, nullptr);
+        logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &mainDs, 0, nullptr);
     }
     if (materialDs != VK_NULL_HANDLE) {
         //printf("[BIND] WaterBackFaceRenderer::renderBackFacePass: layout=%p firstSet=1 count=1 sets=%p\n", (void*)pipelineLayout, (void*)materialDs);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1, &materialDs, 0, nullptr);
+        logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1, &materialDs, 0, nullptr);
     }
     if (sceneDs != VK_NULL_HANDLE) {
         //printf("[BIND] WaterBackFaceRenderer::renderBackFacePass: layout=%p firstSet=2 count=1 sets=%p\n", (void*)pipelineLayout, (void*)sceneDs);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1, &sceneDs, 0, nullptr);
+        logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1, &sceneDs, 0, nullptr);
     }
 
     if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {

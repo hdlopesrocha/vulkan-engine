@@ -4,6 +4,9 @@
 #include "../../utils/FileReader.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "../includes/locations.hpp"
+#include "../includes/vertex_layouts.hpp"
+
 // For VBO creation
 #include "../VertexBufferObjectBuilder.hpp"
 #include "../../math/SphereModel.hpp"
@@ -27,9 +30,9 @@ void SkyRenderer::init(VulkanApp* app) {
     auto [pipeline, layout] = app->createGraphicsPipeline(
         { skyVert.info, skyFrag.info },
         std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
-        {
-            VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-            VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) }
+        std::vector<VkVertexInputAttributeDescription>{
+            VkVertexInputAttributeDescription{ ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+            VkVertexInputAttributeDescription{ ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
         },
         setLayouts,
         nullptr,
@@ -55,9 +58,9 @@ void SkyRenderer::init(VulkanApp* app) {
     auto [gridPipeline, gridLayout] = app->createGraphicsPipeline(
         { skyVert.info, skyGridFrag.info },
         std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
-        {
-            VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-            VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) }
+        std::vector<VkVertexInputAttributeDescription>{
+            VkVertexInputAttributeDescription{ ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+            VkVertexInputAttributeDescription{ ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
         },
         setLayouts,
         nullptr,
@@ -99,7 +102,7 @@ void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet d
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
     // Only bind the sky descriptor set (set 0)
     //std::cerr << "[SKY RENDER] Binding descriptor set: skyDs=" << (void*)descriptorSet << std::endl;
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeLayout, 0, 1, &descriptorSet, 0, nullptr);
+    logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeLayout, 0, 1, &descriptorSet, 0, nullptr);
     // No push-constants used for sky; model is encoded into UBO/viewPos.
 
     // Explicitly set viewport/scissor because this pipeline relies on dynamic state
@@ -315,7 +318,7 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     vkCmdBeginRendering(cmd, &renderingInfo);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyEquirectPipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyEquirectPipelineLayout,
+    logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyEquirectPipelineLayout,
                             0, 1, &descriptorSet, 0, nullptr);
 
     // Push resolution constant

@@ -5,6 +5,8 @@
 #include "../../math/BoxLineGeometry.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <stb/stb_image.h>
+#include "../includes/locations.hpp"
+#include "../includes/vertex_layouts.hpp"
 
 DebugCubeRenderer::DebugCubeRenderer() {}
 
@@ -41,10 +43,10 @@ void DebugCubeRenderer::init(VulkanApp* app) {
         std::vector<VkVertexInputBindingDescription>{ 
             VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } 
         },
-        {
-            VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
-            VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
-            VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, texCoord) }
+        std::vector<VkVertexInputAttributeDescription>{
+            VkVertexInputAttributeDescription{ ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+            VkVertexInputAttributeDescription{ ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+            VkVertexInputAttributeDescription{ ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
         },
         setLayouts,
         nullptr,  // No push constants
@@ -248,7 +250,7 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
     poolInfo.pPoolSizes = poolSizes;
     poolInfo.maxSets = 1;
     // Allow freeing descriptor sets created from this pool
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     
     if (vkCreateDescriptorPool(app->getDevice(), &poolInfo, nullptr, &gridDescriptorPool) != VK_SUCCESS) {
         std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to create grid descriptor pool!" << std::endl;
@@ -287,7 +289,7 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
     descriptorWrite.descriptorCount = 1;
     descriptorWrite.pImageInfo = &imageInfo;
     
-    vkUpdateDescriptorSets(app->getDevice(), 1, &descriptorWrite, 0, nullptr);
+    logged_vkUpdateDescriptorSets(app->getDevice(), 1, &descriptorWrite, 0, nullptr);
     
     // Create initial instance buffer (will be resized as needed)
     instanceBufferCapacity = 128;
@@ -312,7 +314,7 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
     bufferWrite.descriptorCount = 1;
     bufferWrite.pBufferInfo = &bufferInfo;
     
-    vkUpdateDescriptorSets(app->getDevice(), 1, &bufferWrite, 0, nullptr);
+    logged_vkUpdateDescriptorSets(app->getDevice(), 1, &bufferWrite, 0, nullptr);
 }
 
 void DebugCubeRenderer::updateInstanceBuffer(VulkanApp* app) {
@@ -347,7 +349,7 @@ void DebugCubeRenderer::updateInstanceBuffer(VulkanApp* app) {
         bufferWrite.descriptorCount = 1;
         bufferWrite.pBufferInfo = &bufferInfo;
         
-        vkUpdateDescriptorSets(app->getDevice(), 1, &bufferWrite, 0, nullptr);
+        logged_vkUpdateDescriptorSets(app->getDevice(), 1, &bufferWrite, 0, nullptr);
     }
     
     // Upload instance data
@@ -394,7 +396,7 @@ void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescripto
     
     // Bind descriptor sets: set 0 = UBO, set 1 = grid texture + instance buffer
     VkDescriptorSet descriptorSets[] = { descriptorSet, gridDescriptorSet };
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 
+    logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 
         0, 2, descriptorSets, 0, nullptr);
     
     // Bind cube VBO

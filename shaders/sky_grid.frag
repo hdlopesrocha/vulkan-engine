@@ -1,11 +1,13 @@
 #version 450
 
-layout(location = 0) in vec3 fragPosWorld;
-layout(location = 1) in vec3 fragNormal;
+#include "includes/locations.glsl"
+
+layout(location = VARY_POSWORLD) in vec3 fragPosWorld;
+layout(location = VARY_NORMAL) in vec3 fragNormal;
 
 #include "includes/ubo.glsl"
 
-layout(location = 0) out vec4 outColor;
+layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 void main() {
     // Direction from camera to fragment (world-space)

@@ -225,9 +225,9 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         // Bind shadow descriptor set (uses dummy depth at bindings 4,8,9)
         VkPipelineLayout layout = shadowMapper->getShadowPipelineLayout();
         VkDescriptorSet ds = shadowDescriptorSet;
-        if (layout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
+            if (layout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
             //printf("[BIND] SceneRenderer::mainPass (shadow bind): layout=%p firstSet=0 count=1 sets=%p\n", (void*)layout, (void*)ds);
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
+            logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
         }
 
         // Render vegetation FIRST to shadow map so it casts shadows on solid geometry below.
@@ -244,7 +244,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowPipeline);
         }
         if (solidShadowLayout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowLayout, 0, 1, &ds, 0, nullptr);
+            logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowLayout, 0, 1, &ds, 0, nullptr);
         }
 
         // Render solid geometry after vegetation so terrain can be shadowed by vegetation
@@ -354,29 +354,25 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
         VkPipelineLayout waterLayout = waterRenderer->getWaterGeometryPipelineLayout();
         if (waterPipe != VK_NULL_HANDLE && waterLayout != VK_NULL_HANDLE) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipe);
+
             VkDescriptorSet mainDs = app->getMainDescriptorSet();
             if (mainDs != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 0, 1, &mainDs, 0, nullptr);
+                logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 0, 1, &mainDs, 0, nullptr);
             }
+
             VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
             if (materialDs != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 1, 1, &materialDs, 0, nullptr);
+                logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 1, 1, &materialDs, 0, nullptr);
             }
+
             VkDescriptorSet sceneDs = waterRenderer->getWaterDepthDescriptorSet(frameIdx);
             if (sceneDs != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 2, 1, &sceneDs, 0, nullptr);
+                logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 2, 1, &sceneDs, 0, nullptr);
             }
+
             // Draw filled water geometry (will update depth buffer)
             waterRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
         }
-
-        // Now draw the wireframe overlay; it will depth-test against the
-        // water depth written by the filled pass above.
-        waterWireframe->draw(commandBuffer, app,
-            {app->getMainDescriptorSet(),
-             app->getMaterialDescriptorSet(),
-             waterRenderer->getWaterDepthDescriptorSet(frameIdx)},
-            waterRenderer->getIndirectRenderer());
 
         waterRenderer->endWaterGeometryPass(commandBuffer);
         waterRenderer->postRenderBarrier(commandBuffer, frameIdx);
@@ -714,7 +710,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         };
         waterWireframe->createPipeline(app, {VK_FORMAT_R32G32B32A32_SFLOAT},
             waterSetLayouts,
-            "shaders/water.vert.spv", "shaders/wireframe.frag.spv",
+            "shaders/water.vert.spv", "shaders/water_wireframe.frag.spv",
             "shaders/water.tesc.spv", "shaders/water.tese.spv",
             "water wireframe");
     }
@@ -883,15 +879,61 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
         pendingMeshQueue.erase(pendingMeshQueue.begin(), pendingMeshQueue.begin() + n);
     }
     if (batch.empty()) return;
-    for (auto& pd : batch) {
-        updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, pd.geom);
+
+    // Compute per-layer totals for the incoming batch so we can pre-size
+    // renderer buffers and enable incremental uploads when possible.
+    size_t solidNewV = 0, solidNewI = 0, solidNewM = 0;
+    size_t waterNewV = 0, waterNewI = 0, waterNewM = 0;
+    for (const auto &pd : batch) {
+        if (pd.layer == LAYER_OPAQUE) {
+            solidNewV += pd.geom.vertices.size();
+            solidNewI += pd.geom.indices.size();
+            solidNewM += 1;
+        } else {
+            waterNewV += pd.geom.vertices.size();
+            waterNewI += pd.geom.indices.size();
+            waterNewM += 1;
+        }
     }
-    // Batch rebuild: one GPU upload per frame instead of one per mesh.
-    // updateMeshForNode appends geometry to CPU arrays and marks dirty=true;
-    // rebuild() here consolidates all changes into the GPU buffers at once.
+
     IndirectRenderer& solidIR = solidRenderer->getIndirectRenderer();
-    if (solidIR.isDirty()) solidIR.rebuild(app);
     IndirectRenderer& waterIR = waterRenderer->getIndirectRenderer();
+
+    bool solidCanIncremental = true;
+    bool waterCanIncremental = true;
+
+    if (solidNewM > 0) {
+        size_t desiredV = solidIR.getMergedVertexCount() + solidNewV;
+        size_t desiredI = solidIR.getMergedIndexCount() + solidNewI;
+        size_t desiredM = solidIR.getMeshCount() + solidNewM;
+        solidCanIncremental = solidIR.ensureCapacity(desiredV, desiredI, desiredM);
+        if (solidCanIncremental) {
+            printf("[SceneRenderer::processPendingMeshes] Solid renderer pre-sized for incremental uploads (v=%zu,i=%zu,m=%zu)\n", desiredV, desiredI, desiredM);
+        } else {
+            printf("[SceneRenderer::processPendingMeshes] Solid renderer needs rebuild to grow capacity (v=%zu,i=%zu,m=%zu)\n", desiredV, desiredI, desiredM);
+        }
+    }
+
+    if (waterNewM > 0) {
+        size_t desiredV = waterIR.getMergedVertexCount() + waterNewV;
+        size_t desiredI = waterIR.getMergedIndexCount() + waterNewI;
+        size_t desiredM = waterIR.getMeshCount() + waterNewM;
+        waterCanIncremental = waterIR.ensureCapacity(desiredV, desiredI, desiredM);
+        if (waterCanIncremental) {
+            printf("[SceneRenderer::processPendingMeshes] Water renderer pre-sized for incremental uploads (v=%zu,i=%zu,m=%zu)\n", desiredV, desiredI, desiredM);
+        } else {
+            printf("[SceneRenderer::processPendingMeshes] Water renderer needs rebuild to grow capacity (v=%zu,i=%zu,m=%zu)\n", desiredV, desiredI, desiredM);
+        }
+    }
+
+    // Process meshes and attempt incremental upload only when pre-sizing succeeded.
+    for (auto& pd : batch) {
+        bool attemptUpload = (pd.layer == LAYER_OPAQUE) ? solidCanIncremental : waterCanIncremental;
+        updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, pd.geom, attemptUpload, pd.version);
+    }
+
+    // Batch rebuild: one GPU upload per frame instead of one per mesh when needed.
+    if (solidIR.isDirty()) solidIR.rebuild(app);
     if (waterIR.isDirty()) waterIR.rebuild(app);
 }
 
@@ -913,18 +955,17 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
         // Trigger solid mesh update for this node if needed.
         // CPU tessellation runs here (background thread); result is queued for
         // main-thread GPU upload via processPendingMeshes().
-        if (nd.containmentType != ContainmentType::Disjoint) {
-            if (auto* localScene = dynamic_cast<LocalScene*>(scene)) {
-                this->updateDebugSDFCubesForChunk(nid, nd, localScene->getOpaqueOctree());
-            }
-            OctreeNodeData nodeCopy = nd;
-            this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
-                [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
-                    std::lock_guard<std::mutex> lock(pendingMeshMutex);
-                    pendingMeshQueue.push_back({layer, nid, nd, geom});
-                }
-            );
+        if (auto* localScene = dynamic_cast<LocalScene*>(scene)) {
+            this->updateDebugSDFCubesForChunk(nid, nd, localScene->getOpaqueOctree());
         }
+        OctreeNodeData nodeCopy = nd;
+        this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
+            [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+                std::lock_guard<std::mutex> lock(pendingMeshMutex);
+                pendingMeshQueue.push_back({layer, nid, nd, geom, nd.node->version});
+            }
+        );
+    
     };
     
     solidNodeEraseCallback = [this, scene](const OctreeNodeData& nd) {
@@ -951,18 +992,17 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         // CPU tessellation runs here (background thread); result is queued for
         // main-thread GPU upload via processPendingMeshes().
-        if (nd.containmentType != ContainmentType::Disjoint) {
-            if (auto* localScene = dynamic_cast<LocalScene*>(scene)) {
-                this->updateDebugSDFCubesForChunk(nid, nd, localScene->transparentOctree);
-            }
-            OctreeNodeData nodeCopy = nd;
-            this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
-                [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
-                    std::lock_guard<std::mutex> lock(pendingMeshMutex);
-                    pendingMeshQueue.push_back({layer, nid, nd, geom});
-                }
-            );
+        if (auto* localScene = dynamic_cast<LocalScene*>(scene)) {
+            this->updateDebugSDFCubesForChunk(nid, nd, localScene->transparentOctree);
         }
+        OctreeNodeData nodeCopy = nd;
+        this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
+            [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+                std::lock_guard<std::mutex> lock(pendingMeshMutex);
+                pendingMeshQueue.push_back({layer, nid, nd, geom, nd.node->version});
+            }
+        );
+    
     };
 
     liquidNodeEraseCallback = [this, scene](const OctreeNodeData& nd) {
@@ -986,28 +1026,34 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
 
 
 // Ensure mesh exists and is up-to-date for a node: insert or replace when needed
-void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom) {
+void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom, bool attemptUpload, uint sourceVersion) {
     std::lock_guard<std::recursive_mutex> lock(chunksMutex);
     IndirectRenderer &renderer = layer == LAYER_OPAQUE ? solidRenderer->getIndirectRenderer() : waterRenderer->getIndirectRenderer();
     auto &cur = layer == LAYER_OPAQUE ? solidChunks : transparentChunks;
     auto it = cur.find(nid);
-    if (it != cur.end()) {
-        if (it->second.version >= nd.node->version) {
-            printf("[SceneRenderer::updateMeshForNode] Node %llu already up-to-date (version %u >= %u)\n", (unsigned long long)nid, it->second.version, nd.node->version);
+    uint effectiveVersion = sourceVersion != 0 ? sourceVersion : nd.node->version;
+        if (it != cur.end()) {
+        if (it->second.version >= effectiveVersion) {
+            printf("[SceneRenderer::updateMeshForNode] Node %llu already up-to-date (version %u >= %u)\n", (unsigned long long)nid, it->second.version, effectiveVersion);
             return; // already up-to-date
         }
         if (it->second.meshId != UINT32_MAX) {
             printf("[SceneRenderer::updateMeshForNode] Removing old mesh for node %llu (meshId=%u)\n", (unsigned long long)nid, it->second.meshId);
             renderer.removeMesh(it->second.meshId);
+            // Immediately zero the GPU indirect command for the old mesh so
+            // it won't be rendered while we prepare the new version.
+            renderer.eraseMeshFromGPU(app, it->second.meshId);
         }
     }
     uint32_t meshId = renderer.addMesh(geom);
-    Model3DVersion mv{meshId, nd.node->version};
+    Model3DVersion mv{meshId, effectiveVersion};
     cur[nid] = mv;
     // Upload mesh into the renderer (may mark renderer dirty). The renderer
     // rebuild will perform GPU uploads; we keep that responsibility centralized
     // so uploads may be performed asynchronously inside the renderer.
-    renderer.uploadMesh(app, meshId);
+    if (attemptUpload) {
+        renderer.uploadMesh(app, meshId);
+    }
     // Rebuild is deferred to the end of processPendingMeshes() for efficiency.
     // When called from brush rebuild paths, the caller invokes rebuild() explicitly.
 
@@ -1213,14 +1259,12 @@ static void updateBrushMeshForNode(SceneRenderer* sr, VulkanApp* app, Layer laye
 SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
     brushSolidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        if (nd.containmentType != ContainmentType::Disjoint) {
-            OctreeNodeData nodeCopy = nd;
-            this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
-                [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
-                    updateBrushMeshForNode(this, app, layer, nid, nd, geom, this->brushSolidChunks);
-                }
-            );
-        }
+        OctreeNodeData nodeCopy = nd;
+        this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
+            [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+                updateBrushMeshForNode(this, app, layer, nid, nd, geom, this->brushSolidChunks);
+            }
+        );
     };
 
     brushSolidNodeEraseCallback = [this](const OctreeNodeData& nd) {
@@ -1241,14 +1285,13 @@ SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* s
 LiquidSpaceChangeHandler SceneRenderer::makeBrushLiquidSpaceChangeHandler(Scene* scene, VulkanApp* app) {
     brushLiquidNodeEventCallback = [this, scene, app](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
-        if (nd.containmentType != ContainmentType::Disjoint) {
-            OctreeNodeData nodeCopy = nd;
-            this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
-                [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
-                    updateBrushMeshForNode(this, app, layer, nid, nd, geom, this->brushTransparentChunks);
-                }
-            );
-        }
+        OctreeNodeData nodeCopy = nd;
+        this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
+            [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+                updateBrushMeshForNode(this, app, layer, nid, nd, geom, this->brushTransparentChunks);
+            }
+        );
+        
     };
 
     brushLiquidNodeEraseCallback = [this](const OctreeNodeData& nd) {

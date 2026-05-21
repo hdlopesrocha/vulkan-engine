@@ -1,10 +1,12 @@
 #version 450
 
-layout(location = 0) in vec3 inPosition;
-layout(location = 1) in vec3 inNormal;
+#include "includes/locations.glsl"
 
-layout(location = 0) out vec3 fragPosWorld;
-layout(location = 1) out vec3 fragNormal;
+layout(location = ATTR_POS) in vec3 inPosition;
+layout(location = ATTR_NORMAL) in vec3 inNormal;
+
+layout(location = VARY_POSWORLD) out vec3 fragPosWorld;
+layout(location = VARY_NORMAL) out vec3 fragNormal;
 
 #include "includes/ubo.glsl"
 

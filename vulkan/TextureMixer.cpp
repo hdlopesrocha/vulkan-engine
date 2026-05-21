@@ -302,10 +302,21 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 	bindings[5].descriptorCount = 1;
 	bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+	VkDescriptorBindingFlags bindingFlags[6] = {};
+	for (int i = 0; i < 6; ++i) bindingFlags[i] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+
+	VkDescriptorSetLayoutBindingFlagsCreateInfo flagsCreateInfo{};
+	flagsCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+	flagsCreateInfo.bindingCount = 6;
+	flagsCreateInfo.pBindingFlags = bindingFlags;
+
 	VkDescriptorSetLayoutCreateInfo layoutInfo{};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	layoutInfo.bindingCount = 6;
 	layoutInfo.pBindings = bindings;
+	layoutInfo.pNext = &flagsCreateInfo;
+	// BindingFlags uses UPDATE_AFTER_BIND for these bindings; require layout flag
+	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
 
 	if (vkCreateDescriptorSetLayout(app->getDevice(), &layoutInfo, nullptr, &computeDescriptorSetLayout) != VK_SUCCESS) {
 		throw std::runtime_error("failed to create compute descriptor set layout!");
@@ -377,7 +388,8 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 	// maxSets should cover per-layer sets plus a few extras
 	poolInfo.maxSets = layerAmount > 0 ? (layerAmount + 16) : 128;
 	// Allow freeing individual descriptor sets (TextureMixer frees temp sets)
-	poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+	// and support update-after-bind allocations required by the layout
+	poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
 
 	if (vkCreateDescriptorPool(app->getDevice(), &poolInfo, nullptr, &computeDescriptorPool) != VK_SUCCESS) {
 		throw std::runtime_error("failed to create compute descriptor pool!");
@@ -451,7 +463,7 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 			mkStor(5, bumpStorageInfo);
 
 			if (!writes.empty()) {
-				vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+				logged_vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 			}
 			app->resources.addDescriptorSet(perLayerDescSets[i], "TextureMixer: perLayerDescSet");
 		}
@@ -563,7 +575,7 @@ void TextureMixer::createTripleComputeDescriptorSet(VulkanApp* app) {
 	addStorageImage(4, normalImageInfo);
 	addStorageImage(5, bumpImageInfo);
 
-	if (!writes.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+	if (!writes.empty()) logged_vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void TextureMixer::updateComputeDescriptorSets(VulkanApp* app) {
@@ -645,7 +657,7 @@ void TextureMixer::updateComputeDescriptorSets(VulkanApp* app) {
 	}
 
 	if (!writes.empty()) {
-		vkUpdateDescriptorSets(dev, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+		logged_vkUpdateDescriptorSets(dev, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 		std::lock_guard<std::mutex> lk(logsMutex);
 		logs.emplace_back("updateComputeDescriptorSets: descriptor sets updated with texture arrays");
 		std::cerr << "[TextureMixer] updateComputeDescriptorSets: wrote " << writes.size() << " descriptors" << std::endl;
@@ -758,7 +770,7 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet,
 	VkWriteDescriptorSet s2{}; s2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; s2.dstSet = descSet; s2.dstBinding = 2; s2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; s2.descriptorCount = 1; s2.pImageInfo = &samplerInfo;
 	writes.push_back(s1);
 	writes.push_back(s2);
-	vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+	logged_vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, int map) {
@@ -999,14 +1011,14 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
     VkDescriptorSet setToFree = VK_NULL_HANDLE; // descriptor set created in lambda that may need cleanup
 	printf("[TextureMixer] vkCmdBindPipeline: computePipeline=%p\n", (void*)computePipeline);
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &tempDesc, 0, nullptr);
+	logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &tempDesc, 0, nullptr);
 
 	vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PerlinPushConstants), &pushConstants);
 
 	uint32_t groupCountX = (width + 15) / 16;
 	uint32_t groupCountY = (height + 15) / 16;
 
-	vkCmdDispatch(cmd, groupCountX, groupCountY, 1);
+	logged_vkCmdDispatch(cmd, groupCountX, groupCountY, 1);
 
 	// Predeclare barriers vector to cover non-array-layer code path
 	std::vector<VkImageMemoryBarrier> barriers;

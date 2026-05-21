@@ -3,25 +3,26 @@
 layout(vertices = 3) out;
 
 #include "includes/ubo.glsl"
+#include "includes/locations.glsl"
 
 // Pass through per-vertex varyings from vertex shader
-layout(location = 0) in vec3 pc_inFragColor[];
-layout(location = 1) in vec2 pc_inUV[];
-layout(location = 2) in vec3 pc_inNormal[];
-layout(location = 4) in vec3 pc_inPosWorld[];
-layout(location = 5) flat in int pc_inBrushIndex[];
-layout(location = 7) in vec3 pc_inLocalPos[];
-layout(location = 8) in vec3 pc_inLocalNormal[];
+layout(location = VARY_COLOR) in vec3 pc_inFragColor[];
+layout(location = VARY_UV) in vec2 pc_inUV[];
+layout(location = VARY_NORMAL) in vec3 pc_inNormal[];
+layout(location = VARY_POSWORLD) in vec3 pc_inPosWorld[];
+layout(location = VARY_BRUSHPATCH) flat in int pc_inBrushIndex[];
+layout(location = VARY_LOCALPOS) in vec3 pc_inLocalPos[];
+layout(location = VARY_LOCALNORMAL) in vec3 pc_inLocalNormal[];
 
 
-layout(location = 0) out vec3 tc_fragColor[];
-layout(location = 1) out vec2 tc_fragUV[];
-layout(location = 2) out vec3 tc_fragNormal[];
-layout(location = 4) out vec3 tc_fragPosWorld[];
-layout(location = 5) flat out ivec3 tc_fragBrushIndex[];
-layout(location = 11) out vec3 tc_fragTexWeights[];
-layout(location = 7) out vec3 tc_fragLocalPos[];
-layout(location = 8) out vec3 tc_fragLocalNormal[];
+layout(location = VARY_COLOR) out vec3 tc_fragColor[];
+layout(location = VARY_UV) out vec2 tc_fragUV[];
+layout(location = VARY_NORMAL) out vec3 tc_fragNormal[];
+layout(location = VARY_POSWORLD) out vec3 tc_fragPosWorld[];
+layout(location = VARY_BRUSHPATCH) flat out ivec3 tc_fragBrushIndex[];
+layout(location = VARY_LOCALPOS) out vec3 tc_fragLocalPos[];
+layout(location = VARY_LOCALNORMAL) out vec3 tc_fragLocalNormal[];
+layout(location = VARY_TEXWEIGHTS) out vec3 tc_fragTexWeights[];
 
 
 // Compute per-edge tess factor using nearest endpoint distance to camera

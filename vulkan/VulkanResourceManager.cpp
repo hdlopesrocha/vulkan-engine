@@ -19,7 +19,7 @@ void VulkanResourceManager::addDeviceMemory(VkDeviceMemory mem, const char* desc
     }
     std::lock_guard<std::mutex> lk(mtx);
     deviceMemories[(uintptr_t)mem] = {mem, desc ? std::string(desc) : std::string()};
-    /* std::cerr << "[VulkanResourceManager] addDeviceMemory this=" << (void*)this << " mem=" << (void*)mem << " desc=" << (desc ? desc : "(null)") << " deviceMemories=" << deviceMemories.size() << std::endl;*/
+    std::cerr << "[VulkanResourceManager] addDeviceMemory mem=" << (void*)mem << " desc=" << (desc ? desc : "(null)") << " total=" << deviceMemories.size() << std::endl;
 }
 
 void VulkanResourceManager::addImage(VkImage img, const char* desc) {
@@ -30,6 +30,7 @@ void VulkanResourceManager::addImage(VkImage img, const char* desc) {
     }
     std::lock_guard<std::mutex> lk(mtx);
     images[(uintptr_t)img] = {img, desc ? std::string(desc) : std::string()};
+    std::cerr << "[VulkanResourceManager] addImage img=" << (void*)img << " desc=" << (desc ? desc : "(null)") << " total=" << images.size() << std::endl;
 }
 
 void VulkanResourceManager::addImageView(VkImageView iv, const char* desc) {
@@ -40,6 +41,7 @@ void VulkanResourceManager::addImageView(VkImageView iv, const char* desc) {
     }
     std::lock_guard<std::mutex> lk(mtx);
     imageViews[(uintptr_t)iv] = {iv, desc ? std::string(desc) : std::string()};
+    std::cerr << "[VulkanResourceManager] addImageView iv=" << (void*)iv << " desc=" << (desc ? desc : "(null)") << " total=" << imageViews.size() << std::endl;
 }
 
 void VulkanResourceManager::addSampler(VkSampler s, const char* desc) {
@@ -122,6 +124,7 @@ void VulkanResourceManager::addDescriptorPool(VkDescriptorPool dp, const char* d
         // std::cerr << "[VulkanResourceManager] reserved descriptorPools bucket_count=" << bc << std::endl;
     }
     descriptorPools[(uintptr_t)dp] = {dp, desc ? std::string(desc) : std::string()};
+    std::cerr << "[VulkanResourceManager] addDescriptorPool dp=" << (void*)dp << " desc=" << (desc ? desc : "(null)") << " total=" << descriptorPools.size() << std::endl;
 }
 
 void VulkanResourceManager::addDescriptorSet(VkDescriptorSet ds, const char* desc) {
@@ -278,7 +281,41 @@ std::optional<VulkanResourceManager::Entry> VulkanResourceManager::find(uintptr_
 void VulkanResourceManager::cleanup(VkDevice device) {
     if (device == VK_NULL_HANDLE) return;
 
-    // Helper destroys by extracting keys while holding mutex only for map access/erase
+    // Attempt to ensure the device is idle before destroying objects.
+    // If the device is lost, calling vkDestroy* may trigger validation
+    // errors because submitted batches may have been cancelled by the driver.
+    // In that case, avoid calling Vulkan destroy/free functions and simply
+    // clear our tracked handles to avoid validation-layer warnings.
+    VkResult waitRes = vkDeviceWaitIdle(device);
+    if (waitRes == VK_ERROR_DEVICE_LOST) {
+        std::cerr << "[VulkanResourceManager] cleanup: device lost detected, skipping explicit vkDestroy* calls\n";
+        std::lock_guard<std::mutex> lk(mtx);
+        pipelines.clear();
+        pipelineLayouts.clear();
+        shaderModules.clear();
+        framebuffers.clear();
+        samplers.clear();
+        imageViews.clear();
+        images.clear();
+        buffers.clear();
+        deviceMemories.clear();
+        descriptorPools.clear();
+        descriptorSetLayouts.clear();
+        renderPasses.clear();
+        semaphores.clear();
+        fences.clear();
+        commandPools.clear();
+        descriptorSets.clear();
+        return;
+    } else if (waitRes != VK_SUCCESS) {
+        std::cerr << "[VulkanResourceManager] cleanup: vkDeviceWaitIdle() returned " << waitRes << ", proceeding with best-effort cleanup\n";
+    }
+
+    // Helper destroys by extracting keys while holding mutex only for map access/erase.
+    // To avoid double-destroys or races where another thread removed the
+    // resource between key collection and destruction, check that the handle
+    // is still present in the map immediately before calling the Vulkan
+    // destroy function. If the entry is gone, log and skip the destroy.
     auto destroyAndClear = [&](auto &m, auto destroyFn) {
         std::vector<uintptr_t> keys;
         {
@@ -287,9 +324,31 @@ void VulkanResourceManager::cleanup(VkDevice device) {
             for (const auto &p : m) keys.push_back(p.first);
         }
         for (uintptr_t h : keys) {
+            bool present = false;
+            uintptr_t storedHandle = 0;
+            {
+                std::lock_guard<std::mutex> lk(mtx);
+                auto it = m.find(h);
+                if (it != m.end()) {
+                    present = true;
+                    storedHandle = (uintptr_t)(it->second.first);
+                }
+            }
+            if (!present) {
+                std::cerr << "[VulkanResourceManager] cleanup: skipping destroy for unknown handle " << (void*)h << std::endl;
+                continue;
+            }
+            if (storedHandle != h) {
+                std::cerr << "[VulkanResourceManager] cleanup: handle mismatch key=" << (void*)h << " stored=" << (void*)storedHandle << " - erasing and skipping destroy" << std::endl;
+                std::lock_guard<std::mutex> lk(mtx);
+                m.erase(h);
+                continue;
+            }
             destroyFn(device, h);
-            std::lock_guard<std::mutex> lk(mtx);
-            m.erase(h);
+            {
+                std::lock_guard<std::mutex> lk(mtx);
+                m.erase(h);
+            }
         }
     };
 

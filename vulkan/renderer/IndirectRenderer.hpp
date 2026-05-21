@@ -111,6 +111,9 @@ public:
         }
         return count;
     }
+    // Total merged vertex/index counts (used for capacity planning)
+    size_t getMergedVertexCount() const;
+    size_t getMergedIndexCount() const;
 
     // Host-read of the GPU-visible count (requires GPU idle; stats-only).
     uint32_t readVisibleCount(VulkanApp* app) const;

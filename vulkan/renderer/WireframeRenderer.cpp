@@ -2,6 +2,8 @@
 #include "../../utils/FileReader.hpp"
 #include <iostream>
 #include <array>
+#include "../includes/locations.hpp"
+#include "../includes/vertex_layouts.hpp"
 
 void WireframeRenderer::createPipeline(VulkanApp* app,
                                        const std::vector<VkFormat>& colorFormats,
@@ -78,12 +80,7 @@ void WireframeRenderer::createPipeline(VulkanApp* app,
     bindingDesc.stride = sizeof(Vertex);
     bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    std::array<VkVertexInputAttributeDescription, 5> attrDescs{};
-    attrDescs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)};
-    attrDescs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)};
-    attrDescs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)};
-    attrDescs[3] = {3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)};
-    attrDescs[4] = {5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex)};
+    auto attrDescs = vk_layouts::defaultAttributes();
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -227,7 +224,7 @@ void WireframeRenderer::draw(VkCommandBuffer cmd,
         //printf("[BIND] WireframeRenderer::draw: layout=%p firstSet=0 count=%u sets=", (void*)wireframePipelineLayout, (unsigned)descriptorSets.size());
         for (size_t i = 0; i < descriptorSets.size(); ++i) printf("%p ", (void*)descriptorSets[i]);
         printf("\n");
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
             wireframePipelineLayout, 0,
             static_cast<uint32_t>(descriptorSets.size()), descriptorSets.data(),
             0, nullptr);

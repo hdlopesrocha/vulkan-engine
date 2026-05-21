@@ -1,5 +1,7 @@
 #version 450
 
+#include "includes/locations.glsl"
+
 // Sky equirectangular map renderer.
 // Renders the procedural sky dome to an equirectangular 2D texture.
 // UV.x = longitude [0,2π], UV.y = latitude [0,π] (top = zenith, bottom = nadir).
@@ -13,7 +15,7 @@ layout(push_constant) uniform PushConstants {
     vec2 resolution; // width, height of equirect target
 } pc;
 
-layout(location = 0) out vec4 outColor;
+layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 const float PI = 3.14159265358979323846;
 

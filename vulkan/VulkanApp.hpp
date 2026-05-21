@@ -15,6 +15,7 @@
 #include <mutex>
 #include <cstdint>
 #include <unordered_map>
+#include <atomic>
 
 #include "vulkan.hpp"
 #include "VulkanResourceManager.hpp"
@@ -57,6 +58,8 @@ class VulkanApp {
     // Dedicated queues for async subsystems
     VkQueue vegetationQueue = VK_NULL_HANDLE;
     VkQueue geometryQueue = VK_NULL_HANDLE;
+    // Optional dedicated transfer queue (if available)
+    VkQueue transferQueue = VK_NULL_HANDLE;
 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     std::vector<VkImage> swapchainImages;
@@ -69,6 +72,8 @@ class VulkanApp {
     // Dedicated command pools for subsystem queues
     VkCommandPool vegetationCommandPool = VK_NULL_HANDLE;
     VkCommandPool geometryCommandPool = VK_NULL_HANDLE;
+    // Optional command pool for the transfer queue
+    VkCommandPool transferCommandPool = VK_NULL_HANDLE;
 
     std::vector<VkSemaphore> imageAvailableSemaphores;
     std::vector<VkSemaphore> renderFinishedSemaphores;
@@ -124,6 +129,8 @@ private:
     
     // mutex used by runSingleTimeCommands and other transient-pool users
     std::mutex transientPoolMutex;
+    // mutex used by transfer-pool users
+    std::mutex transferPoolMutex;
     
 protected:
     // set when the framebuffer (GLFW window) is resized so we can recreate swapchain
@@ -147,6 +154,9 @@ protected:
 
     // True between initVulkan() and the end of setup() — used to show loading screen
     bool isLoading = false;
+
+    // Set when a device-lost is detected to allow graceful shutdown handling
+    std::atomic<bool> deviceLost{false};
 
     // Allow derived classes to build ImGui UI per-frame
     virtual void renderImGui();
@@ -216,6 +226,17 @@ protected:
         void preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer);
         // Wait for all tracked pending command buffers to finish (blocks).
         void waitForAllPendingCommandBuffers();
+        // Record and submit a short-lived command buffer asynchronously.
+        // Returns a fence that will be signaled when the submission completes.
+        VkFence runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn);
+        // Record and submit a short-lived command buffer asynchronously to the transfer queue.
+        // Returns a fence that will be signaled when the submission completes.
+        // If `outSemaphore` is non-null the submission will signal that semaphore
+        // when finished and it will be added to `extraWaitSemaphores` so frame
+        // submission can wait on it.
+        VkFence runSingleTimeCommandsAsyncOnTransfer(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore = nullptr);
+        // Synchronous variant: record, submit to the transfer queue and wait for completion.
+        void runSingleTimeCommandsOnTransfer(const std::function<void(VkCommandBuffer)>& fn);
         // Query whether a given fence is still tracked as pending by VulkanApp
         bool isFencePending(VkFence fence);
         // Deferred destruction helpers
@@ -293,7 +314,28 @@ protected:
         Buffer createDeviceLocalBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
         VkShaderModule createShaderModule(const std::vector<char>& code);
     // Refactored: Accepts set layouts and optional push constant range, returns pipeline and layout
+    // Main implementation accepts a vector of attribute descriptions so callers
+    // that already have std::vector (e.g. vk_layouts::defaultAttributes()) can pass it directly.
     std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
+        std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
+        const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
+        const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions,
+        const std::vector<VkDescriptorSetLayout>& setLayouts = {},
+        const VkPushConstantRange* pushConstantRange = nullptr,
+        VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL,
+        VkCullModeFlagBits cullMode = VK_CULL_MODE_BACK_BIT,
+        bool depthWrite = true,
+        bool colorWrite = true,
+        VkCompareOp depthCompare = VK_COMPARE_OP_LESS,
+        VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        bool depthClampEnable = false,
+        const std::vector<VkFormat>& colorFormats = {},
+        VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
+        bool noColorAttachment = false,
+        VkRenderPass legacyRenderPass = VK_NULL_HANDLE);
+
+    // Backwards-compatible wrapper for callers that pass an initializer_list
+    inline std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
         std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
         const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
         std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions,
@@ -309,7 +351,12 @@ protected:
         const std::vector<VkFormat>& colorFormats = {},
         VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
         bool noColorAttachment = false,
-        VkRenderPass legacyRenderPass = VK_NULL_HANDLE);
+        VkRenderPass legacyRenderPass = VK_NULL_HANDLE) {
+        std::vector<VkVertexInputAttributeDescription> vec(attributeDescriptions);
+        return createGraphicsPipeline(stages, bindingDescriptions, vec, setLayouts, pushConstantRange,
+            polygonMode, cullMode, depthWrite, colorWrite, depthCompare, topology, depthClampEnable,
+            colorFormats, depthFormat, noColorAttachment, legacyRenderPass);
+    }
         std::vector<VkCommandBuffer> createCommandBuffers();
 
         VkDevice getDevice() const;
@@ -400,3 +447,10 @@ protected:
 extern VulkanApp* g_imguiVulkanApp;
 void setImGuiVulkanApp(VulkanApp* app);
 VulkanApp* getImGuiVulkanApp();
+
+// Logging wrappers to capture descriptor updates, descriptor binds and dispatches
+// These helpers print details and correlate command-buffer operations with
+// submit ids stored in `g_cmdSubmitMap` (defined in VulkanApp.cpp).
+void logged_vkUpdateDescriptorSets(VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites, uint32_t descriptorCopyCount, const VkCopyDescriptorSet* pDescriptorCopies);
+void logged_vkCmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets, uint32_t dynamicOffsetCount, const uint32_t* pDynamicOffsets);
+void logged_vkCmdDispatch(VkCommandBuffer commandBuffer, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ);

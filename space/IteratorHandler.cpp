@@ -39,9 +39,7 @@ void IteratorHandler::iterateParallelBFS(const Octree &tree, OctreeNodeData &roo
             activeTasks.fetch_add(1);
 
             if (params.node != NULL) {
-                before(tree, params);
-
-                if (params.node != NULL && test(tree, params)) {
+                if (params.node != NULL && iterate(tree, params)) {
                     uint8_t internalOrder[8];
                     getOrder(tree, params, internalOrder);
 
@@ -64,15 +62,12 @@ void IteratorHandler::iterateParallelBFS(const Octree &tree, OctreeNodeData &roo
                                                 params.level + 1,
                                                 child,
                                                 params.cube.getChild(j), 
-                                                params.containmentType,
                                                 params.context
                                             );
 
                                             queue.push(childData);
                         }
                     }
-
-                    after(tree, params); // only if test() passed
                 }
             }
 
@@ -116,9 +111,8 @@ void IteratorHandler::iterateBFS(const Octree &tree, OctreeNodeData &rootParams)
             continue;
 
         // Same as recursive version
-        before(tree, params);
 
-        if (params.node != NULL && test(tree, params)) {
+        if (params.node != NULL && iterate(tree, params)) {
             uint8_t internalOrder[8];
             getOrder(tree, params, internalOrder);
 
@@ -141,7 +135,6 @@ void IteratorHandler::iterateBFS(const Octree &tree, OctreeNodeData &rootParams)
                         params.level + 1,
                         child,
                         params.cube.getChild(j),
-                        params.containmentType,
                         params.context
                     );
 
@@ -150,7 +143,6 @@ void IteratorHandler::iterateBFS(const Octree &tree, OctreeNodeData &rootParams)
                 }
             }
 
-            after(tree, params); // only if test() passed
         }
     }
 }
@@ -159,8 +151,7 @@ void IteratorHandler::iterateBFS(const Octree &tree, OctreeNodeData &rootParams)
 
 void IteratorHandler::iterateMultiThreaded(const Octree &tree, OctreeNodeData &params) {
     if(params.node != NULL) {
-        before(tree, params);
-        if(params.node != NULL && test(tree, params)) {
+        if(params.node != NULL && iterate(tree, params)) {
             uint8_t internalOrder[8];
             getOrder(tree, params, internalOrder);
 
@@ -177,7 +168,7 @@ void IteratorHandler::iterateMultiThreaded(const Octree &tree, OctreeNodeData &p
                     throw std::runtime_error("Wrong pointer @ iter!");
                 }                
                 if(child != NULL && params.node != child) {
-                    OctreeNodeData data = OctreeNodeData( params.level+1, child, params.cube.getChild(j), params.containmentType, params.context);
+                    OctreeNodeData data = OctreeNodeData( params.level+1, child, params.cube.getChild(j), params.context);
                     if(!child->isChunk()) {
                         threads.emplace_back([this, &tree, &data]() {
                             this->iterateMultiThreaded(tree, data);
@@ -193,17 +184,14 @@ void IteratorHandler::iterateMultiThreaded(const Octree &tree, OctreeNodeData &p
                     t.join();
                 }
             }
-        
 
-            after(tree, params); // only if test() passed
         }
     }
 }
 
-void IteratorHandler::iterate(const Octree &tree, OctreeNodeData &params) {
+void IteratorHandler::iterateOctree(const Octree &tree, OctreeNodeData &params) {
     if(params.node != NULL) {
-        before(tree, params);
-        if(params.node != NULL && test(tree, params)) {
+        if(params.node != NULL && iterate(tree, params)) {
             uint8_t internalOrder[8];
             getOrder(tree, params, internalOrder);
 
@@ -216,11 +204,10 @@ void IteratorHandler::iterate(const Octree &tree, OctreeNodeData &params) {
                     throw std::runtime_error("Wrong pointer @ iter!");
                 }                
                 if(child != NULL && params.node != child) {
-                    OctreeNodeData data = OctreeNodeData( params.level+1, child, params.cube.getChild(j), params.containmentType, params.context);
+                    OctreeNodeData data = OctreeNodeData( params.level+1, child, params.cube.getChild(j), params.context);
                     this->iterate(tree, data);
                 }
             }
-            after(tree, params); // only if test() passed
         }
     }
 }
@@ -235,9 +222,8 @@ void IteratorHandler::iterateFlatIn(const Octree &tree, OctreeNodeData &params) 
         flatData.pop();
 
         OctreeNode* node = data.node;
-        before(tree, data);
 
-        if (node != NULL && test(tree, data)) {
+        if (node != NULL && iterate(tree, data)) {
             getOrder(tree, data, internalOrder);
             OctreeNode* children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
             node->getChildren(*tree.allocator, children);
@@ -254,13 +240,11 @@ void IteratorHandler::iterateFlatIn(const Octree &tree, OctreeNodeData &params) 
                         data.level + 1,
                         child,
                         data.cube.getChild(j),
-                        data.containmentType,
                         data.context
                     ));
                 }
             }
 
-            after(tree, data); // only if test() passed
         }
     }
 }
@@ -276,9 +260,8 @@ void IteratorHandler::iterateFlat(const Octree &tree, OctreeNodeData &params) {
 
         if (!frame.secondVisit) {
             // First visit: Apply `before()`
-            before(tree, frame);
 
-            if (!(frame.node !=NULL && test(tree, frame))) {
+            if (!(frame.node !=NULL && iterate(tree, frame))) {
                 stack.pop(); // Skip children, go back up
                 continue;
             }
@@ -296,12 +279,10 @@ void IteratorHandler::iterateFlat(const Octree &tree, OctreeNodeData &params) {
             OctreeNode* child = block->get(j, *tree.allocator);
 
             if (child) {
-                OctreeNodeData data(frame.level+1, child, frame.cube.getChild(j), frame.containmentType, frame.context);
+                OctreeNodeData data(frame.level+1, child, frame.cube.getChild(j), frame.context);
                 stack.push(StackFrame(data, 0, false));
             }
         } else {
-            // After all children are processed, apply `after()`
-            after(tree, frame);
             stack.pop();
         }
     }
@@ -322,11 +303,10 @@ void IteratorHandler::iterateFlatOut(const Octree &tree, OctreeNodeData &params)
         if (!frame.visited) {
             
             // First visit: execute before() and update context.
-            before(tree, frame);
             frame.visited = true;
 
             // Only process children if the test passes.
-            if (!test(tree, frame)) {
+            if (!iterate(tree, frame)) {
                 stackOut.pop();
                 continue;
             }
@@ -342,12 +322,11 @@ void IteratorHandler::iterateFlatOut(const Octree &tree, OctreeNodeData &params)
                 ChildBlock * block = node->getBlock(*tree.allocator);
                 OctreeNode* child = block->get(j, *tree.allocator);
                 if (child) {
-                    stackOut.push(StackFrameOut(OctreeNodeData(frame.level + 1, child, frame.cube.getChild(j), frame.containmentType, frame.context), false));
+                    stackOut.push(StackFrameOut(OctreeNodeData(frame.level + 1, child, frame.cube.getChild(j), frame.context), false));
                 }
             }
         } else {
             // Second visit: all children have been processed; now call after().
-            after(tree, frame);
             stackOut.pop();
         }
     }

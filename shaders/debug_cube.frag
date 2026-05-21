@@ -1,9 +1,11 @@
 #version 450
 
-layout(location = 0) in vec3 fragTexCoord;
-layout(location = 1) in vec3 fragColor;
+#include "includes/locations.glsl"
 
-layout(location = 0) out vec4 outColor;
+layout(location = VARY_UV) in vec3 fragTexCoord;
+layout(location = VARY_COLOR) in vec3 fragColor;
+
+layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 layout(set = 1, binding = 1) uniform sampler2D gridTexture;
 

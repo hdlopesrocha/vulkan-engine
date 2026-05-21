@@ -1,5 +1,7 @@
 #version 450
 
+#include "includes/locations.glsl"
+
 layout(binding = 0) uniform sampler2D depthTex;
 
 layout(push_constant) uniform PC {
@@ -8,8 +10,8 @@ layout(push_constant) uniform PC {
     float mode; // 0.0 = perspective linearize, 1.0 = passthrough
 } pc;
 
-layout(location = 0) in vec2 uv;
-layout(location = 0) out vec4 outColor;
+layout(location = VARY_UV) in vec2 uv;
+layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 // Linearize perspective depth from non-linear depth buffer value
 float LinearizeDepth(float d, float near, float far) {

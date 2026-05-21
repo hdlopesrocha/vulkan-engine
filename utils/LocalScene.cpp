@@ -44,6 +44,10 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
     handlers.emplace_back(&tesselator);
     Processor processor(&tessCount, threadPool, &context, &handlers);
     tree->iterateFlat(processor, data);
+
+    std::cout << "[requestModel3D] Node " << data.node 
+              << ", Triangles=" << tesselator.geometry.indices.size() / 3
+             << "]" << std::endl;
     // Log geometry stats for every chunk
     //printf("[requestModel3D] Node %p, Layer %d, Cube Min=(%.2f,%.2f,%.2f), Max=(%.2f,%.2f,%.2f), Verts=%zu, Indices=%zu\n",
     //    data.node, (int)layer,
@@ -154,7 +158,7 @@ static void notifyChunkNodes(OctreeNode* node, const BoundingCube& cube, uint le
                              OctreeAllocator& allocator, const OctreeChangeHandler& handler) {
     if (!node) return;
     if (node->isChunk()) {
-        handler.onNodeAdded(OctreeNodeData(level, node, cube, ContainmentType::Intersects, nullptr));
+        handler.onNodeAdded(OctreeNodeData(level, node, cube, nullptr));
         return;
     }
     OctreeNode* children[8] = {};

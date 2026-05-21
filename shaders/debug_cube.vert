@@ -1,11 +1,13 @@
 #version 450
 
-layout(location = 0) in vec3 inPosition;
-layout(location = 1) in vec3 inNormal;
-layout(location = 2) in vec3 inTexCoord;
+#include "includes/locations.glsl"
 
-layout(location = 0) out vec3 fragTexCoord;
-layout(location = 1) out vec3 fragColor;
+layout(location = ATTR_POS) in vec3 inPosition;
+layout(location = ATTR_NORMAL) in vec3 inNormal;
+layout(location = ATTR_UV) in vec3 inTexCoord;
+
+layout(location = VARY_UV) out vec3 fragTexCoord;
+layout(location = VARY_COLOR) out vec3 fragColor;
 
 #include "includes/ubo.glsl"
 

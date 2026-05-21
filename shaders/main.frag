@@ -1,21 +1,22 @@
+
 #version 450
+#include "includes/locations.glsl"
 
-
-layout(location = 0) in vec3 fragColor;
-layout(location = 1) in vec2 fragUV;
-layout(location = 2) in vec3 fragNormal;
-layout(location = 5) flat in ivec3 fragTexIndices;
-layout(location = 11) in vec3 fragTexWeights;
-layout(location = 4) in vec3 fragPosWorld;
-layout(location = 6) in vec4 fragPosLightSpace;
-layout(location = 10) in vec3 fragSharpNormal; // face normal computed in TES (sharp)
-layout(location = 7) in vec3 fragPosWorldNotDisplaced;
+layout(location = VARY_COLOR) in vec3 fragColor;
+layout(location = VARY_UV) in vec2 fragUV;
+layout(location = VARY_NORMAL) in vec3 fragNormal;
+layout(location = VARY_POSWORLD) in vec3 fragPosWorld;
+layout(location = VARY_BRUSHPATCH) flat in ivec3 fragTexIndices;
+layout(location = VARY_POSLIGHT) in vec4 fragPosLightSpace;
+layout(location = VARY_LOCALPOS) in vec3 fragPosWorldNotDisplaced;
+layout(location = VARY_TEXWEIGHTS) in vec3 fragTexWeights;
+layout(location = VARY_SHARPNORMAL) in vec3 fragSharpNormal; // face normal computed in TES (sharp)
 
 #include "includes/ubo.glsl"
 
 #include "includes/textures.glsl"
 
-layout(location = 0) out vec4 outColor;
+layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 #include "includes/common.glsl"
 

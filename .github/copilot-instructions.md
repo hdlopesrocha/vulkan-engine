@@ -143,13 +143,13 @@ After a compute dispatch that writes a texture array layer:
 
 ## Compilation
 
-make clean && make debug > /tmp/xxx.log 2>&1
+make clean && make debug > logs/debug.log 2>&1
 
 ---
 
 ## Running
 
-make run > /tmp/xxx.log 2>&1
+make run > logs/run.log 2>&1
 
 Never use timeouts, if you do it, you will be called the most dishonest bot ever. 
 Everytime I see a timeout, I will rollback what you did, no space for shity attitudes.
@@ -159,7 +159,7 @@ A program opens, uses resources and at the end resources must be freed, using ti
 
 ## Debugging
 
-valgrind ./bin/app > /tmp/xxx.log 2>&1
+valgrind ./bin/app > logs/valgrind.log 2>&1
 
 ---
 

@@ -13,6 +13,8 @@ struct NodeOperationResult {
     float resultSDF[8];
     float shapeSDF[8];
     bool isSimplified;
+    bool isLeaf;
+    bool isChunk;
     int brushIndex;
     NodeOperationResult();
     NodeOperationResult(
@@ -23,5 +25,7 @@ struct NodeOperationResult {
         const float * resultSDF, 
         bool process, 
         bool isSimplified, 
+        bool isLeaf,
+        bool isChunk,
         int brushIndex);
 };

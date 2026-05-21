@@ -2,24 +2,23 @@
 #extension GL_ARB_shader_draw_parameters : require
 
 #include "includes/ubo.glsl"
+#include "includes/locations.glsl"
 
+layout(location = ATTR_POS) in vec3 inPos;
+layout(location = ATTR_COLOR) in vec3 inColor;
+layout(location = ATTR_UV) in vec2 inUV;
+layout(location = ATTR_NORMAL) in vec3 inNormal;
+layout(location = ATTR_BRUSH_INDEX) in int inBrushIndex;
 
-layout(location = 0) in vec3 inPos;
-layout(location = 1) in vec3 inColor;
-layout(location = 2) in vec2 inUV;
-layout(location = 3) in vec3 inNormal;
-// tangent removed: computed in fragment shader for triplanar mapping
-layout(location = 5) in int inBrushIndex;
-
-layout(location = 0) out vec3 fragColor;
-layout(location = 1) out vec2 fragUV;
-layout(location = 2) out vec3 fragNormal;
-layout(location = 4) out vec3 fragPosWorld;
-layout(location = 5) flat out int fragBrushIndex;      // per-vertex texture index for TCS
-layout(location = 6) out vec4 fragPosLightSpace;
-layout(location = 7) out vec3 fragLocalPos;          // provide local/world pos to TCS
-layout(location = 8) out vec3 fragLocalNormal;       // provide local/world normal to TCS
-layout(location = 10) out vec3 fragSharpNormal;      // face normal
+layout(location = VARY_COLOR) out vec3 fragColor;
+layout(location = VARY_UV) out vec2 fragUV;
+layout(location = VARY_NORMAL) out vec3 fragNormal;
+layout(location = VARY_POSWORLD) out vec3 fragPosWorld;
+layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;      // per-vertex texture index for TCS
+layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace;
+layout(location = VARY_LOCALPOS) out vec3 fragLocalPos;          // provide local/world pos to TCS
+layout(location = VARY_LOCALNORMAL) out vec3 fragLocalNormal;       // provide local/world normal to TCS
+layout(location = VARY_SHARPNORMAL) out vec3 fragSharpNormal;      // face normal
 
 void main() {
     fragColor = inColor;

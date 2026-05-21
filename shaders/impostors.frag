@@ -1,12 +1,15 @@
+
 #version 450
 
-// xy=UV, z=float(layerIdx) packed by the geometry shader.
-layout(location = 0) in vec3 inTexCoord;
-layout(location = 1) in vec3 inWorldPos;
-layout(location = 2) flat in vec3 inFaceNormal;
-layout(location = 3) flat in float inRotFrac;
+#include "includes/locations.glsl"
 
-layout(location = 0) out vec4 outColor;
+// xy=UV, z=float(layerIdx) packed by the geometry shader.
+layout(location = VARY_UV) in vec3 inTexCoord;
+layout(location = VARY_POSWORLD) in vec3 inWorldPos;
+layout(location = VARY_FACE_NORMAL) flat in vec3 inFaceNormal;
+layout(location = VARY_ROTFRAC) flat in float inRotFrac;
+
+layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 #include "includes/ubo.glsl"
 

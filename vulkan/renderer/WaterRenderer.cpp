@@ -7,6 +7,8 @@
 #include <iostream>
 #include <array>
 #include <glm/gtc/matrix_transform.hpp>
+#include "../includes/locations.hpp"
+#include "../includes/vertex_layouts.hpp"
 
 // Sub-renderer accessors removed: SceneRenderer now owns back-face and 360 renderers.
 
@@ -209,9 +211,9 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         app->resources.addImageView(waterDepthAlphaImageViews[frameIdx], "WaterRenderer: waterDepthAlphaImageView");
 
         createImage(VK_FORMAT_D32_SFLOAT,
-                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT,
-                    waterGeomDepthImages[frameIdx], waterGeomDepthMemories[frameIdx], waterGeomDepthImageViews[frameIdx]);
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT,
+                waterGeomDepthImages[frameIdx], waterGeomDepthMemories[frameIdx], waterGeomDepthImageViews[frameIdx]);
         waterGeomDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
         std::cerr << "[WaterRenderer] waterGeomDepthImage[" << frameIdx << "] = " << (void*)waterGeomDepthImages[frameIdx] << std::endl;
 
@@ -472,7 +474,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     depthPoolInfo.pPoolSizes = &depthPoolSize;
     depthPoolInfo.maxSets = 2;  // 2 frames in flight
     // Allow freeing individual descriptor sets if code frees them explicitly
-    depthPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    depthPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     
     if (vkCreateDescriptorPool(device, &depthPoolInfo, nullptr, &waterDepthDescriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water depth descriptor pool!");
@@ -558,13 +560,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     bindingDesc.binding = 0;
     bindingDesc.stride = sizeof(Vertex);
     bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-    std::array<VkVertexInputAttributeDescription, 5> attrDescs{};
-    attrDescs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)};
-    attrDescs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)};
-    attrDescs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)};
-    attrDescs[3] = {3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)};
-    attrDescs[4] = {5, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex)};
+    auto attrDescs = vk_layouts::defaultAttributes();
 
     // --- Create pipeline layout manually ---
     VkPipelineLayoutCreateInfo waterLayoutInfo{};
@@ -922,7 +918,7 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     writes[4].pImageInfo = &imageInfos[4];
 
     // Removed write descriptor set for Scene position/world-position texture (g-buffer)
-    vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    logged_vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams) {
@@ -1056,7 +1052,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         VkDescriptorSet mainDs = app->getMainDescriptorSet();
         if (mainDs != VK_NULL_HANDLE) {
             //printf("[BIND] WaterRenderer::render: layout=%p firstSet=0 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)mainDs);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
         }
 
@@ -1064,7 +1060,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
         if (materialDs != VK_NULL_HANDLE) {
             //printf("[BIND] WaterRenderer::render: layout=%p firstSet=1 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)materialDs);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
         }
 
@@ -1072,7 +1068,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         VkDescriptorSet sceneDs = waterDepthDescriptorSets[frameIndex];
         if (sceneDs != VK_NULL_HANDLE) {
             //printf("[BIND] WaterRenderer::render: layout=%p firstSet=2 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)sceneDs);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
         }
     }

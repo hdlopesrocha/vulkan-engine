@@ -1,10 +1,13 @@
 #version 450
-layout(location = 0) in vec3 inTexCoord;  // xy=uv, z=array layer
-layout(location = 1) in flat int inBrushIndex;
-layout(location = 2) in      vec3 inWorldPos;    // interpolated vertex world position
-layout(location = 3) in flat vec3 inPlaneNormal; // billboard face normal (world space)
-layout(location = 4) in flat vec3 inTangentWS;   // billboard tangent (world space)
-layout(location = 0) out vec4 outColor;
+
+#include "includes/locations.glsl"
+
+layout(location = VARY_UV) in vec3 inTexCoord;  // xy=uv, z=array layer
+layout(location = VARY_BRUSHPATCH) in flat int inBrushIndex;
+layout(location = VARY_POSWORLD) in      vec3 inWorldPos;    // interpolated vertex world position
+layout(location = VARY_PLANE_NORMAL) in flat vec3 inPlaneNormal; // billboard face normal (world space)
+layout(location = VARY_POSLIGHT) in flat vec3 inTangentWS;   // billboard tangent (world space)
+layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 #include "includes/ubo.glsl"
 

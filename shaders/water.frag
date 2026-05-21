@@ -1,18 +1,20 @@
 #version 450
 
+#include "includes/locations.glsl"
+
 // Water fragment shader
 // Samples scene color with Perlin noise-based refraction, specular lighting, and depth-based effects
 
-layout(location = 0) in vec3 fragPos;
-layout(location = 1) in vec3 fragNormal;
-layout(location = 2) in vec2 fragTexCoord;
-layout(location = 3) in vec4 fragPosClip;  // clip-space position for scene sampling
-layout(location = 4) in vec3 fragDebug;   // debug visual (displacement)
-layout(location = 5) in vec3 fragPosWorld;  // world-space position for shadow cascades
-layout(location = 6) in vec4 fragPosLightSpace; // light-space pos (cascade 0)
-layout(location = 7) flat in int fragBrushIndex;
+layout(location = VARY_LOCALPOS) in vec3 fragPos;
+layout(location = VARY_NORMAL) in vec3 fragNormal;
+layout(location = VARY_UV) in vec2 fragTexCoord;
+layout(location = VARY_POSCLIP) in vec4 fragPosClip;  // clip-space position for scene sampling
+layout(location = VARY_DEBUG) in vec3 fragDebug;   // debug visual (displacement)
+layout(location = VARY_POSWORLD) in vec3 fragPosWorld;  // world-space position for shadow cascades
+layout(location = VARY_POSLIGHT) in vec4 fragPosLightSpace; // light-space pos (cascade 0)
+layout(location = VARY_BRUSHPATCH) flat in int fragBrushIndex;
 
-layout(location = 0) out vec4 outColor;
+layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 // Use the same UBO as main shader
 #include "includes/ubo.glsl"

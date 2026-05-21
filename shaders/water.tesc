@@ -1,19 +1,21 @@
 #version 450
 
+#include "includes/locations.glsl"
+
 // Water tessellation control shader
 
 layout(vertices = 3) out;
 
-layout(location = 0) in vec3 inPos[];
-layout(location = 1) in vec3 inNormal[];
-layout(location = 2) in vec2 inTexCoord[];
-layout(location = 7) flat in int pc_inBrushIndex[];
+layout(location = VARY_LOCALPOS) in vec3 inPos[];
+layout(location = VARY_NORMAL) in vec3 inNormal[];
+layout(location = VARY_UV) in vec2 inTexCoord[];
+layout(location = VARY_BRUSHPATCH) flat in int pc_inBrushIndex[];
 
-layout(location = 0) out vec3 outPos[];
-layout(location = 1) out vec3 outNormal[];
-layout(location = 2) out vec2 outTexCoord[];
-layout(location = 5) flat out ivec3 tc_fragBrushIndex[];
-layout(location = 11) out vec3 tc_fragTexWeights[];
+layout(location = VARY_LOCALPOS) out vec3 outPos[];
+layout(location = VARY_NORMAL) out vec3 outNormal[];
+layout(location = VARY_UV) out vec2 outTexCoord[];
+layout(location = VARY_BRUSHPATCH) flat out ivec3 tc_fragBrushIndex[];
+layout(location = VARY_TEXWEIGHTS) out vec3 tc_fragTexWeights[];
 
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 viewProjection;

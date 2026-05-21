@@ -9,7 +9,7 @@ Processor::Processor(long * count, ThreadPool &threadPool, ThreadContext * conte
 
 }
 
-bool Processor::test(const Octree &tree, OctreeNodeData &params) {
+bool Processor::iterate(const Octree &tree, OctreeNodeData &params) {
     if(params.context != NULL) {
         return false;
     }
@@ -21,14 +21,6 @@ bool Processor::test(const Octree &tree, OctreeNodeData &params) {
         return true;
     }
     return false;
-}
-
-void Processor::before(const Octree &tree, OctreeNodeData &params) {        
-
-}
-
-void Processor::after(const Octree &tree, OctreeNodeData &params) {
-
 }
 
 void Processor::getOrder(const Octree &tree, OctreeNodeData &params, uint8_t * order){

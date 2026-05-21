@@ -1,5 +1,7 @@
 #version 450
 
+#include "includes/locations.glsl"
+
 // Final compositing pass: Sky (equirectangular) + Solid + Water
 // Background pixels (depth == 1.0) are filled with sky sampled from equirect map.
 // Solid geometry pixels are used as-is.
@@ -18,7 +20,7 @@ layout(set = 0, binding = 5) uniform WaterUBO {
 
 layout(set = 0, binding = 6) uniform sampler2D sceneSkyTex;
 
-layout(location = 0) out vec4 outColor;
+layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 const float PI = 3.14159265358979;
 

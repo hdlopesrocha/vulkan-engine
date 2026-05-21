@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cstdio>
+#include "../includes/locations.hpp"
+#include "../includes/vertex_layouts.hpp"
 
 // ─────────────────────────────────────────── Fibonacci sphere ───────────────
 
@@ -318,7 +320,7 @@ void ImpostorCapture::capture(VulkanApp* app,
 
             const uint32_t dynOffset = static_cast<uint32_t>(viewIdx * uboStride);
             VkDescriptorSet sets[2] = { uboDescSet, texDescSet };
-            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            logged_vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     capturePipelineLayout, 0, 2, sets, 1, &dynOffset);
 
             vkCmdPushConstants(cb, capturePipelineLayout,
@@ -610,19 +612,23 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     bindingDescs[0] = { 0, sizeof(Vertex),    VK_VERTEX_INPUT_RATE_VERTEX   };
     bindingDescs[1] = { 1, sizeof(float) * 4, VK_VERTEX_INPUT_RATE_INSTANCE };
 
-    VkVertexInputAttributeDescription attrs[5]{};
-    attrs[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, position) };
-    attrs[1] = { 1, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, normal)   };
-    attrs[2] = { 2, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) };
-    attrs[3] = { 3, 0, VK_FORMAT_R32_SINT,            (uint32_t)offsetof(Vertex, brushIndex) };
-    attrs[4] = { 4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                                    };
+    // Use a minimal attribute list that matches `shaders/vegetation.vert`.
+    // `vegetation.vert` does not declare a color attribute, so avoid
+    // providing ATTR_COLOR here to prevent "attribute not consumed" warnings.
+    std::vector<VkVertexInputAttributeDescription> attrs = {
+        VkVertexInputAttributeDescription{ ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+        VkVertexInputAttributeDescription{ ATTR_UV,  0, VK_FORMAT_R32G32_SFLOAT,    offsetof(Vertex, texCoord) },
+        VkVertexInputAttributeDescription{ ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+        VkVertexInputAttributeDescription{ ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex) },
+        VkVertexInputAttributeDescription{ ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 }
+    };
 
     VkPipelineVertexInputStateCreateInfo vertexInput{};
     vertexInput.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInput.vertexBindingDescriptionCount   = 2;
     vertexInput.pVertexBindingDescriptions      = bindingDescs;
-    vertexInput.vertexAttributeDescriptionCount = 5;
-    vertexInput.pVertexAttributeDescriptions    = attrs;
+    vertexInput.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrs.size());
+    vertexInput.pVertexAttributeDescriptions    = attrs.data();
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -778,7 +784,7 @@ void ImpostorCapture::allocateDescSets(VulkanApp* app) {
         sizes[1].descriptorCount = 3;
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
         poolInfo.maxSets       = 2;
         poolInfo.poolSizeCount = 2;
         poolInfo.pPoolSizes    = sizes;
@@ -811,7 +817,7 @@ void ImpostorCapture::allocateDescSets(VulkanApp* app) {
     w.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     w.descriptorCount = 1;
     w.pBufferInfo     = &bufInfo;
-    vkUpdateDescriptorSets(app->getDevice(), 1, &w, 0, nullptr);
+    logged_vkUpdateDescriptorSets(app->getDevice(), 1, &w, 0, nullptr);
     // Texture descriptor is written in updateTexDescSet() at capture time.
 }
 
@@ -832,7 +838,7 @@ void ImpostorCapture::updateTexDescSet(VkDevice device,
         ws[i].descriptorCount = 1;
         ws[i].pImageInfo      = &infos[i];
     }
-    vkUpdateDescriptorSets(device, 3, ws, 0, nullptr);
+    logged_vkUpdateDescriptorSets(device, 3, ws, 0, nullptr);
 }
 
 void ImpostorCapture::createImGuiDescSetsForType(VulkanApp* app, uint32_t billboardType) {

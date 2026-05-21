@@ -162,7 +162,12 @@ public:
     // cleanup declared above (accepts VulkanApp*)
 
     // Process pending node change queues on the main thread
-    void updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom);
+    // If `attemptUpload` is false the mesh will be added but the immediate
+    // GPU upload will be skipped (deferred to a later rebuild).
+    // `sourceVersion` when non-zero is the snapshot of the node version that
+    // produced the geometry; prefer it over `nd.node->version` to avoid race
+    // conditions between tessellation and main-thread upload.
+    void updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom, bool attemptUpload = true, uint sourceVersion = 0);
 
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
     // Process nodes for a single Layer (nodeMap maps NodeID->OctreeNodeData)
@@ -197,6 +202,7 @@ public:
         NodeID         nid;
         OctreeNodeData nodeData;
         Geometry       geom;
+        uint           version = 0; // snapshot of node->version at generation time
     };
     // Drain the pending mesh queue on the main (render) thread.
     // Call once per frame from update() before recording command buffers.

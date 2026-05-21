@@ -762,7 +762,7 @@ public:
                 poolInfo.poolSizeCount = 1;
                 poolInfo.pPoolSizes = &poolSize;
                 poolInfo.maxSets = 1;
-                poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+                poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
                 // Try to allocate the compute descriptor set from the IndirectRenderer's shared pool
                 VkDescriptorPool taskPool = VK_NULL_HANDLE;
                 VkDescriptorSetLayout dsLayout = ind.getComputeDescriptorSetLayout();
@@ -822,7 +822,7 @@ public:
                     writes[2] = writes[0]; writes[2].dstBinding = 2; writes[2].pBufferInfo = &boundsBuf;
                     writes[3] = writes[0]; writes[3].dstBinding = 3; writes[3].pBufferInfo = &countBuf;
 
-                    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+                    logged_vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
                     ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
                 }
 
@@ -904,7 +904,7 @@ public:
                 poolInfo.poolSizeCount = 1;
                 poolInfo.pPoolSizes = &poolSize;
                 poolInfo.maxSets = 1;
-                poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+                poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
                 VkDescriptorPool taskPool = VK_NULL_HANDLE;
                 if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &taskPool) != VK_SUCCESS) {
                     throw std::runtime_error("[Async] Failed to create descriptor pool for backFace task (no fallback allowed)");
@@ -945,7 +945,7 @@ public:
                     writes[2] = writes[0]; writes[2].dstBinding = 2; writes[2].pBufferInfo = &boundsBuf;
                     writes[3] = writes[0]; writes[3].dstBinding = 3; writes[3].pBufferInfo = &countBuf;
 
-                    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+                    logged_vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
                 }
 
                 // Run cull into per-task buffers - only when compute pipeline is ready (meshes loaded)
