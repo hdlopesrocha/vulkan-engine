@@ -2,6 +2,7 @@
 
 #include "../math/SpaceType.hpp"
 #include "../math/BrushMode.hpp"
+#include "../math/ContainmentType.hpp"
 
 class OctreeNode;
 
@@ -9,13 +10,13 @@ struct NodeOperationResult {
     OctreeNode * node;
     SpaceType shapeType;
     SpaceType resultType;
-    bool process;
     float resultSDF[8];
     float shapeSDF[8];
     bool isSimplified;
     bool isLeaf;
     bool isChunk;
     int brushIndex;
+    ContainmentType check;
     NodeOperationResult();
     NodeOperationResult(
         OctreeNode * node, 
@@ -23,9 +24,9 @@ struct NodeOperationResult {
         const float * shapeSDF, 
         SpaceType resultType, 
         const float * resultSDF, 
-        bool process, 
         bool isSimplified, 
         bool isLeaf,
         bool isChunk,
-        int brushIndex);
+        int brushIndex,
+        ContainmentType check);
 };
