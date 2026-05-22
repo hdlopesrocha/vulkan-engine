@@ -131,64 +131,6 @@ extern "C" void ImGui_RecordTransitionImageLayoutLayer_C(void* appPtr,
    
 }
 
-// --- Logging wrapper implementations ---
-// These live in this translation unit so they can access internal helpers
-// such as `layoutName()` and the global `g_cmdSubmitMap`.
-void logged_vkUpdateDescriptorSets(VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites, uint32_t descriptorCopyCount, const VkCopyDescriptorSet* pDescriptorCopies) {
-    std::thread::id tid = std::this_thread::get_id();
-    uint64_t lastSubmit = 0;
-    try { 
-        lastSubmit = g_submitCounter.load() - 1; 
-    } catch(...) { 
-        lastSubmit = 0; 
-    }
-    std::cerr << "[VulkanApp] vkUpdateDescriptorSets thread=" << tid << " lastSubmitId=" << lastSubmit << " writes=" << descriptorWriteCount << " copies=" << descriptorCopyCount << std::endl;
-    for (uint32_t i = 0; i < descriptorWriteCount; ++i) {
-        const VkWriteDescriptorSet &w = pDescriptorWrites[i];
-        std::cerr << "  dstSet=" << (void*)w.dstSet << " dstBinding=" << w.dstBinding << " dstArray=" << w.dstArrayElement << " type=" << w.descriptorType << " count=" << w.descriptorCount << std::endl;
-        if (w.pImageInfo) {
-            for (uint32_t j = 0; j < w.descriptorCount; ++j) {
-                const VkDescriptorImageInfo &ii = w.pImageInfo[j];
-                std::cerr << "    imageView=" << (void*)ii.imageView << " sampler=" << (void*)ii.sampler << " layout=" << layoutName(ii.imageLayout) << std::endl;
-            }
-        }
-        if (w.pBufferInfo) {
-            for (uint32_t j = 0; j < w.descriptorCount; ++j) {
-                const VkDescriptorBufferInfo &bi = w.pBufferInfo[j];
-                std::cerr << "    buffer=" << (void*)bi.buffer << " offset=" << bi.offset << " range=" << bi.range << std::endl;
-            }
-        }
-    }
-
-    // Forward to the real Vulkan call
-    vkUpdateDescriptorSets(device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
-}
-
-void logged_vkCmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets, uint32_t dynamicOffsetCount, const uint32_t* pDynamicOffsets) {
-    uint64_t submitId = 0;
-    {
-        std::lock_guard<std::mutex> lk(pendingCmdMutex);
-        auto it = g_cmdSubmitMap.find(commandBuffer);
-        if (it != g_cmdSubmitMap.end()) submitId = it->second;
-    }
-    std::cerr << "[VulkanApp] vkCmdBindDescriptorSets cmd=" << (void*)commandBuffer << " submitId=" << submitId << " layout=" << (void*)layout << " firstSet=" << firstSet << " count=" << descriptorSetCount << std::endl;
-    for (uint32_t i = 0; i < descriptorSetCount; ++i) {
-        std::cerr << "    set[" << i << "]=" << (void*)pDescriptorSets[i] << std::endl;
-    }
-    vkCmdBindDescriptorSets(commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
-}
-
-void logged_vkCmdDispatch(VkCommandBuffer commandBuffer, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) {
-    uint64_t submitId = 0;
-    {
-        std::lock_guard<std::mutex> lk(pendingCmdMutex);
-        auto it = g_cmdSubmitMap.find(commandBuffer);
-        if (it != g_cmdSubmitMap.end()) submitId = it->second;
-    }
-    std::cerr << "[VulkanApp] vkCmdDispatch cmd=" << (void*)commandBuffer << " submitId=" << submitId << " groups=(" << groupCountX << "," << groupCountY << "," << groupCountZ << ")" << std::endl;
-    vkCmdDispatch(commandBuffer, groupCountX, groupCountY, groupCountZ);
-}
-
 void VulkanApp::initVulkan() {
     createInstance();
     setupDebugMessenger();
@@ -381,12 +323,12 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     writes[2].descriptorCount = 1;
     writes[2].pBufferInfo = &outInfo;
 
-    logged_vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
 
     // Record and submit a single-time command buffer for compute dispatch
     runSingleTimeCommands([&](VkCommandBuffer cmd) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
 
         // Push constants: instancesPerTriangle, vertexCount, indexCount, seed, baseTri, billboardCount
         uint32_t push[6];
@@ -409,7 +351,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
                 uint32_t thisGroups = remaining > maxGroupsX ? maxGroupsX : remaining;
                 push[4] = baseTri;
                 vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
-                logged_vkCmdDispatch(cmd, thisGroups, 1, 1);
+                vkCmdDispatch(cmd, thisGroups, 1, 1);
                 baseTri += thisGroups;
                 remaining -= thisGroups;
             }
@@ -605,7 +547,7 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     writes[2].descriptorCount = 1;
     writes[2].pBufferInfo = &outInfo;
 
-    logged_vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
 
     // Allocate a command buffer (temporary pool) for async dispatch
     VkCommandBuffer cmd = allocatePrimaryCommandBuffer();
@@ -616,7 +558,7 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     vkBeginCommandBuffer(cmd, &beginInfo);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
 
     uint32_t push[6];
     push[0] = instancesPerTriangle;
@@ -637,7 +579,7 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
             uint32_t thisGroups = remaining > maxGroupsX ? maxGroupsX : remaining;
             push[4] = baseTri;
             vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
-            logged_vkCmdDispatch(cmd, thisGroups, 1, 1);
+            vkCmdDispatch(cmd, thisGroups, 1, 1);
             baseTri += thisGroups;
             remaining -= thisGroups;
         }
@@ -3586,7 +3528,7 @@ void VulkanApp::updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &des
         }
     }
     if (filtered.empty()) return;
-    logged_vkUpdateDescriptorSets(device, static_cast<uint32_t>(filtered.size()), filtered.data(), 0, nullptr);
+    vkUpdateDescriptorSets(device, static_cast<uint32_t>(filtered.size()), filtered.data(), 0, nullptr);
 }
 
 void VulkanApp::updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> descriptors) {
@@ -3612,7 +3554,7 @@ void VulkanApp::updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> 
         }
     }
     if (filtered.empty()) return;
-    logged_vkUpdateDescriptorSets(device, static_cast<uint32_t>(filtered.size()), filtered.data(), 0, nullptr);
+    vkUpdateDescriptorSets(device, static_cast<uint32_t>(filtered.size()), filtered.data(), 0, nullptr);
 }
 
 
@@ -4029,6 +3971,17 @@ void VulkanApp::drawFrame() {
     uint32_t semaphoreIndex = acquireIndex % numImages;
     acquireIndex++;
 
+    // Wait for the CPU frame fence for the current frame first. This limits
+    // the number of outstanding acquired swapchain images to the number of
+    // CPU frames-in-flight and ensures forward progress for vkAcquireNextImageKHR
+    // when using an infinite timeout (UINT64_MAX).
+    VkResult waitForFrameFence = vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+    if (waitForFrameFence == VK_ERROR_DEVICE_LOST) return;
+    if (waitForFrameFence != VK_SUCCESS) {
+        std::cerr << "vkWaitForFences failed: " << waitForFrameFence << std::endl;
+        return;
+    }
+
     // Acquire next image using per-image semaphore
     VkResult r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphores[semaphoreIndex], VK_NULL_HANDLE, &imageIndex);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -4038,14 +3991,6 @@ void VulkanApp::drawFrame() {
         return;
     } else if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
         std::cerr << "vkAcquireNextImageKHR failed: " << r << std::endl;
-        return;
-    }
-
-    // Wait for the CPU frame fence for the current frame (ensures GPU finished with this frame's resources)
-    VkResult waitForFrameFence = vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-    if (waitForFrameFence == VK_ERROR_DEVICE_LOST) return;
-    if (waitForFrameFence != VK_SUCCESS) {
-        std::cerr << "vkWaitForFences failed: " << waitForFrameFence << std::endl;
         return;
     }
 
@@ -4142,10 +4087,7 @@ void VulkanApp::drawFrame() {
     submitInfo.pWaitSemaphores = localWaitSemaphores.data();
     submitInfo.pWaitDstStageMask = localWaitStages.data();
 
-    // We'll also fill the signal semaphores from renderFinishedSemaphores as before
-    VkSemaphore initialSignalSemaphores[] = { renderFinishedSemaphores[semaphoreIndex] };
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = initialSignalSemaphores;
+    // Signal semaphores will be set at submit time (use per-frame renderFinished semaphore)
 
     // Debug: check commandBuffers size and imageIndex
     //std::cerr << "[DEBUG] commandBuffers.size()=" << commandBuffers.size() << " imageIndex=" << imageIndex << std::endl;
@@ -4281,8 +4223,8 @@ void VulkanApp::drawFrame() {
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    // Signal semaphore indexed by acquired imageIndex (presentation will wait on this)
-    VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[imageIndex] };
+    // Signal the per-frame render-finished semaphore; presentation will wait on it
+    VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[semaphoreIndex] };
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
