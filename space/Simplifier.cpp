@@ -11,7 +11,7 @@ Simplifier::Simplifier(float angle, float distance, bool texturing) {
 }	
 
 
-SimplificationResult Simplifier::simplify(const BoundingCube chunkCube, const BoundingCube cube, const float * sdf, NodeOperationResult * children){
+SimplificationResult Simplifier::simplify(const BoundingCube cube, const float * sdf, NodeOperationResult * children){
 	SimplificationResult res(false, DISCARD_BRUSH_INDEX);
 	int brushIndex = DISCARD_BRUSH_INDEX;
 
@@ -21,16 +21,13 @@ SimplificationResult Simplifier::simplify(const BoundingCube chunkCube, const Bo
 		for(uint i=0; i < 8 ; ++i) {
 			NodeOperationResult * child = &children[i];
 			if(child) {
-				
-				if(child->resultType == SpaceType::Surface) {
-					if(brushIndex == DISCARD_BRUSH_INDEX) {
-						brushIndex = child->brushIndex;
-					} else if(child->brushIndex != DISCARD_BRUSH_INDEX 
-						&& child->brushIndex != brushIndex) {
-						return res;    
-					}
+				if(brushIndex == DISCARD_BRUSH_INDEX) {
+					brushIndex = child->brushIndex;
+				} else if(child->brushIndex != DISCARD_BRUSH_INDEX 
+					&& child->brushIndex != brushIndex) {
+					return res;    
 				}
-								
+						
 				if(!child->isSimplified) {
 					return res;
 				}

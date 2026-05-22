@@ -21,7 +21,7 @@ class Simplifier {
     bool texturing;
 public:
     Simplifier(float angle, float distance, bool texturing);
-    SimplificationResult simplify(const BoundingCube chunkCube, const BoundingCube cube, const float * sdf, NodeOperationResult * children);
+    SimplificationResult simplify(const BoundingCube cube, const float * sdf, NodeOperationResult * children);
 };
 
  

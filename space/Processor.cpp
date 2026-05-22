@@ -10,17 +10,11 @@ Processor::Processor(long * count, ThreadPool &threadPool, ThreadContext * conte
 }
 
 bool Processor::iterate(const Octree &tree, OctreeNodeData &params) {
-    if(params.context != NULL) {
+    if(params.node->getType() == SpaceType::Surface && params.node->isSimplified()) {
+        tree.iterateTriangles(params.node, params.cube, params.level, fh, context);
         return false;
     }
-    else if(params.node->getType() == SpaceType::Surface) {    
-        if(params.node->isSimplified()) {
-            tree.iterateTriangles(params.node, params.cube, params.level, fh, context);
-            return false;
-        }
-        return true;
-    }
-    return false;
+    return !params.node->isLeaf();
 }
 
 void Processor::getOrder(const Octree &tree, OctreeNodeData &params, uint8_t * order){
