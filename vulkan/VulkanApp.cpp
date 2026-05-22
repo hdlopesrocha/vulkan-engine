@@ -2464,6 +2464,24 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             return;
         }
 
+        // Runtime validation: if we have recorded array-layer metadata for this
+        // image, ensure the requested baseArrayLayer+layerCount is within bounds.
+        if (image != VK_NULL_HANDLE) {
+            auto layersOpt = resources.getImageArrayLayers(image);
+            if (layersOpt.has_value()) {
+                uint32_t recordedLayers = layersOpt.value();
+                // Detect obvious out-of-range requests
+                if (baseArrayLayer >= recordedLayers || baseArrayLayer + layerCount > recordedLayers) {
+                    auto entry = resources.find((uintptr_t)image);
+                    std::string desc = entry ? entry->desc : std::string("(unknown)");
+                    std::cerr << "[VulkanApp] ERROR: requested array layer range out-of-bounds for image=" << (void*)image
+                              << " desc='" << desc << "' base=" << baseArrayLayer << " count=" << layerCount
+                              << " recordedLayers=" << recordedLayers << std::endl;
+                    throw std::runtime_error("recordTransitionImageLayoutLayer: requested array layer range out-of-bounds");
+                }
+            }
+        }
+
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = effectiveOld;
