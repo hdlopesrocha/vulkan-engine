@@ -240,7 +240,22 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 		// Allow sampling and transfers, and also allow storage usage so compute
 		// shaders can write directly into array layers via imageStore.
 		imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		// If a dedicated transfer queue exists and differs from graphics, create
+		// the image with CONCURRENT sharing so transfer-queue uploads can access
+		// the image without explicit ownership-transfer barriers.
+		if (app) {
+			auto qfi = app->findQueueFamilies(app->getPhysicalDevice());
+			if (qfi.transferFamily.has_value() && qfi.transferFamily.value() != qfi.graphicsFamily.value()) {
+				uint32_t families[2] = { qfi.graphicsFamily.value(), qfi.transferFamily.value() };
+				imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+				imageInfo.queueFamilyIndexCount = 2;
+				imageInfo.pQueueFamilyIndices = families;
+			} else {
+				imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+			}
+		} else {
+			imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		}
 		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
 		VkDevice device = app->getDevice();
@@ -252,8 +267,9 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 		std::cerr << "[TextureArrayManager] createArray: image=" << (void*)out.image << " format=" << (int)format << " layers=" << imageInfo.arrayLayers << " mipLevels=" << imageInfo.mipLevels << std::endl;
 		// Register image so final-sweep can clean it if an owner misses unregister
 		app->resources.addImage(out.image, "TextureArrayManager: out.image");
-		// Also add to central resource manager
+		// Also add to central resource manager and record array-layer count
 		app->resources.addImage(out.image, "TextureArrayManager::createArray image");
+		app->resources.setImageArrayLayers(out.image, imageInfo.arrayLayers);
 
 		VkMemoryRequirements memRequirements;
 		vkGetImageMemoryRequirements(device, out.image, &memRequirements);

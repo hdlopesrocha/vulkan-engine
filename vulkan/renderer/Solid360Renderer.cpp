@@ -31,6 +31,7 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSam
         if (vkCreateImage(device, &imgInfo, nullptr, &image) != VK_SUCCESS)
             throw std::runtime_error("Failed to create 360 image!");
         app->resources.addImage(image, "Solid360Renderer: solid360 image");
+        app->resources.setImageArrayLayers(image, imgInfo.arrayLayers);
         VkMemoryRequirements memReqs;
         vkGetImageMemoryRequirements(device, image, &memReqs);
         VkMemoryAllocateInfo allocInfo{};
