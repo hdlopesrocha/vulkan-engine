@@ -702,9 +702,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     if(check == ContainmentType::Disjoint) {
         resultType = frame.type;
         shapeType = SpaceType::Empty;
-    } else if(shapeType == SpaceType::Empty) {
-
-    } else {
+    } else if(resultType == SpaceType::Surface) {
         bool interpolated = frame.iteratedNode != NULL;
         if(resultType == SpaceType::Surface) {
             // Create nodes for surface results if they don't exist
