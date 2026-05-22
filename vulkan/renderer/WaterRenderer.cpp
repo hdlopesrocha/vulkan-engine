@@ -924,7 +924,7 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     writes[4].pImageInfo = &imageInfos[4];
 
     // Removed write descriptor set for Scene position/world-position texture (g-buffer)
-    logged_vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams) {
@@ -1058,7 +1058,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         VkDescriptorSet mainDs = app->getMainDescriptorSet();
         if (mainDs != VK_NULL_HANDLE) {
             //printf("[BIND] WaterRenderer::render: layout=%p firstSet=0 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)mainDs);
-            logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
         }
 
@@ -1066,7 +1066,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
         if (materialDs != VK_NULL_HANDLE) {
             //printf("[BIND] WaterRenderer::render: layout=%p firstSet=1 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)materialDs);
-            logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
         }
 
@@ -1074,7 +1074,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         VkDescriptorSet sceneDs = waterDepthDescriptorSets[frameIndex];
         if (sceneDs != VK_NULL_HANDLE) {
             //printf("[BIND] WaterRenderer::render: layout=%p firstSet=2 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)sceneDs);
-            logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
         }
     }

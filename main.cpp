@@ -822,7 +822,7 @@ public:
                     writes[2] = writes[0]; writes[2].dstBinding = 2; writes[2].pBufferInfo = &boundsBuf;
                     writes[3] = writes[0]; writes[3].dstBinding = 3; writes[3].pBufferInfo = &countBuf;
 
-                    logged_vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+                    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
                     ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
                 }
 
@@ -945,7 +945,7 @@ public:
                     writes[2] = writes[0]; writes[2].dstBinding = 2; writes[2].pBufferInfo = &boundsBuf;
                     writes[3] = writes[0]; writes[3].dstBinding = 3; writes[3].pBufferInfo = &countBuf;
 
-                    logged_vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+                    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
                 }
 
                 // Run cull into per-task buffers - only when compute pipeline is ready (meshes loaded)

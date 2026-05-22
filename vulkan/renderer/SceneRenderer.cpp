@@ -228,7 +228,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         VkDescriptorSet ds = shadowDescriptorSet;
             if (layout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
             //printf("[BIND] SceneRenderer::mainPass (shadow bind): layout=%p firstSet=0 count=1 sets=%p\n", (void*)layout, (void*)ds);
-            logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
         }
 
         // Render vegetation FIRST to shadow map so it casts shadows on solid geometry below.
@@ -245,7 +245,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowPipeline);
         }
         if (solidShadowLayout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
-            logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowLayout, 0, 1, &ds, 0, nullptr);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowLayout, 0, 1, &ds, 0, nullptr);
         }
 
         // Render solid geometry after vegetation so terrain can be shadowed by vegetation
@@ -366,17 +366,17 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
 
                 VkDescriptorSet mainDs = app->getMainDescriptorSet();
                 if (mainDs != VK_NULL_HANDLE) {
-                    logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 0, 1, &mainDs, 0, nullptr);
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 0, 1, &mainDs, 0, nullptr);
                 }
 
                 VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
                 if (materialDs != VK_NULL_HANDLE) {
-                    logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 1, 1, &materialDs, 0, nullptr);
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 1, 1, &materialDs, 0, nullptr);
                 }
 
                 VkDescriptorSet sceneDs = waterRenderer->getWaterDepthDescriptorSet(frameIdx);
                 if (sceneDs != VK_NULL_HANDLE) {
-                    logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 2, 1, &sceneDs, 0, nullptr);
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 2, 1, &sceneDs, 0, nullptr);
                 }
 
                 // Draw filled water geometry (will update depth buffer)

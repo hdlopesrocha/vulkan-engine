@@ -497,17 +497,6 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     }
     indirectCommands = cmds;
 
-    // Debug: print first few commands to verify data
-    static bool printedCmds = false;
-    if (!printedCmds && !cmds.empty()) {
-        printf("[IndirectRenderer::rebuild] Sample indirect commands:\n");
-        for (size_t i = 0; i < std::min(size_t(3), cmds.size()); ++i) {
-            printf("  cmd[%zu]: indexCount=%u instanceCount=%u firstIndex=%u vertexOffset=%d firstInstance=%u\n",
-                i, cmds[i].indexCount, cmds[i].instanceCount, cmds[i].firstIndex, cmds[i].vertexOffset, cmds[i].firstInstance);
-        }
-        printedCmds = true;
-    }
-
     // Create or update the global indirect buffer with capacity-based sizing
     // Use host-visible memory for AMD RADV driver compatibility
     VkDeviceSize indirectBufferSize = sizeof(VkDrawIndexedIndirectCommand) * meshCapacity;
@@ -785,7 +774,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             writes[3].dstBinding = 3;
             writes[3].pBufferInfo = &countBuf;
 
-            logged_vkUpdateDescriptorSets(app->getDevice(), 4, writes, 0, nullptr);
+            vkUpdateDescriptorSets(app->getDevice(), 4, writes, 0, nullptr);
         }
     }
 
@@ -844,13 +833,13 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 
     // Bind and dispatch compute cull
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-    logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeDescriptorSet, 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeDescriptorSet, 0, nullptr);
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::mat4), &viewProj);
 
     uint32_t numCmds = static_cast<uint32_t>(indirectCommands.size());
     uint32_t groupSize = 64;
     uint32_t groups = (numCmds + groupSize - 1) / groupSize;
-    if (groups > 0) logged_vkCmdDispatch(cmd, groups, 1, 1);
+    if (groups > 0) vkCmdDispatch(cmd, groups, 1, 1);
 
     // Barrier to make shader writes to the compact indirect buffer and visible count visible to indirect draw
     VkBufferMemoryBarrier barriers[2] = {};
@@ -904,7 +893,7 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
 
     // Bind and dispatch compute cull using caller-provided descriptor set
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-    logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeDesc, 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeDesc, 0, nullptr);
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::mat4), &viewProj);
 
     uint32_t numCmds = 0;
@@ -914,7 +903,7 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     }
     uint32_t groupSize = 64;
     uint32_t groups = (numCmds + groupSize - 1) / groupSize;
-    if (groups > 0) logged_vkCmdDispatch(cmd, groups, 1, 1);
+    if (groups > 0) vkCmdDispatch(cmd, groups, 1, 1);
 
     // Barrier to make shader writes to the compact indirect buffer and visible count visible to indirect draw
     VkBufferMemoryBarrier barriers[2] = {};

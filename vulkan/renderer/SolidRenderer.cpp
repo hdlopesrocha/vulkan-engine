@@ -317,7 +317,7 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
     
     if (perTextureDescriptorSet != VK_NULL_HANDLE) {
         //printf("[BIND] SolidRenderer::draw: layout=%p firstSet=0 count=1 sets=%p\n", (void*)usedLayout, (void*)perTextureDescriptorSet);
-        logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, usedLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, usedLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
     } else {
         std::cerr << "[SolidRenderer::draw] ERROR: perTextureDescriptorSet is NULL!" << std::endl;
     }
@@ -357,7 +357,7 @@ void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp
 
     // Bind descriptor set using the depth pre-pass pipeline layout
     if (perTextureDescriptorSet != VK_NULL_HANDLE) {
-        logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipelineLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipelineLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
     }
 
     // Draw all meshes using GPU-culled indirect commands (depth-only)

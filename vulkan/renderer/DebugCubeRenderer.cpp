@@ -289,7 +289,7 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
     descriptorWrite.descriptorCount = 1;
     descriptorWrite.pImageInfo = &imageInfo;
     
-    logged_vkUpdateDescriptorSets(app->getDevice(), 1, &descriptorWrite, 0, nullptr);
+    vkUpdateDescriptorSets(app->getDevice(), 1, &descriptorWrite, 0, nullptr);
     
     // Create initial instance buffer (will be resized as needed)
     instanceBufferCapacity = 128;
@@ -314,7 +314,7 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
     bufferWrite.descriptorCount = 1;
     bufferWrite.pBufferInfo = &bufferInfo;
     
-    logged_vkUpdateDescriptorSets(app->getDevice(), 1, &bufferWrite, 0, nullptr);
+    vkUpdateDescriptorSets(app->getDevice(), 1, &bufferWrite, 0, nullptr);
 }
 
 void DebugCubeRenderer::updateInstanceBuffer(VulkanApp* app) {
@@ -349,7 +349,7 @@ void DebugCubeRenderer::updateInstanceBuffer(VulkanApp* app) {
         bufferWrite.descriptorCount = 1;
         bufferWrite.pBufferInfo = &bufferInfo;
         
-        logged_vkUpdateDescriptorSets(app->getDevice(), 1, &bufferWrite, 0, nullptr);
+        vkUpdateDescriptorSets(app->getDevice(), 1, &bufferWrite, 0, nullptr);
     }
     
     // Upload instance data
@@ -396,7 +396,7 @@ void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescripto
     
     // Bind descriptor sets: set 0 = UBO, set 1 = grid texture + instance buffer
     VkDescriptorSet descriptorSets[] = { descriptorSet, gridDescriptorSet };
-    logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 
         0, 2, descriptorSets, 0, nullptr);
     
     // Bind cube VBO

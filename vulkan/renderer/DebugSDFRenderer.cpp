@@ -149,7 +149,7 @@ void DebugSDFRenderer::createDescriptorSet(VulkanApp* app) {
     write.descriptorCount = 1;
     write.pBufferInfo = &bufferInfo;
 
-    logged_vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
+    vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
 }
 
 void DebugSDFRenderer::updateInstanceBuffer(VulkanApp* app) {
@@ -185,7 +185,7 @@ void DebugSDFRenderer::updateInstanceBuffer(VulkanApp* app) {
         write.descriptorCount = 1;
         write.pBufferInfo = &bufferInfo;
 
-        logged_vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
+        vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
     }
 
     std::vector<InstanceData> instanceData;
@@ -237,7 +237,7 @@ void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptor
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
     VkDescriptorSet descriptorSets[] = {mainDescriptorSet, descriptorSet};
-    logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
         0, 2, descriptorSets, 0, nullptr);
 
     const VkBuffer vertexBuffers[] = {vertexBuffer.buffer};

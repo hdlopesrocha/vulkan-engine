@@ -224,7 +224,7 @@ void WireframeRenderer::draw(VkCommandBuffer cmd,
         //printf("[BIND] WireframeRenderer::draw: layout=%p firstSet=0 count=%u sets=", (void*)wireframePipelineLayout, (unsigned)descriptorSets.size());
         for (size_t i = 0; i < descriptorSets.size(); ++i) printf("%p ", (void*)descriptorSets[i]);
         printf("\n");
-        logged_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
             wireframePipelineLayout, 0,
             static_cast<uint32_t>(descriptorSets.size()), descriptorSets.data(),
             0, nullptr);

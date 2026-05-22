@@ -320,7 +320,7 @@ void ImpostorCapture::capture(VulkanApp* app,
 
             const uint32_t dynOffset = static_cast<uint32_t>(viewIdx * uboStride);
             VkDescriptorSet sets[2] = { uboDescSet, texDescSet };
-            logged_vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     capturePipelineLayout, 0, 2, sets, 1, &dynOffset);
 
             vkCmdPushConstants(cb, capturePipelineLayout,
@@ -817,7 +817,7 @@ void ImpostorCapture::allocateDescSets(VulkanApp* app) {
     w.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     w.descriptorCount = 1;
     w.pBufferInfo     = &bufInfo;
-    logged_vkUpdateDescriptorSets(app->getDevice(), 1, &w, 0, nullptr);
+    vkUpdateDescriptorSets(app->getDevice(), 1, &w, 0, nullptr);
     // Texture descriptor is written in updateTexDescSet() at capture time.
 }
 
@@ -838,7 +838,7 @@ void ImpostorCapture::updateTexDescSet(VkDevice device,
         ws[i].descriptorCount = 1;
         ws[i].pImageInfo      = &infos[i];
     }
-    logged_vkUpdateDescriptorSets(device, 3, ws, 0, nullptr);
+    vkUpdateDescriptorSets(device, 3, ws, 0, nullptr);
 }
 
 void ImpostorCapture::createImGuiDescSetsForType(VulkanApp* app, uint32_t billboardType) {

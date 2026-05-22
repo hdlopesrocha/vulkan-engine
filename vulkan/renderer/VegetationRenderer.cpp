@@ -164,7 +164,7 @@ bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
             writes[i].descriptorCount = 1;
             writes[i].pImageInfo      = &infos[i];
         }
-        logged_vkUpdateDescriptorSets(app->getDevice(), 3, writes, 0, nullptr);
+        vkUpdateDescriptorSets(app->getDevice(), 3, writes, 0, nullptr);
         vegDescriptorVersion = 1;
         app->registerDescriptorSet(vegDescriptorSet);
         std::cerr << "[VEGETATION] Allocated vegDescriptorSet=" << (void*)vegDescriptorSet << " (3 sampler2DArray)" << std::endl;
@@ -437,7 +437,7 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
     // Bind the shadow descriptor set at set 0 and vegetation descriptor set at set 1
     // shadowDescriptorSet contains the light-space UBO for shadow rendering
     VkDescriptorSet sets[2] = { shadowDescriptorSet, vegDescriptorSet };
-    logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 2, sets, 0, nullptr);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 2, sets, 0, nullptr);
 
     // Push constants for shadow pass: same as regular draw but with wind disabled
     WindPushConstants pc{};
@@ -578,7 +578,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView albedoArray
             ws[i].descriptorCount = 1;
             ws[i].pImageInfo      = &imgInfos[i];
         }
-        logged_vkUpdateDescriptorSets(device, 2, ws, 0, nullptr);
+        vkUpdateDescriptorSets(device, 2, ws, 0, nullptr);
     }
 
     // Build impostor pipeline (same vertex input as vegetation, different shaders).
@@ -689,7 +689,7 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
     }
     VkDescriptorSet sets[2] = { globalSet, vegDescriptorSet };
     //printf("[BIND] VegetationRenderer::draw: layout=%p firstSet=0 count=2 sets=%p %p\n", (void*)pipelineLayout, (void*)sets[0], (void*)sets[1]);
-    logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 2, sets, 0, nullptr);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 2, sets, 0, nullptr);
 
     WindPushConstants pc{};
     pc.billboardScale     = billboardScale;
@@ -762,7 +762,7 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorPipeline);
 
         VkDescriptorSet impSets[2] = { globalSet, impostorDescSet };
-        logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     impostorPipelineLayout, 0, 2, impSets, 0, nullptr);
 
         // Re-push the same push constants using the impostor pipeline layout.

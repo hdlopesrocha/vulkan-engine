@@ -448,9 +448,3 @@ extern VulkanApp* g_imguiVulkanApp;
 void setImGuiVulkanApp(VulkanApp* app);
 VulkanApp* getImGuiVulkanApp();
 
-// Logging wrappers to capture descriptor updates, descriptor binds and dispatches
-// These helpers print details and correlate command-buffer operations with
-// submit ids stored in `g_cmdSubmitMap` (defined in VulkanApp.cpp).
-void logged_vkUpdateDescriptorSets(VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites, uint32_t descriptorCopyCount, const VkCopyDescriptorSet* pDescriptorCopies);
-void logged_vkCmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets, uint32_t dynamicOffsetCount, const uint32_t* pDynamicOffsets);
-void logged_vkCmdDispatch(VkCommandBuffer commandBuffer, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ);
