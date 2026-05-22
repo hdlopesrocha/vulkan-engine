@@ -14,6 +14,7 @@
 #include <mutex>
 #include <random>
 #include <unordered_set>
+#include <cstdlib>
 
 namespace {
 constexpr float kDebugSDFClip = 10.0f;
@@ -320,10 +321,14 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
     VkImageView sceneDepthView = solidRenderer->getDepthView(frameIdx);
     VkImage sceneDepthImage = solidRenderer->getDepthImage(frameIdx);
 
+    const char* _wg_dis = std::getenv("VULKAN_DISABLE_WATERGEOM");
+    bool _wg_env_skip = (_wg_dis && _wg_dis[0] != '\0');
+    if (_wg_env_skip) std::cerr << "[SceneRenderer] VULKAN_DISABLE_WATERGEOM set; skipping water geometry operations" << std::endl;
+
     // Initialize water geometry depth from the scene depth so water geometry
     // rasterization can depth-test against solid geometry and avoid rendering
     // water where it is occluded by solids.
-    if (waterRenderer) {
+    if (waterRenderer && !_wg_env_skip) {
         waterRenderer->initializeGeomDepthFromSceneDepth(app, commandBuffer, frameIdx, sceneDepthImage);
     }
 
@@ -336,48 +341,58 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
     if (wireframeEnabled && waterWireframe && waterWireframe->getPipeline() != VK_NULL_HANDLE) {
         // Wireframe path: use WaterRenderer for setup/pass management,
         // but bind the wireframe pipeline instead of the normal one.
-        waterRenderer->prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
-        if (backFaceRenderer && !skipBackFace) {
-            backFaceRenderer->renderBackFacePass(app, commandBuffer, frameIdx,
-                                                waterRenderer->getIndirectRenderer(),
-                                                waterRenderer->getWaterGeometryPipelineLayout(),
-                                                app->getMainDescriptorSet(),
-                                                app->getMaterialDescriptorSet(),
-                                                waterRenderer->getWaterDepthDescriptorSet(frameIdx),
-                                                solidRenderer->getDepthImage(frameIdx));
+        if (!_wg_env_skip) {
+            waterRenderer->prepareRender(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
+            const char* _bf_dis = std::getenv("VULKAN_DISABLE_BACKFACE");
+            bool _bf_env_skip = (_bf_dis && _bf_dis[0] != '\0');
+            if (_bf_env_skip) std::cerr << "[SceneRenderer] VULKAN_DISABLE_BACKFACE set; skipping back-face pass" << std::endl;
+            if (backFaceRenderer && !skipBackFace && !_bf_env_skip) {
+                backFaceRenderer->renderBackFacePass(app, commandBuffer, frameIdx,
+                                                    waterRenderer->getIndirectRenderer(),
+                                                    waterRenderer->getWaterGeometryPipelineLayout(),
+                                                    app->getMainDescriptorSet(),
+                                                    app->getMaterialDescriptorSet(),
+                                                    waterRenderer->getWaterDepthDescriptorSet(frameIdx),
+                                                    solidRenderer->getDepthImage(frameIdx));
+            }
+            waterRenderer->beginWaterGeometryPass(commandBuffer, frameIdx);
+
+            // First render filled water geometry to populate the water depth
+            // buffer so the wireframe can depth-test against actual water depth.
+            VkPipeline waterPipe = waterRenderer->getWaterGeometryPipeline();
+            VkPipelineLayout waterLayout = waterRenderer->getWaterGeometryPipelineLayout();
+            if (waterPipe != VK_NULL_HANDLE && waterLayout != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipe);
+
+                VkDescriptorSet mainDs = app->getMainDescriptorSet();
+                if (mainDs != VK_NULL_HANDLE) {
+                    logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 0, 1, &mainDs, 0, nullptr);
+                }
+
+                VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
+                if (materialDs != VK_NULL_HANDLE) {
+                    logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 1, 1, &materialDs, 0, nullptr);
+                }
+
+                VkDescriptorSet sceneDs = waterRenderer->getWaterDepthDescriptorSet(frameIdx);
+                if (sceneDs != VK_NULL_HANDLE) {
+                    logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 2, 1, &sceneDs, 0, nullptr);
+                }
+
+                // Draw filled water geometry (will update depth buffer)
+                waterRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
+            }
+
+            waterRenderer->endWaterGeometryPass(commandBuffer);
+            waterRenderer->postRenderBarrier(commandBuffer, frameIdx);
+        } else {
+            // Skipping water geometry operations as requested by env guard
         }
-        waterRenderer->beginWaterGeometryPass(commandBuffer, frameIdx);
-
-        // First render filled water geometry to populate the water depth
-        // buffer so the wireframe can depth-test against actual water depth.
-        VkPipeline waterPipe = waterRenderer->getWaterGeometryPipeline();
-        VkPipelineLayout waterLayout = waterRenderer->getWaterGeometryPipelineLayout();
-        if (waterPipe != VK_NULL_HANDLE && waterLayout != VK_NULL_HANDLE) {
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipe);
-
-            VkDescriptorSet mainDs = app->getMainDescriptorSet();
-            if (mainDs != VK_NULL_HANDLE) {
-                logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 0, 1, &mainDs, 0, nullptr);
-            }
-
-            VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
-            if (materialDs != VK_NULL_HANDLE) {
-                logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 1, 1, &materialDs, 0, nullptr);
-            }
-
-            VkDescriptorSet sceneDs = waterRenderer->getWaterDepthDescriptorSet(frameIdx);
-            if (sceneDs != VK_NULL_HANDLE) {
-                logged_vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 2, 1, &sceneDs, 0, nullptr);
-            }
-
-            // Draw filled water geometry (will update depth buffer)
-            waterRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
-        }
-
-        waterRenderer->endWaterGeometryPass(commandBuffer);
-        waterRenderer->postRenderBarrier(commandBuffer, frameIdx);
     } else {
-        if (backFaceRenderer && !skipBackFace) {
+        const char* _bf_dis2 = std::getenv("VULKAN_DISABLE_BACKFACE");
+        bool _bf_env_skip2 = (_bf_dis2 && _bf_dis2[0] != '\0');
+        if (_bf_env_skip2) std::cerr << "[SceneRenderer] VULKAN_DISABLE_BACKFACE set; skipping back-face pass" << std::endl;
+        if (backFaceRenderer && !skipBackFace && !_bf_env_skip2) {
             backFaceRenderer->renderBackFacePass(app, commandBuffer, frameIdx,
                                                 waterRenderer->getIndirectRenderer(),
                                                 waterRenderer->getWaterGeometryPipelineLayout(),
@@ -386,7 +401,11 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
                                                 waterRenderer->getWaterDepthDescriptorSet(frameIdx),
                                                 solidRenderer->getDepthImage(frameIdx));
         }
-        waterRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
+        if (!_wg_env_skip) {
+            waterRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);
+        } else {
+            // Skipping waterRenderer::render due to VULKAN_DISABLE_WATERGEOM
+        }
     }
 
     // Post-processing should run inside the active main render pass; caller (e.g. MyApp::draw) should invoke
@@ -1140,6 +1159,10 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
                 }
                 if (grassIndices.size() < 3) {
                     // No grass triangles in this chunk; ensure old chunk vegetation is cleared.
+                    if (std::getenv("VULKAN_DISABLE_VEGETATION")) {
+                        std::cerr << "[SceneRenderer] VULKAN_DISABLE_VEGETATION set; skipping vegetation clear for node " << (unsigned long long)nid << std::endl;
+                        return;
+                    }
                     vegetationRenderer->generateChunkInstances(nid, Buffer{}, 0, Buffer{}, 0, chunkCenter, instancesPerTriangle, app, seed);
                     return;
                 }
@@ -1151,7 +1174,11 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
                 uint32_t indexCount = static_cast<uint32_t>(grassIndices.size());
 
                 // Pass Buffer objects to vegetationRenderer and let it defer destruction
-                vegetationRenderer->generateChunkInstances(nid, posBuf, vertexCount, idxBuf, indexCount, chunkCenter, instancesPerTriangle, app, seed);
+                if (std::getenv("VULKAN_DISABLE_VEGETATION")) {
+                    std::cerr << "[SceneRenderer] VULKAN_DISABLE_VEGETATION set; skipping generateChunkInstances for node " << (unsigned long long)nid << std::endl;
+                } else {
+                    vegetationRenderer->generateChunkInstances(nid, posBuf, vertexCount, idxBuf, indexCount, chunkCenter, instancesPerTriangle, app, seed);
+                }
             } catch (const std::exception &e) {
                 std::cerr << "[SceneRenderer] Vegetation generation failed for node " << (unsigned long long)nid
                           << ": " << e.what() << std::endl;

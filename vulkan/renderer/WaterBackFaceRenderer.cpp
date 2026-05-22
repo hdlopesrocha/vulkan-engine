@@ -3,6 +3,7 @@
 #include "../../utils/FileReader.hpp"
 #include <stdexcept>
 #include <iostream>
+#include <cstdlib>
 #include "../includes/locations.hpp"
 #include "../includes/vertex_layouts.hpp"
 
@@ -195,7 +196,23 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         imageInfo.usage = usage;
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        // Use CONCURRENT sharing if transfer and graphics queues differ so
+        // transfer operations (vkCmdCopyImage on a transfer queue) can run
+        // without explicit ownership-transfer barriers.
+        if (app) {
+            auto qfi = app->findQueueFamilies(app->getPhysicalDevice());
+            if (qfi.transferFamily.has_value() && qfi.transferFamily.value() != qfi.graphicsFamily.value()) {
+                uint32_t families[2] = { qfi.graphicsFamily.value(), qfi.transferFamily.value() };
+                imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+                imageInfo.queueFamilyIndexCount = 2;
+                imageInfo.pQueueFamilyIndices = families;
+            } else {
+                imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            }
+        } else {
+            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        }
 
         if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create back-face image!");
@@ -213,6 +230,11 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
         }
         vkBindImageMemory(device, image, memory, 0);
         app->resources.addDeviceMemory(memory, "WaterBackFaceRenderer: memory");
+
+        // Log allocation details to aid post-mortem correlation with dmesg GPUVM faults
+        std::cerr << "[WaterBackFaceRenderer] created image=" << (void*)image
+                  << " mem=" << (void*)memory
+                  << " allocSize=" << (size_t)memReq.size << std::endl;
 
         VkImageViewCreateInfo viewInfo{};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -238,11 +260,9 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
         backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
         // Ensure authoritative/tracked layout matches the render-pass initial layout
         if (backFaceDepthImages[i] != VK_NULL_HANDLE && app) {
-            try {
-                app->transitionImageLayoutLayer(backFaceDepthImages[i], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
-                app->setImageLayoutTracked(backFaceDepthImages[i], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
-                backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            } catch (...) { /* best-effort */ }
+            app->transitionImageLayoutLayer(backFaceDepthImages[i], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(backFaceDepthImages[i], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+            backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         }
     }
 
@@ -280,10 +300,26 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     // geometry and will only write where the water is visible in front of
     // solids. Otherwise fall back to clearing to 1.0 as before.
     bool copiedFromScene = false;
-    if (sceneDepthImage != VK_NULL_HANDLE) {
+    // Allow disabling the scene->backface depth copy for binary-search debugging
+    const char* dis = std::getenv("VULKAN_DISABLE_DEPTH_COPY");
+    if (dis && dis[0] != '\0') {
+        std::cerr << "[WaterBackFaceRenderer] VULKAN_DISABLE_DEPTH_COPY set; skipping back-face depth copy for frame " << frameIndex << std::endl;
+    } else if (sceneDepthImage != VK_NULL_HANDLE) {
         // Transition scene depth -> TRANSFER_SRC and back-face depth -> TRANSFER_DST
-        try { app->recordTransitionImageLayoutLayer(cmd, sceneDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1); } catch (...) {}
-        try { app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1); } catch (...) {}
+        app->recordTransitionImageLayoutLayer(cmd, sceneDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1); 
+        app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
+
+  
+        std::cerr << "[WaterBackFaceRenderer] copying depth src=" << (void*)sceneDepthImage
+                    << " dst=" << (void*)backFaceDepthImages[frameIndex]
+                    << " extent=" << renderWidth << "x" << renderHeight << " frame=" << frameIndex << std::endl;
+        std::cerr << "  app swapchain size=" << app->getWidth() << "x" << app->getHeight()
+                    << " trackedLayouts: src=" << (int)app->getImageLayoutTracked(sceneDepthImage, 0)
+                    << " dst=" << (int)app->getImageLayoutTracked(backFaceDepthImages[frameIndex], 0) << std::endl;
+        if (renderWidth != static_cast<uint32_t>(app->getWidth()) || renderHeight != static_cast<uint32_t>(app->getHeight())) {
+            std::cerr << "  [WaterBackFaceRenderer] WARNING: back-face render size (" << renderWidth << "x" << renderHeight
+                        << ") differs from app swapchain (" << app->getWidth() << "x" << app->getHeight() << ")" << std::endl;
+        }
 
         VkImageCopy copyRegion{};
         copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -303,11 +339,11 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
                        1, &copyRegion);
 
         // Transition back-face depth -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL for rendering
-        try { app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1); } catch (...) {}
+        app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
         backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
         // Transition scene depth back to shader-read for sampling by water shaders
-        try { app->recordTransitionImageLayoutLayer(cmd, sceneDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1); } catch (...) {}
+        app->recordTransitionImageLayoutLayer(cmd, sceneDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
 
         copiedFromScene = true;
     } else {

@@ -38,7 +38,23 @@ inline void createImage2D(
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage         = usage;
     imageInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+
+    // If transfer and graphics use different queue families, create the
+    // image with CONCURRENT sharing so transfer queue copies can access it
+    // without requiring explicit ownership-transfer barriers.
+    if (app) {
+        auto qfi = app->findQueueFamilies(app->getPhysicalDevice());
+        if (qfi.transferFamily.has_value() && qfi.transferFamily.value() != qfi.graphicsFamily.value()) {
+            uint32_t families[2] = { qfi.graphicsFamily.value(), qfi.transferFamily.value() };
+            imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+            imageInfo.queueFamilyIndexCount = 2;
+            imageInfo.pQueueFamilyIndices = families;
+        } else {
+            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        }
+    } else {
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    }
 
     if (vkCreateImage(device, &imageInfo, nullptr, &outImage) != VK_SUCCESS)
         throw std::runtime_error(std::string("Failed to create image: ") + name);
@@ -57,6 +73,12 @@ inline void createImage2D(
         throw std::runtime_error(std::string("Failed to allocate image memory: ") + name);
     vkBindImageMemory(device, outImage, outMemory, 0);
     app->resources.addDeviceMemory(outMemory, name);
+
+    // Log allocation info to help correlate kernel GPUVM fault addresses
+    std::cerr << "[RendererUtils::createImage2D] name=" << (name ? name : "(null)")
+              << " image=" << (void*)outImage
+              << " mem=" << (void*)outMemory
+              << " allocSize=" << (size_t)memReq.size << std::endl;
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
