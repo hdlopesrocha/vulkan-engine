@@ -36,6 +36,10 @@ public:
     // All add/remove methods accept an optional description string identifying where the object was created.
     void addDeviceMemory(VkDeviceMemory mem, const char* desc = nullptr);
     void addImage(VkImage img, const char* desc = nullptr);
+    // Record the array-layer count for an image (useful for runtime validation).
+    void setImageArrayLayers(VkImage img, uint32_t arrayLayers);
+    // Query recorded array-layer count for an image.
+    std::optional<uint32_t> getImageArrayLayers(VkImage img) const;
     void addImageView(VkImageView iv, const char* desc = nullptr);
     void addSampler(VkSampler s, const char* desc = nullptr);
     void addFramebuffer(VkFramebuffer fb, const char* desc = nullptr);
@@ -118,6 +122,8 @@ private:
     ResourceMap<VkSemaphore> semaphores;
     ResourceMap<VkFence> fences;
     ResourceMap<VkCommandPool> commandPools;
+        // Optional metadata: record array layer counts for images created as 2D arrays or cubemaps
+        std::unordered_map<uintptr_t, uint32_t> imageArrayLayers;
 
 public:
 };

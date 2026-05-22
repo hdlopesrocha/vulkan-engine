@@ -33,6 +33,21 @@ void VulkanResourceManager::addImage(VkImage img, const char* desc) {
     std::cerr << "[VulkanResourceManager] addImage img=" << (void*)img << " desc=" << (desc ? desc : "(null)") << " total=" << images.size() << std::endl;
 }
 
+void VulkanResourceManager::setImageArrayLayers(VkImage img, uint32_t arrayLayers) {
+    if (img == VK_NULL_HANDLE) return;
+    std::lock_guard<std::mutex> lk(mtx);
+    imageArrayLayers[(uintptr_t)img] = arrayLayers;
+    std::cerr << "[VulkanResourceManager] setImageArrayLayers img=" << (void*)img << " layers=" << arrayLayers << std::endl;
+}
+
+std::optional<uint32_t> VulkanResourceManager::getImageArrayLayers(VkImage img) const {
+    if (img == VK_NULL_HANDLE) return std::nullopt;
+    std::lock_guard<std::mutex> lk(mtx);
+    auto it = imageArrayLayers.find((uintptr_t)img);
+    if (it == imageArrayLayers.end()) return std::nullopt;
+    return it->second;
+}
+
 void VulkanResourceManager::addImageView(VkImageView iv, const char* desc) {
     if (iv == VK_NULL_HANDLE) return;
     if (desc) {
