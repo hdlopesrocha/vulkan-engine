@@ -23,10 +23,9 @@ OctreeNode::OctreeNode(Vertex vertex) {
 OctreeNode * OctreeNode::init(Vertex vertex) {
 	memcpy(this->sdf, INFINITY_ARRAY, sizeof(float)*8);
 	this->bits = 0x0;
-	this->setLeaf(false);
 	this->setSimplified(false);
 	this->setChunk(false);
-	this->setType(SpaceType::Empty);
+	this->setType(SpaceType::Surface);
 	this->vertex = vertex;
 	this->blockId = UINT_MAX;
 	this->version = 0u;	
@@ -37,6 +36,25 @@ ChildBlock * OctreeNode::getBlock(OctreeAllocator &allocator) const {
 	return allocator.childAllocator.getFromIndex(this->blockId);
 }
 
+
+void OctreeNode::setChildren(OctreeAllocator &allocator, OctreeNode * childrenPtr[8]) {
+	uint blockId = this->blockId;
+	ChildBlock * block = NULL;
+	if(blockId == UINT_MAX) {
+		block = allocator.childAllocator.allocate()->init();
+		this->blockId = allocator.childAllocator.getIndex(block);
+	} else {
+		block = allocator.childAllocator.getFromIndex(blockId);
+	}
+
+    uint childNodes[8] = {UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX};
+	for(int i=0; i < 8; ++i) {
+		if(childrenPtr[i] != NULL) {
+			childNodes[i] = allocator.getIndex(childrenPtr[i]);
+		}
+	}
+	memcpy(block->children, childNodes, sizeof(uint)*8);
+}
 
 void OctreeNode::setChildren(OctreeAllocator &allocator, uint children[8]) {
 	uint blockId = this->blockId;
@@ -75,14 +93,14 @@ OctreeNode::~OctreeNode() {
 
 }
 
-ChildBlock * OctreeNode::clear(OctreeAllocator &allocator, ChildBlock * block, const BoundingCube& cube) {
+ChildBlock * OctreeNode::clear(OctreeAllocator &allocator, ChildBlock * block) {
 
 	if(this->blockId != UINT_MAX) {
 		if(block == NULL) {
 			block = getBlock(allocator);
 		}
 		if(block!=NULL) {	
-			block->clear(allocator, cube);
+			block->clear(allocator);
 			allocator.childAllocator.deallocate(block);
 			this->blockId = UINT_MAX;
 			block = NULL;
@@ -119,13 +137,9 @@ void OctreeNode::setChunk(bool value) {
 }
 
 bool OctreeNode::isLeaf() const {
-	return this->bits & (0x1 << 5);
+	return this->blockId == UINT_MAX;
 }
 
-void OctreeNode::setLeaf(bool value) {
-	uint8_t mask = (0x1 << 5);
-	this->bits = (this->bits & ~mask) | (value ? mask : 0x0);
-}
 
 SpaceType OctreeNode::getType() const {
 	if(this->bits & (0x1 << 0)) {

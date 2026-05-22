@@ -21,11 +21,12 @@ public:
     OctreeNode(Vertex vertex);
     ~OctreeNode();
     OctreeNode * init(Vertex vertex);
-    ChildBlock * clear(OctreeAllocator &allocator, ChildBlock * block, const BoundingCube& cube);
+    ChildBlock * clear(OctreeAllocator &allocator, ChildBlock * block);
     ChildBlock * getBlock(OctreeAllocator &allocator) const;
     ChildBlock * allocate(OctreeAllocator &allocator);
     void getChildren(OctreeAllocator &allocator, OctreeNode * childNodes[8]) const;
     void setChildren(OctreeAllocator &allocator, uint children[8]);
+    void setChildren(OctreeAllocator &allocator, OctreeNode * children[8]);
 
     void setType(SpaceType type);
 
@@ -36,7 +37,6 @@ public:
     void setChunk(bool value);
 
     bool isLeaf() const ;
-    void setLeaf(bool value);
 
     void setBrush(int brushIndex);
     int getBrush() const;
