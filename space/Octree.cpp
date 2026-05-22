@@ -700,8 +700,8 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     }
     
     if(check == ContainmentType::Disjoint) {
-        resultType = frame.type;
-        shapeType = SpaceType::Empty;
+        //resultType = frame.type;
+        //shapeType = SpaceType::Empty;
     } else if(resultType == SpaceType::Surface) {
         bool interpolated = frame.iteratedNode != NULL;
         if(resultType == SpaceType::Surface) {
@@ -731,8 +731,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                         NodeOperationResult & child = children[i];
                         OctreeNode * childNode = child.node;
 
-                        if(child.resultType != SpaceType::Surface 
-                            && child.check != ContainmentType::Disjoint) {
+                        if(child.check != ContainmentType::Disjoint && child.resultType != SpaceType::Surface) {
                             if(childNode == NULL) {
                                 BoundingCube childCube = frame.cube.getChild(i);
                                 childNode = allocator->allocate()->init(Vertex(childCube.getCenter()));
@@ -742,9 +741,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                             childNode->setSDF(child.resultSDF);
                             childNode->setSimplified(child.isSimplified);
                             childNode->setChunk(child.isChunk);
-                            childNode->setBrush(child.brushIndex);
-                            ++childNode->version;
-                        
+                            childNode->setBrush(child.brushIndex);                        
                         }
                                                 
                         if(frame.node != NULL && childNode == node) {
@@ -756,25 +753,24 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                 }
             }
         }
-
-        if(node != NULL) {
-            node->setType(resultType);
-            node->setSDF(resultSDF);
-            node->setSimplified(isSimplified);
-            node->setChunk(isChunk);
-            node->setBrush(brushIndex);
-            ++node->version;
-
-            if (isChunk) {
-                OctreeNodeData nodeData(frame.level, node, frame.cube, nullptr);
-                resultType == SpaceType::Surface ? args.changeHandler.onNodeAdded(nodeData) : 
-                                                args.changeHandler.onNodeDeleted(nodeData);
-            }
-            if(resultType != SpaceType::Surface) {
-                node->clear(*allocator, NULL);
-            }
-        } 
     }
+
+    if(node != NULL && check != ContainmentType::Disjoint) {
+        node->setType(resultType);
+        node->setSDF(resultSDF);
+        node->setSimplified(isSimplified);
+        node->setChunk(isChunk);
+        node->setBrush(brushIndex);
+        if (isChunk) {
+            ++node->version;
+            OctreeNodeData nodeData(frame.level, node, frame.cube, nullptr);
+            resultType == SpaceType::Surface ? args.changeHandler.onNodeAdded(nodeData) : 
+                                            args.changeHandler.onNodeDeleted(nodeData);
+        }
+        if(resultType != SpaceType::Surface) {
+            //node->clear(*allocator, NULL);
+        }
+    } 
 
     return NodeOperationResult(node, shapeType, shapeSDF, resultType, resultSDF, isSimplified, isLeaf, isChunk, brushIndex, check);
 }
