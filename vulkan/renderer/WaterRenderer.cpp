@@ -1,5 +1,6 @@
 
 #include "WaterRenderer.hpp"
+#include <cstdlib>
 #include "RendererUtils.hpp"
 
 #include "../../utils/FileReader.hpp"
@@ -149,12 +150,10 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
 
         // Ensure GPU/tracked layout initialized for scene color image
         if (sceneColorImages[frameIdx] != VK_NULL_HANDLE && app) {
-            try {
-                app->transitionImageLayoutLayer(sceneColorImages[frameIdx], app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
-                // Update authoritative tracked layout immediately as a best-effort
-                app->setImageLayoutTracked(sceneColorImages[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-                sceneColorImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            } catch (...) { /* best-effort */ }
+            app->transitionImageLayoutLayer(sceneColorImages[frameIdx], app->getSwapchainImageFormat(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            // Update authoritative tracked layout immediately as a best-effort
+            app->setImageLayoutTracked(sceneColorImages[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+            sceneColorImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
 
         createImage(VK_FORMAT_D32_SFLOAT,
@@ -165,11 +164,9 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         std::cerr << "[WaterRenderer] sceneDepthImages[" << frameIdx << "] = " << (void*)sceneDepthImages[frameIdx] << std::endl;
         // Ensure GPU layout is transitioned immediately and then update tracked map.
         if (sceneDepthImages[frameIdx] != VK_NULL_HANDLE && app) {
-            try {
-                app->transitionImageLayoutLayerForce(sceneDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
-                app->setImageLayoutTracked(sceneDepthImages[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
-                sceneDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            } catch (...) { /* best-effort */ }
+            app->transitionImageLayoutLayerForce(sceneDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(sceneDepthImages[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+            sceneDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         }
     }
 
@@ -181,12 +178,10 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         waterDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
 
         if (waterDepthImages[frameIdx] != VK_NULL_HANDLE && app) {
-            try {
-                // Force an initial GPU transition and update authoritative tracked layout
-                app->transitionImageLayoutLayerForce(waterDepthImages[frameIdx], VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
-                app->setImageLayoutTracked(waterDepthImages[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
-                waterDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            } catch (...) { /* best-effort */ }
+            // Force an initial GPU transition and update authoritative tracked layout
+            app->transitionImageLayoutLayerForce(waterDepthImages[frameIdx], VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(waterDepthImages[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+            waterDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
 
         // Create an alternate image view that swizzles the alpha (linear depth)
@@ -211,18 +206,16 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         app->resources.addImageView(waterDepthAlphaImageViews[frameIdx], "WaterRenderer: waterDepthAlphaImageView");
 
         createImage(VK_FORMAT_D32_SFLOAT,
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                 VK_IMAGE_ASPECT_DEPTH_BIT,
                 waterGeomDepthImages[frameIdx], waterGeomDepthMemories[frameIdx], waterGeomDepthImageViews[frameIdx]);
         waterGeomDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
         std::cerr << "[WaterRenderer] waterGeomDepthImage[" << frameIdx << "] = " << (void*)waterGeomDepthImages[frameIdx] << std::endl;
 
         if (waterGeomDepthImages[frameIdx] != VK_NULL_HANDLE && app) {
-            try {
-                app->transitionImageLayoutLayerForce(waterGeomDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
-                app->setImageLayoutTracked(waterGeomDepthImages[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
-                waterGeomDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            } catch (...) { /* best-effort */ }
+            app->transitionImageLayoutLayerForce(waterGeomDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(waterGeomDepthImages[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+            waterGeomDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         }
 
         // Back-face depth image will be created by SceneRenderer-owned WaterBackFaceRenderer
@@ -327,18 +320,14 @@ void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint
 
     // Ensure images are in attachment layouts before beginRendering
     if (waterDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        try {
-            app->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex], VK_FORMAT_R32G32B32A32_SFLOAT,
-                waterDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
-            app->recordTrackedLayoutForCommandBuffer(cmd, waterDepthImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
-        } catch (...) {}
+        app->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex], VK_FORMAT_R32G32B32A32_SFLOAT,
+            waterDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
+        app->recordTrackedLayoutForCommandBuffer(cmd, waterDepthImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
     }
     if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        try {
-            app->recordTransitionImageLayoutLayer(cmd, waterGeomDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
-                waterGeomDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
-            app->recordTrackedLayoutForCommandBuffer(cmd, waterGeomDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
-        } catch (...) {}
+        app->recordTransitionImageLayoutLayer(cmd, waterGeomDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
+            waterGeomDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+        app->recordTrackedLayoutForCommandBuffer(cmd, waterGeomDepthImages[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
     }
 
     VkRenderingAttachmentInfo colorAttachment{};
@@ -376,11 +365,9 @@ void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint
 
     // Transition color image back to shader-read layout for sampling
     if (waterDepthImages[frameIndex] != VK_NULL_HANDLE) {
-        try {
-            app->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex], VK_FORMAT_R32G32B32A32_SFLOAT,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
-            waterDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        } catch (...) {}
+        app->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex], VK_FORMAT_R32G32B32A32_SFLOAT,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        waterDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 }
 
@@ -771,6 +758,13 @@ void WaterRenderer::initializeGeomDepthFromSceneDepth(VulkanApp* app, VkCommandB
     if (sceneDepthImage == VK_NULL_HANDLE) return;
     if (waterGeomDepthImages[frameIndex] == VK_NULL_HANDLE) return;
 
+    // Allow disabling depth-image copy for rapid binary-search debugging
+    const char* dis = std::getenv("VULKAN_DISABLE_DEPTH_COPY");
+    if (dis && dis[0] != '\0') {
+        std::cerr << "[WaterRenderer] VULKAN_DISABLE_DEPTH_COPY set; skipping depth copy for frame " << frameIndex << std::endl;
+        return;
+    }
+
 
     app->recordTransitionImageLayoutLayer(cmd, sceneDepthImage, VK_FORMAT_D32_SFLOAT,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1);
@@ -778,6 +772,18 @@ void WaterRenderer::initializeGeomDepthFromSceneDepth(VulkanApp* app, VkCommandB
     app->recordTransitionImageLayoutLayer(cmd, waterGeomDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
 
+
+    // Debug: log copy parameters and tracked layouts to help diagnose GPU faults
+    std::cerr << "[WaterRenderer] initializeGeomDepthFromSceneDepth: copying depth src=" << (void*)sceneDepthImage
+                << " dst=" << (void*)waterGeomDepthImages[frameIndex]
+                << " extent=" << renderWidth << "x" << renderHeight << " frame=" << frameIndex << std::endl;
+    std::cerr << "  app swapchain size=" << app->getWidth() << "x" << app->getHeight()
+                << " trackedLayouts: src=" << (int)app->getImageLayoutTracked(sceneDepthImage, 0)
+                << " dst=" << (int)app->getImageLayoutTracked(waterGeomDepthImages[frameIndex], 0) << std::endl;
+    if (renderWidth != static_cast<uint32_t>(app->getWidth()) || renderHeight != static_cast<uint32_t>(app->getHeight())) {
+        std::cerr << "  [WaterRenderer] WARNING: water render size (" << renderWidth << "x" << renderHeight
+                    << ") differs from app swapchain (" << app->getWidth() << "x" << app->getHeight() << ")" << std::endl;
+    }
 
     VkImageCopy copyRegion{};
     copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;

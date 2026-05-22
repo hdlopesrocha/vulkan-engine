@@ -127,41 +127,39 @@ extern "C" void ImGui_RecordTransitionImageLayoutLayer_C(void* appPtr,
                                                          uint32_t layerCount) {
     if (!appPtr) return;
     VulkanApp* app = (VulkanApp*)appPtr;
-    try {
-        app->recordTransitionImageLayoutLayer(commandBuffer, image, format, oldLayout, newLayout, mipLevels, baseArrayLayer, layerCount);
-    } catch (...) {
-        // swallow exceptions coming from integration calls to avoid crashing third-party code
-    }
+    app->recordTransitionImageLayoutLayer(commandBuffer, image, format, oldLayout, newLayout, mipLevels, baseArrayLayer, layerCount);
+   
 }
 
 // --- Logging wrapper implementations ---
 // These live in this translation unit so they can access internal helpers
 // such as `layoutName()` and the global `g_cmdSubmitMap`.
 void logged_vkUpdateDescriptorSets(VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites, uint32_t descriptorCopyCount, const VkCopyDescriptorSet* pDescriptorCopies) {
-    try {
-        std::thread::id tid = std::this_thread::get_id();
-        uint64_t lastSubmit = 0;
-        try { lastSubmit = g_submitCounter.load() - 1; } catch(...) { lastSubmit = 0; }
-        std::cerr << "[VulkanApp] vkUpdateDescriptorSets thread=" << tid << " lastSubmitId=" << lastSubmit << " writes=" << descriptorWriteCount << " copies=" << descriptorCopyCount << std::endl;
-        for (uint32_t i = 0; i < descriptorWriteCount; ++i) {
-            const VkWriteDescriptorSet &w = pDescriptorWrites[i];
-            std::cerr << "  dstSet=" << (void*)w.dstSet << " dstBinding=" << w.dstBinding << " dstArray=" << w.dstArrayElement << " type=" << w.descriptorType << " count=" << w.descriptorCount << std::endl;
-            if (w.pImageInfo) {
-                for (uint32_t j = 0; j < w.descriptorCount; ++j) {
-                    const VkDescriptorImageInfo &ii = w.pImageInfo[j];
-                    std::cerr << "    imageView=" << (void*)ii.imageView << " sampler=" << (void*)ii.sampler << " layout=" << layoutName(ii.imageLayout) << std::endl;
-                }
-            }
-            if (w.pBufferInfo) {
-                for (uint32_t j = 0; j < w.descriptorCount; ++j) {
-                    const VkDescriptorBufferInfo &bi = w.pBufferInfo[j];
-                    std::cerr << "    buffer=" << (void*)bi.buffer << " offset=" << bi.offset << " range=" << bi.range << std::endl;
-                }
+    std::thread::id tid = std::this_thread::get_id();
+    uint64_t lastSubmit = 0;
+    try { 
+        lastSubmit = g_submitCounter.load() - 1; 
+    } catch(...) { 
+        lastSubmit = 0; 
+    }
+    std::cerr << "[VulkanApp] vkUpdateDescriptorSets thread=" << tid << " lastSubmitId=" << lastSubmit << " writes=" << descriptorWriteCount << " copies=" << descriptorCopyCount << std::endl;
+    for (uint32_t i = 0; i < descriptorWriteCount; ++i) {
+        const VkWriteDescriptorSet &w = pDescriptorWrites[i];
+        std::cerr << "  dstSet=" << (void*)w.dstSet << " dstBinding=" << w.dstBinding << " dstArray=" << w.dstArrayElement << " type=" << w.descriptorType << " count=" << w.descriptorCount << std::endl;
+        if (w.pImageInfo) {
+            for (uint32_t j = 0; j < w.descriptorCount; ++j) {
+                const VkDescriptorImageInfo &ii = w.pImageInfo[j];
+                std::cerr << "    imageView=" << (void*)ii.imageView << " sampler=" << (void*)ii.sampler << " layout=" << layoutName(ii.imageLayout) << std::endl;
             }
         }
-    } catch (...) {
-        // Never let logging crash the app.
+        if (w.pBufferInfo) {
+            for (uint32_t j = 0; j < w.descriptorCount; ++j) {
+                const VkDescriptorBufferInfo &bi = w.pBufferInfo[j];
+                std::cerr << "    buffer=" << (void*)bi.buffer << " offset=" << bi.offset << " range=" << bi.range << std::endl;
+            }
+        }
     }
+
     // Forward to the real Vulkan call
     vkUpdateDescriptorSets(device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
 }
@@ -173,12 +171,10 @@ void logged_vkCmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBin
         auto it = g_cmdSubmitMap.find(commandBuffer);
         if (it != g_cmdSubmitMap.end()) submitId = it->second;
     }
-    try {
-        std::cerr << "[VulkanApp] vkCmdBindDescriptorSets cmd=" << (void*)commandBuffer << " submitId=" << submitId << " layout=" << (void*)layout << " firstSet=" << firstSet << " count=" << descriptorSetCount << std::endl;
-        for (uint32_t i = 0; i < descriptorSetCount; ++i) {
-            std::cerr << "    set[" << i << "]=" << (void*)pDescriptorSets[i] << std::endl;
-        }
-    } catch (...) {}
+    std::cerr << "[VulkanApp] vkCmdBindDescriptorSets cmd=" << (void*)commandBuffer << " submitId=" << submitId << " layout=" << (void*)layout << " firstSet=" << firstSet << " count=" << descriptorSetCount << std::endl;
+    for (uint32_t i = 0; i < descriptorSetCount; ++i) {
+        std::cerr << "    set[" << i << "]=" << (void*)pDescriptorSets[i] << std::endl;
+    }
     vkCmdBindDescriptorSets(commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
 }
 
@@ -189,9 +185,7 @@ void logged_vkCmdDispatch(VkCommandBuffer commandBuffer, uint32_t groupCountX, u
         auto it = g_cmdSubmitMap.find(commandBuffer);
         if (it != g_cmdSubmitMap.end()) submitId = it->second;
     }
-    try {
-        std::cerr << "[VulkanApp] vkCmdDispatch cmd=" << (void*)commandBuffer << " submitId=" << submitId << " groups=(" << groupCountX << "," << groupCountY << "," << groupCountZ << ")" << std::endl;
-    } catch (...) {}
+    std::cerr << "[VulkanApp] vkCmdDispatch cmd=" << (void*)commandBuffer << " submitId=" << submitId << " groups=(" << groupCountX << "," << groupCountY << "," << groupCountZ << ")" << std::endl;
     vkCmdDispatch(commandBuffer, groupCountX, groupCountY, groupCountZ);
 }
 
@@ -351,6 +345,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     VkDescriptorSet descSet = VK_NULL_HANDLE;
     if (vkAllocateDescriptorSets(device, &ainfo, &descSet) != VK_SUCCESS) {
         std::cerr << "[VulkanApp] Failed to allocate descriptor set for vegetation compute" << std::endl;
+        resources.removeDescriptorPool(descPool);
         vkDestroyDescriptorPool(device, descPool, nullptr);
         vkDestroyPipeline(device, pipeline, nullptr);
         resources.removeShaderModule(compModule);
@@ -435,6 +430,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
 
     // Cleanup temporary Vulkan objects
     vkFreeDescriptorSets(device, descPool, 1, &descSet);
+    resources.removeDescriptorPool(descPool);
     vkDestroyDescriptorPool(device, descPool, nullptr);
     vkDestroyPipeline(device, pipeline, nullptr);
     resources.removeShaderModule(compModule);
@@ -572,6 +568,7 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     VkDescriptorSet descSet = VK_NULL_HANDLE;
     if (vkAllocateDescriptorSets(device, &ainfo, &descSet) != VK_SUCCESS) {
         std::cerr << "[VulkanApp] Failed to allocate descriptor set for vegetation compute (async)" << std::endl;
+        resources.removeDescriptorPool(descPool);
         vkDestroyDescriptorPool(device, descPool, nullptr);
         vkDestroyPipeline(device, pipeline, nullptr);
         vkDestroyShaderModule(device, compModule, nullptr);
@@ -665,7 +662,10 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
         if (descSet != VK_NULL_HANDLE) {
             vkFreeDescriptorSets(device, descPool, 1, &descSet);
         }
-        if (descPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descPool, nullptr);
+        if (descPool != VK_NULL_HANDLE) {
+            resources.removeDescriptorPool(descPool);
+            vkDestroyDescriptorPool(device, descPool, nullptr);
+        }
         if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, pipeline, nullptr);
         if (compModule != VK_NULL_HANDLE) {
             resources.removeShaderModule(compModule);
@@ -806,7 +806,7 @@ void VulkanApp::cleanup() {
     {
         std::lock_guard<std::mutex> dd(deferredDestroyMutex);
         for (auto &p : deferredDestroys) {
-            try { if (!deviceLost) p.second(); } catch (...) {}
+            if (!deviceLost) p.second();
         }
         deferredDestroys.clear();
     }
@@ -853,7 +853,7 @@ void VulkanApp::cleanup() {
     {
         std::lock_guard<std::mutex> dd(deferredDestroyMutex);
         for (auto &p : deferredDestroys) {
-            try { if (!deviceLost) p.second(); } catch (...) {}
+            if (!deviceLost) p.second();
         }
         deferredDestroys.clear();
     }
@@ -1374,12 +1374,8 @@ void VulkanApp::runSingleTimeCommandsOnTransfer(const std::function<void(VkComma
             throw std::runtime_error("failed to begin command buffer in runSingleTimeCommandsOnTransfer");
         }
 
-        try {
-            fn(cmd);
-        } catch (...) {
-            // fall through to cleanup
-        }
-
+        fn(cmd);
+     
         if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
             vkFreeCommandBuffers(device, transferCommandPool, 1, &cmd);
             throw std::runtime_error("failed to end command buffer in runSingleTimeCommandsOnTransfer");
@@ -1769,11 +1765,7 @@ void VulkanApp::processPendingCommandBuffers() {
                 }
             }
             if (canRun) {
-                try {
-                    fn();
-                } catch (...) {
-                    // swallow exceptions from destroy callbacks
-                }
+                fn();
                 it = deferredDestroys.erase(it);
             } else ++it;
         }
@@ -1848,7 +1840,7 @@ void VulkanApp::processPendingCommandBuffers() {
             for (auto dit = deferredDestroys.begin(); dit != deferredDestroys.end(); ) {
                 if (dit->first == fence) {
                     auto fn = dit->second;
-                    try { fn(); } catch (...) {}
+                    fn();
                     dit = deferredDestroys.erase(dit);
                 } else {
                     ++dit;
@@ -4884,11 +4876,6 @@ void VulkanApp::run() {
     setup();
     isLoading = false;
 
-    try {
-        mainLoop();
-    } catch (...) {
-        cleanup();
-        throw;
-    }
+    mainLoop();  
     cleanup();
 }
