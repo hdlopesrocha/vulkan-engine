@@ -1165,36 +1165,71 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
         }
     }
 
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = 0;
+    VkFence fence = VK_NULL_HANDLE;
+    if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+        std::lock_guard<std::mutex> poolLock(transientPoolMutex);
+        vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
+        throw std::runtime_error("failed to create fence for single-time submit");
+    }
+
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
 
     {
-        std::lock_guard<std::mutex> lockQ(queueSubmitMutex);
+        std::lock_guard<std::mutex> lock(queueSubmitMutex);
+        // Assign a submit id for this submission for diagnostics
+        uint64_t submitId = g_submitCounter.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+            g_cmdSubmitMap[cmd] = submitId;
+        }
+
         // Promote pending layout updates before submit so validation sees
         // a populated authoritative layout for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(cmd);
 
-        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
-            std::lock_guard<std::mutex> poolLock(transientPoolMutex);
-            vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
-            throw std::runtime_error("failed to submit command buffer in runSingleTimeCommands");
+        VkResult submitRes = vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence);
+        if (submitRes != VK_SUCCESS) {
+            if (submitRes == VK_ERROR_DEVICE_LOST) {
+                deviceLost.store(true);
+                std::cerr << "[VulkanApp] runSingleTimeCommands: vkQueueSubmit returned VK_ERROR_DEVICE_LOST; registering fence and deferring command-buffer cleanup\n";
+                resources.addFence(fence, "VulkanApp::runSingleTimeCommands: fence");
+                {
+                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+                    if (commandBufferPoolMap.find(cmd) == commandBufferPoolMap.end()) {
+                        commandBufferPoolMap[cmd] = transientCommandPool;
+                    }
+                    pendingCommandBuffers.emplace_back(cmd, fence);
+                }
+                return;
+            } else {
+                vkDestroyFence(device, fence, nullptr);
+                std::lock_guard<std::mutex> poolLock(transientPoolMutex);
+                vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
+                throw std::runtime_error("failed to submit command buffer in runSingleTimeCommands");
+            }
         }
-        // Wait while holding the mutex to prevent other threads from
-        // submitting or waiting on the queue concurrently.
-        vkQueueWaitIdle(graphicsQueue);
     }
+
+    // Wait for completion of the submitted command buffer via the fence,
+    // then apply pending layout updates and free the command buffer.
+    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 
     // Apply any pending layout updates recorded while recording this
     // single-time command buffer before freeing it (the GPU work is
-    // complete because we waited on the queue).
+    // complete because we waited on the fence).
     applyPendingLayoutUpdatesForCommandBuffer(cmd);
 
     {
         std::lock_guard<std::mutex> poolLock(transientPoolMutex);
         vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
     }
+    vkDestroyFence(device, fence, nullptr);
 }
 
 VkFence VulkanApp::runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn) {
