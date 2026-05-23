@@ -769,6 +769,10 @@ public:
                 VkDescriptorSet computeDs = VK_NULL_HANDLE;
                 VkDescriptorPool sharedPool = ind.getComputeDescriptorPool();
                 if (dsLayout != VK_NULL_HANDLE && sharedPool != VK_NULL_HANDLE) {
+                    // Serialize allocations from the shared descriptor pool to avoid
+                    // concurrent vkAllocateDescriptorSets races on some drivers.
+                    static std::mutex shared_compute_desc_pool_alloc_mutex;
+                    std::lock_guard<std::mutex> sharedLock(shared_compute_desc_pool_alloc_mutex);
                     VkDescriptorSetAllocateInfo ainfoShared{};
                     ainfoShared.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
                     ainfoShared.descriptorPool = sharedPool;
