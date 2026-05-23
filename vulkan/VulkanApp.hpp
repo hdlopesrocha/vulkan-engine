@@ -228,6 +228,8 @@ protected:
         void preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer);
         // Wait for all tracked pending command buffers to finish (blocks).
         void waitForAllPendingCommandBuffers();
+        // Throttle helper: block if too many pending command buffers exist.
+        void throttleIfTooManyPending();
         // Record and submit a short-lived command buffer asynchronously.
         // Returns a fence that will be signaled when the submission completes.
         VkFence runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn);
