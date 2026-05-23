@@ -700,59 +700,57 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     }
     
     if(check == ContainmentType::Disjoint) {
-        //resultType = frame.type;
-        //shapeType = SpaceType::Empty;
+        resultType = frame.type;
+        shapeType = SpaceType::Empty;
     } else if(resultType == SpaceType::Surface) {
-        bool interpolated = frame.iteratedNode != NULL;
-        if(resultType == SpaceType::Surface) {
-            // Create nodes for surface results if they don't exist
-            if(node == NULL) {
-                node = allocator->allocate()->init(Vertex(frame.cube.getCenter()));   
-            }
+        // Create nodes for surface results if they don't exist
+        if(node == NULL) {
+            node = allocator->allocate()->init(Vertex(frame.cube.getCenter()));   
+        }
 
-            if(node!= NULL) {
-                node->vertex.position = SDF::getAveragePosition(resultSDF, frame.cube);
-                node->vertex.normal = SDF::getNormalFromPosition(resultSDF, frame.cube, node->vertex.position);
-                // Simplification & Painting
-                if(isLeaf) {
-                    if(shapeType != SpaceType::Empty) {
-                        brushIndex = args.painter.paint(node->vertex, args.translate, args.scale);
-                    }  
-                } else {    
-                    if (!isChunk) {
-                        SimplificationResult simplificationResult = args.simplifier.simplify(frame.cube, resultSDF, children);
-                        isSimplified = simplificationResult.isSimplified;
-                        if(isSimplified) {
-                            brushIndex = simplificationResult.brushIndex;
-                        } 
-                    }
-                    OctreeNode * childNodes[8] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
-                    for(uint i =0 ; i < 8 ; ++i) {
-                        NodeOperationResult & child = children[i];
-                        OctreeNode * childNode = child.node;
-
-                        if(child.check != ContainmentType::Disjoint && child.resultType != SpaceType::Surface) {
-                            if(childNode == NULL) {
-                                BoundingCube childCube = frame.cube.getChild(i);
-                                childNode = allocator->allocate()->init(Vertex(childCube.getCenter()));
-                                children[i].node = childNode;
-                            }
-                            childNode->setType(child.resultType);
-                            childNode->setSDF(child.resultSDF);
-                            childNode->setSimplified(child.isSimplified);
-                            childNode->setChunk(child.isChunk);
-                            childNode->setBrush(child.brushIndex);                        
-                        }
-                                                
-                        if(frame.node != NULL && childNode == node) {
-                            throw std::runtime_error("Infinite recursion! " + std::to_string((long) childNode) + " " + std::to_string((long)node) );
-                        }        
-                        childNodes[i] = childNode;
-                    }
-                    node->setChildren(*allocator, childNodes);
+        if(node!= NULL) {
+            node->vertex.position = SDF::getAveragePosition(resultSDF, frame.cube);
+            node->vertex.normal = SDF::getNormalFromPosition(resultSDF, frame.cube, node->vertex.position);
+            // Simplification & Painting
+            if(isLeaf) {
+                if(shapeType != SpaceType::Empty) {
+                    brushIndex = args.painter.paint(node->vertex, args.translate, args.scale);
+                }  
+            } else {    
+                if (!isChunk) {
+                    SimplificationResult simplificationResult = args.simplifier.simplify(frame.cube, resultSDF, children);
+                    isSimplified = simplificationResult.isSimplified;
+                    if(isSimplified) {
+                        brushIndex = simplificationResult.brushIndex;
+                    } 
                 }
+                OctreeNode * childNodes[8] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
+                for(uint i =0 ; i < 8 ; ++i) {
+                    NodeOperationResult & child = children[i];
+                    OctreeNode * childNode = child.node;
+
+                    if(child.check != ContainmentType::Disjoint && child.resultType != SpaceType::Surface) {
+                        if(childNode == NULL) {
+                            BoundingCube childCube = frame.cube.getChild(i);
+                            childNode = allocator->allocate()->init(Vertex(childCube.getCenter()));
+                            children[i].node = childNode;
+                        }
+                        childNode->setType(child.resultType);
+                        childNode->setSDF(child.resultSDF);
+                        childNode->setSimplified(child.isSimplified);
+                        childNode->setChunk(child.isChunk);
+                        childNode->setBrush(child.brushIndex);                        
+                    }
+                                            
+                    if(frame.node != NULL && childNode == node) {
+                        throw std::runtime_error("Infinite recursion! " + std::to_string((long) childNode) + " " + std::to_string((long)node) );
+                    }        
+                    childNodes[i] = childNode;
+                }
+                node->setChildren(*allocator, childNodes);
             }
         }
+        
     }
 
     if(node != NULL && check != ContainmentType::Disjoint) {
@@ -768,7 +766,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                                             args.changeHandler.onNodeDeleted(nodeData);
         }
         if(resultType != SpaceType::Surface) {
-            //node->clear(*allocator, NULL);
+            node->clear(*allocator, NULL);
         }
     } 
 
