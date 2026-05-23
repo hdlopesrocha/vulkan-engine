@@ -656,9 +656,28 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     VkDebugUtilsMessageTypeFlagsEXT messageType,
     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
     void* pUserData) {
-    if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
-        std::cerr << "validation: " << pCallbackData->pMessage << "\n";
+    const char* sev = "UNKNOWN";
+    if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) sev = "ERROR";
+    else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) sev = "WARNING";
+    else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) sev = "INFO";
+    else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT) sev = "VERBOSE";
+
+    const char* tstr = "";
+    if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT) tstr = "GENERAL";
+    if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) tstr = (strlen(tstr) ? ",VALIDATION" : "VALIDATION");
+    if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT) tstr = (strlen(tstr) ? ",PERFORMANCE" : "PERFORMANCE");
+
+    std::cerr << "validation(" << sev << ":" << tstr << ") " << (pCallbackData && pCallbackData->pMessage ? pCallbackData->pMessage : "") << "\n";
+
+    // Print up to a few referenced objects to aid post-mortem debugging
+    if (pCallbackData && pCallbackData->objectCount > 0 && pCallbackData->pObjects) {
+        uint32_t limit = std::min<uint32_t>(pCallbackData->objectCount, 8);
+        for (uint32_t i = 0; i < limit; ++i) {
+            const VkDebugUtilsObjectNameInfoEXT &obj = pCallbackData->pObjects[i];
+            std::cerr << "  obj[" << i << "] type=" << obj.objectType << " handle=" << (void*)(uintptr_t)obj.objectHandle << " name=" << (obj.pObjectName ? obj.pObjectName : "(null)") << "\n";
+        }
     }
+
     return VK_FALSE;
 }
 
@@ -1929,6 +1948,22 @@ void VulkanApp::waitForAllPendingCommandBuffers() {
     }
 }
 
+// Throttle helper: if too many pending command buffers are queued, wait
+// for them to complete before allowing more submissions. This avoids
+// unbounded growth of pending resources which can trigger driver GPU hangs
+// on some implementations when memory/queue pressure is high.
+void VulkanApp::throttleIfTooManyPending() {
+    const size_t MAX_PENDING = 128;
+    size_t pending = 0;
+    {
+        std::lock_guard<std::mutex> lk(pendingCmdMutex);
+        pending = pendingCommandBuffers.size();
+    }
+    if (pending <= MAX_PENDING) return;
+    // Wait for all currently pending command buffers to complete.
+    waitForAllPendingCommandBuffers();
+}
+
 // Check whether a fence is currently tracked as pending
 bool VulkanApp::isFencePending(VkFence fence) {
     std::lock_guard<std::mutex> lk(pendingCmdMutex);
@@ -1941,6 +1976,9 @@ bool VulkanApp::isFencePending(VkFence fence) {
 
 // Submit a pre-recorded command buffer asynchronously and return a fence that will be signaled on completion.
 VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore) {
+    // If the app has too many pending async submissions, block briefly
+    // until some complete to avoid overwhelming the driver.
+    throttleIfTooManyPending();
     // End command buffer here (caller recorded commands assumed)
     vkEndCommandBuffer(commandBuffer);
 
@@ -1981,6 +2019,24 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
         // authoritative tracked layouts reflect submission order. Acquire
         // `queueSubmitMutex` first to maintain consistent lock ordering.
         std::lock_guard<std::mutex> lock(queueSubmitMutex);
+
+        // Double-use validation: check if this command buffer is already pending
+        {
+            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+            for (const auto& cbf : pendingCommandBuffers) {
+                if (cbf.first == commandBuffer) {
+                    std::cerr << "[VulkanApp][ERROR] Attempted to submit command buffer " << (void*)commandBuffer << " which is already pending! Aborting submission to prevent device loss." << std::endl;
+                    // Clean up and abort
+                    if (semaphore != VK_NULL_HANDLE) {
+                        resources.removeSemaphore(semaphore);
+                        vkDestroySemaphore(device, semaphore, nullptr);
+                    }
+                    resources.removeFence(fence);
+                    vkDestroyFence(device, fence, nullptr);
+                    throw std::runtime_error("Double-use of command buffer detected");
+                }
+            }
+        }
 
         // Assign a submit id for this submission to aid post-mortem correlation
         uint64_t submitId = g_submitCounter.fetch_add(1);
@@ -2075,6 +2131,9 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
 
 // Submit a pre-recorded command buffer asynchronously to a specific queue and return a fence that will be signaled on completion.
 VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore) {
+    // Throttle excessive outstanding submissions which can cause driver hangs
+    // on some implementations when resources are exhausted.
+    throttleIfTooManyPending();
     // End command buffer here (caller recorded commands assumed)
     vkEndCommandBuffer(commandBuffer);
 
@@ -2111,6 +2170,23 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
     {
         // Serialize pre-apply and submission to maintain consistent ordering
         std::lock_guard<std::mutex> lock(queueSubmitMutex);
+
+        // Double-use validation: check if this command buffer is already pending
+        {
+            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+            for (const auto& cbf : pendingCommandBuffers) {
+                if (cbf.first == commandBuffer) {
+                    std::cerr << "[VulkanApp][ERROR] Attempted to submit command buffer " << (void*)commandBuffer << " which is already pending! Aborting submission to prevent device loss." << std::endl;
+                    if (semaphore != VK_NULL_HANDLE) {
+                        resources.removeSemaphore(semaphore);
+                        vkDestroySemaphore(device, semaphore, nullptr);
+                    }
+                    resources.removeFence(fence);
+                    vkDestroyFence(device, fence, nullptr);
+                    throw std::runtime_error("Double-use of command buffer detected");
+                }
+            }
+        }
 
         // Assign a submit id for this submission to aid post-mortem correlation
         uint64_t submitId = g_submitCounter.fetch_add(1);
@@ -4623,6 +4699,7 @@ void VulkanApp::createInstance() {
 
     if (enableValidationLayers) {
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
     }
 
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
@@ -4631,6 +4708,20 @@ void VulkanApp::createInstance() {
     if (enableValidationLayers) {
         createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
         createInfo.ppEnabledLayerNames = validationLayers.data();
+
+        // Enable GPU-assisted and synchronization validation features to catch
+        // shader and synchronization errors that may not appear in CPU-side
+        // validation. Chain VkValidationFeaturesEXT into VkInstanceCreateInfo.
+        VkValidationFeatureEnableEXT enabledValidationFeatures[] = {
+            VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT,
+            VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT,
+            VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT,
+        };
+        VkValidationFeaturesEXT validationFeatures{};
+        validationFeatures.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
+        validationFeatures.enabledValidationFeatureCount = static_cast<uint32_t>(sizeof(enabledValidationFeatures)/sizeof(enabledValidationFeatures[0]));
+        validationFeatures.pEnabledValidationFeatures = enabledValidationFeatures;
+        createInfo.pNext = &validationFeatures;
     } else {
         createInfo.enabledLayerCount = 0;
     }
@@ -4669,6 +4760,7 @@ void VulkanApp::setupDebugMessenger() {
     VkDebugUtilsMessengerCreateInfoEXT createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
     createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                                VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
     createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
