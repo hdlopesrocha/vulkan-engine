@@ -425,7 +425,7 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 			return;
 		}
 
-		VkResult allocRes = vkAllocateDescriptorSets(app->getDevice(), &ainfo, perLayerDescSets.data());
+		VkResult allocRes = app->allocateDescriptorSetsThreadSafe(&ainfo, perLayerDescSets.data());
 		if (allocRes != VK_SUCCESS) {
 			std::cerr << "[TextureMixer] Warning: failed to allocate per-layer descriptor sets (res=" << allocRes << ")" << std::endl;
 			return;
@@ -486,7 +486,7 @@ void TextureMixer::createTripleComputeDescriptorSet(VulkanApp* app) {
 		std::cerr << "[TextureMixer::createTripleComputeDescriptorSet] ERROR: computeDescriptorPool is VK_NULL_HANDLE" << std::endl;
 		throw std::runtime_error("TextureMixer: computeDescriptorPool is VK_NULL_HANDLE");
 	}
-	if (vkAllocateDescriptorSets(app->getDevice(), &allocInfo, &tripleComputeDescSet) != VK_SUCCESS) {
+	if (app->allocateDescriptorSetsThreadSafe(&allocInfo, &tripleComputeDescSet) != VK_SUCCESS) {
 		std::cerr << "[TextureMixer::createTripleComputeDescriptorSet] vkAllocateDescriptorSets failed" << std::endl;
 		throw std::runtime_error("failed to allocate compute triple descriptor set!");
 	}
@@ -719,7 +719,7 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet,
 		std::cerr << "[TextureMixer::createComputeDescriptorSet] ERROR: computeDescriptorPool is VK_NULL_HANDLE" << std::endl;
 		throw std::runtime_error("TextureMixer: computeDescriptorPool is VK_NULL_HANDLE");
 	}
-	if (vkAllocateDescriptorSets(app->getDevice(), &allocInfo, &descSet) != VK_SUCCESS) {
+	if (app->allocateDescriptorSetsThreadSafe(&allocInfo, &descSet) != VK_SUCCESS) {
 		std::cerr << "[TextureMixer::createComputeDescriptorSet] ERROR: vkAllocateDescriptorSets failed" << std::endl;
 		throw std::runtime_error("failed to allocate compute descriptor set!");
 	}

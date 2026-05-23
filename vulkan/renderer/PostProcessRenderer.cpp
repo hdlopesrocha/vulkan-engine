@@ -172,7 +172,7 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
     allocInfo.descriptorSetCount = FRAMES_IN_FLIGHT;
     allocInfo.pSetLayouts = layouts.data();
 
-    if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data()) != VK_SUCCESS) {
+    if (app->allocateDescriptorSetsThreadSafe(&allocInfo, descriptorSets.data()) != VK_SUCCESS) {
         throw std::runtime_error("Failed to allocate post-process descriptor sets!");
     }
     for (uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i) {

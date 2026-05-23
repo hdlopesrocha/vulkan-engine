@@ -722,7 +722,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         alloc.descriptorPool = computeDescriptorPool;
         alloc.descriptorSetCount = 1;
         alloc.pSetLayouts = &computeDescriptorSetLayout;
-        if (vkAllocateDescriptorSets(app->getDevice(), &alloc, &computeDescriptorSet) != VK_SUCCESS) {
+        if (app->allocateDescriptorSetsThreadSafe(&alloc, &computeDescriptorSet) != VK_SUCCESS) {
             throw std::runtime_error("failed to allocate compute descriptor set");
         }
         app->resources.addDescriptorSet(computeDescriptorSet, "IndirectRenderer: computeDescriptorSet");
