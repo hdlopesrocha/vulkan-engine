@@ -139,7 +139,6 @@ void TextureMixer::flushPendingRequests(VulkanApp* app) {
 
 void TextureMixer::pollPendingGenerations(VulkanApp* app) {
 	// Pull any completed fences and promote their logs (check fences BEFORE letting VulkanApp destroy them)
-
 	std::vector<std::tuple<VkFence, uint32_t>> completed;
 	{
 		std::lock_guard<std::mutex> lk(pendingFencesMutex);
@@ -159,8 +158,20 @@ void TextureMixer::pollPendingGenerations(VulkanApp* app) {
 				completed.push_back(*it);
 				it = pendingFences.erase(it);
 			} else if (st == VK_ERROR_DEVICE_LOST) {
-				it = pendingFences.erase(it);
+				std::lock_guard<std::mutex> lkll(logsMutex);
+				char buf[256];
+				snprintf(buf, sizeof(buf), "CRITICAL: Device lost detected for fence=%p layer=%u. Aborting resource destruction/reuse for this layer!", (void*)f, layer);
+				logs.emplace_back(buf);
+				std::cerr << "[TextureMixer] " << buf << std::endl;
+				// Do not erase the fence here, keep it for diagnostics
+				++it;
+				continue;
 			} else {
+				// Defensive: if the fence is not signaled, do NOT destroy or reuse any resource for this layer
+				char buf[256];
+				snprintf(buf, sizeof(buf), "WARNING: Fence not signaled for fence=%p layer=%u. Resource destruction/reuse is blocked until signaled.", (void*)f, layer);
+				std::lock_guard<std::mutex> lkll(logsMutex);
+				logs.emplace_back(buf);
 				++it;
 			}
 		}
