@@ -168,6 +168,8 @@ protected:
     std::mutex queueSubmitMutex;
     // Mutex used to serialize command pool operations (alloc/free/reset) across threads
     std::mutex commandPoolMutex;
+    // Mutex used to serialize vkAllocateDescriptorSets calls across threads
+    std::mutex descriptorAllocMutex;
 
     private:
         static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
@@ -284,6 +286,10 @@ protected:
         void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
     void createDescriptorPool(uint32_t uboCount, uint32_t samplerCount);
         VkDescriptorSet createDescriptorSet(VkDescriptorSetLayout layout);
+    // Thread-safe wrapper for vkAllocateDescriptorSets that serializes
+    // allocations using `descriptorAllocMutex`. Use this to allocate from
+    // shared descriptor pools across multiple threads.
+    VkResult allocateDescriptorSetsThreadSafe(const VkDescriptorSetAllocateInfo* pAllocInfo, VkDescriptorSet* pDescriptorSets);
         VkDescriptorSet createMaterialDescriptorSet();
         void updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> descriptors);
         void updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &descriptors);

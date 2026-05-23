@@ -2,6 +2,7 @@
 #include "VulkanApp.hpp"
 #include <cstring>
 #include <thread>
+#include <execinfo.h>
 
 static const char* layoutName(VkImageLayout l) {
     switch (l) {
@@ -73,6 +74,10 @@ std::unordered_map<VkCommandBuffer, uint64_t> g_cmdSubmitMap;
 // This allows allocating per-thread temporary pools for async recording
 // and freeing/destroying the correct pool when work completes.
 std::unordered_map<VkCommandBuffer, VkCommandPool> commandBufferPoolMap;
+// Optional per-command-buffer allocation backtrace to help correlate
+// failing vkQueueSubmit() calls with the code that recorded/allocated
+// the command buffer.
+std::unordered_map<VkCommandBuffer, std::string> g_cmdBacktraces;
 
 std::mutex extraSemaphoreMutex;
 std::vector<VkSemaphore> extraWaitSemaphores;
@@ -2016,6 +2021,24 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
                 // Mark global device lost state so other subsystems can adapt.
                 deviceLost.store(true);
                 std::cerr << "[VulkanApp] submitCommandBufferAsync: vkQueueSubmit returned VK_ERROR_DEVICE_LOST\n";
+                // Print allocation backtrace (if available) to aid root-cause analysis
+                {
+                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+                    auto it = g_cmdBacktraces.find(commandBuffer);
+                    if (it != g_cmdBacktraces.end()) {
+                        std::cerr << "[VulkanApp] submit id=" << submitId << " allocation backtrace:\n" << it->second;
+                    }
+                }
+                // Ensure the fence is tracked (it was added earlier).  Also
+                // record the command-buffer -> pool mapping if missing so the
+                // centralized cleanup can free the command buffer later.
+                {
+                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+                    if (commandBufferPoolMap.find(commandBuffer) == commandBufferPoolMap.end()) {
+                        commandBufferPoolMap[commandBuffer] = transientCommandPool;
+                    }
+                    pendingCommandBuffers.emplace_back(commandBuffer, fence);
+                }
                 // Keep semaphore and fence registered; centralized cleanup handles them.
                 return fence;
             }
@@ -2133,6 +2156,24 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
             }
             if (submitRes == VK_ERROR_DEVICE_LOST) {
                 deviceLost.store(true);
+                // Print allocation backtrace (if available) to aid debugging
+                {
+                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+                    auto it = g_cmdBacktraces.find(commandBuffer);
+                    if (it != g_cmdBacktraces.end()) {
+                        std::cerr << "[VulkanApp] submitToQueue id=" << submitId << " allocation backtrace:\n" << it->second;
+                    }
+                }
+                // Ensure the command buffer is tracked and deferred for cleanup
+                // so we don't attempt to free it while the driver still
+                // considers it pending.
+                {
+                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+                    if (commandBufferPoolMap.find(commandBuffer) == commandBufferPoolMap.end()) {
+                        commandBufferPoolMap[commandBuffer] = transientCommandPool;
+                    }
+                    pendingCommandBuffers.emplace_back(commandBuffer, fence);
+                }
                 // Leave fence registered for centralized cleanup and return the fence so caller can still defer destroys.
                 return fence;
             } else {
@@ -2194,7 +2235,33 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
         // sees populated layouts for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
-        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence) != VK_SUCCESS) {
+        VkResult submitRes = vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence);
+        if (submitRes != VK_SUCCESS) {
+            if (submitRes == VK_ERROR_DEVICE_LOST) {
+                deviceLost.store(true);
+                std::cerr << "[VulkanApp] submitCommandBufferAndWait: vkQueueSubmit returned VK_ERROR_DEVICE_LOST\n";
+                // Print allocation backtrace (if available) to help correlate
+                // the failing submit with the recording site.
+                {
+                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+                    auto it = g_cmdBacktraces.find(commandBuffer);
+                    if (it != g_cmdBacktraces.end()) {
+                        std::cerr << "[VulkanApp] submitCommandBufferAndWait allocation backtrace:\n" << it->second;
+                    }
+                }
+                // Register fence with resource tracker and defer freeing the
+                // command buffer so we don't call vkFreeCommandBuffers while
+                // the driver still considers it in use.
+                resources.addFence(fence, "VulkanApp::submitCommandBufferAndWait: fence");
+                {
+                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+                    if (commandBufferPoolMap.find(commandBuffer) == commandBufferPoolMap.end()) {
+                        commandBufferPoolMap[commandBuffer] = commandPool;
+                    }
+                    pendingCommandBuffers.emplace_back(commandBuffer, fence);
+                }
+                return;
+            }
             vkDestroyFence(device, fence, nullptr);
             throw std::runtime_error("failed to submit command buffer in submitCommandBufferAndWait");
         }
@@ -2347,6 +2414,22 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         {
             std::lock_guard<std::mutex> lk(pendingCmdMutex);
             commandBufferPoolMap[cmd] = tempPool;
+
+            // Capture an allocation backtrace for this command buffer so
+            // we can later correlate failing vkQueueSubmit() calls with
+            // the code path that allocated/recorded the command buffer.
+            void* bt_buf[32];
+            int bt_n = backtrace(bt_buf, 32);
+            char** bt_syms = backtrace_symbols(bt_buf, bt_n);
+            std::string bt_str;
+            for (int i = 1; i < bt_n; ++i) { // skip frame 0 (this function)
+                if (bt_syms && bt_syms[i]) {
+                    bt_str += bt_syms[i];
+                    bt_str += "\n";
+                }
+            }
+            if (bt_syms) free(bt_syms);
+            g_cmdBacktraces[cmd] = bt_str;
         }
         return cmd;
     }
@@ -2379,6 +2462,11 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             if (it != g_cmdSubmitMap.end()) {
                 std::cerr << "[VulkanApp] freeCommandBuffer: cmd=" << (void*)cmd << " submitId=" << it->second << std::endl;
                 g_cmdSubmitMap.erase(it);
+            }
+            auto bit = g_cmdBacktraces.find(cmd);
+            if (bit != g_cmdBacktraces.end()) {
+                std::cerr << "[VulkanApp] freeCommandBuffer: cmd=" << (void*)cmd << " allocation backtrace:\n" << bit->second;
+                g_cmdBacktraces.erase(bit);
             }
         }
 
@@ -3539,14 +3627,28 @@ VkDescriptorSet VulkanApp::createDescriptorSet(VkDescriptorSetLayout layout) {
     }
 
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-    if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
-        std::cerr << "[VulkanApp::createDescriptorSet] vkAllocateDescriptorSets failed for layout=" << (void*)layout << std::endl;
-        throw std::runtime_error("failed to allocate descriptor set!");
+    {
+        // Serialize allocations from the shared app descriptor pool to avoid
+        // driver races when multiple threads allocate descriptor sets concurrently.
+        std::lock_guard<std::mutex> lk(descriptorAllocMutex);
+        if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
+            std::cerr << "[VulkanApp::createDescriptorSet] vkAllocateDescriptorSets failed for layout=" << (void*)layout << std::endl;
+            throw std::runtime_error("failed to allocate descriptor set!");
+        }
     }
     // Register descriptor set so manager can track it for inspection
     resources.addDescriptorSet(descriptorSet, "VulkanApp: descriptorSet");
     std::cout << "[VulkanApp::createDescriptorSet] allocated descriptorSet=" << (void*)descriptorSet << " layout=" << (void*)layout << std::endl;
     return descriptorSet;
+}
+
+VkResult VulkanApp::allocateDescriptorSetsThreadSafe(const VkDescriptorSetAllocateInfo* pAllocInfo, VkDescriptorSet* pDescriptorSets) {
+    std::lock_guard<std::mutex> lk(descriptorAllocMutex);
+    VkResult res = vkAllocateDescriptorSets(device, pAllocInfo, pDescriptorSets);
+    if (res != VK_SUCCESS) {
+        std::cerr << "[VulkanApp::allocateDescriptorSetsThreadSafe] vkAllocateDescriptorSets failed: " << res << std::endl;
+    }
+    return res;
 }
 
 VkDescriptorSet VulkanApp::createMaterialDescriptorSet() {
