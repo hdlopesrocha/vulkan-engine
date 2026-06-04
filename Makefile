@@ -145,7 +145,7 @@ $(foreach ext,$(SHADER_EXTS),$(eval $(call SHADER_COMPILE_RULE,$(ext))))
 release:
 	@$(MAKE) --no-print-directory BUILD=release all
 
-.PHONY: run run-debug
+.PHONY: run run-debug valgrind
 run: all
 	@echo "Running app from $(OUT_DIR)/"
 	@cd $(OUT_DIR) && ./app
@@ -153,6 +153,11 @@ run: all
 run-debug: debug
 	@echo "Running debug build from $(OUT_DIR)/"
 	@cd $(OUT_DIR) && ./app
+
+valgrind: debug
+	@echo "Running valgrind with suppressions..."
+	@mkdir -p logs
+	@cd $(OUT_DIR) && valgrind --suppressions=../valgrind.supp --leak-check=full --show-leak-kinds=all ./app > ../logs/valgrind.log 2>&1; echo "Exit code: $$?"
 
 clean:
 	@if [ "$(RESET)" = "1" ]; then reset; fi

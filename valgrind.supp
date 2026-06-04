@@ -27,10 +27,26 @@
    obj:/usr/lib/x86_64-linux-gnu/libvulkan_radeon.so
 }
 
-# --- AMD Vulkan driver: uninitialized values ---
+# --- AMD Vulkan driver: uninitialized values (conditional) ---
 {
-   amd_radeon_uninit
+   amd_radeon_uninit_cond
    Memcheck:Cond
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_radeon.so
+}
+
+# --- AMD Vulkan driver: uninitialized values (Value8) ---
+{
+   amd_radeon_uninit_value8
+   Memcheck:Value8
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_radeon.so
+}
+
+# --- AMD Vulkan driver: uninitialized values (Value4) ---
+{
+   amd_radeon_uninit_value4
+   Memcheck:Value4
    ...
    obj:/usr/lib/x86_64-linux-gnu/libvulkan_radeon.so
 }

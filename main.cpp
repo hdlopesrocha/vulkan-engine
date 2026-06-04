@@ -430,7 +430,7 @@ public:
                 }
             }
         }
-        generateMapPending = true; // Trigger initial map generation on first frame so user sees something without needing to click 
+        //generateMapPending = true; // Trigger initial map generation on first frame so user sees something without needing to click 
     }
 
     // Move vegetation texture setup into its own method for clarity
@@ -1260,6 +1260,27 @@ public:
                     ImGui::Text("FPS:           %.1f", profileFps);
                     ImGui::Text("Update:        %.2f", profileCpuUpdate);
                     ImGui::Text("Record:        %.2f", profileCpuRecord);
+                }
+
+                // GPU memory usage (VK_EXT_memory_budget)
+                {
+                    auto budgets = getMemoryBudgets();
+                    if (!budgets.empty()) {
+                        ImGui::Separator();
+                        ImGui::Text("--- GPU Memory (MB) ---");
+                        for (size_t h = 0; h < budgets.size(); ++h) {
+                            const auto& b = budgets[h];
+                            const char* heapName = (b.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? "Device Local" : "Host Visible";
+                            float usageMB  = static_cast<float>(b.usage)  / (1024.0f * 1024.0f);
+                            float budgetMB = static_cast<float>(b.budget) / (1024.0f * 1024.0f);
+                            float totalMB  = static_cast<float>(b.size)   / (1024.0f * 1024.0f);
+                            if (b.budget > 0) {
+                                ImGui::Text("%s:  %.0f / %.0f MB", heapName, usageMB, budgetMB);
+                            } else {
+                                ImGui::Text("%s:  %.0f / %.0f MB (total)", heapName, usageMB, totalMB);
+                            }
+                        }
+                    }
                 }
 
                 ImGui::End();

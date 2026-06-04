@@ -714,6 +714,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 // --- New helper methods for basic rendering ---
 std::vector<const char*> deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
     // VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME promoted to Vulkan 1.2 core — using vulkan12Features instead
     // VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME promoted to Vulkan 1.1 core
     // VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME promoted to Vulkan 1.2 core
@@ -1429,7 +1430,12 @@ void VulkanApp::waitForFrameFences() {
 
 void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory, const char* debugName) {
     VkImageCreateInfo imageInfo{};
+    // Belt-and-suspenders: ensure all bytes are zero before setting fields.
+    // Some drivers (RADV) may read padding bytes that C++ value-init does not touch.
+    std::memset(&imageInfo, 0, sizeof(imageInfo));
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.pNext = nullptr;
+    imageInfo.flags = 0;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
     imageInfo.extent.width = width;
     imageInfo.extent.height = height;
@@ -1440,6 +1446,7 @@ void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, Vk
     imageInfo.tiling = tiling;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = usage;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     // If transfer and graphics use different families, create image with
     // CONCURRENT sharing to avoid explicit ownership transfer barriers.
     QueueFamilyIndices qfi = findQueueFamilies(physicalDevice);
@@ -1450,8 +1457,9 @@ void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, Vk
         imageInfo.pQueueFamilyIndices = families;
     } else {
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.queueFamilyIndexCount = 0;
+        imageInfo.pQueueFamilyIndices = nullptr;
     }
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
     if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
         throw std::runtime_error("failed to create image!");
@@ -1466,7 +1474,9 @@ void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, Vk
     vkGetImageMemoryRequirements(device, image, &memRequirements);
 
     VkMemoryAllocateInfo allocInfo{};
+    std::memset(&allocInfo, 0, sizeof(allocInfo));
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.pNext = nullptr;
     // Pad to avoid BestPractices small-allocation / small-dedicated-allocation warnings.
     static constexpr VkDeviceSize kMinImgAlloc = 262144;
     allocInfo.allocationSize = (memRequirements.size < kMinImgAlloc)
@@ -1809,19 +1819,6 @@ void VulkanApp::applyPendingLayoutUpdatesForCommandBuffer(VkCommandBuffer cmd) {
             auto it = g_cmdSubmitMap.find(cmd);
             if (it != g_cmdSubmitMap.end()) submitId = it->second;
         }
-        std::cerr << "[VulkanApp] applyPendingLayouts: submitId=" << submitId << " cmd=" << (void*)cmd << " applied " << updates.size() << " updates" << std::endl;
-        for (const auto &u : updates) {
-            for (uint32_t l = 0; l < u.layerCount; ++l) {
-                auto entry = resources.find((uintptr_t)u.image);
-                std::string desc = entry ? entry->desc : std::string("(unknown)");
-                std::cerr << "[VulkanApp] applyPendingLayouts: submitId=" << submitId
-                          << " image=" << (void*)u.image
-                          << " desc=" << desc
-                          << " layer=" << (u.baseArrayLayer + l)
-                          << " new=" << layoutName(u.newLayout)
-                          << " isBarrier=" << u.isBarrier << std::endl;
-            }
-        }
     }
 }
 
@@ -1869,8 +1866,6 @@ void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer
 
     if (latest.empty()) return;
 
-    // Debug: show what will be applied for this submit and the previous tracked layout
-    std::cerr << "[VulkanApp] preApply submitId=" << submitId << " cmd=" << (void*)commandBuffer << " applying " << latest.size() << " updates" << std::endl;
 
     // Apply the collected latest updates into the authoritative map,
     // but first log each image/layer with its previous tracked layout.
@@ -2001,28 +1996,6 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
         {
             std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
             g_cmdSubmitMap[commandBuffer] = submitId;
-        }
-        std::cerr << "[VulkanApp] submit id=" << submitId << " cmd=" << (void*)commandBuffer << " fence=" << (void*)fence << " sem=" << (void*)semaphore << std::endl;
-
-        // Debug: print any pending layout updates recorded for this command buffer
-        {
-            std::lock_guard<std::mutex> plk(pendingLayoutMutex);
-            auto pit = commandBufferPendingLayouts.find(commandBuffer);
-            if (pit != commandBufferPendingLayouts.end()) {
-                std::cerr << "[VulkanApp] submit id=" << submitId << " cmd=" << (void*)commandBuffer << " has " << pit->second.size() << " pending layout updates" << std::endl;
-                for (const auto &u : pit->second) {
-                    auto entry = resources.find((uintptr_t)u.image);
-                    std::string desc = entry ? entry->desc : std::string("(unknown)");
-                    std::cerr << "[VulkanApp] submit id=" << submitId << " pendingLayout: image=" << (void*)u.image
-                              << " desc=" << desc
-                              << " new=" << layoutName(u.newLayout)
-                              << " baseLayer=" << u.baseArrayLayer
-                              << " layerCount=" << u.layerCount
-                              << " isBarrier=" << u.isBarrier << std::endl;
-                }
-            } else {
-                std::cerr << "[VulkanApp] submit id=" << submitId << " cmd=" << (void*)commandBuffer << " has no pending layout updates" << std::endl;
-            }
         }
 
         // Promote pending layout updates before submit so validation sees
@@ -2159,27 +2132,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         }
         std::cerr << "[VulkanApp] submitToQueue id=" << submitId << " cmd=" << (void*)commandBuffer << " fence=" << (void*)fence << " sem=" << (void*)semaphore << " targetQueue=" << (void*)targetQueue << std::endl;
 
-        // Debug: print any pending layout updates recorded for this command buffer
-        {
-            std::lock_guard<std::mutex> plk(pendingLayoutMutex);
-            auto pit = commandBufferPendingLayouts.find(commandBuffer);
-            if (pit != commandBufferPendingLayouts.end()) {
-                std::cerr << "[VulkanApp] submitToQueue id=" << submitId << " cmd=" << (void*)commandBuffer << " has " << pit->second.size() << " pending layout updates" << std::endl;
-                for (const auto &u : pit->second) {
-                    auto entry = resources.find((uintptr_t)u.image);
-                    std::string desc = entry ? entry->desc : std::string("(unknown)");
-                    std::cerr << "[VulkanApp] submitToQueue id=" << submitId << " pendingLayout: image=" << (void*)u.image
-                              << " desc=" << desc
-                              << " new=" << layoutName(u.newLayout)
-                              << " baseLayer=" << u.baseArrayLayer
-                              << " layerCount=" << u.layerCount
-                              << " isBarrier=" << u.isBarrier << std::endl;
-                }
-            } else {
-                std::cerr << "[VulkanApp] submitToQueue id=" << submitId << " cmd=" << (void*)commandBuffer << " has no pending layout updates" << std::endl;
-            }
-        }
-
+       
         // Promote pending layout updates for this submission
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
@@ -2250,20 +2203,6 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
     {
         // Serialize pre-apply and submission to maintain consistent ordering
         std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
-
-        // Debug: print any pending layout updates recorded for this command buffer
-        {
-            std::lock_guard<std::mutex> plk(pendingLayoutMutex);
-            auto pit = commandBufferPendingLayouts.find(commandBuffer);
-            if (pit != commandBufferPendingLayouts.end()) {
-                // std::cerr << "[VulkanApp] submitCommandBufferAndWait: cmd=" << (void*)commandBuffer << " has " << pit->second.size() << " pending layout updates" << std::endl;
-                for (const auto &u : pit->second) {
-                    // std::cerr << "[VulkanApp] submitCommandBufferAndWait: cmd=" << (void*)commandBuffer << " pending image=" << (void*)u.image << " new=" << (int)u.newLayout << " baseLayer=" << (unsigned)u.baseArrayLayer << " layerCount=" << (unsigned)u.layerCount << std::endl;
-                }
-            } else {
-                // std::cerr << "[VulkanApp] submitCommandBufferAndWait: cmd=" << (void*)commandBuffer << " has no pending layout updates" << std::endl;
-            }
-        }
 
         // Promote pending layout updates for this submission so validation
         // sees populated layouts for affected subresources.
@@ -2617,15 +2556,6 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             }
         }
 
-        // Debug: print caller/tracked/pending/effective/new layouts for this request
-        /*std::cerr << "[VulkanApp::recordTransitionImageLayoutLayer] cmd=" << (void*)commandBuffer
-                  << " image=" << (void*)image
-                  << " callerOld=" << (int)oldLayout
-                  << " tracked=" << (int)tracked
-                  << " pending=" << (int)pendingOld
-                  << " effectiveOld=" << (int)effectiveOld
-                  << " new=" << (int)newLayout << std::endl;
-*/
         // If the authoritative (tracked) layout already equals the requested
         // final layout, there's nothing to emit.
         if (effectiveOld == newLayout) {
@@ -2677,12 +2607,6 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         barrier.subresourceRange.levelCount = mipLevels;
         barrier.subresourceRange.baseArrayLayer = baseArrayLayer;
         barrier.subresourceRange.layerCount = layerCount;
-
-        // Debug: print immediate transition details
-        //std::cerr << "[VulkanApp] transitionImageLayoutLayer (single-time): image=" << (void*)image << " oldLayout=" << (int)oldLayout << " newLayout=" << (int)newLayout << " mipLevels=" << (unsigned)mipLevels << " baseArrayLayer=" << (unsigned)baseArrayLayer << " layerCount=" << (unsigned)layerCount << std::endl;
-
-        // Debug: print requested transition details to help trace oldLayout mismatches
-        //    std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: cmd=" << (void*)commandBuffer << " image=" << (void*)image << " oldLayout=" << (int)oldLayout << " newLayout=" << (int)newLayout << " mipLevels=" << (unsigned)mipLevels << " baseArrayLayer=" << (unsigned)baseArrayLayer << " layerCount=" << (unsigned)layerCount << std::endl;
 
         VkPipelineStageFlags sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         VkPipelineStageFlags destinationStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
@@ -2812,9 +2736,6 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
                 std::to_string((int)effectiveOld) + " new=" + std::to_string((int)newLayout));
         }
 
-        // Debug: log chosen access masks and pipeline stages for this barrier
-        //std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: image=" << (void*)image << " old=" << (int)barrier.oldLayout << " new=" << (int)newLayout << " srcAccess=0x" << std::hex << (unsigned)barrier.srcAccessMask << " dstAccess=0x" << (unsigned)barrier.dstAccessMask << " srcStage=0x" << (unsigned)sourceStage << " dstStage=0x" << (unsigned)destinationStage << " aspect=0x" << (unsigned)barrier.subresourceRange.aspectMask << std::dec << std::endl;
-
         vkCmdPipelineBarrier(
             commandBuffer,
             sourceStage, destinationStage,
@@ -2837,18 +2758,6 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             up.layerCount = layerCount;
             up.isBarrier = true;
             commandBufferPendingLayouts[commandBuffer].push_back(up);
-            {
-                auto entry = resources.find((uintptr_t)image);
-                std::string desc = entry ? entry->desc : std::string("(unknown)");
-                std::cerr << "[VulkanApp] recordTransitionImageLayoutLayer: cmd=" << (void*)commandBuffer
-                          << " image=" << (void*)image
-                          << " desc=" << desc
-                          << " new=" << layoutName(newLayout)
-                          << " baseLayer=" << baseArrayLayer
-                          << " layerCount=" << layerCount
-                          << " pendingCount=" << commandBufferPendingLayouts[commandBuffer].size()
-                          << " isBarrier=1" << std::endl;
-            }
         }
     }
 
@@ -2976,9 +2885,6 @@ void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkIma
         } else {
             throw std::runtime_error("transitionImageLayoutLayer: Unsupported image layout transition requested (no fallback allowed)");
         }
-
-        // Debug: log chosen access masks and pipeline stages for this barrier
-        //std::cerr << "[VulkanApp] transitionImageLayoutLayer: image=" << (void*)image << " old=" << (int)oldLayout << " new=" << (int)newLayout << " srcAccess=0x" << std::hex << (unsigned)barrier.srcAccessMask << " dstAccess=0x" << (unsigned)barrier.dstAccessMask << " srcStage=0x" << (unsigned)sourceStage << " dstStage=0x" << (unsigned)destinationStage << " aspect=0x" << (unsigned)barrier.subresourceRange.aspectMask << std::dec << std::endl;
 
         vkCmdPipelineBarrier(
             commandBuffer,
@@ -3147,12 +3053,6 @@ void VulkanApp::recordTrackedLayoutForCommandBuffer(VkCommandBuffer commandBuffe
         setImageLayoutTracked(image, newLayout, baseArrayLayer, layerCount);
         return;
     }
-    // Debug: record that a tracked-only layout was recorded for this command buffer
-    /*std::cerr << "[VulkanApp::recordTrackedLayoutForCommandBuffer] cmd=" << (void*)commandBuffer
-              << " image=" << (void*)image
-              << " new=" << (int)newLayout
-              << " baseLayer=" << baseArrayLayer
-              << " layerCount=" << layerCount << std::endl;*/
 
     std::lock_guard<std::mutex> plk(pendingLayoutMutex);
     VulkanApp::PendingLayoutUpdate up;
@@ -3259,17 +3159,22 @@ void VulkanApp::createSyncObjects() {
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    // Semaphores per frame-in-flight (one set for each CPU frame slot)
+    // imageAvailableSemaphores: one per CPU frame-in-flight slot, used to wait on acquire
     imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-    renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+    // renderFinishedSemaphores: one per swapchain image to avoid re-signaling a semaphore
+    // that is still in use by the presentation engine (VUID-vkQueueSubmit-pSignalSemaphores-00067).
+    renderFinishedSemaphores.resize(numImages);
 
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create semaphores for frame " + std::to_string(i));
+        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create imageAvailableSemaphore for frame " + std::to_string(i));
         }
-        // Register semaphores
         resources.addSemaphore(imageAvailableSemaphores[i], "VulkanApp: imageAvailableSemaphore");
+    }
+    for (uint32_t i = 0; i < numImages; i++) {
+        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create renderFinishedSemaphore for image " + std::to_string(i));
+        }
         resources.addSemaphore(renderFinishedSemaphores[i], "VulkanApp: renderFinishedSemaphore");
     }
     
@@ -3794,8 +3699,6 @@ void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
         throw std::runtime_error("failed to create descriptor pool!");
     }
     // Register default descriptor pool for app-managed allocations
-    // debug: print addresses to verify resources object
-    //std::cerr << "[VulkanApp] createDescriptorPool: this=" << (void*)this << " resources=" << (void*)&resources << " descriptorPool=" << (void*)descriptorPool << std::endl;
     resources.addDescriptorPool(descriptorPool, "VulkanApp: descriptorPool");
 }
 
@@ -4156,12 +4059,6 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     // Register buffer and its memory so the VulkanResourceManager tracks them
     resources.addBuffer(buffer.buffer, "VulkanApp: buffer.buffer");
     resources.addDeviceMemory(buffer.memory, "VulkanApp: buffer.memory");
-    // Debug: record allocation sizes and mapping to help trace GPUVM faults
-    std::cerr << "[VulkanApp] createBuffer: buf=" << (void*)buffer.buffer
-              << " requestedSize=" << (size_t)size
-              << " allocSize=" << (size_t)memRequirements.size
-              << " mem=" << (void*)buffer.memory << std::endl;
-    /*std::cerr << "[VulkanApp::createBuffer] buffer=" << (void*)buffer.buffer << " size=" << (size_t)size << " usage=0x" << std::hex << (unsigned)usage << " mem=" << (void*)buffer.memory << " buffers=" << resources.getBufferMap().size() << " memories=" << resources.getDeviceMemoryMap().size() << std::endl;*/
     return buffer;
 }
 
@@ -4223,6 +4120,31 @@ bool VulkanApp::isResourceRegistered(uintptr_t handle) const {
     if (handle == 0) return false;
     auto e = resources.find(handle);
     return e.has_value();
+}
+
+std::vector<VulkanApp::MemoryHeapBudget> VulkanApp::getMemoryBudgets() const {
+    std::vector<MemoryHeapBudget> result;
+    if (!physicalDevice) return result;
+
+    // Chain VkPhysicalDeviceMemoryBudgetPropertiesEXT into VkPhysicalDeviceMemoryProperties2
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budgetProps{};
+    budgetProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+
+    VkPhysicalDeviceMemoryProperties2 memProps2{};
+    memProps2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+    memProps2.pNext = &budgetProps;
+
+    vkGetPhysicalDeviceMemoryProperties2(physicalDevice, &memProps2);
+
+    for (uint32_t i = 0; i < memProps2.memoryProperties.memoryHeapCount; ++i) {
+        MemoryHeapBudget hb{};
+        hb.flags  = memProps2.memoryProperties.memoryHeaps[i].flags;
+        hb.size   = memProps2.memoryProperties.memoryHeaps[i].size;
+        hb.usage  = budgetProps.heapUsage[i];
+        hb.budget = budgetProps.heapBudget[i];
+        result.push_back(hb);
+    }
+    return result;
 }
 
 Buffer VulkanApp::createIndexBuffer(const std::vector<uint> &indices) {
@@ -4434,16 +4356,18 @@ void VulkanApp::drawFrame() {
     submitInfo.pWaitSemaphores = localWaitSemaphores.data();
     submitInfo.pWaitDstStageMask = localWaitStages.data();
 
-    // Signal semaphores will be set at submit time (use per-frame renderFinished semaphore)
+    // Signal semaphore indexed by swapchain image to avoid re-signaling before
+    // the presentation engine re-acquires the image (per-image semaphore).
+    VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[imageIndex] };
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
 
     // Debug: check commandBuffers size and imageIndex
-    //std::cerr << "[DEBUG] commandBuffers.size()=" << commandBuffers.size() << " imageIndex=" << imageIndex << std::endl;
     if (imageIndex >= commandBuffers.size()) {
         std::cerr << "[FATAL] imageIndex out of bounds for commandBuffers!" << std::endl;
         abort();
     }
     VkCommandBuffer &commandBuffer = commandBuffers[imageIndex];
-    //std::cerr << "[DEBUG] commandBuffer=" << (void*)commandBuffer << std::endl;
     if (commandBuffer == VK_NULL_HANDLE) {
         std::cerr << "[FATAL] commandBuffer is VK_NULL_HANDLE!" << std::endl;
         abort();
@@ -4580,11 +4504,6 @@ void VulkanApp::drawFrame() {
 
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
-
-    // Signal the per-frame render-finished semaphore; presentation will wait on it
-    VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[semaphoreIndex] };
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = signalSemaphores;
 
     {
         // Serialize pre-apply and submission to ensure tracked layouts match
@@ -4767,6 +4686,18 @@ void VulkanApp::recreateSwapchain() {
     // Ensure imagesInFlight matches the new swapchain image count
     imagesInFlight.clear();
     imagesInFlight.resize(swapchainImages.size(), VK_NULL_HANDLE);
+
+    // Recreate sync objects (semaphores) with the correct count for the new swapchain.
+    // Destroy old semaphores first since cleanupSwapchain preserved them.
+    for (auto &s : imageAvailableSemaphores) {
+        if (s != VK_NULL_HANDLE) { resources.removeSemaphore(s); vkDestroySemaphore(device, s, nullptr); s = VK_NULL_HANDLE; }
+    }
+    for (auto &s : renderFinishedSemaphores) {
+        if (s != VK_NULL_HANDLE) { resources.removeSemaphore(s); vkDestroySemaphore(device, s, nullptr); s = VK_NULL_HANDLE; }
+    }
+    imageAvailableSemaphores.clear();
+    renderFinishedSemaphores.clear();
+    createSyncObjects();
 
     // Re-create ImGui Vulkan backend objects so they use the updated swapchain image count.
     // ImGui_ImplVulkan_Init stores internal arrays sized by ImageCount; when the swapchain
