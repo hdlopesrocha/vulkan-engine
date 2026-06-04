@@ -22,6 +22,35 @@ static const char* layoutName(VkImageLayout l) {
 
 Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkFence* outFence) {
     auto stagingAlloc = stagingRing.allocate(size);
+    if (!stagingAlloc.mappedPtr) {
+        // Ring buffer exhausted or fragmented — fall back to dedicated staging buffer
+        Buffer stagingBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        void* mapped;
+        vkMapMemory(device, stagingBuffer.memory, 0, size, 0, &mapped);
+        memcpy(mapped, data, (size_t)size);
+        vkUnmapMemory(device, stagingBuffer.memory);
+
+        Buffer gpuBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        VkFence fence = runSingleTimeCommandsAsyncOnTransfer([&](VkCommandBuffer cmd) {
+            VkBufferCopy copyRegion{};
+            copyRegion.size = size;
+            vkCmdCopyBuffer(cmd, stagingBuffer.buffer, gpuBuffer.buffer, 1, &copyRegion);
+        });
+
+        deferDestroyUntilFence(fence, [dev = device, sb = stagingBuffer, this]() {
+            if (sb.buffer != VK_NULL_HANDLE) {
+                if (resources.removeBuffer(sb.buffer)) vkDestroyBuffer(dev, sb.buffer, nullptr);
+            }
+            if (sb.memory != VK_NULL_HANDLE) {
+                if (resources.removeDeviceMemory(sb.memory)) vkFreeMemory(dev, sb.memory, nullptr);
+            }
+        });
+
+        if (outFence) *outFence = fence;
+        return gpuBuffer;
+    }
+
     memcpy(stagingAlloc.mappedPtr, data, (size_t)size);
 
     Buffer gpuBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);

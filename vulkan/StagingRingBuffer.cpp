@@ -112,13 +112,25 @@ StagingRingBuffer::Allocation StagingRingBuffer::allocate(VkDeviceSize size) {
         return alloc;
     }
 
-    // Must wrap: fit at beginning
-    Allocation alloc;
-    alloc.offset = 0;
-    alloc.mappedPtr = mappedPtr_;
-    head_ = alignedSize;
-    bytesInUse_ += alignedSize;
-    return alloc;
+    // Must wrap: only safe if the beginning is free (tail_ has advanced past it).
+    // Out-of-order releases can leave tail_ behind, so we must check that the
+    // space at the beginning is actually available. If tail_ < alignedSize,
+    // the beginning still has in-use data and wrapping would cause corruption.
+    if (tail_ >= alignedSize) {
+        Allocation alloc;
+        alloc.offset = 0;
+        alloc.mappedPtr = mappedPtr_;
+        head_ = alignedSize;
+        bytesInUse_ += alignedSize;
+        return alloc;
+    }
+
+    // Cannot fit — ring is fragmented. Return empty allocation.
+    // Caller must handle this by falling back to a dedicated staging buffer.
+    std::cerr << "[StagingRingBuffer] allocation of " << alignedSize
+              << " bytes failed: head=" << head_ << " tail=" << tail_
+              << " capacity=" << capacity_ << " inUse=" << bytesInUse_ << std::endl;
+    return {};
 }
 
 void StagingRingBuffer::release(VkDeviceSize offset, VkDeviceSize size) {

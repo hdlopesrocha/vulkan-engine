@@ -618,6 +618,28 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             vkMapMemory(app->getDevice(), stagingCompact.memory, 0, indirectDataSize, 0, &data);
             memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
             vkUnmapMemory(app->getDevice(), stagingCompact.memory);
+
+            // Copy staging data into the device-local compact buffer synchronously.
+            // The compact buffer must be initialized before any draw reads it,
+            // otherwise the GPU reads uninitialized device memory.
+            app->runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd) {
+                VkBufferCopy copyRegion{};
+                copyRegion.srcOffset = 0;
+                copyRegion.dstOffset = 0;
+                copyRegion.size = indirectDataSize;
+                vkCmdCopyBuffer(cmd, stagingCompact.buffer, compactIndirectBuffer.buffer, 1, &copyRegion);
+                recordTransferWriteRelease(cmd, compactIndirectBuffer.buffer, 0, indirectDataSize);
+            });
+
+            // Staging buffer can be freed immediately since the transfer is synchronous
+            VkDevice dev = app->getDevice();
+            Buffer sc = stagingCompact;
+            if (sc.buffer != VK_NULL_HANDLE) {
+                if (app->resources.removeBuffer(sc.buffer)) vkDestroyBuffer(dev, sc.buffer, nullptr);
+            }
+            if (sc.memory != VK_NULL_HANDLE) {
+                if (app->resources.removeDeviceMemory(sc.memory)) vkFreeMemory(dev, sc.memory, nullptr);
+            }
         }
     }
 

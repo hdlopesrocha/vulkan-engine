@@ -23,9 +23,20 @@
 
 class VulkanApp {
     public:
-        // Main UBO/sampler descriptor set (allocated from descriptorSetLayout)
-        VkDescriptorSet mainDescriptorSet = VK_NULL_HANDLE;
-        VkDescriptorSet getMainDescriptorSet() const { return mainDescriptorSet; }
+        // Main descriptor sets (one per frame-in-flight). Use
+        // `getMainDescriptorSet()` to obtain the set for the current frame.
+        std::vector<VkDescriptorSet> mainDescriptorSets;
+        VkDescriptorSet getMainDescriptorSet() const {
+            if (mainDescriptorSets.empty()) return VK_NULL_HANDLE;
+            uint32_t idx = currentFrame % static_cast<uint32_t>(mainDescriptorSets.size());
+            return mainDescriptorSets[idx];
+        }
+        // Accessor for descriptor set by frame index (used during init)
+        VkDescriptorSet getMainDescriptorSetForFrame(uint32_t idx) const {
+            if (idx >= mainDescriptorSets.size()) return VK_NULL_HANDLE;
+            return mainDescriptorSets[idx];
+        }
+        size_t getMainDescriptorSetCount() const { return mainDescriptorSets.size(); }
 
         // Utility: Generate vegetation instances using a compute shader
         // vertexBuffer: input triangle mesh (positions, 3 floats per vertex)
@@ -69,6 +80,7 @@ class VulkanApp {
     std::vector<VkImageView> swapchainImageViews;
 
     VkCommandPool commandPool = VK_NULL_HANDLE;            // primary pool for framebuffers and main-thread work
+    std::vector<VkCommandPool> frameCommandPools;          // per-swapchain-image pools (no RESET_COMMAND_BUFFER_BIT)
     VkCommandPool transientCommandPool = VK_NULL_HANDLE;   // separate pool for asynchronous / short-lived operations
     // Dedicated command pools for subsystem queues
     VkCommandPool vegetationCommandPool = VK_NULL_HANDLE;
@@ -83,6 +95,19 @@ class VulkanApp {
     std::vector<VkFence> imagesInFlight;
     // frame index for round-robin CPU frames-in-flight
     uint32_t currentFrame = 0;
+
+    // Timeline semaphore for async upload completion tracking.
+    // Replaces per-upload binary semaphores — every async transfer
+    // submission signals a strictly increasing value, and the graphics
+    // submission waits on the latest value to ensure all uploads complete
+    // before rendering.
+    VkSemaphore uploadTimeline = VK_NULL_HANDLE;
+    std::atomic<uint64_t> uploadTimelineValue{0};    // Per-frame binary semaphores for cross-queue buffer dependency tracking.
+    // Every async transfer signals this frame's semaphore; the graphics frame
+    // waits on it. The validator requires binary semaphores for cross-queue
+    // buffer hazard tracking.
+    VkSemaphore transferCompleteSem[3] = {};
+    bool transferSemUsed[3] = {};
 
 public:
     uint32_t getCurrentFrame() const { return currentFrame; }
@@ -167,8 +192,11 @@ protected:
     // expose the GLFW window to derived classes for input polling
     GLFWwindow* getWindow();
 
-    // Mutex used to serialize `vkQueueSubmit` / `vkQueueWaitIdle` calls across threads
-    std::mutex queueSubmitMutex;
+    // Per-queue mutexes for concurrent submissions without cross-queue contention.
+    // Transfer, graphics, and compute can submit independently without serializing.
+    std::mutex graphicsSubmitMutex;
+    std::mutex transferSubmitMutex;
+    std::mutex vegetationSubmitMutex;
     // Mutex used to serialize command pool operations (alloc/free/reset) across threads
     std::mutex commandPoolMutex;
     // Mutex used to serialize vkAllocateDescriptorSets calls across threads
@@ -207,12 +235,12 @@ protected:
         // Submit `VkSubmitInfo` array while serializing access to the `graphicsQueue` to avoid concurrent queue use from multiple threads.
         void submitAndWait(const VkSubmitInfo* submits, uint32_t submitCount, VkFence fence = VK_NULL_HANDLE);
         // Wait for the graphics queue to become idle (vkQueueWaitIdle) while holding
-        // `queueSubmitMutex` to avoid races with concurrent submissions.  This is
+        // `graphicsSubmitMutex` to avoid races with concurrent submissions.  This is
         // usually sufficient for synchronizing most operations and avoids the
         // cost of a full device-level idle.  Use `runSingleTimeCommands` for
         // small transient waits that also need pipeline barriers.
         VkResult queueWaitIdle();
-        // Call `vkDeviceWaitIdle` while holding `queueSubmitMutex` to avoid races
+        // Call `vkDeviceWaitIdle` while holding `graphicsSubmitMutex` to avoid races
         // with concurrent queue submissions.  This method is retained for
         // compatibility but should be avoided in new code; prefer
         // `queueWaitIdle` or `runSingleTimeCommands` instead.
@@ -235,7 +263,7 @@ protected:
         void throttleIfTooManyPending();
         // Record and submit a short-lived command buffer asynchronously.
         // Returns a fence that will be signaled when the submission completes.
-        VkFence runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn);
+        VkFence runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore = nullptr);
         // Record and submit a short-lived command buffer asynchronously to the transfer queue.
         // Returns a fence that will be signaled when the submission completes.
         // If `outSemaphore` is non-null the submission will signal that semaphore
@@ -250,6 +278,8 @@ protected:
         void deferDestroyUntilAllPending(std::function<void()> destroyFn);
         void deferDestroyUntilFence(VkFence fence, std::function<void()> destroyFn);
         bool hasPendingCommandBuffers();
+        // Add a semaphore that the next frame submission must wait on (for async uploads)
+        void addExtraWaitSemaphore(VkSemaphore sem, VkPipelineStageFlags stage);
         void createDescriptorSetLayout();
 
     // ImGui integration glue: backend can call these to route submits through the
