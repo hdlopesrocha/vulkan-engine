@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Buffer.hpp"
+#include "StagingRingBuffer.hpp"
 
 // Standard library includes first
 #include <iostream>
@@ -114,6 +115,8 @@ private:
 
     // Central resource manager for automatic cleanup
     VulkanResourceManager resources;
+    // Persistent staging ring buffer for async uploads (eliminates per-upload allocations)
+    StagingRingBuffer stagingRing;
     // Track per-image per-layer last-known layouts to avoid callers supplying
     // stale oldLayout values that trigger validation errors. Key is a 64-bit
     // composed from (image_ptr << 32) | baseArrayLayer.
