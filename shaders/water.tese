@@ -70,7 +70,7 @@ void main() {
                        bary.z * inTexCoord[2];
     
     // Select per-patch brushIndex from compressed TCS outputs (tc_fragBrushIndex / tc_fragTexWeights)
-    ivec3 texIndices = tc_fragBrushIndex[0];
+    ivec3 texIndices = max(tc_fragBrushIndex[0], ivec3(0));
     vec3 weights = tc_fragTexWeights[0] * bary.x + tc_fragTexWeights[1] * bary.y + tc_fragTexWeights[2] * bary.z;
     int chosenIdx = texIndices.x;
     if (texIndices.y >= 0 && weights.y > weights.x) chosenIdx = texIndices.y;

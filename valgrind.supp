@@ -1,0 +1,138 @@
+# Valgrind suppressions for third-party Vulkan libraries
+# These are bugs in the validation layer, AMD driver, and LLVM - not our code.
+
+# --- Validation layer: uninitialized stack variable in vkCreateDevice ---
+{
+   vklayer_khronos_uninit_createDevice
+   Memcheck:Cond
+   ...
+   obj:*libVkLayer_khronos_validation.so*
+}
+
+# --- Validation layer: possibly lost memory ---
+{
+   vklayer_khronos_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:*libVkLayer_khronos_validation.so*
+}
+
+# --- AMD Vulkan driver: possibly lost memory ---
+{
+   amd_radeon_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_radeon.so
+}
+
+# --- AMD Vulkan driver: uninitialized values ---
+{
+   amd_radeon_uninit
+   Memcheck:Cond
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_radeon.so
+}
+
+# --- LLVM (used by AMD shader compiler): possibly lost ---
+{
+   llvm_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libLLVM.so*
+}
+
+# --- MESA device select layer: possibly lost ---
+{
+   mesa_device_select_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libVkLayer_MESA_device_select.so
+}
+
+# --- libX11 (GLFW init): possibly lost ---
+{
+   x11_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libX11.so*
+}
+
+# --- libxcb (GLFW init): possibly lost ---
+{
+   xcb_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libxcb.so*
+}
+
+# --- libgnutls (GLFW init): possibly lost ---
+{
+   gnutls_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libgnutls.so*
+}
+
+# --- libtasn1 (GLFW init): possibly lost ---
+{
+   tasn1_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libtasn1.so*
+}
+
+# --- Vulkan loader: possibly lost (vkEnumeratePhysicalDevices) ---
+{
+   vulkan_loader_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan.so*
+}
+
+# --- Other GPU drivers loaded during enumeration (asahi, lvp, etc.) ---
+{
+   vulkan_asahi_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_asahi.so*
+}
+{
+   vulkan_lvp_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so*
+}
+{
+   vulkan_intel_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_intel.so*
+}
+{
+   vulkan_nouveau_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libvulkan_nouveau.so*
+}
+
+# --- libstdc++ locale init: possibly lost ---
+{
+   stdcpp_possibly_lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libstdc++.so*
+}

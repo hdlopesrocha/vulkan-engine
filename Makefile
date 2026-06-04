@@ -10,6 +10,7 @@ CC = g++
 BUILD ?= release
 ifeq ($(BUILD),debug)
 	CFLAGS = -std=c++23 -O0 -g -DDEBUG -pthread -Ithird_party/imgui
+	LDFLAGS =
 else
 	CFLAGS = -std=c++23 -O3 -march=native -DNDEBUG -pthread -DUSE_IMGUI -Ithird_party/imgui
 endif
@@ -83,15 +84,13 @@ imgui: $(IMGUI_OBJS)
 	@echo "ImGui compilation complete"
 
 .PHONY: server
-server:
+server: $(SERVER_OBJS)
 	@mkdir -p $(OUT_DIR)
-	@# Ensure project objects are built, then link server with them so it can use project symbols
-	@$(MAKE) -s --no-print-directory $(SERVER_OBJS)
-	@$(CC) $(CFLAGS) $(SERVER_INCLUDES) server.cpp $(SERVER_OBJS) -o $(OUT_DIR)/server $(SERVER_LIBS)
+	@$(CC) $(CFLAGS) $(SERVER_INCLUDES) server.cpp $(SERVER_OBJS) -o $(OUT_DIR)/server $(SERVER_LIBS) $(LDFLAGS)
 
 $(OUT): $(OBJS)
 	@echo "Linking: $(OUT)"
-	@$(CC) $(CFLAGS) $(INCLUDES) $(OBJS) -o $(OUT) $(LIBS)
+	@$(CC) $(CFLAGS) $(INCLUDES) $(OBJS) -o $(OUT) $(LIBS) $(LDFLAGS)
 
 	@echo "Copying runtime resources to $(OUT_DIR)/"
 	@mkdir -p $(OUT_DIR)/shaders
@@ -132,7 +131,7 @@ $(OUT_DIR)/shaders/%.$(1).spv: shaders/%.$(1)
 	@echo "Compiling shader: $$< -> $$@"
 	@mkdir -p $$(dir $$@)
 	@if command -v glslc >/dev/null 2>&1; then \
-		glslc -Ishaders/includes $$< -o $$@; \
+		glslc --target-env=vulkan1.1 -Ishaders/includes $$< -o $$@; \
 	else \
 		glslangValidator -Ishaders/includes -V --target-env vulkan1.1 $$< -o $$@; \
 	fi
