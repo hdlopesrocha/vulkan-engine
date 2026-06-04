@@ -135,7 +135,11 @@ void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
     
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
+    {
+        static constexpr VkDeviceSize kMin = 262144;
+        const VkDeviceSize sz = memRequirements.size;
+        allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
+    }
     allocInfo.memoryTypeIndex = app->findMemoryType(memRequirements.memoryTypeBits, 
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     

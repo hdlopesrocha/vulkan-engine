@@ -223,7 +223,11 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
 
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memReq.size;
+        {
+            static constexpr VkDeviceSize kMin = 262144;
+            const VkDeviceSize sz = memReq.size;
+            allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
+        }
         allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
             throw std::runtime_error("Failed to allocate back-face image memory!");

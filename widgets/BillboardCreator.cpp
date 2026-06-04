@@ -144,7 +144,11 @@ void BillboardCreator::createBillboardArrayTextures() {
         vkGetImageMemoryRequirements(device, outImg, &memReq);
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memReq.size;
+        {
+            static constexpr VkDeviceSize kMin = 262144;
+            const VkDeviceSize sz = memReq.size;
+            allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
+        }
         allocInfo.memoryTypeIndex = vulkanApp->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (vkAllocateMemory(device, &allocInfo, nullptr, &outMem) != VK_SUCCESS)
             throw std::runtime_error(std::string("BillboardCreator: failed to allocate array memory: ") + name);

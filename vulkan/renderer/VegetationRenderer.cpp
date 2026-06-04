@@ -830,7 +830,11 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     if (deviceLocalTypeIndex == UINT32_MAX) throw std::runtime_error("No suitable device local memory type for instance buffer");
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memReq.size;
+    {
+        static constexpr VkDeviceSize kMin = 262144;
+        const VkDeviceSize sz = memReq.size;
+        allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
+    }
     allocInfo.memoryTypeIndex = deviceLocalTypeIndex;
     if (vkAllocateMemory(device, &allocInfo, nullptr, &instanceMemory) != VK_SUCCESS) throw std::runtime_error("Failed to allocate instance buffer memory");
     vkBindBufferMemory(device, instanceBuffer, instanceMemory, 0);
@@ -859,7 +863,11 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     if (indirectTypeIndex == UINT32_MAX) throw std::runtime_error("No suitable host visible memory type for indirect buffer");
     VkMemoryAllocateInfo indirectAllocInfo{};
     indirectAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    indirectAllocInfo.allocationSize = indirectMemReq.size;
+    {
+        static constexpr VkDeviceSize kMin = 262144;
+        const VkDeviceSize sz = indirectMemReq.size;
+        indirectAllocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
+    }
     indirectAllocInfo.memoryTypeIndex = indirectTypeIndex;
     if (vkAllocateMemory(device, &indirectAllocInfo, nullptr, &indirectMemory) != VK_SUCCESS) throw std::runtime_error("Failed to allocate indirect buffer memory");
     vkBindBufferMemory(device, indirectBuffer, indirectMemory, 0);

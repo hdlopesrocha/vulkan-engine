@@ -853,43 +853,16 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 			if (genN) textureArrayManager->getImTexture(targetLayer, 1);
 			if (genB) textureArrayManager->getImTexture(targetLayer, 2);
 
-			// Before performing layout changes, ensure any prior generation or transfer
-			// that touches this layer has completed. Use the synchronous helper to
-			// transition the specific layer to GENERAL so the validation layer's
-			// known layout is updated before we write descriptors and dispatch.
-			if (app) app->waitForAllPendingCommandBuffers();
+			// Before recording the async command buffer, ensure any prior generation
+			// that touches this layer has completed. Only wait for layer-specific
+			// fences — do NOT block on unrelated async work (geometry uploads, etc.).
+			if (app) {
+				// Pump pending completions so fences we need to wait on can signal.
+				app->processPendingCommandBuffers();
+			}
 			// If another generation for this layer is pending, wait for it.
 			if (isLayerGenerationPending(targetLayer)) {
 				waitForLayerGeneration(app, targetLayer);
-			}
-			// If tracked layout is TRANSFER_DST, wait briefly while pumping pending
-			// command buffers so any transfer completes.
-			int waitCount = 0;
-			while (textureArrayManager->getLayerLayout(0, targetLayer) == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && waitCount < 200) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(5));
-				if (app) app->processPendingCommandBuffers();
-				++waitCount;
-			}
-			if (waitCount >= 200) {
-				std::lock_guard<std::mutex> lkll(logsMutex);
-				logs.emplace_back("Warning: waited for transfer dst layout but it persisted");
-			}
-
-			// Synchronously transition the target array layer(s) to GENERAL so
-			// the validation layer will accept subsequent transitions and the
-			// descriptor writes that expect GENERAL layout.
-			if (genA) {
-					app->transitionImageLayoutLayer(textureArrayManager->albedoArray.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, textureArrayManager->albedoArray.mipLevels, targetLayer, 1);
-					// Update tracked layout to reflect the synchronous transition we just performed
-					textureArrayManager->setLayerLayout(0, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
-			}
-			if (genN) {
-					app->transitionImageLayoutLayer(textureArrayManager->normalArray.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, textureArrayManager->normalArray.mipLevels, targetLayer, 1);
-					textureArrayManager->setLayerLayout(1, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
-			}
-			if (genB) {
-					app->transitionImageLayoutLayer(textureArrayManager->bumpArray.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, textureArrayManager->bumpArray.mipLevels, targetLayer, 1);
-					textureArrayManager->setLayerLayout(2, targetLayer, VK_IMAGE_LAYOUT_GENERAL);
 			}
 
 			// Debug: print tracked layouts and pending state to help diagnose layout mismatches
@@ -911,10 +884,11 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 		throw std::runtime_error("TextureMixer: invalid target layer or missing TextureArrayManager");
 	}
 
-	// Record and submit the command buffer for compute dispatch and post-barriers
-	// using the serialized helper so recording, submit and free happen
-	// synchronously and safely with respect to other threads.
-	// The lambda records commands into `cmd`.
+	// Submit the command buffer synchronously — the GPU work for texture
+	// generation is infrequent (happens only when mixer parameters change)
+	// and blocking here is acceptable.  The critical improvement is that we
+	// no longer call waitForAllPendingCommandBuffers() (which would block on
+	// unrelated geometry uploads) and we no longer spin-wait for TRANSFER_DST.
 	app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
 
 	// Helper to build an image memory barrier for a specific array layer range
@@ -1153,30 +1127,13 @@ if (genB && textureArrayManager->bumpArray.mipLevels <= 1) {
 
 	}); // runSingleTimeCommands: recorded and submitted synchronously
 
-	// Synchronous generation completed: mark layer initialized and update tracked layouts
+	// Synchronous generation complete: mark layer initialized and update layouts
 	if (textureArrayManager) {
 		textureArrayManager->setLayerInitialized(targetLayer, true);
 		textureArrayManager->setLayerLayout(0, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		textureArrayManager->setLayerLayout(1, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		textureArrayManager->setLayerLayout(2, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	}
-	printf("[TextureMixer] generatePerlinNoise: useArrayLayer=%d targetLayer=%u primary=%u secondary=%u\n",
-		useArrayLayer ? 1 : 0, targetLayer, pushConstants.primaryLayer, pushConstants.secondaryLayer);
-
-	// Debug: print the image views used for storage images
-	if (useArrayLayer && textureArrayManager) {
-		printf("[TextureMixer] albedoArray.image=%p albedoLayerView=%p\n", (void*)textureArrayManager->albedoArray.image, (void*)textureArrayManager->albedoLayerViews[targetLayer]);
-		printf("[TextureMixer] normalArray.image=%p normalLayerView=%p\n", (void*)textureArrayManager->normalArray.image, (void*)textureArrayManager->normalLayerViews[targetLayer]);
-		printf("[TextureMixer] bumpArray.image=%p bumpLayerView=%p\n", (void*)textureArrayManager->bumpArray.image, (void*)textureArrayManager->bumpLayerViews[targetLayer]);
-
-		std::lock_guard<std::mutex> lkll(logsMutex);
-		char buf[256];
-		snprintf(buf, sizeof(buf), "Generated layer=%u maps=%s%s%s", targetLayer, genA?"A":"", genN?"N":"", genB?"B":"");
-		logs.emplace_back(buf);
-	}
-
-	printf("Perlin noise generation complete!\n");
-
 	if (onTextureGeneratedCallback) {
 		onTextureGeneratedCallback();
 	}

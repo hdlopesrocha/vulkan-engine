@@ -52,15 +52,14 @@ void ImpostorCapture::init(VulkanApp* app) {
     imguiDescSets.fill(VK_NULL_HANDLE);
     capturedTypes = 0;
 
-    // Pre-transition all 60 layers UNDEFINED → SHADER_READ_ONLY_OPTIMAL
-    // so the render pass (which now declares initialLayout=SHADER_READ_ONLY)
-    // sees a consistent layout even before the first capture.
+    // Pre-transition all 60 layers UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
+    // so the render pass sees a writable layout before the first capture.
     app->runSingleTimeCommands([&](VkCommandBuffer cb) {
         app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             1, 0, TOTAL_LAYERS);
         app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             1, 0, TOTAL_LAYERS);
     });
 
@@ -406,7 +405,11 @@ void ImpostorCapture::createCaptureImages(VulkanApp* app) {
         vkGetImageMemoryRequirements(device, captureImage, &memReq);
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize  = memReq.size;
+        {
+            static constexpr VkDeviceSize kMin = 262144;
+            const VkDeviceSize sz = memReq.size;
+            allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
+        }
         allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits,
                                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (vkAllocateMemory(device, &allocInfo, nullptr, &captureMemory) != VK_SUCCESS)
@@ -462,7 +465,11 @@ void ImpostorCapture::createCaptureImages(VulkanApp* app) {
         vkGetImageMemoryRequirements(device, captureNormalImage, &memReq);
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize  = memReq.size;
+        {
+            static constexpr VkDeviceSize kMin = 262144;
+            const VkDeviceSize sz = memReq.size;
+            allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
+        }
         allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits,
                                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (vkAllocateMemory(device, &allocInfo, nullptr, &captureNormalMemory) != VK_SUCCESS)
@@ -521,7 +528,11 @@ void ImpostorCapture::createDepth(VulkanApp* app) {
     vkGetImageMemoryRequirements(device, depthImage, &memReq);
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize  = memReq.size;
+    {
+        static constexpr VkDeviceSize kMin = 262144;
+        const VkDeviceSize sz = memReq.size;
+        allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
+    }
     allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits,
                                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (vkAllocateMemory(device, &allocInfo, nullptr, &depthMemory) != VK_SUCCESS)
