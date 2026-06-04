@@ -49,6 +49,7 @@ public:
     VkPipeline getSkyGridPipeline() const { return skyGridPipeline; }
     VkPipelineLayout getSkyGridPipelineLayout() const { return skyGridPipelineLayout; }
     const VertexBufferObject& getSkyVBO() const { return skyVBO; }
+    Buffer getSkyUniformBuffer() const;
 
 private:
     VkPipeline skyPipeline = VK_NULL_HANDLE;        // Gradient sky pipeline

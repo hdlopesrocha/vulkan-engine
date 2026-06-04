@@ -49,8 +49,8 @@ public:
     PassUBO<UniformObject> shadowPassUBO;
     PassUBO<WaterParamsGPU> waterPassUBO;
 
-    // Main uniform buffer
-    Buffer mainUniformBuffer;
+    // Main uniform buffers (one per frame-in-flight)
+    std::vector<Buffer> mainUniformBuffers;
     
     // Materials SSBO
     Buffer materialsBuffer;
@@ -62,9 +62,10 @@ public:
     // Water render time UBO (binding 10)
     Buffer waterRenderUBOBuffer_;
 
-    // Shadow-specific descriptor set: same as main but binding 4 points to a
-    // dummy 1×1 depth image (avoids layout mismatch when shadow map is being written)
-    VkDescriptorSet shadowDescriptorSet = VK_NULL_HANDLE;
+    // Shadow-specific descriptor sets (one per frame). Each mirrors the main
+    // descriptor set but binding 4 points to a dummy depth view to avoid
+    // layout-mismatch validation errors while writing the real shadow maps.
+    std::vector<VkDescriptorSet> shadowDescriptorSets;
 
     std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<ShadowRenderer> shadowMapper;

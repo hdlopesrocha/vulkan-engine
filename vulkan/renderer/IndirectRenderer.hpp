@@ -73,6 +73,12 @@ public:
 
 public:
   
+    // Acquire vertex/index buffers from the transfer queue. Must be called once
+    // per frame before draws. Records a buffer memory barrier with no QFO
+    // (VK_QUEUE_FAMILY_IGNORED — buffers are CONCURRENT) to make transfer
+    // writes visible to vertex/index input stages.
+    void acquireBuffers(VkCommandBuffer cmd);
+
     // Run GPU culling/compaction (must be called outside any render pass).
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws = 0);
     // Run GPU culling into caller-provided output buffers using a provided compute descriptor set.

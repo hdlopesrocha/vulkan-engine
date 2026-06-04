@@ -177,11 +177,19 @@ void SkyRenderer::init(VulkanApp* app, SkySettings &settings, VkDescriptorSet de
     if (descriptorSet != VK_NULL_HANDLE && !skySphere) {
         skySphere = std::make_unique<SkySphere>();
         skySphere->init(app, settings, descriptorSet);
+    } else if (descriptorSet != VK_NULL_HANDLE && skySphere) {
+        // SkySphere already created — write its buffer to this additional descriptor set
+        skySphere->writeDescriptorSet(app, descriptorSet);
     }
 }
 
 void SkyRenderer::update(VulkanApp* app) {
     if (skySphere) skySphere->update(app);
+}
+
+Buffer SkyRenderer::getSkyUniformBuffer() const {
+    if (skySphere) return skySphere->getBuffer();
+    return {};
 }
 
 // ---------- Offscreen equirectangular sky rendering ----------
@@ -288,10 +296,18 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = skyColorImages[frameIndex];
         barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        barrier.srcAccessMask = (skyColorLayouts[frameIndex] == VK_IMAGE_LAYOUT_UNDEFINED) ? 0 : VK_ACCESS_SHADER_READ_BIT;
+
+        VkPipelineStageFlags srcStage;
+        if (skyColorLayouts[frameIndex] == VK_IMAGE_LAYOUT_UNDEFINED) {
+            barrier.srcAccessMask = 0;
+            srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        } else {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            srcStage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        }
         barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            srcStage,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
@@ -349,7 +365,7 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         vkCmdPipelineBarrier(cmd,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
     skyColorLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

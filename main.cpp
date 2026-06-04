@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <cstring>
 #include <cstdlib>
+#include <sys/resource.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -22,6 +23,7 @@
 #include <backends/imgui_impl_vulkan.h>
 
 #include "vulkan/ubo/UniformObject.hpp"
+#include "vulkan/ubo/SkyUniform.hpp"
 #include "vulkan/VulkanApp.hpp"
 #include "vulkan/renderer/SceneRenderer.hpp"
 #include "utils/LocalScene.hpp"
@@ -67,7 +69,7 @@
 class MyApp : public VulkanApp, public IEventHandler {
 public:
     Settings settings;
-    SceneRenderer * sceneRenderer;
+    SceneRenderer * sceneRenderer = nullptr;
     LocalScene * mainScene;
     LocalScene * brushScene = nullptr;
     std::shared_ptr<Brush3dWidget> brush3dWidget;
@@ -428,6 +430,7 @@ public:
                 }
             }
         }
+        generateMapPending = true; // Trigger initial map generation on first frame so user sees something without needing to click 
     }
 
     // Move vegetation texture setup into its own method for clarity
@@ -463,6 +466,9 @@ public:
         if (sceneRenderer && sceneRenderer->vegetationRenderer) {
             sceneRenderer->vegetationRenderer->setWindTime(mainTime);
             sceneRenderer->vegetationRenderer->setImpostorDistance(settings.impostorDistance);
+        }
+        if (sceneRenderer && sceneRenderer->skyRenderer) {
+            sceneRenderer->skyRenderer->update(this);
         }
         profileCpuUpdate = std::chrono::duration<float, std::milli>(
             std::chrono::high_resolution_clock::now() - cpuUpdateT0).count();
@@ -534,7 +540,7 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 0);
         if (sceneRenderer) {
-            sceneRenderer->shadowPass(this, commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, settings.enableShadows, settings.vegetationEnabled);
+            sceneRenderer->shadowPass(this, commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.vegetationEnabled);
         } else {
             std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping shadow pass\n";
         }
@@ -544,9 +550,9 @@ public:
         // Upload UBO to GPU
         if (sceneRenderer) {
             void* data;
-            vkMapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory, 0, sizeof(UniformObject), 0, &data);
+            vkMapMemory(getDevice(), sceneRenderer->mainUniformBuffers[frameIdx].memory, 0, sizeof(UniformObject), 0, &data);
             memcpy(data, &uboStatic, sizeof(UniformObject));
-            vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory);
+            vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffers[frameIdx].memory);
         } else {
             std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping UBO upload\n";
         }
@@ -554,6 +560,7 @@ public:
 
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
+        sceneRenderer->solidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
         sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
@@ -569,7 +576,7 @@ public:
         if (sceneRenderer->skyRenderer) {
             SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
             sceneRenderer->skyRenderer->renderOffscreen(this, commandBuffer, frameIdx,
-                getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, uboStatic, viewProj, skyMode);
+                getMainDescriptorSet(), sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
         }
 
         VkClearValue colorClear{};
@@ -585,13 +592,13 @@ public:
         if (sceneRenderer->skyRenderer) {
             SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
             sceneRenderer->skyRenderer->render(this, commandBuffer, getMainDescriptorSet(),
-                sceneRenderer->mainUniformBuffer, uboStatic, viewProj, skyMode);
+                sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
 
             // Restore the main UBO that sky rendering overwrote
             void* data;
-            vkMapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory, 0, sizeof(UniformObject), 0, &data);
+            vkMapMemory(getDevice(), sceneRenderer->mainUniformBuffers[frameIdx].memory, 0, sizeof(UniformObject), 0, &data);
             memcpy(data, &uboStatic, sizeof(UniformObject));
-            vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffer.memory);
+            vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffers[frameIdx].memory);
         }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 5);
@@ -599,7 +606,7 @@ public:
         // Sky is now rendered inside the solid pass above, before solid geometry.
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
-        sceneRenderer->mainPass(this, commandBuffer, frameIdx, waterEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffer, settings.renderSolid, settings.wireframeMode,
+        sceneRenderer->mainPass(this, commandBuffer, frameIdx, waterEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffers[frameIdx], settings.renderSolid, settings.wireframeMode,
             viewProj, uboStatic, true, false, true, 0, 0.0f, 0.0f);
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
@@ -832,23 +839,145 @@ public:
 
                 // Render solid360 using per-task compact/visible buffers when available
                 SkySettings::Mode skyMode360 = this->sceneRenderer->getSkySettings().mode;
+
+                // Create a per-task UBO + descriptor set so async recording does not
+                // race with the application's main per-frame UBOs.
+                Buffer taskUBO = app->createBuffer(sizeof(UniformObject),
+                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                // Allocate gfxDs from a per-task pool to avoid handle-reuse races
+                // with the shared main descriptor pool across frames.
+                VkDescriptorPool gfxPool = VK_NULL_HANDLE;
+                {
+                    VkDescriptorPoolSize ps{};
+                    ps.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; ps.descriptorCount = 3;
+                    VkDescriptorPoolSize ps2{};
+                    ps2.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps2.descriptorCount = 6;
+                    VkDescriptorPoolSize ps3{};
+                    ps3.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; ps3.descriptorCount = 2;
+                    VkDescriptorPoolSize poolSizes[] = {ps, ps2, ps3};
+                    VkDescriptorPoolCreateInfo gfxPoolInfo{};
+                    gfxPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                    gfxPoolInfo.poolSizeCount = 3;
+                    gfxPoolInfo.pPoolSizes = poolSizes;
+                    gfxPoolInfo.maxSets = 1;
+                    gfxPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+                    if (vkCreateDescriptorPool(device, &gfxPoolInfo, nullptr, &gfxPool) != VK_SUCCESS)
+                        throw std::runtime_error("[Async] Failed to create gfx descriptor pool for solid360 task");
+                    app->resources.addDescriptorPool(gfxPool, "Temp: solid360 gfx pool");
+                }
+                VkDescriptorSet gfxDs = VK_NULL_HANDLE;
+                {
+                    VkDescriptorSetAllocateInfo ainfo{};
+                    ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                    ainfo.descriptorPool = gfxPool;
+                    ainfo.descriptorSetCount = 1;
+                    VkDescriptorSetLayout layout = app->getDescriptorSetLayout();
+                    ainfo.pSetLayouts = &layout;
+                    if (vkAllocateDescriptorSets(device, &ainfo, &gfxDs) != VK_SUCCESS)
+                        throw std::runtime_error("[Async] Failed to allocate gfx descriptor set for solid360 task");
+                    app->resources.addDescriptorSet(gfxDs, "Temp: solid360 gfx DS");
+                }
+
+                // Prepare descriptor writes mirroring main descriptor set but using taskUBO.
+                // All buffer infos must be heap-allocated because their pointers
+                // are stored in gfxWrites and later freed in the cleanup loop.
+                std::vector<VkWriteDescriptorSet> gfxWrites;
+                VkDescriptorBufferInfo* uboInfo = new VkDescriptorBufferInfo{ taskUBO.buffer, 0, sizeof(UniformObject) };
+                VkWriteDescriptorSet uboWrite{};
+                uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                uboWrite.dstSet = gfxDs;
+                uboWrite.dstBinding = 0;
+                uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                uboWrite.descriptorCount = 1;
+                uboWrite.pBufferInfo = uboInfo;
+                gfxWrites.push_back(uboWrite);
+
+                // Helper to add image writes (allocate infos per-write)
+                auto addImageWriteLocal = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
+                    if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
+                    VkDescriptorImageInfo* info = new VkDescriptorImageInfo();
+                    info->sampler = sampler; info->imageView = view; info->imageLayout = layout;
+                    VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    w.dstSet = gfxDs; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    w.descriptorCount = 1; w.pImageInfo = info;
+                    gfxWrites.push_back(w);
+                };
+
+                if (this->textureArrayManager.albedoSampler != VK_NULL_HANDLE) {
+                    addImageWriteLocal(1, this->textureArrayManager.albedoSampler, this->textureArrayManager.albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    addImageWriteLocal(2, this->textureArrayManager.normalSampler, this->textureArrayManager.normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    addImageWriteLocal(3, this->textureArrayManager.bumpSampler, this->textureArrayManager.bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                }
+                addImageWriteLocal(4, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+                addImageWriteLocal(8, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+                addImageWriteLocal(9, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+
+                // Buffer infos must be heap-allocated (like addImageWriteLocal does for
+                // images) because they are stored by pointer in gfxWrites and must
+                // remain valid until updateDescriptorSet() consumes them below.
+                if (this->sceneRenderer->materialsBuffer.buffer != VK_NULL_HANDLE) {
+                    VkDescriptorBufferInfo* matInfo = new VkDescriptorBufferInfo{ this->sceneRenderer->materialsBuffer.buffer, 0, VK_WHOLE_SIZE };
+                    VkWriteDescriptorSet matWrite{}; matWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    matWrite.dstSet = gfxDs; matWrite.dstBinding = 5; matWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    matWrite.descriptorCount = 1; matWrite.pBufferInfo = matInfo;
+                    gfxWrites.push_back(matWrite);
+                }
+                if (this->sceneRenderer->waterParamsBuffer_.buffer != VK_NULL_HANDLE) {
+                    VkDescriptorBufferInfo* waterInfo = new VkDescriptorBufferInfo{ this->sceneRenderer->waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE };
+                    VkWriteDescriptorSet waterWrite{}; waterWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    waterWrite.dstSet = gfxDs; waterWrite.dstBinding = 7; waterWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    waterWrite.descriptorCount = 1; waterWrite.pBufferInfo = waterInfo;
+                    gfxWrites.push_back(waterWrite);
+                }
+                // Sky UBO (binding 6) — required by sky pipeline used in solid360 rendering
+                {
+                    Buffer skyBuf = this->sceneRenderer->skyRenderer->getSkyUniformBuffer();
+                    if (skyBuf.buffer != VK_NULL_HANDLE) {
+                        VkDescriptorBufferInfo* skyInfo = new VkDescriptorBufferInfo{ skyBuf.buffer, 0, sizeof(SkyUniform) };
+                        VkWriteDescriptorSet skyWrite{}; skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                        skyWrite.dstSet = gfxDs; skyWrite.dstBinding = 6; skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                        skyWrite.descriptorCount = 1; skyWrite.pBufferInfo = skyInfo;
+                        gfxWrites.push_back(skyWrite);
+                    }
+                }
+                if (this->sceneRenderer->waterRenderUBOBuffer_.buffer != VK_NULL_HANDLE) {
+                    VkDescriptorBufferInfo* wrInfo = new VkDescriptorBufferInfo{ this->sceneRenderer->waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO) };
+                    VkWriteDescriptorSet wrWrite{}; wrWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    wrWrite.dstSet = gfxDs; wrWrite.dstBinding = 10; wrWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                    wrWrite.descriptorCount = 1; wrWrite.pBufferInfo = wrInfo;
+                    gfxWrites.push_back(wrWrite);
+                }
+
+                app->updateDescriptorSet(gfxWrites);
+                for (auto &w : gfxWrites) { if (w.pImageInfo) delete w.pImageInfo; if (w.pBufferInfo) delete w.pBufferInfo; }
+
                 this->sceneRenderer->solid360Renderer->renderSolid360(
                     app, cmd,
                     this->sceneRenderer->skyRenderer.get(), skyMode360,
                     this->sceneRenderer->solidRenderer.get(),
-                    app->getMainDescriptorSet(),
-                    this->sceneRenderer->mainUniformBuffer, this->uboStatic,
+                    gfxDs,
+                    taskUBO, this->uboStatic,
                     (computeDs != VK_NULL_HANDLE) ? taskCompact.buffer : VK_NULL_HANDLE,
                     (computeDs != VK_NULL_HANDLE) ? taskVisible.buffer : VK_NULL_HANDLE);
 
                 // Submit and schedule cleanup of temporary resources after fence signals
                 VkFence f = app->submitCommandBufferAsync(cmd, &semSolid360);
-                app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app]() {
+                app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app, gfxDs, gfxPool, taskUBO]() {
                     // Unregister and destroy descriptor set/pool
                     app->resources.removeDescriptorSet(computeDs);
                     if (taskPool != VK_NULL_HANDLE) {
                         app->resources.removeDescriptorPool(taskPool);
                         vkDestroyDescriptorPool(device, taskPool, nullptr);
+                    }
+                    // Destroy per-task gfx descriptor pool (and its descriptor set).
+                    // Do NOT free gfxDs back to the shared main pool — on the next
+                    // frame a new solid360 task may get the same handle, causing
+                    // a use-after-free when this callback runs.
+                    if (gfxPool != VK_NULL_HANDLE) {
+                        app->resources.removeDescriptorSet(gfxDs);
+                        app->resources.removeDescriptorPool(gfxPool);
+                        vkDestroyDescriptorPool(device, gfxPool, nullptr);
                     }
                     // Destroy buffers and free memory
                     if (taskCompact.buffer != VK_NULL_HANDLE) {
@@ -866,6 +995,15 @@ public:
                     if (taskVisible.memory != VK_NULL_HANDLE) {
                         app->resources.removeDeviceMemory(taskVisible.memory);
                         vkFreeMemory(device, taskVisible.memory, nullptr);
+                    }
+                    // Destroy per-task UBO
+                    if (taskUBO.buffer != VK_NULL_HANDLE) {
+                        app->resources.removeBuffer(taskUBO.buffer);
+                        vkDestroyBuffer(device, taskUBO.buffer, nullptr);
+                    }
+                    if (taskUBO.memory != VK_NULL_HANDLE) {
+                        app->resources.removeDeviceMemory(taskUBO.memory);
+                        vkFreeMemory(device, taskUBO.memory, nullptr);
                     }
                 });
             });
@@ -1337,6 +1475,15 @@ public:
 
 
 int main(int argc, char** argv) {
+    // Allow threads (RADV driver, validation layers, miniaudio) to use
+    // real-time scheduling. Without this, glibc's thread priority protection
+    // code (tpp.c) hits an assertion when a library tries to promote a thread
+    // to SCHED_FIFO but RLIMIT_RTPRIO is too low.
+    struct rlimit rlim;
+    if (getrlimit(RLIMIT_RTPRIO, &rlim) == 0) {
+        rlim.rlim_cur = rlim.rlim_max;
+        setrlimit(RLIMIT_RTPRIO, &rlim);
+    }
     try {
         MyApp app;
         app.run();

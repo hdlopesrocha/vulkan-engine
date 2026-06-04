@@ -15,8 +15,14 @@ public:
     void init(VulkanApp* app, SkySettings& settings,
               VkDescriptorSet descriptorSet);
 
+    // Write sky UBO buffer to an additional descriptor set (for multi-frame setups)
+    void writeDescriptorSet(VulkanApp* app, VkDescriptorSet descriptorSet);
+
     // Update sky UBO contents from SkySettings (call per-frame if UI may change)
     void update(VulkanApp* app);
+
+    // Access the sky uniform buffer for binding to descriptor sets
+    Buffer getBuffer() const { return skyBuffer; }
 
     // Destroy GPU resources
     void cleanup();

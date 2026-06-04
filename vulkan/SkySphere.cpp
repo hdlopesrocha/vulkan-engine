@@ -74,6 +74,19 @@ void SkySphere::update(VulkanApp* app) {
     }
 }
 
+void SkySphere::writeDescriptorSet(VulkanApp* app, VkDescriptorSet descriptorSet) {
+    if (skyBuffer.buffer == VK_NULL_HANDLE || descriptorSet == VK_NULL_HANDLE) return;
+    VkDescriptorBufferInfo skyBufInfo{ skyBuffer.buffer, 0, skyBufferSize };
+    VkWriteDescriptorSet skyWrite{};
+    skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    skyWrite.dstSet = descriptorSet;
+    skyWrite.dstBinding = 6;
+    skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    skyWrite.descriptorCount = 1;
+    skyWrite.pBufferInfo = &skyBufInfo;
+    app->updateDescriptorSet({ skyWrite });
+}
+
 void SkySphere::cleanup() {
     // Clear local handles; VulkanResourceManager will perform destruction
     skyBuffer.buffer = VK_NULL_HANDLE;

@@ -5,6 +5,67 @@
 #include <cmath>
 #include <iostream>
 
+namespace {
+// Record a buffer memory barrier to make transfer-written vertex/index data
+// available. Buffers are CONCURRENT (accessible by both queues) so
+// VK_QUEUE_FAMILY_IGNORED is correct. Timeline semaphore handles cross-queue
+// execution ordering.
+void recordTransferWriteRelease(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size) {
+    // Make transfer writes available and visible to vertex/index reads.
+    // All transfers use the graphics queue with pipeline barriers.
+    VkBufferMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = buffer;
+    barrier.offset = offset;
+    barrier.size = size;
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+        0, 0, nullptr, 1, &barrier, 0, nullptr);
+}
+} // anonymous namespace
+
+void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
+    if (vertexBuffer.buffer == VK_NULL_HANDLE && indexBuffer.buffer == VK_NULL_HANDLE) return;
+
+    VkBufferMemoryBarrier barriers[2]{};
+    uint32_t count = 0;
+    if (vertexBuffer.buffer != VK_NULL_HANDLE) {
+        barriers[count].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        barriers[count].srcAccessMask = 0;
+        barriers[count].dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+        barriers[count].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[count].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[count].buffer = vertexBuffer.buffer;
+        barriers[count].offset = 0;
+        barriers[count].size = VK_WHOLE_SIZE;
+        ++count;
+    }
+    if (indexBuffer.buffer != VK_NULL_HANDLE) {
+        barriers[count].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        barriers[count].srcAccessMask = 0;
+        barriers[count].dstAccessMask = VK_ACCESS_INDEX_READ_BIT;
+        barriers[count].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[count].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[count].buffer = indexBuffer.buffer;
+        barriers[count].offset = 0;
+        barriers[count].size = VK_WHOLE_SIZE;
+        ++count;
+    }
+    if (count > 0) {
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+            0, 0, nullptr,
+            count, barriers,
+            0, nullptr);
+    }
+}
+
 void IndirectRenderer::setVertexBufferForMesh(uint32_t meshId, Buffer vbuf) {
     std::lock_guard<std::mutex> guard(mutex);
     // For simplicity, just assign to the main vertexBuffer (per-mesh not tracked in this design)
@@ -69,6 +130,13 @@ uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
     }
 
     mergedVertices.insert(mergedVertices.end(), mesh.vertices.begin(), mesh.vertices.end());
+    // Clamp brush indices in newly inserted vertices to prevent OOB shader access
+    size_t newStart = m.baseVertex;
+    for (size_t vi = newStart; vi < mergedVertices.size(); ++vi) {
+        for (int c = 0; c < 3; ++c)
+            if (mergedVertices[vi].brushIndex > 16 || mergedVertices[vi].brushIndex < 0)
+                mergedVertices[vi].brushIndex = 0;
+    }
     mergedIndices.insert(mergedIndices.end(), mesh.indices.begin(), mesh.indices.end());
 
     VkDrawIndexedIndirectCommand cmd{};
@@ -206,65 +274,30 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
     }
     VkDeviceSize vertexOffset = info.baseVertex * sizeof(Vertex);
     VkDeviceSize vertexSize = meshVertexCount * sizeof(Vertex);
-    if (vertexSize > 0 && info.baseVertex < mergedVertices.size()) {
-        Buffer stagingVertex = app->createBuffer(vertexSize,
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        void* data;
-        vkMapMemory(app->getDevice(), stagingVertex.memory, 0, vertexSize, 0, &data);
-        memcpy(data, &mergedVertices[info.baseVertex], vertexSize);
-        vkUnmapMemory(app->getDevice(), stagingVertex.memory);
-        // Submit copy asynchronously to the transfer queue to avoid blocking the graphics queue.
-        VkSemaphore semV = VK_NULL_HANDLE;
-        VkFence fenceV = app->runSingleTimeCommandsAsyncOnTransfer([&](VkCommandBuffer cmd) {
-            VkBufferCopy copyRegion{};
-            copyRegion.srcOffset = 0;
-            copyRegion.dstOffset = vertexOffset;
-            copyRegion.size = vertexSize;
-            vkCmdCopyBuffer(cmd, stagingVertex.buffer, vertexBuffer.buffer, 1, &copyRegion);
-        }, &semV);
-        // Defer destruction of the staging buffer until the transfer fence signals
-        VkDevice dev = app->getDevice();
-        Buffer sbv = stagingVertex;
-        app->deferDestroyUntilFence(fenceV, [dev, sbv, app]() {
-            if (sbv.buffer != VK_NULL_HANDLE) {
-                if (app->resources.removeBuffer(sbv.buffer)) vkDestroyBuffer(dev, sbv.buffer, nullptr);
-            }
-            if (sbv.memory != VK_NULL_HANDLE) {
-                if (app->resources.removeDeviceMemory(sbv.memory)) vkFreeMemory(dev, sbv.memory, nullptr);
-            }
-        });
-    }
     VkDeviceSize indexOffset = info.firstIndex * sizeof(uint32_t);
     VkDeviceSize indexSize = info.indexCount * sizeof(uint32_t);
-    if (indexSize > 0 && info.firstIndex < mergedIndices.size()) {
-        Buffer stagingIndex = app->createBuffer(indexSize,
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        void* data;
-        vkMapMemory(app->getDevice(), stagingIndex.memory, 0, indexSize, 0, &data);
-        memcpy(data, &mergedIndices[info.firstIndex], indexSize);
-        vkUnmapMemory(app->getDevice(), stagingIndex.memory);
-        // Submit copy asynchronously to the transfer queue to avoid blocking the graphics queue.
-        VkSemaphore semI = VK_NULL_HANDLE;
-        VkFence fenceI = app->runSingleTimeCommandsAsyncOnTransfer([&](VkCommandBuffer cmd) {
-            VkBufferCopy copyRegion{};
-            copyRegion.srcOffset = 0;
-            copyRegion.dstOffset = indexOffset;
-            copyRegion.size = indexSize;
-            vkCmdCopyBuffer(cmd, stagingIndex.buffer, indexBuffer.buffer, 1, &copyRegion);
-        }, &semI);
-        // Defer destruction of the staging buffer until the transfer fence signals
-        VkDevice devI = app->getDevice();
-        Buffer sbi = stagingIndex;
-        app->deferDestroyUntilFence(fenceI, [devI, sbi, app]() {
-            if (sbi.buffer != VK_NULL_HANDLE) {
-                if (app->resources.removeBuffer(sbi.buffer)) vkDestroyBuffer(devI, sbi.buffer, nullptr);
+    bool doVertexUpload = (vertexSize > 0 && info.baseVertex < mergedVertices.size());
+    bool doIndexUpload = (indexSize > 0 && info.firstIndex < mergedIndices.size());
+    if (doVertexUpload || doIndexUpload) {
+        if (doVertexUpload) {
+            for (size_t v = info.baseVertex; v < info.baseVertex + meshVertexCount; ++v) {
+                if (mergedVertices[v].brushIndex > 16 || mergedVertices[v].brushIndex < 0)
+                    mergedVertices[v].brushIndex = 0;
             }
-            if (sbi.memory != VK_NULL_HANDLE) {
-                if (app->resources.removeDeviceMemory(sbi.memory)) vkFreeMemory(devI, sbi.memory, nullptr);
-            }
-        });
+        }
+
+        StagingRingBuffer::Allocation aV{}, aI{};
+        VkBuffer sb = app->stagingRing.buffer();
+        if (doVertexUpload) { aV = app->stagingRing.allocate(vertexSize); if (!aV.mappedPtr) return true; memcpy(aV.mappedPtr, &mergedVertices[info.baseVertex], vertexSize); }
+        if (doIndexUpload) { aI = app->stagingRing.allocate(indexSize); if (!aI.mappedPtr) { if (aV.mappedPtr) app->stagingRing.release(aV.offset, vertexSize); return true; } memcpy(aI.mappedPtr, &mergedIndices[info.firstIndex], indexSize); }
+
+        VkFence fence = app->runSingleTimeCommandsAsyncOnTransfer([&](VkCommandBuffer cmd) {
+            if (doVertexUpload) { VkBufferCopy c{}; c.srcOffset=aV.offset; c.dstOffset=vertexOffset; c.size=vertexSize; vkCmdCopyBuffer(cmd,sb,vertexBuffer.buffer,1,&c); recordTransferWriteRelease(cmd,vertexBuffer.buffer,vertexOffset,vertexSize); }
+            if (doIndexUpload)  { VkBufferCopy c{}; c.srcOffset=aI.offset; c.dstOffset=indexOffset; c.size=indexSize; vkCmdCopyBuffer(cmd,sb,indexBuffer.buffer,1,&c); recordTransferWriteRelease(cmd,indexBuffer.buffer,indexOffset,indexSize); }
+        }, nullptr);
+
+        if (doVertexUpload) { VkDeviceSize o=aV.offset,s=vertexSize; app->deferDestroyUntilFence(fence,[this,app,o,s](){app->stagingRing.release(o,s);}); }
+        if (doIndexUpload)  { VkDeviceSize o=aI.offset,s=indexSize;  app->deferDestroyUntilFence(fence,[this,app,o,s](){app->stagingRing.release(o,s);}); }
     }
     return true;
 }
@@ -331,18 +364,10 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     if (!dirty) return;
     printf("[IndirectRenderer::rebuild] dirty=true, rebuilding buffers...\n");
 
-    // Wait for any async generation/submit to finish.
-    // Do NOT call waitForFrameFences() here: rebuild() is invoked from
-    // processPendingMeshes() which runs inside drawFrame() after the current
-    // frame's fence has already been reset but before it is re-submitted.
-    // Waiting for that fence would block forever. The drawFrame() fence wait
-    // at the top of drawFrame() already guarantees the GPU was idle before
-    // we entered update(), so old buffers are not in flight.
-    app->waitForAllPendingCommandBuffers();
-
     // Helper to schedule safe destruction of old buffers via the app's
-    // deferred-destroy mechanism. This avoids leaking device memory when
-    // replacing buffers during rebuilds.
+    // deferred-destroy mechanism. The callback runs only after outstanding
+    // async uploads and frame fences have completed, so rebuilds can replace
+    // buffers without stalling the streaming path.
     auto scheduleDestroyBuffer = [&](const Buffer &b) {
         if (b.buffer == VK_NULL_HANDLE && b.memory == VK_NULL_HANDLE) return;
         Buffer copy = b;
@@ -415,69 +440,84 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         
-        // Upload current data via staging
-        if (!mergedVertices.empty()) {
-            VkDeviceSize dataSize = mergedVertices.size() * sizeof(Vertex);
-            Buffer staging = app->createBuffer(dataSize,
+        // Upload current data via staging. Batch vertex+index copies into one
+        // transfer submission so the rebuild path only pays one fence/semaphore.
+        // Rebuild is infrequent; use dedicated staging buffers (ring buffer is
+        // reserved for the async streaming hot path).
+        Buffer stagingVertex{};
+        Buffer stagingIndex{};
+        bool doVertexUpload = !mergedVertices.empty();
+        bool doIndexUpload = !mergedIndices.empty();
+        VkDeviceSize vertexDataSize = mergedVertices.size() * sizeof(Vertex);
+        VkDeviceSize indexDataSize = mergedIndices.size() * sizeof(uint32_t);
+
+        if (doVertexUpload) {
+            // Clamp brush indices before upload.
+            static int clampedCount = 0;
+            for (auto& v : mergedVertices) {
+                if (v.brushIndex > 16 || v.brushIndex < 0) {
+                    if (clampedCount < 10) fprintf(stderr, "[rebuild] clamping brushIndex %d → 0\n", v.brushIndex);
+                    v.brushIndex = 0;
+                    ++clampedCount;
+                }
+            }
+            stagingVertex = app->createBuffer(vertexDataSize,
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             void* data;
-            vkMapMemory(app->getDevice(), staging.memory, 0, dataSize, 0, &data);
-            memcpy(data, mergedVertices.data(), dataSize);
-            vkUnmapMemory(app->getDevice(), staging.memory);
-            
-            // Submit merged upload asynchronously to transfer queue and obtain a semaphore
-            VkSemaphore semV = VK_NULL_HANDLE;
-            VkFence fenceV = app->runSingleTimeCommandsAsyncOnTransfer([&](VkCommandBuffer cmd) {
-                VkBufferCopy copyRegion{};
-                copyRegion.srcOffset = 0;
-                copyRegion.dstOffset = 0;
-                copyRegion.size = dataSize;
-                vkCmdCopyBuffer(cmd, staging.buffer, vertexBuffer.buffer, 1, &copyRegion);
-            }, &semV);
-            // Defer explicit destruction of the staging buffer until transfer completes
-            VkDevice devV = app->getDevice();
-            Buffer sbv = staging;
-            app->deferDestroyUntilFence(fenceV, [devV, sbv, app]() {
-                if (sbv.buffer != VK_NULL_HANDLE) {
-                    if (app->resources.removeBuffer(sbv.buffer)) vkDestroyBuffer(devV, sbv.buffer, nullptr);
-                }
-                if (sbv.memory != VK_NULL_HANDLE) {
-                    if (app->resources.removeDeviceMemory(sbv.memory)) vkFreeMemory(devV, sbv.memory, nullptr);
-                }
-            });
+            vkMapMemory(app->getDevice(), stagingVertex.memory, 0, vertexDataSize, 0, &data);
+            memcpy(data, mergedVertices.data(), vertexDataSize);
+            vkUnmapMemory(app->getDevice(), stagingVertex.memory);
         }
-        
-        if (!mergedIndices.empty()) {
-            VkDeviceSize dataSize = mergedIndices.size() * sizeof(uint32_t);
-            Buffer staging = app->createBuffer(dataSize,
+        if (doIndexUpload) {
+            stagingIndex = app->createBuffer(indexDataSize,
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             void* data;
-            vkMapMemory(app->getDevice(), staging.memory, 0, dataSize, 0, &data);
-            memcpy(data, mergedIndices.data(), dataSize);
-            vkUnmapMemory(app->getDevice(), staging.memory);
-            
-            // Submit merged upload asynchronously to transfer queue and obtain a semaphore
-            VkSemaphore semI = VK_NULL_HANDLE;
-            VkFence fenceI = app->runSingleTimeCommandsAsyncOnTransfer([&](VkCommandBuffer cmd) {
-                VkBufferCopy copyRegion{};
-                copyRegion.srcOffset = 0;
-                copyRegion.dstOffset = 0;
-                copyRegion.size = dataSize;
-                vkCmdCopyBuffer(cmd, staging.buffer, indexBuffer.buffer, 1, &copyRegion);
-            }, &semI);
-            // Defer explicit destruction of the staging buffer until transfer completes
-            VkDevice devI = app->getDevice();
-            Buffer sbi = staging;
-            app->deferDestroyUntilFence(fenceI, [devI, sbi, app]() {
-                if (sbi.buffer != VK_NULL_HANDLE) {
-                    if (app->resources.removeBuffer(sbi.buffer)) vkDestroyBuffer(devI, sbi.buffer, nullptr);
+            vkMapMemory(app->getDevice(), stagingIndex.memory, 0, indexDataSize, 0, &data);
+            memcpy(data, mergedIndices.data(), indexDataSize);
+            vkUnmapMemory(app->getDevice(), stagingIndex.memory);
+        }
+
+        if (doVertexUpload || doIndexUpload) {
+            // Use synchronous transfer: wait for the copy to complete before
+            // any draw commands reference these buffers. Rebuild is infrequent,
+            // so the CPU stall is negligible.
+            app->runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd) {
+                if (doVertexUpload) {
+                    VkBufferCopy copyRegion{};
+                    copyRegion.srcOffset = 0;
+                    copyRegion.dstOffset = 0;
+                    copyRegion.size = vertexDataSize;
+                    vkCmdCopyBuffer(cmd, stagingVertex.buffer, vertexBuffer.buffer, 1, &copyRegion);
+                    recordTransferWriteRelease(cmd, vertexBuffer.buffer, 0, vertexDataSize);
                 }
-                if (sbi.memory != VK_NULL_HANDLE) {
-                    if (app->resources.removeDeviceMemory(sbi.memory)) vkFreeMemory(devI, sbi.memory, nullptr);
+                if (doIndexUpload) {
+                    VkBufferCopy copyRegion{};
+                    copyRegion.srcOffset = 0;
+                    copyRegion.dstOffset = 0;
+                    copyRegion.size = indexDataSize;
+                    vkCmdCopyBuffer(cmd, stagingIndex.buffer, indexBuffer.buffer, 1, &copyRegion);
+                    recordTransferWriteRelease(cmd, indexBuffer.buffer, 0, indexDataSize);
                 }
             });
+
+            VkDevice dev = app->getDevice();
+            Buffer sbv = stagingVertex;
+            Buffer sbi = stagingIndex;
+            // Staging buffers can be destroyed immediately since the transfer is complete
+            if (sbv.buffer != VK_NULL_HANDLE) {
+                if (app->resources.removeBuffer(sbv.buffer)) vkDestroyBuffer(dev, sbv.buffer, nullptr);
+            }
+            if (sbv.memory != VK_NULL_HANDLE) {
+                if (app->resources.removeDeviceMemory(sbv.memory)) vkFreeMemory(dev, sbv.memory, nullptr);
+            }
+            if (sbi.buffer != VK_NULL_HANDLE) {
+                if (app->resources.removeBuffer(sbi.buffer)) vkDestroyBuffer(dev, sbi.buffer, nullptr);
+            }
+            if (sbi.memory != VK_NULL_HANDLE) {
+                if (app->resources.removeDeviceMemory(sbi.memory)) vkFreeMemory(dev, sbi.memory, nullptr);
+            }
         }
     }
 
@@ -557,47 +597,47 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     }
 
     // Create/resize compact indirect buffer (storage + indirect usage)
-    // This buffer is written by compute shader and read by indirect draw
-    VkDeviceSize compactSize = indirectBufferSize; // same capacity as full indirect buffer
+    // Written by compute shader every frame, read by indirect draw — DEVICE_LOCAL
+    // for optimal GPU performance on discrete GPUs.
+    VkDeviceSize compactSize = indirectBufferSize;
     printf("[IndirectRenderer::rebuild] meshes=%zu activeCmds=%zu capacity=%zu\n", meshes.size(), cmds.size(), meshCapacity);
     if (compactIndirectBuffer.buffer != VK_NULL_HANDLE || compactIndirectBuffer.memory != VK_NULL_HANDLE) {
         scheduleDestroyBuffer(compactIndirectBuffer);
         compactIndirectBuffer = {};
     }
+    Buffer stagingCompact{};
     if (compactSize > 0) {
-        // Compact buffer is written by compute shader every frame - use host-coherent for compatibility
-        // (device-local can cause issues on some AMD drivers when written by compute)
-        compactIndirectBuffer = app->createBuffer(compactSize, 
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, 
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        
-        // Initialize compactIndirectBuffer with the same data as indirectBuffer so that
-        // drawIndirectOnly() works even without running the compute cull pass
+        compactIndirectBuffer = app->createBuffer(compactSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (indirectDataSize > 0) {
+            stagingCompact = app->createBuffer(indirectDataSize,
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             void* data;
-            vkMapMemory(app->getDevice(), compactIndirectBuffer.memory, 0, indirectDataSize, 0, &data);
+            vkMapMemory(app->getDevice(), stagingCompact.memory, 0, indirectDataSize, 0, &data);
             memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
-            vkUnmapMemory(app->getDevice(), compactIndirectBuffer.memory);
+            vkUnmapMemory(app->getDevice(), stagingCompact.memory);
         }
     }
 
-    // Create or zero the visible count buffer (single uint) - host-visible for compute shader writes
+    // Create or zero the visible count buffer (single uint).
+    // Must be HOST_VISIBLE — readVisibleCount() maps it for CPU stats reads.
     VkDeviceSize countSize = sizeof(uint32_t);
     if (visibleCountBuffer.buffer != VK_NULL_HANDLE || visibleCountBuffer.memory != VK_NULL_HANDLE) {
-        // Schedule destruction of any previous visible-count buffer
         scheduleDestroyBuffer(visibleCountBuffer);
         visibleCountBuffer = {};
     }
-    visibleCountBuffer = app->createBuffer(countSize, 
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, 
+    visibleCountBuffer = app->createBuffer(countSize,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    
-    // Initialize visibleCount with the number of active commands so drawIndirectOnly() works without culling
+
+    // Initialize visibleCount
+    uint32_t initialCount = static_cast<uint32_t>(indirectCommands.size());
     {
-        uint32_t initialCount = static_cast<uint32_t>(indirectCommands.size());
         void* data;
-        vkMapMemory(app->getDevice(), visibleCountBuffer.memory, 0, sizeof(uint32_t), 0, &data);
-        memcpy(data, &initialCount, sizeof(uint32_t));
+        vkMapMemory(app->getDevice(), visibleCountBuffer.memory, 0, countSize, 0, &data);
+        memcpy(data, &initialCount, countSize);
         vkUnmapMemory(app->getDevice(), visibleCountBuffer.memory);
     }
 
@@ -656,7 +696,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.offset = 0;
-        pc.size = sizeof(glm::mat4) + sizeof(uint32_t);  // mat4 viewProj + uint targetLayer
+        pc.size = sizeof(glm::mat4) + sizeof(uint32_t);  // 68 bytes
 
         VkPipelineLayoutCreateInfo plinfo{};
         plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -781,6 +821,9 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // Try to load device function for indirect-count draws; require it.
     cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCountKHR");
     if (!cmdDrawIndexedIndirectCount) {
+        cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(app->getDevice(), "vkCmdDrawIndexedIndirectCount");
+    }
+    if (!cmdDrawIndexedIndirectCount) {
         throw std::runtime_error("Required device function vkCmdDrawIndexedIndirectCountKHR is not available");
     }
 
@@ -834,7 +877,8 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // Bind and dispatch compute cull
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeDescriptorSet, 0, nullptr);
-    vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::mat4), &viewProj);
+    uint8_t pc[68]; memcpy(pc, &viewProj, 64); uint32_t layer = 0; memcpy(pc+64, &layer, 4);
+    vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 68, pc);
 
     uint32_t numCmds = static_cast<uint32_t>(indirectCommands.size());
     uint32_t groupSize = 64;
@@ -894,7 +938,8 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     // Bind and dispatch compute cull using caller-provided descriptor set
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeDesc, 0, nullptr);
-    vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::mat4), &viewProj);
+    uint8_t pc2[68]; memcpy(pc2, &viewProj, 64); uint32_t layer2 = 0; memcpy(pc2+64, &layer2, 4);
+    vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 68, pc2);
 
     uint32_t numCmds = 0;
     {
