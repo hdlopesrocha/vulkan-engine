@@ -36,7 +36,7 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
     uint32_t count = 0;
     if (vertexBuffer.buffer != VK_NULL_HANDLE) {
         barriers[count].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        barriers[count].srcAccessMask = 0;
+        barriers[count].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
         barriers[count].dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
         barriers[count].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barriers[count].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -47,7 +47,7 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
     }
     if (indexBuffer.buffer != VK_NULL_HANDLE) {
         barriers[count].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        barriers[count].srcAccessMask = 0;
+        barriers[count].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
         barriers[count].dstAccessMask = VK_ACCESS_INDEX_READ_BIT;
         barriers[count].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barriers[count].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -58,7 +58,7 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
     }
     if (count > 0) {
         vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_HOST_BIT,
             VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
             0, 0, nullptr,
             count, barriers,
@@ -286,79 +286,20 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
             }
         }
 
-        // Try ring buffer first; fall back to dedicated staging if full.
-        StagingRingBuffer::Allocation aV{}, aI{};
-        bool useRingV = false, useRingI = false;
-        Buffer fallbackStagingV{}, fallbackStagingI{};
-        VkBuffer sb = app->stagingRing.buffer();
-
+        // Direct memcpy to HOST_VISIBLE|HOST_COHERENT buffers — synchronous,
+        // immediately visible to the GPU on integrated/shared-memory GPUs.
+        // Avoids async staging transfer race where vkCmdCopyBuffer hasn't
+        // completed before the render pass reads the vertex/index data.
+        void* data;
         if (doVertexUpload) {
-            aV = app->stagingRing.allocate(vertexSize);
-            if (aV.mappedPtr) {
-                memcpy(aV.mappedPtr, &mergedVertices[info.baseVertex], vertexSize);
-                useRingV = true;
-            } else {
-                // Ring full — create dedicated staging buffer
-                fallbackStagingV = app->createBuffer(vertexSize,
-                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                void* d;
-                vkMapMemory(app->getDevice(), fallbackStagingV.memory, 0, vertexSize, 0, &d);
-                memcpy(d, &mergedVertices[info.baseVertex], vertexSize);
-                vkUnmapMemory(app->getDevice(), fallbackStagingV.memory);
-            }
+            vkMapMemory(app->getDevice(), vertexBuffer.memory, vertexOffset, vertexSize, 0, &data);
+            memcpy(data, &mergedVertices[info.baseVertex], vertexSize);
+            vkUnmapMemory(app->getDevice(), vertexBuffer.memory);
         }
         if (doIndexUpload) {
-            aI = app->stagingRing.allocate(indexSize);
-            if (aI.mappedPtr) {
-                memcpy(aI.mappedPtr, &mergedIndices[info.firstIndex], indexSize);
-                useRingI = true;
-            } else {
-                if (useRingV) { app->stagingRing.release(aV.offset, vertexSize); useRingV = false; }
-                fallbackStagingI = app->createBuffer(indexSize,
-                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                void* d;
-                vkMapMemory(app->getDevice(), fallbackStagingI.memory, 0, indexSize, 0, &d);
-                memcpy(d, &mergedIndices[info.firstIndex], indexSize);
-                vkUnmapMemory(app->getDevice(), fallbackStagingI.memory);
-            }
-        }
-
-        VkDevice dev = app->getDevice();
-        VkFence fence = app->runSingleTimeCommandsAsyncOnTransfer([&](VkCommandBuffer cmd) {
-            if (doVertexUpload) {
-                VkBuffer src = useRingV ? sb : fallbackStagingV.buffer;
-                VkDeviceSize srcOff = useRingV ? aV.offset : 0;
-                VkBufferCopy c{}; c.srcOffset=srcOff; c.dstOffset=vertexOffset; c.size=vertexSize;
-                vkCmdCopyBuffer(cmd, src, vertexBuffer.buffer, 1, &c);
-                recordTransferWriteRelease(cmd, vertexBuffer.buffer, vertexOffset, vertexSize);
-            }
-            if (doIndexUpload) {
-                VkBuffer src = useRingI ? sb : fallbackStagingI.buffer;
-                VkDeviceSize srcOff = useRingI ? aI.offset : 0;
-                VkBufferCopy c{}; c.srcOffset=srcOff; c.dstOffset=indexOffset; c.size=indexSize;
-                vkCmdCopyBuffer(cmd, src, indexBuffer.buffer, 1, &c);
-                recordTransferWriteRelease(cmd, indexBuffer.buffer, indexOffset, indexSize);
-            }
-        }, nullptr);
-
-        if (useRingV) { VkDeviceSize o=aV.offset,s=vertexSize; app->deferDestroyUntilFence(fence,[this,app,o,s](){app->stagingRing.release(o,s);}); }
-        if (useRingI) { VkDeviceSize o=aI.offset,s=indexSize;  app->deferDestroyUntilFence(fence,[this,app,o,s](){app->stagingRing.release(o,s);}); }
-        // Destroy fallback staging buffers after the copy completes
-        if (fallbackStagingV.buffer != VK_NULL_HANDLE) {
-            Buffer fv = fallbackStagingV;
-            app->deferDestroyUntilFence(fence, [dev, fv, app]() {
-                if (fv.buffer) { app->resources.removeBuffer(fv.buffer); vkDestroyBuffer(dev, fv.buffer, nullptr); }
-                if (fv.memory) { app->resources.removeDeviceMemory(fv.memory); vkFreeMemory(dev, fv.memory, nullptr); }
-            });
-        }
-        if (fallbackStagingI.buffer != VK_NULL_HANDLE) {
-            Buffer fi = fallbackStagingI;
-            app->deferDestroyUntilFence(fence, [dev, fi, app]() {
-                if (fi.buffer) { app->resources.removeBuffer(fi.buffer); vkDestroyBuffer(dev, fi.buffer, nullptr); }
-                if (fi.memory) { app->resources.removeDeviceMemory(fi.memory); vkFreeMemory(dev, fi.memory, nullptr); }
-            });
+            vkMapMemory(app->getDevice(), indexBuffer.memory, indexOffset, indexSize, 0, &data);
+            memcpy(data, &mergedIndices[info.firstIndex], indexSize);
+            vkUnmapMemory(app->getDevice(), indexBuffer.memory);
         }
     }
     return true;
@@ -430,17 +371,24 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // deferred-destroy mechanism. The callback runs only after outstanding
     // async uploads and frame fences have completed, so rebuilds can replace
     // buffers without stalling the streaming path.
-    // Defer destruction to the current frame's fence. By the time this frame's
-    // render completes, all async command buffers (Solid360, WaterBackFace, etc.)
-    // from previous frames that reference these buffers will also have completed,
-    // because the render waits on their binary semaphores.
+    // Defer destruction until the most recently submitted frame completes.
+    // We must NOT use the current frame's fence — it was just waited on
+    // (already signaled). The previous frame's GPU may still be reading
+    // these buffers. Use (currentFrame + 1) % N to get the fence that was
+    // submitted in the previous iteration and is still in-flight.
     auto scheduleDestroyBuffer = [&](const Buffer &b) {
         if (b.buffer == VK_NULL_HANDLE && b.memory == VK_NULL_HANDLE) return;
         Buffer copy = b;
         VkDevice dev = app->getDevice();
         VkFence fence = VK_NULL_HANDLE;
         uint32_t cf = app->getCurrentFrame();
-        if (cf < app->inFlightFences.size()) fence = app->inFlightFences[cf];
+        size_t n = app->inFlightFences.size();
+        if (n > 0) {
+            // Use the fence from the most recently submitted frame —
+            // (cf + 1) % n gives the fence that's currently in-flight.
+            uint32_t prev = (cf + 1) % static_cast<uint32_t>(n);
+            if (prev < n) fence = app->inFlightFences[prev];
+        }
         app->deferDestroyUntilFence(fence, [dev, copy, app]() {
             if (copy.buffer != VK_NULL_HANDLE) {
                 if (app->resources.removeBuffer(copy.buffer)) vkDestroyBuffer(dev, copy.buffer, nullptr);
