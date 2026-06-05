@@ -286,18 +286,80 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
             }
         }
 
+        // Try ring buffer first; fall back to dedicated staging if full.
         StagingRingBuffer::Allocation aV{}, aI{};
+        bool useRingV = false, useRingI = false;
+        Buffer fallbackStagingV{}, fallbackStagingI{};
         VkBuffer sb = app->stagingRing.buffer();
-        if (doVertexUpload) { aV = app->stagingRing.allocate(vertexSize); if (!aV.mappedPtr) return true; memcpy(aV.mappedPtr, &mergedVertices[info.baseVertex], vertexSize); }
-        if (doIndexUpload) { aI = app->stagingRing.allocate(indexSize); if (!aI.mappedPtr) { if (aV.mappedPtr) app->stagingRing.release(aV.offset, vertexSize); return true; } memcpy(aI.mappedPtr, &mergedIndices[info.firstIndex], indexSize); }
 
+        if (doVertexUpload) {
+            aV = app->stagingRing.allocate(vertexSize);
+            if (aV.mappedPtr) {
+                memcpy(aV.mappedPtr, &mergedVertices[info.baseVertex], vertexSize);
+                useRingV = true;
+            } else {
+                // Ring full — create dedicated staging buffer
+                fallbackStagingV = app->createBuffer(vertexSize,
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                void* d;
+                vkMapMemory(app->getDevice(), fallbackStagingV.memory, 0, vertexSize, 0, &d);
+                memcpy(d, &mergedVertices[info.baseVertex], vertexSize);
+                vkUnmapMemory(app->getDevice(), fallbackStagingV.memory);
+            }
+        }
+        if (doIndexUpload) {
+            aI = app->stagingRing.allocate(indexSize);
+            if (aI.mappedPtr) {
+                memcpy(aI.mappedPtr, &mergedIndices[info.firstIndex], indexSize);
+                useRingI = true;
+            } else {
+                if (useRingV) { app->stagingRing.release(aV.offset, vertexSize); useRingV = false; }
+                fallbackStagingI = app->createBuffer(indexSize,
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                void* d;
+                vkMapMemory(app->getDevice(), fallbackStagingI.memory, 0, indexSize, 0, &d);
+                memcpy(d, &mergedIndices[info.firstIndex], indexSize);
+                vkUnmapMemory(app->getDevice(), fallbackStagingI.memory);
+            }
+        }
+
+        VkDevice dev = app->getDevice();
         VkFence fence = app->runSingleTimeCommandsAsyncOnTransfer([&](VkCommandBuffer cmd) {
-            if (doVertexUpload) { VkBufferCopy c{}; c.srcOffset=aV.offset; c.dstOffset=vertexOffset; c.size=vertexSize; vkCmdCopyBuffer(cmd,sb,vertexBuffer.buffer,1,&c); recordTransferWriteRelease(cmd,vertexBuffer.buffer,vertexOffset,vertexSize); }
-            if (doIndexUpload)  { VkBufferCopy c{}; c.srcOffset=aI.offset; c.dstOffset=indexOffset; c.size=indexSize; vkCmdCopyBuffer(cmd,sb,indexBuffer.buffer,1,&c); recordTransferWriteRelease(cmd,indexBuffer.buffer,indexOffset,indexSize); }
+            if (doVertexUpload) {
+                VkBuffer src = useRingV ? sb : fallbackStagingV.buffer;
+                VkDeviceSize srcOff = useRingV ? aV.offset : 0;
+                VkBufferCopy c{}; c.srcOffset=srcOff; c.dstOffset=vertexOffset; c.size=vertexSize;
+                vkCmdCopyBuffer(cmd, src, vertexBuffer.buffer, 1, &c);
+                recordTransferWriteRelease(cmd, vertexBuffer.buffer, vertexOffset, vertexSize);
+            }
+            if (doIndexUpload) {
+                VkBuffer src = useRingI ? sb : fallbackStagingI.buffer;
+                VkDeviceSize srcOff = useRingI ? aI.offset : 0;
+                VkBufferCopy c{}; c.srcOffset=srcOff; c.dstOffset=indexOffset; c.size=indexSize;
+                vkCmdCopyBuffer(cmd, src, indexBuffer.buffer, 1, &c);
+                recordTransferWriteRelease(cmd, indexBuffer.buffer, indexOffset, indexSize);
+            }
         }, nullptr);
 
-        if (doVertexUpload) { VkDeviceSize o=aV.offset,s=vertexSize; app->deferDestroyUntilFence(fence,[this,app,o,s](){app->stagingRing.release(o,s);}); }
-        if (doIndexUpload)  { VkDeviceSize o=aI.offset,s=indexSize;  app->deferDestroyUntilFence(fence,[this,app,o,s](){app->stagingRing.release(o,s);}); }
+        if (useRingV) { VkDeviceSize o=aV.offset,s=vertexSize; app->deferDestroyUntilFence(fence,[this,app,o,s](){app->stagingRing.release(o,s);}); }
+        if (useRingI) { VkDeviceSize o=aI.offset,s=indexSize;  app->deferDestroyUntilFence(fence,[this,app,o,s](){app->stagingRing.release(o,s);}); }
+        // Destroy fallback staging buffers after the copy completes
+        if (fallbackStagingV.buffer != VK_NULL_HANDLE) {
+            Buffer fv = fallbackStagingV;
+            app->deferDestroyUntilFence(fence, [dev, fv, app]() {
+                if (fv.buffer) { app->resources.removeBuffer(fv.buffer); vkDestroyBuffer(dev, fv.buffer, nullptr); }
+                if (fv.memory) { app->resources.removeDeviceMemory(fv.memory); vkFreeMemory(dev, fv.memory, nullptr); }
+            });
+        }
+        if (fallbackStagingI.buffer != VK_NULL_HANDLE) {
+            Buffer fi = fallbackStagingI;
+            app->deferDestroyUntilFence(fence, [dev, fi, app]() {
+                if (fi.buffer) { app->resources.removeBuffer(fi.buffer); vkDestroyBuffer(dev, fi.buffer, nullptr); }
+                if (fi.memory) { app->resources.removeDeviceMemory(fi.memory); vkFreeMemory(dev, fi.memory, nullptr); }
+            });
+        }
     }
     return true;
 }
@@ -368,11 +430,18 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // deferred-destroy mechanism. The callback runs only after outstanding
     // async uploads and frame fences have completed, so rebuilds can replace
     // buffers without stalling the streaming path.
+    // Defer destruction to the current frame's fence. By the time this frame's
+    // render completes, all async command buffers (Solid360, WaterBackFace, etc.)
+    // from previous frames that reference these buffers will also have completed,
+    // because the render waits on their binary semaphores.
     auto scheduleDestroyBuffer = [&](const Buffer &b) {
         if (b.buffer == VK_NULL_HANDLE && b.memory == VK_NULL_HANDLE) return;
         Buffer copy = b;
         VkDevice dev = app->getDevice();
-        app->deferDestroyUntilAllPending([dev, copy, app]() {
+        VkFence fence = VK_NULL_HANDLE;
+        uint32_t cf = app->getCurrentFrame();
+        if (cf < app->inFlightFences.size()) fence = app->inFlightFences[cf];
+        app->deferDestroyUntilFence(fence, [dev, copy, app]() {
             if (copy.buffer != VK_NULL_HANDLE) {
                 if (app->resources.removeBuffer(copy.buffer)) vkDestroyBuffer(dev, copy.buffer, nullptr);
             }
@@ -428,24 +497,24 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             indexBuffer = {};
         }
         
-        // Create vertex buffer with capacity (not just current size)
+        // Create vertex buffer with capacity (not just current size).
+        // HOST_VISIBLE avoids large device-local buffer copies that trigger
+        // RADV instability on integrated GPUs (Renoir). The data is written
+        // once per rebuild via direct memcpy — no staging buffer needed.
         VkDeviceSize vertexBufferSize = vertexCapacity * sizeof(Vertex);
         vertexBuffer = app->createBuffer(vertexBufferSize,
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         
         // Create index buffer with capacity
         VkDeviceSize indexBufferSize = indexCapacity * sizeof(uint32_t);
         indexBuffer = app->createBuffer(indexBufferSize,
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         
-        // Upload current data via staging. Batch vertex+index copies into one
-        // transfer submission so the rebuild path only pays one fence/semaphore.
-        // Rebuild is infrequent; use dedicated staging buffers (ring buffer is
-        // reserved for the async streaming hot path).
-        Buffer stagingVertex{};
-        Buffer stagingIndex{};
+        // Upload current data via direct memcpy — no staging buffers or
+        // vkCmdCopyBuffer needed. HOST_VISIBLE|HOST_COHERENT memory is
+        // immediately visible to the GPU on integrated/shared-memory GPUs.
         bool doVertexUpload = !mergedVertices.empty();
         bool doIndexUpload = !mergedIndices.empty();
         VkDeviceSize vertexDataSize = mergedVertices.size() * sizeof(Vertex);
@@ -461,64 +530,22 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
                     ++clampedCount;
                 }
             }
-            stagingVertex = app->createBuffer(vertexDataSize,
-                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             void* data;
-            vkMapMemory(app->getDevice(), stagingVertex.memory, 0, vertexDataSize, 0, &data);
+            vkMapMemory(app->getDevice(), vertexBuffer.memory, 0, vertexDataSize, 0, &data);
             memcpy(data, mergedVertices.data(), vertexDataSize);
-            vkUnmapMemory(app->getDevice(), stagingVertex.memory);
+            vkUnmapMemory(app->getDevice(), vertexBuffer.memory);
         }
         if (doIndexUpload) {
-            stagingIndex = app->createBuffer(indexDataSize,
-                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             void* data;
-            vkMapMemory(app->getDevice(), stagingIndex.memory, 0, indexDataSize, 0, &data);
+            vkMapMemory(app->getDevice(), indexBuffer.memory, 0, indexDataSize, 0, &data);
             memcpy(data, mergedIndices.data(), indexDataSize);
-            vkUnmapMemory(app->getDevice(), stagingIndex.memory);
+            vkUnmapMemory(app->getDevice(), indexBuffer.memory);
         }
 
-        if (doVertexUpload || doIndexUpload) {
-            // Use synchronous transfer: wait for the copy to complete before
-            // any draw commands reference these buffers. Rebuild is infrequent,
-            // so the CPU stall is negligible.
-            app->runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd) {
-                if (doVertexUpload) {
-                    VkBufferCopy copyRegion{};
-                    copyRegion.srcOffset = 0;
-                    copyRegion.dstOffset = 0;
-                    copyRegion.size = vertexDataSize;
-                    vkCmdCopyBuffer(cmd, stagingVertex.buffer, vertexBuffer.buffer, 1, &copyRegion);
-                    recordTransferWriteRelease(cmd, vertexBuffer.buffer, 0, vertexDataSize);
-                }
-                if (doIndexUpload) {
-                    VkBufferCopy copyRegion{};
-                    copyRegion.srcOffset = 0;
-                    copyRegion.dstOffset = 0;
-                    copyRegion.size = indexDataSize;
-                    vkCmdCopyBuffer(cmd, stagingIndex.buffer, indexBuffer.buffer, 1, &copyRegion);
-                    recordTransferWriteRelease(cmd, indexBuffer.buffer, 0, indexDataSize);
-                }
-            });
-
-            VkDevice dev = app->getDevice();
-            Buffer sbv = stagingVertex;
-            Buffer sbi = stagingIndex;
-            // Staging buffers can be destroyed immediately since the transfer is complete
-            if (sbv.buffer != VK_NULL_HANDLE) {
-                if (app->resources.removeBuffer(sbv.buffer)) vkDestroyBuffer(dev, sbv.buffer, nullptr);
-            }
-            if (sbv.memory != VK_NULL_HANDLE) {
-                if (app->resources.removeDeviceMemory(sbv.memory)) vkFreeMemory(dev, sbv.memory, nullptr);
-            }
-            if (sbi.buffer != VK_NULL_HANDLE) {
-                if (app->resources.removeBuffer(sbi.buffer)) vkDestroyBuffer(dev, sbi.buffer, nullptr);
-            }
-            if (sbi.memory != VK_NULL_HANDLE) {
-                if (app->resources.removeDeviceMemory(sbi.memory)) vkFreeMemory(dev, sbi.memory, nullptr);
-            }
-        }
+        // No vkCmdCopyBuffer needed — HOST_VISIBLE|HOST_COHERENT memory is
+        // immediately visible to the GPU via the map/memcpy/unmap above.
+        // The host write is automatically available to VERTEX_ATTRIBUTE_READ
+        // and INDEX_READ accesses thanks to HOST_COHERENT.
     }
 
     // Rebuild indirect command list from active meshes so GPU-side compaction matches models/bounds
@@ -605,41 +632,16 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         scheduleDestroyBuffer(compactIndirectBuffer);
         compactIndirectBuffer = {};
     }
-    Buffer stagingCompact{};
     if (compactSize > 0) {
+        // HOST_VISIBLE avoids sync uploads that trigger RADV instability.
         compactIndirectBuffer = app->createBuffer(compactSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (indirectDataSize > 0) {
-            stagingCompact = app->createBuffer(indirectDataSize,
-                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             void* data;
-            vkMapMemory(app->getDevice(), stagingCompact.memory, 0, indirectDataSize, 0, &data);
+            vkMapMemory(app->getDevice(), compactIndirectBuffer.memory, 0, indirectDataSize, 0, &data);
             memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
-            vkUnmapMemory(app->getDevice(), stagingCompact.memory);
-
-            // Copy staging data into the device-local compact buffer synchronously.
-            // The compact buffer must be initialized before any draw reads it,
-            // otherwise the GPU reads uninitialized device memory.
-            app->runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd) {
-                VkBufferCopy copyRegion{};
-                copyRegion.srcOffset = 0;
-                copyRegion.dstOffset = 0;
-                copyRegion.size = indirectDataSize;
-                vkCmdCopyBuffer(cmd, stagingCompact.buffer, compactIndirectBuffer.buffer, 1, &copyRegion);
-                recordTransferWriteRelease(cmd, compactIndirectBuffer.buffer, 0, indirectDataSize);
-            });
-
-            // Staging buffer can be freed immediately since the transfer is synchronous
-            VkDevice dev = app->getDevice();
-            Buffer sc = stagingCompact;
-            if (sc.buffer != VK_NULL_HANDLE) {
-                if (app->resources.removeBuffer(sc.buffer)) vkDestroyBuffer(dev, sc.buffer, nullptr);
-            }
-            if (sc.memory != VK_NULL_HANDLE) {
-                if (app->resources.removeDeviceMemory(sc.memory)) vkFreeMemory(dev, sc.memory, nullptr);
-            }
+            vkUnmapMemory(app->getDevice(), compactIndirectBuffer.memory);
         }
     }
 
@@ -718,7 +720,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.offset = 0;
-        pc.size = sizeof(glm::mat4) + sizeof(uint32_t);  // 68 bytes
+        pc.size = sizeof(glm::mat4) + sizeof(uint32_t) * 2;  // 72 bytes: mat4(64) + targetLayer(4) + numCmds(4)
 
         VkPipelineLayoutCreateInfo plinfo{};
         plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -899,10 +901,17 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // Bind and dispatch compute cull
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeDescriptorSet, 0, nullptr);
-    uint8_t pc[68]; memcpy(pc, &viewProj, 64); uint32_t layer = 0; memcpy(pc+64, &layer, 4);
-    vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 68, pc);
+    uint32_t numCmds = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        numCmds = static_cast<uint32_t>(indirectCommands.size());
+    }
+    // Fast return if nothing to cull — avoids touching the pipeline at all
+    if (numCmds == 0) return;
 
-    uint32_t numCmds = static_cast<uint32_t>(indirectCommands.size());
+    uint8_t pc[72]; memcpy(pc, &viewProj, 64); uint32_t layer = 0; memcpy(pc+64, &layer, 4); memcpy(pc+68, &numCmds, 4);
+    vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 72, pc);
+
     uint32_t groupSize = 64;
     uint32_t groups = (numCmds + groupSize - 1) / groupSize;
     if (groups > 0) vkCmdDispatch(cmd, groups, 1, 1);
@@ -960,14 +969,18 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     // Bind and dispatch compute cull using caller-provided descriptor set
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeDesc, 0, nullptr);
-    uint8_t pc2[68]; memcpy(pc2, &viewProj, 64); uint32_t layer2 = 0; memcpy(pc2+64, &layer2, 4);
-    vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 68, pc2);
 
     uint32_t numCmds = 0;
     {
         std::lock_guard<std::mutex> lock(mutex);
         numCmds = static_cast<uint32_t>(indirectCommands.size());
     }
+    // Fast return if nothing to cull — avoids touching the pipeline at all
+    if (numCmds == 0) return;
+
+    uint8_t pc2[72]; memcpy(pc2, &viewProj, 64); uint32_t layer2 = 0; memcpy(pc2+64, &layer2, 4); memcpy(pc2+68, &numCmds, 4);
+    vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 72, pc2);
+
     uint32_t groupSize = 64;
     uint32_t groups = (numCmds + groupSize - 1) / groupSize;
     if (groups > 0) vkCmdDispatch(cmd, groups, 1, 1);
@@ -1006,6 +1019,7 @@ void IndirectRenderer::drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer com
     vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
     uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
+    if (maxCount == 0) return; // nothing to draw — avoid calling indirect draw with 0 maxDraw
 
     if (!cmdDrawIndexedIndirectCount) {
         throw std::runtime_error("vkCmdDrawIndexedIndirectCountKHR not available (draw-indirect-count required)");
@@ -1093,6 +1107,7 @@ void IndirectRenderer::drawAll(VkCommandBuffer cmd) {
 
     // Draw ALL meshes from the original (non-culled) indirect buffer
     uint32_t drawCount = static_cast<uint32_t>(indirectCommands.size());
+    if (drawCount == 0) return; // nothing to draw
     vkCmdDrawIndexedIndirect(cmd, indirectBuffer.buffer, 0, drawCount, sizeof(VkDrawIndexedIndirectCommand));
 }
 
@@ -1112,6 +1127,7 @@ void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pi
     // No per-draw model push-constants: models are identity in shaders.
 
     uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
+    if (maxCount == 0) return; // nothing to draw
     if (!cmdDrawIndexedIndirectCount) {
         throw std::runtime_error("vkCmdDrawIndexedIndirectCountKHR not available (draw-indirect-count required)");
     }

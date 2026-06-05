@@ -2451,8 +2451,14 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         }
         if (pool == VK_NULL_HANDLE) pool = commandPool;
 
-        // Free the command buffer from the appropriate pool
-        {
+        // Free the command buffer from the appropriate pool.
+        // The transientCommandPool is protected by transientPoolMutex
+        // (used by runSingleTimeCommands / runSingleTimeCommandsAsync for
+        // allocation). All other pools are protected by commandPoolMutex.
+        if (pool == transientCommandPool) {
+            std::lock_guard<std::mutex> lock(transientPoolMutex);
+            vkFreeCommandBuffers(dev, pool, 1, &cmd);
+        } else {
             std::lock_guard<std::mutex> lock(commandPoolMutex);
             vkFreeCommandBuffers(dev, pool, 1, &cmd);
         }
@@ -2460,16 +2466,8 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         // Remove any submit mapping for this command buffer (cleanup trace state)
         {
             std::lock_guard<std::mutex> lk(pendingCmdMutex);
-            auto it = g_cmdSubmitMap.find(cmd);
-            if (it != g_cmdSubmitMap.end()) {
-                std::cerr << "[VulkanApp] freeCommandBuffer: cmd=" << (void*)cmd << " submitId=" << it->second << std::endl;
-                g_cmdSubmitMap.erase(it);
-            }
-            auto bit = g_cmdBacktraces.find(cmd);
-            if (bit != g_cmdBacktraces.end()) {
-                std::cerr << "[VulkanApp] freeCommandBuffer: cmd=" << (void*)cmd << " allocation backtrace:\n" << bit->second;
-                g_cmdBacktraces.erase(bit);
-            }
+            g_cmdSubmitMap.erase(cmd);
+            g_cmdBacktraces.erase(cmd);
         }
 
         // If this was a temporary pool we created, destroy it now

@@ -29,6 +29,7 @@ layout(std430, binding = 3) buffer VisibleCount {
 layout(push_constant) uniform PC {
     mat4 viewProj;
     uint targetLayer; // 0 = LAYER_OPAQUE, 1 = LAYER_TRANSPARENT (unused for now - all meshes in renderer are same layer)
+    uint numCmds;     // actual number of draw commands (guards against uninitialized buffer tail)
 } pc;
 
 // Robust AABB vs frustum test using extracted clip-space planes from the viewProj matrix
@@ -77,8 +78,11 @@ bool aabbVisible(mat4 mvp, vec3 minp, vec3 maxp) {
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    // Guard: avoid out-of-range if dispatched exactly to number of commands it'll be fine
-    if (idx >= inCmds.cmds.length()) return;
+    // Belt-and-suspenders: guard against uninitialized buffer slots.
+    // The dispatch covers up to the next multiple of 64, and the buffer may
+    // have capacity beyond the valid command count. Check BOTH the push
+    // constant (exact count) and the SSBO length (buffer capacity).
+    if (idx >= pc.numCmds || idx >= inCmds.cmds.length()) return;
 
     // Note: All meshes in this renderer are from the same layer (targetLayer in push constants)
     // so no per-mesh layer filtering needed - separate IndirectRenderers handle opaque vs transparent
@@ -93,7 +97,7 @@ void main() {
     } else {
         // If bounds missing, conservatively mark visible
         uint dst = atomicAdd(count, 1);
-        outCmds.cmds[dst] = inCmds.cmds[idx];
+        if (dst < outCmds.cmds.length()) outCmds.cmds[dst] = inCmds.cmds[idx];
         return;
     }
 
@@ -105,7 +109,9 @@ void main() {
 
     uint dst = atomicAdd(count, 1);
     // Keep the original firstInstance (idx) for identification (models are identity)
-    DrawCmd cmd = inCmds.cmds[idx];
-    cmd.firstInstance = idx;
-    outCmds.cmds[dst] = cmd;
+    if (dst < outCmds.cmds.length()) {
+        DrawCmd cmd = inCmds.cmds[idx];
+        cmd.firstInstance = idx;
+        outCmds.cmds[dst] = cmd;
+    }
 }

@@ -85,6 +85,14 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSam
 
     if (app) {
         app->setImageLayoutTracked(cube360ColorImage, VK_IMAGE_LAYOUT_UNDEFINED, 0, 6);
+        // Force transition color image to SHADER_READ_ONLY_OPTIMAL so it is
+        // always valid for sampling, even when Solid360 async rendering is disabled.
+        try {
+            app->transitionImageLayoutLayerForce(cube360ColorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 6);
+            app->setImageLayoutTracked(cube360ColorImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 6);
+        } catch (...) {
+            app->setImageLayoutTracked(cube360ColorImage, VK_IMAGE_LAYOUT_UNDEFINED, 0, 6);
+        }
     }
 
     for (uint32_t face = 0; face < 6; ++face) {
@@ -138,7 +146,7 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSam
 
     // Initialize per-face tracked layouts
     for (uint32_t face = 0; face < 6; ++face) {
-        cube360ColorLayouts[face] = VK_IMAGE_LAYOUT_UNDEFINED;
+        cube360ColorLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 

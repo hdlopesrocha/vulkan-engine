@@ -447,6 +447,7 @@ public:
 // (setup implementation defined out-of-line below)
 
     void update(float deltaTime) override {
+
         if (deltaTime > 0.0f) profileFps = 1.0f / deltaTime;
         auto cpuUpdateT0 = std::chrono::high_resolution_clock::now();
         // Poll keyboard input and publish events
@@ -460,7 +461,9 @@ public:
         // Drain the pending mesh queue populated by the background scene-loading
         // thread.  GPU uploads happen here on the main thread so newly generated
         // chunks become visible progressively without blocking the render loop.
-        if (sceneRenderer) sceneRenderer->processPendingMeshes(this, camera.getPosition());
+        // During loading, defer all uploads — the concurrent vkCmdCopyBuffer
+        // submissions during rebuild() trigger RADV GPU hangs on Renoir iGPUs.
+        if (sceneRenderer && !isLoading) sceneRenderer->processPendingMeshes(this, camera.getPosition());
 
         mainTime += deltaTime;
         if (sceneRenderer && sceneRenderer->vegetationRenderer) {
@@ -475,6 +478,7 @@ public:
     }
 
     void preRenderPass(VkCommandBuffer &commandBuffer) override {
+
         uint32_t frameIdx = getCurrentFrame();
 
         // Profiling: read previous frame's query results (fence guaranteed signaled), then reset for this frame
@@ -541,8 +545,6 @@ public:
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 0);
         if (sceneRenderer) {
             sceneRenderer->shadowPass(this, commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.vegetationEnabled);
-        } else {
-            std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping shadow pass\n";
         }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 1);
@@ -732,7 +734,7 @@ public:
         VkSemaphore semSolid360 = VK_NULL_HANDLE;
         VkSemaphore semBackFace = VK_NULL_HANDLE;
 
-        // 360° cubemap (sky + solid) - record/submit on a separate primary command buffer
+        // 360° cubemap (sky + solid)
         if (waterEnabled && sceneRenderer && sceneRenderer->solid360Renderer) {
             launchedSolid360 = true;
             asyncTasks.emplace_back([this, viewProj, frameIdx, &semSolid360]() {
@@ -746,76 +748,70 @@ public:
                     app->freeCommandBuffer(cmd);
                     return;
                 }
-                // Allocate per-task compact/visible buffers and descriptor set so cull+draw
-                // recorded on this command buffer don't race with other submissions.
                 IndirectRenderer &ind = this->sceneRenderer->solidRenderer->getIndirectRenderer();
                 uint32_t numCmds = static_cast<uint32_t>(ind.getMeshCount());
-                VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * (numCmds > 0 ? numCmds : 1);
-
-                Buffer taskCompact = app->createBuffer(compactSize,
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                Buffer taskVisible = app->createBuffer(sizeof(uint32_t),
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                bool hasGeometry = (numCmds > 0 && ind.getIndirectBuffer().buffer != VK_NULL_HANDLE);
 
                 VkDevice device = app->getDevice();
-                // Create a small temporary descriptor pool for this task
-                VkDescriptorPoolSize poolSize{};
-                poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                poolSize.descriptorCount = 4;
-                VkDescriptorPoolCreateInfo poolInfo{};
-                poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                poolInfo.poolSizeCount = 1;
-                poolInfo.pPoolSizes = &poolSize;
-                poolInfo.maxSets = 1;
-                poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-                // Try to allocate the compute descriptor set from the IndirectRenderer's shared pool
+                Buffer taskCompact{};
+                Buffer taskVisible{};
                 VkDescriptorPool taskPool = VK_NULL_HANDLE;
-                VkDescriptorSetLayout dsLayout = ind.getComputeDescriptorSetLayout();
                 VkDescriptorSet computeDs = VK_NULL_HANDLE;
-                VkDescriptorPool sharedPool = ind.getComputeDescriptorPool();
-                if (dsLayout != VK_NULL_HANDLE && sharedPool != VK_NULL_HANDLE) {
-                    // Serialize allocations from the shared descriptor pool to avoid
-                    // concurrent vkAllocateDescriptorSets races on some drivers.
-                    static std::mutex shared_compute_desc_pool_alloc_mutex;
-                    std::lock_guard<std::mutex> sharedLock(shared_compute_desc_pool_alloc_mutex);
-                    VkDescriptorSetAllocateInfo ainfoShared{};
-                    ainfoShared.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                    ainfoShared.descriptorPool = sharedPool;
-                    ainfoShared.descriptorSetCount = 1;
-                    ainfoShared.pSetLayouts = &dsLayout;
-                    if (vkAllocateDescriptorSets(device, &ainfoShared, &computeDs) == VK_SUCCESS) {
-                        app->resources.addDescriptorSet(computeDs, "Shared: solid360 compute DS");
-                    } else {
-                        computeDs = VK_NULL_HANDLE;
-                    }
-                }
 
-                // If shared allocation failed, create a temporary pool and allocate from it
-                if (computeDs == VK_NULL_HANDLE) {
-                    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &taskPool) != VK_SUCCESS) {
-                        throw std::runtime_error("[Async] Failed to create descriptor pool for solid360 task (no fallback allowed)");
-                    }
-                    app->resources.addDescriptorPool(taskPool, "Temp: solid360 cull pool");
+                // Only set up compute cull + per-task indirect buffers when there is geometry to cull.
+                if (hasGeometry) {
+                    VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * numCmds;
+                    taskCompact = app->createBuffer(compactSize,
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                    taskVisible = app->createBuffer(sizeof(uint32_t),
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-                    if (dsLayout != VK_NULL_HANDLE) {
-                        VkDescriptorSetAllocateInfo ainfo{};
-                        ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                        ainfo.descriptorPool = taskPool;
-                        ainfo.descriptorSetCount = 1;
-                        ainfo.pSetLayouts = &dsLayout;
-                        if (vkAllocateDescriptorSets(device, &ainfo, &computeDs) != VK_SUCCESS) {
-                            app->resources.removeDescriptorPool(taskPool);
-                            vkDestroyDescriptorPool(device, taskPool, nullptr);
-                            throw std::runtime_error("[Async] Failed to allocate compute descriptor set for solid360 task (no fallback allowed)");
+                    VkDescriptorPoolSize poolSize{};
+                    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    poolSize.descriptorCount = 4;
+                    VkDescriptorPoolCreateInfo poolInfo{};
+                    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                    poolInfo.poolSizeCount = 1;
+                    poolInfo.pPoolSizes = &poolSize;
+                    poolInfo.maxSets = 1;
+                    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+
+                    VkDescriptorSetLayout dsLayout = ind.getComputeDescriptorSetLayout();
+                    VkDescriptorPool sharedPool = ind.getComputeDescriptorPool();
+                    if (dsLayout != VK_NULL_HANDLE && sharedPool != VK_NULL_HANDLE) {
+                        static std::mutex shared_compute_desc_pool_alloc_mutex;
+                        std::lock_guard<std::mutex> sharedLock(shared_compute_desc_pool_alloc_mutex);
+                        VkDescriptorSetAllocateInfo ainfoShared{};
+                        ainfoShared.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                        ainfoShared.descriptorPool = sharedPool;
+                        ainfoShared.descriptorSetCount = 1;
+                        ainfoShared.pSetLayouts = &dsLayout;
+                        if (vkAllocateDescriptorSets(device, &ainfoShared, &computeDs) == VK_SUCCESS) {
+                            app->resources.addDescriptorSet(computeDs, "Shared: solid360 compute DS");
                         }
-                        app->resources.addDescriptorSet(computeDs, "Temp: solid360 compute DS");
                     }
-                }
+                    if (computeDs == VK_NULL_HANDLE) {
+                        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &taskPool) != VK_SUCCESS) {
+                            throw std::runtime_error("[Async] Failed to create descriptor pool for solid360 task (no fallback allowed)");
+                        }
+                        app->resources.addDescriptorPool(taskPool, "Temp: solid360 cull pool");
+                        if (dsLayout != VK_NULL_HANDLE) {
+                            VkDescriptorSetAllocateInfo ainfo{};
+                            ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                            ainfo.descriptorPool = taskPool;
+                            ainfo.descriptorSetCount = 1;
+                            ainfo.pSetLayouts = &dsLayout;
+                            if (vkAllocateDescriptorSets(device, &ainfo, &computeDs) != VK_SUCCESS) {
+                                app->resources.removeDescriptorPool(taskPool);
+                                vkDestroyDescriptorPool(device, taskPool, nullptr);
+                                throw std::runtime_error("[Async] Failed to allocate compute descriptor set for solid360 task (no fallback allowed)");
+                            }
+                            app->resources.addDescriptorSet(computeDs, "Temp: solid360 compute DS");
+                        }
+                    }
 
-                // Run cull into per-task buffers - only when compute pipeline is ready (meshes loaded)
-                if (computeDs != VK_NULL_HANDLE) {
                     VkDescriptorBufferInfo inBuf{}; inBuf.buffer = ind.getIndirectBuffer().buffer; inBuf.offset = 0; inBuf.range = VK_WHOLE_SIZE;
                     VkDescriptorBufferInfo outBuf{}; outBuf.buffer = taskCompact.buffer; outBuf.offset = 0; outBuf.range = VK_WHOLE_SIZE;
                     VkDescriptorBufferInfo boundsBuf{}; boundsBuf.buffer = ind.getBoundsBuffer().buffer; boundsBuf.offset = 0; boundsBuf.range = VK_WHOLE_SIZE;
@@ -828,11 +824,9 @@ public:
                     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                     writes[0].descriptorCount = 1;
                     writes[0].pBufferInfo = &inBuf;
-
                     writes[1] = writes[0]; writes[1].dstBinding = 1; writes[1].pBufferInfo = &outBuf;
                     writes[2] = writes[0]; writes[2].dstBinding = 2; writes[2].pBufferInfo = &boundsBuf;
                     writes[3] = writes[0]; writes[3].dstBinding = 3; writes[3].pBufferInfo = &countBuf;
-
                     vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
                     ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
                 }
@@ -1009,7 +1003,7 @@ public:
             });
         }
 
-        // Back-face depth for water - record/submit on a separate primary command buffer
+        // Back-face depth for water
         if (waterEnabled && sceneRenderer && sceneRenderer->backFaceRenderer) {
             launchedBackFace = true;
             asyncTasks.emplace_back([this, viewProj, frameIdx, &semBackFace]() {
@@ -1372,11 +1366,9 @@ public:
 
         // --- SAFETY: Ensure indirect buffers are rebuilt if dirty before first draw ---
         if (sceneRenderer->solidRenderer->getIndirectRenderer().isDirty()) {
-            // printf("[MyApp::draw] solidRenderer indirect buffer dirty, rebuilding before draw...\\n");
             sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
         }
         if (sceneRenderer->waterRenderer->getIndirectRenderer().isDirty()) {
-            // printf("[MyApp::draw] waterRenderer indirect buffer dirty, rebuilding before draw...\\n");
             sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
         }
 
@@ -1387,7 +1379,6 @@ public:
         // Composite offscreen scene + water into the swapchain
         if (sceneRenderer && sceneRenderer->postProcessRenderer) {
             VkImageView skyViewPP = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-            // Post-process will sample water targets; they are cleared in preRenderPass when disabled
             sceneRenderer->postProcessRenderer->render(
                 this,
                 commandBuffer,
@@ -1400,7 +1391,7 @@ public:
                 frameIdx,
                 skyViewPP);
         }
-        //std::cout << "[MyApp::draw] waterPass returned. Rendering ImGui..." << std::endl;
+
         // ImGui rendering
         ImDrawData* draw_data = ImGui::GetDrawData();
         if (!draw_data) {
@@ -1408,7 +1399,6 @@ public:
         } else if (commandBuffer == VK_NULL_HANDLE) {
             std::cerr << "[MyApp::draw] Error: commandBuffer is VK_NULL_HANDLE before ImGui rendering, skipping ImGui." << std::endl;
         } else {
-            //std::cerr << "[MyApp::draw] ImGui::GetDrawData() valid, calling ImGui_ImplVulkan_RenderDrawData..." << std::endl;
             VkQueryPool qp = queryPools[getCurrentFrame()];
             if (profilingEnabled && qp != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, qp, 12);
