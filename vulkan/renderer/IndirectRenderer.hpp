@@ -86,16 +86,9 @@ public:
                                    VkBuffer outCompactBuffer, VkBuffer outVisibleCountBuffer, uint32_t maxDraws = 0);
     // Issue indirect draw using the compacted indirect buffer (call inside render pass).
     void drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws = 0);
-    // Issue indirect draw using caller-provided compact/visible count buffers.
     void drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer compactBuffer, VkBuffer visibleCountBuffer, uint32_t maxDraws = 0);
-    // Draw ALL meshes without GPU frustum culling (uses original indirect buffer).
-    // Useful for omnidirectional renders (cubemap faces, shadow maps, etc.).
-    void drawAll(VkCommandBuffer cmd);
-    // Bind vertex/index buffers (call once before multiple drawIndirectOnly calls)
     void bindBuffers(VkCommandBuffer cmd);
-    // Issue indirect draw only (buffers must already be bound via bindBuffers)
     void drawIndirectOnly(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws = 0);
-    // Issue indirect draw with custom pipeline layout for push constants
     void drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pipelineLayout, uint32_t maxDraws = 0);
 
     // Accessors

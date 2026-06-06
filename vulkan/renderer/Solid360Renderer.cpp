@@ -317,7 +317,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                 if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
                     solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
                 } else {
-                    solidRenderer->getIndirectRenderer().drawAll(cmd);
+                    solidRenderer->getIndirectRenderer().drawPrepared(cmd, 0);
                 }
             }
         }
