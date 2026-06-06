@@ -179,6 +179,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                                      SolidRenderer* solidRenderer,
                                      VkDescriptorSet mainDescriptorSet,
                                      Buffer& uniformBuffer, const UniformObject& ubo,
+                                     VkDescriptorSet computeDs,
                                      VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer) {
     if (!app || cmd == VK_NULL_HANDLE) return;
     if (cube360FaceViews[0] == VK_NULL_HANDLE) return;
@@ -254,6 +255,12 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                                                  1, face, 1);
         }
 
+        // Per-face frustum cull — must run OUTSIDE dynamic rendering
+        if (computeDs != VK_NULL_HANDLE && compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
+            auto &ind = solidRenderer->getIndirectRenderer();
+            ind.prepareCullWithDescriptor(cmd, faceVP, computeDs, compactIndirectBuffer, visibleCountBuffer);
+        }
+
         VkClearValue clears[2];
         clears[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
         clears[1].depthStencil = {1.0f, 0};
@@ -313,7 +320,6 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             if (gfxPipe != VK_NULL_HANDLE && gfxLayout != VK_NULL_HANDLE) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxPipe);
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
-                // If caller provided per-task compact/visible buffers, use them to draw the solid renderer's visible set.
                 if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
                     solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
                 } else {
@@ -323,6 +329,33 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         }
 
         vkCmdEndRendering(cmd);
+
+        // Barrier: ensure previous face's draw finishes reading compact/visible
+        // buffers before next face's cull overwrites them
+        {
+            VkBufferMemoryBarrier b[2]{};
+            uint32_t bc = 0;
+            if (compactIndirectBuffer != VK_NULL_HANDLE) {
+                b[bc].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                b[bc].srcAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+                b[bc].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                b[bc].buffer = compactIndirectBuffer;
+                b[bc].size = VK_WHOLE_SIZE; ++bc;
+            }
+            if (visibleCountBuffer != VK_NULL_HANDLE) {
+                b[bc].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                b[bc].srcAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+                b[bc].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                b[bc].buffer = visibleCountBuffer;
+                b[bc].size = VK_WHOLE_SIZE; ++bc;
+            }
+            if (bc > 0) {
+                vkCmdPipelineBarrier(cmd,
+                    VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0, 0, nullptr, bc, b, 0, nullptr);
+            }
+        }
 
         // Transition color: COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
         {

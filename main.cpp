@@ -766,7 +766,7 @@ public:
                 VkDescriptorPool taskPool = VK_NULL_HANDLE;
                 VkDescriptorSet computeDs = VK_NULL_HANDLE;
 
-                // Only set up compute cull + per-task indirect buffers when there is geometry to cull.
+                // Set up per-task buffers + compute descriptor for per-face culling
                 if (hasGeometry) {
                     VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * numCmds;
                     taskCompact = app->createBuffer(compactSize,
@@ -801,9 +801,8 @@ public:
                         }
                     }
                     if (computeDs == VK_NULL_HANDLE) {
-                        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &taskPool) != VK_SUCCESS) {
-                            throw std::runtime_error("[Async] Failed to create descriptor pool for solid360 task (no fallback allowed)");
-                        }
+                        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &taskPool) != VK_SUCCESS)
+                            throw std::runtime_error("[Async] Failed to create descriptor pool for solid360 task");
                         app->resources.addDescriptorPool(taskPool, "Temp: solid360 cull pool");
                         if (dsLayout != VK_NULL_HANDLE) {
                             VkDescriptorSetAllocateInfo ainfo{};
@@ -814,7 +813,7 @@ public:
                             if (vkAllocateDescriptorSets(device, &ainfo, &computeDs) != VK_SUCCESS) {
                                 app->resources.removeDescriptorPool(taskPool);
                                 vkDestroyDescriptorPool(device, taskPool, nullptr);
-                                throw std::runtime_error("[Async] Failed to allocate compute descriptor set for solid360 task (no fallback allowed)");
+                                throw std::runtime_error("[Async] Failed to allocate compute descriptor set for solid360 task");
                             }
                             app->resources.addDescriptorSet(computeDs, "Temp: solid360 compute DS");
                         }
@@ -836,7 +835,7 @@ public:
                     writes[2] = writes[0]; writes[2].dstBinding = 2; writes[2].pBufferInfo = &boundsBuf;
                     writes[3] = writes[0]; writes[3].dstBinding = 3; writes[3].pBufferInfo = &countBuf;
                     vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
-                    ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
+                    // Cull is deferred to renderSolid360 which runs per-face
                 }
 
                 // Render solid360 using per-task compact/visible buffers when available
@@ -960,29 +959,18 @@ public:
                     this->sceneRenderer->solidRenderer.get(),
                     gfxDs,
                     taskUBO, this->uboStatic,
-                    (computeDs != VK_NULL_HANDLE) ? taskCompact.buffer : VK_NULL_HANDLE,
-                    (computeDs != VK_NULL_HANDLE) ? taskVisible.buffer : VK_NULL_HANDLE);
+                    computeDs,
+                    taskCompact.buffer,
+                    taskVisible.buffer);
 
-                // Submit and schedule cleanup of temporary resources after fence signals
                 VkFence f = app->submitCommandBufferAsync(cmd, &semSolid360);
                 { std::lock_guard<std::mutex> lk(asyncFenceMutex); pendingAsyncFences.push_back(f); }
                 app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app, gfxDs, gfxPool, taskUBO]() {
-                    // Unregister and destroy descriptor set/pool
-                    app->resources.removeDescriptorSet(computeDs);
-                    if (taskPool != VK_NULL_HANDLE) {
-                        app->resources.removeDescriptorPool(taskPool);
-                        vkDestroyDescriptorPool(device, taskPool, nullptr);
-                    }
-                    // Destroy per-task gfx descriptor pool (and its descriptor set).
-                    // Do NOT free gfxDs back to the shared main pool — on the next
-                    // frame a new solid360 task may get the same handle, causing
-                    // a use-after-free when this callback runs.
                     if (gfxPool != VK_NULL_HANDLE) {
                         app->resources.removeDescriptorSet(gfxDs);
                         app->resources.removeDescriptorPool(gfxPool);
                         vkDestroyDescriptorPool(device, gfxPool, nullptr);
                     }
-                    // Destroy buffers and free memory
                     if (taskCompact.buffer != VK_NULL_HANDLE) {
                         app->resources.removeBuffer(taskCompact.buffer);
                         vkDestroyBuffer(device, taskCompact.buffer, nullptr);
@@ -999,7 +987,6 @@ public:
                         app->resources.removeDeviceMemory(taskVisible.memory);
                         vkFreeMemory(device, taskVisible.memory, nullptr);
                     }
-                    // Destroy per-task UBO
                     if (taskUBO.buffer != VK_NULL_HANDLE) {
                         app->resources.removeBuffer(taskUBO.buffer);
                         vkDestroyBuffer(device, taskUBO.buffer, nullptr);
