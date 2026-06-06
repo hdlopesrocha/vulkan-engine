@@ -19,7 +19,9 @@ void VulkanResourceManager::addDeviceMemory(VkDeviceMemory mem, const char* desc
     }
     std::lock_guard<std::mutex> lk(mtx);
     deviceMemories[(uintptr_t)mem] = {mem, desc ? std::string(desc) : std::string()};
+#if 0
     std::cerr << "[VulkanResourceManager] addDeviceMemory mem=" << (void*)mem << " desc=" << (desc ? desc : "(null)") << " total=" << deviceMemories.size() << std::endl;
+#endif
 }
 
 void VulkanResourceManager::addImage(VkImage img, const char* desc) {
@@ -30,14 +32,18 @@ void VulkanResourceManager::addImage(VkImage img, const char* desc) {
     }
     std::lock_guard<std::mutex> lk(mtx);
     images[(uintptr_t)img] = {img, desc ? std::string(desc) : std::string()};
+#if 0
     std::cerr << "[VulkanResourceManager] addImage img=" << (void*)img << " desc=" << (desc ? desc : "(null)") << " total=" << images.size() << std::endl;
+#endif
 }
 
 void VulkanResourceManager::setImageArrayLayers(VkImage img, uint32_t arrayLayers) {
     if (img == VK_NULL_HANDLE) return;
     std::lock_guard<std::mutex> lk(mtx);
     imageArrayLayers[(uintptr_t)img] = arrayLayers;
+#if 0
     std::cerr << "[VulkanResourceManager] setImageArrayLayers img=" << (void*)img << " layers=" << arrayLayers << std::endl;
+#endif
 }
 
 std::optional<uint32_t> VulkanResourceManager::getImageArrayLayers(VkImage img) const {
@@ -56,7 +62,9 @@ void VulkanResourceManager::addImageView(VkImageView iv, const char* desc) {
     }
     std::lock_guard<std::mutex> lk(mtx);
     imageViews[(uintptr_t)iv] = {iv, desc ? std::string(desc) : std::string()};
+#if 0
     std::cerr << "[VulkanResourceManager] addImageView iv=" << (void*)iv << " desc=" << (desc ? desc : "(null)") << " total=" << imageViews.size() << std::endl;
+#endif
 }
 
 void VulkanResourceManager::addSampler(VkSampler s, const char* desc) {
@@ -139,7 +147,9 @@ void VulkanResourceManager::addDescriptorPool(VkDescriptorPool dp, const char* d
         // std::cerr << "[VulkanResourceManager] reserved descriptorPools bucket_count=" << bc << std::endl;
     }
     descriptorPools[(uintptr_t)dp] = {dp, desc ? std::string(desc) : std::string()};
+#if 0
     std::cerr << "[VulkanResourceManager] addDescriptorPool dp=" << (void*)dp << " desc=" << (desc ? desc : "(null)") << " total=" << descriptorPools.size() << std::endl;
+#endif
 }
 
 void VulkanResourceManager::addDescriptorSet(VkDescriptorSet ds, const char* desc) {

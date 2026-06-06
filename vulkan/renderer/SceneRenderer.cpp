@@ -991,11 +991,13 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
         size_t desiredI = solidIR.getMergedIndexCount() + solidNewI;
         size_t desiredM = solidIR.getMeshCount() + solidNewM;
         solidCanIncremental = solidIR.ensureCapacity(desiredV, desiredI, desiredM);
+#if 0
         if (solidCanIncremental) {
             printf("[SceneRenderer::processPendingMeshes] Solid renderer pre-sized for incremental uploads (v=%zu,i=%zu,m=%zu)\n", desiredV, desiredI, desiredM);
         } else {
             printf("[SceneRenderer::processPendingMeshes] Solid renderer needs rebuild to grow capacity (v=%zu,i=%zu,m=%zu)\n", desiredV, desiredI, desiredM);
         }
+#endif
     }
 
     if (waterNewM > 0) {
@@ -1003,11 +1005,13 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
         size_t desiredI = waterIR.getMergedIndexCount() + waterNewI;
         size_t desiredM = waterIR.getMeshCount() + waterNewM;
         waterCanIncremental = waterIR.ensureCapacity(desiredV, desiredI, desiredM);
+#if 0
         if (waterCanIncremental) {
             printf("[SceneRenderer::processPendingMeshes] Water renderer pre-sized for incremental uploads (v=%zu,i=%zu,m=%zu)\n", desiredV, desiredI, desiredM);
         } else {
             printf("[SceneRenderer::processPendingMeshes] Water renderer needs rebuild to grow capacity (v=%zu,i=%zu,m=%zu)\n", desiredV, desiredI, desiredM);
         }
+#endif
     }
 
     // Process meshes and attempt incremental upload only when pre-sizing succeeded.
@@ -1132,11 +1136,11 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
     uint effectiveVersion = sourceVersion != 0 ? sourceVersion : nd.node->version;
         if (it != cur.end()) {
         if (it->second.version >= effectiveVersion) {
-            printf("[SceneRenderer::updateMeshForNode] Node %llu already up-to-date (version %u >= %u)\n", (unsigned long long)nid, it->second.version, effectiveVersion);
+            //printf("[SceneRenderer::updateMeshForNode] Node %llu already up-to-date (version %u >= %u)\n", (unsigned long long)nid, it->second.version, effectiveVersion);
             return; // already up-to-date
         }
         if (it->second.meshId != UINT32_MAX) {
-            printf("[SceneRenderer::updateMeshForNode] Removing old mesh for node %llu (meshId=%u)\n", (unsigned long long)nid, it->second.meshId);
+            //printf("[SceneRenderer::updateMeshForNode] Removing old mesh for node %llu (meshId=%u)\n", (unsigned long long)nid, it->second.meshId);
             renderer.removeMesh(it->second.meshId);
             // Immediately zero the GPU indirect command for the old mesh so
             // it won't be rendered while we prepare the new version.

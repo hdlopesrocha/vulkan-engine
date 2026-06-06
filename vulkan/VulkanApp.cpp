@@ -720,23 +720,17 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         if (strstr(msg, "no VkRenderingInfo::pColorAttachments[0]") != nullptr) return VK_FALSE;
     }
 
-    std::cerr << "validation(" << sev << ":" << tstr << ") " << (pCallbackData && pCallbackData->pMessage ? pCallbackData->pMessage : "") << std::endl;
+    // Only print WARNING and ERROR — suppress INFO/VERBOSE noise
+    bool isWarningOrError = (messageSeverity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+                                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)) != 0;
+    if (isWarningOrError) {
+        std::cerr << "validation(" << sev << ":" << tstr << ") " << (pCallbackData && pCallbackData->pMessage ? pCallbackData->pMessage : "") << std::endl;
+    }
+
     // Exit immediately on any real ERROR or WARNING so we can fix it.
-    if (messageSeverity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
-                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)) {
+    if (isWarningOrError) {
         _exit(1);
     }
-    return VK_FALSE;
-
-    // Print up to a few referenced objects to aid post-mortem debugging
-    if (pCallbackData && pCallbackData->objectCount > 0 && pCallbackData->pObjects) {
-        uint32_t limit = std::min<uint32_t>(pCallbackData->objectCount, 8);
-        for (uint32_t i = 0; i < limit; ++i) {
-            const VkDebugUtilsObjectNameInfoEXT &obj = pCallbackData->pObjects[i];
-            std::cerr << "  obj[" << i << "] type=" << obj.objectType << " handle=" << (void*)(uintptr_t)obj.objectHandle << " name=" << (obj.pObjectName ? obj.pObjectName : "(null)") << "\n";
-        }
-    }
-
     return VK_FALSE;
 }
 
@@ -1908,11 +1902,13 @@ void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer
         if (it != imageLayerLayouts.end()) prev = it->second;
         auto entry = resources.find((uintptr_t)image);
         std::string desc = entry ? entry->desc : std::string("(unknown)");
+#if 0
         std::cerr << "[VulkanApp] preApply submitId=" << submitId << " image=" << (void*)image
                   << " desc=" << desc
                   << " layer=" << layer
                   << " prev=" << layoutName(prev)
                   << " new=" << layoutName(p.second) << std::endl;
+#endif
         imageLayerLayouts[p.first] = p.second;
     }
 }
@@ -3092,6 +3088,7 @@ void VulkanApp::recordTrackedLayoutForCommandBuffer(VkCommandBuffer commandBuffe
     {
         auto entry = resources.find((uintptr_t)image);
         std::string desc = entry ? entry->desc : std::string("(unknown)");
+#if 0
         std::cerr << "[VulkanApp] recordTrackedLayoutForCommandBuffer: cmd=" << (void*)commandBuffer
                   << " image=" << (void*)image
                   << " desc=" << desc
@@ -3099,6 +3096,7 @@ void VulkanApp::recordTrackedLayoutForCommandBuffer(VkCommandBuffer commandBuffe
                   << " baseLayer=" << baseArrayLayer
                   << " layerCount=" << layerCount
                   << " isBarrier=0" << std::endl;
+#endif
     }
 }
 
@@ -3780,17 +3778,25 @@ void VulkanApp::updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &des
         const VkWriteDescriptorSet &w = descriptors[i];
         if (w.pImageInfo) {
             if (w.pImageInfo[0].imageView == VK_NULL_HANDLE || w.pImageInfo[0].sampler == VK_NULL_HANDLE) {
+#if 0
                 std::cerr << "[VulkanApp::updateDescriptorSet] Skipping write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " due to null imageView/sampler" << std::endl;
+#endif
                 continue;
             }
+#if 0
             std::cerr << "[VulkanApp::updateDescriptorSet] write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " type=" << w.descriptorType << " imageView=" << (void*)w.pImageInfo[0].imageView << " sampler=" << (void*)w.pImageInfo[0].sampler << std::endl;
+#endif
             filtered.push_back(w);
         } else if (w.pBufferInfo) {
             if (w.pBufferInfo[0].buffer == VK_NULL_HANDLE) {
+#if 0
                 std::cerr << "[VulkanApp::updateDescriptorSet] Skipping write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " due to null buffer" << std::endl;
+#endif
                 continue;
             }
+#if 0
             std::cerr << "[VulkanApp::updateDescriptorSet] write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " type=" << w.descriptorType << " buffer=" << (void*)w.pBufferInfo[0].buffer << " offset=" << w.pBufferInfo[0].offset << " range=" << w.pBufferInfo[0].range << std::endl;
+#endif
             filtered.push_back(w);
         } else {
             // No image or buffer info; include as-is
@@ -3809,13 +3815,17 @@ void VulkanApp::updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> 
         const VkWriteDescriptorSet &w = descriptorWrites[i];
         if (w.pImageInfo) {
             if (w.pImageInfo[0].imageView == VK_NULL_HANDLE || w.pImageInfo[0].sampler == VK_NULL_HANDLE) {
+#if 0
                 std::cerr << "[VulkanApp::updateDescriptorSet] Skipping init write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " due to null imageView/sampler" << std::endl;
+#endif
                 continue;
             }
             filtered.push_back(w);
         } else if (w.pBufferInfo) {
             if (w.pBufferInfo[0].buffer == VK_NULL_HANDLE) {
+#if 0
                 std::cerr << "[VulkanApp::updateDescriptorSet] Skipping init write[" << i << "] dstSet=" << (void*)w.dstSet << " binding=" << w.dstBinding << " due to null buffer" << std::endl;
+#endif
                 continue;
             }
             filtered.push_back(w);
@@ -4545,7 +4555,8 @@ void VulkanApp::drawFrame() {
             g_cmdSubmitMap[commandBuffer] = submitId;
         }
 
-        // Log submit details: command buffer, swapchain image and wait semaphores
+        // Log submit details (verbose — disabled for production)
+#if 0
         std::cerr << "[VulkanApp] frame submitId=" << submitId
                   << " cmd=" << (void*)commandBuffer
                   << " imageIndex=" << imageIndex
@@ -4556,6 +4567,7 @@ void VulkanApp::drawFrame() {
                       << "/" << localWaitStages[_i];
         }
         std::cerr << std::endl;
+#endif
 
         // Promote pending layout updates for this submission so validation
         // sees populated layouts for affected subresources.

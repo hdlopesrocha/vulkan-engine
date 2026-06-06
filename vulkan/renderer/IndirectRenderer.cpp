@@ -364,11 +364,15 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     
     size_t activeMeshCount = 0;
     for (const auto& kv : meshes) if (kv.second.active) ++activeMeshCount;
+#if 0
     printf("[IndirectRenderer::rebuild] Called. dirty=%d, meshes.size()=%zu, activeMeshCount=%zu, mergedVertices=%zu, mergedIndices=%zu\n",
         dirty, meshes.size(), activeMeshCount, mergedVertices.size(), mergedIndices.size());
+#endif
     
     if (!dirty) return;
+#if 0
     printf("[IndirectRenderer::rebuild] dirty=true, rebuilding buffers...\n");
+#endif
 
     // Helper to schedule safe destruction of old buffers via the app's
     // deferred-destroy mechanism. The callback runs only after outstanding
@@ -416,12 +420,14 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // If there are no meshes, free existing buffers.
     static bool printedBufferInfo = false;
     if (!printedBufferInfo) {
+#if 0
         printf("[IndirectRenderer::rebuild] mergedVertices.size()=%zu mergedIndices.size()=%zu\n", 
             mergedVertices.size(), mergedIndices.size());
         if (!mergedVertices.empty()) {
             printf("[IndirectRenderer::rebuild] Sample vertex[0]: pos=(%.2f,%.2f,%.2f)\n",
                 mergedVertices[0].position.x, mergedVertices[0].position.y, mergedVertices[0].position.z);
         }
+#endif
         printedBufferInfo = true;
     }
     if (mergedVertices.empty() || mergedIndices.empty()) {
@@ -578,7 +584,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // Written by compute shader every frame, read by indirect draw — DEVICE_LOCAL
     // for optimal GPU performance on discrete GPUs.
     VkDeviceSize compactSize = indirectBufferSize;
-    printf("[IndirectRenderer::rebuild] meshes=%zu activeCmds=%zu capacity=%zu\n", meshes.size(), cmds.size(), meshCapacity);
+    //printf("[IndirectRenderer::rebuild] meshes=%zu activeCmds=%zu capacity=%zu\n", meshes.size(), cmds.size(), meshCapacity);
     if (compactIndirectBuffer.buffer != VK_NULL_HANDLE || compactIndirectBuffer.memory != VK_NULL_HANDLE) {
         scheduleDestroyBuffer(compactIndirectBuffer);
         compactIndirectBuffer = {};
@@ -820,11 +826,13 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     
     static bool printedOnce = false;
     if (!printedOnce) {
+#if 0
         uint32_t numCmds = 0;
         for (const auto& kv : meshes) if (kv.second.active) ++numCmds;
         std::cout << "[IndirectRenderer::prepareCull] RUNNING: numCmds=" << numCmds
                   << ", computePipeline=" << (void*)computePipeline
                   << ", computeDescriptorSet=" << (void*)computeDescriptorSet << std::endl;
+#endif
         printedOnce = true;
     }
     

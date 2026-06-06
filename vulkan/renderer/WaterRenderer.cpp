@@ -772,7 +772,7 @@ void WaterRenderer::initializeGeomDepthFromSceneDepth(VulkanApp* app, VkCommandB
     app->recordTransitionImageLayoutLayer(cmd, waterGeomDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
 
-
+#if 0
     // Debug: log copy parameters and tracked layouts to help diagnose GPU faults
     std::cerr << "[WaterRenderer] initializeGeomDepthFromSceneDepth: copying depth src=" << (void*)sceneDepthImage
                 << " dst=" << (void*)waterGeomDepthImages[frameIndex]
@@ -784,6 +784,7 @@ void WaterRenderer::initializeGeomDepthFromSceneDepth(VulkanApp* app, VkCommandB
         std::cerr << "  [WaterRenderer] WARNING: water render size (" << renderWidth << "x" << renderHeight
                     << ") differs from app swapchain (" << app->getWidth() << "x" << app->getHeight() << ")" << std::endl;
     }
+#endif
 
     VkImageCopy copyRegion{};
     copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;

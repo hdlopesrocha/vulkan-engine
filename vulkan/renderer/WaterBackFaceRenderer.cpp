@@ -307,13 +307,15 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     // Allow disabling the scene->backface depth copy for binary-search debugging
     const char* dis = std::getenv("VULKAN_DISABLE_DEPTH_COPY");
     if (dis && dis[0] != '\0') {
+#if 0
         std::cerr << "[WaterBackFaceRenderer] VULKAN_DISABLE_DEPTH_COPY set; skipping back-face depth copy for frame " << frameIndex << std::endl;
+#endif
     } else if (sceneDepthImage != VK_NULL_HANDLE) {
         // Transition scene depth -> TRANSFER_SRC and back-face depth -> TRANSFER_DST
         app->recordTransitionImageLayoutLayer(cmd, sceneDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1); 
         app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
 
-  
+#if 0
         std::cerr << "[WaterBackFaceRenderer] copying depth src=" << (void*)sceneDepthImage
                     << " dst=" << (void*)backFaceDepthImages[frameIndex]
                     << " extent=" << renderWidth << "x" << renderHeight << " frame=" << frameIndex << std::endl;
@@ -324,6 +326,7 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
             std::cerr << "  [WaterBackFaceRenderer] WARNING: back-face render size (" << renderWidth << "x" << renderHeight
                         << ") differs from app swapchain (" << app->getWidth() << "x" << app->getHeight() << ")" << std::endl;
         }
+#endif
 
         VkImageCopy copyRegion{};
         copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
