@@ -30,39 +30,32 @@ void recordTransferWriteRelease(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSi
 } // anonymous namespace
 
 void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
-    if (vertexBuffer.buffer == VK_NULL_HANDLE && indexBuffer.buffer == VK_NULL_HANDLE) return;
-
-    VkBufferMemoryBarrier barriers[2]{};
+    VkBufferMemoryBarrier barriers[4]{};
     uint32_t count = 0;
-    if (vertexBuffer.buffer != VK_NULL_HANDLE) {
+
+    auto addBarrier = [&](VkBuffer buf, VkAccessFlags dstAccess) {
+        if (buf == VK_NULL_HANDLE) return;
         barriers[count].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        barriers[count].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-        barriers[count].dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+        barriers[count].srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        barriers[count].dstAccessMask = dstAccess;
         barriers[count].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barriers[count].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barriers[count].buffer = vertexBuffer.buffer;
+        barriers[count].buffer = buf;
         barriers[count].offset = 0;
         barriers[count].size = VK_WHOLE_SIZE;
         ++count;
-    }
-    if (indexBuffer.buffer != VK_NULL_HANDLE) {
-        barriers[count].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        barriers[count].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-        barriers[count].dstAccessMask = VK_ACCESS_INDEX_READ_BIT;
-        barriers[count].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barriers[count].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barriers[count].buffer = indexBuffer.buffer;
-        barriers[count].offset = 0;
-        barriers[count].size = VK_WHOLE_SIZE;
-        ++count;
-    }
+    };
+
+    addBarrier(vertexBuffer.buffer,       VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
+    addBarrier(indexBuffer.buffer,        VK_ACCESS_INDEX_READ_BIT);
+    addBarrier(indirectBuffer.buffer,     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+    addBarrier(boundsBuffer.buffer,       VK_ACCESS_SHADER_READ_BIT);
+
     if (count > 0) {
         vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_HOST_BIT,
-            VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-            0, 0, nullptr,
-            count, barriers,
-            0, nullptr);
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            0, 0, nullptr, count, barriers, 0, nullptr);
     }
 }
 
@@ -327,10 +320,20 @@ bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
 void IndirectRenderer::uploadMeshMetaBuffers(VulkanApp* app) {
     std::lock_guard<std::mutex> guard(mutex);
     if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
+
+    // Append-only: skip already-written entries to avoid rewriting data
+    // that in-flight GPU frames may be reading from.
     size_t activeIdx = 0;
+    size_t skipped = 0;
     for (auto& kv : meshes) {
         MeshInfo& info = kv.second;
         if (!info.active) continue;
+        if (skipped < metaBuffersWrittenCount) {
+            ++skipped;
+            ++activeIdx;
+            continue;
+        }
+
         VkDrawIndexedIndirectCommand cmd{};
         cmd.indexCount = info.indexCount;
         cmd.instanceCount = 1;
@@ -344,7 +347,6 @@ void IndirectRenderer::uploadMeshMetaBuffers(VulkanApp* app) {
         memcpy(data, &cmd, cmdSize);
         vkUnmapMemory(app->getDevice(), indirectBuffer.memory);
         info.indirectOffset = cmdOffset;
-        // Models SSBO removed: shaders use identity model matrices, skip writing models
         if (boundsBuffer.buffer != VK_NULL_HANDLE) {
             VkDeviceSize boundsOffset = activeIdx * 2 * sizeof(glm::vec4);
             glm::vec4 bounds[2] = { info.boundsMin, info.boundsMax };
@@ -354,6 +356,7 @@ void IndirectRenderer::uploadMeshMetaBuffers(VulkanApp* app) {
         }
         ++activeIdx;
     }
+    metaBuffersWrittenCount = activeIdx;
 }
 
 void IndirectRenderer::rebuild(VulkanApp* app) {
@@ -804,6 +807,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     pendingDescriptorSet = VK_NULL_HANDLE;
 
     dirty = false;
+    metaBuffersWrittenCount = 0; // rebuild rewrites all entries
 }
 
 void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws) {
@@ -816,7 +820,8 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     
     static bool printedOnce = false;
     if (!printedOnce) {
-        uint32_t numCmds = static_cast<uint32_t>(indirectCommands.size());
+        uint32_t numCmds = 0;
+        for (const auto& kv : meshes) if (kv.second.active) ++numCmds;
         std::cout << "[IndirectRenderer::prepareCull] RUNNING: numCmds=" << numCmds
                   << ", computePipeline=" << (void*)computePipeline
                   << ", computeDescriptorSet=" << (void*)computeDescriptorSet << std::endl;
@@ -852,7 +857,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     uint32_t numCmds = 0;
     {
         std::lock_guard<std::mutex> lock(mutex);
-        numCmds = static_cast<uint32_t>(indirectCommands.size());
+        for (const auto& kv : meshes) if (kv.second.active) ++numCmds;
     }
     // Fast return if nothing to cull — avoids touching the pipeline at all
     if (numCmds == 0) return;
@@ -921,7 +926,7 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     uint32_t numCmds = 0;
     {
         std::lock_guard<std::mutex> lock(mutex);
-        numCmds = static_cast<uint32_t>(indirectCommands.size());
+        for (const auto& kv : meshes) if (kv.second.active) ++numCmds;
     }
     // Fast return if nothing to cull — avoids touching the pipeline at all
     if (numCmds == 0) return;

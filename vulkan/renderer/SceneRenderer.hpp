@@ -208,6 +208,10 @@ public:
     // Drain the pending mesh queue on the main (render) thread.
     // Call once per frame from update() before recording command buffers.
     void processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos);
+    bool hasPendingMeshes() const {
+        std::lock_guard<std::mutex> lock(pendingMeshMutex);
+        return !pendingMeshQueue.empty();
+    }
 
 private:
     void updateDebugSDFCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree);

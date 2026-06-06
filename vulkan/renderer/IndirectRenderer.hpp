@@ -166,6 +166,11 @@ private:
     size_t indexCapacity = 0;
     size_t meshCapacity = 0;
 
+    // Tracks how many active mesh entries have been written to GPU
+    // indirect/bounds buffers. Used for append-only writes to avoid
+    // rewriting existing entries while in-flight GPU frames read them.
+    size_t metaBuffersWrittenCount = 0;
+
     bool dirty = false;
     bool descriptorDirty = false;  // flag for deferred descriptor update
     VkDescriptorSet pendingDescriptorSet = VK_NULL_HANDLE; // ds to update (VK_NULL_HANDLE means use/create material set)

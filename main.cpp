@@ -93,6 +93,10 @@ public:
     VkDescriptorSet shadowPassDescriptorSet = VK_NULL_HANDLE;
     UniformObject uboStatic = {};
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    // Track async task fences so we can defer buffer modifications
+    // until GPU work from previous-frame async tasks completes.
+    std::vector<VkFence> pendingAsyncFences;
+    std::mutex asyncFenceMutex;
     std::shared_ptr<SettingsWidget> settingsWidget;
     std::shared_ptr<SkyWidget> skyWidget;
     std::shared_ptr<WaterWidget> waterWidget;
@@ -461,9 +465,13 @@ public:
         // Drain the pending mesh queue populated by the background scene-loading
         // thread.  GPU uploads happen here on the main thread so newly generated
         // chunks become visible progressively without blocking the render loop.
-        // During loading, defer all uploads — the concurrent vkCmdCopyBuffer
-        // submissions during rebuild() trigger RADV GPU hangs on Renoir iGPUs.
-        if (sceneRenderer && !isLoading) sceneRenderer->processPendingMeshes(this, camera.getPosition());
+        // Process pending meshes at a controlled rate. Modifying shared
+        // vertex/index/indirect/bounds buffers while in-flight GPU frames
+        // are reading them causes geometry flickering on integrated GPUs.
+        // Processing every N frames gives the GPU time to drain pending work.
+        static int meshTick = 0;
+        if (sceneRenderer && !isLoading && (++meshTick % 3 == 0))
+            sceneRenderer->processPendingMeshes(this, camera.getPosition());
 
         mainTime += deltaTime;
         if (sceneRenderer && sceneRenderer->vegetationRenderer) {
@@ -957,6 +965,7 @@ public:
 
                 // Submit and schedule cleanup of temporary resources after fence signals
                 VkFence f = app->submitCommandBufferAsync(cmd, &semSolid360);
+                { std::lock_guard<std::mutex> lk(asyncFenceMutex); pendingAsyncFences.push_back(f); }
                 app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app, gfxDs, gfxPool, taskUBO]() {
                     // Unregister and destroy descriptor set/pool
                     app->resources.removeDescriptorSet(computeDs);
@@ -1102,6 +1111,7 @@ public:
 
                 // Submit and schedule cleanup of temporary resources after fence signals
                 VkFence f = app->submitCommandBufferAsync(cmd, &semBackFace);
+                { std::lock_guard<std::mutex> lk(asyncFenceMutex); pendingAsyncFences.push_back(f); }
                 app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app]() {
                     // Unregister and destroy descriptor set/pool
                     app->resources.removeDescriptorSet(computeDs);
