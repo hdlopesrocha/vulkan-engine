@@ -8,11 +8,13 @@ layout(location = VARY_BRUSHPATCH) flat in int fragBrushIndex;
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 void main() {
-    if (abs(fragSdf) > 10.0) {
+    float rng = 10.0;
+
+    if (abs(fragSdf) > rng) {
         discard;
     }
 
-    float normalizedMagnitude = clamp(abs(fragSdf) / 10.0, 0.0, 1.0);
+    float normalizedMagnitude = clamp(abs(fragSdf) / rng, 0.0, 1.0);
     vec3 negativeColor = vec3(0.0, 0.0, 0.0);
 
     // Palette copied from main.frag debug palette (16 colors)

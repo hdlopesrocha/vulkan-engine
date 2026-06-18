@@ -1370,6 +1370,12 @@ public:
         }
 
         uint32_t frameIdx = getCurrentFrame();
+
+        // Per-frame cull buffers: each IndirectRenderer needs its own per-frame
+        // compact/visibleCount buffer to avoid cross-frame overwrite races.
+        sceneRenderer->solidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
+        sceneRenderer->waterRenderer->getIndirectRenderer().setCullFrame(frameIdx);
+
         glm::mat4 viewProj = camera.getViewProjectionMatrix();
         glm::mat4 invViewProj = glm::inverse(viewProj);
 

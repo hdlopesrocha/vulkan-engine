@@ -83,9 +83,15 @@ void IndirectRenderer::cleanup() {
     vertexBuffer = {};
     indexBuffer = {};
     indirectBuffer = {};
-    compactIndirectBuffer = {};
+    for (auto& b : compactIndirectBuffers) b = {};
     boundsBuffer = {};
-    visibleCountBuffer = {};
+    for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+        if (visibleCountMapped[f] && storedDevice != VK_NULL_HANDLE) {
+            vkUnmapMemory(storedDevice, visibleCountBuffers[f].memory);
+            visibleCountMapped[f] = nullptr;
+        }
+        visibleCountBuffers[f] = {};
+    }
 
     computePipeline = VK_NULL_HANDLE;
     computePipelineLayout = VK_NULL_HANDLE;
@@ -585,44 +591,50 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // for optimal GPU performance on discrete GPUs.
     VkDeviceSize compactSize = indirectBufferSize;
     //printf("[IndirectRenderer::rebuild] meshes=%zu activeCmds=%zu capacity=%zu\n", meshes.size(), cmds.size(), meshCapacity);
-    if (compactIndirectBuffer.buffer != VK_NULL_HANDLE || compactIndirectBuffer.memory != VK_NULL_HANDLE) {
-        scheduleDestroyBuffer(compactIndirectBuffer);
-        compactIndirectBuffer = {};
-    }
-    if (compactSize > 0) {
-        // HOST_VISIBLE avoids sync uploads that trigger RADV instability.
-        compactIndirectBuffer = app->createBuffer(compactSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (indirectDataSize > 0) {
-            void* data;
-            vkMapMemory(app->getDevice(), compactIndirectBuffer.memory, 0, indirectDataSize, 0, &data);
-            memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
-            vkUnmapMemory(app->getDevice(), compactIndirectBuffer.memory);
+    for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+        if (compactIndirectBuffers[f].buffer != VK_NULL_HANDLE || compactIndirectBuffers[f].memory != VK_NULL_HANDLE) {
+            scheduleDestroyBuffer(compactIndirectBuffers[f]);
+            compactIndirectBuffers[f] = {};
+        }
+        if (compactSize > 0) {
+            compactIndirectBuffers[f] = app->createBuffer(compactSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            if (indirectDataSize > 0) {
+                void* data;
+                vkMapMemory(app->getDevice(), compactIndirectBuffers[f].memory, 0, indirectDataSize, 0, &data);
+                memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
+                vkUnmapMemory(app->getDevice(), compactIndirectBuffers[f].memory);
+            }
         }
     }
 
-    // Create or zero the visible count buffer (single uint).
-    // Must be HOST_VISIBLE — readVisibleCount() maps it for CPU stats reads.
+    // Create or zero the per-frame visible count buffers.
     VkDeviceSize countSize = sizeof(uint32_t);
-    if (visibleCountBuffer.buffer != VK_NULL_HANDLE || visibleCountBuffer.memory != VK_NULL_HANDLE) {
-        scheduleDestroyBuffer(visibleCountBuffer);
-        visibleCountBuffer = {};
-    }
-    visibleCountBuffer = app->createBuffer(countSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    // Initialize visibleCount
     uint32_t initialCount = static_cast<uint32_t>(indirectCommands.size());
-    {
-        void* data;
-        vkMapMemory(app->getDevice(), visibleCountBuffer.memory, 0, countSize, 0, &data);
-        memcpy(data, &initialCount, countSize);
-        vkUnmapMemory(app->getDevice(), visibleCountBuffer.memory);
+    VkDevice dev = app->getDevice();
+    storedDevice = dev;
+    for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+        // Unmap old persistent mapping before destroying
+        if (visibleCountMapped[f]) {
+            vkUnmapMemory(dev, visibleCountBuffers[f].memory);
+            visibleCountMapped[f] = nullptr;
+        }
+        if (visibleCountBuffers[f].buffer != VK_NULL_HANDLE || visibleCountBuffers[f].memory != VK_NULL_HANDLE) {
+            scheduleDestroyBuffer(visibleCountBuffers[f]);
+            visibleCountBuffers[f] = {};
+        }
+        visibleCountBuffers[f] = app->createBuffer(countSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        // Persistently map for host-side zeroing (avoids vkCmdFillBuffer + barrier issues on RADV)
+        vkMapMemory(dev, visibleCountBuffers[f].memory, 0, countSize, 0, (void**)&visibleCountMapped[f]);
+        // Initialize with full count (fallback when culling is off)
+        *visibleCountMapped[f] = initialCount;
     }
 
-    // Create compute pipeline + descriptor set for GPU culling if not present
+    // Create compute pipeline + descriptor sets for GPU culling if not present
     if (computePipeline == VK_NULL_HANDLE) {
         // Descriptor layout bindings match shaders/indirect.comp:
         //  binding 0 = inCmds, 1 = outCmds, 2 = bounds, 3 = VisibleCount
@@ -743,41 +755,46 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         alloc.descriptorPool = computeDescriptorPool;
         alloc.descriptorSetCount = 1;
         alloc.pSetLayouts = &computeDescriptorSetLayout;
-        if (app->allocateDescriptorSetsThreadSafe(&alloc, &computeDescriptorSet) != VK_SUCCESS) {
-            throw std::runtime_error("failed to allocate compute descriptor set");
+        for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+            if (app->allocateDescriptorSetsThreadSafe(&alloc, &computeDescriptorSets[f]) != VK_SUCCESS) {
+                throw std::runtime_error("failed to allocate compute descriptor set");
+            }
+            app->resources.addDescriptorSet(computeDescriptorSets[f], "IndirectRenderer: computeDescriptorSet");
         }
-        app->resources.addDescriptorSet(computeDescriptorSet, "IndirectRenderer: computeDescriptorSet");
     }
 
-    // Update compute descriptor set with buffer infos
-    if (computeDescriptorSet != VK_NULL_HANDLE) {
-        VkDescriptorBufferInfo inBuf{};
-        inBuf.buffer = indirectBuffer.buffer;
-        inBuf.offset = 0;
-        inBuf.range = VK_WHOLE_SIZE;
-        VkDescriptorBufferInfo outBuf{};
-        outBuf.buffer = compactIndirectBuffer.buffer;
-        outBuf.offset = 0;
-        outBuf.range = VK_WHOLE_SIZE;
-        VkDescriptorBufferInfo boundsBuf{};
-        boundsBuf.buffer = boundsBuffer.buffer;
-        boundsBuf.offset = 0;
-        boundsBuf.range = VK_WHOLE_SIZE;
-        VkDescriptorBufferInfo countBuf{};
-        countBuf.buffer = visibleCountBuffer.buffer;
-        countBuf.offset = 0;
-        countBuf.range = VK_WHOLE_SIZE;
+    // Update per-frame compute descriptor sets with buffer infos
+    VkDescriptorBufferInfo inBuf{};
+    inBuf.buffer = indirectBuffer.buffer;
+    inBuf.offset = 0;
+    inBuf.range = VK_WHOLE_SIZE;
+    VkDescriptorBufferInfo boundsBufInfo{};
+    boundsBufInfo.buffer = boundsBuffer.buffer;
+    boundsBufInfo.offset = 0;
+    boundsBufInfo.range = VK_WHOLE_SIZE;
 
-        // Check required buffers are valid before updating descriptor set
-        if (indirectBuffer.buffer == VK_NULL_HANDLE ||
-            compactIndirectBuffer.buffer == VK_NULL_HANDLE ||
-            boundsBuffer.buffer == VK_NULL_HANDLE ||
-            visibleCountBuffer.buffer == VK_NULL_HANDLE) {
-            std::cerr << "[IndirectRenderer] Skipping compute descriptor set update: one or more buffers are VK_NULL_HANDLE" << std::endl;
-        } else {
+    bool anyNull = (indirectBuffer.buffer == VK_NULL_HANDLE || boundsBuffer.buffer == VK_NULL_HANDLE);
+    for (uint32_t f = 0; f < MAX_CULL_FRAMES && !anyNull; f++) {
+        if (compactIndirectBuffers[f].buffer == VK_NULL_HANDLE || visibleCountBuffers[f].buffer == VK_NULL_HANDLE) {
+            anyNull = true;
+        }
+    }
+    if (anyNull) {
+        std::cerr << "[IndirectRenderer] Skipping compute descriptor set update: one or more buffers are VK_NULL_HANDLE" << std::endl;
+    } else {
+        for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
+            VkDescriptorBufferInfo outBuf{};
+            outBuf.buffer = compactIndirectBuffers[f].buffer;
+            outBuf.offset = 0;
+            outBuf.range = VK_WHOLE_SIZE;
+            VkDescriptorBufferInfo countBuf{};
+            countBuf.buffer = visibleCountBuffers[f].buffer;
+            countBuf.offset = 0;
+            countBuf.range = VK_WHOLE_SIZE;
+
             VkWriteDescriptorSet writes[4] = {};
             writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[0].dstSet = computeDescriptorSet;
+            writes[0].dstSet = computeDescriptorSets[f];
             writes[0].dstBinding = 0;
             writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[0].descriptorCount = 1;
@@ -786,11 +803,9 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             writes[1] = writes[0];
             writes[1].dstBinding = 1; 
             writes[1].pBufferInfo = &outBuf;
-            // bounds is at binding 2 in the shader
             writes[2] = writes[0]; 
             writes[2].dstBinding = 2;
-            writes[2].pBufferInfo = &boundsBuf;
-            // visible count is at binding 3 in the shader
+            writes[2].pBufferInfo = &boundsBufInfo;
             writes[3] = writes[0]; 
             writes[3].dstBinding = 3;
             writes[3].pBufferInfo = &countBuf;
@@ -816,10 +831,18 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     metaBuffersWrittenCount = 0; // rebuild rewrites all entries
 }
 
+void IndirectRenderer::setCullFrame(uint32_t frame) {
+    currentCullFrame = frame % MAX_CULL_FRAMES;
+}
+
 void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj, uint32_t maxDraws) {
     // NOTE: No mutex lock here - this is only called from the main render thread
     // and all buffer modifications happen in rebuild() which does lock.
-    if (computePipeline == VK_NULL_HANDLE || compactIndirectBuffer.buffer == VK_NULL_HANDLE) {
+    Buffer& compactBuf = compactIndirectBuffers[currentCullFrame];
+    Buffer& visibleCount = visibleCountBuffers[currentCullFrame];
+    VkDescriptorSet descSet = computeDescriptorSets[currentCullFrame];
+
+    if (computePipeline == VK_NULL_HANDLE || compactBuf.buffer == VK_NULL_HANDLE) {
         // No meshes loaded yet (e.g. during parallel background loading). Nothing to cull.
         return;
     }
@@ -836,32 +859,15 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         printedOnce = true;
     }
     
-    // Reset visible count to zero using a command (clear GPU-side counter)
-    vkCmdFillBuffer(cmd, visibleCountBuffer.buffer, 0, sizeof(uint32_t), 0);
-
-    // Barrier: vkCmdFillBuffer is a TRANSFER write. The compute shader does
-    // atomicAdd on visibleCountBuffer, so we must ensure the fill is visible
-    // before the dispatch starts. Without this the atomicAdd can race the
-    // fill and read a stale value from the previous frame.
-    {
-        VkBufferMemoryBarrier fillBarrier{};
-        fillBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-        fillBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        fillBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        fillBarrier.buffer = visibleCountBuffer.buffer;
-        fillBarrier.offset = 0;
-        fillBarrier.size = sizeof(uint32_t);
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, 0, nullptr, 1, &fillBarrier, 0, nullptr);
+    // Reset visible count to zero via persistent host mapping — avoids
+    // vkCmdFillBuffer + TRANSFER_BIT barrier which is unreliable on RADV.
+    if (visibleCountMapped[currentCullFrame]) {
+        *visibleCountMapped[currentCullFrame] = 0;
     }
 
     // Bind and dispatch compute cull
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeDescriptorSet, 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &descSet, 0, nullptr);
     uint32_t numCmds = 0;
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -884,12 +890,12 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     barriers[0].dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
     barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barriers[0].buffer = compactIndirectBuffer.buffer;
+    barriers[0].buffer = compactBuf.buffer;
     barriers[0].offset = 0;
     barriers[0].size = VK_WHOLE_SIZE;
 
     barriers[1] = barriers[0];
-    barriers[1].buffer = visibleCountBuffer.buffer;
+    barriers[1].buffer = visibleCount.buffer;
     barriers[1].dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
 
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 0, nullptr, 2, barriers, 0, nullptr);
@@ -905,26 +911,19 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
         throw std::runtime_error("IndirectRenderer::prepareCullWithDescriptor requires valid outCompactBuffer and computeDesc");
     }
 
-    // Reset visible count to zero using a command (clear GPU-side counter)
+    // Reset visible count via host mapped write (outVisibleCountBuffer is HOST_VISIBLE|HOST_COHERENT).
+    // vkCmdFillBuffer + TRANSFER_BIT barrier is unreliable on RADV.
+    // The caller owns the buffer; we clear it with a global memory barrier + fill.
     vkCmdFillBuffer(cmd, outVisibleCountBuffer, 0, sizeof(uint32_t), 0);
-
-    // Barrier: vkCmdFillBuffer is a TRANSFER write. The compute shader does
-    // atomicAdd on visibleCountBuffer, so we must ensure the fill is visible
-    // before the dispatch starts.
     {
-        VkBufferMemoryBarrier fillBarrier{};
-        fillBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        VkMemoryBarrier fillBarrier{};
+        fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-        fillBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        fillBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        fillBarrier.buffer = outVisibleCountBuffer;
-        fillBarrier.offset = 0;
-        fillBarrier.size = sizeof(uint32_t);
         vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, 0, nullptr, 1, &fillBarrier, 0, nullptr);
+            0, 1, &fillBarrier, 0, nullptr, 0, nullptr);
     }
 
     // Bind and dispatch compute cull using caller-provided descriptor set
@@ -1027,7 +1026,7 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
         // Check if using indirect count
         if (cmdDrawIndexedIndirectCount) {
            //printf("[IndirectRenderer::drawPrepared] Using GPU-driven count from visibleCountBuffer=%p\n",
-           //       (void*)visibleCountBuffer.buffer);
+           //       (void*)visibleCountBuffers[currentCullFrame].buffer);
         }
         frameCount++;
     }
@@ -1045,7 +1044,7 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
         throw std::runtime_error("vkCmdDrawIndexedIndirectCountKHR not available (draw-indirect-count required)");
     }
     // Use indirect-count variant to let the GPU supply the visible count from compute shader
-    cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffer.buffer, 0, visibleCountBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+    cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffers[currentCullFrame].buffer, 0, visibleCountBuffers[currentCullFrame].buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
 }
 
 void IndirectRenderer::bindBuffers(VkCommandBuffer cmd) {
@@ -1061,7 +1060,9 @@ void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VulkanApp* app, uin
 }
 
 void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pipelineLayout, uint32_t maxDraws) {
-    if (compactIndirectBuffer.buffer == VK_NULL_HANDLE) {
+    Buffer& compactBuf = compactIndirectBuffers[currentCullFrame];
+    Buffer& visibleCount = visibleCountBuffers[currentCullFrame];
+    if (compactBuf.buffer == VK_NULL_HANDLE) {
         static bool reported = false;
         if (!reported) {
             printf("[IndirectRenderer::drawIndirectOnly] compactIndirectBuffer is VK_NULL_HANDLE, no draws\n");
@@ -1076,20 +1077,19 @@ void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pi
     if (!cmdDrawIndexedIndirectCount) {
         throw std::runtime_error("vkCmdDrawIndexedIndirectCountKHR not available (draw-indirect-count required)");
     }
-    cmdDrawIndexedIndirectCount(cmd, compactIndirectBuffer.buffer, 0, visibleCountBuffer.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
+    cmdDrawIndexedIndirectCount(cmd, compactBuf.buffer, 0, visibleCount.buffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
 }
 
 uint32_t IndirectRenderer::readVisibleCount(VulkanApp* app) const {
-    if (!app || visibleCountBuffer.buffer == VK_NULL_HANDLE) return 0;
-    // Stats-only: wait for GPU to finish so the counter is coherent before mapping.
+    const Buffer& visibleCount = visibleCountBuffers[currentCullFrame];
+    if (!app || visibleCount.buffer == VK_NULL_HANDLE) return 0;
+    // Stats-only: wait for GPU to finish so the counter is coherent.
     app->deviceWaitIdle();
-    uint32_t count = 0;
-    void* data = nullptr;
-    if (vkMapMemory(app->getDevice(), visibleCountBuffer.memory, 0, sizeof(uint32_t), 0, &data) == VK_SUCCESS && data) {
-        memcpy(&count, data, sizeof(uint32_t));
-        vkUnmapMemory(app->getDevice(), visibleCountBuffer.memory);
+    // Use persistent host mapping — avoid vkMapMemory on already-mapped memory
+    if (visibleCountMapped[currentCullFrame]) {
+        return *visibleCountMapped[currentCullFrame];
     }
-    return count;
+    return 0;
 }
 
 

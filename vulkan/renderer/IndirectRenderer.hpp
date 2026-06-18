@@ -9,12 +9,15 @@
 #include <mutex>
 #include <cstdint>
 
+#include <array>
+
 // Manages a single large vertex/index/indirect buffer and provides a simple
 // CPU-side allocator for adding/removing meshes. Draws are performed via
 // vkCmdDrawIndexedIndirect (one indirect command per mesh). The allocator is
 // append-first and supports reclamation on remove (simple free list rebuild).
 class IndirectRenderer {
 public:
+    static constexpr uint32_t MAX_CULL_FRAMES = 3;
         // Allow external code to force the dirty flag
         void setDirty(bool value) { dirty = value; }
     // Upload vertex and index data for a single mesh
@@ -63,6 +66,10 @@ public:
     // Call after removeMesh() for runtime removals.
     void eraseMeshFromGPU(VulkanApp* app, uint32_t meshId);
     
+    // Set which per-frame cull buffers to use. Must be called once per frame
+    // before prepareCull / drawPrepared. frame idx should be in [0, MAX_CULL_FRAMES).
+    void setCullFrame(uint32_t frame);
+    
     // Ensure GPU buffers have capacity for at least the given counts. 
     // Call this before a batch of addMesh+uploadMesh if you know the expected size.
     // Returns true if buffers are ready, false if they needed to be created/grown (triggers rebuild).
@@ -95,7 +102,7 @@ public:
     const Buffer& getVertexBuffer() const { return vertexBuffer; }
     const Buffer& getIndexBuffer() const { return indexBuffer; }
     const Buffer& getIndirectBuffer() const { return indirectBuffer; }
-    const Buffer& getCompactIndirectBuffer() const { return compactIndirectBuffer; }
+    const Buffer& getCompactIndirectBuffer() const { return compactIndirectBuffers[currentCullFrame]; }
     const Buffer& getBoundsBuffer() const { return boundsBuffer; }
     VkPipeline getComputePipeline() const { return computePipeline; }
     VkDescriptorSetLayout getComputeDescriptorSetLayout() const { return computeDescriptorSetLayout; }
@@ -133,18 +140,25 @@ private:
     std::vector<uint32_t> mergedIndices;
     std::vector<VkDrawIndexedIndirectCommand> indirectCommands;
 
-    // A temporary compact indirect buffer used to upload only visible commands
-    Buffer compactIndirectBuffer;
+    // Set which per-frame cull buffers to use. Must be called once per frame
+    // before prepareCull / drawPrepared. frame idx should be in [0, MAX_CULL_FRAMES).
+
+    // A temporary compact indirect buffer used to upload only visible commands — per-frame to avoid cross-frame races
+    std::array<Buffer, MAX_CULL_FRAMES> compactIndirectBuffers;
     // GPU-side culling resources
     Buffer boundsBuffer; // vec4 per-mesh: xyz=center, w=radius
-    Buffer visibleCountBuffer; // single uint counter
+    // Per-frame visible count buffers
+    std::array<Buffer, MAX_CULL_FRAMES> visibleCountBuffers;
+    // Persistent host mapping for zeroing visible counts (avoids vkCmdFillBuffer + barrier on RADV)
+    mutable std::array<uint32_t*, MAX_CULL_FRAMES> visibleCountMapped = {nullptr, nullptr, nullptr};
+    VkDevice storedDevice = VK_NULL_HANDLE;
 
     // Compute pipeline objects for GPU culling
     VkPipeline computePipeline = VK_NULL_HANDLE;
     VkPipelineLayout computePipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout computeDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool computeDescriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSet computeDescriptorSet = VK_NULL_HANDLE;
+    std::array<VkDescriptorSet, MAX_CULL_FRAMES> computeDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
 
     // Optional device function for indirect-count draw (KHR or core 1.2)
     PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
@@ -165,6 +179,7 @@ private:
     size_t metaBuffersWrittenCount = 0;
 
     bool dirty = false;
+    uint32_t currentCullFrame = 0;
     bool descriptorDirty = false;  // flag for deferred descriptor update
     VkDescriptorSet pendingDescriptorSet = VK_NULL_HANDLE; // ds to update (VK_NULL_HANDLE means use/create material set)
 };
