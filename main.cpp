@@ -1136,6 +1136,7 @@ public:
         // Run water geometry pass offscreen and bind scene textures for post-process
         if (waterEnabled) {
             // GPU frustum cull water meshes (must run outside a render pass)
+            sceneRenderer->waterRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
             sceneRenderer->waterRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
             // Use 360° solid+sky reflection instead of the sky-only equirect view
             VkImageView cubeReflectionView = VK_NULL_HANDLE;

@@ -36,7 +36,7 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
     auto addBarrier = [&](VkBuffer buf, VkAccessFlags dstAccess) {
         if (buf == VK_NULL_HANDLE) return;
         barriers[count].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        barriers[count].srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        barriers[count].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
         barriers[count].dstAccessMask = dstAccess;
         barriers[count].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barriers[count].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -53,7 +53,7 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
 
     if (count > 0) {
         vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_HOST_BIT,
             VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
             0, 0, nullptr, count, barriers, 0, nullptr);
     }
