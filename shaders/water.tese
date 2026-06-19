@@ -129,7 +129,26 @@ void main() {
 
     // Displace along the interpolated surface normal so bump follows mesh orientation.
     pos += waveDisplacement * normal;
-    fragNormal = normal;
+
+    // Compute bumped normal from the displacement function so that
+    // lighting, reflection, and refraction respond to the wave shape.
+    // Uses the same central-differences approach as the fragment shader's
+    // non-tessellated path, sampling the displacement at nearby world-space
+    // offsets along tangent (T) and bitangent (B).
+    {
+        vec3 upVec = abs(normal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        vec3 T = normalize(cross(upVec, normal));
+        vec3 B = cross(normal, T);
+
+        float epsTes = 0.5;
+        float hT = waterWaveDisplacement(xyz + epsTes * T, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
+        float hB = waterWaveDisplacement(xyz + epsTes * B, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
+
+        vec3 bumpedN = normalize(normal - ((hT - waveDisplacement) / epsTes) * T - ((hB - waveDisplacement) / epsTes) * B);
+        // Keep the normal facing the visible side of the surface
+        if (dot(bumpedN, normal) < 0.0) bumpedN = -bumpedN;
+        fragNormal = bumpedN;
+    }
 
     // Debug: encode displacement as color (normalized)
     float maxExpected = bumpAmp * waveScale * 1.5; // heuristic normalization factor
