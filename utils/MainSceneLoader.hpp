@@ -27,6 +27,7 @@
 #include "../sdf/ConeDistanceFunction.hpp"
 #include "../sdf/CylinderDistanceFunction.hpp"
 #include "../sdf/TaperedCylinderDistanceFunction.hpp"
+#include "../sdf/TaperedCapsuleDistanceFunction.hpp"
 #include "../sdf/OctreeDifferenceFunction.hpp"
 
 #include "../sdf/WrappedHeightMap.hpp"
@@ -39,6 +40,7 @@
 #include "../sdf/WrappedCone.hpp"
 #include "../sdf/WrappedCylinder.hpp"
 #include "../sdf/WrappedTaperedCylinder.hpp"
+#include "../sdf/WrappedTaperedCapsule.hpp"
 #include "../sdf/WrappedPerlinDistortDistanceEffect.hpp"
 #include "../sdf/WrappedPerlinCarveDistanceEffect.hpp"
 #include "../sdf/WrappedSineDistortDistanceEffect.hpp"
@@ -245,6 +247,19 @@ public:
             TaperedCylinderDistanceFunction function(0.25f, 0.5f);
             Transformation model(glm::vec3(radius), center, 0,0,0);
             WrappedTaperedCylinder wrappedFunction = WrappedTaperedCylinder(&function);
+            opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(11), minSize, simplifier, opaqueHandler);
+        }
+        flush();
+
+        {
+            std::cout << "\topaqueLayer.add(taperedCapsule)"<< std::endl;
+            glm::vec3 center = glm::vec3(0,512, 512*6);
+            float radius = 256.0f;
+            // Wider at bottom (r1=0.5), narrower at top (r2=0.25)
+            TaperedCapsuleDistanceFunction function(
+                glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f), 0.5f, 0.25f);
+            Transformation model(glm::vec3(radius), center, 0,0,0);
+            WrappedTaperedCapsule wrappedFunction = WrappedTaperedCapsule(&function);
             opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(11), minSize, simplifier, opaqueHandler);
         }
         flush();

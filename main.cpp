@@ -1788,6 +1788,13 @@ void MyApp::rebuildBrushScene() {
                 applyEntry(&wrapped);
                 break;
             }
+            case 9: { // Tapered Capsule
+                TaperedCapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB,
+                    entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y);
+                WrappedTaperedCapsule wrapped(&fn);
+                applyEntry(&wrapped);
+                break;
+            }
             default:
                 std::cerr << "[rebuildBrushScene] Unknown sdfType " << entry.sdfType << ", skipping" << std::endl;
                 break;

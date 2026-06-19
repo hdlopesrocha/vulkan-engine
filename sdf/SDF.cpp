@@ -176,6 +176,13 @@ float SDF::capsule(const glm::vec3 &p, glm::vec3 a, glm::vec3 b, float r ) {
     return glm::length( pa - ba*h ) - r;
 }
 
+float SDF::taperedCapsule(const glm::vec3 &p, glm::vec3 a, glm::vec3 b, float r1, float r2) {
+    glm::vec3 pa = p - a, ba = b - a;
+    float h = glm::clamp(glm::dot(pa, ba) / glm::dot(ba, ba), 0.0f, 1.0f);
+    float r = glm::mix(r1, r2, h);
+    return glm::length(pa - ba * h) - r;
+}
+
 float SDF::torus(const glm::vec3 &p, glm::vec2 t ) {
   glm::vec2 q = glm::vec2(glm::length(glm::vec2(p.x,p.z))-t.x,p.y);
   return glm::length(q)-t.y;

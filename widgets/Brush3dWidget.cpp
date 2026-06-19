@@ -9,7 +9,7 @@
 
 // Static label arrays for combo boxes
 const char* Brush3dWidget::sdfTypeNames[] = {
-    "Sphere", "Box", "Capsule", "Octahedron", "Pyramid", "Torus", "Cone", "Cylinder", "Tapered Cylinder"
+    "Sphere", "Box", "Capsule", "Octahedron", "Pyramid", "Torus", "Cone", "Cylinder", "Tapered Cylinder", "Tapered Capsule"
 };
 const char* Brush3dWidget::brushModeNames[] = { "Add", "Remove" };
 const char* Brush3dWidget::layerNames[] = { "Opaque", "Transparent" };
@@ -154,6 +154,15 @@ void Brush3dWidget::renderEntry(int index) {
         ImGui::Text("Tapered Cylinder Parameters:");
         if (ImGui::DragFloat("Bottom Radius", &e.taperedCylinderRadii.x, 0.01f, 0.01f, 10.0f)) dirty = true;
         if (ImGui::DragFloat("Top Radius", &e.taperedCylinderRadii.y, 0.01f, 0.01f, 10.0f)) dirty = true;
+    }
+
+    // Tapered capsule-specific parameters
+    if (e.sdfType == 9) { // Tapered Capsule
+        ImGui::Text("Tapered Capsule Parameters:");
+        if (ImGui::DragFloat3("Point A", &e.capsuleA.x, 1.0f)) dirty = true;
+        if (ImGui::DragFloat3("Point B", &e.capsuleB.x, 1.0f)) dirty = true;
+        if (ImGui::DragFloat("Radius A", &e.taperedCapsuleRadii.x, 0.01f, 0.01f, 10.0f)) dirty = true;
+        if (ImGui::DragFloat("Radius B", &e.taperedCapsuleRadii.y, 0.01f, 0.01f, 10.0f)) dirty = true;
     }
 
     // Effect
