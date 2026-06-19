@@ -168,7 +168,7 @@ public:
     // `sourceVersion` when non-zero is the snapshot of the node version that
     // produced the geometry; prefer it over `nd.node->version` to avoid race
     // conditions between tessellation and main-thread upload.
-    void updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom, bool attemptUpload = true, uint sourceVersion = 0);
+    void updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom, bool attemptUpload = true, uint sourceVersion = 0, bool* hadRemovals = nullptr);
 
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
     // Process nodes for a single Layer (nodeMap maps NodeID->OctreeNodeData)

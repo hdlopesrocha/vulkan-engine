@@ -1017,23 +1017,24 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
     }
 
     // Process meshes and attempt incremental upload only when pre-sizing succeeded.
+    bool solidOrWaterHadRemovals = false;
     for (auto& pd : batch) {
         bool attemptUpload = (pd.layer == LAYER_OPAQUE) ? solidCanIncremental : waterCanIncremental;
-        updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, pd.geom, attemptUpload, pd.version);
+        updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, pd.geom, attemptUpload, pd.version, &solidOrWaterHadRemovals);
     }
 
-    // Batch rebuild: only needed when buffers were created/grown (canIncremental == false).
-    // When canIncremental == true, uploadMesh() already pushed vertex/index data via async
-    // transfer and updated the host-visible meta buffers — no rebuild required.
+    // Batch rebuild: only needed when buffers were created/grown (canIncremental == false)
+    // OR when meshes were removed — removals leave stale indirect commands on GPU
+    // that must be compacted away by a full rebuild.
     if (solidIR.isDirty()) {
-        if (solidCanIncremental && solidNewM > 0) {
+        if (solidCanIncremental && solidNewM > 0 && !solidOrWaterHadRemovals) {
             solidIR.setDirty(false);
         } else {
             solidIR.rebuild(app);
         }
     }
     if (waterIR.isDirty()) {
-        if (waterCanIncremental && waterNewM > 0) {
+        if (waterCanIncremental && waterNewM > 0 && !solidOrWaterHadRemovals) {
             waterIR.setDirty(false);
         } else {
             waterIR.rebuild(app);
@@ -1130,7 +1131,7 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
 
 
 // Ensure mesh exists and is up-to-date for a node: insert or replace when needed
-void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom, bool attemptUpload, uint sourceVersion) {
+void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom, bool attemptUpload, uint sourceVersion, bool* hadRemovals) {
     std::lock_guard<std::recursive_mutex> lock(chunksMutex);
     IndirectRenderer &renderer = layer == LAYER_OPAQUE ? solidRenderer->getIndirectRenderer() : waterRenderer->getIndirectRenderer();
     auto &cur = layer == LAYER_OPAQUE ? solidChunks : transparentChunks;
@@ -1144,9 +1145,13 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
         if (it->second.meshId != UINT32_MAX) {
             //printf("[SceneRenderer::updateMeshForNode] Removing old mesh for node %llu (meshId=%u)\n", (unsigned long long)nid, it->second.meshId);
             renderer.removeMesh(it->second.meshId);
-            // Immediately zero the GPU indirect command for the old mesh so
-            // it won't be rendered while we prepare the new version.
-            renderer.eraseMeshFromGPU(app, it->second.meshId);
+            // Do NOT call eraseMeshFromGPU here — it maps & zeroes the GPU
+            // indirect buffer while the previous in-flight frame may still be
+            // reading that slot.  The stale indirect command is harmless: it
+            // points to vertex/index data that hasn't been overwritten
+            // (append-only), so the old mesh renders correctly until the next
+            // rebuild() compacts the buffers.
+            if (hadRemovals) *hadRemovals = true;
         }
     }
     uint32_t meshId = renderer.addMesh(geom);
