@@ -435,7 +435,7 @@ public:
                 }
             }
         }
-        //generateMapPending = true; // Trigger initial map generation on first frame so user sees something without needing to click 
+        generateMapPending = true; // Trigger initial map generation on first frame so user sees something without needing to click 
     }
 
     // Move vegetation texture setup into its own method for clarity
