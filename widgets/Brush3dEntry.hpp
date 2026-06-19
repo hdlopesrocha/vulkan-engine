@@ -4,7 +4,7 @@
 
 // Represents one SDF brush entry with all parameters needed to populate the scene
 struct BrushEntry {
-    // SDF primitive: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder
+    // SDF primitive: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder,8=TaperedCylinder
     int sdfType = 3;
     // Operation: 0=ADD, 1=REMOVE
     int brushMode = 0;
@@ -34,4 +34,6 @@ struct BrushEntry {
     float capsuleRadius = 0.5f;
     // Torus-specific
     glm::vec2 torusRadii = glm::vec2(0.5f, 0.25f);
+    // Tapered cylinder-specific (r1=bottom, r2=top, in local unit space)
+    glm::vec2 taperedCylinderRadii = glm::vec2(0.25f, 0.5f);
 };

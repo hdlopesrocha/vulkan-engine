@@ -158,6 +158,18 @@ float SDF::cylinder(const glm::vec3 &p, float r, float h) {
     return glm::min(glm::max(d.x, d.y), 0.0f) + glm::length(glm::max(d, 0.0f));
 }
 
+float SDF::taperedCylinder(const glm::vec3 &p, float r1, float r2, float h) {
+    // Capped cone / tapered cylinder: bottom radius r1, top radius r2, half-height h.
+    // Extends from y=-h (r1) to y=+h (r2).
+    glm::vec2 q = glm::vec2(glm::length(glm::vec2(p.x, p.z)), p.y);
+    glm::vec2 k1 = glm::vec2(r2, h);
+    glm::vec2 k2 = glm::vec2(r2 - r1, 2.0f * h);
+    glm::vec2 ca = glm::vec2(q.x - glm::min(q.x, (q.y < 0.0f) ? r1 : r2), glm::abs(q.y) - h);
+    glm::vec2 cb = q - k1 + k2 * glm::clamp(glm::dot(k1 - q, k2) / glm::dot(k2, k2), 0.0f, 1.0f);
+    float s = (cb.x < 0.0f && ca.y < 0.0f) ? -1.0f : 1.0f;
+    return s * glm::sqrt(glm::min(glm::dot(ca, ca), glm::dot(cb, cb)));
+}
+
 float SDF::capsule(const glm::vec3 &p, glm::vec3 a, glm::vec3 b, float r ) {
     glm::vec3 pa = p - a, ba = b - a;
     float h = glm::clamp( glm::dot(pa,ba)/glm::dot(ba,ba), 0.0f, 1.0f );

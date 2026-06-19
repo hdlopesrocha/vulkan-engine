@@ -40,6 +40,7 @@ public:
 
     static float box(const glm::vec3 &p, const glm::vec3 len);
     static float cylinder(const glm::vec3 &p, float r, float h);
+    static float taperedCylinder(const glm::vec3 &p, float r1, float r2, float h);
     static float torus(const glm::vec3 &p, glm::vec2 t );
     static float capsule(const glm::vec3 &p, glm::vec3 a, glm::vec3 b, float r );
     static float octahedron(const glm::vec3 &p, float s);

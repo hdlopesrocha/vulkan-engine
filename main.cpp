@@ -187,7 +187,8 @@ public:
             { "textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg" },
             { "textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg" },
             { "textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg" },
-            { "textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg" }
+            { "textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg" },
+            { "textures/bark_color.jpg", "textures/bark_normal.jpg", "textures/bark_bump.jpg" }
         };
 
         // Bulk load the triples directly using TextureTriple vector already defined above
@@ -1778,6 +1779,12 @@ void MyApp::rebuildBrushScene() {
             case 7: { // Cylinder
                 CylinderDistanceFunction fn;
                 WrappedCylinder wrapped(&fn);
+                applyEntry(&wrapped);
+                break;
+            }
+            case 8: { // Tapered Cylinder
+                TaperedCylinderDistanceFunction fn(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y);
+                WrappedTaperedCylinder wrapped(&fn);
                 applyEntry(&wrapped);
                 break;
             }

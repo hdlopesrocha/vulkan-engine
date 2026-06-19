@@ -26,6 +26,7 @@
 #include "../sdf/TorusDistanceFunction.hpp"
 #include "../sdf/ConeDistanceFunction.hpp"
 #include "../sdf/CylinderDistanceFunction.hpp"
+#include "../sdf/TaperedCylinderDistanceFunction.hpp"
 #include "../sdf/OctreeDifferenceFunction.hpp"
 
 #include "../sdf/WrappedHeightMap.hpp"
@@ -37,6 +38,7 @@
 #include "../sdf/WrappedTorus.hpp"
 #include "../sdf/WrappedCone.hpp"
 #include "../sdf/WrappedCylinder.hpp"
+#include "../sdf/WrappedTaperedCylinder.hpp"
 #include "../sdf/WrappedPerlinDistortDistanceEffect.hpp"
 #include "../sdf/WrappedPerlinCarveDistanceEffect.hpp"
 #include "../sdf/WrappedSineDistortDistanceEffect.hpp"
@@ -232,6 +234,18 @@ public:
             Transformation model(glm::vec3(radius), center, 0,0,0);
             WrappedCylinder wrappedFunction = WrappedCylinder(&function);
             opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
+        }
+        flush();
+
+        {
+            std::cout << "\topaqueLayer.add(taperedCylinder)"<< std::endl;
+            glm::vec3 center = glm::vec3(0,512, 512*5);
+            float radius = 256.0f;
+            // Bottom radius 0.25, top radius 0.5 in local space → wider at top
+            TaperedCylinderDistanceFunction function(0.25f, 0.5f);
+            Transformation model(glm::vec3(radius), center, 0,0,0);
+            WrappedTaperedCylinder wrappedFunction = WrappedTaperedCylinder(&function);
+            opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(11), minSize, simplifier, opaqueHandler);
         }
         flush();
 

@@ -15,7 +15,8 @@ enum SdfType {
     CARVE_PERLIN,
     DISTORT_SINE,
     CYLINDER,
-    CARVE_VORONOI
+    CARVE_VORONOI,
+    TAPERED_CYLINDER
 };
 const char* toString(SdfType t);
 
