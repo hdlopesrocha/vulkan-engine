@@ -732,6 +732,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         _exit(1);
     }
     return VK_FALSE;
+    return VK_FALSE;
 }
 
 // --- New helper methods for basic rendering ---
@@ -4675,12 +4676,16 @@ void VulkanApp::cleanupSwapchain() {
         depthImageMemory = VK_NULL_HANDLE;
     }
 
-    // free command buffers (they reference old framebuffers)
+    // free command buffers from their per-frame pools (not the main commandPool)
     if (!commandBuffers.empty()) {
         // Acquire graphicsSubmitMutex first to maintain consistent lock ordering
         std::lock_guard<std::mutex> lockQ(graphicsSubmitMutex);
         std::lock_guard<std::mutex> lockC(commandPoolMutex);
-        vkFreeCommandBuffers(device, commandPool, static_cast<uint32_t>(commandBuffers.size()), commandBuffers.data());
+        for (uint32_t i = 0; i < static_cast<uint32_t>(commandBuffers.size()); ++i) {
+            if (commandBuffers[i] != VK_NULL_HANDLE && i < frameCommandPools.size()) {
+                vkFreeCommandBuffers(device, frameCommandPools[i], 1, &commandBuffers[i]);
+            }
+        }
         commandBuffers.clear();
     }
 

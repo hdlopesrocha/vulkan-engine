@@ -64,8 +64,10 @@ void collectLeafSDFCubes(OctreeNode* node, const BoundingCube& cube, OctreeAlloc
         debugCube.brushIndex = node->vertex.brushIndex;
         if (hasDrawableSDFFace(debugCube.sdf)) {
             out.push_back(debugCube);
+            return;  // Parent covers this subtree — children are redundant
         }
-        return;
+        // Parent is simplified but has no drawable faces; traverse children
+        // in case individual child leaves still have visible SDF faces.
     }
 
     ChildBlock* block = node->getBlock(allocator);
