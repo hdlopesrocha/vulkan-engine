@@ -64,7 +64,8 @@ public:
     void exportToJson(const std::string &filename) const;
     void exportToBson(const std::string &filename) const;
 private:
-    void buildSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], float resultSDF[8], ThreadContext * threadContext) const;
+    void buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], ThreadContext * threadContext) const;
+    void buildResultSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], float resultSDF[8], ThreadContext * threadContext) const;
     float evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float> * threadContext, glm::vec3 p) const;
     void shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, ThreadContext * threadContext, NodeOperationResult childResult[8]);
 };

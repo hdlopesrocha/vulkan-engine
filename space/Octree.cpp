@@ -525,13 +525,18 @@ float Octree::evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float
     return d;
 }
 
-void Octree::buildSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], float resultSDF[8], ThreadContext * threadContext) const {
+void Octree::buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], ThreadContext * threadContext) const {
     const glm::vec3 min = frame.cube.getMin();
     const glm::vec3 length = frame.cube.getLength();
     tsl::robin_map<glm::vec3, float> * shapeSdfCache = &threadContext->shapeSdfCache;
 
     for (uint i = 0; i < 8; ++i) {
         shapeSDF[i] = evaluateSDF(args, shapeSdfCache, min + length * Octree::getShift(i));
+    }
+}
+
+void Octree::buildResultSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], float resultSDF[8], ThreadContext * threadContext) const {
+    for (uint i = 0; i < 8; ++i) {
         resultSDF[i] = args.operation(resultSDF[i], shapeSDF[i]);
     }
 }
@@ -660,10 +665,14 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
 
     r.isSimplified = r.isLeaf;
     r.process = check != ContainmentType::Disjoint;  
-
-    if(r.isLeaf || !r.process ) {
-        SDF::copySDF(frame.sdf, r.resultSDF);
-        buildSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
+    buildShapeSDF(args, frame, r.shapeSDF, threadContext);
+    SDF::copySDF(frame.sdf, r.resultSDF);
+    if(!r.process) {    
+        r.shapeType = SpaceType::Empty;
+        r.resultType = frame.type; 
+    }
+    else if(r.isLeaf) {
+        buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
         r.shapeType = SDF::eval(r.shapeSDF);
         r.resultType = SDF::eval(r.resultSDF);
     }
@@ -686,8 +695,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         r.shapeType = childToParent(childShapeSolid, childShapeEmpty);
         r.resultType = childToParent(childResultSolid, childResultEmpty);
     }
-    
-    if(r.process) {
+    if(r.process && r.shapeType != SpaceType::Empty) {    
         if(r.resultType == SpaceType::Surface) {
             // Create nodes for surface results if they don't exist
             if(r.node == NULL) {
@@ -757,11 +765,6 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             }
         }
     }
-    else  {
-        r.resultType = frame.type;
-        r.shapeType = SpaceType::Empty;
-    }  
-    
     return r;
 }
 
