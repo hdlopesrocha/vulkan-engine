@@ -45,7 +45,7 @@ SimplificationResult Simplifier::simplify(const BoundingCube cube, const float *
 				float d = SDF::interpolate(sdf, corner , cube);
 				float dif = glm::abs(d - child->resultSDF[j]);
 
-				if(dif > cube.getLengthX() * 0.05) {
+				if(dif > cube.getLengthX() * 0.1f) {
 					return res;
 				}
 			}

@@ -510,6 +510,7 @@ void SDF::getChildSDF(const float sdf[8], uint i , float result[8]) {
     BoundingCube cube = canonicalCube.getChild(i);
     for (uint j = 0; j < 8; ++j) {
         if(sdf[j] == INFINITY) {
+            for (uint k = 0; k < 8; ++k) result[k] = INFINITY;
             return;
         }
     }
@@ -528,13 +529,14 @@ SpaceType SDF::eval(const float sdf[8]) {
     bool hasNegative = false;
     for (int i = 0; i < 8; ++i) {  
         if(sdf[i] == INFINITY) {
-            return SpaceType::Empty;
+            continue;  // skip untouched corners
         } else if (sdf[i] >= 0.0f) {
             hasPositive = true;
         } else {
             hasNegative = true;
         }
     }
+    if (!hasPositive && !hasNegative) return SpaceType::Empty;
     return hasNegative && hasPositive ? SpaceType::Surface : (hasPositive ? SpaceType::Empty : SpaceType::Solid);
 }
 

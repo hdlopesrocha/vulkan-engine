@@ -3,18 +3,19 @@
 #include "../math/SpaceType.hpp"
 #include "../math/BrushMode.hpp"
 #include "../math/ContainmentType.hpp"
-
+#include "../math/Math.hpp"
 class OctreeNode;
 
 struct NodeOperationResult {
     OctreeNode * node;
     SpaceType shapeType;
     SpaceType resultType;
-    float resultSDF[8];
-    float shapeSDF[8];
+    float resultSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
+    float shapeSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
     bool isSimplified;
     bool isLeaf;
     bool isChunk;
+    bool process;
     int brushIndex;
     ContainmentType check;
     NodeOperationResult();
@@ -27,6 +28,6 @@ struct NodeOperationResult {
         bool isSimplified, 
         bool isLeaf,
         bool isChunk,
-        int brushIndex,
-        ContainmentType check);
+        bool process,
+        int brushIndex);
 };

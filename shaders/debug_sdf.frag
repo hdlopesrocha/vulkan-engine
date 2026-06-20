@@ -11,7 +11,8 @@ void main() {
     float rng = 10.0;
 
     if (abs(fragSdf) > rng) {
-        discard;
+        outColor = vec4(0.0, 0.0, 0.0, 0.1);
+        return;
     }
 
     float normalizedMagnitude = clamp(abs(fragSdf) / rng, 0.0, 1.0);
