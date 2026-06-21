@@ -144,6 +144,10 @@ float SDF::opIntersection(float d1, float d2) {
     return glm::max(d1,d2);
 }
 
+float SDF::opPaint(float d1, float d2) {
+    return opUnion(d1, opIntersection(d1, d2));
+}
+
 float SDF::opXor(float d1, float d2) {
     return glm::max(glm::min(d1,d2),-glm::max(d1,d2));
 }

@@ -558,7 +558,8 @@ void Octree::apply(
   	expand(args);
     OctreeNodeFrame frame = OctreeNodeFrame(root, NULL, *this, root ? root->getType() : SpaceType::Empty, 0, root ? root->sdf : nullptr, DISCARD_BRUSH_INDEX, *this);
     ThreadContext localChunkContext = ThreadContext(*this);
-    shape(frame, args, &localChunkContext);
+    NodeOperationResult r = NodeOperationResult();
+    shape(r, frame, args, &localChunkContext);
     std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << std::endl; 
 }
 
@@ -630,10 +631,10 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
             NodeOperationResult * result = &childResult[i];
             threads.emplace_back([this, childFrame, args, result]() {
             ThreadContext localThreadContext(childFrame.cube);
-            *result = shape(childFrame, args, &localThreadContext);
+            shape(*result, childFrame, args, &localThreadContext);
             });
         } else {
-            childResult[i] = shape(childFrame, args, threadContext);
+            shape(childResult[i], childFrame, args, threadContext);
         }
         (*shapeCounter)++;
     
@@ -643,8 +644,7 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
     }
 }
 
-NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext) {    
-    NodeOperationResult r = NodeOperationResult();
+void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext) {    
     r.node = frame.node;
     r.brushIndex = r.node ? r.node->vertex.brushIndex : frame.brushIndex;
 
@@ -698,7 +698,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
     SpaceType interpolatedType = SDF::eval(frame.sdf);
     bool interpolatedSurface = frame.node == NULL && interpolatedType == SpaceType::Surface;
 
-    if(r.process && (r.shapeType != SpaceType::Empty || interpolatedSurface)) {    
+    if( (r.process && r.shapeType != SpaceType::Empty) || interpolatedSurface) {    
         if(r.resultType == SpaceType::Surface) {
             // Create nodes for surface results if they don't exist
             if(r.node == NULL) {
@@ -727,8 +727,7 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
                    
                         OctreeNode * childNode = child.node;
 
-                        if(child.process && 
-                            child.resultType != SpaceType::Surface) {
+                        if(child.resultType != SpaceType::Surface) {
                             if(childNode == NULL) {
                                 BoundingCube childCube = frame.cube.getChild(i);
                                 childNode = allocator->allocate()->init(Vertex(childCube.getCenter()));
@@ -768,7 +767,6 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
             }
         }
     }
-    return r;
 }
 
 void Octree::iterate(IteratorHandler &handler, OctreeNodeData data) {

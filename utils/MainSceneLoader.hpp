@@ -380,7 +380,7 @@ public:
             BoxDistanceFunction function = BoxDistanceFunction();
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             WrappedBox wrappedFunction = WrappedBox(&function);
-            opaqueLayer.apply(SDF::opIntersection, &wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*0.25, simplifier, opaqueHandler);
+            opaqueLayer.apply(SDF::opPaint, &wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*0.25, simplifier, opaqueHandler);
         }
         flush();
         
@@ -406,7 +406,7 @@ public:
             BoxDistanceFunction function = BoxDistanceFunction();
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             WrappedBox wrappedFunction = WrappedBox(&function);
-            opaqueLayer.apply(SDF::opIntersection, &wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*4.0, simplifier, opaqueHandler);
+            opaqueLayer.apply(SDF::opPaint, &wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*4.0, simplifier, opaqueHandler);
         }
         flush();
 

@@ -32,6 +32,7 @@ public:
     static float opUnion( float d1, float d2 );
     static float opSubtraction( float d1, float d2 );
     static float opIntersection( float d1, float d2 );
+    static float opPaint( float d1, float d2 );
     static float opXor(float d1, float d2 );
 
     static float opSmoothUnion( float d1, float d2, float k );

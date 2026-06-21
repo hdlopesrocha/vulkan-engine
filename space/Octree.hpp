@@ -39,7 +39,7 @@ public:
     void expand(const ShapeArgs &args);
     void apply(float (*operation)(float, float), WrappedSignedDistanceFunction *function, const Transformation model, glm::vec4 translate, glm::vec4 scale, const TexturePainter &painter, float minSize, Simplifier &simplifier, const OctreeChangeHandler &changeHandler);
     void reset();
-    NodeOperationResult shape(OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext);
+    void shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext);
         void iterate(IteratorHandler &handler);
         void iterateFlat(IteratorHandler &handler);
         void iterate(IteratorHandler &handler, OctreeNodeData data);
