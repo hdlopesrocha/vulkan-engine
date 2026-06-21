@@ -695,7 +695,10 @@ NodeOperationResult Octree::shape(OctreeNodeFrame frame, const ShapeArgs &args, 
         r.shapeType = childToParent(childShapeSolid, childShapeEmpty);
         r.resultType = childToParent(childResultSolid, childResultEmpty);
     }
-    if(r.process && r.shapeType != SpaceType::Empty) {    
+    SpaceType interpolatedType = SDF::eval(frame.sdf);
+    bool interpolatedSurface = frame.node == NULL && interpolatedType == SpaceType::Surface;
+
+    if(r.process && (r.shapeType != SpaceType::Empty || interpolatedSurface)) {    
         if(r.resultType == SpaceType::Surface) {
             // Create nodes for surface results if they don't exist
             if(r.node == NULL) {
