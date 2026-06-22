@@ -583,12 +583,13 @@ bool Octree::isThreadNode(float length, float minSize, int threadSize) const {
 }
 
 void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, ThreadContext * threadContext, NodeOperationResult childResult[8]) {
-    float length = frame.cube.getLengthX();
+    float childLength = frame.cube.getLengthX()*0.5f;
+    bool isChildThread = isThreadNode(childLength, args.minSize, 16);
+    bool isChildChunk = isChunkNode(childLength);
     std::vector<std::thread> threads;
-    threads.reserve(8);
-
-    bool isChildThread = isThreadNode(length*0.5f, args.minSize, 16);
-    bool isChildChunk = isChunkNode(length*0.5f);
+    if(isChildThread) {
+        threads.reserve(8);
+    }
 
     OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
     OctreeNode * node = frame.node;
@@ -639,20 +640,22 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
         (*shapeCounter)++;
     
     }
-    for(std::thread &t : threads) {
-        if(t.joinable()) t.join();
+    if(isChildThread) {
+        for(std::thread &t : threads) {
+            if(t.joinable()) t.join();
+        }
     }
 }
 
 void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext) {    
     r.node = frame.node;
-    r.brushIndex = r.node ? r.node->vertex.brushIndex : frame.brushIndex;
-
     const float length = frame.cube.getLengthX();
-    r.isChunk = isChunkNode(length);
     const bool isShapeLeaf = length <= args.minSize;
     const bool isNodeLeaf = r.node == NULL || r.node->isLeaf();
+    r.brushIndex = r.node ? r.node->vertex.brushIndex : frame.brushIndex;
+    r.isChunk = isChunkNode(length);
     r.isLeaf = isShapeLeaf && isNodeLeaf;
+    r.isSimplified = r.isLeaf;
 
     NodeOperationResult children[8] = { 
         NodeOperationResult(), NodeOperationResult(), 
@@ -661,7 +664,6 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         NodeOperationResult(), NodeOperationResult() 
     };
 
-    r.isSimplified = r.isLeaf;
     buildShapeSDF(args, frame, r.shapeSDF, threadContext);
  
     if(r.isLeaf) {
@@ -696,7 +698,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                                 // && frame.type == SpaceType::Surface
                                 ;
 
-    if(r.shapeType != SpaceType::Empty || interpolatedSurface) {    
+    if(r.shapeType != SpaceType::Empty || interpolatedSurface) {
         if(r.resultType == SpaceType::Surface) {
             // Create nodes for surface results if they don't exist
             if(r.node == NULL) {
