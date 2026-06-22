@@ -865,6 +865,30 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         *visibleCountMapped[currentCullFrame] = 0;
     }
 
+    // Barrier: ensure any prior indirect-draw reads of compactBuf / visibleCount
+    // (e.g. from a shadow pass that ran earlier in this command buffer) are
+    // complete before the compute shader writes to these buffers. Without this,
+    // validation layers report WRITE_AFTER_READ hazards.
+    {
+        VkBufferMemoryBarrier preBarriers[2] = {};
+        preBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        preBarriers[0].srcAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        preBarriers[0].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        preBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preBarriers[0].buffer = compactBuf.buffer;
+        preBarriers[0].offset = 0;
+        preBarriers[0].size = VK_WHOLE_SIZE;
+
+        preBarriers[1] = preBarriers[0];
+        preBarriers[1].buffer = visibleCount.buffer;
+
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, nullptr, 2, preBarriers, 0, nullptr);
+    }
+
     // Bind and dispatch compute cull
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &descSet, 0, nullptr);
