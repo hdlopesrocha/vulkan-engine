@@ -1611,6 +1611,19 @@ void MyApp::setupVegetationTextures() {
         billboardCreator->bakeAllBillboards();
     }
 
+    // Wire freshly baked billboard array textures to VegetationRenderer.
+    // The setup() call to setBillboardArrayTextures happens before baking,
+    // so the views were VK_NULL_HANDLE. Re-wire now with valid views.
+    if (sceneRenderer && sceneRenderer->vegetationRenderer && billboardCreator) {
+        sceneRenderer->vegetationRenderer->setBillboardArrayTextures(
+            billboardCreator->getAlbedoArrayView(),
+            billboardCreator->getNormalArrayView(),
+            billboardCreator->getOpacityArrayView(),
+            billboardCreator->getArraySampler(),
+            this
+        );
+    }
+
     // Notify ImpostorWidget about the freshly baked texture arrays.
     if (impostorWidget && billboardCreator) {
         impostorWidget->setSource(

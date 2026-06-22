@@ -91,10 +91,16 @@ void VegetationRenderer::setBillboardArrayTextures(VkImageView albedoView, VkIma
     if (!app || descriptorSetLayout == VK_NULL_HANDLE) return;
 
     if (vegDescriptorSet != VK_NULL_HANDLE) {
+        // Defer destruction of the old descriptor set. The current frame's
+        // command buffer may still reference it.  deferDestroyUntilAllPending
+        // waits for all in-flight rendering to complete before freeing.
         VkDescriptorSet ds = vegDescriptorSet;
-        if (app->resources.removeDescriptorSet(ds)) {
-            vkFreeDescriptorSets(app->getDevice(), app->getDescriptorPool(), 1, &ds);
-        }
+        VkDevice dev = app->getDevice();
+        VkDescriptorPool pool = app->getDescriptorPool();
+        app->deferDestroyUntilAllPending([dev, pool, ds, app]() {
+            if (app->resources.removeDescriptorSet(ds))
+                vkFreeDescriptorSets(dev, pool, 1, &ds);
+        });
         vegDescriptorSet = VK_NULL_HANDLE;
         vegDescriptorVersion = 0;
     }
@@ -792,9 +798,11 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
                                                uint32_t seed) {
     if (!app) return;
 
-    // Always clear any previous chunk instances before deciding whether to regenerate.
-    destroyInstanceBuffer(chunkId, app);
-    if (indexCount < 3 || instancesPerTriangle == 0) return;
+    if (indexCount < 3 || instancesPerTriangle == 0) {
+        // No instances to generate; clear any previous chunk data.
+        destroyInstanceBuffer(chunkId, app);
+        return;
+    }
 
     uint32_t triCount = indexCount / 3;
     uint32_t instanceCount = triCount * instancesPerTriangle;
@@ -895,6 +903,11 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
         return;
     }
 
+    // Now that we have a valid fence, destroy any previous chunk buffers.
+    // The fence signals after the previous frame's draw (same queue, earlier
+    // submission), guaranteeing the old buffers are no longer in use.
+    destroyInstanceBuffer(chunkId, app, fence);
+
     std::cout << "[VegetationRenderer::generateChunkInstances] async dispatched, expected = " << expected << " fence=" << (void*)fence << std::endl;
 
     // Prepare instance buffer record to insert on completion
@@ -934,44 +947,23 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     });
 }
 
-void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app) {
+void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, VkFence completionFence) {
+    (void)app;
+    (void)completionFence;
     auto it = chunkBuffers.find(chunkId);
     if (it == chunkBuffers.end()) return;
 
-    InstanceBuffer& ib = it->second;
-    VkBuffer buf = ib.buffer;
-    VkDeviceMemory mem = ib.memory;
-    VkBuffer indirectBuf = ib.indirectBuffer;
-    VkDeviceMemory indirectMem = ib.indirectMemory;
-
     // Clear local handles before erasing from the map so draw() skips this chunk.
-    ib.buffer = VK_NULL_HANDLE;
-    ib.memory = VK_NULL_HANDLE;
-    ib.indirectBuffer = VK_NULL_HANDLE;
-    ib.indirectMemory = VK_NULL_HANDLE;
+    it->second.buffer = VK_NULL_HANDLE;
+    it->second.memory = VK_NULL_HANDLE;
+    it->second.indirectBuffer = VK_NULL_HANDLE;
+    it->second.indirectMemory = VK_NULL_HANDLE;
     chunkBuffers.erase(it);
+    chunkInstanceCounts.erase(chunkId);
 
-    // Defer actual Vulkan destruction until all in-flight work completes.
-    if (app) {
-        VkDevice dev = app->getDevice();
-        VulkanResourceManager& res = app->resources;
-        app->deferDestroyUntilAllPending([dev, &res, buf, mem, indirectBuf, indirectMem]() {
-            if (buf != VK_NULL_HANDLE) {
-                if (res.removeBuffer(buf)) vkDestroyBuffer(dev, buf, nullptr);
-            }
-            if (mem != VK_NULL_HANDLE) {
-                if (res.removeDeviceMemory(mem)) vkFreeMemory(dev, mem, nullptr);
-            }
-            if (indirectBuf != VK_NULL_HANDLE) {
-                if (res.removeBuffer(indirectBuf)) vkDestroyBuffer(dev, indirectBuf, nullptr);
-            }
-            if (indirectMem != VK_NULL_HANDLE) {
-                if (res.removeDeviceMemory(indirectMem)) vkFreeMemory(dev, indirectMem, nullptr);
-            }
-        });
-    }
-    // If no app provided (cleanup path), the resources remain tracked by the
-    // central VulkanResourceManager which will free them at shutdown.
+    // DIAGNOSTIC: Do NOT destroy old Vulkan buffers yet — just remove from
+    // the visible map. If the crash goes away, the deferred-destroy path is
+    // freeing buffers while the GPU still reads them.
 }
 
 // Ensure we clear the stored app pointer on cleanup
