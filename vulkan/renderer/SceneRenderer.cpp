@@ -257,16 +257,6 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
             vegetationRenderer->drawShadow(app, commandBuffer, ds, cameraPos);
         }
 
-        // Restore solid renderer vertex/index buffers. Vegetation drawShadow
-        // binds 2 vertex buffers; solid pipeline only uses binding 0.
-        // Unbind binding 1 so the stale instance buffer doesn't leak into the
-        // solid shadow draw (RADV is sensitive to leftover vertex bindings).
-        {
-            VkBuffer nullBuf = VK_NULL_HANDLE;
-            VkDeviceSize zero = 0;
-            vkCmdBindVertexBuffers(commandBuffer, 1, 1, &nullBuf, &zero);
-        }
-
         // Restore solid shadow state for indexed draws
         VkPipeline solidShadowPipeline = shadowMapper->getShadowPipeline();
         VkPipelineLayout solidShadowLayout = shadowMapper->getShadowPipelineLayout();

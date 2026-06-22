@@ -4431,11 +4431,6 @@ void VulkanApp::drawFrame() {
         update(deltaTime);
     }
 
-    // Wait for all pending GPU work (async compute dispatches) to complete
-    // before recording draw commands. Vegetation compute→graphics sync is
-    // handled by vegetationTimeline waits inside the vegetation draw functions.
-    processPendingCommandBuffers();
-
     // ImGui new frame (backend)
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
