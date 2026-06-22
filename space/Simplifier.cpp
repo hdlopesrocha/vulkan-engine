@@ -16,11 +16,10 @@ SimplificationResult Simplifier::simplify(const BoundingCube cube, const float *
 	int brushIndex = DISCARD_BRUSH_INDEX;
 
 	//uint mask = 0xff;
-	int nodeCount=0;
 	if(texturing) {
 		for(uint i=0; i < 8 ; ++i) {
 			NodeOperationResult * child = &children[i];
-			if(child) {
+			if(child && child->resultType == SpaceType::Surface) {
 				if(brushIndex == DISCARD_BRUSH_INDEX) {
 					brushIndex = child->brushIndex;
 				} else if(child->brushIndex != DISCARD_BRUSH_INDEX 
@@ -37,7 +36,7 @@ SimplificationResult Simplifier::simplify(const BoundingCube cube, const float *
 	// for leaf nodes shouldn't loop
 	for(uint i=0; i < 8 ; ++i) {
 		NodeOperationResult * child = &children[i];
-		if(child->resultType == SpaceType::Surface) {
+		if(child && child->resultType == SpaceType::Surface) {
 			BoundingCube childCube = cube.getChild(i);
 
 			for(int j = 0 ; j < 8 ; ++j) {
@@ -48,17 +47,10 @@ SimplificationResult Simplifier::simplify(const BoundingCube cube, const float *
 				if(dif > cube.getLengthX() * 0.1f) {
 					return res;
 				}
-			}
-
-			++nodeCount;
-			
+			}			
 		}
 	}
-	
-	if(nodeCount > 0) {	
-		res.isSimplified = true;
-		res.brushIndex = brushIndex;
-	}
-	
+	res.isSimplified = true;
+	res.brushIndex = brushIndex;
 	return res;
 }

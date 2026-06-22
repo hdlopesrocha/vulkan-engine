@@ -15,7 +15,6 @@ struct NodeOperationResult {
     bool isSimplified;
     bool isLeaf;
     bool isChunk;
-    bool process;
     int brushIndex;
     ContainmentType check;
     NodeOperationResult();
@@ -28,6 +27,5 @@ struct NodeOperationResult {
         bool isSimplified, 
         bool isLeaf,
         bool isChunk,
-        bool process,
         int brushIndex);
 };
