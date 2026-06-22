@@ -541,11 +541,8 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
         vkCmdPipelineBarrier2(cmd, &depInfo);
     }
 
-    // End and submit to the vegetation queue, signalling the vegetation timeline
-    // semaphore so the draw pass can wait for compute completion on the GPU side.
-    uint64_t signalVal = vegetationTimelineValue.fetch_add(1) + 1;
-    VkFence f = submitCommandBufferAsyncToQueue(cmd, vegetationQueue, nullptr,
-                                                 vegetationTimeline, signalVal);
+    // End and submit to the vegetation queue
+    VkFence f = submitCommandBufferAsyncToQueue(cmd, vegetationQueue, nullptr);
 
     // Defer freeing only the per-chunk descriptor set; cached pipeline/pool persist.
     deferDestroyUntilFence(f, [device, descSet, this]() {
@@ -694,22 +691,6 @@ bool VulkanApp::ensureVegetationComputePipeline() {
         }
     }
     return true;
-}
-
-void VulkanApp::waitForVegetationCompute() {
-    uint64_t waitVal = vegetationTimelineValue.load();
-    if (waitVal == 0) return; // no compute dispatched yet
-    
-    VkSemaphoreWaitInfo waitInfo{};
-    waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
-    waitInfo.semaphoreCount = 1;
-    waitInfo.pSemaphores = &vegetationTimeline;
-    waitInfo.pValues = &waitVal;
-    
-    VkResult res = vkWaitSemaphores(device, &waitInfo, UINT64_MAX);
-    if (res != VK_SUCCESS) {
-        std::cerr << "[VulkanApp] waitForVegetationCompute: vkWaitSemaphores returned " << res << " for value " << waitVal << "\n";
-    }
 }
 
 void VulkanApp::createImageViews() {
@@ -868,12 +849,6 @@ void VulkanApp::cleanup() {
         resources.removeSemaphore(uploadTimeline);
         vkDestroySemaphore(device, uploadTimeline, nullptr);
         uploadTimeline = VK_NULL_HANDLE;
-    }
-    // Destroy the vegetation compute → graphics timeline semaphore
-    if (vegetationTimeline != VK_NULL_HANDLE) {
-        resources.removeSemaphore(vegetationTimeline);
-        vkDestroySemaphore(device, vegetationTimeline, nullptr);
-        vegetationTimeline = VK_NULL_HANDLE;
     }
     // Process any deferred-destruction callbacks immediately so resources
     // scheduled with deferDestroyUntilAllPending() are released while the
@@ -2141,8 +2116,7 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
 }
 
 // Submit a pre-recorded command buffer asynchronously to a specific queue and return a fence that will be signaled on completion.
-VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore,
-                                                     VkSemaphore timelineSemaphore, uint64_t timelineValue) {
+VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore) {
     // Throttle excessive outstanding submissions which can cause driver hangs
     // on some implementations when resources are exhausted.
     throttleIfTooManyPending();
@@ -2168,28 +2142,14 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         resources.addSemaphore(semaphore, "VulkanApp::submitCommandBufferAsyncToQueue: semaphore");
     }
 
-    // Build signal semaphore arrays: binary semaphore (if requested) + optional timeline
-    bool haveBinary = (semaphore != VK_NULL_HANDLE);
-    bool haveTimeline = (timelineSemaphore != VK_NULL_HANDLE);
-    uint32_t signalCount = (haveBinary ? 1u : 0u) + (haveTimeline ? 1u : 0u);
-    
-    VkSemaphore signalSems[2];
-    uint64_t signalValues[2];
-    if (haveBinary) { signalSems[0] = semaphore; signalValues[0] = 0; }
-    if (haveTimeline) { signalSems[haveBinary ? 1u : 0u] = timelineSemaphore; signalValues[haveBinary ? 1u : 0u] = timelineValue; }
-
-    VkTimelineSemaphoreSubmitInfo timelineSubmitInfo{};
-    timelineSubmitInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
-    timelineSubmitInfo.signalSemaphoreValueCount = signalCount;
-    timelineSubmitInfo.pSignalSemaphoreValues = signalValues;
-
+    // Signal only binary semaphore if requested. Same-queue transfers don't
+    // need timeline — queue submission order guarantees transfer-before-render.
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.pNext = haveTimeline ? &timelineSubmitInfo : nullptr;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
-    submitInfo.signalSemaphoreCount = signalCount;
-    submitInfo.pSignalSemaphores = signalSems;
+    submitInfo.signalSemaphoreCount = (semaphore != VK_NULL_HANDLE) ? 1u : 0u;
+    submitInfo.pSignalSemaphores = (semaphore != VK_NULL_HANDLE) ? &semaphore : nullptr;
 
     {
         // Serialize pre-apply and submission to maintain consistent ordering
@@ -3301,23 +3261,6 @@ void VulkanApp::createSyncObjects() {
         uploadTimelineValue.store(1); // start at 1 (initialValue=1 avoids RADV value-0 crash)
     }
 
-    // Vegetation compute → graphics timeline semaphore
-    {
-        VkSemaphoreTypeCreateInfo typeInfo{};
-        typeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
-        typeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
-        typeInfo.initialValue = 0;
-
-        VkSemaphoreCreateInfo createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        createInfo.pNext = &typeInfo;
-        if (vkCreateSemaphore(device, &createInfo, nullptr, &vegetationTimeline) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create vegetation timeline semaphore");
-        }
-        resources.addSemaphore(vegetationTimeline, "VulkanApp: vegetationTimeline");
-        vegetationTimelineValue.store(0);
-    }
-
     // async submission bookkeeping
     pendingCommandBuffers.clear();
     semaphoresPendingDestroy.clear();
@@ -4322,25 +4265,27 @@ Buffer VulkanApp::createDeviceLocalBuffer(const void* data, VkDeviceSize size, V
         VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, 
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     
-    // Copy from staging to device-local buffer, then insert a pipeline barrier
-    // so that subsequent shader/compute reads see the transferred data.
+    // Copy from staging to device-local buffer, then insert a full global
+    // memory barrier to flush all writes to L2. This is required because
+    // the buffer will be read by a DIFFERENT command buffer (compute shader
+    // dispatched asynchronously). Standard pipeline barriers only guarantee
+    // visibility within the SAME command buffer; on RADV/AMD, inter-CB
+    // implicit ordering does not include full memory visibility.
     runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd){
         VkBufferCopy copyRegion{};
         copyRegion.size = size;
         vkCmdCopyBuffer(cmd, stagingBuffer.buffer, gpuBuffer.buffer, 1, &copyRegion);
 
-        VkBufferMemoryBarrier bufBarrier{};
-        bufBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        bufBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        bufBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
-        bufBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bufBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bufBarrier.buffer = gpuBuffer.buffer;
-        bufBarrier.size = VK_WHOLE_SIZE;
+        VkMemoryBarrier memBarrier{};
+        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT |
+                                   VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                   VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
         vkCmdPipelineBarrier(cmd,
             VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-            0, 0, nullptr, 1, &bufBarrier, 0, nullptr);
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0, 1, &memBarrier, 0, nullptr, 0, nullptr);
     });
     
     // Transfer completed synchronously; destroy staging resources now.

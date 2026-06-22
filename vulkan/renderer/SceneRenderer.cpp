@@ -250,23 +250,26 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
         }
 
-        // Bind solid shadow pipeline first, then draw solid geometry.
-        // Vegetation draws after so its vertex buffer bindings don't leak into
-        // the solid draw (RADV is sensitive to leftover bindings across
-        // pipeline switches).
+        // Render vegetation FIRST to shadow map so it casts shadows on solid geometry below.
+        // Vegetation uses camera-based LOD (not light position) for consistent density.
+        if (vegetationEnabled && vegetationRenderer) {
+            const glm::vec3 cameraPos = glm::vec3(uboStatic.viewPos);  // Use original camera position for LOD
+            vegetationRenderer->drawShadow(app, commandBuffer, ds, cameraPos);
+        }
+
+        // Restore solid shadow state for indexed draws
         VkPipeline solidShadowPipeline = shadowMapper->getShadowPipeline();
+        VkPipelineLayout solidShadowLayout = shadowMapper->getShadowPipelineLayout();
         if (solidShadowPipeline != VK_NULL_HANDLE) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowPipeline);
         }
-
-        // Render solid geometry (drawPrepared binds its own vertex/index buffers)
-        solidRenderer->getIndirectRenderer().drawPrepared(commandBuffer, 0);
-
-        // Vegetation shadow pass: compute→graphics sync via vegetationTimeline.
-        if (vegetationEnabled && vegetationRenderer) {
-            const glm::vec3 cameraPos = glm::vec3(uboStatic.viewPos);
-            vegetationRenderer->drawShadow(app, commandBuffer, ds, cameraPos);
+        if (solidShadowLayout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowLayout, 0, 1, &ds, 0, nullptr);
         }
+
+        // Render solid geometry using drawPrepared (compact culled buffer) to avoid
+        // GPU timeout on iGPUs when drawing all meshes to large shadow maps.
+        solidRenderer->getIndirectRenderer().drawPrepared(commandBuffer, 0);
 
         shadowMapper->endShadowPass(app, commandBuffer, c);
     }
@@ -1254,8 +1257,30 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
                     return;
                 }
 
-                Buffer posBuf = app->createDeviceLocalBuffer(positions.data(), positions.size() * sizeof(glm::vec3), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-                Buffer idxBuf = app->createDeviceLocalBuffer(grassIndices.data(), grassIndices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                // Use host-visible buffers for vertex/index data consumed by
+                // the compute shader. Avoids GPU-side vkCmdCopyBuffer which
+                // requires inter-command-buffer memory visibility (problematic
+                // on RADV when compute runs in a different command buffer).
+                Buffer posBuf = app->createBuffer(
+                    positions.size() * sizeof(glm::vec3),
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                {
+                    void* dst;
+                    vkMapMemory(app->getDevice(), posBuf.memory, 0, VK_WHOLE_SIZE, 0, &dst);
+                    memcpy(dst, positions.data(), positions.size() * sizeof(glm::vec3));
+                    vkUnmapMemory(app->getDevice(), posBuf.memory);
+                }
+                Buffer idxBuf = app->createBuffer(
+                    grassIndices.size() * sizeof(uint32_t),
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                {
+                    void* dst;
+                    vkMapMemory(app->getDevice(), idxBuf.memory, 0, VK_WHOLE_SIZE, 0, &dst);
+                    memcpy(dst, grassIndices.data(), grassIndices.size() * sizeof(uint32_t));
+                    vkUnmapMemory(app->getDevice(), idxBuf.memory);
+                }
 
                 uint32_t vertexCount = static_cast<uint32_t>(positions.size());
                 uint32_t indexCount = static_cast<uint32_t>(grassIndices.size());
