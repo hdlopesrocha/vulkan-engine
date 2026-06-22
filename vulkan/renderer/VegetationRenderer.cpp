@@ -421,6 +421,8 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         if (vegetationShadowPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION SHADOW DRAW ERROR] Shadow pipeline is VK_NULL_HANDLE!" << std::endl;
         return;
     }
+    // Wait for all pending vegetation compute dispatches (GPU-side timeline)
+    app->waitForVegetationCompute();
 
     // Ensure vegetation descriptor set is present and up-to-date
     if (!ensureVegDescriptorSet(app)) {
@@ -667,6 +669,8 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         if (vegetationPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION DRAW ERROR] Attempted to bind VK_NULL_HANDLE pipeline!" << std::endl;
         return;
     }
+    // Wait for all pending vegetation compute dispatches (GPU-side timeline)
+    app->waitForVegetationCompute();
     if (billboardAlbedoView  == VK_NULL_HANDLE ||
         billboardNormalView  == VK_NULL_HANDLE ||
         billboardOpacityView == VK_NULL_HANDLE ||

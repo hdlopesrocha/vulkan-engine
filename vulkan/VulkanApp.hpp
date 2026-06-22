@@ -85,6 +85,12 @@ class VulkanApp {
     VkShaderModule       vegComputeShaderModule   = VK_NULL_HANDLE;
     std::mutex           vegComputeMutex; // protects lazy-init of cached compute pipeline
 
+    // Timeline semaphore for vegetation compute→graphics synchronization.
+    // Each async compute dispatch signals an increasing value; the vegetation
+    // draw waits for the latest value before rendering.
+    VkSemaphore          vegetationTimeline = VK_NULL_HANDLE;
+    std::atomic<uint64_t> vegetationTimelineValue{0};
+
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     std::vector<VkImage> swapchainImages;
     VkFormat swapchainImageFormat;
@@ -241,7 +247,8 @@ protected:
         // If outSemaphore is non-null, the submission will signal that semaphore when finished (useful to make frame submit wait on generation).
         VkFence submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore = nullptr);
         // Submit a pre-recorded command buffer asynchronously to a specific queue (e.g., vegetation/geometry) and return a fence.
-        VkFence submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore = nullptr);
+        VkFence submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore = nullptr,
+                                                VkSemaphore timelineSemaphore = VK_NULL_HANDLE, uint64_t timelineValue = 0);
         // Submit a pre-recorded command buffer and block until it completes.
         void submitCommandBufferAndWait(VkCommandBuffer commandBuffer);
         // Submit `VkSubmitInfo` array while serializing access to the `graphicsQueue` to avoid concurrent queue use from multiple threads.
@@ -421,6 +428,11 @@ protected:
         VkQueue getGraphicsQueue() const { return graphicsQueue; }
         VkQueue getPresentQueue() const { return presentQueue; }
         VkSwapchainKHR getSwapchain() const { return swapchain; }
+
+        // Wait for all pending vegetation compute dispatches to finish on the GPU.
+        // Uses the vegetationTimeline semaphore — only blocks for vegetation work,
+        // not all queue work (unlike vkQueueWaitIdle).
+        void waitForVegetationCompute();
         VkFormat getSwapchainImageFormat() const { return swapchainImageFormat; }
         VkExtent2D getSwapchainExtent() const { return swapchainExtent; }
         const std::vector<VkImage>& getSwapchainImages() const { return swapchainImages; }
