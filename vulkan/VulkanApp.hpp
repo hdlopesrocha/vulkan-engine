@@ -52,12 +52,16 @@ class VulkanApp {
             uint32_t instancesPerTriangle,
             VkBuffer outputBuffer, uint32_t outputBufferSize, uint32_t seed = 1337);
         // Async variant: dispatch compute on a subsystem queue and return a fence via outFence.
+        // Uses a cached compute pipeline (lazily created on first call).
         uint32_t generateVegetationInstancesComputeAsync(
             VkBuffer vertexBuffer, uint32_t vertexCount,
             VkBuffer indexBuffer, uint32_t indexCount,
             uint32_t instancesPerTriangle,
             VkBuffer outputBuffer, uint32_t outputBufferSize, VkFence* outFence,
             uint32_t seed = 1337, uint32_t billboardCount = 3);
+        // Lazily create (or return) the cached vegetation compute pipeline.
+        // Thread-safe: multiple callers may race on first call.
+        bool ensureVegetationComputePipeline();
         void initWindow(); // Only one declaration, public
     GLFWwindow* window = nullptr;
 
@@ -72,6 +76,14 @@ class VulkanApp {
     VkQueue geometryQueue = VK_NULL_HANDLE;
     // Optional dedicated transfer queue (if available)
     VkQueue transferQueue = VK_NULL_HANDLE;
+
+    // Cached vegetation compute pipeline (created once, reused for all chunks)
+    VkPipeline           vegComputePipeline       = VK_NULL_HANDLE;
+    VkPipelineLayout     vegComputePipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout vegComputeDescSetLayout  = VK_NULL_HANDLE;
+    VkDescriptorPool     vegComputeDescPool       = VK_NULL_HANDLE;
+    VkShaderModule       vegComputeShaderModule   = VK_NULL_HANDLE;
+    std::mutex           vegComputeMutex; // protects lazy-init of cached compute pipeline
 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     std::vector<VkImage> swapchainImages;

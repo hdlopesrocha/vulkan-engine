@@ -793,7 +793,7 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     if (!app) return;
 
     // Always clear any previous chunk instances before deciding whether to regenerate.
-    destroyInstanceBuffer(chunkId);
+    destroyInstanceBuffer(chunkId, app);
     if (indexCount < 3 || instancesPerTriangle == 0) return;
 
     uint32_t triCount = indexCount / 3;
@@ -934,16 +934,44 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     });
 }
 
-void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId) {
+void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app) {
     auto it = chunkBuffers.find(chunkId);
-    if (it != chunkBuffers.end()) {
-        // Defer actual destruction to VulkanResourceManager; clear local handles
-        it->second.buffer = VK_NULL_HANDLE;
-        it->second.memory = VK_NULL_HANDLE;
-        it->second.indirectBuffer = VK_NULL_HANDLE;
-        it->second.indirectMemory = VK_NULL_HANDLE;
-        chunkBuffers.erase(it);
+    if (it == chunkBuffers.end()) return;
+
+    InstanceBuffer& ib = it->second;
+    VkBuffer buf = ib.buffer;
+    VkDeviceMemory mem = ib.memory;
+    VkBuffer indirectBuf = ib.indirectBuffer;
+    VkDeviceMemory indirectMem = ib.indirectMemory;
+
+    // Clear local handles before erasing from the map so draw() skips this chunk.
+    ib.buffer = VK_NULL_HANDLE;
+    ib.memory = VK_NULL_HANDLE;
+    ib.indirectBuffer = VK_NULL_HANDLE;
+    ib.indirectMemory = VK_NULL_HANDLE;
+    chunkBuffers.erase(it);
+
+    // Defer actual Vulkan destruction until all in-flight work completes.
+    if (app) {
+        VkDevice dev = app->getDevice();
+        VulkanResourceManager& res = app->resources;
+        app->deferDestroyUntilAllPending([dev, &res, buf, mem, indirectBuf, indirectMem]() {
+            if (buf != VK_NULL_HANDLE) {
+                if (res.removeBuffer(buf)) vkDestroyBuffer(dev, buf, nullptr);
+            }
+            if (mem != VK_NULL_HANDLE) {
+                if (res.removeDeviceMemory(mem)) vkFreeMemory(dev, mem, nullptr);
+            }
+            if (indirectBuf != VK_NULL_HANDLE) {
+                if (res.removeBuffer(indirectBuf)) vkDestroyBuffer(dev, indirectBuf, nullptr);
+            }
+            if (indirectMem != VK_NULL_HANDLE) {
+                if (res.removeDeviceMemory(indirectMem)) vkFreeMemory(dev, indirectMem, nullptr);
+            }
+        });
     }
+    // If no app provided (cleanup path), the resources remain tracked by the
+    // central VulkanResourceManager which will free them at shutdown.
 }
 
 // Ensure we clear the stored app pointer on cleanup

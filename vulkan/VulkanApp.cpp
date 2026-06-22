@@ -433,7 +433,7 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
 
     uint32_t triCount = indexCount / 3;
     uint32_t expectedInstances = triCount * instancesPerTriangle;
-    uint32_t expectedBytes = expectedInstances * sizeof(float) * 4; // shader writes vec4
+    uint32_t expectedBytes = expectedInstances * sizeof(float) * 4;
     if (outputBufferSize < expectedBytes) {
         std::cerr << "[VulkanApp] generateVegetationInstancesComputeAsync: outputBufferSize too small (" << outputBufferSize << " < " << expectedBytes << ")" << std::endl;
         return 0;
@@ -441,124 +441,23 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
 
     VkDevice device = getDevice();
 
-    // Descriptor set layout: three storage buffers (vertices, indices, output instances)
-    VkDescriptorSetLayoutBinding bindings[3] = {};
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    bindings[2].binding = 2;
-    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[2].descriptorCount = 1;
-    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 3;
-    layoutInfo.pBindings = bindings;
-
-    VkDescriptorSetLayout descLayout = VK_NULL_HANDLE;
-    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descLayout) != VK_SUCCESS) {
-        std::cerr << "[VulkanApp] Failed to create vegetation compute descriptor set layout (async)" << std::endl;
+    // Ensure cached compute pipeline is ready (lazy init, thread-safe)
+    if (!ensureVegetationComputePipeline()) {
+        std::cerr << "[VulkanApp] Failed to ensure cached vegetation compute pipeline" << std::endl;
         return 0;
     }
 
-    // Push constant range matches shader Push struct (6 uints)
-    VkPushConstantRange pushRange{};
-    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pushRange.offset = 0;
-    pushRange.size = sizeof(uint32_t) * 6;
-
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipelineLayoutCreateInfo plInfo{};
-    plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plInfo.setLayoutCount = 1;
-    plInfo.pSetLayouts = &descLayout;
-    plInfo.pushConstantRangeCount = 1;
-    plInfo.pPushConstantRanges = &pushRange;
-    if (vkCreatePipelineLayout(device, &plInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
-        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
-        std::cerr << "[VulkanApp] Failed to create vegetation compute pipeline layout (async)" << std::endl;
-        return 0;
-    }
-
-    // Load compute shader
-    auto compCode = FileReader::readFile("shaders/vegetation_instance_gen.comp.spv");
-    if (compCode.empty()) {
-        std::cerr << "[VulkanApp] vegetation_instance_gen.comp.spv not found or empty (async)" << std::endl;
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
-        return 0;
-    }
-    VkShaderModule compModule = createShaderModule(compCode);
-
-    VkPipelineShaderStageCreateInfo stageInfo{};
-    stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stageInfo.module = compModule;
-    stageInfo.pName = "main";
-
-    VkComputePipelineCreateInfo pipelineInfo{};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipelineInfo.stage = stageInfo;
-    pipelineInfo.layout = pipelineLayout;
-
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
-        std::cerr << "[VulkanApp] Failed to create vegetation compute pipeline (async)" << std::endl;
-        vkDestroyShaderModule(device, compModule, nullptr);
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
-        return 0;
-    }
-
-    // Descriptor pool and set
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = 3;
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-    poolInfo.maxSets = 1;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-    VkDescriptorPool descPool = VK_NULL_HANDLE;
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool) != VK_SUCCESS) {
-        std::cerr << "[VulkanApp] Failed to create descriptor pool for vegetation compute (async)" << std::endl;
-        vkDestroyPipeline(device, pipeline, nullptr);
-        vkDestroyShaderModule(device, compModule, nullptr);
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
-        return 0;
-    }
-    // Register and log descriptor pool
-    resources.addDescriptorPool(descPool, "VulkanApp: vegetation compute descPool");
-    std::cerr << "[VulkanApp] descriptorPool created: " << (void*)descPool << " maxSets=" << poolInfo.maxSets << " poolSizeCount=" << poolInfo.poolSizeCount << std::endl;
-
+    // Allocate a per-chunk descriptor set from the shared cached descriptor pool.
+    VkDescriptorSet descSet = VK_NULL_HANDLE;
     VkDescriptorSetAllocateInfo ainfo{};
     ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ainfo.descriptorPool = descPool;
+    ainfo.descriptorPool = vegComputeDescPool;
     ainfo.descriptorSetCount = 1;
-    ainfo.pSetLayouts = &descLayout;
-    VkDescriptorSet descSet = VK_NULL_HANDLE;
+    ainfo.pSetLayouts = &vegComputeDescSetLayout;
     if (vkAllocateDescriptorSets(device, &ainfo, &descSet) != VK_SUCCESS) {
-        std::cerr << "[VulkanApp] Failed to allocate descriptor set for vegetation compute (async)" << std::endl;
-        resources.removeDescriptorPool(descPool);
-        vkDestroyDescriptorPool(device, descPool, nullptr);
-        vkDestroyPipeline(device, pipeline, nullptr);
-        vkDestroyShaderModule(device, compModule, nullptr);
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+        std::cerr << "[VulkanApp] Failed to allocate vegetation compute descriptor set" << std::endl;
         return 0;
     }
-    resources.addDescriptorSet(descSet, "VulkanApp: vegetation compute descSet");
-    std::cerr << "[VulkanApp] descriptorSet allocated: " << (void*)descSet << std::endl;
 
     VkDescriptorBufferInfo vbInfo{ vertexBuffer, 0, VK_WHOLE_SIZE };
     VkDescriptorBufferInfo ibInfo{ indexBuffer, 0, VK_WHOLE_SIZE };
@@ -596,8 +495,8 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd, &beginInfo);
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegComputePipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegComputePipelineLayout, 0, 1, &descSet, 0, nullptr);
 
     uint32_t push[6];
     push[0] = instancesPerTriangle;
@@ -617,7 +516,7 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
         while (remaining > 0) {
             uint32_t thisGroups = remaining > maxGroupsX ? maxGroupsX : remaining;
             push[4] = baseTri;
-            vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
+            vkCmdPushConstants(cmd, vegComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
             vkCmdDispatch(cmd, thisGroups, 1, 1);
             baseTri += thisGroups;
             remaining -= thisGroups;
@@ -645,26 +544,153 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     // End and submit to the vegetation queue
     VkFence f = submitCommandBufferAsyncToQueue(cmd, vegetationQueue, nullptr);
 
-    // Defer destruction of descriptor/pipeline resources until fence signals
-    deferDestroyUntilFence(f, [device, descPool, descSet, pipeline, pipelineLayout, descLayout, compModule, this]() {
+    // Defer freeing only the per-chunk descriptor set; cached pipeline/pool persist.
+    deferDestroyUntilFence(f, [device, descSet, this]() {
         if (descSet != VK_NULL_HANDLE) {
-            vkFreeDescriptorSets(device, descPool, 1, &descSet);
+            vkFreeDescriptorSets(device, vegComputeDescPool, 1, &descSet);
         }
-        if (descPool != VK_NULL_HANDLE) {
-            resources.removeDescriptorPool(descPool);
-            vkDestroyDescriptorPool(device, descPool, nullptr);
-        }
-        if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, pipeline, nullptr);
-        if (compModule != VK_NULL_HANDLE) {
-            resources.removeShaderModule(compModule);
-            vkDestroyShaderModule(device, compModule, nullptr);
-        }
-        if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        if (descLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
     });
 
     if (outFence) *outFence = f;
     return expectedInstances;
+}
+
+bool VulkanApp::ensureVegetationComputePipeline() {
+    // Fast path: already initialized
+    {
+        std::lock_guard<std::mutex> lk(vegComputeMutex);
+        if (vegComputePipeline != VK_NULL_HANDLE) return true;
+    }
+
+    VkDevice dev = getDevice();
+
+    // Descriptor set layout: three storage buffers
+    VkDescriptorSetLayoutBinding bindings[3] = {};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 3;
+    layoutInfo.pBindings = bindings;
+
+    VkDescriptorSetLayout descLayout = VK_NULL_HANDLE;
+    if (vkCreateDescriptorSetLayout(dev, &layoutInfo, nullptr, &descLayout) != VK_SUCCESS) {
+        std::cerr << "[VulkanApp] Failed to create cached vegetation compute DS layout" << std::endl;
+        return false;
+    }
+
+    // Push constant range: 6 uints
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(uint32_t) * 6;
+
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts = &descLayout;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges = &pushRange;
+
+    VkPipelineLayout pipeLayout = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(dev, &plInfo, nullptr, &pipeLayout) != VK_SUCCESS) {
+        vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
+        std::cerr << "[VulkanApp] Failed to create cached vegetation compute pipeline layout" << std::endl;
+        return false;
+    }
+
+    // Load compute shader
+    auto compCode = FileReader::readFile("shaders/vegetation_instance_gen.comp.spv");
+    if (compCode.empty()) {
+        vkDestroyPipelineLayout(dev, pipeLayout, nullptr);
+        vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
+        std::cerr << "[VulkanApp] vegetation_instance_gen.comp.spv not found" << std::endl;
+        return false;
+    }
+    VkShaderModule compModule = createShaderModule(compCode);
+
+    VkPipelineShaderStageCreateInfo stageInfo{};
+    stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stageInfo.module = compModule;
+    stageInfo.pName = "main";
+
+    VkComputePipelineCreateInfo cpInfo{};
+    cpInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    cpInfo.stage = stageInfo;
+    cpInfo.layout = pipeLayout;
+
+    VkPipeline pipe = VK_NULL_HANDLE;
+    if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpInfo, nullptr, &pipe) != VK_SUCCESS) {
+        vkDestroyShaderModule(dev, compModule, nullptr);
+        vkDestroyPipelineLayout(dev, pipeLayout, nullptr);
+        vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
+        std::cerr << "[VulkanApp] Failed to create cached vegetation compute pipeline" << std::endl;
+        return false;
+    }
+
+    // Shared descriptor pool with enough capacity for concurrent async dispatches.
+    // Use FREE_DESCRIPTOR_SET_BIT so individual sets can be freed without pool reset.
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = 3 * 64; // enough for 64 concurrent dispatches
+
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = 64;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(dev, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
+        vkDestroyPipeline(dev, pipe, nullptr);
+        vkDestroyShaderModule(dev, compModule, nullptr);
+        vkDestroyPipelineLayout(dev, pipeLayout, nullptr);
+        vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
+        std::cerr << "[VulkanApp] Failed to create cached vegetation compute descriptor pool" << std::endl;
+        return false;
+    }
+
+    // Commit cached state atomically
+    {
+        std::lock_guard<std::mutex> lk(vegComputeMutex);
+        if (vegComputePipeline == VK_NULL_HANDLE) {
+            vegComputePipeline       = pipe;
+            vegComputePipelineLayout = pipeLayout;
+            vegComputeDescSetLayout  = descLayout;
+            vegComputeDescPool       = pool;
+            vegComputeShaderModule   = compModule;
+
+            resources.addPipeline(pipe, "VulkanApp: cachedVegetation ComputePipeline");
+            resources.addPipelineLayout(pipeLayout, "VulkanApp: cachedVegetation ComputePipelineLayout");
+            resources.addDescriptorSetLayout(descLayout, "VulkanApp: cachedVegetation ComputeDescSetLayout");
+            resources.addDescriptorPool(pool, "VulkanApp: cachedVegetation ComputeDescPool");
+            resources.addShaderModule(compModule, "VulkanApp: cachedVegetation ComputeShaderModule");
+            std::cerr << "[VulkanApp] Cached vegetation compute pipeline ready: pipe=" << (void*)pipe << "\n";
+        } else {
+            // Another thread already initialized; clean up duplicates
+            vkDestroyDescriptorPool(dev, pool, nullptr);
+            vkDestroyPipeline(dev, pipe, nullptr);
+            vkDestroyShaderModule(dev, compModule, nullptr);
+            vkDestroyPipelineLayout(dev, pipeLayout, nullptr);
+            vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
+        }
+    }
+    return true;
 }
 
 void VulkanApp::createImageViews() {
@@ -4239,11 +4265,25 @@ Buffer VulkanApp::createDeviceLocalBuffer(const void* data, VkDeviceSize size, V
         VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, 
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     
-    // Copy from staging to device-local buffer on transfer queue
+    // Copy from staging to device-local buffer, then insert a pipeline barrier
+    // so that subsequent shader/compute reads see the transferred data.
     runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd){
         VkBufferCopy copyRegion{};
         copyRegion.size = size;
         vkCmdCopyBuffer(cmd, stagingBuffer.buffer, gpuBuffer.buffer, 1, &copyRegion);
+
+        VkBufferMemoryBarrier bufBarrier{};
+        bufBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        bufBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        bufBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+        bufBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufBarrier.buffer = gpuBuffer.buffer;
+        bufBarrier.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+            0, 0, nullptr, 1, &bufBarrier, 0, nullptr);
     });
     
     // Transfer completed synchronously; destroy staging resources now.

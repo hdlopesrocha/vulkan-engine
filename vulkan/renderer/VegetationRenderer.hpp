@@ -133,7 +133,7 @@ private:
     };
     std::unordered_map<NodeID, InstanceBuffer> chunkBuffers;
     std::unordered_map<NodeID, size_t> chunkInstanceCounts;
-    void destroyInstanceBuffer(NodeID chunkId);
+    void destroyInstanceBuffer(NodeID chunkId, VulkanApp* app = nullptr);
     // If the renderer was initialized with an app, this will be set and
     // allows immediate compute-based generation calls to run against the
     // provided `VulkanApp` instance.
