@@ -250,26 +250,23 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
         }
 
-        // Vegetation shadow pass: compute→graphics synchronization is handled
-        // by the vegetationTimeline semaphore (waited inside drawShadow).
-        if (vegetationEnabled && vegetationRenderer) {
-            const glm::vec3 cameraPos = glm::vec3(uboStatic.viewPos);  // Use original camera position for LOD
-            vegetationRenderer->drawShadow(app, commandBuffer, ds, cameraPos);
-        }
-
-        // Restore solid shadow state for indexed draws
+        // Bind solid shadow pipeline first, then draw solid geometry.
+        // Vegetation draws after so its vertex buffer bindings don't leak into
+        // the solid draw (RADV is sensitive to leftover bindings across
+        // pipeline switches).
         VkPipeline solidShadowPipeline = shadowMapper->getShadowPipeline();
-        VkPipelineLayout solidShadowLayout = shadowMapper->getShadowPipelineLayout();
         if (solidShadowPipeline != VK_NULL_HANDLE) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowPipeline);
         }
-        if (solidShadowLayout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowLayout, 0, 1, &ds, 0, nullptr);
-        }
 
-        // Render solid geometry using drawPrepared (compact culled buffer) to avoid
-        // GPU timeout on iGPUs when drawing all meshes to large shadow maps.
+        // Render solid geometry (drawPrepared binds its own vertex/index buffers)
         solidRenderer->getIndirectRenderer().drawPrepared(commandBuffer, 0);
+
+        // Vegetation shadow pass: compute→graphics sync via vegetationTimeline.
+        if (vegetationEnabled && vegetationRenderer) {
+            const glm::vec3 cameraPos = glm::vec3(uboStatic.viewPos);
+            vegetationRenderer->drawShadow(app, commandBuffer, ds, cameraPos);
+        }
 
         shadowMapper->endShadowPass(app, commandBuffer, c);
     }
