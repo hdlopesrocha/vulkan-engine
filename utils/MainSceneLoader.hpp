@@ -61,17 +61,15 @@
 class MainSceneLoader : public SceneLoaderCallback {
 public:
 
-    // Optional callback invoked after each add()/del() shape operation.
-    // Set this to flush the UniqueOctreeChangeHandler so chunks stream to the
-    // GPU queue in real time instead of all at once at the end of loadScene().
-    std::function<void()> flushCallback;
 
     Simplifier simplifier = Simplifier(0.99f, 0.1f, true);
     MainSceneLoader() {};
     ~MainSceneLoader() = default;
+    void action(Octree &opaqueLayer, const OctreeChangeHandler& opaqueHandler,Octree &transparentLayer,const OctreeChangeHandler& transparentHandler) {
+
+    }
 
     void loadScene(Octree &opaqueLayer, const OctreeChangeHandler& opaqueHandler,Octree &transparentLayer,const OctreeChangeHandler& transparentHandler) {
-        auto flush = [&]() { if (flushCallback) flushCallback(); };
 
         //WrappedSignedDistanceFunction::resetCalls();
         int sizePerTile = 30;
@@ -113,7 +111,6 @@ public:
             WrappedBox wrappedFunction = WrappedBox(&function);
             opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(0), minSize, simplifier, opaqueHandler);
         }
-        flush();
 
         {
             std::cout << "\topaqueLayer.add(sphere)"<< std::endl;
@@ -125,7 +122,6 @@ public:
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(5), minSize, simplifier, opaqueHandler);
         }
-        flush();
 
         {
             std::cout << "\topaqueLayer.del(sphere)"<< std::endl;
@@ -137,7 +133,6 @@ public:
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             opaqueLayer.apply(SDF::opSubtraction, &wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
-        flush();
 
         {
             std::cout << "\topaqueLayer.del(sphere)"<< std::endl;
@@ -149,7 +144,6 @@ public:
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             opaqueLayer.apply(SDF::opSubtraction, &wrappedFunction, model, translate, scale, SimpleBrush(4), minSize, simplifier, opaqueHandler);
         }
-        flush();
         
         {
             Transformation model = Transformation();
@@ -162,7 +156,6 @@ public:
             WrappedPerlinDistortDistanceEffect distortedFunction = WrappedPerlinDistortDistanceEffect(&wrappedFunction, 64.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f);
             opaqueLayer.apply(SDF::opSubtraction, &distortedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
-        flush();
 
         {
             std::cout << "\ttransparentLayer.add(sphere)"<< std::endl;
@@ -174,7 +167,7 @@ public:
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             transparentLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(1), minSize, simplifier, transparentHandler);
         }
-        flush();
+
         {
             std::cout << "\ttransparentLayer.add(sphere)"<< std::endl;
             glm::vec3 min = glm::vec3(1500,0,1500);
@@ -185,7 +178,6 @@ public:
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             transparentLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(2), minSize, simplifier, transparentHandler);
         }
-        flush();
 
         {
             std::cout << "\topaqueLayer.add(octahedron)"<< std::endl;
@@ -196,7 +188,6 @@ public:
             WrappedOctahedron wrappedFunction = WrappedOctahedron(&function);
             opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
-        flush();
 
         {
             std::cout << "\topaqueLayer.add(pyramid)"<< std::endl;
@@ -207,7 +198,6 @@ public:
             WrappedPyramid wrappedFunction = WrappedPyramid(&function);
             opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
-        flush();
 
         {
             std::cout << "\topaqueLayer.add(torus)"<< std::endl;
@@ -218,7 +208,6 @@ public:
             WrappedTorus wrappedFunction = WrappedTorus(&function);
             opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
-        flush();
 
         {
             std::cout << "\topaqueLayer.add(cone)"<< std::endl;
@@ -229,7 +218,6 @@ public:
             WrappedCone wrappedFunction = WrappedCone(&function);
             opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
-        flush();
 
         {
             std::cout << "\topaqueLayer.add(cylinder)"<< std::endl;
@@ -240,8 +228,7 @@ public:
             WrappedCylinder wrappedFunction = WrappedCylinder(&function);
             opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
-        flush();
-
+    
         {
             std::cout << "\topaqueLayer.add(taperedCylinder)"<< std::endl;
             glm::vec3 center = glm::vec3(0,512, 512*5);
@@ -252,8 +239,7 @@ public:
             WrappedTaperedCylinder wrappedFunction = WrappedTaperedCylinder(&function);
             opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(11), minSize, simplifier, opaqueHandler);
         }
-        flush();
-
+    
         {
             std::cout << "\topaqueLayer.add(taperedCapsule)"<< std::endl;
             glm::vec3 center = glm::vec3(0,512, 512*6);
@@ -265,8 +251,7 @@ public:
             WrappedTaperedCapsule wrappedFunction = WrappedTaperedCapsule(&function);
             opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(11), minSize, simplifier, opaqueHandler);
         }
-        flush();
-
+    
         if(false){
             std::cout << "\topaqueLayer.add(proceduralTree)"<< std::endl;
             tree::TreeHandler treeHandler;
@@ -282,7 +267,6 @@ public:
             treeHandler.applyToOctree(opaqueLayer, opaqueHandler, treeModel, translate, scale,
                                       11, minSize*0.25f, simplifier);
         
-            flush();
        }
 
         {
@@ -296,8 +280,7 @@ public:
             //distortedFunction.cacheEnabled = true;
             opaqueLayer.apply(SDF::opUnion, &distortedFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
         }
-        flush();
-
+    
         {
             std::cout << "\topaqueLayer.add(perlinCarve)"<< std::endl;
             glm::vec3 center = glm::vec3(512,512, 512*1);
@@ -309,7 +292,7 @@ public:
             //carvedFunction.cacheEnabled = true;
             opaqueLayer.apply(SDF::opUnion, &carvedFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
         }
-        flush();
+    
         {
             std::cout << "\topaqueLayer.add(sineDistort)"<< std::endl;
             glm::vec3 center = glm::vec3(512,512, 512*2);
@@ -321,7 +304,7 @@ public:
             //carvedFunction.cacheEnabled = true;
             opaqueLayer.apply(SDF::opUnion, &carvedFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
         }
-        flush();
+    
         {
             std::cout << "\topaqueLayer.add(voronoiDistort)"<< std::endl;
             glm::vec3 center = glm::vec3(512,512, 512*3);
@@ -332,7 +315,7 @@ public:
             WrappedVoronoiCarveDistanceEffect distortFunction = WrappedVoronoiCarveDistanceEffect(&wrappedFunction, 64.0f, 64.0f, glm::vec3(0), 0.0f, 1.0f);
             opaqueLayer.apply(SDF::opUnion, &distortFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
         }
-        flush();
+    
         {
             std::cout << "\topaqueLayer.add(voronoiDistort)"<< std::endl;
             glm::vec3 center = glm::vec3(512,512, 512*4);
@@ -343,7 +326,7 @@ public:
             WrappedVoronoiCarveDistanceEffect distortFunction = WrappedVoronoiCarveDistanceEffect(&wrappedFunction, 64.0f, 64.0f, glm::vec3(0), 0.0f, -1.0f);
             opaqueLayer.apply(SDF::opUnion, &distortFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
         }
-        flush();
+    
         {
             Transformation model = Transformation();
             std::cout << "\ttransparentLayer.add(water)"<< std::endl;
@@ -357,8 +340,7 @@ public:
             //wrappedFunction.cacheEnabled = true;
             transparentLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, WaterBrush(0), minSize, simplifier, transparentHandler);
         }
-        flush();
-
+    
         {
             std::cout << "\topaqueLayer.add(box)"<< std::endl;
             glm::vec3 min = glm::vec3(1500,0,-1000);
@@ -369,8 +351,28 @@ public:
             WrappedBox wrappedFunction = WrappedBox(&function);
             opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(0), minSize*4, simplifier, opaqueHandler);
         }
-        flush();
-
+        
+        {
+            std::cout << "\topaqueLayer.add(box)"<< std::endl;
+            glm::vec3 min = glm::vec3(2500,0,-1000);
+            glm::vec3 len = glm::vec3(512.0f);
+            BoundingBox box = BoundingBox(min,min+len);
+            BoxDistanceFunction function = BoxDistanceFunction();
+            Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
+            WrappedBox wrappedFunction = WrappedBox(&function);
+            opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(0), minSize*0.25, simplifier, opaqueHandler);
+        }
+        
+        {
+            std::cout << "\topaqueLayer.add(box)"<< std::endl;
+            glm::vec3 min = glm::vec3(2500+128,256+128,-1000+128);
+            glm::vec3 len = glm::vec3(256.0f);
+            BoundingBox box = BoundingBox(min,min+len);
+            BoxDistanceFunction function = BoxDistanceFunction();
+            Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
+            WrappedBox wrappedFunction = WrappedBox(&function);
+            opaqueLayer.apply(SDF::opPaint, &wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*4.0, simplifier, opaqueHandler);
+        }
         
         {
             std::cout << "\topaqueLayer.add(box)"<< std::endl;
@@ -382,34 +384,7 @@ public:
             WrappedBox wrappedFunction = WrappedBox(&function);
             opaqueLayer.apply(SDF::opPaint, &wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*0.25, simplifier, opaqueHandler);
         }
-        flush();
         
-
-        {
-            std::cout << "\topaqueLayer.add(box)"<< std::endl;
-            glm::vec3 min = glm::vec3(2500,0,-1000);
-            glm::vec3 len = glm::vec3(512.0f);
-            BoundingBox box = BoundingBox(min,min+len);
-            BoxDistanceFunction function = BoxDistanceFunction();
-            Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
-            WrappedBox wrappedFunction = WrappedBox(&function);
-            opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(0), minSize*0.25, simplifier, opaqueHandler);
-        }
-        flush();
-
-
-        {
-            std::cout << "\topaqueLayer.add(box)"<< std::endl;
-            glm::vec3 min = glm::vec3(2500+128,256+128,-1000+128);
-            glm::vec3 len = glm::vec3(256.0f);
-            BoundingBox box = BoundingBox(min,min+len);
-            BoxDistanceFunction function = BoxDistanceFunction();
-            Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
-            WrappedBox wrappedFunction = WrappedBox(&function);
-            opaqueLayer.apply(SDF::opPaint, &wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*4.0, simplifier, opaqueHandler);
-        }
-        flush();
-
         //brushContext->model.scale = glm::vec3(256.0f);
 
 

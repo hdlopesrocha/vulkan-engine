@@ -446,6 +446,7 @@ public:
     void rebuildBrushScene();
     // Clear GPU meshes, reset octrees and regenerate via MainSceneLoader
     void generateMap();
+    void action();
     // Clear GPU meshes, reset octrees, load from file and tessellate
     void loadSceneFromFile(const std::string& path);
 
@@ -1167,6 +1168,7 @@ public:
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Generate Map")) generateMapPending = true;
+                if (ImGui::MenuItem("Action")) action();
                 ImGui::Separator();
                 if (ImGui::MenuItem("Save Scene...")) scenePicker_.open(sceneFolderBuf, true,  "Mode: Save");
                 if (ImGui::MenuItem("Load Scene...")) scenePicker_.open(sceneFolderBuf, false, "Mode: Load");
@@ -1816,6 +1818,27 @@ void MyApp::rebuildBrushScene() {
 
 // Ensure pending texture generation requests are flushed after a frame is submitted
 // so array-layer transitions happen outside of active draw command buffers.
+
+void MyApp::action() {
+    // Join any previous background tessellation thread
+    if (sceneProcessThread.joinable()) sceneProcessThread.join();
+
+    // Wait for the GPU to finish all in-flight work before clearing GPU resources
+    deviceWaitIdle();
+
+    MainSceneLoader loader;
+    mainScene->action(loader, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler);
+    std::cout << "[MyApp::action] Octree construction complete\n";
+
+    // Tessellate chunks in a background thread
+    sceneProcessThread = std::thread([this]() {
+        sceneUniqueSolidHandler->handleEvents();
+        sceneUniqueLiquidHandler->handleEvents();
+        if (octreeExplorerWidget)
+            octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
+        std::cout << "[MyApp::action] Scene chunk tessellation complete\n";
+    });
+}
 
 void MyApp::generateMap() {
     // Join any previous background tessellation thread

@@ -28,6 +28,7 @@ public:
 
     void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback) override;
     bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) override;
+    void action(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) override;
     void loadScene(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) override;
     void save(const std::string& filePath, const Settings* settings = nullptr);
     void load(const std::string& filePath, Settings* settings = nullptr);

@@ -676,26 +676,31 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         bool process = check != ContainmentType::Disjoint;  
         if(process) {    
             shapeChildren(frame, args, threadContext, children);
+            bool childResultSolid = true;
+            bool childResultEmpty = true;
+            bool childShapeSolid = true;
+            bool childShapeEmpty = true;
+            for(uint i = 0; i < 8; ++i) {
+                NodeOperationResult &child = children[i];
+                childResultEmpty &= child.resultType == SpaceType::Empty;
+                childResultSolid &= child.resultType == SpaceType::Solid;
+                childShapeEmpty &= child.shapeType == SpaceType::Empty;
+                childShapeSolid &= child.shapeType == SpaceType::Solid;
+                r.shapeSDF[i] = child.shapeSDF[i];
+                r.resultSDF[i] = child.resultSDF[i];
+            }
+            r.shapeType = childToParent(childShapeSolid, childShapeEmpty);
+            r.resultType = childToParent(childResultSolid, childResultEmpty);
+        } else {
+            r.shapeType = SpaceType::Empty;
+            r.resultType = frame.type;
+            SDF::copySDF(frame.sdf, r.resultSDF);
         }
-        bool childResultSolid = true;
-        bool childResultEmpty = true;
-        bool childShapeSolid = true;
-        bool childShapeEmpty = true;
-        for(uint i = 0; i < 8; ++i) {
-            NodeOperationResult &child = children[i];
-            childResultEmpty &= child.resultType == SpaceType::Empty;
-            childResultSolid &= child.resultType == SpaceType::Solid;
-            childShapeEmpty &= child.shapeType == SpaceType::Empty;
-            childShapeSolid &= child.shapeType == SpaceType::Solid;
-            r.shapeSDF[i] = child.shapeSDF[i];
-            r.resultSDF[i] = child.resultSDF[i];
-        }
-        r.shapeType = childToParent(childShapeSolid, childShapeEmpty);
-        r.resultType = childToParent(childResultSolid, childResultEmpty);
+        
     }
     bool interpolatedSurface = frame.node == NULL 
-                                && SDF::eval(frame.sdf) == SpaceType::Surface
-                                // && frame.type == SpaceType::Surface
+                                //&& SDF::eval(frame.sdf) == SpaceType::Surface 
+                                && frame.type == SpaceType::Surface
                                 ;
 
     if(r.shapeType != SpaceType::Empty || interpolatedSurface) {

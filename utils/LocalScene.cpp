@@ -80,6 +80,19 @@ void LocalScene::loadScene(SceneLoaderCallback& callback, const OctreeChangeHand
     //transparentOctree.exportToJson("liquid.json");
     //transparentOctree.exportToBson("liquid.bson");
 }
+void LocalScene::action(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) {
+    std::cout << "LocalScene::action() " << std::endl;
+    auto startTime = std::chrono::steady_clock::now();
+    callback.action(opaqueOctree, opaqueLayerChangeHandler, transparentOctree, transparentLayerChangeHandler);
+    auto endTime = std::chrono::steady_clock::now();
+    double elapsed = std::chrono::duration<double>(endTime - startTime).count();
+    std::cout << "LocalScene::action Ok! " << std::to_string(elapsed) << "s"  << std::endl;
+    // Export opaque (solid) octree to JSON after loading the scene
+    //opaqueOctree.exportToJson("solid.json");
+    //opaqueOctree.exportToBson("solid.bson");
+    //transparentOctree.exportToJson("liquid.json");
+    //transparentOctree.exportToBson("liquid.bson");
+}
 
 void LocalScene::save(const std::string& filePath, const Settings* settings) {
     OctreeFile opaqueSaver(&opaqueOctree, "opaque");
