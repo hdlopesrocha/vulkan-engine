@@ -414,6 +414,50 @@ float VegetationRenderer::getAverageDensityFactor(const glm::vec3& cameraPos) co
     return factorCount > 0 ? factorSum / static_cast<float>(factorCount) : 1.0f;
 }
 
+void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
+    if (commandBuffer == VK_NULL_HANDLE) return;
+
+    std::vector<VkBufferMemoryBarrier2> readBarriers;
+    readBarriers.reserve(chunkBuffers.size() * 2);
+    for (const auto& [chunkId, buf] : chunkBuffers) {
+        (void)chunkId;
+        if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
+
+        VkBufferMemoryBarrier2 instanceBarrier{};
+        instanceBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        instanceBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        instanceBarrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+        instanceBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+        instanceBarrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
+        instanceBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        instanceBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        instanceBarrier.buffer = buf.buffer;
+        instanceBarrier.offset = 0;
+        instanceBarrier.size = VK_WHOLE_SIZE;
+        readBarriers.push_back(instanceBarrier);
+
+        VkBufferMemoryBarrier2 indirectBarrier{};
+        indirectBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        indirectBarrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        indirectBarrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+        indirectBarrier.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        indirectBarrier.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        indirectBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        indirectBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        indirectBarrier.buffer = buf.indirectBuffer;
+        indirectBarrier.offset = 0;
+        indirectBarrier.size = VK_WHOLE_SIZE;
+        readBarriers.push_back(indirectBarrier);
+    }
+    if (readBarriers.empty()) return;
+
+    VkDependencyInfo depInfo{};
+    depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    depInfo.bufferMemoryBarrierCount = static_cast<uint32_t>(readBarriers.size());
+    depInfo.pBufferMemoryBarriers = readBarriers.data();
+    vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+}
+
 
 void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::vec3& cameraPos) {
     if (!app || vegetationShadowPipeline == VK_NULL_HANDLE) {
@@ -853,37 +897,11 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     vkBindBufferMemory(device, instanceBuffer, instanceMemory, 0);
     app->resources.addDeviceMemory(instanceMemory, "VegetationRenderer: instanceMemory");
 
-    // Create host-visible indirect buffer and fill draw command
-    VkBuffer indirectBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory indirectMemory = VK_NULL_HANDLE;
-    VkBufferCreateInfo indirectBufInfo{};
-    indirectBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    indirectBufInfo.size = sizeof(VkDrawIndirectCommand);
-    indirectBufInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-    indirectBufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(device, &indirectBufInfo, nullptr, &indirectBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to create indirect buffer");
-    app->resources.addBuffer(indirectBuffer, "VegetationRenderer: indirectBuffer");
-
-    VkMemoryRequirements indirectMemReq;
-    vkGetBufferMemoryRequirements(device, indirectBuffer, &indirectMemReq);
-    uint32_t indirectTypeIndex = UINT32_MAX;
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
-        if ((indirectMemReq.memoryTypeBits & (1 << i)) && (memProps.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))) {
-            indirectTypeIndex = i;
-            break;
-        }
-    }
-    if (indirectTypeIndex == UINT32_MAX) throw std::runtime_error("No suitable host visible memory type for indirect buffer");
-    VkMemoryAllocateInfo indirectAllocInfo{};
-    indirectAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    {
-        static constexpr VkDeviceSize kMin = 262144;
-        const VkDeviceSize sz = indirectMemReq.size;
-        indirectAllocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-    }
-    indirectAllocInfo.memoryTypeIndex = indirectTypeIndex;
-    if (vkAllocateMemory(device, &indirectAllocInfo, nullptr, &indirectMemory) != VK_SUCCESS) throw std::runtime_error("Failed to allocate indirect buffer memory");
-    vkBindBufferMemory(device, indirectBuffer, indirectMemory, 0);
+    Buffer indirect = app->createBuffer(sizeof(VkDrawIndirectCommand),
+        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkBuffer indirectBuffer = indirect.buffer;
+    VkDeviceMemory indirectMemory = indirect.memory;
 
     VkDrawIndirectCommand drawCmd{};
     drawCmd.vertexCount = 1;
@@ -891,10 +909,11 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     drawCmd.firstVertex = 0;
     drawCmd.firstInstance = 0;
     void* indirectData;
-    vkMapMemory(device, indirectMemory, 0, sizeof(VkDrawIndirectCommand), 0, &indirectData);
+    if (vkMapMemory(device, indirectMemory, 0, sizeof(VkDrawIndirectCommand), 0, &indirectData) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to map vegetation indirect buffer");
+    }
     std::memcpy(indirectData, &drawCmd, sizeof(VkDrawIndirectCommand));
     vkUnmapMemory(device, indirectMemory);
-    app->resources.addDeviceMemory(indirectMemory, "VegetationRenderer: indirectMemory");
 
     // Dispatch compute to fill instanceBuffer asynchronously on vegetation queue
     VkFence fence = VK_NULL_HANDLE;

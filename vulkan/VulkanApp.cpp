@@ -454,9 +454,12 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     ainfo.descriptorPool = vegComputeDescPool;
     ainfo.descriptorSetCount = 1;
     ainfo.pSetLayouts = &vegComputeDescSetLayout;
-    if (vkAllocateDescriptorSets(device, &ainfo, &descSet) != VK_SUCCESS) {
-        std::cerr << "[VulkanApp] Failed to allocate vegetation compute descriptor set" << std::endl;
-        return 0;
+    {
+        std::lock_guard<std::mutex> lk(vegComputeMutex);
+        if (vkAllocateDescriptorSets(device, &ainfo, &descSet) != VK_SUCCESS) {
+            std::cerr << "[VulkanApp] Failed to allocate vegetation compute descriptor set" << std::endl;
+            return 0;
+        }
     }
 
     VkDescriptorBufferInfo vbInfo{ vertexBuffer, 0, VK_WHOLE_SIZE };
@@ -497,6 +500,33 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegComputePipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegComputePipelineLayout, 0, 1, &descSet, 0, nullptr);
+
+    // Acquire vertex/index buffers for compute access. These were uploaded
+    // via createDeviceLocalBuffer in a SEPARATE command buffer. On RADV,
+    // inter-CB visibility requires an explicit acquire barrier even though
+    // the transfer CB completed synchronously (fence wait).
+    {
+        VkBufferMemoryBarrier2 acquireBarriers[2]{};
+        acquireBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        acquireBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        acquireBarriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        acquireBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        acquireBarriers[0].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+        acquireBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        acquireBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        acquireBarriers[0].buffer = vertexBuffer;
+        acquireBarriers[0].offset = 0;
+        acquireBarriers[0].size = VK_WHOLE_SIZE;
+
+        acquireBarriers[1] = acquireBarriers[0];
+        acquireBarriers[1].buffer = indexBuffer;
+
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.bufferMemoryBarrierCount = 2;
+        depInfo.pBufferMemoryBarriers = acquireBarriers;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
 
     uint32_t push[6];
     push[0] = instancesPerTriangle;
@@ -541,12 +571,17 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
         vkCmdPipelineBarrier2(cmd, &depInfo);
     }
 
-    // End and submit to the vegetation queue
-    VkFence f = submitCommandBufferAsyncToQueue(cmd, vegetationQueue, nullptr);
+    // End and submit to the vegetation queue. Signal a semaphore as well as a
+    // fence: the fence gates CPU-side publication/destruction, while the
+    // semaphore creates the required device-side dependency before graphics
+    // reads the generated instance buffer.
+    VkSemaphore completionSemaphore = VK_NULL_HANDLE;
+    VkFence f = submitCommandBufferAsyncToQueue(cmd, vegetationQueue, &completionSemaphore);
 
     // Defer freeing only the per-chunk descriptor set; cached pipeline/pool persist.
     deferDestroyUntilFence(f, [device, descSet, this]() {
         if (descSet != VK_NULL_HANDLE) {
+            std::lock_guard<std::mutex> lk(vegComputeMutex);
             vkFreeDescriptorSets(device, vegComputeDescPool, 1, &descSet);
         }
     });
@@ -2234,7 +2269,18 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         pendingCommandBuffers.emplace_back(commandBuffer, fence);
     }
 
-    // Signal the upload timeline semaphore so the graphics queue can wait on
+    if (semaphore != VK_NULL_HANDLE && outSemaphore) {
+        *outSemaphore = semaphore;
+
+        std::lock_guard<std::mutex> lk(extraSemaphoreMutex);
+        VkPipelineStageFlags waitStage =
+            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
+            VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
+            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+            VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT;
+        extraWaitSemaphores.emplace_back(semaphore, waitStage);
+    }
+
     return fence;
 }
 
@@ -4265,27 +4311,25 @@ Buffer VulkanApp::createDeviceLocalBuffer(const void* data, VkDeviceSize size, V
         VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, 
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     
-    // Copy from staging to device-local buffer, then insert a full global
-    // memory barrier to flush all writes to L2. This is required because
-    // the buffer will be read by a DIFFERENT command buffer (compute shader
-    // dispatched asynchronously). Standard pipeline barriers only guarantee
-    // visibility within the SAME command buffer; on RADV/AMD, inter-CB
-    // implicit ordering does not include full memory visibility.
+    // Copy from staging to device-local buffer, then insert a pipeline barrier
+    // so that subsequent shader/compute reads see the transferred data.
     runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd){
         VkBufferCopy copyRegion{};
         copyRegion.size = size;
         vkCmdCopyBuffer(cmd, stagingBuffer.buffer, gpuBuffer.buffer, 1, &copyRegion);
 
-        VkMemoryBarrier memBarrier{};
-        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        memBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT |
-                                   VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
-                                   VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+        VkBufferMemoryBarrier bufBarrier{};
+        bufBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        bufBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        bufBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+        bufBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufBarrier.buffer = gpuBuffer.buffer;
+        bufBarrier.size = VK_WHOLE_SIZE;
         vkCmdPipelineBarrier(cmd,
             VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-            0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+            0, 0, nullptr, 1, &bufBarrier, 0, nullptr);
     });
     
     // Transfer completed synchronously; destroy staging resources now.

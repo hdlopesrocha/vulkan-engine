@@ -665,7 +665,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
     };
 
     buildShapeSDF(args, frame, r.shapeSDF, threadContext);
- 
+    bool process = true;
     if(r.isLeaf) {
         buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
         r.shapeType = SDF::eval(r.shapeSDF);
@@ -673,7 +673,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
     }
     else {
         const ContainmentType check = args.function->check(frame.cube, args.model, args.minSize);
-        bool process = check != ContainmentType::Disjoint;  
+        process = check != ContainmentType::Disjoint;  
         if(process) {    
             shapeChildren(frame, args, threadContext, children);
             bool childResultSolid = true;
@@ -692,13 +692,13 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             r.shapeType = childToParent(childShapeSolid, childShapeEmpty);
             r.resultType = childToParent(childResultSolid, childResultEmpty);
         } else {
-            r.shapeType = SpaceType::Empty;
+            r.shapeType = SDF::eval(r.shapeSDF);
             r.resultType = frame.type;
             SDF::copySDF(frame.sdf, r.resultSDF);
         }
         
     }
-    bool interpolatedSurface = frame.node == NULL 
+    bool interpolatedSurface = (frame.node == NULL)
                                 //&& SDF::eval(frame.sdf) == SpaceType::Surface 
                                 && frame.type == SpaceType::Surface
                                 ;

@@ -549,8 +549,16 @@ public:
         // shadowEffects.w = global shadow toggle (shader checks ubo.shadowEffects.w > 0.5)
         uboStatic.shadowEffects.w = settings.enableShadows ? 1.0f : 0.0f;
 
+        // ── GPU culling: must run BEFORE shadow pass so drawPrepared has
+        // current-frame compact/visibleCount buffers populated. ──
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
+        sceneRenderer->solidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
+        sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
+        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
+
         // Shadow pass: renders solid geometry into shadow map from light's perspective
-        // Must run AFTER UBO is built (needs lightSpaceMatrix, passParams, etc.)
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 0);
         if (sceneRenderer) {
@@ -568,14 +576,6 @@ public:
         } else {
             std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping UBO upload\n";
         }
-
-
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
-        sceneRenderer->solidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
-        sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
 
         const bool waterEnabled = settings.waterEnabled;
         const bool vegetationEnabled = settings.vegetationEnabled;
