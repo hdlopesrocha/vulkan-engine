@@ -1140,6 +1140,17 @@ void IndirectRenderer::bindBuffers(VkCommandBuffer cmd) {
     vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 }
 
+void IndirectRenderer::drawAll(VkCommandBuffer cmd) {
+    if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
+
+    bindBuffers(cmd);
+
+    auto active = getActiveMeshInfos();
+    for (auto& info : active) {
+        vkCmdDrawIndexedIndirect(cmd, indirectBuffer.buffer, info.indirectOffset, 1, sizeof(VkDrawIndexedIndirectCommand));
+    }
+}
+
 void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws) {
     drawIndirectOnly(cmd, app->getPipelineLayout(), maxDraws);
 }
