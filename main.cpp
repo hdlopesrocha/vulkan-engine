@@ -188,7 +188,9 @@ public:
             { "textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg" },
             { "textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg" },
             { "textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg" },
-            { "textures/bark_color.jpg", "textures/bark_normal.jpg", "textures/bark_bump.jpg" }
+            { "textures/bark_color.jpg", "textures/bark_normal.jpg", "textures/bark_bump.jpg" },
+            { "textures/blocks_color.jpg", "textures/blocks_normal.jpg", "textures/blocks_bump.jpg" },
+            { "textures/asphalt_color.jpg", "textures/asphalt_normal.jpg", "textures/asphalt_bump.jpg" }
         };
 
         // Bulk load the triples directly using TextureTriple vector already defined above

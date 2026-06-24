@@ -4,6 +4,7 @@
 #include <chrono>
 #include <functional>
 #include <glm/glm.hpp>
+#include <glm/gtc/constants.hpp>
 
 #include "Scene.hpp"
 #include "../space/Octree.hpp"
@@ -46,6 +47,9 @@
 #include "../sdf/WrappedSineDistortDistanceEffect.hpp"
 #include "../sdf/WrappedVoronoiCarveDistanceEffect.hpp"
 #include "../sdf/WrappedOctreeDifference.hpp"
+#include "../sdf/RoadSpline.hpp"
+#include "../sdf/RoadDistanceFunction.hpp"
+#include "../sdf/WrappedRoad.hpp"
 
 // tree generation
 #include "../tree/TreeHandler.hpp"
@@ -384,11 +388,45 @@ public:
             WrappedBox wrappedFunction = WrappedBox(&function);
             opaqueLayer.apply(SDF::opPaint, &wrappedFunction, model, translate, scale, SimpleBrush(1), minSize*0.25, simplifier, opaqueHandler);
         }
-        
         //brushContext->model.scale = glm::vec3(256.0f);
 
+        {
+            std::cout << "\topaqueLayer.add(road)"<< std::endl;
+            std::vector<RoadSpline::ControlPoint> ctrlPts;
+            glm::vec3 up(0.0f, 1.0f, 0.0f);
 
+            int numPts = 32;
+            float radius = 1500.0f;
+            for (int i = 0; i <= numPts; ++i) {
+                float t = (float)i / (float)numPts;
+                float angle = t * 2.0f * glm::pi<float>();
+                float x = radius * glm::cos(angle);
+                float z = radius * glm::sin(angle);
+                float y = 256.0f;
+                ctrlPts.emplace_back(glm::vec3(x, y, z), up);
+            }
 
+            RoadSpline roadSpline(ctrlPts);
+            Transformation roadModel = Transformation();
+            int numSegs = 24;
+            float overlap = 0.05f;
+            float halfDiag = glm::length(glm::vec2(256.0f, 256.0f)) * 0.5f;
+            for (int i = 0; i < numSegs; ++i) {
+                float t0 = (float)i / (float)numSegs;
+                float t1 = (float)(i + 1) / (float)numSegs;
+                float tMin = std::max(0.0f, t0 - overlap / (float)numSegs);
+                float tMax = std::min(1.0f, t1 + overlap / (float)numSegs);
+                bool startCap = false;
+                bool endCap   = false;
+                RoadDistanceFunction roadFunc(&roadSpline, 512.0f, 64.0f,
+                                              tMin, tMax, startCap, endCap);
+                BoundingSphere segSphere = roadSpline.boundingSphereInRange(tMin, tMax, halfDiag);
+                WrappedRoad wrappedRoad(&roadFunc, segSphere.center, segSphere.radius);
+                opaqueLayer.apply(SDF::opUnion, &wrappedRoad, roadModel,
+                                  translate, scale, SimpleBrush(13),
+                                  minSize, simplifier, opaqueHandler);
+            }
+        }
 
     }
 
