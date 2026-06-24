@@ -64,6 +64,361 @@ void VegetationRenderer::cleanup() {
     billboardVBO.indexBuffer.memory = VK_NULL_HANDLE;
     billboardVBO.indexCount = 0;
     appPtr = nullptr;
+    destroyCulling();
+}
+
+void VegetationRenderer::destroyCulling() {
+    auto device = appPtr ? appPtr->getDevice() : VK_NULL_HANDLE;
+    if (device == VK_NULL_HANDLE) return;
+    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE) {
+        if (appPtr->resources.removeBuffer(concatenatedInstanceBuffer.buffer))
+            vkDestroyBuffer(device, concatenatedInstanceBuffer.buffer, nullptr);
+        if (appPtr->resources.removeDeviceMemory(concatenatedInstanceBuffer.memory))
+            vkFreeMemory(device, concatenatedInstanceBuffer.memory, nullptr);
+        concatenatedInstanceBuffer = {};
+    }
+    if (chunkMetaBuffer.buffer != VK_NULL_HANDLE) {
+        if (appPtr->resources.removeBuffer(chunkMetaBuffer.buffer))
+            vkDestroyBuffer(device, chunkMetaBuffer.buffer, nullptr);
+        if (appPtr->resources.removeDeviceMemory(chunkMetaBuffer.memory))
+            vkFreeMemory(device, chunkMetaBuffer.memory, nullptr);
+        chunkMetaBuffer = {};
+    }
+    if (compactedCmdBuffer.buffer != VK_NULL_HANDLE) {
+        if (appPtr->resources.removeBuffer(compactedCmdBuffer.buffer))
+            vkDestroyBuffer(device, compactedCmdBuffer.buffer, nullptr);
+        if (appPtr->resources.removeDeviceMemory(compactedCmdBuffer.memory))
+            vkFreeMemory(device, compactedCmdBuffer.memory, nullptr);
+        compactedCmdBuffer = {};
+    }
+    if (visibleCountBuffer.buffer != VK_NULL_HANDLE) {
+        if (appPtr->resources.removeBuffer(visibleCountBuffer.buffer))
+            vkDestroyBuffer(device, visibleCountBuffer.buffer, nullptr);
+        if (appPtr->resources.removeDeviceMemory(visibleCountBuffer.memory))
+            vkFreeMemory(device, visibleCountBuffer.memory, nullptr);
+        visibleCountBuffer = {};
+        visibleCountMapped = nullptr;
+    }
+    if (vegCullDescPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(device, vegCullDescPool, nullptr);
+        vegCullDescPool = VK_NULL_HANDLE;
+        vegCullDescSet = VK_NULL_HANDLE;
+    }
+    // Pipeline and layouts are tracked by central manager — just clear handles
+    vegCullPipeline = VK_NULL_HANDLE;
+    vegCullPipelineLayout = VK_NULL_HANDLE;
+    vegCullDescSetLayout = VK_NULL_HANDLE;
+    vegNumChunks = 0;
+    vegConsolidationDirty = true;
+}
+
+void VegetationRenderer::initCulling(VulkanApp* app) {
+    if (vegCullPipeline != VK_NULL_HANDLE) return;
+    auto device = app->getDevice();
+
+    auto compCode = FileReader::readFile("shaders/vegetation_cull.comp.spv");
+    VkShaderModule compModule = app->createShaderModule(compCode);
+
+    VkDescriptorSetLayoutBinding bindings[3] = {};
+    bindings[0].binding = 0;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[1].binding = 1;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].binding = 2;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 3;
+    layoutInfo.pBindings = bindings;
+    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &vegCullDescSetLayout) != VK_SUCCESS)
+        throw std::runtime_error("failed to create vegetation cull desc set layout!");
+    app->resources.addDescriptorSetLayout(vegCullDescSetLayout, "VegetationCull: descSetLayout");
+
+    VkPushConstantRange pc{};
+    pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pc.offset = 0;
+    pc.size = sizeof(glm::mat4) + sizeof(uint32_t);
+
+    VkPipelineLayoutCreateInfo plinfo{};
+    plinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plinfo.setLayoutCount = 1;
+    plinfo.pSetLayouts = &vegCullDescSetLayout;
+    plinfo.pushConstantRangeCount = 1;
+    plinfo.pPushConstantRanges = &pc;
+    if (vkCreatePipelineLayout(device, &plinfo, nullptr, &vegCullPipelineLayout) != VK_SUCCESS)
+        throw std::runtime_error("failed to create vegetation cull pipeline layout!");
+    app->resources.addPipelineLayout(vegCullPipelineLayout, "VegetationCull: pipelineLayout");
+
+    VkPipelineShaderStageCreateInfo stage{};
+    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = compModule;
+    stage.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage = stage;
+    pipelineInfo.layout = vegCullPipelineLayout;
+    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vegCullPipeline) != VK_SUCCESS)
+        throw std::runtime_error("failed to create vegetation cull compute pipeline!");
+    app->resources.addPipeline(vegCullPipeline, "VegetationCull: computePipeline");
+
+    vkDestroyShaderModule(device, compModule, nullptr);
+
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = 3;
+    VkDescriptorPoolCreateInfo poolCI{};
+    poolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolCI.maxSets = 1;
+    poolCI.poolSizeCount = 1;
+    poolCI.pPoolSizes = &poolSize;
+    if (vkCreateDescriptorPool(device, &poolCI, nullptr, &vegCullDescPool) != VK_SUCCESS)
+        throw std::runtime_error("failed to create vegetation cull descriptor pool!");
+
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = vegCullDescPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &vegCullDescSetLayout;
+    if (vkAllocateDescriptorSets(device, &allocInfo, &vegCullDescSet) != VK_SUCCESS)
+        throw std::runtime_error("failed to allocate vegetation cull descriptor set!");
+}
+
+void VegetationRenderer::consolidateChunks(VulkanApp* app) {
+    if (chunkBuffers.empty()) return;
+    if (!app) return;
+    auto device = app->getDevice();
+
+    // Ensure compute pipeline exists
+    initCulling(app);
+
+    // Count total instances
+    size_t totalInstances = 0;
+    for (const auto& kv : chunkInstanceCounts)
+        totalInstances += kv.second;
+    if (totalInstances == 0) return;
+
+    uint32_t numChunks = static_cast<uint32_t>(chunkBuffers.size());
+
+    // Allocate concatenated instance buffer (device-local, used as vertex buffer binding 1)
+    VkDeviceSize concatSize = totalInstances * sizeof(glm::vec4);
+    if (concatenatedInstanceBuffer.buffer == VK_NULL_HANDLE) {
+        concatenatedInstanceBuffer = app->createBuffer(concatSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    }
+
+    // Allocate chunk meta buffer (host-visible for initial upload)
+    VkDeviceSize metaSize = numChunks * sizeof(ChunkMeta);
+    if (chunkMetaBuffer.buffer == VK_NULL_HANDLE)
+        chunkMetaBuffer = app->createBuffer(metaSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    // Allocate compacted cmd buffer (device-local storage + indirect)
+    VkDeviceSize compactedSize = std::max(256u, numChunks) * sizeof(VkDrawIndirectCommand);
+    if (compactedCmdBuffer.buffer == VK_NULL_HANDLE)
+        compactedCmdBuffer = app->createBuffer(compactedSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    // Allocate visible count buffer (host-visible for CPU reset, storage for compute, indirect for vkCmdDrawIndirectCount)
+    if (visibleCountBuffer.buffer == VK_NULL_HANDLE)
+        visibleCountBuffer = app->createBuffer(sizeof(uint32_t),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    // Map visible count and initialize to 0
+    if (visibleCountMapped == nullptr && visibleCountBuffer.memory != VK_NULL_HANDLE) {
+        vkMapMemory(device, visibleCountBuffer.memory, 0, sizeof(uint32_t), 0, reinterpret_cast<void**>(&visibleCountMapped));
+        *visibleCountMapped = 0;
+    }
+
+    // Build per-chunk metadata on CPU
+    std::vector<ChunkMeta> metaArray(numChunks);
+    uint32_t instanceOffset = 0;
+    uint32_t chunkIdx = 0;
+    float halfExtent = std::max(8.0f, billboardScale * 0.35f);
+
+    // Create a temporary command buffer for GPU copy operations
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = app->getCommandPool();
+    allocInfo.commandBufferCount = 1;
+    VkCommandBuffer copyCmd;
+    vkAllocateCommandBuffers(device, &allocInfo, &copyCmd);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(copyCmd, &beginInfo);
+
+    for (const auto& [chunkId, buf] : chunkBuffers) {
+        (void)chunkId;
+        if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
+
+        ChunkMeta& meta = metaArray[chunkIdx];
+        meta.instanceOffset = instanceOffset;
+        meta.instanceCount = static_cast<uint32_t>(buf.count);
+        meta.aabbMin = buf.center - glm::vec3(halfExtent);
+        meta.aabbMax = buf.center + glm::vec3(halfExtent);
+        meta.pad0 = 0.0f;
+        meta.pad1 = 0.0f;
+
+        // Copy instance data from per-chunk buffer to concatenated buffer
+        VkBufferCopy copyRegion{};
+        copyRegion.srcOffset = 0;
+        copyRegion.dstOffset = instanceOffset * sizeof(glm::vec4);
+        copyRegion.size = buf.count * sizeof(glm::vec4);
+        vkCmdCopyBuffer(copyCmd, buf.buffer, concatenatedInstanceBuffer.buffer, 1, &copyRegion);
+
+        instanceOffset += static_cast<uint32_t>(buf.count);
+        chunkIdx++;
+    }
+
+    vegNumChunks = chunkIdx; // actual number of valid chunks processed
+
+    if (vegNumChunks == 0) {
+        vkEndCommandBuffer(copyCmd);
+        VkSubmitInfo submit{};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &copyCmd;
+        VkFence fence;
+        VkFenceCreateInfo fenceCI{};
+        fenceCI.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        vkCreateFence(device, &fenceCI, nullptr, &fence);
+        vkQueueSubmit(app->getGraphicsQueue(), 1, &submit, fence);
+        vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+        vkDestroyFence(device, fence, nullptr);
+        vkFreeCommandBuffers(device, app->getCommandPool(), 1, &copyCmd);
+        vegConsolidationDirty = false;
+        return;
+    }
+
+    // Insert barrier: transfer writes visible to vertex input (for draw)
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+    vkCmdPipelineBarrier(copyCmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+        0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    vkEndCommandBuffer(copyCmd);
+
+    VkSubmitInfo submit{};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &copyCmd;
+    VkFence fence;
+    VkFenceCreateInfo fenceCI{};
+    fenceCI.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    vkCreateFence(device, &fenceCI, nullptr, &fence);
+    vkQueueSubmit(app->getGraphicsQueue(), 1, &submit, fence);
+    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    vkDestroyFence(device, fence, nullptr);
+    vkFreeCommandBuffers(device, app->getCommandPool(), 1, &copyCmd);
+
+    // Upload metadata to GPU
+    void* data;
+    vkMapMemory(device, chunkMetaBuffer.memory, 0, metaSize, 0, &data);
+    memcpy(data, metaArray.data(), vegNumChunks * sizeof(ChunkMeta));
+    vkUnmapMemory(device, chunkMetaBuffer.memory);
+
+    // Update descriptor set with the new buffers
+    VkDescriptorBufferInfo metaBI{};
+    metaBI.buffer = chunkMetaBuffer.buffer;
+    metaBI.offset = 0;
+    metaBI.range = VK_WHOLE_SIZE;
+
+    VkDescriptorBufferInfo compactedBI{};
+    compactedBI.buffer = compactedCmdBuffer.buffer;
+    compactedBI.offset = 0;
+    compactedBI.range = VK_WHOLE_SIZE;
+
+    VkDescriptorBufferInfo countBI{};
+    countBI.buffer = visibleCountBuffer.buffer;
+    countBI.offset = 0;
+    countBI.range = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet writes[3]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = vegCullDescSet;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[0].pBufferInfo = &metaBI;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = vegCullDescSet;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[1].pBufferInfo = &compactedBI;
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = vegCullDescSet;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[2].pBufferInfo = &countBI;
+    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+
+    vegConsolidationDirty = false;
+}
+
+void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj) {
+    // Consolidate if chunks have changed since last consolidation
+    if (vegConsolidationDirty && !chunkBuffers.empty()) {
+        // Cannot consolidate here (needs a command buffer submit + wait).
+        // Consolidation must happen outside the hot path (e.g. after scene load).
+        // If not consolidated, the draw functions will use the legacy per-chunk path.
+        return;
+    }
+    if (vegCullPipeline == VK_NULL_HANDLE || vegNumChunks == 0) return;
+    if (compactedCmdBuffer.buffer == VK_NULL_HANDLE || visibleCountBuffer.buffer == VK_NULL_HANDLE) return;
+
+    // Reset visible count
+    if (visibleCountMapped) *visibleCountMapped = 0;
+
+    // Barrier: ensure prior GPU writes to meta/concatenated are visible
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegCullPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegCullPipelineLayout, 0, 1, &vegCullDescSet, 0, nullptr);
+
+    struct CullPC {
+        glm::mat4 viewProj;
+        uint32_t numChunks;
+    } pc;
+    pc.viewProj = viewProj;
+    pc.numChunks = vegNumChunks;
+    vkCmdPushConstants(cmd, vegCullPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPC), &pc);
+
+    uint32_t groups = (vegNumChunks + 63) / 64;
+    vkCmdDispatch(cmd, groups, 1, 1);
+
+    // Barrier: compute writes (compacted buffer + visible count) visible to indirect draw
+    VkMemoryBarrier postBarrier{};
+    postBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    postBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    postBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1, &postBarrier, 0, nullptr, 0, nullptr);
 }
 
 void VegetationRenderer::setTextureArrayManager(TextureArrayManager* mgr, VulkanApp* app) {
@@ -352,6 +707,8 @@ void VegetationRenderer::clearAllInstances() {
         std::lock_guard<std::mutex> lk(pendingChunksMutex);
         pendingChunks.clear();
     }
+    vegConsolidationDirty = true;
+    vegNumChunks = 0;
 }
 
 size_t VegetationRenderer::getInstanceTotal() const {
@@ -467,7 +824,8 @@ void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
 }
 
 
-void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::vec3& cameraPos) {
+void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
+    (void)viewProj; // GPU culling is dispatched by prepareCull() outside the render pass
     if (!app || vegetationShadowPipeline == VK_NULL_HANDLE) {
         if (!app) std::cerr << "[VEGETATION SHADOW DRAW ERROR] app is null!" << std::endl;
         if (vegetationShadowPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION SHADOW DRAW ERROR] Shadow pipeline is VK_NULL_HANDLE!" << std::endl;
@@ -552,29 +910,85 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         &pc
     );
 
-    // For each chunk, bind base vertex buffer + instance buffer and draw indirect.
-    // Distance-based thinning is handled in the vegetation shader using camera position.
-    static int shadowDrawLogCounter = 0;
-    int chunksDrawn = 0;
-    for (auto& [chunkId, buf] : chunkBuffers) {
-        (void)chunkId;
-        if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
-        if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
-
-        VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
+    // Draw: consolidated (GPU culling) or legacy per-chunk path.
+    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+        VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
         VkDeviceSize offsets[2] = { 0, 0 };
-        // Bind base vertex buffer at binding 0 and instance buffer at binding 1
         vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-        vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
-        chunksDrawn++;
+        vkCmdDrawIndirectCount(commandBuffer, compactedCmdBuffer.buffer, 0,
+        visibleCountBuffer.buffer, 0, vegNumChunks, sizeof(VkDrawIndirectCommand));
+    } else {
+        static int shadowDrawLogCounter = 0;
+        int chunksDrawn = 0;
+        for (auto& [chunkId, buf] : chunkBuffers) {
+            (void)chunkId;
+            if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
+            if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
+
+            VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
+            VkDeviceSize offsets[2] = { 0, 0 };
+            vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
+            vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
+            chunksDrawn++;
+        }
+        if (shadowDrawLogCounter < 5) {
+            std::cerr << "[VEGETATION SHADOW DRAW] chunksDrawn=" << chunksDrawn << " totalChunks=" << chunkBuffers.size() << std::endl;
+            shadowDrawLogCounter++;
+        }
     }
-    if (shadowDrawLogCounter < 5) {
-        std::cerr << "[VEGETATION SHADOW DRAW] chunksDrawn=" << chunksDrawn << " totalChunks=" << chunkBuffers.size() << std::endl;
-        shadowDrawLogCounter++;
+
+    // ── Impostor depth pass ────────────────────────────────────────────────────
+    // Draw camera-facing quads with per-pixel depth from the captured depth array,
+    // so impostors cast accurate shadows onto the scene.
+    if (impostorDepthPipeline != VK_NULL_HANDLE &&
+        impostorDepthDescSet  != VK_NULL_HANDLE &&
+        impostorDistance > 0.0f) {
+
+        static int impostorDepthDrawCounter = 0;
+        if (impostorDepthDrawCounter < 5) {
+            std::cerr << "[VEGETATION SHADOW DRAW] Impostor depth pass active, drawing "
+                      << chunkBuffers.size() << " chunks\n";
+            impostorDepthDrawCounter++;
+        }
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorDepthPipeline);
+
+        VkDescriptorSet depthSets[2] = { shadowDescriptorSet, impostorDepthDescSet };
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    impostorDepthPipelineLayout, 0, 2, depthSets, 0, nullptr);
+
+        vkCmdPushConstants(commandBuffer, impostorDepthPipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT
+                           | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(WindPushConstants), &pc);
+
+        if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+            VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
+            VkDeviceSize offsets[2] = { 0, 0 };
+            vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
+            vkCmdDrawIndirectCount(commandBuffer, compactedCmdBuffer.buffer, 0,
+                visibleCountBuffer.buffer, 0, vegNumChunks, sizeof(VkDrawIndirectCommand));
+        } else {
+            for (auto& [chunkId, buf] : chunkBuffers) {
+                (void)chunkId;
+                if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
+                if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
+
+                VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
+                VkDeviceSize offsets[2] = { 0, 0 };
+                vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
+                vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
+            }
+        }
     }
 }
 
-void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView albedoArray60, VkImageView normalArray60, VkSampler sampler) {
+void VegetationRenderer::setImpostorData(VulkanApp* app,
+                                          VkImageView albedoArray60,
+                                          VkImageView normalArray60,
+                                          VkSampler sampler,
+                                          VkImageView depthArray60,
+                                          VkBuffer captureInvVPBuf) {
     if (!app || albedoArray60 == VK_NULL_HANDLE || normalArray60 == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
     // Wait for all in-flight work to complete before recreating descriptor sets.
     // This prevents handle-reuse collisions between pending command buffers and
@@ -584,13 +998,18 @@ void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView albedoArray
     VkDevice device = app->getDevice();
 
     // Destroy any previous impostor resources (handles are tracked in the central manager).
-    impostorPipeline       = VK_NULL_HANDLE;
-    impostorPipelineLayout = VK_NULL_HANDLE;
-    impostorDescSetLayout  = VK_NULL_HANDLE;
-    impostorDescPool       = VK_NULL_HANDLE;
-    impostorDescSet        = VK_NULL_HANDLE;
+    impostorPipeline            = VK_NULL_HANDLE;
+    impostorPipelineLayout      = VK_NULL_HANDLE;
+    impostorDescSetLayout       = VK_NULL_HANDLE;
+    impostorDescPool            = VK_NULL_HANDLE;
+    impostorDescSet             = VK_NULL_HANDLE;
+    impostorDepthPipeline       = VK_NULL_HANDLE;
+    impostorDepthPipelineLayout = VK_NULL_HANDLE;
+    impostorDepthDescSetLayout  = VK_NULL_HANDLE;
+    impostorDepthDescPool       = VK_NULL_HANDLE;
+    impostorDepthDescSet        = VK_NULL_HANDLE;
 
-    // Descriptor set layout: set 1 — binding 0=albedo array, binding 1=normal array.
+    // ── Set 1: impostor color pipeline (albedo + normal arrays) ──────────
     {
         VkDescriptorSetLayoutBinding bindings[2]{};
         bindings[0].binding         = 0;
@@ -608,27 +1027,20 @@ void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView albedoArray
         if (vkCreateDescriptorSetLayout(device, &info, nullptr, &impostorDescSetLayout) != VK_SUCCESS)
             throw std::runtime_error("VegetationRenderer: impostorDescSetLayout failed");
         app->resources.addDescriptorSetLayout(impostorDescSetLayout, "VegetationRenderer: impostorDescSetLayout");
-    }
 
-    // Private descriptor pool (2 combined image samplers).
-    {
         VkDescriptorPoolSize sz{};
         sz.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         sz.descriptorCount = 2;
-        VkDescriptorPoolCreateInfo info{};
-        info.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        info.maxSets       = 1;
-        info.poolSizeCount = 1;
-        info.pPoolSizes    = &sz;
-        // Support update-after-bind allocations if needed by set layouts
-        info.flags         = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-        if (vkCreateDescriptorPool(device, &info, nullptr, &impostorDescPool) != VK_SUCCESS)
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.maxSets       = 1;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes    = &sz;
+        poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &impostorDescPool) != VK_SUCCESS)
             throw std::runtime_error("VegetationRenderer: impostorDescPool failed");
         app->resources.addDescriptorPool(impostorDescPool, "VegetationRenderer: impostorDescPool");
-    }
 
-    // Allocate and write descriptor set (albedo + normal array).
-    {
         VkDescriptorSetAllocateInfo alloc{};
         alloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         alloc.descriptorPool     = impostorDescPool;
@@ -652,7 +1064,145 @@ void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView albedoArray
         vkUpdateDescriptorSets(device, 2, ws, 0, nullptr);
     }
 
-    // Build impostor pipeline (same vertex input as vegetation, different shaders).
+    // ── Set 1 (depth variant): depth array + capture inv VP buffer ──────
+    if (depthArray60 != VK_NULL_HANDLE && captureInvVPBuf != VK_NULL_HANDLE) {
+        VkDescriptorSetLayoutBinding depthBindings[2]{};
+        depthBindings[0].binding         = 0;
+        depthBindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        depthBindings[0].descriptorCount = 1;
+        depthBindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        depthBindings[1].binding         = 1;
+        depthBindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        depthBindings[1].descriptorCount = 1;
+        depthBindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo info{};
+        info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        info.bindingCount = 2;
+        info.pBindings    = depthBindings;
+        if (vkCreateDescriptorSetLayout(device, &info, nullptr, &impostorDepthDescSetLayout) != VK_SUCCESS)
+            throw std::runtime_error("VegetationRenderer: impostorDepthDescSetLayout failed");
+        app->resources.addDescriptorSetLayout(impostorDepthDescSetLayout, "VegetationRenderer: impostorDepthDescSetLayout");
+
+        VkDescriptorPoolSize depthPoolSizes[2]{};
+        depthPoolSizes[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        depthPoolSizes[0].descriptorCount = 1;
+        depthPoolSizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        depthPoolSizes[1].descriptorCount = 1;
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.maxSets       = 1;
+        poolInfo.poolSizeCount = 2;
+        poolInfo.pPoolSizes    = depthPoolSizes;
+        poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &impostorDepthDescPool) != VK_SUCCESS)
+            throw std::runtime_error("VegetationRenderer: impostorDepthDescPool failed");
+        app->resources.addDescriptorPool(impostorDepthDescPool, "VegetationRenderer: impostorDepthDescPool");
+
+        VkDescriptorSetAllocateInfo alloc{};
+        alloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc.descriptorPool     = impostorDepthDescPool;
+        alloc.descriptorSetCount = 1;
+        alloc.pSetLayouts        = &impostorDepthDescSetLayout;
+        if (vkAllocateDescriptorSets(device, &alloc, &impostorDepthDescSet) != VK_SUCCESS)
+            throw std::runtime_error("VegetationRenderer: impostorDepthDescSet alloc failed");
+
+        VkDescriptorImageInfo depthImgInfo{};
+        depthImgInfo.sampler     = sampler;
+        depthImgInfo.imageView   = depthArray60;
+        depthImgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkDescriptorBufferInfo bufInfo{};
+        bufInfo.buffer = captureInvVPBuf;
+        bufInfo.offset = 0;
+        bufInfo.range  = VK_WHOLE_SIZE;
+
+        VkWriteDescriptorSet ws[2]{};
+        ws[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        ws[0].dstSet          = impostorDepthDescSet;
+        ws[0].dstBinding      = 0;
+        ws[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ws[0].descriptorCount = 1;
+        ws[0].pImageInfo      = &depthImgInfo;
+        ws[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        ws[1].dstSet          = impostorDepthDescSet;
+        ws[1].dstBinding      = 1;
+        ws[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        ws[1].descriptorCount = 1;
+        ws[1].pBufferInfo     = &bufInfo;
+        vkUpdateDescriptorSets(device, 2, ws, 0, nullptr);
+
+        // ── Build impostor depth pipeline ────────────────────────────────
+        auto depthVertCode = FileReader::readFile("shaders/impostors.vert.spv");
+        auto depthGeomCode = FileReader::readFile("shaders/impostors_depth.geom.spv");
+        auto depthFragCode = FileReader::readFile("shaders/impostors_depth.frag.spv");
+
+        VkShaderModule depthVertMod = app->createShaderModule(depthVertCode);
+        VkShaderModule depthGeomMod = app->createShaderModule(depthGeomCode);
+        VkShaderModule depthFragMod = app->createShaderModule(depthFragCode);
+
+        VkPipelineShaderStageCreateInfo depthStages[3]{};
+        depthStages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        depthStages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+        depthStages[0].module = depthVertMod;
+        depthStages[0].pName  = "main";
+        depthStages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        depthStages[1].stage  = VK_SHADER_STAGE_GEOMETRY_BIT;
+        depthStages[1].module = depthGeomMod;
+        depthStages[1].pName  = "main";
+        depthStages[2].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        depthStages[2].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+        depthStages[2].module = depthFragMod;
+        depthStages[2].pName  = "main";
+
+        VkVertexInputBindingDescription depthBindingDescs[2]{};
+        depthBindingDescs[0] = { 0, sizeof(Vertex),       VK_VERTEX_INPUT_RATE_VERTEX   };
+        depthBindingDescs[1] = { 1, sizeof(float) * 4,    VK_VERTEX_INPUT_RATE_INSTANCE };
+
+        std::vector<VkDescriptorSetLayout> depthSetLayouts = {
+            app->getDescriptorSetLayout(),
+            impostorDepthDescSetLayout
+        };
+        VkPushConstantRange depthPCRange{};
+        depthPCRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT
+                                | VK_SHADER_STAGE_FRAGMENT_BIT;
+        depthPCRange.offset     = 0;
+        depthPCRange.size       = sizeof(WindPushConstants);
+
+        auto [depthPipe, depthLayout] = app->createGraphicsPipeline(
+            { depthStages[0], depthStages[1], depthStages[2] },
+            std::vector<VkVertexInputBindingDescription>{ depthBindingDescs[0], depthBindingDescs[1] },
+            {
+                { ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, position) },
+                { ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, (uint32_t)offsetof(Vertex, normal)   },
+                { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
+                { ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT,    (uint32_t)offsetof(Vertex, brushIndex) },
+                { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
+            },
+            depthSetLayouts,
+            &depthPCRange,
+            VK_POLYGON_MODE_FILL,
+            VK_CULL_MODE_NONE,
+            true,  // depthWrite — write correct per-pixel depth to shadow map
+            false, // colorWrite — depth-only pass
+            VK_COMPARE_OP_LESS,
+            VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
+            false,
+            {},
+            VK_FORMAT_D32_SFLOAT,
+            true,  // noColorAttachment
+            true   // depthBiasEnable
+        );
+
+        impostorDepthPipeline       = depthPipe;
+        impostorDepthPipelineLayout = depthLayout;
+
+        if (impostorDepthPipeline == VK_NULL_HANDLE)
+            std::cerr << "[VegetationRenderer] WARNING: impostor depth pipeline creation failed\n";
+        else
+            std::cerr << "[VegetationRenderer] Impostor depth pipeline created: " << (void*)impostorDepthPipeline << "\n";
+    }
+
+    // ── Build impostor color pipeline (same vertex input as vegetation) ───
     auto vertCode = FileReader::readFile("shaders/impostors.vert.spv");
     auto geomCode = FileReader::readFile("shaders/impostors.geom.spv");
     auto fragCode = FileReader::readFile("shaders/impostors.frag.spv");
@@ -698,10 +1248,10 @@ void VegetationRenderer::setImpostorData(VulkanApp* app, VkImageView albedoArray
         std::vector<VkVertexInputBindingDescription>{ bindingDescs[0], bindingDescs[1] },
         {
             { ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, position) },
-            { ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, normal)   },
+            { ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, (uint32_t)offsetof(Vertex, normal)   },
             { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
-            { ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT,            (uint32_t)offsetof(Vertex, brushIndex) },
-            { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                                    },
+            { ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT,    (uint32_t)offsetof(Vertex, brushIndex) },
+            { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
         },
         impSetLayouts,
         &pcRange,
@@ -814,18 +1364,26 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         &pc
     );
 
-    // For each chunk, bind base vertex buffer + instance buffer and draw indirect.
-    // Distance-based thinning is handled in the vegetation shader.
-    for (auto& [chunkId, buf] : chunkBuffers) {
-        (void)chunkId;
-        if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
-        if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
-
-        VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
+    // Bind instance buffer: either concatenated (GPU culling) or per-chunk (legacy)
+    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+        // ── Consolidated: draw all visible chunks from the compacted indirect buffer ──
+        VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
         VkDeviceSize offsets[2] = { 0, 0 };
-        // Bind base vertex buffer at binding 0 and instance buffer at binding 1
         vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-        vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
+        vkCmdDrawIndirectCount(commandBuffer, compactedCmdBuffer.buffer, 0,
+        visibleCountBuffer.buffer, 0, vegNumChunks, sizeof(VkDrawIndirectCommand));
+    } else {
+        // ── Legacy: iterate per-chunk buffers (no GPU culling) ──
+        for (auto& [chunkId, buf] : chunkBuffers) {
+            (void)chunkId;
+            if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
+            if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
+
+            VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
+            VkDeviceSize offsets[2] = { 0, 0 };
+            vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
+            vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
+        }
     }
 
     // ── Impostor pass ────────────────────────────────────────────────────────
@@ -848,15 +1406,23 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
                            | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(WindPushConstants), &pc);
 
-        for (auto& [chunkId, buf] : chunkBuffers) {
-            (void)chunkId;
-            if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
-            if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
-
-            VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
+        if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+            VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
             VkDeviceSize offsets[2] = { 0, 0 };
             vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-            vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
+            vkCmdDrawIndirectCount(commandBuffer, compactedCmdBuffer.buffer, 0,
+                visibleCountBuffer.buffer, 0, vegNumChunks, sizeof(VkDrawIndirectCommand));
+        } else {
+            for (auto& [chunkId, buf] : chunkBuffers) {
+                (void)chunkId;
+                if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
+                if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
+
+                VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
+                VkDeviceSize offsets[2] = { 0, 0 };
+                vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
+                vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
+            }
         }
     }
 }

@@ -560,6 +560,9 @@ public:
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
         sceneRenderer->solidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
         sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
+        if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
+            sceneRenderer->vegetationRenderer->prepareCull(commandBuffer, viewProj);
+        }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 3);
 

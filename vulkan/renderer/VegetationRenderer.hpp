@@ -91,14 +91,14 @@ public:
     size_t pendingChunkCount() const;
     void clearAllInstances();
 
-    // Draw all visible vegetation chunks (frustum culling is per-chunk, matching geometry)
+    // Draw all visible vegetation chunks with GPU frustum culling.
     void draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos);
     void recordReadBarriers(VkCommandBuffer& commandBuffer);
     
     // Draw vegetation to shadow map using light-space matrix in the bound UBO.
-    // Camera position is used for distance-based LOD, ensuring vegetation LOD matches
-    // what's visible from the camera, not from the light source.
-    void drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::vec3& cameraPos);
+    // Camera position is used for distance-based LOD; viewProj is the camera's
+    // view-projection for GPU frustum culling (matching solid shadow culling).
+    void drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos);
 
     // Stats helpers
     size_t getChunkCount() const { return chunkInstanceCounts.size(); }
@@ -116,11 +116,28 @@ public:
     // Impostor rendering.  Call after init() once impostor views have been captured.
     // albedoArray60 and normalArray60 must be VkImageView covering 60 layers
     // (3 billboard types × 20 Fibonacci views).
-    void setImpostorData(VulkanApp* app, VkImageView albedoArray60, VkImageView normalArray60, VkSampler sampler);
+    // depthArray60 is the captured device Z array (R32_SFLOAT, 60 layers) for depth reprojection.
+    // captureInvVPBuf is a storage buffer containing per-layer inverse VP matrices.
+    void setImpostorData(VulkanApp* app,
+                         VkImageView albedoArray60,
+                         VkImageView normalArray60,
+                         VkSampler sampler,
+                         VkImageView depthArray60 = VK_NULL_HANDLE,
+                         VkBuffer   captureInvVPBuf = VK_NULL_HANDLE);
 
     // Distance beyond which vegetation instances are replaced by impostor quads.
     // Set to 0 (default) to disable impostor rendering entirely.
     void setImpostorDistance(float dist) { impostorDistance = dist; }
+
+    // Build the concatenated instance buffer and per-chunk metadata for GPU
+    // frustum culling. Must be called once after all chunks are generated.
+    // Uses a temporary command buffer (synchronous, one-time cost).
+    void consolidateChunks(VulkanApp* app);
+
+    // GPU frustum culling: dispatch compute shader that culls chunks against
+    // viewProj and compacts visible draw commands. Must be called OUTSIDE any
+    // render pass (compute dispatches are illegal inside dynamic rendering).
+    void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj);
 
 private:
     
@@ -185,6 +202,43 @@ private:
     VkDescriptorSetLayout impostorDescSetLayout  = VK_NULL_HANDLE;
     VkDescriptorPool      impostorDescPool       = VK_NULL_HANDLE;
     VkDescriptorSet       impostorDescSet        = VK_NULL_HANDLE;
+
+    // Impostor depth pipeline (shadow map depth-only pass).
+    VkPipeline            impostorDepthPipeline       = VK_NULL_HANDLE;
+    VkPipelineLayout      impostorDepthPipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout impostorDepthDescSetLayout  = VK_NULL_HANDLE;
+    VkDescriptorPool      impostorDepthDescPool       = VK_NULL_HANDLE;
+    VkDescriptorSet       impostorDepthDescSet        = VK_NULL_HANDLE;
+
     float                 impostorDistance       = 0.0f;
     VkRenderPass          storedSolidRenderPass  = VK_NULL_HANDLE;
+
+    // ── GPU frustum culling (indirection via concatenated instance buffer) ──────
+    struct ChunkMeta {
+        glm::vec3 aabbMin;
+        float pad0;
+        glm::vec3 aabbMax;
+        float pad1;
+        uint32_t instanceOffset;
+        uint32_t instanceCount;
+    };
+
+    Buffer concatenatedInstanceBuffer;  // all instances concatenated (vec4 per element)
+    Buffer chunkMetaBuffer;             // ChunkMeta[] on GPU
+    Buffer compactedCmdBuffer;          // output VkDrawIndirectCommand[] (compacted visible chunks)
+    Buffer visibleCountBuffer;          // atomic counter (uint32_t)
+    uint32_t* visibleCountMapped = nullptr;
+
+    // Culling compute pipeline
+    VkPipeline            vegCullPipeline       = VK_NULL_HANDLE;
+    VkPipelineLayout      vegCullPipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout vegCullDescSetLayout  = VK_NULL_HANDLE;
+    VkDescriptorPool      vegCullDescPool       = VK_NULL_HANDLE;
+    VkDescriptorSet       vegCullDescSet        = VK_NULL_HANDLE;
+
+    uint32_t vegNumChunks = 0;             // number of chunks in the consolidated metadata
+    bool vegConsolidationDirty = true;     // rebuild concatenated buffer + metadata
+
+    void initCulling(VulkanApp* app);
+    void destroyCulling();
 };
