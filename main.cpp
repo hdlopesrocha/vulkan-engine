@@ -240,6 +240,21 @@ public:
             materialCount = layerCount ? layerCount : 1u;
         }
         materials.assign(materialCount, MaterialProperties{});
+     
+        materials[14u].mappingMode = true;
+        materials[14u].tessLevel = 5.0f;
+        materials[14u].tessHeightScale = 8.0f;
+        materials[14u].triplanar = true;
+        materials[14u].triplanarScaleU = 0.002f;
+        materials[14u].triplanarScaleV = 0.002f;
+
+        materials[12u].mappingMode = true;
+        materials[12u].tessLevel = 16.0f;
+        materials[12u].tessHeightScale = 32.0f;
+        materials[12u].triplanar = true;
+        materials[12u].triplanarScaleU = 0.002f;
+        materials[12u].triplanarScaleV = 0.002f;
+
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);
         for (size_t i = 0; i < materialCount; ++i) materialManager.update(i, materials[i], this);
