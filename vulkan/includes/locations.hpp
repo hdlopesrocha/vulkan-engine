@@ -14,6 +14,7 @@ static constexpr uint32_t ATTR_INSTANCE = 5u;
 // Fragment output locations (match render pass attachments)
 static constexpr uint32_t FRAG_OUT_COLOR = 0u;
 static constexpr uint32_t FRAG_OUT_NORMAL = 1u;
+static constexpr uint32_t FRAG_OUT_DEPTH = 2u;
 
 // Inter-stage varyings (compact contiguous range to match shaders/includes/locations.glsl)
 static constexpr uint32_t VARY_COLOR = 22u;

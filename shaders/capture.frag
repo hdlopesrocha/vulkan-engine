@@ -12,6 +12,7 @@ layout(location = VARY_POSLIGHT) flat in vec3 inTangentWS;
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 layout(location = FRAG_OUT_NORMAL) out vec4 outNormal; // world-space normal, encoded to [0,1]
+layout(location = FRAG_OUT_DEPTH) out float outDepth;  // device Z for shadow-map reprojection
 
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
     mat4 viewProjection;
@@ -73,7 +74,7 @@ void main() {
     vec3 B     = normalize(cross(T, faceN));
     mat3 TBN   = mat3(T, B, faceN);
     vec3 wsLeaf = normalize(TBN * leafNorm);
-    vec3 wsBg   = normalize(TBN * bgNorm);
-    vec3 wsNorm = normalize(mix(wsBg, wsLeaf, weight));
+    vec3 wsNorm = wsLeaf;
     outNormal   = vec4(wsNorm * 0.5 + 0.5, 1.0);
+    outDepth    = gl_FragCoord.z;
 }

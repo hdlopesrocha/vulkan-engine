@@ -47,14 +47,23 @@ public:
     uint32_t closestView(const glm::vec3& dir) const;
 
     // Full 60-layer array views – usable as sampler2DArray in scene shaders.
-    VkImageView getCaptureArrayView()       const { return captureArrayView; }
-    VkImageView getCaptureNormalArrayView() const { return captureNormalArrayView; }
+    VkImageView getCaptureArrayView()          const { return captureArrayView; }
+    VkImageView getCaptureNormalArrayView()    const { return captureNormalArrayView; }
+    VkImageView getCaptureDepthArrayView()     const { return captureDepthArrayView; }
+
+    // Per-layer capture inverse VP matrices for depth reprojection in the shadow pass.
+    const glm::mat4* getCaptureInvVP()      const { return captureInvVP.data(); }
+    uint32_t         getCaptureInvVPCount()  const { return TOTAL_LAYERS; }
+    VkBuffer         getCaptureInvVPBuffer() const { return captureInvVPBuffer; }
 
     // Sampler suitable for scene use (created at init).
     VkSampler   getCaptureArraySampler() const { return sceneSampler; }
 
     // ImGui-compatible descriptor set for normal map view (billboardType, viewIdx).
     VkDescriptorSet getImGuiNormalDescSet(uint32_t billboardType, uint32_t viewIdx) const;
+
+    // ImGui-compatible descriptor set for depth view (billboardType, viewIdx).
+    VkDescriptorSet getImGuiDepthDescSet(uint32_t billboardType, uint32_t viewIdx) const;
 
 private:
     // Fibonacci sphere directions (unit vectors pointing FROM camera TO center).
@@ -71,6 +80,12 @@ private:
     VkDeviceMemory captureNormalMemory     = VK_NULL_HANDLE;
     VkImageView    captureNormalArrayView  = VK_NULL_HANDLE;
     std::array<VkImageView, TOTAL_LAYERS> captureNormalLayerViews{};
+
+    // Depth capture texture array (device Z for shadow-map reprojection).
+    VkImage        captureDepthImage      = VK_NULL_HANDLE;
+    VkDeviceMemory captureDepthMemory     = VK_NULL_HANDLE;
+    VkImageView    captureDepthArrayView  = VK_NULL_HANDLE;
+    std::array<VkImageView, TOTAL_LAYERS> captureDepthLayerViews{};
 
     // Depth image (single non-array, reused across all views in one submit).
     VkImage        depthImage  = VK_NULL_HANDLE;
@@ -125,6 +140,15 @@ private:
     VkSampler sceneSampler = VK_NULL_HANDLE;  // for scene rendering (created at init)
     std::array<VkDescriptorSet, TOTAL_LAYERS> imguiDescSets{};
     std::array<VkDescriptorSet, TOTAL_LAYERS> imguiNormalDescSets{};
+    std::array<VkDescriptorSet, TOTAL_LAYERS> imguiDepthDescSets{};
+
+    // Per-layer capture inverse VP matrices for depth reprojection.
+    std::array<glm::mat4, TOTAL_LAYERS> captureInvVP{};
+
+    // Buffer containing captureInvVP data for GPU access in depth pass.
+    VkBuffer       captureInvVPBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory captureInvVPMemory = VK_NULL_HANDLE;
+    void*          captureInvVPMapped = nullptr;
 
     // Bitmask of which billboard types have been captured.
     uint32_t capturedTypes = 0;
@@ -139,6 +163,7 @@ private:
     void createPipeline(VulkanApp* app);
     void createUBO(VulkanApp* app);
     void createCaptureBuffers(VulkanApp* app);
+    void createCaptureInvVPBuffer(VulkanApp* app);
     void createSceneSampler(VulkanApp* app);
     void allocateDescSets(VulkanApp* app);
     void updateTexDescSet(VkDevice device,

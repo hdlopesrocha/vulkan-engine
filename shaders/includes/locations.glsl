@@ -13,6 +13,7 @@
 // Keep these matching render pass attachment locations (0 = primary color)
 #define FRAG_OUT_COLOR 0
 #define FRAG_OUT_NORMAL 1
+#define FRAG_OUT_DEPTH 2
 
 // Inter-stage varying locations.
 // Important: geometry stage input interfaces are limited to 64 components

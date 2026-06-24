@@ -47,6 +47,7 @@ void ImpostorCapture::init(VulkanApp* app) {
     createPipeline(app);
     createUBO(app);
     createCaptureBuffers(app);
+    createCaptureInvVPBuffer(app);
     createSceneSampler(app);
     allocateDescSets(app);
     imguiDescSets.fill(VK_NULL_HANDLE);
@@ -59,6 +60,9 @@ void ImpostorCapture::init(VulkanApp* app) {
             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             1, 0, TOTAL_LAYERS);
         app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            1, 0, TOTAL_LAYERS);
+        app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             1, 0, TOTAL_LAYERS);
     });
@@ -173,6 +177,34 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
     if (captureNormalImage  != VK_NULL_HANDLE) { app->resources.removeImage(captureNormalImage);       vkDestroyImage(device, captureNormalImage, nullptr);  captureNormalImage  = VK_NULL_HANDLE; }
     if (captureNormalMemory != VK_NULL_HANDLE) { app->resources.removeDeviceMemory(captureNormalMemory); vkFreeMemory(device, captureNormalMemory, nullptr); captureNormalMemory = VK_NULL_HANDLE; }
 
+    // Depth capture image views.
+    for (auto& v : captureDepthLayerViews) {
+        if (v != VK_NULL_HANDLE) { app->resources.removeImageView(v); vkDestroyImageView(device, v, nullptr); v = VK_NULL_HANDLE; }
+    }
+    if (captureDepthArrayView != VK_NULL_HANDLE) {
+        app->resources.removeImageView(captureDepthArrayView);
+        vkDestroyImageView(device, captureDepthArrayView, nullptr);
+        captureDepthArrayView = VK_NULL_HANDLE;
+    }
+    if (captureDepthImage  != VK_NULL_HANDLE) { app->resources.removeImage(captureDepthImage);       vkDestroyImage(device, captureDepthImage, nullptr);  captureDepthImage  = VK_NULL_HANDLE; }
+    if (captureDepthMemory != VK_NULL_HANDLE) { app->resources.removeDeviceMemory(captureDepthMemory); vkFreeMemory(device, captureDepthMemory, nullptr); captureDepthMemory = VK_NULL_HANDLE; }
+
+    // Capture inv VP storage buffer.
+    if (captureInvVPMapped != nullptr) {
+        vkUnmapMemory(device, captureInvVPMemory);
+        captureInvVPMapped = nullptr;
+    }
+    if (captureInvVPBuffer != VK_NULL_HANDLE) {
+        app->resources.removeBuffer(captureInvVPBuffer);
+        vkDestroyBuffer(device, captureInvVPBuffer, nullptr);
+        captureInvVPBuffer = VK_NULL_HANDLE;
+    }
+    if (captureInvVPMemory != VK_NULL_HANDLE) {
+        app->resources.removeDeviceMemory(captureInvVPMemory);
+        vkFreeMemory(device, captureInvVPMemory, nullptr);
+        captureInvVPMemory = VK_NULL_HANDLE;
+    }
+
     capturedTypes = 0;
     initDone = false;
 }
@@ -240,7 +272,14 @@ void ImpostorCapture::capture(VulkanApp* app,
         ubo.lightDir       = lightDir;
         ubo.lightColor     = lightColor;
         std::memcpy(static_cast<uint8_t*>(uboMapped) + i * uboStride, &ubo, sizeof(CaptureUBO));
+
+        // Store inverse VP for depth reprojection in the shadow pass.
+        const uint32_t layerIdx = layerBase + i;
+        captureInvVP[layerIdx] = glm::inverse(proj * view);
     }
+
+    // Upload updated inv VP data to the GPU buffer (persistently mapped).
+    std::memcpy(captureInvVPMapped, captureInvVP.data(), TOTAL_LAYERS * sizeof(glm::mat4));
 
     // Push constant template: no wind, density culling disabled, impostorDistance=0.
     CapturePC pc{};
@@ -267,11 +306,13 @@ void ImpostorCapture::capture(VulkanApp* app,
                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
             app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
+            app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerIdx, 1);
             // Transition depth UNDEFINED → DEPTH_STENCIL_ATTACHMENT (reuse each view)
             app->recordTransitionImageLayoutLayer(cb, depthImage, VK_FORMAT_D32_SFLOAT,
                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
 
-            VkRenderingAttachmentInfo colorAtts[2]{};
+            VkRenderingAttachmentInfo colorAtts[3]{};
             colorAtts[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             colorAtts[0].imageView = captureLayerViews[layerIdx];
             colorAtts[0].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -284,6 +325,12 @@ void ImpostorCapture::capture(VulkanApp* app,
             colorAtts[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             colorAtts[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             colorAtts[1].clearValue.color = { 0.5f, 0.5f, 1.0f, 0.0f };
+            colorAtts[2].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            colorAtts[2].imageView = captureDepthLayerViews[layerIdx];
+            colorAtts[2].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorAtts[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            colorAtts[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            colorAtts[2].clearValue.color = { 1.0f, 0.0f, 0.0f, 0.0f }; // clear depth to far=1.0
 
             VkRenderingAttachmentInfo depthAtt{};
             depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -298,7 +345,7 @@ void ImpostorCapture::capture(VulkanApp* app,
             renderingInfo.renderArea.offset = {0, 0};
             renderingInfo.renderArea.extent = {TEX_SIZE, TEX_SIZE};
             renderingInfo.layerCount = 1;
-            renderingInfo.colorAttachmentCount = 2;
+            renderingInfo.colorAttachmentCount = 3;
             renderingInfo.pColorAttachments = colorAtts;
             renderingInfo.pDepthAttachment = &depthAtt;
 
@@ -332,10 +379,12 @@ void ImpostorCapture::capture(VulkanApp* app,
 
             vkCmdEndRendering(cb);
 
-            // Transition color layers back to SHADER_READ_ONLY_OPTIMAL
+            // Transition color + depth layers back to SHADER_READ_ONLY_OPTIMAL
             app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
             app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
+            app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerIdx, 1);
         }
     });
@@ -366,6 +415,11 @@ VkDescriptorSet ImpostorCapture::getImGuiDescSet(uint32_t billboardType, uint32_
 VkDescriptorSet ImpostorCapture::getImGuiNormalDescSet(uint32_t billboardType, uint32_t viewIdx) const {
     if (billboardType >= NUM_BILLBOARD_TYPES || viewIdx >= NUM_VIEWS) return VK_NULL_HANDLE;
     return imguiNormalDescSets[billboardType * NUM_VIEWS + viewIdx];
+}
+
+VkDescriptorSet ImpostorCapture::getImGuiDepthDescSet(uint32_t billboardType, uint32_t viewIdx) const {
+    if (billboardType >= NUM_BILLBOARD_TYPES || viewIdx >= NUM_VIEWS) return VK_NULL_HANDLE;
+    return imguiDepthDescSets[billboardType * NUM_VIEWS + viewIdx];
 }
 
 uint32_t ImpostorCapture::closestView(const glm::vec3& dir) const {
@@ -502,6 +556,67 @@ void ImpostorCapture::createCaptureImages(VulkanApp* app) {
         if (vkCreateImageView(device, &v, nullptr, &captureNormalLayerViews[i]) != VK_SUCCESS)
             throw std::runtime_error("ImpostorCapture: captureNormalLayerView failed");
         app->resources.addImageView(captureNormalLayerViews[i], "ImpostorCapture: captureNormalLayerView");
+    }
+
+    // ── Depth capture image (device Z, R32_SFLOAT, 60 layers) ──
+    {
+        const VkFormat depthFmt = VK_FORMAT_R32_SFLOAT;
+        VkImageCreateInfo imgInfo{};
+        imgInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imgInfo.imageType     = VK_IMAGE_TYPE_2D;
+        imgInfo.format        = depthFmt;
+        imgInfo.extent        = { TEX_SIZE, TEX_SIZE, 1 };
+        imgInfo.mipLevels     = 1;
+        imgInfo.arrayLayers   = TOTAL_LAYERS;
+        imgInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        imgInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        imgInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(device, &imgInfo, nullptr, &captureDepthImage) != VK_SUCCESS)
+            throw std::runtime_error("ImpostorCapture: captureDepthImage creation failed");
+        app->resources.addImage(captureDepthImage, "ImpostorCapture: captureDepthImage");
+
+        VkMemoryRequirements memReq;
+        vkGetImageMemoryRequirements(device, captureDepthImage, &memReq);
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        {
+            static constexpr VkDeviceSize kMin = 262144;
+            const VkDeviceSize sz = memReq.size;
+            allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
+        }
+        allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits,
+                                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &captureDepthMemory) != VK_SUCCESS)
+            throw std::runtime_error("ImpostorCapture: captureDepthMemory allocation failed");
+        app->resources.addDeviceMemory(captureDepthMemory, "ImpostorCapture: captureDepthMemory");
+        vkBindImageMemory(device, captureDepthImage, captureDepthMemory, 0);
+    }
+
+    // All-layers depth view (VK_IMAGE_VIEW_TYPE_2D_ARRAY).
+    {
+        VkImageViewCreateInfo v{};
+        v.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        v.image            = captureDepthImage;
+        v.viewType         = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        v.format           = VK_FORMAT_R32_SFLOAT;
+        v.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, TOTAL_LAYERS };
+        if (vkCreateImageView(device, &v, nullptr, &captureDepthArrayView) != VK_SUCCESS)
+            throw std::runtime_error("ImpostorCapture: captureDepthArrayView failed");
+        app->resources.addImageView(captureDepthArrayView, "ImpostorCapture: captureDepthArrayView");
+    }
+
+    // Per-layer depth views (VK_IMAGE_VIEW_TYPE_2D).
+    for (uint32_t i = 0; i < TOTAL_LAYERS; ++i) {
+        VkImageViewCreateInfo v{};
+        v.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        v.image            = captureDepthImage;
+        v.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+        v.format           = VK_FORMAT_R32_SFLOAT;
+        v.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, i, 1 };
+        if (vkCreateImageView(device, &v, nullptr, &captureDepthLayerViews[i]) != VK_SUCCESS)
+            throw std::runtime_error("ImpostorCapture: captureDepthLayerView failed");
+        app->resources.addImageView(captureDepthLayerViews[i], "ImpostorCapture: captureDepthLayerView");
     }
 }
 
@@ -667,8 +782,8 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     multisample.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    // Two color blend attachments to match the 2-attachment render pass (albedo + normal).
-    VkPipelineColorBlendAttachmentState blendAtts[2]{};
+    // Three color blend attachments (albedo, normal, depth).
+    VkPipelineColorBlendAttachmentState blendAtts[3]{};
     for (auto& b : blendAtts) {
         b.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
                          | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -676,7 +791,7 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     }
     VkPipelineColorBlendStateCreateInfo colorBlend{};
     colorBlend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlend.attachmentCount = 2;
+    colorBlend.attachmentCount = 3;
     colorBlend.pAttachments    = blendAtts;
 
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
@@ -716,10 +831,10 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     pipelineInfo.layout              = capturePipelineLayout;
 
     // Dynamic rendering (no render pass)
-    VkFormat colorFormats[2] = { VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM };
+    VkFormat colorFormats[3] = { VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R32_SFLOAT };
     VkPipelineRenderingCreateInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    renderingInfo.colorAttachmentCount = 2;
+    renderingInfo.colorAttachmentCount = 3;
     renderingInfo.pColorAttachmentFormats = colorFormats;
     renderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
     pipelineInfo.pNext = &renderingInfo;
@@ -768,6 +883,16 @@ void ImpostorCapture::createCaptureBuffers(VulkanApp* app) {
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     captureInstBuf = ib.buffer;
     captureInstMem = ib.memory;
+}
+
+void ImpostorCapture::createCaptureInvVPBuffer(VulkanApp* app) {
+    const VkDeviceSize totalSize = TOTAL_LAYERS * sizeof(glm::mat4);
+    Buffer buf = app->createBuffer(totalSize,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    captureInvVPBuffer = buf.buffer;
+    captureInvVPMemory = buf.memory;
+    vkMapMemory(app->getDevice(), captureInvVPMemory, 0, totalSize, 0, &captureInvVPMapped);
 }
 
 void ImpostorCapture::createSceneSampler(VulkanApp* app) {
@@ -872,6 +997,10 @@ void ImpostorCapture::createImGuiDescSetsForType(VulkanApp* app, uint32_t billbo
             imguiSampler, captureLayerViews[layerIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         imguiNormalDescSets[layerIdx] = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
             imguiSampler, captureNormalLayerViews[layerIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (captureDepthLayerViews[layerIdx] != VK_NULL_HANDLE) {
+            imguiDepthDescSets[layerIdx] = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
+                imguiSampler, captureDepthLayerViews[layerIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
     }
 }
 
@@ -880,6 +1009,9 @@ void ImpostorCapture::destroyImGuiDescSets() {
         if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); ds = VK_NULL_HANDLE; }
     }
     for (auto& ds : imguiNormalDescSets) {
+        if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); ds = VK_NULL_HANDLE; }
+    }
+    for (auto& ds : imguiDepthDescSets) {
         if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); ds = VK_NULL_HANDLE; }
     }
 }
