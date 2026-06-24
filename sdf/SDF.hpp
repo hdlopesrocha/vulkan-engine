@@ -43,6 +43,9 @@ public:
     static float cylinder(const glm::vec3 &p, float r, float h);
     static float taperedCylinder(const glm::vec3 &p, float r1, float r2, float h);
     static float torus(const glm::vec3 &p, glm::vec2 t );
+    static float triangleStrip(const glm::vec3 &p,
+        const glm::vec3 &v0, const glm::vec3 &v1,
+        const glm::vec3 &v2, const glm::vec3 &v3, float halfThick);
     static float capsule(const glm::vec3 &p, glm::vec3 a, glm::vec3 b, float r );
     static float taperedCapsule(const glm::vec3 &p, glm::vec3 a, glm::vec3 b, float r1, float r2);
     static float octahedron(const glm::vec3 &p, float s);

@@ -192,6 +192,45 @@ float SDF::torus(const glm::vec3 &p, glm::vec2 t ) {
   return glm::length(q)-t.y;
 }
 
+static float distToSegment(const glm::vec3 &p, const glm::vec3 &a, const glm::vec3 &b) {
+    glm::vec3 ab = b - a;
+    glm::vec3 ap = p - a;
+    float t = glm::clamp(glm::dot(ap, ab) / glm::dot(ab, ab), 0.0f, 1.0f);
+    return glm::length(ap - ab * t);
+}
+
+static float distToTriangle(const glm::vec3 &p, const glm::vec3 &a, const glm::vec3 &b, const glm::vec3 &c, float halfThick) {
+    glm::vec3 n = glm::cross(b - a, c - a);
+    float nLen = glm::length(n);
+    if (nLen < 1e-10f)
+        return distToSegment(p, a, b) - halfThick;
+    n /= nLen;
+    float planeDist = glm::dot(p - a, n);
+    glm::vec3 proj = p - planeDist * n;
+    glm::vec3 bc = c - b, ca = a - c;
+    glm::vec3 v0 = glm::cross(b - a, proj - a);
+    glm::vec3 v1 = glm::cross(c - b, proj - b);
+    glm::vec3 v2 = glm::cross(a - c, proj - c);
+    float d0 = glm::dot(v0, n), d1 = glm::dot(v1, n), d2 = glm::dot(v2, n);
+    bool inside = (d0 >= 0.0f && d1 >= 0.0f && d2 >= 0.0f) ||
+                  (d0 <= 0.0f && d1 <= 0.0f && d2 <= 0.0f);
+    if (inside)
+        return glm::abs(planeDist) - halfThick;
+    float dEdge = glm::min(distToSegment(proj, a, b),
+                  glm::min(distToSegment(proj, b, c), distToSegment(proj, c, a)));
+    float dPlane = glm::max(glm::abs(planeDist) - halfThick, 0.0f);
+    return glm::sqrt(dEdge * dEdge + dPlane * dPlane);
+}
+
+float SDF::triangleStrip(const glm::vec3 &p,
+    const glm::vec3 &v0, const glm::vec3 &v1,
+    const glm::vec3 &v2, const glm::vec3 &v3, float halfThick)
+{
+    float d0 = distToTriangle(p, v0, v1, v2, halfThick);
+    float d1 = distToTriangle(p, v1, v2, v3, halfThick);
+    return glm::min(d0, d1);
+}
+
 float SDF::octahedron(const glm::vec3 &p, float s ) {
   glm::vec3 p2 = abs(p);
   float m = p2.x+p2.y+p2.z-s;
