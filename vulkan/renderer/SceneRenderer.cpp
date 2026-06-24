@@ -820,8 +820,15 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
 // Update only the texture / materials bindings in the app's main descriptor set.
 void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager) {
     if (!app) return;
-    VkDescriptorSet mainDs = app->getMainDescriptorSet();
-    if (mainDs == VK_NULL_HANDLE) return;
+
+    // Update ALL main descriptor sets (double-buffered).  Vegetation and
+    // solid draws use getMainDescriptorSet() which round-robins through
+    // mainDescriptorSets; if only the current-frame set is updated, the
+    // other frame's draws miss shadow-map bindings → no self-shadowing.
+    const size_t setCount = app->getMainDescriptorSetCount();
+    for (size_t s = 0; s < setCount; ++s) {
+    VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(s));
+    if (mainDs == VK_NULL_HANDLE) continue;
 
     std::vector<VkWriteDescriptorSet> writes;
 
@@ -938,6 +945,7 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
             for (auto &w : shadowWrites) { if (w.pImageInfo) delete w.pImageInfo; if (w.pBufferInfo) delete w.pBufferInfo; }
         }
     }
+    } // for each main descriptor set
 
     std::cerr << "[SceneRenderer] updateTextureDescriptorSet: updated main descriptor set with texture bindings" << std::endl;
 }
