@@ -9,11 +9,11 @@ LandBrush::LandBrush() {
     this->rock = 7;       // textures/rock_color.jpg (index 7)
     this->snow = 9;       // textures/snow_color.jpg (index 9)
 
-    this->grassMixSand = 14;
-    this->grassMixSnow = 15;
-    this->rockMixGrass = 16;
-    this->rockMixSnow = 17;
-    this->rockMixSand = 18;
+    this->grassMixSand = 15;
+    this->grassMixSnow = 16;
+    this->rockMixGrass = 17;
+    this->rockMixSnow = 18;
+    this->rockMixSand = 19;
 }
 
 int LandBrush::paint(const Vertex &vertex, glm::vec4 translate, glm::vec4 scale) const {
