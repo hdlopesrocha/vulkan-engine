@@ -265,13 +265,13 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         if (solidShadowPipeline != VK_NULL_HANDLE) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowPipeline);
         }
-        solidRenderer->getIndirectRenderer().drawPrepared(commandBuffer, 0);
+        solidRenderer->getIndirectRenderer().drawAll(commandBuffer);
 
         // Vegetation shadow pass: drawn after solid so its 2-buffer vertex
         // bindings don't leak into the solid draw.
         if (vegetationEnabled && vegetationRenderer) {
             const glm::vec3 cameraPos = glm::vec3(uboStatic.viewPos);
-            vegetationRenderer->drawShadow(app, commandBuffer, ds, cameraPos);
+            vegetationRenderer->drawShadow(app, commandBuffer, ds, uboStatic.viewProjection, cameraPos);
         }
 
         shadowMapper->endShadowPass(app, commandBuffer, c);
