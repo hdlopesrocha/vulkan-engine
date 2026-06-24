@@ -31,7 +31,7 @@ float computeEdgeTess(vec3 a, vec3 b, float nearDist, float farDist, float minLe
     float db = length(b - ubo.viewPos.xyz);
     float d = min(da, db);
     float factor = clamp(1.0 - smoothstep(nearDist, farDist, d), 0.0, 1.0); // 1.0 at near, 0.0 at far
-    return mix(minLevel, maxLevel, factor) + materialLevel;
+    return mix(minLevel, maxLevel, factor) + materialLevel * factor;
 }
 
 void main() {
