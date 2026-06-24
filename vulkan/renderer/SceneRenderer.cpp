@@ -237,6 +237,12 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
                 0, 1, &memBarrier, 0, nullptr, 0, nullptr);
         }
 
+        // Acquire vegetation instance/indirect buffers before
+        // vkCmdBeginRendering (barriers illegal inside dynamic rendering).
+        if (vegetationEnabled && vegetationRenderer) {
+            vegetationRenderer->recordReadBarriers(commandBuffer);
+        }
+
         shadowMapper->beginShadowPass(app, commandBuffer, c, lsMatrix);
 
         // Bind shadow descriptor set (uses dummy depth at bindings 4,8,9)
@@ -944,7 +950,7 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
     // Cap uploads per frame so the render loop stays responsive.
     // Remaining entries stay in the queue for subsequent frames.
-    static constexpr size_t kMaxPerFrame = 4;
+    static constexpr size_t kMaxPerFrame = 10;
     std::deque<PendingMeshData> batch;
     {
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
@@ -1254,23 +1260,10 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
                     return;
                 }
 
-                // Use device-local buffers (createDeviceLocalBuffer) for
-                // vertex/index data. The compute shader reads via TCP
-                // (Texture Cache Pipe) on RADV, which requires device-local
-                // GPU pages. Host-visible memory doesn't have the right
-                // page-table permissions for TCP reads, causing GPUVM faults.
-                Buffer posBuf = app->createDeviceLocalBuffer(positions.data(), positions.size() * sizeof(glm::vec3), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-                Buffer idxBuf = app->createDeviceLocalBuffer(grassIndices.data(), grassIndices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-
-                uint32_t vertexCount = static_cast<uint32_t>(positions.size());
-                uint32_t indexCount = static_cast<uint32_t>(grassIndices.size());
-
-                // Pass Buffer objects to vegetationRenderer and let it defer destruction
-                if (std::getenv("VULKAN_DISABLE_VEGETATION")) {
-                    std::cerr << "[SceneRenderer] VULKAN_DISABLE_VEGETATION set; skipping generateChunkInstances for node " << (unsigned long long)nid << std::endl;
-                } else {
-                    vegetationRenderer->generateChunkInstances(nid, posBuf, vertexCount, idxBuf, indexCount, chunkCenter, instancesPerTriangle, app, seed);
-                }
+                // CPU-side instance generation — avoids RADV GPUVM faults where
+                // the Texture Cache/Pipe cannot read storage buffers on iGPUs.
+                vegetationRenderer->generateChunkInstancesCPU(nid, positions, grassIndices,
+                    chunkCenter, instancesPerTriangle, app, seed);
             } catch (const std::exception &e) {
                 std::cerr << "[SceneRenderer] Vegetation generation failed for node " << (unsigned long long)nid
                           << ": " << e.what() << std::endl;

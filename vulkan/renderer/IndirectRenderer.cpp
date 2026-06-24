@@ -285,20 +285,56 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
             }
         }
 
-        // Direct memcpy to HOST_VISIBLE|HOST_COHERENT buffers — synchronous,
-        // immediately visible to the GPU on integrated/shared-memory GPUs.
-        // Avoids async staging transfer race where vkCmdCopyBuffer hasn't
-        // completed before the render pass reads the vertex/index data.
-        void* data;
-        if (doVertexUpload) {
-            vkMapMemory(app->getDevice(), vertexBuffer.memory, vertexOffset, vertexSize, 0, &data);
-            memcpy(data, &mergedVertices[info.baseVertex], vertexSize);
-            vkUnmapMemory(app->getDevice(), vertexBuffer.memory);
-        }
-        if (doIndexUpload) {
-            vkMapMemory(app->getDevice(), indexBuffer.memory, indexOffset, indexSize, 0, &data);
-            memcpy(data, &mergedIndices[info.firstIndex], indexSize);
-            vkUnmapMemory(app->getDevice(), indexBuffer.memory);
+        // Direct memcpy to HOST_VISIBLE staging buffer, then vkCmdCopyBuffer
+        // to device-local vertex/index buffers. Device-local memory is
+        // required because HOST_VISIBLE pages on RADV iGPU lack TCP-read
+        // permission in the GPU page table.
+        if (doVertexUpload || doIndexUpload) {
+            VkDeviceSize stagingSize = (doVertexUpload ? vertexSize : 0)
+                                     + (doIndexUpload  ? indexSize  : 0);
+            Buffer staging = app->createBuffer(stagingSize,
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            void* mapped = nullptr;
+            vkMapMemory(app->getDevice(), staging.memory, 0, stagingSize, 0, &mapped);
+            VkDeviceSize off = 0;
+            if (doVertexUpload) {
+                std::memcpy(static_cast<char*>(mapped) + off, &mergedVertices[info.baseVertex], vertexSize);
+                off += vertexSize;
+            }
+            if (doIndexUpload) {
+                std::memcpy(static_cast<char*>(mapped) + off, &mergedIndices[info.firstIndex], indexSize);
+            }
+            vkUnmapMemory(app->getDevice(), staging.memory);
+
+            // Drain the queue so the validation layer sees the previous
+            // frame's reads complete before this copy writes.  Called
+            // only during mesh uploads, not every frame.
+            app->queueWaitIdle();
+
+            app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+                VkDeviceSize o = 0;
+                if (doVertexUpload) {
+                    VkBufferCopy vCopy{};
+                    vCopy.dstOffset = vertexOffset;
+                    vCopy.size = vertexSize;
+                    vkCmdCopyBuffer(cmd, staging.buffer, vertexBuffer.buffer, 1, &vCopy);
+                    o += vertexSize;
+                }
+                if (doIndexUpload) {
+                    VkBufferCopy iCopy{};
+                    iCopy.srcOffset = o;
+                    iCopy.dstOffset = indexOffset;
+                    iCopy.size = indexSize;
+                    vkCmdCopyBuffer(cmd, staging.buffer, indexBuffer.buffer, 1, &iCopy);
+                }
+            });
+
+            VkDevice dev = app->getDevice();
+            if (app->resources.removeBuffer(staging.buffer))
+                vkDestroyBuffer(dev, staging.buffer, nullptr);
+            if (app->resources.removeDeviceMemory(staging.memory))
+                vkFreeMemory(dev, staging.memory, nullptr);
         }
     }
     return true;
@@ -380,36 +416,30 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     printf("[IndirectRenderer::rebuild] dirty=true, rebuilding buffers...\n");
 #endif
 
-    // Helper to schedule safe destruction of old buffers via the app's
-    // deferred-destroy mechanism. The callback runs only after outstanding
-    // async uploads and frame fences have completed, so rebuilds can replace
-    // buffers without stalling the streaming path.
-    // Defer destruction until the most recently submitted frame completes.
-    // We must NOT use the current frame's fence — it was just waited on
-    // (already signaled). The previous frame's GPU may still be reading
-    // these buffers. Use (currentFrame + 1) % N to get the fence that was
-    // submitted in the previous iteration and is still in-flight.
+    // Defer destruction until ALL pending GPU work completes.
+    // Using VK_NULL_HANDLE (wait-for-all-pending) avoids a fence-index
+    // wrap-around bug where (currentFrame+1)%n picks an already-signaled
+    // fence, destroying SSBOs that are still being read by in-flight
+    // indirect.comp compute dispatches — causing GPUVM faults on RADV.
     auto scheduleDestroyBuffer = [&](const Buffer &b) {
         if (b.buffer == VK_NULL_HANDLE && b.memory == VK_NULL_HANDLE) return;
         Buffer copy = b;
         VkDevice dev = app->getDevice();
-        VkFence fence = VK_NULL_HANDLE;
-        uint32_t cf = app->getCurrentFrame();
-        size_t n = app->inFlightFences.size();
-        if (n > 0) {
-            // Use the fence from the most recently submitted frame —
-            // (cf + 1) % n gives the fence that's currently in-flight.
-            uint32_t prev = (cf + 1) % static_cast<uint32_t>(n);
-            if (prev < n) fence = app->inFlightFences[prev];
+        // Defer to the current frame's fence.  Previous frames may still
+        // reference these buffers via in-flight command buffers.  By the time
+        // the current frame's fence signals, all earlier frames have also
+        // completed (same-queue submission order).
+        VkFence curFence = app->getCurrentFrameFence();
+        if (curFence != VK_NULL_HANDLE) {
+            app->deferDestroyUntilFence(curFence, [dev, copy, app]() {
+                if (copy.buffer != VK_NULL_HANDLE) {
+                    if (app->resources.removeBuffer(copy.buffer)) vkDestroyBuffer(dev, copy.buffer, nullptr);
+                }
+                if (copy.memory != VK_NULL_HANDLE) {
+                    if (app->resources.removeDeviceMemory(copy.memory)) vkFreeMemory(dev, copy.memory, nullptr);
+                }
+            });
         }
-        app->deferDestroyUntilFence(fence, [dev, copy, app]() {
-            if (copy.buffer != VK_NULL_HANDLE) {
-                if (app->resources.removeBuffer(copy.buffer)) vkDestroyBuffer(dev, copy.buffer, nullptr);
-            }
-            if (copy.memory != VK_NULL_HANDLE) {
-                if (app->resources.removeDeviceMemory(copy.memory)) vkFreeMemory(dev, copy.memory, nullptr);
-            }
-        });
     };
 
     // Calculate required capacity with 25% headroom for incremental adds
@@ -460,20 +490,19 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             indexBuffer = {};
         }
         
-        // Create vertex buffer with capacity (not just current size).
-        // HOST_VISIBLE avoids large device-local buffer copies that trigger
-        // RADV instability on integrated GPUs (Renoir). The data is written
-        // once per rebuild via direct memcpy — no staging buffer needed.
+        // Create device-local vertex buffer. HOST_VISIBLE on RADV iGPU
+        // lacks TCP-read permission in the GPU page table (even with
+        // EXCLUSIVE sharing), causing GPUVM PERMISSION_FAULTS.
         VkDeviceSize vertexBufferSize = vertexCapacity * sizeof(Vertex);
         vertexBuffer = app->createBuffer(vertexBufferSize,
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         
-        // Create index buffer with capacity
+        // Create device-local index buffer (same rationale).
         VkDeviceSize indexBufferSize = indexCapacity * sizeof(uint32_t);
         indexBuffer = app->createBuffer(indexBufferSize,
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         
         // Upload current data via direct memcpy — no staging buffers or
         // vkCmdCopyBuffer needed. HOST_VISIBLE|HOST_COHERENT memory is
@@ -493,22 +522,54 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
                     ++clampedCount;
                 }
             }
-            void* data;
-            vkMapMemory(app->getDevice(), vertexBuffer.memory, 0, vertexDataSize, 0, &data);
-            memcpy(data, mergedVertices.data(), vertexDataSize);
-            vkUnmapMemory(app->getDevice(), vertexBuffer.memory);
-        }
-        if (doIndexUpload) {
-            void* data;
-            vkMapMemory(app->getDevice(), indexBuffer.memory, 0, indexDataSize, 0, &data);
-            memcpy(data, mergedIndices.data(), indexDataSize);
-            vkUnmapMemory(app->getDevice(), indexBuffer.memory);
         }
 
-        // No vkCmdCopyBuffer needed — HOST_VISIBLE|HOST_COHERENT memory is
-        // immediately visible to the GPU via the map/memcpy/unmap above.
-        // The host write is automatically available to VERTEX_ATTRIBUTE_READ
-        // and INDEX_READ accesses thanks to HOST_COHERENT.
+        // Staging copy: device-local buffers need staging → GPU copy.
+        if (doVertexUpload || doIndexUpload) {
+            VkDeviceSize stagingSize = (doVertexUpload ? vertexDataSize : 0)
+                                     + (doIndexUpload  ? indexDataSize  : 0);
+            Buffer staging = app->createBuffer(stagingSize,
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            void* mapped = nullptr;
+            vkMapMemory(app->getDevice(), staging.memory, 0, stagingSize, 0, &mapped);
+            VkDeviceSize offset = 0;
+            if (doVertexUpload) {
+                std::memcpy(static_cast<char*>(mapped) + offset, mergedVertices.data(), vertexDataSize);
+                offset += vertexDataSize;
+            }
+            if (doIndexUpload) {
+                std::memcpy(static_cast<char*>(mapped) + offset, mergedIndices.data(), indexDataSize);
+            }
+            vkUnmapMemory(app->getDevice(), staging.memory);
+
+            // Drain the queue so the validation layer sees the previous
+            // frame's reads complete before this copy writes.  Called
+            // only during mesh uploads, not every frame.
+            app->queueWaitIdle();
+
+            app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+                VkDeviceSize off = 0;
+                if (doVertexUpload) {
+                    VkBufferCopy vCopy{};
+                    vCopy.size = vertexDataSize;
+                    vkCmdCopyBuffer(cmd, staging.buffer, vertexBuffer.buffer, 1, &vCopy);
+                    off += vertexDataSize;
+                }
+                if (doIndexUpload) {
+                    VkBufferCopy iCopy{};
+                    iCopy.srcOffset = off;
+                    iCopy.size = indexDataSize;
+                    vkCmdCopyBuffer(cmd, staging.buffer, indexBuffer.buffer, 1, &iCopy);
+                }
+            });
+
+            VkDevice dev = app->getDevice();
+            if (app->resources.removeBuffer(staging.buffer))
+                vkDestroyBuffer(dev, staging.buffer, nullptr);
+            if (app->resources.removeDeviceMemory(staging.memory))
+                vkFreeMemory(dev, staging.memory, nullptr);
+        }
     }
 
     // Rebuild indirect command list from active meshes so GPU-side compaction matches models/bounds

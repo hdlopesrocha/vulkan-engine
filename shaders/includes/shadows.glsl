@@ -12,6 +12,12 @@ float ShadowPCF(sampler2D smap, vec3 projCoords, float bias) {
     return shadow / 25.0;
 }
 
+// Hard shadow: single-tap, no PCF — returns 0.0 (lit) or 1.0 (shadowed).
+float ShadowHard(sampler2D smap, vec3 projCoords, float bias) {
+    float pcfDepth = texture(smap, projCoords.xy).r;
+    return projCoords.z > (pcfDepth + bias) ? 1.0 : 0.0;
+}
+
 // Returns true when projCoords.xy is within [margin, 1-margin] and z in [0,1].
 bool insideShadowMap(vec3 projCoords, float margin) {
     return projCoords.x >= margin && projCoords.x <= 1.0 - margin &&
@@ -53,5 +59,27 @@ float ShadowCalculation(vec4 fragPosLightSpace, float bias) {
     }
 
     // Outside all cascades: no shadow
+    return 0.0;
+}
+
+// Hard-shadow variant (no PCF) — used by vegetation/impostors for crisp shadows.
+float ShadowCalculationHard(vec4 fragPosLightSpace, float bias) {
+    vec3 proj0 = fragPosLightSpace.xyz / fragPosLightSpace.w;
+    proj0.xy = proj0.xy * 0.5 + 0.5;
+
+    if (insideShadowMap(proj0, 0.0)) {
+        return ShadowHard(shadowMap, proj0, bias);
+    }
+
+    vec3 proj1 = projectToShadowMap(ubo.lightSpaceMatrix1, fragPosWorld);
+    if (insideShadowMap(proj1, 0.0)) {
+        return ShadowHard(shadowMap1, proj1, bias);
+    }
+
+    vec3 proj2 = projectToShadowMap(ubo.lightSpaceMatrix2, fragPosWorld);
+    if (insideShadowMap(proj2, 0.0)) {
+        return ShadowHard(shadowMap2, proj2, bias);
+    }
+
     return 0.0;
 }

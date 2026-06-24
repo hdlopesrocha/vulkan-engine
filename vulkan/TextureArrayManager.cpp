@@ -237,25 +237,10 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 		imageInfo.format = format;
 		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
 		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		// Allow sampling and transfers, and also allow storage usage so compute
-		// shaders can write directly into array layers via imageStore.
+		// SAMPLED + TRANSFER_DST + STORAGE + TRANSFER_SRC.  EXCLUSIVE sharing;
+		// CONCURRENT on RADV strips TCP-read permission → GPUVM fault.
 		imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-		// If a dedicated transfer queue exists and differs from graphics, create
-		// the image with CONCURRENT sharing so transfer-queue uploads can access
-		// the image without explicit ownership-transfer barriers.
-		if (app) {
-			auto qfi = app->findQueueFamilies(app->getPhysicalDevice());
-			if (qfi.transferFamily.has_value() && qfi.transferFamily.value() != qfi.graphicsFamily.value()) {
-				uint32_t families[2] = { qfi.graphicsFamily.value(), qfi.transferFamily.value() };
-				imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
-				imageInfo.queueFamilyIndexCount = 2;
-				imageInfo.pQueueFamilyIndices = families;
-			} else {
-				imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-			}
-		} else {
-			imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		}
+		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
 		VkDevice device = app->getDevice();

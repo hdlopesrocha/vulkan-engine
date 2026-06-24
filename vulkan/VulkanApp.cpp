@@ -1532,19 +1532,14 @@ void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, Vk
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = usage;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    // If transfer and graphics use different families, create image with
-    // CONCURRENT sharing to avoid explicit ownership transfer barriers.
-    QueueFamilyIndices qfi = findQueueFamilies(physicalDevice);
-    if (qfi.transferFamily.has_value() && qfi.transferFamily.value() != qfi.graphicsFamily.value()) {
-        uint32_t families[2] = { qfi.graphicsFamily.value(), qfi.transferFamily.value() };
-        imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
-        imageInfo.queueFamilyIndexCount = 2;
-        imageInfo.pQueueFamilyIndices = families;
-    } else {
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        imageInfo.queueFamilyIndexCount = 0;
-        imageInfo.pQueueFamilyIndices = nullptr;
-    }
+    // Always use EXCLUSIVE sharing.  runSingleTimeCommandsOnTransfer routes
+    // to the graphics queue, so cross-queue sharing is never needed.
+    // VK_SHARING_MODE_CONCURRENT on RADV strips TCP-read permission from
+    // GPU page-table entries, causing GPUVM PERMISSION_FAULTS when fragment
+    // shaders sample the image via the Texture Cache/Pipe.
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.queueFamilyIndexCount = 0;
+    imageInfo.pQueueFamilyIndices = nullptr;
 
     if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
         throw std::runtime_error("failed to create image!");
@@ -4138,15 +4133,12 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size;
     bufferInfo.usage = usage;
-    QueueFamilyIndices qfi = findQueueFamilies(physicalDevice);
-    if (qfi.transferFamily.has_value() && qfi.transferFamily.value() != qfi.graphicsFamily.value()) {
-        uint32_t families[2] = { qfi.graphicsFamily.value(), qfi.transferFamily.value() };
-        bufferInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
-        bufferInfo.queueFamilyIndexCount = 2;
-        bufferInfo.pQueueFamilyIndices = families;
-    } else {
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    }
+    // Always use EXCLUSIVE sharing.  runSingleTimeCommandsOnTransfer routes
+    // to the graphics queue, so cross-queue sharing with the transfer family
+    // is never needed.  VK_SHARING_MODE_CONCURRENT on RADV strips TCP-read
+    // permission from GPU page-table entries, causing GPUVM PERMISSION_FAULTS
+    // when compute shaders read the buffer via the Texture Cache/Pipe.
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer.buffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to create buffer!");
@@ -4157,8 +4149,9 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     static constexpr VkDeviceSize kMin = 262144;
-    allocInfo.allocationSize = (memRequirements.size < kMin) ? kMin
+    VkDeviceSize alignedSize = (memRequirements.size < kMin) ? kMin
         : (memRequirements.size >= 1048576 ? memRequirements.size : memRequirements.size + 1);
+    allocInfo.allocationSize = alignedSize;
     allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
 
     if (vkAllocateMemory(device, &allocInfo, nullptr, &buffer.memory) != VK_SUCCESS) {
@@ -4345,6 +4338,66 @@ Buffer VulkanApp::createDeviceLocalBuffer(const void* data, VkDeviceSize size, V
     return gpuBuffer;
 }
 
+Buffer VulkanApp::createDeviceLocalBufferExclusive(const void* data, VkDeviceSize size, VkBufferUsageFlags usage) {
+    Buffer stagingBuffer = createBuffer(size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    void* mapped;
+    vkMapMemory(device, stagingBuffer.memory, 0, size, 0, &mapped);
+    memcpy(mapped, data, (size_t)size);
+    vkUnmapMemory(device, stagingBuffer.memory);
+
+    Buffer gpuBuffer{};
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = size;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &gpuBuffer.buffer) != VK_SUCCESS)
+        throw std::runtime_error("createDeviceLocalBufferExclusive: vkCreateBuffer failed");
+    resources.addBuffer(gpuBuffer.buffer, "createDeviceLocalBufferExclusive: buffer");
+
+    VkMemoryRequirements memReq;
+    vkGetBufferMemoryRequirements(device, gpuBuffer.buffer, &memReq);
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReq.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memReq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &gpuBuffer.memory) != VK_SUCCESS)
+        throw std::runtime_error("createDeviceLocalBufferExclusive: vkAllocateMemory failed");
+    vkBindBufferMemory(device, gpuBuffer.buffer, gpuBuffer.memory, 0);
+    resources.addDeviceMemory(gpuBuffer.memory, "createDeviceLocalBufferExclusive: memory");
+
+    runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd){
+        VkBufferCopy copyRegion{};
+        copyRegion.size = size;
+        vkCmdCopyBuffer(cmd, stagingBuffer.buffer, gpuBuffer.buffer, 1, &copyRegion);
+
+        VkBufferMemoryBarrier bufBarrier{};
+        bufBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        bufBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        bufBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        bufBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufBarrier.buffer = gpuBuffer.buffer;
+        bufBarrier.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, nullptr, 1, &bufBarrier, 0, nullptr);
+    });
+
+    if (stagingBuffer.buffer != VK_NULL_HANDLE) {
+        if (resources.removeBuffer(stagingBuffer.buffer)) vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
+    }
+    if (stagingBuffer.memory != VK_NULL_HANDLE) {
+        if (resources.removeDeviceMemory(stagingBuffer.memory)) vkFreeMemory(device, stagingBuffer.memory, nullptr);
+    }
+    return gpuBuffer;
+}
+
 void VulkanApp::drawFrame() {
     const uint32_t MAX_FRAMES_IN_FLIGHT = static_cast<uint32_t>(inFlightFences.size());
     const uint32_t numImages = static_cast<uint32_t>(swapchainImages.size());
@@ -4521,14 +4574,15 @@ void VulkanApp::drawFrame() {
         return;
     }
 
+    // Process any completed async generation submissions and free their command buffers/fences/semaphores.
+    // Must run BEFORE preRenderPass so newly-generated vegetation chunks are available for the shadow pass.
+    processPendingCommandBuffers();
+
     // Only run scene hooks when the app is fully set up
     if (!isLoading) {
         // Hook for compute/barrier operations before render pass
         preRenderPass(commandBuffer);
     }
-
-    // Process any completed async generation submissions and free their command buffers/fences/semaphores
-    processPendingCommandBuffers();
 
     // Transition swapchain image: UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
     // Synchronization2: embed stage/access masks in the barrier struct.

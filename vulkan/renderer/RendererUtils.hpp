@@ -39,22 +39,12 @@ inline void createImage2D(
     imageInfo.usage         = usage;
     imageInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
 
-    // If transfer and graphics use different queue families, create the
-    // image with CONCURRENT sharing so transfer queue copies can access it
-    // without requiring explicit ownership-transfer barriers.
-    if (app) {
-        auto qfi = app->findQueueFamilies(app->getPhysicalDevice());
-        if (qfi.transferFamily.has_value() && qfi.transferFamily.value() != qfi.graphicsFamily.value()) {
-            uint32_t families[2] = { qfi.graphicsFamily.value(), qfi.transferFamily.value() };
-            imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
-            imageInfo.queueFamilyIndexCount = 2;
-            imageInfo.pQueueFamilyIndices = families;
-        } else {
-            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        }
-    } else {
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    }
+    // EXCLUSIVE sharing: CONCURRENT on RADV strips TCP-read permission.
+    // runSingleTimeCommandsOnTransfer routes to the graphics queue,
+    // so cross-queue sharing is never needed.
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.queueFamilyIndexCount = 0;
+    imageInfo.pQueueFamilyIndices = nullptr;
 
     if (vkCreateImage(device, &imageInfo, nullptr, &outImage) != VK_SUCCESS)
         throw std::runtime_error(std::string("Failed to create image: ") + name);

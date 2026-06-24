@@ -8,9 +8,12 @@
 #include "../VertexBufferObject.hpp"
 #include "../../utils/Scene.hpp" // for NodeID
 #include <vector>
+#include <deque>
 #include <unordered_map>
 #include <array>
+#include <mutex>
 #include <glm/glm.hpp>
+#include <glm/gtc/round.hpp>
 
 // Per-chunk vegetation instance buffer and renderer
 class VegetationRenderer {
@@ -71,6 +74,21 @@ public:
                                 const glm::vec3& chunkCenter,
                                 uint32_t instancesPerTriangle, VulkanApp* app,
                                 uint32_t seed = 1337);
+    // CPU-side instance generation — avoids GPUVM faults on RADV iGPUs where
+    // the Texture Cache/Pipe cannot read from device-local or host-visible
+    // storage buffers.  Enqueues the chunk and processes up to maxPerFrame
+    // chunks each frame via processPendingChunks().
+    void generateChunkInstancesCPU(NodeID chunkId,
+                                   const std::vector<glm::vec3>& positions,
+                                   const std::vector<uint32_t>& grassIndices,
+                                   const glm::vec3& chunkCenter,
+                                   uint32_t instancesPerTriangle, VulkanApp* app,
+                                   uint32_t seed = 1337);
+    // Drain up to maxChunks from the pending queue.  Call every frame from
+    // draw() so chunks trickle in at a controlled rate.
+    void processPendingChunks(uint32_t maxChunks);
+    // Number of chunks still waiting in the queue.
+    size_t pendingChunkCount() const;
     void clearAllInstances();
 
     // Draw all visible vegetation chunks (frustum culling is per-chunk, matching geometry)
@@ -135,6 +153,19 @@ private:
     std::unordered_map<NodeID, InstanceBuffer> chunkBuffers;
     std::unordered_map<NodeID, size_t> chunkInstanceCounts;
     void destroyInstanceBuffer(NodeID chunkId, VulkanApp* app = nullptr, VkFence completionFence = VK_NULL_HANDLE);
+
+    // Pending CPU-generation queue — chunks are enqueued by the scene loader
+    // and drained 10-per-frame by draw().
+    struct PendingChunk {
+        NodeID chunkId;
+        std::vector<glm::vec3> positions;
+        std::vector<uint32_t> grassIndices;
+        glm::vec3 chunkCenter;
+        uint32_t instancesPerTriangle;
+        uint32_t seed;
+    };
+    std::deque<PendingChunk> pendingChunks;
+    mutable std::mutex pendingChunksMutex;
     // If the renderer was initialized with an app, this will be set and
     // allows immediate compute-based generation calls to run against the
     // provided `VulkanApp` instance.

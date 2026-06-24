@@ -123,6 +123,10 @@ class VulkanApp {
 
 public:
     uint32_t getCurrentFrame() const { return currentFrame; }
+    VkFence getCurrentFrameFence() const {
+        if (inFlightFences.empty()) return VK_NULL_HANDLE;
+        return inFlightFences[currentFrame % inFlightFences.size()];
+    }
 
 private:
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
@@ -365,6 +369,11 @@ protected:
         Buffer createDeviceLocalBufferAsync(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkFence* outFence);
         // Synchronous variant: Create a device-local storage buffer and upload data via staging transfer
         Buffer createDeviceLocalBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
+        // Same as createDeviceLocalBuffer but always uses VK_SHARING_MODE_EXCLUSIVE.
+        // Required for RADV where concurrent sharing between queue families
+        // strips GPU page-table TCP-read permission, causing GPUVM faults
+        // when compute shaders read the buffer via the Texture Cache/Pipe.
+        Buffer createDeviceLocalBufferExclusive(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
         VkShaderModule createShaderModule(const std::vector<char>& code);
     // Refactored: Accepts set layouts and optional push constant range, returns pipeline and layout
     // Main implementation accepts a vector of attribute descriptions so callers

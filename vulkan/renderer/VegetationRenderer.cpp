@@ -345,6 +345,12 @@ void VegetationRenderer::clearAllInstances() {
     for (auto& [id, _] : chunkBuffers) destroyInstanceBuffer(id);
     chunkBuffers.clear();
     chunkInstanceCounts.clear();
+    // Clear any pending CPU-generation chunks to prevent stale data
+    // from a previous scene from being processed after scene reset.
+    {
+        std::lock_guard<std::mutex> lk(pendingChunksMutex);
+        pendingChunks.clear();
+    }
 }
 
 size_t VegetationRenderer::getInstanceTotal() const {
@@ -417,18 +423,20 @@ float VegetationRenderer::getAverageDensityFactor(const glm::vec3& cameraPos) co
 void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
     if (commandBuffer == VK_NULL_HANDLE) return;
 
-    std::vector<VkBufferMemoryBarrier2> readBarriers;
+    std::vector<VkBufferMemoryBarrier> readBarriers;
     readBarriers.reserve(chunkBuffers.size() * 2);
     for (const auto& [chunkId, buf] : chunkBuffers) {
         (void)chunkId;
         if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
 
-        VkBufferMemoryBarrier2 instanceBarrier{};
-        instanceBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        instanceBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        instanceBarrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-        instanceBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
-        instanceBarrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
+        // Instance buffers are filled by the CPU (processPendingChunks writes
+        // via mapped HOST_VISIBLE memory).  Without this barrier the GPU may
+        // read uninitialized billboardIndex values, producing out-of-bounds
+        // texture-array accesses that cause RADV GPUVM faults (TCP read).
+        VkBufferMemoryBarrier instanceBarrier{};
+        instanceBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        instanceBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+        instanceBarrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
         instanceBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         instanceBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         instanceBarrier.buffer = buf.buffer;
@@ -436,12 +444,10 @@ void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
         instanceBarrier.size = VK_WHOLE_SIZE;
         readBarriers.push_back(instanceBarrier);
 
-        VkBufferMemoryBarrier2 indirectBarrier{};
-        indirectBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        indirectBarrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-        indirectBarrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
-        indirectBarrier.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-        indirectBarrier.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        VkBufferMemoryBarrier indirectBarrier{};
+        indirectBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        indirectBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+        indirectBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
         indirectBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         indirectBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         indirectBarrier.buffer = buf.indirectBuffer;
@@ -451,11 +457,12 @@ void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
     }
     if (readBarriers.empty()) return;
 
-    VkDependencyInfo depInfo{};
-    depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    depInfo.bufferMemoryBarrierCount = static_cast<uint32_t>(readBarriers.size());
-    depInfo.pBufferMemoryBarriers = readBarriers.data();
-    vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+    vkCmdPipelineBarrier(commandBuffer,
+        VK_PIPELINE_STAGE_HOST_BIT,
+        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+        0, 0, nullptr,
+        static_cast<uint32_t>(readBarriers.size()), readBarriers.data(),
+        0, nullptr);
 }
 
 
@@ -465,8 +472,12 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         if (vegetationShadowPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION SHADOW DRAW ERROR] Shadow pipeline is VK_NULL_HANDLE!" << std::endl;
         return;
     }
-    // FIX: Wait for GPU idle before vegetation shadow draw.
-    vkQueueWaitIdle(app->getGraphicsQueue());
+
+    // Early-out when there are no chunks to draw: skip pipeline/descriptor
+    // binding entirely. On RADV iGPUs, binding pipelines that reference
+    // large texture arrays (via vegDescriptorSet) can trigger GPUVM faults
+    // even when zero draw calls are issued.
+    if (chunkBuffers.empty()) return;
 
     // Ensure vegetation descriptor set is present and up-to-date
     if (!ensureVegDescriptorSet(app)) {
@@ -542,6 +553,8 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
 
     // For each chunk, bind base vertex buffer + instance buffer and draw indirect.
     // Distance-based thinning is handled in the vegetation shader using camera position.
+    static int shadowDrawLogCounter = 0;
+    int chunksDrawn = 0;
     for (auto& [chunkId, buf] : chunkBuffers) {
         (void)chunkId;
         if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
@@ -552,6 +565,11 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         // Bind base vertex buffer at binding 0 and instance buffer at binding 1
         vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
         vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
+        chunksDrawn++;
+    }
+    if (shadowDrawLogCounter < 5) {
+        std::cerr << "[VEGETATION SHADOW DRAW] chunksDrawn=" << chunksDrawn << " totalChunks=" << chunkBuffers.size() << std::endl;
+        shadowDrawLogCounter++;
     }
 }
 
@@ -713,9 +731,12 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         if (vegetationPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION DRAW ERROR] Attempted to bind VK_NULL_HANDLE pipeline!" << std::endl;
         return;
     }
-    // FIX: Wait for GPU idle before vegetation draw. Async compute
-    // submissions race with vegetation rendering on RADV.
-    vkQueueWaitIdle(app->getGraphicsQueue());
+
+    // Early-out when there are no chunks to draw.  Pending chunks are
+    // drained in MyApp::update() so chunkBuffers is already populated
+    // when preRenderPass records read barriers before beginPass.
+    if (chunkBuffers.empty()) return;
+
     if (billboardAlbedoView  == VK_NULL_HANDLE ||
         billboardNormalView  == VK_NULL_HANDLE ||
         billboardOpacityView == VK_NULL_HANDLE ||
@@ -934,7 +955,14 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
 
     std::cout << "[VegetationRenderer::generateChunkInstances] async dispatched, expected = " << expected << " fence=" << (void*)fence << std::endl;
 
-    // Prepare instance buffer record to insert on completion
+    // Wait for the compute dispatch to complete before returning.
+    // RADV GPUVM faults (TCP read permission) occur when too many
+    // concurrent compute dispatches are in flight, even with correct
+    // synchronization.  Serializing eliminates the concurrency.
+    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+
+    // Insert the instance buffer into visible maps immediately (fence
+    // already signaled).
     InstanceBuffer ibuf;
     ibuf.buffer = instanceBuffer;
     ibuf.memory = instanceMemory;
@@ -942,42 +970,256 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     ibuf.indirectMemory = indirectMemory;
     ibuf.center = chunkCenter;
     ibuf.count = expected;
+    chunkBuffers[chunkId] = ibuf;
+    chunkInstanceCounts[chunkId] = expected;
+    std::cout << "[VegetationRenderer] chunk " << (unsigned long long)chunkId << " instances ready: " << expected << std::endl;
 
-    // Defer adding the instance buffer to the visible map until the GPU finished
-    app->deferDestroyUntilFence(fence, [this, chunkId, ibuf, expected]() mutable {
-        // insert into local maps so draw will pick it up
-        this->chunkBuffers[chunkId] = ibuf;
-        this->chunkInstanceCounts[chunkId] = expected;
-        std::cout << "[VegetationRenderer] chunk " << (unsigned long long)chunkId << " instances ready: " << expected << std::endl;
-    });
-
-    // Defer destruction of the temporary input buffers (vertex/index) until fence signals
+    // Transfer input buffers (vertex/index) — the fence is already signaled
+    // (vkWaitForFences above), so destroy them immediately.
     VkDevice dev = device;
-    Buffer vbuf = vertexBuffer;
-    Buffer ib = indexBuffer;
-    app->deferDestroyUntilFence(fence, [dev, vbuf, ib, app]() {
-        if (vbuf.buffer != VK_NULL_HANDLE) {
-            if (app->resources.removeBuffer(vbuf.buffer)) vkDestroyBuffer(dev, vbuf.buffer, nullptr);
+    if (vertexBuffer.buffer != VK_NULL_HANDLE) {
+        if (app->resources.removeBuffer(vertexBuffer.buffer)) vkDestroyBuffer(dev, vertexBuffer.buffer, nullptr);
+    }
+    if (vertexBuffer.memory != VK_NULL_HANDLE) {
+        if (app->resources.removeDeviceMemory(vertexBuffer.memory)) vkFreeMemory(dev, vertexBuffer.memory, nullptr);
+    }
+    if (indexBuffer.buffer != VK_NULL_HANDLE) {
+        if (app->resources.removeBuffer(indexBuffer.buffer)) vkDestroyBuffer(dev, indexBuffer.buffer, nullptr);
+    }
+    if (indexBuffer.memory != VK_NULL_HANDLE) {
+        if (app->resources.removeDeviceMemory(indexBuffer.memory)) vkFreeMemory(dev, indexBuffer.memory, nullptr);
+    }
+}
+
+// ── CPU-side instance generation ─────────────────────────────────────────────
+// Replicates vegetation_instance_gen.comp logic on the CPU.  Avoids GPUVM
+// faults on RADV iGPUs where TCP cannot read storage buffers from any
+// memory type (device-local, host-visible, or concurrent-shared).
+
+namespace {
+
+// XorShift32 PRNG — matches compute shader behaviour.
+uint32_t xorshift32(uint32_t& state) {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+}
+
+float randFloat(uint32_t& state) {
+    return float(xorshift32(state) & 0x00FFFFFFu) / float(0x01000000u);
+}
+
+// Position hash — matches posHash in the compute shader.
+uint32_t posHash(const glm::vec3& p) {
+    glm::ivec3 qi = glm::ivec3(glm::round(p * 8.0f));
+    uint32_t h = uint32_t(qi.x) * 1640531513u;
+    h ^= uint32_t(qi.y) * 2246822519u;
+    h ^= uint32_t(qi.z) * 3266489917u;
+    return h;
+}
+
+// 2D cell hash — matches cellHash in the compute shader.
+uint32_t cellHash(glm::ivec2 c) {
+    uint32_t h = uint32_t(c.x) * 1640531513u ^ uint32_t(c.y) * 2246822519u;
+    h ^= h >> 13;
+    h *= 0x45d9f3bu;
+    h ^= h >> 16;
+    return h;
+}
+
+// Biome noise — matches biomeNoise in the compute shader.
+float biomeNoise(const glm::vec2& xz) {
+    const float kBiomeScale = 50.0f;
+    glm::vec2 p = xz / kBiomeScale;
+    glm::ivec2 i = glm::ivec2(glm::floor(p));
+    glm::vec2 f = p - glm::vec2(i);
+    glm::vec2 u = f * f * (3.0f - 2.0f * f);
+
+    float a = float(cellHash(i + glm::ivec2(0, 0))) / 4294967295.0f;
+    float b = float(cellHash(i + glm::ivec2(1, 0))) / 4294967295.0f;
+    float c = float(cellHash(i + glm::ivec2(0, 1))) / 4294967295.0f;
+    float d = float(cellHash(i + glm::ivec2(1, 1))) / 4294967295.0f;
+
+    return glm::mix(glm::mix(a, b, u.x), glm::mix(c, d, u.x), u.y);
+}
+
+} // anonymous namespace
+
+void VegetationRenderer::generateChunkInstancesCPU(NodeID chunkId,
+                                                   const std::vector<glm::vec3>& positions,
+                                                   const std::vector<uint32_t>& grassIndices,
+                                                   const glm::vec3& chunkCenter,
+                                                   uint32_t instancesPerTriangle, VulkanApp* app,
+                                                   uint32_t seed) {
+    (void)app; // used later in processPendingChunks
+    if (grassIndices.size() < 3 || instancesPerTriangle == 0 || positions.empty()) {
+        destroyInstanceBuffer(chunkId, app);
+        return;
+    }
+    // Enqueue for later processing — the render thread drains this queue.
+    PendingChunk pc;
+    pc.chunkId             = chunkId;
+    pc.positions           = positions;
+    pc.grassIndices        = grassIndices;
+    pc.chunkCenter         = chunkCenter;
+    pc.instancesPerTriangle = instancesPerTriangle;
+    pc.seed                = seed;
+    {
+        std::lock_guard<std::mutex> lk(pendingChunksMutex);
+        pendingChunks.push_back(std::move(pc));
+    }
+}
+
+size_t VegetationRenderer::pendingChunkCount() const {
+    std::lock_guard<std::mutex> lk(pendingChunksMutex);
+    return pendingChunks.size();
+}
+
+void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
+    if (!appPtr) return;
+    VulkanApp* app = appPtr;
+    const uint32_t billboardCnt = (billboardCount > 0) ? billboardCount : 1u;
+
+    for (uint32_t n = 0; n < maxChunks; ++n) {
+        PendingChunk pc;
+        {
+            std::lock_guard<std::mutex> lk(pendingChunksMutex);
+            if (pendingChunks.empty()) break;
+            pc = std::move(pendingChunks.front());
+            pendingChunks.pop_front();
         }
-        if (vbuf.memory != VK_NULL_HANDLE) {
-            if (app->resources.removeDeviceMemory(vbuf.memory)) vkFreeMemory(dev, vbuf.memory, nullptr);
+
+        const uint32_t triCount = static_cast<uint32_t>(pc.grassIndices.size()) / 3;
+        const uint32_t instanceCount = triCount * pc.instancesPerTriangle;
+
+        std::vector<float> instanceData(instanceCount * 4, 0.0f);
+
+        for (uint32_t tri = 0; tri < triCount; ++tri) {
+            const uint32_t tb = tri * 3;
+            const uint32_t i0 = pc.grassIndices[tb + 0];
+            const uint32_t i1 = pc.grassIndices[tb + 1];
+            const uint32_t i2 = pc.grassIndices[tb + 2];
+            if (i0 >= pc.positions.size() || i1 >= pc.positions.size() || i2 >= pc.positions.size()) continue;
+
+            const glm::vec3 v0 = pc.positions[i0];
+            const glm::vec3 v1 = pc.positions[i1];
+            const glm::vec3 v2 = pc.positions[i2];
+
+            const glm::vec3 fn = glm::cross(v1 - v0, v2 - v0);
+            if (glm::abs(fn.y) <= 0.5f * glm::length(fn)) {
+                for (uint32_t s = 0; s < pc.instancesPerTriangle; ++s) {
+                    const uint32_t oi = (tri * pc.instancesPerTriangle + s) * 4;
+                    instanceData[oi + 3] = -1.0f;
+                }
+                continue;
+            }
+
+            const glm::vec3 tc = (v0 + v1 + v2) / 3.0f;
+            const uint32_t tch = posHash(tc);
+
+            for (uint32_t s = 0; s < pc.instancesPerTriangle; ++s) {
+                uint32_t rng = pc.seed ^ tch ^ (tri * 2654435761u) ^ (s * 19349663u);
+                float u = randFloat(rng);
+                float v = randFloat(rng);
+                if (u + v > 1.0f) { u = 1.0f - u; v = 1.0f - v; }
+                float w = 1.0f - u - v;
+                glm::vec3 pos = u * v0 + v * v1 + w * v2;
+
+                uint32_t bi = std::min(
+                    uint32_t(biomeNoise(glm::vec2(pos.x, pos.z)) * float(billboardCnt)),
+                    billboardCnt - 1u);
+
+                uint32_t rs = pc.seed ^ posHash(pos);
+                float rf = randFloat(rs);
+
+                const uint32_t oi = (tri * pc.instancesPerTriangle + s) * 4;
+                instanceData[oi + 0] = pos.x;
+                instanceData[oi + 1] = pos.y;
+                instanceData[oi + 2] = pos.z;
+                instanceData[oi + 3] = float(bi) + rf;
+            }
         }
-        if (ib.buffer != VK_NULL_HANDLE) {
-            if (app->resources.removeBuffer(ib.buffer)) vkDestroyBuffer(dev, ib.buffer, nullptr);
-        }
-        if (ib.memory != VK_NULL_HANDLE) {
-            if (app->resources.removeDeviceMemory(ib.memory)) vkFreeMemory(dev, ib.memory, nullptr);
-        }
-    });
+
+        const VkDeviceSize bufSize = instanceData.size() * sizeof(float);
+
+        // Staging buffer: host-visible, filled by CPU.
+        Buffer stagingInst = app->createBuffer(bufSize,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        void* mapped = nullptr;
+        vkMapMemory(app->getDevice(), stagingInst.memory, 0, bufSize, 0, &mapped);
+        std::memcpy(mapped, instanceData.data(), size_t(bufSize));
+        vkUnmapMemory(app->getDevice(), stagingInst.memory);
+
+        // Device-local instance buffer: GPU reads via vertex input.
+        // On RADV iGPUs, vertex reads go through TCP (Texture Cache/Pipe),
+        // and host-visible pages lack TCP-read permission → GPUVM fault.
+        Buffer instBuf = app->createBuffer(bufSize,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        // Indirect buffer: device-local, avoids same TCP-read issue.
+        Buffer indirect = app->createBuffer(sizeof(VkDrawIndirectCommand),
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        // Staging for indirect draw command.
+        Buffer stagingIndirect = app->createBuffer(sizeof(VkDrawIndirectCommand),
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VkDrawIndirectCommand drawCmd{};
+        drawCmd.vertexCount   = 1;
+        drawCmd.instanceCount = instanceCount;
+        drawCmd.firstVertex   = 0;
+        drawCmd.firstInstance = 0;
+        void* idata = nullptr;
+        vkMapMemory(app->getDevice(), stagingIndirect.memory, 0, sizeof(VkDrawIndirectCommand), 0, &idata);
+        std::memcpy(idata, &drawCmd, sizeof(VkDrawIndirectCommand));
+        vkUnmapMemory(app->getDevice(), stagingIndirect.memory);
+
+        // Copy staging → device-local on the graphics queue, synchronous.
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+            VkBufferCopy copyRegion{};
+            copyRegion.size = bufSize;
+            vkCmdCopyBuffer(cmd, stagingInst.buffer, instBuf.buffer, 1, &copyRegion);
+
+            VkBufferCopy indirectCopy{};
+            indirectCopy.size = sizeof(VkDrawIndirectCommand);
+            vkCmdCopyBuffer(cmd, stagingIndirect.buffer, indirect.buffer, 1, &indirectCopy);
+        });
+
+        // Destroy staging buffers immediately (copy completed synchronously).
+        VkDevice dev = app->getDevice();
+        if (app->resources.removeBuffer(stagingInst.buffer))
+            vkDestroyBuffer(dev, stagingInst.buffer, nullptr);
+        if (app->resources.removeDeviceMemory(stagingInst.memory))
+            vkFreeMemory(dev, stagingInst.memory, nullptr);
+        if (app->resources.removeBuffer(stagingIndirect.buffer))
+            vkDestroyBuffer(dev, stagingIndirect.buffer, nullptr);
+        if (app->resources.removeDeviceMemory(stagingIndirect.memory))
+            vkFreeMemory(dev, stagingIndirect.memory, nullptr);
+
+        destroyInstanceBuffer(pc.chunkId, app);
+
+        InstanceBuffer ibuf;
+        ibuf.buffer         = instBuf.buffer;
+        ibuf.memory         = instBuf.memory;
+        ibuf.indirectBuffer = indirect.buffer;
+        ibuf.indirectMemory = indirect.memory;
+        ibuf.center         = pc.chunkCenter;
+        ibuf.count          = instanceCount;
+        chunkBuffers[pc.chunkId] = ibuf;
+        chunkInstanceCounts[pc.chunkId] = instanceCount;
+    }
 }
 
 void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, VkFence completionFence) {
-    (void)app;
-    (void)completionFence;
     auto it = chunkBuffers.find(chunkId);
     if (it == chunkBuffers.end()) return;
 
-    // Clear local handles before erasing from the map so draw() skips this chunk.
+    // Snatch the old Vulkan handles before clearing the map entry.
+    InstanceBuffer old = it->second;
     it->second.buffer = VK_NULL_HANDLE;
     it->second.memory = VK_NULL_HANDLE;
     it->second.indirectBuffer = VK_NULL_HANDLE;
@@ -985,9 +1227,26 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, V
     chunkBuffers.erase(it);
     chunkInstanceCounts.erase(chunkId);
 
-    // DIAGNOSTIC: Do NOT destroy old Vulkan buffers yet — just remove from
-    // the visible map. If the crash goes away, the deferred-destroy path is
-    // freeing buffers while the GPU still reads them.
+    if (!app) return;
+
+    // Destroy old buffers immediately.  The CPU-generation path runs on the
+    // render thread via processPendingChunks() which is called from draw()
+    // before command buffer submission, so no in-flight work references them.
+    // The GPU path (generateChunkInstances) waits synchronously on the fence
+    // before returning, so the GPU is done by the time we reach here.
+    VkDevice dev = app->getDevice();
+    if (old.buffer != VK_NULL_HANDLE) {
+        if (app->resources.removeBuffer(old.buffer)) vkDestroyBuffer(dev, old.buffer, nullptr);
+    }
+    if (old.memory != VK_NULL_HANDLE) {
+        if (app->resources.removeDeviceMemory(old.memory)) vkFreeMemory(dev, old.memory, nullptr);
+    }
+    if (old.indirectBuffer != VK_NULL_HANDLE) {
+        if (app->resources.removeBuffer(old.indirectBuffer)) vkDestroyBuffer(dev, old.indirectBuffer, nullptr);
+    }
+    if (old.indirectMemory != VK_NULL_HANDLE) {
+        if (app->resources.removeDeviceMemory(old.indirectMemory)) vkFreeMemory(dev, old.indirectMemory, nullptr);
+    }
 }
 
 // Ensure we clear the stored app pointer on cleanup

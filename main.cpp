@@ -467,13 +467,18 @@ public:
         // Drain the pending mesh queue populated by the background scene-loading
         // thread.  GPU uploads happen here on the main thread so newly generated
         // chunks become visible progressively without blocking the render loop.
-        // Process pending meshes at a controlled rate. Modifying shared
-        // vertex/index/indirect/bounds buffers while in-flight GPU frames
-        // are reading them causes geometry flickering on integrated GPUs.
-        // Processing every N frames gives the GPU time to drain pending work.
-        static int meshTick = 0;
-        if (sceneRenderer && !isLoading && (++meshTick % 3 == 0))
+        // Process pending meshes at a controlled rate (10 per frame).
+        // Chunks closest to the camera are uploaded first.
+        if (sceneRenderer && !isLoading)
             sceneRenderer->processPendingMeshes(this, camera.getPosition());
+
+        // Drain the CPU vegetation-generation queue so chunkBuffers is
+        // populated before preRenderPass records read barriers.  Must
+        // happen here because barriers cannot be emitted inside dynamic
+        // rendering, and draw() runs inside beginPass/endPass.
+        if (sceneRenderer && sceneRenderer->vegetationRenderer) {
+            sceneRenderer->vegetationRenderer->processPendingChunks(10);
+        }
 
         mainTime += deltaTime;
         if (sceneRenderer && sceneRenderer->vegetationRenderer) {
@@ -582,7 +587,6 @@ public:
 
         // Render sky + solids/vegetation into the solid offscreen framebuffer (one per frame)
 
-        // Render sky to its own offscreen FBO so it can be sampled as a texture by the water shader
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 4);
         if (sceneRenderer->skyRenderer) {
@@ -596,6 +600,13 @@ public:
         colorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
         VkClearValue depthClear{};
         depthClear.depthStencil = {1.0f, 0};
+
+            // Acquire vegetation instance/indirect buffers before
+            // vkCmdBeginRendering (barriers illegal inside dynamic rendering).
+            if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
+                sceneRenderer->vegetationRenderer->recordReadBarriers(commandBuffer);
+            }
+
             sceneRenderer->solidRenderer->beginPass(commandBuffer, frameIdx, colorClear, depthClear, this);
 
         // Render sky first inside the solid pass so water composites on top of (sky + solid).
@@ -618,7 +629,7 @@ public:
         // Sky is now rendered inside the solid pass above, before solid geometry.
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
-        sceneRenderer->mainPass(this, commandBuffer, frameIdx, waterEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffers[frameIdx], settings.renderSolid, settings.wireframeMode,
+        sceneRenderer->mainPass(this, commandBuffer, frameIdx, waterEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffers[frameIdx], true, settings.wireframeMode,
             viewProj, uboStatic, true, false, true, 0, 0.0f, 0.0f);
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
@@ -1860,12 +1871,22 @@ void MyApp::generateMap() {
     // Wait for the GPU to finish all in-flight work before clearing GPU resources
     deviceWaitIdle();
 
+    // Drain any pending deferred-destroy callbacks while the GPU is idle.
+    processPendingCommandBuffers();
+
     // Remove all existing GPU-side meshes
     if (sceneRenderer) {
         sceneRenderer->removeAllRegisteredMeshes();
         sceneRenderer->removeAllTransparentMeshes();
         sceneRenderer->nodeDebugCubes.clear();
         sceneRenderer->clearDebugSDFCubes();
+        // Clear vegetation chunk buffers and pending CPU-generation queue.
+        // Stale instance buffers from the previous scene reference freed octree
+        // memory and cause GPUVM faults (TCP read permission) on RADV when
+        // the next frame's shadow pass binds the vegetation pipeline.
+        if (sceneRenderer->vegetationRenderer) {
+            sceneRenderer->vegetationRenderer->clearAllInstances();
+        }
     }
 
     // Reset both octrees (frees all node memory, keeps bounds)
@@ -1905,6 +1926,9 @@ void MyApp::loadSceneFromFile(const std::string& path) {
         sceneRenderer->removeAllTransparentMeshes();
         sceneRenderer->nodeDebugCubes.clear();
         sceneRenderer->clearDebugSDFCubes();
+        if (sceneRenderer->vegetationRenderer) {
+            sceneRenderer->vegetationRenderer->clearAllInstances();
+        }
     }
 
     mainScene->getOpaqueOctree().reset();

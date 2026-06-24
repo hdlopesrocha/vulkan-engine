@@ -197,22 +197,10 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
         imageInfo.usage = usage;
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
-        // Use CONCURRENT sharing if transfer and graphics queues differ so
-        // transfer operations (vkCmdCopyImage on a transfer queue) can run
-        // without explicit ownership-transfer barriers.
-        if (app) {
-            auto qfi = app->findQueueFamilies(app->getPhysicalDevice());
-            if (qfi.transferFamily.has_value() && qfi.transferFamily.value() != qfi.graphicsFamily.value()) {
-                uint32_t families[2] = { qfi.graphicsFamily.value(), qfi.transferFamily.value() };
-                imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
-                imageInfo.queueFamilyIndexCount = 2;
-                imageInfo.pQueueFamilyIndices = families;
-            } else {
-                imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            }
-        } else {
-            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        }
+        // EXCLUSIVE sharing: CONCURRENT on RADV strips TCP-read permission.
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.queueFamilyIndexCount = 0;
+        imageInfo.pQueueFamilyIndices = nullptr;
 
         if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create back-face image!");

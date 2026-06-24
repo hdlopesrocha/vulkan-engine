@@ -114,9 +114,9 @@ void main() {
     float shadow = 0.0;
     if (!shadowPass && ubo.shadowEffects.w > 0.5) {
         if (NdotL > 0.01) {
-            float bias = max(0.003 * (1.0 - NdotL), 0.001);
+            float bias = max(0.002 * (1.0 - NdotL), 0.0005);
             vec4 fragPosLightSpace = ubo.lightSpaceMatrix * vec4(inWorldPos, 1.0);
-            shadow = ShadowCalculation(fragPosLightSpace, bias);
+            shadow = ShadowCalculationHard(fragPosLightSpace, bias);
         } else {
             shadow = 1.0;
         }
