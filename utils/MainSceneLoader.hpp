@@ -425,7 +425,7 @@ public:
                 BoundingSphere segSphere = roadSpline.boundingSphereInRange(tMin, tMax, halfDiag);
                 WrappedRoad wrappedRoad(&roadFunc, segSphere.center, segSphere.radius);
                 opaqueLayer.apply(SDF::opUnion, &wrappedRoad, roadModel,
-                                  translate, scale, SimpleBrush(13),
+                                  translate, scale, SimpleBrush(12),
                                   minSize, simplifier, opaqueHandler);
             }
         }
