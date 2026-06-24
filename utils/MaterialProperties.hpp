@@ -10,13 +10,14 @@ struct MaterialProperties {
     float tessHeightScale = 0.2f;
     // Tessellation level for hardware displacement (used when mappingMode == 2)
     float tessLevel = 16.0f;
+    // Per-material distance-based tessellation range
+    float tessMinLevel = 4.0f;
+    float tessMaxLevel = 32.0f;
     
     float ambientFactor = 0.4f;
     
     float specularStrength = 0.5f;
     float shininess = 32.0f;
-    float padding1 = 0.0f;  // Align to 16 bytes
-    float padding2 = 0.0f;
 
     // Triplanar mapping toggle and per-material UV scales (disabled by default)
     bool triplanar = true;

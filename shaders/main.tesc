@@ -81,11 +81,11 @@ void main() {
     vec3 center = (p0 + p1 + p2) / 3.0;
     float dist = length(center - ubo.viewPos.xyz);
 
-    // Read tuning parameters from UBO: x=nearDist, y=farDist, z=minLevel, w=maxLevel
+    // Read per-material tessellation range; near/far distances still come from the global UBO
     float nearDist = ubo.tessParams.x;
     float farDist  = ubo.tessParams.y;
-    float minLevel = ubo.tessParams.z;
-    float maxLevel = ubo.tessParams.w;
+    float minLevel = materials[patchBrushIndex].tessLevelParams.x;
+    float maxLevel = materials[patchBrushIndex].tessLevelParams.y;
 
     float outer0, outer1, outer2, inner;
     if (!tessEnabled) {

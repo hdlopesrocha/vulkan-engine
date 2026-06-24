@@ -10,6 +10,7 @@ static MaterialGPU toGPU(const MaterialProperties &m) {
     out.specularParams = glm::vec4(m.specularStrength, m.shininess, 0.0f, 0.0f);
     out.triplanarParams = glm::vec4(m.triplanarScaleU, m.triplanarScaleV, m.triplanar ? 1.0f : 0.0f, 0.0f);
     out.normalParams = glm::vec4(m.normalFlipY ? 1.0f : 0.0f, m.normalSwapXZ ? 1.0f : 0.0f, 0.0f, 0.0f);
+    out.tessLevelParams = glm::vec4(m.tessMinLevel, m.tessMaxLevel, 0.0f, 0.0f);
     return out;
 }
 

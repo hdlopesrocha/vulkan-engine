@@ -7,4 +7,5 @@ struct MaterialGPU {
     glm::vec4 specularParams;  // x = specularStrength, y = shininess
     glm::vec4 triplanarParams; // x = scaleU, y = scaleV, z = triplanarEnabled (0/1)
     glm::vec4 normalParams;   // x = flipNormalY (0/1), y = swapNormalXZ (0/1), z/w = reserved
+    glm::vec4 tessLevelParams; // x = minLevel, y = maxLevel, z/w = reserved
 };

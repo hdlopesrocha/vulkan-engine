@@ -16,14 +16,15 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
     mat4 lightSpaceMatrix2; // cascade 2 (16x ortho0)
 } ubo;
 
-// Packed material data uploaded once to GPU. Matches the CPU-side MaterialGPU (4 vec4s).
+// Packed material data uploaded once to GPU. Matches the CPU-side MaterialGPU (6 vec4s).
 // Access this as `materials[brushIndex]` from shaders. Uses std430 for tightly-packed vec4 alignment.
 struct MaterialGPU {
-    vec4 materialFlags;   // .z = ambientFactor
-    vec4 mappingParams;   // x = mappingEnabled (0/1), y = tessLevel, z = invertHeight (0/1), w = tessHeightScale
-    vec4 specularParams;  // x = specularStrength, y = shininess
-    vec4 triplanarParams; // x = scaleU, y = scaleV, z = triplanarEnabled (0/1)
-    vec4 normalParams;   // x = flipNormalY (0/1), y = swapNormalXZ (0/1), z/w = reserved
+    vec4 materialFlags;    // .z = ambientFactor
+    vec4 mappingParams;    // x = mappingEnabled (0/1), y = tessLevel, z = invertHeight (0/1), w = tessHeightScale
+    vec4 specularParams;   // x = specularStrength, y = shininess
+    vec4 triplanarParams;  // x = scaleU, y = scaleV, z = triplanarEnabled (0/1)
+    vec4 normalParams;     // x = flipNormalY (0/1), y = swapNormalXZ (0/1), z/w = reserved
+    vec4 tessLevelParams;  // x = minLevel, y = maxLevel, z/w = reserved
 };
 
 layout(std430, set = 0, binding = 5) readonly buffer Materials {

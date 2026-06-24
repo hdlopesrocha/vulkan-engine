@@ -201,6 +201,12 @@ void TextureViewer::render() {
                 int tess = static_cast<int>(mat.tessLevel + 0.5f);
                 if (ImGui::SliderInt("Tessellation Level", &tess, 1, 64)) { mat.tessLevel = static_cast<float>(tess); dirty = true; }
                 if (ImGui::SliderFloat("Tess Height Scale", &mat.tessHeightScale, 0.0f, 64.0f, "%.3f")) dirty = true;
+                ImGui::Spacing();
+                ImGui::Text("Distance-based range");
+                int minLvl = static_cast<int>(mat.tessMinLevel + 0.5f);
+                int maxLvl = static_cast<int>(mat.tessMaxLevel + 0.5f);
+                if (ImGui::SliderInt("Tess Min Level", &minLvl, 1, 64)) { mat.tessMinLevel = static_cast<float>(minLvl); dirty = true; }
+                if (ImGui::SliderInt("Tess Max Level", &maxLvl, 1, 64)) { mat.tessMaxLevel = static_cast<float>(maxLvl); dirty = true; }
             }
 
             if (dirty && onMaterialChanged) onMaterialChanged(currentIndex);
