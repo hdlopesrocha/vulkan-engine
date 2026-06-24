@@ -22,8 +22,8 @@ public:
         adaptiveTessellation = true;
         tessMinLevel = 1.0f;
         tessMaxLevel = 32.0f;
-        tessMaxDistance = 30.0f;
-        tessMinDistance = 10.0f;
+        tessMaxDistance = 200.0f;
+        tessMinDistance = 1.0f;
         vsyncEnabled = true;
         showDebugCubes = false;
         showBoundingBoxes = false;
@@ -63,8 +63,8 @@ public:
     bool adaptiveTessellation = true;
     float tessMinLevel = 1.0f;
     float tessMaxLevel = 32.0f;
-    float tessMaxDistance = 30.0f;
-    float tessMinDistance = 10.0f;
+    float tessMaxDistance = 512.0f;
+    float tessMinDistance = 1.0f;
 
     // Present mode
     bool vsyncEnabled = true;

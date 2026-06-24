@@ -112,8 +112,8 @@ void SettingsWidget::render() {
         ImGuiHelpers::SetTooltipIfHovered("Enable camera-distance driven tessellation level");
         ImGui::SliderFloat("Tess Min Level", &settings.tessMinLevel, 1.0f, 64.0f, "%.1f");
         ImGui::SliderFloat("Tess Max Level", &settings.tessMaxLevel, 1.0f, 64.0f, "%.1f");
-        ImGui::SliderFloat("Tess Min Distance", &settings.tessMinDistance, 1.0f, 200.0f, "%.1f");
-        ImGui::SliderFloat("Tess Max Distance", &settings.tessMaxDistance, 1.0f, 200.0f, "%.1f");
+        ImGui::SliderFloat("Tess Min Distance", &settings.tessMinDistance, 1.0f, 2048.0f, "%.1f");
+        ImGui::SliderFloat("Tess Max Distance", &settings.tessMaxDistance, 1.0f, 2048.0f, "%.1f");
 
         ImGui::Separator();
         ImGui::Text("Triplanar Mapping");
