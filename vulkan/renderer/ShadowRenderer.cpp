@@ -145,7 +145,7 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
         setLayouts,
         nullptr,
         VK_POLYGON_MODE_FILL,
-        VK_CULL_MODE_BACK_BIT,
+        VK_CULL_MODE_NONE,
         true,   // depthWrite
         false,  // colorWrite (shadow pass only needs depth)
         VK_COMPARE_OP_LESS_OR_EQUAL,
