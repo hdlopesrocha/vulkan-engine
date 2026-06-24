@@ -50,6 +50,8 @@
 #include "../sdf/RoadSpline.hpp"
 #include "../sdf/RoadDistanceFunction.hpp"
 #include "../sdf/WrappedRoad.hpp"
+#include "../sdf/TriangleStripDistanceFunction.hpp"
+#include "../sdf/WrappedTriangleStrip.hpp"
 
 // tree generation
 #include "../tree/TreeHandler.hpp"
@@ -425,6 +427,60 @@ public:
                 opaqueLayer.apply(SDF::opUnion, &wrappedRoad, roadModel,
                                   translate, scale, SimpleBrush(13),
                                   minSize, simplifier, opaqueHandler);
+            }
+        }
+
+        {
+            int numSegs = 96;
+            float angleStep = 2.0f * glm::pi<float>() / numSegs;
+            float overlap = 0.05f;
+            float unitInner = 1.00f - 512.0f / 1500.0f;
+            float unitOuter = 1.00f;
+            float unitHalfThick = 32.0f / 1500.0f;
+            float worldScale = 1500.0f;
+            float heights[1] = { 800.0f };
+            for (int ringIdx = 0; ringIdx < 1; ++ringIdx) {
+                std::cout << "\topaqueLayer.add(triangleStrip " << ringIdx << ")" << std::endl;
+                Transformation tsModel = Transformation(glm::vec3(worldScale),
+                    glm::vec3(0.0f, heights[ringIdx], 0.0f), 0, 0, 0);
+                for (int i = 0; i < numSegs; ++i) {
+                    float a0 = i * angleStep;
+                    float a1 = (i + 1) * angleStep;
+
+                    // Triangle strip section: v0,v1,v2 = 1st tri, v1,v2,v3 = 2nd tri
+                    // Vertices in local unit space (Y=0 = strip mid-surface)
+                    glm::vec3 v0(unitInner * glm::cos(a0), 0.0f, unitInner * glm::sin(a0));
+                    glm::vec3 v1(unitOuter * glm::cos(a0), 0.0f, unitOuter * glm::sin(a0));
+                    glm::vec3 v2(unitInner * glm::cos(a1), 0.0f, unitInner * glm::sin(a1));
+                    glm::vec3 v3(unitOuter * glm::cos(a1), 0.0f, unitOuter * glm::sin(a1));
+
+                    TriangleStripDistanceFunction tsFunc(v0, v1, v2, v3, unitHalfThick);
+
+                    // Bounding sphere in world space
+                    float aMin = a0 - overlap * angleStep;
+                    float aMax = a1 + overlap * angleStep;
+                    float hh = unitHalfThick * worldScale;
+                    float y = heights[ringIdx];
+                    glm::vec3 aabbMin(1e30f), aabbMax(-1e30f);
+                    int samples = 4;
+                    for (int j = 0; j <= samples; ++j) {
+                        float a = aMin + (aMax - aMin) * ((float)j / (float)samples);
+                        float rInner = unitInner * worldScale;
+                        float rOuter = unitOuter * worldScale;
+                        glm::vec3 inner(rInner * glm::cos(a), y - hh, rInner * glm::sin(a));
+                        glm::vec3 outer(rOuter * glm::cos(a), y + hh, rOuter * glm::sin(a));
+                        aabbMin = glm::min(aabbMin, inner);
+                        aabbMin = glm::min(aabbMin, outer);
+                        aabbMax = glm::max(aabbMax, inner);
+                        aabbMax = glm::max(aabbMax, outer);
+                    }
+                    glm::vec3 segCenter = (aabbMin + aabbMax) * 0.5f;
+                    float segRadius = glm::distance(segCenter, aabbMax);
+                    WrappedTriangleStrip wrappedTs(&tsFunc, segCenter, segRadius);
+                    opaqueLayer.apply(SDF::opUnion, &wrappedTs, tsModel,
+                                      translate, scale, SimpleBrush(14),
+                                      minSize, simplifier, opaqueHandler);
+                }
             }
         }
 
