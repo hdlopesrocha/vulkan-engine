@@ -34,7 +34,9 @@ void ImpostorWidget::setSource(VkImageView albedo, VkImageView normal,
             vegRenderer->setImpostorData(vulkanApp,
                                          capture.getCaptureArrayView(),
                                          capture.getCaptureNormalArrayView(),
-                                         capture.getCaptureArraySampler());
+                                         capture.getCaptureArraySampler(),
+                                         capture.getCaptureDepthArrayView(),
+                                         capture.getCaptureInvVPCount() > 0 ? capture.getCaptureInvVPBuffer() : VK_NULL_HANDLE);
         }
     }
 }
@@ -45,7 +47,9 @@ void ImpostorWidget::rewire() {
         vegRenderer->setImpostorData(vulkanApp,
                                      capture.getCaptureArrayView(),
                                      capture.getCaptureNormalArrayView(),
-                                     capture.getCaptureArraySampler());
+                                     capture.getCaptureArraySampler(),
+                                     capture.getCaptureDepthArrayView(),
+                                     capture.getCaptureInvVPBuffer());
     }
 }
 
@@ -102,7 +106,9 @@ void ImpostorWidget::render() {
             vegRenderer->setImpostorData(vulkanApp,
                                          capture.getCaptureArrayView(),
                                          capture.getCaptureNormalArrayView(),
-                                         capture.getCaptureArraySampler());
+                                         capture.getCaptureArraySampler(),
+                                         capture.getCaptureDepthArrayView(),
+                                         capture.getCaptureInvVPBuffer());
         }
     }
 
@@ -113,21 +119,27 @@ void ImpostorWidget::render() {
         return;
     }
 
-    // ── Thumbnail grid ───────────────────────────────────────────────
+    // ── Preview mode ────────────────────────────────────────────────
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Text("Captured views (%u, Fibonacci sphere):", ImpostorCapture::NUM_VIEWS);
     ImGui::SameLine();
-    ImGui::Checkbox("Show normals", &previewNormals);
+    const char* modeNames[] = { "Albedo", "Normal", "Depth" };
+    ImGui::SetNextItemWidth(100.0f);
+    ImGui::Combo("##PreviewMode", &previewMode, modeNames, 3);
     ImGui::Spacing();
 
     const float thumbSize = 48.0f;
     const int   columns   = 5;
     for (uint32_t i = 0; i < ImpostorCapture::NUM_VIEWS; ++i) {
         if (i % columns != 0) ImGui::SameLine();
-        VkDescriptorSet ds = previewNormals
-            ? capture.getImGuiNormalDescSet(static_cast<uint32_t>(selectedBillboard), i)
-            : capture.getImGuiDescSet(static_cast<uint32_t>(selectedBillboard), i);
+        VkDescriptorSet ds = VK_NULL_HANDLE;
+        if (previewMode == 0)
+            ds = capture.getImGuiDescSet(static_cast<uint32_t>(selectedBillboard), i);
+        else if (previewMode == 1)
+            ds = capture.getImGuiNormalDescSet(static_cast<uint32_t>(selectedBillboard), i);
+        else
+            ds = capture.getImGuiDepthDescSet(static_cast<uint32_t>(selectedBillboard), i);
         if (ds != VK_NULL_HANDLE) {
             ImGui::PushID(static_cast<int>(i));
             ImGui::Image((ImTextureID)ds, ImVec2(thumbSize, thumbSize));
@@ -142,7 +154,8 @@ void ImpostorWidget::render() {
     // ── Rotatable preview ────────────────────────────────────────────
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::Text("Preview  (drag to rotate)  [%s]:", previewNormals ? "Normals" : "Albedo");
+    const char* modeLabel = (previewMode == 0) ? "Albedo" : (previewMode == 1) ? "Normals" : "Depth";
+    ImGui::Text("Preview  (drag to rotate)  [%s]:", modeLabel);
     ImGui::Spacing();
 
     const float cosP = std::cos(previewPitch);
@@ -151,9 +164,13 @@ void ImpostorWidget::render() {
                                 cosP * std::cos(previewYaw));
     const uint32_t closestIdx = capture.closestView(glm::normalize(previewDir));
 
-    VkDescriptorSet previewDs = previewNormals
-        ? capture.getImGuiNormalDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx)
-        : capture.getImGuiDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
+    VkDescriptorSet previewDs = VK_NULL_HANDLE;
+    if (previewMode == 0)
+        previewDs = capture.getImGuiDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
+    else if (previewMode == 1)
+        previewDs = capture.getImGuiNormalDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
+    else
+        previewDs = capture.getImGuiDepthDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
     if (previewDs != VK_NULL_HANDLE) {
         const float previewSize = 256.0f;
         ImGui::Image((ImTextureID)previewDs, ImVec2(previewSize, previewSize));
