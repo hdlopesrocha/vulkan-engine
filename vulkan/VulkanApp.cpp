@@ -3945,6 +3945,7 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     const std::vector<VkFormat>& colorFormats,
     VkFormat depthFormat,
     bool noColorAttachment,
+    bool depthBiasEnable,
     VkRenderPass legacyRenderPass) {
 
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages(stages);
@@ -3995,7 +3996,7 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     rasterizer.lineWidth = 1.0f;
     rasterizer.cullMode = cullMode;
     rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
-    rasterizer.depthBiasEnable = VK_FALSE;
+    rasterizer.depthBiasEnable = depthBiasEnable ? VK_TRUE : VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;

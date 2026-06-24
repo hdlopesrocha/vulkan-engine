@@ -307,7 +307,8 @@ void VegetationRenderer::init(VulkanApp* app) {
         false,
         {},
         VK_FORMAT_D32_SFLOAT,
-        true   // noColorAttachment: depth-only shadow pass
+        true,   // noColorAttachment: depth-only shadow pass
+        true    // depthBiasEnable: push shadow depths away from light
     );
     vegetationShadowPipeline = shadowPipeline;    shadowPipelineLayout = shadowLayout;
     if (vegetationShadowPipeline == VK_NULL_HANDLE || shadowPipelineLayout == VK_NULL_HANDLE) {

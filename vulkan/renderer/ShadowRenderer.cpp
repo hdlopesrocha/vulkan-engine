@@ -153,7 +153,8 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
         false,
         {},
         VK_FORMAT_D32_SFLOAT,
-        true   // noColorAttachment: depth-only dynamic rendering
+        true,  // noColorAttachment: depth-only dynamic rendering
+        true   // depthBiasEnable: push shadow depths away from light
     );
     shadowPipeline = pipeline;
     shadowPipelineLayout = layout;
@@ -248,7 +249,7 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     shadowScissor.extent = {shadowMapSize, shadowMapSize};
     vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
 
-    vkCmdSetDepthBias(commandBuffer, -1.5f, 0.0f, -2.0f);
+    vkCmdSetDepthBias(commandBuffer, 0.0f, 0.0f, 0.0f);
 
     if (shadowPipeline != VK_NULL_HANDLE) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);

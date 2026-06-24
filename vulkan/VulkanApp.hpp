@@ -394,6 +394,7 @@ protected:
         const std::vector<VkFormat>& colorFormats = {},
         VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
         bool noColorAttachment = false,
+        bool depthBiasEnable = false,
         VkRenderPass legacyRenderPass = VK_NULL_HANDLE);
 
     // Backwards-compatible wrapper for callers that pass an initializer_list
@@ -413,11 +414,12 @@ protected:
         const std::vector<VkFormat>& colorFormats = {},
         VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
         bool noColorAttachment = false,
+        bool depthBiasEnable = false,
         VkRenderPass legacyRenderPass = VK_NULL_HANDLE) {
         std::vector<VkVertexInputAttributeDescription> vec(attributeDescriptions);
         return createGraphicsPipeline(stages, bindingDescriptions, vec, setLayouts, pushConstantRange,
             polygonMode, cullMode, depthWrite, colorWrite, depthCompare, topology, depthClampEnable,
-            colorFormats, depthFormat, noColorAttachment, legacyRenderPass);
+            colorFormats, depthFormat, noColorAttachment, depthBiasEnable, legacyRenderPass);
     }
         std::vector<VkCommandBuffer> createCommandBuffers();
 
