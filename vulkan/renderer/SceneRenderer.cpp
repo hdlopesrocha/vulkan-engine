@@ -422,10 +422,13 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
             // Draw wireframe overlay on top, inside the same render pass,
             // reusing the depth buffer populated by the filled geometry pass.
             VkPipeline waterWfPipe = waterWireframe->getPipeline();
-            if (waterWfPipe != VK_NULL_HANDLE) {
+            VkDescriptorSet wfMainDs = app->getMainDescriptorSet();
+            VkDescriptorSet wfMatDs = app->getMaterialDescriptorSet();
+            VkDescriptorSet wfDepthDs = waterRenderer->getWaterDepthDescriptorSet(frameIdx);
+            if (waterWfPipe != VK_NULL_HANDLE && wfMainDs != VK_NULL_HANDLE &&
+                wfMatDs != VK_NULL_HANDLE && wfDepthDs != VK_NULL_HANDLE) {
                 waterWireframe->draw(commandBuffer, app,
-                    {app->getMainDescriptorSet(), app->getMaterialDescriptorSet(),
-                     waterRenderer->getWaterDepthDescriptorSet(frameIdx)},
+                    {wfMainDs, wfMatDs, wfDepthDs},
                     waterRenderer->getIndirectRenderer());
             }
 
