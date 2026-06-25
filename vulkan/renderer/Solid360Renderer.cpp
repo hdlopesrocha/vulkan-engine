@@ -186,7 +186,10 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
 
     glm::vec3 camPos = glm::vec3(ubo.viewPos);
     struct FaceInfo { glm::vec3 target; glm::vec3 up; };
-    // Standard cubemap face order and orientation: +X, -X, +Y, -Y, +Z, -Z.
+    // Cubemap face order and orientation: +X, -X, +Y, -Y, +Z, -Z.
+    // NOTE: face targets are intentionally inverted to match the convention
+    // used by water.frag's reflect(refract(viewDir, ...)) which passes the
+    // view direction directly (surface→eye) rather than negating it first.
     const FaceInfo faces[6] = {
         { glm::vec3(-1, 0, 0), glm::vec3(0,-1, 0) }, // +X
         { glm::vec3( 1, 0, 0), glm::vec3(0,-1, 0) }, // -X
@@ -405,5 +408,25 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+    }
+
+    // Global same-layout barrier: make all per-face COLOR_ATTACHMENT_WRITEs
+    // visible to subsequent SHADER_SAMPLED_READs (e.g. in the main pass on the same queue).
+    {
+        VkImageMemoryBarrier2 globalBarrier{};
+        globalBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        globalBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        globalBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        globalBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        globalBarrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        globalBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        globalBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        globalBarrier.image = cube360ColorImage;
+        globalBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6 };
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers = &globalBarrier;
+        vkCmdPipelineBarrier2(cmd, &dep);
     }
 }

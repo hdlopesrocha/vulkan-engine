@@ -687,6 +687,30 @@ public:
                 sceneRenderer->vegetationRenderer->recordReadBarriers(commandBuffer);
             }
 
+            // Ensure the 360° cubemap writes (from the async task submitted
+            // earlier on the same queue) are visible to the solid shader's
+            // environment-map sampler.
+            if (sceneRenderer && sceneRenderer->solid360Renderer) {
+                VkImage cubeImg = sceneRenderer->solid360Renderer->getCube360ColorImage();
+                if (cubeImg != VK_NULL_HANDLE) {
+                    VkImageMemoryBarrier2 barrier{};
+                    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                    barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                    barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                    barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    barrier.image = cubeImg;
+                    barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6 };
+                    VkDependencyInfo dep{};
+                    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                    dep.imageMemoryBarrierCount = 1;
+                    dep.pImageMemoryBarriers = &barrier;
+                    vkCmdPipelineBarrier2(commandBuffer, &dep);
+                }
+            }
+
             sceneRenderer->solidRenderer->beginPass(commandBuffer, frameIdx, colorClear, depthClear, this);
 
         // Render sky first inside the solid pass so water composites on top of (sky + solid).
@@ -946,7 +970,7 @@ public:
                     VkDescriptorPoolSize ps{};
                     ps.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; ps.descriptorCount = 3;
                     VkDescriptorPoolSize ps2{};
-                    ps2.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps2.descriptorCount = 6;
+                    ps2.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps2.descriptorCount = 7;
                     VkDescriptorPoolSize ps3{};
                     ps3.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; ps3.descriptorCount = 2;
                     VkDescriptorPoolSize poolSizes[] = {ps, ps2, ps3};
@@ -1006,6 +1030,15 @@ public:
                 addImageWriteLocal(4, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
                 addImageWriteLocal(8, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
                 addImageWriteLocal(9, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+                // Binding 11: environment cubemap (reuse the same cubemap being rendered;
+                // reflections will sample the previous frame's content, avoiding feedback).
+                if (this->sceneRenderer->solid360Renderer) {
+                    VkImageView cubeView = this->sceneRenderer->solid360Renderer->getSolid360View();
+                    VkSampler cubeSampler = this->sceneRenderer->solid360Renderer->getSolid360Sampler();
+                    if (cubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE) {
+                        addImageWriteLocal(11, cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    }
+                }
 
                 // Buffer infos must be heap-allocated (like addImageWriteLocal does for
                 // images) because they are stored by pointer in gfxWrites and must
@@ -1046,12 +1079,17 @@ public:
                 app->updateDescriptorSet(gfxWrites);
                 for (auto &w : gfxWrites) { if (w.pImageInfo) delete w.pImageInfo; if (w.pBufferInfo) delete w.pBufferInfo; }
 
+                // Disable environment-map sampling during cubemap capture to avoid
+                // feedback loops and layout mismatches (the current face is in
+                // COLOR_ATTACHMENT_OPTIMAL, not SHADER_READ_ONLY_OPTIMAL).
+                UniformObject ubo360 = this->uboStatic;
+                ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
                 this->sceneRenderer->solid360Renderer->renderSolid360(
                     app, cmd,
                     this->sceneRenderer->skyRenderer.get(), skyMode360,
                     this->sceneRenderer->solidRenderer.get(),
                     gfxDs,
-                    taskUBO, this->uboStatic,
+                    taskUBO, ubo360,
                     computeDs,
                     taskCompact.buffer,
                     taskVisible.buffer);
