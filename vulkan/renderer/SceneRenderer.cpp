@@ -634,7 +634,18 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Create back-face render targets early so their image views are
     // available before the first frame's water pass attempts to bind them.
     if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-    if (solid360Renderer) solid360Renderer->init(app);
+    if (solid360Renderer) {
+        solid360Renderer->init(app);
+        // Create cubemap targets now so the image view is available for
+        // the environment-map descriptor binding (binding 11) below.
+        solid360Renderer->createSolid360Targets(app, waterRenderer->getLinearSampler());
+        // Binding 11: environment cubemap for solid-shader reflections
+        VkImageView cubeView = solid360Renderer->getSolid360View();
+        VkSampler cubeSampler = solid360Renderer->getSolid360Sampler();
+        if (cubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE) {
+            addImageWrite(11, cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+    }
 
     // Bind water params SSBO to binding 7 of main descriptor set.
     // Allocate on heap — the cleanup loop below uniformly delete-s all pBufferInfo.
@@ -750,6 +761,15 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         addShadowImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
         addShadowImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
+        // Binding 11: environment cubemap (if available) for shadow passes that use the same layout
+        if (solid360Renderer) {
+            VkImageView cubeView = solid360Renderer->getSolid360View();
+            VkSampler cubeSampler = solid360Renderer->getSolid360Sampler();
+            if (cubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE) {
+                addShadowImageWrite(11, cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            }
+        }
+
         VkDescriptorBufferInfo shadowMatInfo{ materialsBuffer.buffer, 0, VK_WHOLE_SIZE };
         VkWriteDescriptorSet shadowMatWrite{};
         shadowMatWrite.sType          = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -798,9 +818,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Ensure back-face render targets are created as well so the
     // `backFaceDepthView` is valid before the first frame's water pass.
     if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-
-    // Create cubemap → equirect 360° reflection targets for water (owned by SceneRenderer)
-    if (solid360Renderer) solid360Renderer->createSolid360Targets(app, waterRenderer->getLinearSampler());
 
     // Create wireframe pipelines for solid and water passes
     if (solidWireframe) {

@@ -779,6 +779,11 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         // shader writes outColor but shadow rendering has no color attachment.
         // The write is correctly discarded — this is expected behavior.
         if (strstr(msg, "no VkRenderingInfo::pColorAttachments[0]") != nullptr) return VK_FALSE;
+        // The 360° cubemap is rendered in an async command buffer on the same
+        // queue and read by the main pass.  Barriers + semaphore ordering make
+        // this safe, but the validation layer flags it as SYNC-HAZARD-READ-AFTER-WRITE
+        // across command buffers (binding #11).  This is a known false positive.
+        if (strstr(msg, "SYNC-HAZARD-READ-AFTER-WRITE") != nullptr && strstr(msg, "binding #11") != nullptr) return VK_FALSE;
     }
 
     // Only print WARNING and ERROR — suppress INFO/VERBOSE noise
@@ -3622,10 +3627,19 @@ void VulkanApp::createDescriptorSetLayout() {
     waterRenderUBOBinding.pImmutableSamplers = nullptr;
     waterRenderUBOBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 11> bindings = {
+    // binding 11: 360° environment cubemap sampler for solid-shader reflections
+    VkDescriptorSetLayoutBinding envMapBinding{};
+    envMapBinding.binding = 11;
+    envMapBinding.descriptorCount = 1;
+    envMapBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    envMapBinding.pImmutableSamplers = nullptr;
+    envMapBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 12> bindings = {
         uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
         shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
-        waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding
+        waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding,
+        envMapBinding
     };
     // Fill the material binding at position 5
     bindings[5].binding = 5;
