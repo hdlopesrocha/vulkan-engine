@@ -49,10 +49,10 @@ struct WaterParams {
     float volumeBumpRate = 0.05f;  // exponential rate: bump ramps with water thickness
     // Tessellation parameters (noise-adaptive water surface)
     // nearDist: camera distance at which tessellation reaches max level
-    float tessNearDist = 10.0f;
+    float tessNearDist = 128.0f;
     // farDist: camera distance at which tessellation drops to min level
-    float tessFarDist = 512.0f;
-    float tessMinLevel = 2.0f;
+    float tessFarDist = 1024.0f;
+    float tessMinLevel = 1.0f;
     float tessMaxLevel = 16.0f;
     // [0..1] how much the bump/noise map influences tessellation.
     // 0 = purely distance-based, 1 = fully noise-adaptive.

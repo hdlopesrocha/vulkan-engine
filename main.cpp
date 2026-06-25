@@ -300,6 +300,8 @@ public:
             wp.causticDepthScale = 128.0f;
             wp.causticPower = 4.0f;
             wp.causticLineScale = 3.0f;
+            wp.tessMinLevel = 2.0f;
+            wp.tessMaxLevel = 16.0f;
             waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
         }
         {
