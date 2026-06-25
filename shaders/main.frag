@@ -160,6 +160,22 @@ void main() {
     float spec = (NdotL > 0.0) ? pow(max(dot(viewDir, reflectDir), 0.0), shininess) : 0.0;
     vec3 specular = ubo.lightColor.rgb * spec * (1.0 - totalShadow) * blendedSpec.x;
 
+    // Environment reflection (360° cubemap) — skipped during cubemap capture
+    // (ubo.materialFlags.x is set to 1.0 by the 360 async task to avoid feedback).
+    vec3 envReflection = vec3(0.0);
+    float blendedRefStrength = 0.0;
+    if (ubo.materialFlags.x < 0.5) {
+        vec3 envReflectDir = reflect(viewDir, worldNormal);
+        vec3 envColor = texture(environmentMap, normalize(envReflectDir)).rgb;
+        // Full-strength environment reflection at all angles
+        float envBlend = 1.0;
+        float refStrength0 = materials[fragTexIndices.x].tessLevelParams.z;
+        float refStrength1 = materials[fragTexIndices.y].tessLevelParams.z;
+        float refStrength2 = materials[fragTexIndices.z].tessLevelParams.z;
+        blendedRefStrength = refStrength0 * w.x + refStrength1 * w.y + refStrength2 * w.z;
+        envReflection = envColor * envBlend * blendedRefStrength;
+    }
+
     // Debug visualisation modes (0 = normal render)
     int debugMode = int(ubo.debugParams.x + 0.5);
     if (debugMode == 1) {
@@ -416,9 +432,16 @@ void main() {
         outColor = vec4(s * 0.5 + 0.5, 1.0);
         return;
     }
+    if (debugMode == 49) {
+        // Environment reflection factor — shows the cubemap sample shaded by
+        // Fresnel and per-material reflectionStrength (pre-multiplied).
+        outColor = vec4(envReflection, 1.0);
+        return;
+    }
 
-    // Fallback to normal rendering
-    vec3 finalColor = ambient + diffuse + specular;
+    // Blend between lit color and environment reflection.
+    // reflectionStrength=0 → lit color only, =1 → pure mirror.
+    vec3 finalColor = mix(ambient + diffuse + specular, envReflection, blendedRefStrength);
     
     // DEBUG: Visualize lighting components
     // Uncomment to debug:
