@@ -18,6 +18,7 @@ struct MaterialProperties {
     
     float specularStrength = 0.5f;
     float shininess = 32.0f;
+    float reflectionStrength = 0.0f;
 
     // Triplanar mapping toggle and per-material UV scales (disabled by default)
     bool triplanar = true;

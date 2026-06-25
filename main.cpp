@@ -257,11 +257,23 @@ public:
         materials[5u].tessLevel = 5.0f;
         materials[5u].tessMinLevel = 2.0f;
         materials[5u].tessMaxLevel = 16.0f;
-        materials[5u].tessHeightScale = 32.0f;
+        materials[5u].tessHeightScale = 2.0f;
         materials[5u].triplanar = true;
         materials[5u].triplanarScaleU = 0.005f;
         materials[5u].triplanarScaleV = 0.005f;
         materials[5u].invertHeight = true;
+        materials[5u].reflectionStrength = 0.8f;
+
+        materials[6u].mappingMode = true;
+        materials[6u].tessLevel = 1.0f;
+        materials[6u].tessMinLevel = 1.0f;
+        materials[6u].tessMaxLevel = 1.0f;
+        materials[6u].tessHeightScale = 0.0f;
+        materials[6u].triplanar = true;
+        materials[6u].triplanarScaleU = 0.005f;
+        materials[6u].triplanarScaleV = 0.005f;
+        materials[6u].invertHeight = true;
+        materials[6u].reflectionStrength = 1.0f;
 
         materials[7u].mappingMode = true;
         materials[7u].tessLevel = 2.0f;
@@ -272,6 +284,7 @@ public:
         materials[7u].triplanarScaleU = 0.01f;
         materials[7u].triplanarScaleV = 0.01f;
         materials[7u].invertHeight = true;
+        materials[7u].reflectionStrength = 0.2f;
 
         materials[14u].mappingMode = true;
         materials[14u].tessLevel = 5.0f;

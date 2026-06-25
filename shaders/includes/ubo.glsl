@@ -8,7 +8,7 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
     vec4 materialFlags;
     mat4 lightSpaceMatrix; // for shadow mapping
     vec4 shadowEffects; // x/y/z = unused, w=global shadows enabled (1.0 = on)
-    vec4 debugParams; // x=debugMode (0=normal,1=fragment normal,2=normal map (world),3=uv,4=tangent,5=bitangent,6=geometry normal (world),7=albedo,8=normal texture,9=height/bump,10=lighting (N·L,shadow),11=normal from derivatives,12=light vector (rgb),13=N·L grayscale,14=shadow diagnostics,15=triplanar weights,16=tex indices (RGB),17=barycentric weights,18=albedo samples (R/G/B),19=triplanar albedo,20=per-projection triplanar heights (RGB),21=UV vs triplanar height diff,22=triplanar normal,23=per-projection triplanar normals (RGB),24=UV vs triplanar normal diff,25=triplanar bump (height),26=per-projection triplanar bump (RGB),27=UV vs triplanar bump diff)
+    vec4 debugParams; // x=debugMode (0=normal,1=fragment normal,2=normal map (world),3=uv,4=tangent,5=bitangent,6=geometry normal (world),7=albedo,8=normal texture,9=height/bump,10=lighting (N·L,shadow),11=normal from derivatives,12=light vector (rgb),13=N·L grayscale,14=shadow diagnostics,15=triplanar weights,16=tex indices (RGB),17=barycentric weights,18=albedo samples (R/G/B),19=triplanar albedo,20=per-projection triplanar heights (RGB),21=UV vs triplanar height diff,22=triplanar normal,23=per-projection triplanar normals (RGB),24=UV vs triplanar normal diff,25=triplanar bump (height),26=per-projection triplanar bump (RGB),27=UV vs triplanar bump diff,49=reflection factor (env map))
     vec4 triplanarSettings;
     vec4 tessParams; // x = tessNearDist, y = tessFarDist, z = tessellationFactor, w = reserved
     vec4 passParams;   // x = isShadowPass, y = tessEnabled, z = nearPlane, w = farPlane
@@ -19,12 +19,12 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
 // Packed material data uploaded once to GPU. Matches the CPU-side MaterialGPU (6 vec4s).
 // Access this as `materials[brushIndex]` from shaders. Uses std430 for tightly-packed vec4 alignment.
 struct MaterialGPU {
-    vec4 materialFlags;    // .z = ambientFactor
+    vec4 materialFlags;    // .x = skipEnvMap (set during cubemap capture), .z = ambientFactor
     vec4 mappingParams;    // x = mappingEnabled (0/1), y = tessLevel, z = invertHeight (0/1), w = tessHeightScale
     vec4 specularParams;   // x = specularStrength, y = shininess
     vec4 triplanarParams;  // x = scaleU, y = scaleV, z = triplanarEnabled (0/1)
     vec4 normalParams;     // x = flipNormalY (0/1), y = swapNormalXZ (0/1), z = invertWidth (0/1)
-    vec4 tessLevelParams;  // x = minLevel, y = maxLevel, z/w = reserved
+    vec4 tessLevelParams;  // x = minLevel, y = maxLevel, z = reflectionStrength, w = reserved
 };
 
 layout(std430, set = 0, binding = 5) readonly buffer Materials {
