@@ -257,6 +257,18 @@ public:
             WrappedTaperedCapsule wrappedFunction = WrappedTaperedCapsule(&function);
             opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(11), minSize, simplifier, opaqueHandler);
         }
+
+        {
+            std::cout << "\topaqueLayer.add(mirror)"<< std::endl;
+            glm::vec3 center = glm::vec3(0,512, 512*7);
+            glm::vec3 len = glm::vec3(32.0f, 256.0f, 256.0f);
+            BoundingBox box = BoundingBox(center - len * 0.5f, center + len * 0.5f);
+            BoxDistanceFunction function = BoxDistanceFunction();
+            Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
+            WrappedBox wrappedFunction = WrappedBox(&function);
+            opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(6), minSize*0.1f, simplifier, opaqueHandler);
+        }
+
     
         if(false){
             std::cout << "\topaqueLayer.add(proceduralTree)"<< std::endl;
