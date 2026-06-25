@@ -334,7 +334,7 @@ void SceneRenderer::drawSolidWireframeOverlay(VulkanApp* app, VkCommandBuffer &c
     solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, solidRenderer->getIndirectRenderer());
 }
 
-void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, bool waterWireframeEnabled, float waterTime, bool skipBackFace, VkImageView skyView, VkImageView cubeReflectionView) {
+void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool waterWireframeEnabled, float waterTime, bool skipBackFace, VkImageView skyView, VkImageView cubeReflectionView) {
     if (commandBuffer == VK_NULL_HANDLE) {
         std::cerr << "[SceneRenderer::waterPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
         return;
@@ -373,7 +373,7 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
     // descriptor set that is already referenced by a pending command buffer
     // (VUID-vkUpdateDescriptorSets-None-03047).
 
-    bool wf = wireframeEnabled || waterWireframeEnabled;
+    bool wf = waterWireframeEnabled;
     if (wf && waterWireframe && waterWireframe->getPipeline() != VK_NULL_HANDLE) {
         // Wireframe path: use WaterRenderer for setup/pass management,
         // but bind the wireframe pipeline instead of the normal one.
@@ -421,15 +421,26 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
 
             // Draw wireframe overlay on top, inside the same render pass,
             // reusing the depth buffer populated by the filled geometry pass.
+            // Bind descriptor sets individually with null checks (same pattern
+            // as the filled water pipeline) to handle missing sets gracefully.
             VkPipeline waterWfPipe = waterWireframe->getPipeline();
-            VkDescriptorSet wfMainDs = app->getMainDescriptorSet();
-            VkDescriptorSet wfMatDs = app->getMaterialDescriptorSet();
-            VkDescriptorSet wfDepthDs = waterRenderer->getWaterDepthDescriptorSet(frameIdx);
-            if (waterWfPipe != VK_NULL_HANDLE && wfMainDs != VK_NULL_HANDLE &&
-                wfMatDs != VK_NULL_HANDLE && wfDepthDs != VK_NULL_HANDLE) {
-                waterWireframe->draw(commandBuffer, app,
-                    {wfMainDs, wfMatDs, wfDepthDs},
-                    waterRenderer->getIndirectRenderer());
+            VkPipelineLayout wfLayout = waterWireframe->getPipelineLayout();
+            if (waterWfPipe != VK_NULL_HANDLE && wfLayout != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterWfPipe);
+
+                VkDescriptorSet wfMainDs = app->getMainDescriptorSet();
+                if (wfMainDs != VK_NULL_HANDLE)
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wfLayout, 0, 1, &wfMainDs, 0, nullptr);
+
+                VkDescriptorSet wfMatDs = app->getMaterialDescriptorSet();
+                if (wfMatDs != VK_NULL_HANDLE)
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wfLayout, 1, 1, &wfMatDs, 0, nullptr);
+
+                VkDescriptorSet wfDepthDs = waterRenderer->getWaterDepthDescriptorSet(frameIdx);
+                if (wfDepthDs != VK_NULL_HANDLE)
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wfLayout, 2, 1, &wfDepthDs, 0, nullptr);
+
+                waterRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
             }
 
             waterRenderer->endWaterGeometryPass(commandBuffer);

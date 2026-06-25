@@ -1194,7 +1194,7 @@ public:
             // If we launched an async back-face submission, tell waterPass to skip issuing it again.
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 10);
-            sceneRenderer->waterPass(this, commandBuffer, frameIdx, getMainDescriptorSet(), settings.wireframeMode, settings.waterWireframeMode,
+            sceneRenderer->waterPass(this, commandBuffer, frameIdx, getMainDescriptorSet(), settings.waterWireframeMode,
                 mainTime, launchedBackFace, skyView, cubeReflectionView);
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 11);
