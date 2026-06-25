@@ -189,6 +189,7 @@ void TextureViewer::render() {
             if (ImGui::SliderFloat("Ambient Factor", &mat.ambientFactor, 0.0f, 1.0f, "%.2f")) dirty = true;
             if (ImGui::SliderFloat("Specular Strength", &mat.specularStrength, 0.0f, 2.0f, "%.2f")) dirty = true;
             if (ImGui::SliderFloat("Shininess", &mat.shininess, 1.0f, 256.0f, "%.0f")) dirty = true;
+            if (ImGui::SliderFloat("Reflection Strength", &mat.reflectionStrength, 0.0f, 1.0f, "%.2f")) dirty = true;
 
             ImGui::Spacing();
             ImGui::Text("Mapping (Tessellation + Bump)");

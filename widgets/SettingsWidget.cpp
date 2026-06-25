@@ -191,7 +191,8 @@ void SettingsWidget::render() {
             "Back-face Depth (linearized)",
             "Scene Depth (early UV, linearized)",
             "Effective Back Depth (min, linearized)",
-            "Water Thickness (normalized)"
+            "Water Thickness (normalized)",
+            "Reflection Factor (env map)"
         };
         int current = settings.debugMode;
         if (ImGui::Combo("Debug Mode", &current, debugItems, IM_ARRAYSIZE(debugItems))) {
