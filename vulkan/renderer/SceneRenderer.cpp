@@ -636,6 +636,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (solid360Renderer) {
         solid360Renderer->init(app);
+        solid360Renderer->setWaterRenderer(waterRenderer.get());
         // Create cubemap targets now so the image view is available for
         // the environment-map descriptor binding (binding 11) below.
         solid360Renderer->createSolid360Targets(app, waterRenderer->getLinearSampler());

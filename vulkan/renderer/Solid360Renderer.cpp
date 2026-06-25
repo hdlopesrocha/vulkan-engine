@@ -202,6 +202,11 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
     glm::mat4 faceProj = glm::perspective(glm::radians(90.0f), 1.0f, ubo.passParams.z, ubo.passParams.w);
     faceProj[1][1] *= -1;
 
+    // Lazily ensure water cubemap resources are ready
+    if (waterRenderer) {
+        waterRenderer->ensureCubemapResources(app, app->getSwapchainImageFormat());
+    }
+
     for (uint32_t face = 0; face < 6; ++face) {
         glm::mat4 faceView = glm::lookAt(camPos, camPos + faces[face].target, faces[face].up);
         glm::mat4 faceVP = faceProj * faceView;
@@ -332,6 +337,37 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         }
 
         vkCmdEndRendering(cmd);
+
+        // Execution barrier: ensure solid pass's depth writes (LATE_FRAGMENT_TESTS)
+        // complete before any subsequent layout transition on the depth image.
+        {
+            VkMemoryBarrier memBarrier{};
+            memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            memBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            memBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            vkCmdPipelineBarrier(cmd,
+                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+        }
+
+        // Render water into the cubemap face (with reflection/refraction disabled via skipEnvMap flag in UBO)
+        if (waterRenderer && waterRenderer->getCubemapWaterPipeline() != VK_NULL_HANDLE) {
+            // Transition depth to read-only layout so it can be both depth-attachment and sampler
+            if (app) app->recordTransitionImageLayoutLayer(cmd, cube360DepthImage, VK_FORMAT_D32_SFLOAT,
+                VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 1, face, 1);
+            cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+            waterRenderer->renderWaterIntoCubemap(cmd,
+                cube360FaceViews[face], cube360DepthViews[face],
+                mainDescriptorSet, app->getMaterialDescriptorSet(),
+                CUBE360_FACE_SIZE);
+
+            // Transition depth back to attachment layout for the post-render barrier below
+            if (app) app->recordTransitionImageLayoutLayer(cmd, cube360DepthImage, VK_FORMAT_D32_SFLOAT,
+                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, face, 1);
+            cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        }
 
         // Barrier: ensure previous face's draw finishes reading compact/visible
         // buffers before next face's cull overwrites them

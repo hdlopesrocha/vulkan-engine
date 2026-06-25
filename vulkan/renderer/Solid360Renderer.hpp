@@ -2,6 +2,7 @@
 #include "../VulkanApp.hpp"
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
+#include "WaterRenderer.hpp"
 #include "../ubo/UniformObject.hpp"
 #include <array>
 
@@ -14,6 +15,8 @@ public:
 
     void createSolid360Targets(VulkanApp* app, VkSampler linearSampler);
     void destroySolid360Targets(VulkanApp* app);
+
+    void setWaterRenderer(WaterRenderer* wr) { waterRenderer = wr; }
 
     void renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                         SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
@@ -43,6 +46,7 @@ public:
     }
 
 private:
+    WaterRenderer* waterRenderer = nullptr;
     static constexpr uint32_t CUBE360_FACE_SIZE = 512;
 
     VkImage cube360ColorImage = VK_NULL_HANDLE;
