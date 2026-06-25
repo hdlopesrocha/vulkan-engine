@@ -325,6 +325,8 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	createArray(normalArray, VK_FORMAT_R8G8B8A8_UNORM, false);
 	createArray(bumpArray, VK_FORMAT_R8G8B8A8_UNORM, false);
 
+	VkDevice device = app->getDevice();
+
 	// Eagerly create per-layer 2D image views so TextureMixer can
 	// allocate per-layer descriptor sets without a timing dependency.
 	auto createPerLayerViews = [&](VkImage image, std::vector<VkImageView> &views, VkFormat fmt) {
