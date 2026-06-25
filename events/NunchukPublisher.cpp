@@ -77,7 +77,7 @@ void NunchukPublisher::readState() {
 
     std::lock_guard<std::mutex> lock(stateMutex);
 
-    if (cwState.ext.type == CWIID_EXT_NUNCHUK) {
+    if (cwState.ext_type == CWIID_EXT_NUNCHUK) {
         state.connected = true;
 
         // Joystick: raw 0..255, map to -1..1 (center ~128)
@@ -93,8 +93,8 @@ void NunchukPublisher::readState() {
         if (state.joystickY > 1.0f) state.joystickY = 1.0f;
 
         // Buttons
-        state.buttonC = (cwState.ext.nunchuk.buttons & CWIID_NUNCHUK_BUTTON_C) != 0;
-        state.buttonZ = (cwState.ext.nunchuk.buttons & CWIID_NUNCHUK_BUTTON_Z) != 0;
+        state.buttonC = (cwState.ext.nunchuk.buttons & CWIID_NUNCHUK_BTN_C) != 0;
+        state.buttonZ = (cwState.ext.nunchuk.buttons & CWIID_NUNCHUK_BTN_Z) != 0;
 
         // Raw accelerometer
         state.accelX = cwState.ext.nunchuk.acc[0];

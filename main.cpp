@@ -242,7 +242,7 @@ public:
             materialCount = layerCount ? layerCount : 1u;
         }
         materials.assign(materialCount, MaterialProperties{});
-  
+          
         materials[0u].mappingMode = true;
         materials[0u].tessLevel = 5.0f;
         materials[0u].tessMinLevel = 2.0f;
@@ -251,6 +251,27 @@ public:
         materials[0u].triplanar = true;
         materials[0u].triplanarScaleU = 0.005f;
         materials[0u].triplanarScaleV = 0.005f;
+        materials[0u].invertHeight = true;
+
+        materials[5u].mappingMode = true;
+        materials[5u].tessLevel = 5.0f;
+        materials[5u].tessMinLevel = 2.0f;
+        materials[5u].tessMaxLevel = 16.0f;
+        materials[5u].tessHeightScale = 32.0f;
+        materials[5u].triplanar = true;
+        materials[5u].triplanarScaleU = 0.005f;
+        materials[5u].triplanarScaleV = 0.005f;
+        materials[5u].invertHeight = true;
+
+        materials[7u].mappingMode = true;
+        materials[7u].tessLevel = 2.0f;
+        materials[7u].tessMinLevel = 2.0f;
+        materials[7u].tessMaxLevel = 20.0f;
+        materials[7u].tessHeightScale = 16.0f;
+        materials[7u].triplanar = true;
+        materials[7u].triplanarScaleU = 0.01f;
+        materials[7u].triplanarScaleV = 0.01f;
+        materials[7u].invertHeight = true;
 
         materials[14u].mappingMode = true;
         materials[14u].tessLevel = 5.0f;
@@ -260,6 +281,7 @@ public:
         materials[14u].triplanar = true;
         materials[14u].triplanarScaleU = 0.002f;
         materials[14u].triplanarScaleV = 0.002f;
+        materials[14u].invertHeight = true;
 
         materials[12u].mappingMode = true;
         materials[12u].tessLevel = 16.0f;
@@ -269,6 +291,7 @@ public:
         materials[12u].triplanar = true;
         materials[12u].triplanarScaleU = 0.002f;
         materials[12u].triplanarScaleV = 0.002f;
+        materials[12u].invertHeight = true;
 
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);

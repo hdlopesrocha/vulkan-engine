@@ -16,7 +16,7 @@ public:
         normalMappingEnabled = true;
         waterEnabled = true;
         vegetationEnabled = false;
-        triplanarThreshold = 0.12f;
+        triplanarThreshold = 0.5f;
         triplanarExponent = 1.0f;
         tessellationEnabled = true;
         shadowTessellationEnabled = true;
