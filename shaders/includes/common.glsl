@@ -5,7 +5,12 @@ float sampleHeight(vec2 texCoords, int brushIndex) {
     // Sample the height from the height texture array (binding = 3)
     // brushIndex selects the layer in the array. If the material requests
     // inverted heights (mappingParams.z), invert the sampled value.
-    float h = texture(heightArray, vec3(texCoords, float(brushIndex))).r;
+    // When invertWidth is set, mirror the U coordinate horizontally.
+    vec2 tc = texCoords;
+    if (materials[brushIndex].normalParams.z > 0.5) {
+        tc.x = 1.0 - tc.x;
+    }
+    float h = texture(heightArray, vec3(tc, float(brushIndex))).r;
     if (materials[brushIndex].mappingParams.z > 0.5) {
         h = 1.0 - h;
     }
@@ -25,6 +30,9 @@ float sampleHeightTriplanar(vec3 worldPos, vec3 normal, int brushIndex) {
     w = wt / sum;
 
     vec2 scale = vec2(materials[brushIndex].triplanarParams.x, materials[brushIndex].triplanarParams.y);
+    if (materials[brushIndex].normalParams.z > 0.5) {
+        scale.x = -scale.x;
+    }
 
     float hX = 0.0;
     float hY = 0.0;

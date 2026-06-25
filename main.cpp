@@ -240,7 +240,16 @@ public:
             materialCount = layerCount ? layerCount : 1u;
         }
         materials.assign(materialCount, MaterialProperties{});
-     
+  
+        materials[0u].mappingMode = true;
+        materials[0u].tessLevel = 5.0f;
+        materials[0u].tessMinLevel = 2.0f;
+        materials[0u].tessMaxLevel = 18.0f;
+        materials[0u].tessHeightScale = 32.0f;
+        materials[0u].triplanar = true;
+        materials[0u].triplanarScaleU = 0.002f;
+        materials[0u].triplanarScaleV = 0.002f;
+
         materials[14u].mappingMode = true;
         materials[14u].tessLevel = 5.0f;
         materials[14u].tessMinLevel = 2.0f;

@@ -197,6 +197,8 @@ void TextureViewer::render() {
             if (ImGui::Checkbox("Enable Tessellation & Bump Mapping", &mappingEnabled)) { mat.mappingMode = mappingEnabled; dirty = true; }
             bool heightDirect = mat.invertHeight;
             if (ImGui::Checkbox("Height Is Direct (white=high)", &heightDirect)) { mat.invertHeight = heightDirect; dirty = true; }
+            bool invW = mat.invertWidth;
+            if (ImGui::Checkbox("Invert Width (mirror U)", &invW)) { mat.invertWidth = invW; dirty = true; }
             if (mat.mappingMode) {
                 int tess = static_cast<int>(mat.tessLevel + 0.5f);
                 if (ImGui::SliderInt("Tessellation Level", &tess, 1, 64)) { mat.tessLevel = static_cast<float>(tess); dirty = true; }

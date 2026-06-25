@@ -24,6 +24,8 @@ struct MaterialProperties {
     float triplanarScaleU = 0.01f;
     float triplanarScaleV = 0.01f;
 
+    // Flip height map U coordinate horizontally
+    bool invertWidth = false;
     // Normal map conventions (defaults keep existing behavior)
     bool normalFlipY = false;   // flip normal map Y (green) channel if true
     bool normalSwapXZ = false;  // swap R/B channels (X/Z) if true
