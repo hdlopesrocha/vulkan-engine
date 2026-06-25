@@ -44,10 +44,11 @@ vec3 clampAndNormalizeBary(vec3 b) {
 
 vec3 sampleDisplacedPos(vec3 bary, float animTime,
                         float foamNoiseScale, int foamNoiseOctaves, float foamNoisePersistence,
+                        float foamNoiseLacunarity,
                         float bumpAmp, float waveScale) {
     vec3 p = bary.x * inPos[0] + bary.y * inPos[1] + bary.z * inPos[2];
     vec3 n = normalize(bary.x * inNormal[0] + bary.y * inNormal[1] + bary.z * inNormal[2]);
-    float h = waterWaveDisplacement(p.xyz, animTime, foamNoiseScale, foamNoiseOctaves, foamNoisePersistence, bumpAmp, waveScale);
+    float h = waterWaveDisplacement(p.xyz, animTime, foamNoiseScale, foamNoiseOctaves, foamNoisePersistence, foamNoiseLacunarity, bumpAmp, waveScale);
     return p + n * h;
 }
 void main() {
@@ -93,6 +94,7 @@ void main() {
     float noiseScale = wp.params2.y;
     int noiseOctaves = int(max(wp.params2.z, 1.0));
     float noisePersistence = wp.params2.w;
+    float noiseLacunarity = wp.params3.y;
 
     float bumpAmp = wp.waveParams.z; // bump amplitude provided via Water widget
 
@@ -123,6 +125,7 @@ void main() {
         noiseScale,
         noiseOctaves,
         noisePersistence,
+        noiseLacunarity,
         bumpAmp,
         waveScale
     );
@@ -135,10 +138,10 @@ void main() {
     vec3 B = cross(normal, T);
 
     float epsTes = max(0.5 / max(noiseScale, 0.001), 0.05);
-    float hT_pos = waterWaveDisplacement(xyz + epsTes * T, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
-    float hT_neg = waterWaveDisplacement(xyz - epsTes * T, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
-    float hB_pos = waterWaveDisplacement(xyz + epsTes * B, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
-    float hB_neg = waterWaveDisplacement(xyz - epsTes * B, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
+    float hT_pos = waterWaveDisplacement(xyz + epsTes * T, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bumpAmp, waveScale);
+    float hT_neg = waterWaveDisplacement(xyz - epsTes * T, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bumpAmp, waveScale);
+    float hB_pos = waterWaveDisplacement(xyz + epsTes * B, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bumpAmp, waveScale);
+    float hB_neg = waterWaveDisplacement(xyz - epsTes * B, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bumpAmp, waveScale);
 
     float dhdT = (hT_pos - hT_neg) / (2.0 * epsTes);
     float dhdB = (hB_pos - hB_neg) / (2.0 * epsTes);

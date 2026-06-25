@@ -44,6 +44,7 @@ void WaterWidget::render() {
             ImGui::SliderFloat("Noise Scale", &layerParams.noiseScale, 0.01f, 256.0f, "%.2f");
             ImGui::SliderInt("Noise Octaves", &layerParams.noiseOctaves, 1, 8);
             ImGui::SliderFloat("Noise Persistence", &layerParams.noisePersistence, 0.1f, 0.9f);
+            ImGui::SliderFloat("Noise Lacunarity", &layerParams.noiseLacunarity, 1.0f, 4.0f);
             ImGui::SliderFloat("Noise Time Speed", &layerParams.noiseTimeSpeed, 0.0f, 5.0f);
         }
 

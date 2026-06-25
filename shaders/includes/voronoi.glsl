@@ -8,12 +8,12 @@ vec3 hash3(vec3 p) {
     )) * 43758.5453123);
 }
 
-// voronoi3d(x, time, fbmSpatialScale, fbmTimeScale, fbmOctaves, fbmPersistence)
+// voronoi3d(x, time, fbmSpatialScale, fbmTimeScale, fbmOctaves, fbmPersistence, fbmLacunarity)
 // `time` and FBM parameters are used to compute a small jitter for each
 // feature point using the same FBM used elsewhere (via `waterFbmNoise`). This
 // perturbs the feature positions (point jitter) rather than translating the
 // entire Voronoi lattice, producing animated but locally coherent motion.
-vec2 voronoi3d(vec3 x, float time, float fbmSpatialScale, float fbmTimeScale, int fbmOctaves, float fbmPersistence) {
+vec2 voronoi3d(vec3 x, float time, float fbmSpatialScale, float fbmTimeScale, int fbmOctaves, float fbmPersistence, float fbmLacunarity) {
     vec3 p = floor(x);
     vec3 f = fract(x);
     float min1 = 1e10;
@@ -31,7 +31,7 @@ vec2 voronoi3d(vec3 x, float time, float fbmSpatialScale, float fbmTimeScale, in
                 // Sample FBM once per feature to get a scalar modulation in [-1..1]
                 // Sample position uses the integer cell coord plus the base feature
                 // offset so neighbouring cells produce different samples.
-                float fbmSample = waterFbmNoise(p + b + baseRp, fbmSpatialScale, time, fbmTimeScale, fbmOctaves, fbmPersistence, vec3(0.0));
+                float fbmSample = waterFbmNoise(p + b + baseRp, fbmSpatialScale, time, fbmTimeScale, fbmOctaves, fbmPersistence, fbmLacunarity, vec3(0.0));
 
                 // Direction for jitter derived from a separate hash so it's stable
                 // but decorrelated from baseRp. Map to [-1,1] then normalize.

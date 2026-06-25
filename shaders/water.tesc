@@ -70,9 +70,10 @@ void main() {
         // function used by the TES and fragment shader at the patch center.
         // Higher wave activity → more tessellation.
         float timeVal = waterRenderUBO.timeParams.x * wp.params3.x;
+        float lacunarity = wp.params3.y;
         float noiseVal = waterWaveDisplacement(
             center, timeVal,
-            wp.params2.y, int(max(wp.params2.z, 1.0)), wp.params2.w,
+            wp.params2.y, int(max(wp.params2.z, 1.0)), wp.params2.w, lacunarity,
             1.0, 1.0
         );
 

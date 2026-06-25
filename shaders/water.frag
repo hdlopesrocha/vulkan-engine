@@ -59,6 +59,7 @@ void main() {
     int noiseOctaves = int(max(wp.params2.z, 1.0));
     float noisePersistence = wp.params2.w;
     float noiseTimeSpeed = wp.params3.x;
+    float noiseLacunarity = wp.params3.y;
     float reflectionStrength = wp.params1.w;
     float specularIntensity = wp.params3.z;
     float specularPowerParam = wp.params3.w;
@@ -147,11 +148,11 @@ void main() {
     } else {
         // When tessellation is inactive, approximate the bumped normal from
         // the procedural displacement on the flat base mesh.
-        float h0 = waterWaveDisplacement(fragPos, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
-        float ht_pos = waterWaveDisplacement(fragPos + epsFrag * T, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
-        float ht_neg = waterWaveDisplacement(fragPos - epsFrag * T, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
-        float hb_pos = waterWaveDisplacement(fragPos + epsFrag * B, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
-        float hb_neg = waterWaveDisplacement(fragPos - epsFrag * B, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
+        float h0 = waterWaveDisplacement(fragPos, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bAmp, 1.0);
+        float ht_pos = waterWaveDisplacement(fragPos + epsFrag * T, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bAmp, 1.0);
+        float ht_neg = waterWaveDisplacement(fragPos - epsFrag * T, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bAmp, 1.0);
+        float hb_pos = waterWaveDisplacement(fragPos + epsFrag * B, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bAmp, 1.0);
+        float hb_neg = waterWaveDisplacement(fragPos - epsFrag * B, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bAmp, 1.0);
 
         float dhdT = (ht_pos - ht_neg) / (2.0 * epsFrag);
         float dhdB = (hb_pos - hb_neg) / (2.0 * epsFrag);
@@ -178,7 +179,8 @@ void main() {
         noiseScale,
         animTime,
         int(noiseOctaves),
-        noisePersistence
+        noisePersistence,
+        noiseLacunarity
     );
     
     // Combine noise layers for complex refraction pattern
@@ -279,15 +281,15 @@ void main() {
     
     // Main specular highlight with noise perturbation
     float specNoise = 0.8 + 0.4 * waterFbmNoise(fragPos.xyz, noiseScale, animTime, 1.0,
-                                                max(int(noiseOctaves), 1), noisePersistence, vec3(0.0));
+                                                max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
     float specular = pow(specAngle, specularPowerParam) * specNoise;
     vec3 specularColor = ubo.lightColor.xyz * specular * specularIntensity;
     
     // Sun glitter: high-frequency noise-based sparkles
     float glitterNoise = waterFbmNoise(fragPos.xyz, noiseScale * 3.0, animTime, 3.0,
-                                       max(int(noiseOctaves) - 2, 1), noisePersistence, vec3(0.0));
+                                       max(int(noiseOctaves) - 2, 1), noisePersistence, noiseLacunarity, vec3(0.0));
     float glitterThreshold = 0.7 + 0.2 * waterFbmNoise(fragPos.xyz, noiseScale * 0.5, animTime, 0.5,
-                                                       max(int(noiseOctaves), 1), noisePersistence, vec3(0.0));
+                                                       max(int(noiseOctaves), 1), noisePersistence, noiseLacunarity, vec3(0.0));
     float glitter = smoothstep(glitterThreshold, 1.0, glitterNoise) * pow(specAngle, 32.0);
     specularColor += ubo.lightColor.xyz * glitter * glitterIntensity;
     
@@ -408,8 +410,8 @@ void main() {
     // Compute only the selected caustic noise per-fragment
     if (causticType == 1) {
         // VORONOI-based measures (Worley noise) — jitter feature points using FBM
-        vec2 vorFront = voronoi3d(fragPos * causticScale, causticAnimTime, noiseScale, 0.5, noiseOctaves, noisePersistence);
-        vec2 vorBack  = voronoi3d(backPos * causticScale, causticAnimTime, noiseScale, 0.5, noiseOctaves, noisePersistence);
+        vec2 vorFront = voronoi3d(fragPos * causticScale, causticAnimTime, noiseScale, 0.5, noiseOctaves, noisePersistence, noiseLacunarity);
+        vec2 vorBack  = voronoi3d(backPos * causticScale, causticAnimTime, noiseScale, 0.5, noiseOctaves, noisePersistence, noiseLacunarity);
         float f1f = vorFront.x;
         float f2f = vorFront.y;
         float f1b = vorBack.x;
@@ -427,18 +429,18 @@ void main() {
         lineFinal = pow(max(lineCombined, 1e-6), causticPower);
     } else {
         // PERLIN-based measures (existing Jacobian method)
-        vec2 ref0 = waterRefractionNoise(fragPos.xyz, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence) * refractionStrength;
-        vec2 refT = waterRefractionNoise(fragPos + eps * T, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence) * refractionStrength;
-        vec2 refB = waterRefractionNoise(fragPos + eps * B, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+        vec2 ref0 = waterRefractionNoise(fragPos.xyz, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
+        vec2 refT = waterRefractionNoise(fragPos + eps * T, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
+        vec2 refB = waterRefractionNoise(fragPos + eps * B, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
         vec2 ddT = (refT - ref0) / eps;
         vec2 ddB = (refB - ref0) / eps;
         float detJFront = ddT.x * ddB.y - ddT.y * ddB.x;
         float trFront = ddT.x + ddB.y;
         float anisFront = sqrt(max(trFront * trFront - 4.0 * detJFront, 0.0));
 
-        vec2 ref0b = waterRefractionNoise(backPos.xyz, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence) * refractionStrength;
-        vec2 refTb = waterRefractionNoise(backPos + eps * T, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence) * refractionStrength;
-        vec2 refBb = waterRefractionNoise(backPos + eps * B, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence) * refractionStrength;
+        vec2 ref0b = waterRefractionNoise(backPos.xyz, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
+        vec2 refTb = waterRefractionNoise(backPos + eps * T, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
+        vec2 refBb = waterRefractionNoise(backPos + eps * B, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
         vec2 ddTb = (refTb - ref0b) / eps;
         vec2 ddBb = (refBb - ref0b) / eps;
         float detJBack = ddTb.x * ddBb.y - ddTb.y * ddBb.x;
@@ -484,6 +486,7 @@ void main() {
             noiseScale,
             noiseOctaves,
             noisePersistence,
+            noiseLacunarity,
             bumpAmpDbg,
             waveScaleDbg
         );

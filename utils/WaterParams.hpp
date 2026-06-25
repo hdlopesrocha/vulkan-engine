@@ -13,6 +13,7 @@ struct WaterParams {
     float depthFalloff = 0.1f;
     int noiseOctaves = 4;
     float noisePersistence = 0.5f;
+    float noiseLacunarity = 2.0f;
     float noiseScale = 0.4f;
     float waterTint = 0.3f;
     float noiseTimeSpeed = 1.0f;

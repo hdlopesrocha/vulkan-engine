@@ -5,7 +5,7 @@
 struct WaterParamsGPU {
     glm::vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=reflectionStrength
     glm::vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
-    glm::vec4 params3;  // x=noiseTimeSpeed, y=unused, z=specularIntensity, w=specularPower
+    glm::vec4 params3;  // x=noiseTimeSpeed, y=noiseLacunarity, z=specularIntensity, w=specularPower
     glm::vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
     glm::vec4 deepColor; // xyz = deepColor, w = glitterIntensity
     glm::vec4 waveParams; // x=tessNoiseInfluence, y=unused, z=bumpAmplitude, w=depthFalloff

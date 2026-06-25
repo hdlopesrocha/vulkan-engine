@@ -87,7 +87,7 @@ float perlinNoise4D(vec4 p) {
     return mix(nxyz0, nxyz1, u.w);
 }
 
-float fbm(vec3 p, int octaves, float persistence) {
+float fbm(vec3 p, int octaves, float persistence, float lacunarity) {
     float total = 0.0;
     float frequency = 1.0;
     float amplitude = 1.0;
@@ -97,13 +97,13 @@ float fbm(vec3 p, int octaves, float persistence) {
         total += perlinNoise3D(p * frequency) * amplitude;
         maxValue += amplitude;
         amplitude *= persistence;
-        frequency *= 2.0;
+        frequency *= lacunarity;
     }
     
     return total / maxValue;
 }
 
-float fbm(vec4 p, int octaves, float persistence) {
+float fbm(vec4 p, int octaves, float persistence, float lacunarity) {
     float total = 0.0;
     float frequency = 1.0;
     float amplitude = 1.0;
@@ -113,13 +113,19 @@ float fbm(vec4 p, int octaves, float persistence) {
         total += perlinNoise4D(p * frequency) * amplitude;
         maxValue += amplitude;
         amplitude *= persistence;
-        frequency *= 2.0;
+        frequency *= lacunarity;
     }
     
     return total / maxValue;
 }
 
-// Legacy version with hardcoded persistence for backward compatibility
+// Legacy versions with hardcoded defaults for backward compatibility
+float fbm(vec3 p, int octaves, float persistence) {
+    return fbm(p, octaves, persistence, 2.0);
+}
+float fbm(vec4 p, int octaves, float persistence) {
+    return fbm(p, octaves, persistence, 2.0);
+}
 float fbm(vec3 p, int octaves) {
-    return fbm(p, octaves, 0.5);
+    return fbm(p, octaves, 0.5, 2.0);
 }

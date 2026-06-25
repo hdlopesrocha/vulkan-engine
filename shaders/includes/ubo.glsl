@@ -53,7 +53,7 @@ layout(set = 0, binding = 10) uniform WaterRenderUBO {
 struct WaterParamsGPU {
     vec4 params1;  // x=refractionStrength, y=fresnelPower, z=transparency, w=reflectionStrength
     vec4 params2;  // x=waterTint, y=noiseScale, z=noiseOctaves, w=noisePersistence
-    vec4 params3;  // x=noiseTimeSpeed, y=unused, z=specularIntensity, w=specularPower
+    vec4 params3;  // x=noiseTimeSpeed, y=noiseLacunarity, z=specularIntensity, w=specularPower
     vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
     vec4 deepColor; // xyz = deepColor, w = glitterIntensity
     vec4 waveParams; // x=tessNoiseInfluence, y=unused, z=bumpAmplitude, w=depthFalloff

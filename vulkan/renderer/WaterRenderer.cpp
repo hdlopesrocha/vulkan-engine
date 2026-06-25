@@ -937,7 +937,7 @@ void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& 
         WaterParamsGPU gpu{};
         gpu.params1 = glm::vec4(p.refractionStrength, p.fresnelPower, p.transparency, p.reflectionStrength);
         gpu.params2 = glm::vec4(p.waterTint, p.noiseScale, static_cast<float>(p.noiseOctaves), p.noisePersistence);
-        gpu.params3 = glm::vec4(p.noiseTimeSpeed, 0.0f, p.specularIntensity, p.specularPower);
+        gpu.params3 = glm::vec4(p.noiseTimeSpeed, p.noiseLacunarity, p.specularIntensity, p.specularPower);
         gpu.shallowColor = glm::vec4(p.shallowColor, p.waveDepthTransition);
         gpu.deepColor = glm::vec4(p.deepColor, p.glitterIntensity);
         gpu.waveParams = glm::vec4(p.tessNoiseInfluence, 0.0f, p.bumpAmplitude, p.depthFalloff);
