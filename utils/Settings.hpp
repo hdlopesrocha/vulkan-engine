@@ -21,7 +21,7 @@ public:
         shadowTessellationEnabled = true;
         adaptiveTessellation = true;
         tessellationFactor = 1.0f;
-        tessMaxDistance = 200.0f;
+        tessMaxDistance = 512.0f;
         tessMinDistance = 1.0f;
         vsyncEnabled = true;
         showDebugCubes = false;

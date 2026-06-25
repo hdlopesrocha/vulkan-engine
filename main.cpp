@@ -243,13 +243,17 @@ public:
      
         materials[14u].mappingMode = true;
         materials[14u].tessLevel = 5.0f;
-        materials[14u].tessHeightScale = 8.0f;
+        materials[14u].tessMinLevel = 2.0f;
+        materials[14u].tessMaxLevel = 18.0f;
+        materials[14u].tessHeightScale = 32.0f;
         materials[14u].triplanar = true;
         materials[14u].triplanarScaleU = 0.002f;
         materials[14u].triplanarScaleV = 0.002f;
 
         materials[12u].mappingMode = true;
         materials[12u].tessLevel = 16.0f;
+        materials[12u].tessMinLevel = 2.0f;
+        materials[12u].tessMaxLevel = 18.0f;
         materials[12u].tessHeightScale = 32.0f;
         materials[12u].triplanar = true;
         materials[12u].triplanarScaleU = 0.002f;
