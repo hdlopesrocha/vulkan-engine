@@ -1314,7 +1314,7 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
     VkRenderingAttachmentInfo depthAtt{};
     depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     depthAtt.imageView = depthView;
-    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
     depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     VkRenderingInfo ri{};
@@ -1331,11 +1331,12 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
     VkRect2D sc{ {}, {faceSize, faceSize} };
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
-    // Update set 2 descriptor: bind face depth as scene depth, dummy for backface/cube/color
+    // Update set 2 descriptor: bind dummy depth as scene depth (depth stays in
+    // ATTACHMENT_OPTIMAL during the water pass), dummy for backface/cube/color
     VkDescriptorImageInfo depthInfo{};
     depthInfo.sampler = linearSampler;
-    depthInfo.imageView = depthView;
-    depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    depthInfo.imageView = cubemapDummyDepthView;
+    depthInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkDescriptorImageInfo dummyColorInfo{};
     dummyColorInfo.sampler = linearSampler;
