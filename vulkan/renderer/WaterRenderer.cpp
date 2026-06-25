@@ -444,6 +444,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     depthLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     depthLayoutInfo.bindingCount = static_cast<uint32_t>(sceneBindings.size());
     depthLayoutInfo.pBindings = sceneBindings.data();
+    depthLayoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     
     if (vkCreateDescriptorSetLayout(device, &depthLayoutInfo, nullptr, &waterDepthDescriptorSetLayout) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create water depth descriptor set layout!");
@@ -454,13 +455,13 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     // Create descriptor pool for scene textures (color + depth), 2 sets for 2 frames
     VkDescriptorPoolSize depthPoolSize{};
     depthPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    depthPoolSize.descriptorCount = 10;  // (color + depth + sky + backfaceDepth + cube) * 2 frames
+    depthPoolSize.descriptorCount = 15;  // (color + depth + sky + backfaceDepth + cube) * 3 sets (2 per-frame + 1 cubemap)
     
     VkDescriptorPoolCreateInfo depthPoolInfo{};
     depthPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     depthPoolInfo.poolSizeCount = 1;
     depthPoolInfo.pPoolSizes = &depthPoolSize;
-    depthPoolInfo.maxSets = 2;  // 2 frames in flight
+    depthPoolInfo.maxSets = 3;  // 2 per-frame sets + 1 cubemap water set
     // Allow freeing individual descriptor sets if code frees them explicitly
     depthPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     
@@ -1087,6 +1088,310 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
     endWaterGeometryPass(cmd);
 
     postRenderBarrier(cmd, frameIndex);
+}
+
+// Helper: create a 1x1 image with given format, initialize to black (color) or 1.0 (depth).
+// Returns the image view on success, VK_NULL_HANDLE on failure.
+static VkImageView _createDummy1x1ImageView(VulkanApp* app, VkFormat fmt, VkImageAspectFlags aspect) {
+    VkDevice device = app->getDevice();
+    VkImageCreateInfo img{};
+    img.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    img.imageType = VK_IMAGE_TYPE_2D; img.format = fmt;
+    img.extent = {1, 1, 1}; img.mipLevels = 1; img.arrayLayers = 1;
+    img.samples = VK_SAMPLE_COUNT_1_BIT; img.tiling = VK_IMAGE_TILING_OPTIMAL;
+    img.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    img.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImage image; VkDeviceMemory mem;
+    if (vkCreateImage(device, &img, nullptr, &image) != VK_SUCCESS) return VK_NULL_HANDLE;
+    VkMemoryRequirements mr; vkGetImageMemoryRequirements(device, image, &mr);
+    VkMemoryAllocateInfo ai{}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = mr.size;
+    ai.memoryTypeIndex = app->findMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (vkAllocateMemory(device, &ai, nullptr, &mem) != VK_SUCCESS) { vkDestroyImage(device, image, nullptr); return VK_NULL_HANDLE; }
+    vkBindImageMemory(device, image, mem, 0);
+    VkImageViewCreateInfo vi{}; vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image = image; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = fmt;
+    vi.subresourceRange.aspectMask = aspect;
+    vi.subresourceRange.levelCount = 1; vi.subresourceRange.layerCount = 1;
+    VkImageView view;
+    if (vkCreateImageView(device, &vi, nullptr, &view) != VK_SUCCESS) { vkDestroyImage(device, image, nullptr); vkFreeMemory(device, mem, nullptr); return VK_NULL_HANDLE; }
+    app->resources.addImage(image, "WaterRenderer: cubemapDummy");
+    app->resources.addDeviceMemory(mem, "WaterRenderer: cubemapDummyMem");
+    app->resources.addImageView(view, "WaterRenderer: cubemapDummyView");
+    // Initialize (clear) via 1-shot command buffer — record ALL barriers
+    // and the clear into the same cb so layout transitions and clear are
+    // submitted atomically. Must use recordTransitionImageLayoutLayer
+    // (not transitionImageLayout) to avoid separate transient submissions.
+    app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+        VkImageSubresourceRange range{aspect, 0, 1, 0, 1};
+        app->recordTransitionImageLayoutLayer(cmd, image, fmt, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
+        if (aspect == VK_IMAGE_ASPECT_DEPTH_BIT) {
+            VkClearDepthStencilValue cv{1.0f, 0};
+            vkCmdClearDepthStencilImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &range);
+        } else {
+            VkClearColorValue cv{};
+            vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &range);
+        }
+        app->recordTransitionImageLayoutLayer(cmd, image, fmt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+    });
+    return view;
+}
+
+void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat) {
+    if (cubemapWaterPipeline != VK_NULL_HANDLE) return;
+    VkDevice device = app->getDevice();
+
+    // --- Dummy 1x1 depth (far plane) for back-face depth ---
+    if (cubemapDummyDepthView == VK_NULL_HANDLE) {
+        cubemapDummyDepthView = _createDummy1x1ImageView(app, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT);
+    }
+
+    // --- Dummy 1x1 cubemap (black) ---
+    if (cubemapDummyCubeView == VK_NULL_HANDLE) {
+        VkDevice device2 = app->getDevice();
+        VkImageCreateInfo ic{};
+        ic.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ic.imageType = VK_IMAGE_TYPE_2D;
+        ic.format = VK_FORMAT_R8G8B8A8_UNORM;
+        ic.extent = {1, 1, 1};
+        ic.mipLevels = 1;
+        ic.arrayLayers = 6;
+        ic.samples = VK_SAMPLE_COUNT_1_BIT;
+        ic.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ic.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        ic.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        ic.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VkImage image; VkDeviceMemory mem;
+        vkCreateImage(device2, &ic, nullptr, &image);
+        VkMemoryRequirements mr; vkGetImageMemoryRequirements(device2, image, &mr);
+        VkMemoryAllocateInfo ai{}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        ai.allocationSize = mr.size;
+        ai.memoryTypeIndex = app->findMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        vkAllocateMemory(device2, &ai, nullptr, &mem);
+        vkBindImageMemory(device2, image, mem, 0);
+        VkImageViewCreateInfo vi{}; vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vi.image = image; vi.viewType = VK_IMAGE_VIEW_TYPE_CUBE; vi.format = VK_FORMAT_R8G8B8A8_UNORM;
+        vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vi.subresourceRange.levelCount = 1; vi.subresourceRange.layerCount = 6;
+        VkImageView view;
+        vkCreateImageView(device2, &vi, nullptr, &view);
+        app->resources.addImage(image, "WaterRenderer: cubemapDummyCube");
+        app->resources.addDeviceMemory(mem, "WaterRenderer: cubemapDummyCubeMem");
+        app->resources.addImageView(view, "WaterRenderer: cubemapDummyCubeView");
+        cubemapDummyCubeImage = image; cubemapDummyCubeMemory = mem; cubemapDummyCubeView = view;
+        // Initialize all 6 faces to black — record barriers and clear atomically
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+            VkImageSubresourceRange range2{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+            app->recordTransitionImageLayoutLayer(cmd, image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 6);
+            VkClearColorValue cv{};
+            vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &range2);
+            app->recordTransitionImageLayoutLayer(cmd, image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 6);
+        });
+    }
+
+    // --- Create cubemap water pipeline (same shaders, swapchain color format) ---
+    if (cubemapWaterPipeline == VK_NULL_HANDLE) {
+        auto vertCode = FileReader::readFile("shaders/water.vert.spv");
+        auto tescCode = FileReader::readFile("shaders/water.tesc.spv");
+        auto teseCode = FileReader::readFile("shaders/water.tese.spv");
+        auto fragCode = FileReader::readFile("shaders/water.frag.spv");
+        if (vertCode.empty() || fragCode.empty()) return;
+
+        VkShaderModule vertModule = app->createShaderModule(vertCode);
+        VkShaderModule fragModule = app->createShaderModule(fragCode);
+        VkShaderModule tescModule = VK_NULL_HANDLE;
+        VkShaderModule teseModule = VK_NULL_HANDLE;
+        bool hasTess = !tescCode.empty() && !teseCode.empty();
+        if (hasTess) { tescModule = app->createShaderModule(tescCode); teseModule = app->createShaderModule(teseCode); }
+
+        std::vector<VkPipelineShaderStageCreateInfo> stages;
+        VkPipelineShaderStageCreateInfo vs{}; vs.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vs.stage = VK_SHADER_STAGE_VERTEX_BIT; vs.module = vertModule; vs.pName = "main"; stages.push_back(vs);
+        if (hasTess) {
+            VkPipelineShaderStageCreateInfo ts{}; ts.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            ts.stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT; ts.module = tescModule; ts.pName = "main"; stages.push_back(ts);
+            VkPipelineShaderStageCreateInfo te{}; te.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            te.stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT; te.module = teseModule; te.pName = "main"; stages.push_back(te);
+        }
+        VkPipelineShaderStageCreateInfo fs{}; fs.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fs.stage = VK_SHADER_STAGE_FRAGMENT_BIT; fs.module = fragModule; fs.pName = "main"; stages.push_back(fs);
+
+        VkVertexInputBindingDescription bd{}; bd.stride = sizeof(Vertex);
+        auto attr = vk_layouts::defaultAttributes();
+
+        VkPipelineVertexInputStateCreateInfo vi{};
+        vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vi.vertexBindingDescriptionCount = 1; vi.pVertexBindingDescriptions = &bd;
+        vi.vertexAttributeDescriptionCount = (uint32_t)attr.size(); vi.pVertexAttributeDescriptions = attr.data();
+
+        VkPipelineInputAssemblyStateCreateInfo ia{};
+        ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        ia.topology = hasTess ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkPipelineViewportStateCreateInfo vp{};
+        vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo ds{};
+        ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+
+        VkPipelineRasterizationStateCreateInfo rs{};
+        rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.lineWidth = 1.0f;
+        rs.cullMode = VK_CULL_MODE_BACK_BIT; rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
+
+        VkPipelineMultisampleStateCreateInfo ms{};
+        ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo dz{};
+        dz.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        dz.depthTestEnable = VK_TRUE; dz.depthWriteEnable = VK_FALSE;
+        dz.depthCompareOp = VK_COMPARE_OP_LESS;
+
+        VkPipelineColorBlendAttachmentState cb{};
+        cb.colorWriteMask = 0xF; cb.blendEnable = VK_FALSE;
+
+        VkPipelineColorBlendStateCreateInfo cblend{};
+        cblend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        cblend.attachmentCount = 1; cblend.pAttachments = &cb;
+
+        VkPipelineTessellationStateCreateInfo tess{};
+        if (hasTess) { tess.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO; tess.patchControlPoints = 3; }
+
+        VkGraphicsPipelineCreateInfo pi{};
+        pi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        VkPipelineRenderingCreateInfo pr{};
+        pr.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        pr.colorAttachmentCount = 1; pr.pColorAttachmentFormats = &colorFormat;
+        pr.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+        pi.pNext = &pr; pi.renderPass = VK_NULL_HANDLE;
+        pi.stageCount = (uint32_t)stages.size(); pi.pStages = stages.data();
+        pi.pVertexInputState = &vi; pi.pInputAssemblyState = &ia;
+        pi.pViewportState = &vp; pi.pDynamicState = &ds;
+        pi.pRasterizationState = &rs; pi.pMultisampleState = &ms;
+        pi.pDepthStencilState = &dz; pi.pColorBlendState = &cblend;
+        pi.layout = waterGeometryPipelineLayout; pi.subpass = 0;
+        if (hasTess) pi.pTessellationState = &tess;
+
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &cubemapWaterPipeline) != VK_SUCCESS) {
+            std::cerr << "[WaterRenderer] Warning: Failed to create cubemap water pipeline" << std::endl;
+        } else {
+            app->resources.addPipeline(cubemapWaterPipeline, "WaterRenderer: cubemapWaterPipeline");
+            std::cout << "[WaterRenderer] Created cubemap water pipeline" << std::endl;
+        }
+    }
+
+    // --- Allocate set 2 descriptor for cubemap water pass ---
+    if (cubemapWaterDepthDS == VK_NULL_HANDLE && waterDepthDescriptorPool != VK_NULL_HANDLE) {
+        VkDescriptorSetAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool = waterDepthDescriptorPool;
+        ai.descriptorSetCount = 1; ai.pSetLayouts = &waterDepthDescriptorSetLayout;
+        if (vkAllocateDescriptorSets(device, &ai, &cubemapWaterDepthDS) != VK_SUCCESS) {
+            std::cerr << "[WaterRenderer] Warning: Failed to allocate cubemap water depth descriptor set" << std::endl;
+            cubemapWaterDepthDS = VK_NULL_HANDLE;
+        }
+    }
+}
+
+void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
+                                            VkImageView colorView, VkImageView depthView,
+                                            VkDescriptorSet descriptorSet0,
+                                            VkDescriptorSet materialDs,
+                                            uint32_t faceSize) {
+    if (!appPtr || cubemapWaterPipeline == VK_NULL_HANDLE || cubemapWaterDepthDS == VK_NULL_HANDLE) return;
+    VkDevice device = appPtr->getDevice();
+
+    // Begin dynamic rendering (caller handles layout transitions)
+    VkRenderingAttachmentInfo colorAtt{};
+    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAtt.imageView = colorView;
+    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingAttachmentInfo depthAtt{};
+    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAtt.imageView = depthView;
+    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    VkRenderingInfo ri{};
+    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    ri.renderArea.extent = {faceSize, faceSize};
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &colorAtt;
+    ri.pDepthAttachment = &depthAtt;
+    vkCmdBeginRendering(cmd, &ri);
+
+    VkViewport vp{0, 0, (float)faceSize, (float)faceSize, 0, 1};
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    VkRect2D sc{ {}, {faceSize, faceSize} };
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+
+    // Update set 2 descriptor: bind face depth as scene depth, dummy for backface/cube/color
+    VkDescriptorImageInfo depthInfo{};
+    depthInfo.sampler = linearSampler;
+    depthInfo.imageView = depthView;
+    depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+    VkDescriptorImageInfo dummyColorInfo{};
+    dummyColorInfo.sampler = linearSampler;
+    dummyColorInfo.imageView = cubemapDummyDepthView; // never sampled with reflection off
+    dummyColorInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkDescriptorImageInfo dummyDepthInfo{};
+    dummyDepthInfo.sampler = nearestSampler;
+    dummyDepthInfo.imageView = cubemapDummyDepthView;
+    dummyDepthInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkDescriptorImageInfo dummyCubeInfo{};
+    dummyCubeInfo.sampler = linearSampler;
+    dummyCubeInfo.imageView = cubemapDummyCubeView;
+    dummyCubeInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    std::array<VkWriteDescriptorSet, 5> writes{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = cubemapWaterDepthDS; writes[0].dstBinding = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].descriptorCount = 1; writes[0].pImageInfo = &dummyColorInfo;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = cubemapWaterDepthDS; writes[1].dstBinding = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].descriptorCount = 1; writes[1].pImageInfo = &depthInfo;
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = cubemapWaterDepthDS; writes[2].dstBinding = 2;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].descriptorCount = 1; writes[2].pImageInfo = &dummyColorInfo;
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = cubemapWaterDepthDS; writes[3].dstBinding = 3;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].descriptorCount = 1; writes[3].pImageInfo = &dummyDepthInfo;
+    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[4].dstSet = cubemapWaterDepthDS; writes[4].dstBinding = 4;
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[4].descriptorCount = 1; writes[4].pImageInfo = &dummyCubeInfo;
+    vkUpdateDescriptorSets(device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
+
+    // Bind pipeline and descriptor sets
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cubemapWaterPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        waterGeometryPipelineLayout, 0, 1, &descriptorSet0, 0, nullptr);
+    if (materialDs != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
+    }
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        waterGeometryPipelineLayout, 2, 1, &cubemapWaterDepthDS, 0, nullptr);
+
+    // Acquire vertex/index buffers (ensure transfer writes are visible), then draw ALL
+    // water patches without frustum culling (cubemap covers all 6 faces).
+    waterIndirectRenderer.acquireBuffers(cmd);
+    waterIndirectRenderer.drawAll(cmd);
+
+    vkCmdEndRendering(cmd);
 }
 
 // Solid 360° cubemap reflection is owned and executed by SceneRenderer.

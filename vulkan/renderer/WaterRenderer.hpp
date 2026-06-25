@@ -86,6 +86,19 @@ public:
     // Get the descriptor set layout for scene textures (set 2)
     VkDescriptorSetLayout getWaterDepthDescriptorSetLayout() const { return waterDepthDescriptorSetLayout; }
 
+    // Cubemap-compatible water pipeline (uses swapchain color format)
+    VkPipeline getCubemapWaterPipeline() const { return cubemapWaterPipeline; }
+
+    // Render water into a given color+depth attachment pair (used by Solid360Renderer).
+    // The caller must ensure the attachments are in COLOR_ATTACHMENT_OPTIMAL /
+    // DEPTH_STENCIL_ATTACHMENT_OPTIMAL layout before calling, and transition them
+    // back after. descriptorSet0 must contain at least bindings 0, 5, 7, 10.
+    void renderWaterIntoCubemap(VkCommandBuffer cmd,
+                                VkImageView colorView, VkImageView depthView,
+                                VkDescriptorSet descriptorSet0,
+                                VkDescriptorSet materialDs,
+                                uint32_t faceSize);
+
     // Prepare render state (UBO upload, descriptor update, pre-barrier).
     // Call this before beginWaterGeometryPass when manually recording commands.
     void prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
@@ -102,6 +115,10 @@ public:
     // Get water params buffer
     Buffer& getWaterParamsBuffer() { return waterParamsBuffer; }
     
+    // Ensure cubemap water rendering resources exist (pipeline, dummy textures, descriptor set).
+    // Called lazily from renderWaterIntoCubemap.
+    void ensureCubemapResources(VulkanApp* app, VkFormat colorFormat);
+
     // Get sampler for ImGui texture display
     VkSampler getLinearSampler() const { return linearSampler; }
     
@@ -172,6 +189,7 @@ private:
 
     // Pipelines
     VkPipeline waterGeometryPipeline = VK_NULL_HANDLE;
+    VkPipeline cubemapWaterPipeline = VK_NULL_HANDLE;
     
     // Water geometry pipeline layout (includes depth texture binding)
     VkPipelineLayout waterGeometryPipelineLayout = VK_NULL_HANDLE;
@@ -181,6 +199,15 @@ private:
     VkDescriptorPool waterDepthDescriptorPool = VK_NULL_HANDLE;
     // Per-frame descriptor sets for scene textures (2 frames in flight)
     std::array<VkDescriptorSet, 2> waterDepthDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+
+    // Cubemap water pass resources
+    VkDescriptorSet cubemapWaterDepthDS = VK_NULL_HANDLE; // set 2 descriptor for cubemap water pass
+    VkImage cubemapDummyDepthImage = VK_NULL_HANDLE;      // depth image cleared to far plane
+    VkDeviceMemory cubemapDummyDepthMemory = VK_NULL_HANDLE;
+    VkImageView cubemapDummyDepthView = VK_NULL_HANDLE;
+    VkImage cubemapDummyCubeImage = VK_NULL_HANDLE;       // dummy cubemap to avoid feedback
+    VkDeviceMemory cubemapDummyCubeMemory = VK_NULL_HANDLE;
+    VkImageView cubemapDummyCubeView = VK_NULL_HANDLE;
 
     // Storage buffer (SSBO) for per-layer WaterParamsGPU entries
     Buffer waterParamsBuffer;
