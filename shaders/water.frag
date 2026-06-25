@@ -68,6 +68,8 @@ void main() {
     // Feature toggles and blur parameters
     bool enableReflection = wp.reserved1.x > 0.5;
     bool enableRefraction = wp.reserved1.y > 0.5;
+    // During 360 cubemap capture, skip reflection/refraction to avoid feedback.
+    if (ubo.materialFlags.x > 0.5) { enableReflection = false; enableRefraction = false; }
     bool enableBlur       = wp.reserved1.z > 0.5;
     float blurRadius      = wp.reserved1.w;
     int   blurSamples     = max(int(wp.reserved2.x), 1);
@@ -196,7 +198,7 @@ void main() {
     // Sample refraction: prefer a solid 360 cubemap for environment refraction.
     // Keep a small contribution from screen-space sampling so nearby geometry
     // still contributes to the refracted appearance.
-    vec3 sceneColor;
+    vec3 sceneColor = vec3(0.0);
     if (enableRefraction) {
         // Approximate air->water refraction. `refract` expects the incident
         // vector (we use `viewDir` here to match reflection sign conventions).
