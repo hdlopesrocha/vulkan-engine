@@ -19,6 +19,14 @@ endif
 INCLUDES = `pkg-config --cflags glfw3 vulkan` -I. -Ithird_party/imgui -Ithird_party/imgui/backends -I/usr/include/stb
 LIBS = `pkg-config --libs glfw3 vulkan` -lstb -ljpeg -lgdal -lz
 
+# Optional Wii Nunchuk support via libcwiid (installed separately)
+HAS_CWIID := $(shell pkg-config --exists cwiid 2>/dev/null && echo 1 || echo 0)
+ifeq ($(HAS_CWIID),1)
+    INCLUDES += $(shell pkg-config --cflags cwiid)
+    LIBS += $(shell pkg-config --libs cwiid)
+    CFLAGS += -DHAS_CWIID
+endif
+
 # Output directory for runtime binary and resources
 OUT_DIR = bin
 
@@ -185,7 +193,8 @@ install:
 						libglm-dev \
 						libshaderc-dev \
 						libstb-dev \
-						libgdal-dev
+						libgdal-dev \
+						libcwiid-dev
 	# 2. Clone Dear ImGui
 	mkdir -p third_party
 	mkdir -p third_party/miniaudio

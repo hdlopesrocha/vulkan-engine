@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include "../events/ControllerParameters.hpp"
+#include "../events/NunchukPublisher.hpp"
 #include <imgui.h>
 #include "components/ImGuiHelpers.hpp"
 
@@ -48,12 +49,14 @@ static const char* buttonName(int b) {
     }
 }
 
-GamepadWidget::GamepadWidget(ControllerParameters* params) : Widget("Gamepad", u8"\uf11b"), ctrlParams(params) {}
+GamepadWidget::GamepadWidget(ControllerParameters* params, NunchukPublisher* nunchuk)
+    : Widget("Gamepad", u8"\uf11b"), ctrlParams(params), nunchukPublisher(nunchuk) {}
 
 void GamepadWidget::render() {
     ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
     if (!wg.visible()) return;
 
+    // ── Standard Gamepad section ──
     // Build a list of joysticks with their presence/gamepad status
     std::vector<std::string> labels;
     labels.reserve(GLFW_JOYSTICK_LAST - GLFW_JOYSTICK_1 + 1);
@@ -135,5 +138,61 @@ void GamepadWidget::render() {
         drawPageIcon(ctrlParams->currentPage);
     }
 
-    
+    // ── Wii Nunchuk section ──
+    ImGui::Separator();
+    ImGui::TextUnformatted("Wii Nunchuk");
+
+    if (!nunchukPublisher) {
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Nunchuk publisher not available");
+        return;
+    }
+
+    const NunchukState& nc = nunchukPublisher->getState();
+
+    if (!nc.connected) {
+        ImGui::TextColored(ImVec4(0.8f, 0.4f, 0.2f, 1.0f), "Disconnected");
+        if (nunchukPublisher->isConnecting()) {
+            ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.2f, 1.0f), "Scanning... (press 1+2 on Wiimote)");
+        } else {
+            if (ImGui::Button("Connect Nunchuk")) {
+                nunchukPublisher->connect();
+            }
+            ImGui::SameLine();
+            ImGui::TextWrapped("Requires Bluetooth + libcwiid");
+        }
+        return;
+    }
+
+    // Nunchuk is connected - show data
+    ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "Connected");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Disconnect")) {
+        nunchukPublisher->disconnect();
+        return;
+    }
+
+    // Joystick
+    ImGui::Text("Joystick: (%.2f, %.2f)", nc.joystickX, nc.joystickY);
+    ImGui::SameLine(200);
+    ImGui::ProgressBar((nc.joystickX + 1.0f) * 0.5f, ImVec2(60.0f, 0.0f), "");
+    // Vertical joystick bar
+    ImGui::SameLine(270);
+    ImGui::ProgressBar((nc.joystickY + 1.0f) * 0.5f, ImVec2(60.0f, 0.0f), "");
+
+    // Buttons
+    ImGui::Text("Buttons:");
+    ImGui::SameLine(80);
+    if (nc.buttonC) ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "C");
+    else ImGui::Text("C");
+    ImGui::SameLine(120);
+    if (nc.buttonZ) ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "Z");
+    else ImGui::Text("Z");
+
+    // Accelerometer raw values
+    ImGui::Text("Accel: X=%d  Y=%d  Z=%d", nc.accelX, nc.accelY, nc.accelZ);
+
+    // Derived orientation
+    ImGui::Text("Roll: %.1f deg", nc.roll);
+    ImGui::SameLine(150);
+    ImGui::Text("Pitch: %.1f deg", nc.pitch);
 }

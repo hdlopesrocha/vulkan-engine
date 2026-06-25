@@ -56,6 +56,7 @@
 #include "events/EventManager.hpp"
 #include "events/KeyboardPublisher.hpp"
 #include "events/GamepadPublisher.hpp"
+#include "events/NunchukPublisher.hpp"
 #include "events/CloseWindowEvent.hpp"
 #include "events/ToggleFullscreenEvent.hpp"
 #include "events/RebuildBrushEvent.hpp"
@@ -154,6 +155,7 @@ public:
     EventManager eventManager;
     KeyboardPublisher keyboardPublisher;
     GamepadPublisher gamepadPublisher;
+    NunchukPublisher nunchukPublisher;
     bool sceneLoading = false;
 
     // Handlers kept alive as members so the tessellation background thread
@@ -411,7 +413,7 @@ public:
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
         controllerParametersWidget = std::make_shared<ControllerParametersWidget>(controllerManager.getParameters(), &brushManager);
-        gamepadWidget = std::make_shared<GamepadWidget>(controllerManager.getParameters());
+        gamepadWidget = std::make_shared<GamepadWidget>(controllerManager.getParameters(), &nunchukPublisher);
         lightWidget = std::make_shared<LightWidget>(&light);
         vulkanResourcesManagerWidget = std::make_shared<VulkanResourcesManagerWidget>(&resources);
         vulkanResourcesManagerWidget->updateWithApp(this);
@@ -497,6 +499,8 @@ public:
         keyboardPublisher.update(getWindow(), &eventManager, camera, deltaTime, &controllerManager, &brushManager, false);
         // Poll gamepad input and publish events (if a controller is connected)
         gamepadPublisher.update(&eventManager, camera, deltaTime, &controllerManager, &brushManager, false);
+        // Poll nunchuk state (if a Wiimote with nunchuk extension is connected)
+        nunchukPublisher.update();
         eventManager.processQueued();
 
         shadowParams.update(camera.getPosition(), light);
