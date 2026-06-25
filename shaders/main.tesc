@@ -42,26 +42,31 @@ void main() {
     tc_fragPosWorld[gl_InvocationID] = pc_inPosWorld[gl_InvocationID];
 
 
-    // Compress the patch's texture indices into up to three unique slots
+    // Compress the patch's texture indices into up to three unique slots.
+    // Discard -1 (underground) brush indices so they never contribute texture.
     int i0 = pc_inBrushIndex[0];
     int i1 = pc_inBrushIndex[1];
     int i2 = pc_inBrushIndex[2];
 
-    int u0 = i0;
-    int u1 = (i1 == u0) ? -1 : i1;
-    int u2;
-    if (i2 == u0 || (u1 != -1 && i2 == u1)) u2 = -1;
-    else u2 = i2;
+    int u0 = (i0 >= 0) ? i0 : -1;
+    int u1 = -1;
+    int u2 = -1;
+    if (i1 >= 0 && i1 != u0) u1 = i1;
+    if (i2 >= 0 && i2 != u0 && i2 != u1) u2 = i2;
 
     // Store the unique indices (use -1 for empty slots)
     tc_fragBrushIndex[gl_InvocationID] = ivec3(u0, u1, u2);
 
-    // Map this corner's barycentric basis into the matching unique-slot
+    // Map this corner's barycentric basis into the matching unique-slot.
+    // Vertices with brushIndex < 0 (underground) get zero weight so they
+    // never bleed the fallback material (index 0 = bricks) into the blend.
     int myIdx = pc_inBrushIndex[gl_InvocationID];
     vec3 texWeights = vec3(0.0);
-    if (myIdx == u0) texWeights.x = 1.0;
-    else if (myIdx == u1) texWeights.y = 1.0;
-    else if (myIdx == u2) texWeights.z = 1.0;
+    if (myIdx >= 0) {
+        if (myIdx == u0) texWeights.x = 1.0;
+        else if (myIdx == u1) texWeights.y = 1.0;
+        else if (myIdx == u2) texWeights.z = 1.0;
+    }
 
     tc_fragTexWeights[gl_InvocationID] = texWeights;
     tc_fragLocalPos[gl_InvocationID] = pc_inLocalPos[gl_InvocationID];

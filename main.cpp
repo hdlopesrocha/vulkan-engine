@@ -302,6 +302,8 @@ public:
             wp.causticLineScale = 3.0f;
             wp.tessMinLevel = 2.0f;
             wp.tessMaxLevel = 16.0f;
+            wp.reflectionStrength = 0.5f;
+            wp.fresnelPower = 1.0f;
             waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
         }
         {
@@ -324,6 +326,8 @@ public:
             wp.enableBlur = true;
             wp.reflectionStrength = 1.0f;
             wp.fresnelPower = 1.0f;
+            wp.tessMinLevel = 1.0f;
+            wp.tessMaxLevel = 1.0f;
             waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
         }
 

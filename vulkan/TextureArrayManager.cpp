@@ -325,6 +325,35 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	createArray(normalArray, VK_FORMAT_R8G8B8A8_UNORM, false);
 	createArray(bumpArray, VK_FORMAT_R8G8B8A8_UNORM, false);
 
+	// Eagerly create per-layer 2D image views so TextureMixer can
+	// allocate per-layer descriptor sets without a timing dependency.
+	auto createPerLayerViews = [&](VkImage image, std::vector<VkImageView> &views, VkFormat fmt) {
+		views.clear();
+		views.reserve(layerAmount);
+		for (uint32_t i = 0; i < layerAmount; ++i) {
+			VkImageViewCreateInfo v{};
+			v.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+			v.image = image;
+			v.viewType = VK_IMAGE_VIEW_TYPE_2D;
+			v.format = fmt;
+			v.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			v.subresourceRange.baseMipLevel = 0;
+			v.subresourceRange.levelCount = mipLevels;
+			v.subresourceRange.baseArrayLayer = i;
+			v.subresourceRange.layerCount = 1;
+			VkImageView view = VK_NULL_HANDLE;
+			if (vkCreateImageView(device, &v, nullptr, &view) == VK_SUCCESS) {
+				app->resources.addImageView(view, "TextureArrayManager: perLayerView");
+				views.push_back(view);
+			} else {
+				views.push_back(VK_NULL_HANDLE);
+			}
+		}
+	};
+	createPerLayerViews(albedoArray.image, albedoLayerViews, VK_FORMAT_R8G8B8A8_UNORM);
+	createPerLayerViews(normalArray.image, normalLayerViews, VK_FORMAT_R8G8B8A8_UNORM);
+	createPerLayerViews(bumpArray.image, bumpLayerViews, VK_FORMAT_R8G8B8A8_UNORM);
+
 	// cleanup existing samplers and create new ones
 	cleanupSampler(app, albedoSampler);
 	cleanupSampler(app, normalSampler);
