@@ -129,13 +129,6 @@ uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
     }
 
     mergedVertices.insert(mergedVertices.end(), mesh.vertices.begin(), mesh.vertices.end());
-    // Clamp brush indices in newly inserted vertices to prevent OOB shader access
-    size_t newStart = m.baseVertex;
-    for (size_t vi = newStart; vi < mergedVertices.size(); ++vi) {
-        for (int c = 0; c < 3; ++c)
-            if (mergedVertices[vi].brushIndex > 16 || mergedVertices[vi].brushIndex < 0)
-                mergedVertices[vi].brushIndex = 0;
-    }
     mergedIndices.insert(mergedIndices.end(), mesh.indices.begin(), mesh.indices.end());
 
     VkDrawIndexedIndirectCommand cmd{};
@@ -278,12 +271,6 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
     bool doVertexUpload = (vertexSize > 0 && info.baseVertex < mergedVertices.size());
     bool doIndexUpload = (indexSize > 0 && info.firstIndex < mergedIndices.size());
     if (doVertexUpload || doIndexUpload) {
-        if (doVertexUpload) {
-            for (size_t v = info.baseVertex; v < info.baseVertex + meshVertexCount; ++v) {
-                if (mergedVertices[v].brushIndex > 16 || mergedVertices[v].brushIndex < 0)
-                    mergedVertices[v].brushIndex = 0;
-            }
-        }
 
         // Direct memcpy to HOST_VISIBLE staging buffer, then vkCmdCopyBuffer
         // to device-local vertex/index buffers. Device-local memory is
@@ -511,18 +498,6 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         bool doIndexUpload = !mergedIndices.empty();
         VkDeviceSize vertexDataSize = mergedVertices.size() * sizeof(Vertex);
         VkDeviceSize indexDataSize = mergedIndices.size() * sizeof(uint32_t);
-
-        if (doVertexUpload) {
-            // Clamp brush indices before upload.
-            static int clampedCount = 0;
-            for (auto& v : mergedVertices) {
-                if (v.brushIndex > 16 || v.brushIndex < 0) {
-                    if (clampedCount < 10) fprintf(stderr, "[rebuild] clamping brushIndex %d → 0\n", v.brushIndex);
-                    v.brushIndex = 0;
-                    ++clampedCount;
-                }
-            }
-        }
 
         // Staging copy: device-local buffers need staging → GPU copy.
         if (doVertexUpload || doIndexUpload) {

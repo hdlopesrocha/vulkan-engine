@@ -10,7 +10,7 @@ layout(location = VARY_COLOR) in vec3 pc_inFragColor[];
 layout(location = VARY_UV) in vec2 pc_inUV[];
 layout(location = VARY_NORMAL) in vec3 pc_inNormal[];
 layout(location = VARY_POSWORLD) in vec3 pc_inPosWorld[];
-layout(location = VARY_BRUSHPATCH) flat in int pc_inBrushIndex[];
+layout(location = VARY_BRUSHPATCH) in int pc_inBrushIndex[];
 layout(location = VARY_LOCALPOS) in vec3 pc_inLocalPos[];
 layout(location = VARY_LOCALNORMAL) in vec3 pc_inLocalNormal[];
 
