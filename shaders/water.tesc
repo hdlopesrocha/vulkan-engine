@@ -2,7 +2,9 @@
 
 #include "includes/locations.glsl"
 
-// Water tessellation control shader
+// Water tessellation control shader — noise-adaptive tessellation
+// Uses the same Perlin FBM noise function as the displacement/bump to
+// allocate more triangles in areas with higher wave activity.
 
 layout(vertices = 3) out;
 
@@ -17,29 +19,15 @@ layout(location = VARY_UV) out vec2 outTexCoord[];
 layout(location = VARY_BRUSHPATCH) flat out ivec3 tc_fragBrushIndex[];
 layout(location = VARY_TEXWEIGHTS) out vec3 tc_fragTexWeights[];
 
-layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 viewProjection;
-    vec4 viewPos;
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 materialFlags;
-    mat4 lightSpaceMatrix;
-    vec4 shadowEffects;
-    vec4 debugParams;
-    vec4 triplanarSettings;
-    vec4 tessParams;   // x=nearDist, y=farDist, z=minLevel, w=maxLevel
-    vec4 passParams;   // x=isShadowPass, y=tessEnabled, z=nearPlane, w=farPlane
-    mat4 lightSpaceMatrix1; // cascade 1
-    mat4 lightSpaceMatrix2; // cascade 2
-} ubo;
+#include "includes/ubo.glsl"
+#include "includes/perlin.glsl"
+#include "includes/water_noise.glsl"
 
 void main() {
-    // Pass through vertex data
     outPos[gl_InvocationID] = inPos[gl_InvocationID];
     outNormal[gl_InvocationID] = inNormal[gl_InvocationID];
     outTexCoord[gl_InvocationID] = inTexCoord[gl_InvocationID];
-    
-    // Compress the patch's texture indices into up to three unique slots
+
     int i0 = pc_inBrushIndex[0];
     int i1 = pc_inBrushIndex[1];
     int i2 = pc_inBrushIndex[2];
@@ -50,10 +38,8 @@ void main() {
     if (i2 == u0 || (u1 != -1 && i2 == u1)) u2 = -1;
     else u2 = i2;
 
-    // Store the unique indices (use -1 for empty slots)
     tc_fragBrushIndex[gl_InvocationID] = ivec3(u0, u1, u2);
 
-    // Map this corner's barycentric basis into the matching unique-slot
     int myIdx = pc_inBrushIndex[gl_InvocationID];
     vec3 texWeights = vec3(0.0);
     if (myIdx == u0) texWeights.x = 1.0;
@@ -63,13 +49,38 @@ void main() {
     tc_fragTexWeights[gl_InvocationID] = texWeights;
 
     if (gl_InvocationID == 0) {
-        // Calculate tessellation level based on distance to camera
         vec3 center = (inPos[0] + inPos[1] + inPos[2]) / 3.0;
         float dist = length(ubo.viewPos.xyz - center);
-        
-        // Higher tessellation when closer
-        float tessLevel = clamp(200.0 / dist, 1.0, 16.0);
-        
+
+        // Select the water params from the first brush index on the patch
+        int idx = max(pc_inBrushIndex[0], 0);
+        WaterParamsGPU wp = waterParams[idx];
+
+        // Tessellation range from per-water-layer params
+        float nearDist  = wp.tessParams.x;
+        float farDist   = wp.tessParams.y;
+        float minLevel  = wp.tessParams.z;
+        float maxLevel  = wp.tessParams.w;
+        float noiseInf  = wp.waveParams.x;
+
+        // Base distance-based tessellation
+        float distTess = clamp(farDist / max(dist, 1.0), minLevel, maxLevel);
+
+        // Noise-adaptive modulation: evaluate the same wave displacement
+        // function used by the TES and fragment shader at the patch center.
+        // Higher wave activity → more tessellation.
+        float timeVal = waterRenderUBO.timeParams.x * wp.params3.x;
+        float noiseVal = waterWaveDisplacement(
+            center, timeVal,
+            wp.params2.y, int(max(wp.params2.z, 1.0)), wp.params2.w,
+            1.0, 1.0
+        );
+
+        // Map noise from [0,1] to a modulation factor around 1.0
+        // At full noiseInfluence (1.0): range = [0.75, 1.25] → ±25%
+        float noiseMod = 1.0 + noiseInf * (noiseVal - 0.5);
+        float tessLevel = clamp(distTess * noiseMod, minLevel, maxLevel);
+
         gl_TessLevelOuter[0] = tessLevel;
         gl_TessLevelOuter[1] = tessLevel;
         gl_TessLevelOuter[2] = tessLevel;

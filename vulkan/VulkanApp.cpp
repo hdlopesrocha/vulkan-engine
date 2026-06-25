@@ -3591,8 +3591,8 @@ void VulkanApp::createDescriptorSetLayout() {
     waterParamsBinding.descriptorCount = 1;
     waterParamsBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     waterParamsBinding.pImmutableSamplers = nullptr;
-    // Make the water params visible to both fragment and tessellation evaluation shaders
-    waterParamsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+    // Make the water params visible to fragment, tessellation evaluation, and tessellation control shaders
+    waterParamsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
 
     // Per-instance / per-draw descriptor set uses bindings: 0 (UBO), 1..3 (samplers), 4 (shadow cascade 0),
     // 5 (Materials SSBO), 6 (Sky UBO), 7 (water params), 8 (shadow cascade 1), 9 (shadow cascade 2)

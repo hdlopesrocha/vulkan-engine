@@ -47,7 +47,7 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
     gpu.params3 = glm::vec4(p.noiseTimeSpeed, 0.0f, p.specularIntensity, p.specularPower);
     gpu.shallowColor = glm::vec4(p.shallowColor, p.waveDepthTransition);
     gpu.deepColor = glm::vec4(p.deepColor, p.glitterIntensity);
-    gpu.waveParams = glm::vec4(0.0f, 0.0f, p.bumpAmplitude, p.depthFalloff);
+    gpu.waveParams = glm::vec4(p.tessNoiseInfluence, 0.0f, p.bumpAmplitude, p.depthFalloff);
     gpu.reserved1 = glm::vec4(p.enableReflection ? 1.0f : 0.0f,
                               p.enableRefraction ? 1.0f : 0.0f,
                               p.enableBlur ? 1.0f : 0.0f,
@@ -57,6 +57,7 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
     gpu.causticParams = glm::vec4(p.causticScale, p.causticIntensity, p.causticPower, p.causticDepthScale);
     gpu.causticExtraParams = glm::vec4(p.causticLineScale, p.causticLineMix, static_cast<float>(p.causticType), p.causticVelocity);
     gpu.reserved3 = glm::vec4(cube360Available ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+    gpu.tessParams = glm::vec4(p.tessNearDist, p.tessFarDist, p.tessMinLevel, p.tessMaxLevel);
 
     size_t offset = static_cast<size_t>(layer) * sizeof(WaterParamsGPU);
     void* data = nullptr;
@@ -939,7 +940,7 @@ void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& 
         gpu.params3 = glm::vec4(p.noiseTimeSpeed, 0.0f, p.specularIntensity, p.specularPower);
         gpu.shallowColor = glm::vec4(p.shallowColor, p.waveDepthTransition);
         gpu.deepColor = glm::vec4(p.deepColor, p.glitterIntensity);
-        gpu.waveParams = glm::vec4(0.0f, 0.0f, p.bumpAmplitude, p.depthFalloff);
+        gpu.waveParams = glm::vec4(p.tessNoiseInfluence, 0.0f, p.bumpAmplitude, p.depthFalloff);
         gpu.reserved1 = glm::vec4(p.enableReflection ? 1.0f : 0.0f,
                                   p.enableRefraction ? 1.0f : 0.0f,
                                   p.enableBlur ? 1.0f : 0.0f,
@@ -949,6 +950,7 @@ void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& 
         gpu.causticParams = glm::vec4(p.causticScale, p.causticIntensity, p.causticPower, p.causticDepthScale);
         gpu.causticExtraParams = glm::vec4(p.causticLineScale, p.causticLineMix, static_cast<float>(p.causticType), p.causticVelocity);
         gpu.reserved3 = glm::vec4(cube360Available ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+        gpu.tessParams = glm::vec4(p.tessNearDist, p.tessFarDist, p.tessMinLevel, p.tessMaxLevel);
         return gpu;
     };
 

@@ -117,38 +117,37 @@ void main() {
     // Calculate wave displacement using 4D Perlin FBM (pos.xyz, time)
     float animTime = time * noiseTimeSpeed;
     vec3 xyz = pos.xyz;
-        float waveDisplacement = waterWaveDisplacement(
-            xyz,
-            animTime,
-            noiseScale,
-            noiseOctaves,
-            noisePersistence,
-            bumpAmp,
-            waveScale
-        );
+    float waveDisplacement = waterWaveDisplacement(
+        xyz,
+        animTime,
+        noiseScale,
+        noiseOctaves,
+        noisePersistence,
+        bumpAmp,
+        waveScale
+    );
 
-    // Displace along the interpolated surface normal so bump follows mesh orientation.
-    pos += waveDisplacement * normal;
+    // Compute gradient of the displacement via central differences and derive
+    // the bumped normal.  Then displace the vertex along that bumped normal so
+    // the geometry's surface matches the shading normal (gradient-based displacement).
+    vec3 upVec = abs(normal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(upVec, normal));
+    vec3 B = cross(normal, T);
 
-    // Compute bumped normal from the displacement function so that
-    // lighting, reflection, and refraction respond to the wave shape.
-    // Uses the same central-differences approach as the fragment shader's
-    // non-tessellated path, sampling the displacement at nearby world-space
-    // offsets along tangent (T) and bitangent (B).
-    {
-        vec3 upVec = abs(normal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-        vec3 T = normalize(cross(upVec, normal));
-        vec3 B = cross(normal, T);
+    float epsTes = max(0.5 / max(noiseScale, 0.001), 0.05);
+    float hT_pos = waterWaveDisplacement(xyz + epsTes * T, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
+    float hT_neg = waterWaveDisplacement(xyz - epsTes * T, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
+    float hB_pos = waterWaveDisplacement(xyz + epsTes * B, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
+    float hB_neg = waterWaveDisplacement(xyz - epsTes * B, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
 
-        float epsTes = 0.5;
-        float hT = waterWaveDisplacement(xyz + epsTes * T, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
-        float hB = waterWaveDisplacement(xyz + epsTes * B, animTime, noiseScale, noiseOctaves, noisePersistence, bumpAmp, waveScale);
+    float dhdT = (hT_pos - hT_neg) / (2.0 * epsTes);
+    float dhdB = (hB_pos - hB_neg) / (2.0 * epsTes);
 
-        vec3 bumpedN = normalize(normal - ((hT - waveDisplacement) / epsTes) * T - ((hB - waveDisplacement) / epsTes) * B);
-        // Keep the normal facing the visible side of the surface
-        if (dot(bumpedN, normal) < 0.0) bumpedN = -bumpedN;
-        fragNormal = bumpedN;
-    }
+    vec3 bumpedN = normalize(normal - dhdT * T - dhdB * B);
+    if (dot(bumpedN, normal) < 0.0) bumpedN = -bumpedN;
+
+    pos += waveDisplacement * bumpedN;
+    fragNormal = bumpedN;
 
     // Debug: encode displacement as color (normalized)
     float maxExpected = bumpAmp * waveScale * 1.5; // heuristic normalization factor

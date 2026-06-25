@@ -47,6 +47,20 @@ void WaterWidget::render() {
             ImGui::SliderFloat("Noise Time Speed", &layerParams.noiseTimeSpeed, 0.0f, 5.0f);
         }
 
+        // Tessellation settings
+        if (ImGui::CollapsingHeader("Tessellation", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::SliderFloat("Near Distance", &layerParams.tessNearDist, 1.0f, 500.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Camera distance at which tessellation reaches maximum level.");
+            ImGui::SliderFloat("Far Distance", &layerParams.tessFarDist, 1.0f, 2000.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Camera distance at which tessellation drops to minimum level.");
+            ImGui::SliderFloat("Min Level", &layerParams.tessMinLevel, 1.0f, 32.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Minimum tessellation factor (far away / flat areas).");
+            ImGui::SliderFloat("Max Level", &layerParams.tessMaxLevel, 1.0f, 64.0f, "%.1f");
+            ImGuiHelpers::SetTooltipIfHovered("Maximum tessellation factor (close up / active wave areas).");
+            ImGui::SliderFloat("Noise Influence", &layerParams.tessNoiseInfluence, 0.0f, 1.0f, "%.2f");
+            ImGuiHelpers::SetTooltipIfHovered("How much the wave noise pattern affects tessellation.\n0 = uniform distance-based, 1 = fully noise-adaptive.");
+        }
+
         // Refraction settings
         if (ImGui::CollapsingHeader("Refraction", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Checkbox("Enable Refraction", &layerParams.enableRefraction);

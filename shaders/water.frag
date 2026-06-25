@@ -138,6 +138,9 @@ void main() {
     vec3 T  = normalize(cross(up, N));
     vec3 B  = cross(N, T);
 
+    // Scale step size to noise wavelength (matching TES)
+    float epsFrag = max(0.5 / max(noiseScale, 0.001), 0.05);
+
     vec3 normal;
     if (ubo.passParams.y > 0.5) {
         normal = N;
@@ -145,10 +148,15 @@ void main() {
         // When tessellation is inactive, approximate the bumped normal from
         // the procedural displacement on the flat base mesh.
         float h0 = waterWaveDisplacement(fragPos, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
-        float ht = waterWaveDisplacement(fragPos + eps * T, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
-        float hb = waterWaveDisplacement(fragPos + eps * B, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
+        float ht_pos = waterWaveDisplacement(fragPos + epsFrag * T, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
+        float ht_neg = waterWaveDisplacement(fragPos - epsFrag * T, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
+        float hb_pos = waterWaveDisplacement(fragPos + epsFrag * B, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
+        float hb_neg = waterWaveDisplacement(fragPos - epsFrag * B, animTime, noiseScale, noiseOctaves, noisePersistence, bAmp, 1.0);
 
-        normal = normalize(N - ((ht - h0) / eps) * T - ((hb - h0) / eps) * B);
+        float dhdT = (ht_pos - ht_neg) / (2.0 * epsFrag);
+        float dhdB = (hb_pos - hb_neg) / (2.0 * epsFrag);
+
+        normal = normalize(N - dhdT * T - dhdB * B);
     }
 
     

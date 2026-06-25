@@ -56,10 +56,11 @@ struct WaterParamsGPU {
     vec4 params3;  // x=noiseTimeSpeed, y=unused, z=specularIntensity, w=specularPower
     vec4 shallowColor; // xyz = shallowColor, w = waveDepthTransition
     vec4 deepColor; // xyz = deepColor, w = glitterIntensity
-    vec4 waveParams; // x=unused, y=unused, z=bumpAmplitude, w=depthFalloff
-    vec4 reserved1;  // unused
-    vec4 reserved2;  // unused
-    vec4 reserved3;  // unused (x = cube360Available)
+    vec4 waveParams; // x=tessNoiseInfluence, y=unused, z=bumpAmplitude, w=depthFalloff
+    vec4 reserved1;  // x=enableReflection, y=enableRefraction, z=enableBlur, w=blurRadius
+    vec4 reserved2;  // x=blurSamples, y=volumeBlurRate, z=volumeBumpRate, w=uniformReflection
+    vec4 reserved3;  // x=cube360Available, yzw=unused
+    vec4 tessParams; // x=tessNearDist, y=tessFarDist, z=tessMinLevel, w=tessMaxLevel
     vec4 causticColor; // rgb = caustic tint, w = unused
     vec4 causticParams; // x = scale, y = intensity, z = power, w = depthScale
     vec4 causticExtraParams; // x = lineScale, y = lineMix, z = causticType (0=perlin,1=voronoi), w = causticVelocity
