@@ -4,7 +4,7 @@
 struct MaterialProperties {
     // Mapping enabled: false = disabled, true = enable tessellation + bump mapping
     bool mappingMode = false;
-    // When true sample height map directly (white=high). When false use legacy invert (black=deep -> 1.0-height)
+    // Mirror height map V coordinate vertically when true
     bool invertHeight = false;
     // Tessellation-specific height scale (used when mappingMode == 2)
     float tessHeightScale = 0.2f;
