@@ -305,6 +305,7 @@ public:
         materials[12u].triplanarScaleU = 0.002f;
         materials[12u].triplanarScaleV = 0.002f;
         materials[12u].invertHeight = true;
+        materials[12u].reflectionStrength = 0.3f;
 
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);

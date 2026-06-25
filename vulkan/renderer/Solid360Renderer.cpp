@@ -341,14 +341,20 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         // Execution barrier: ensure solid pass's depth writes (LATE_FRAGMENT_TESTS)
         // complete before any subsequent layout transition on the depth image.
         {
-            VkMemoryBarrier memBarrier{};
-            memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            memBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            memBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            VkImageMemoryBarrier imgBarrier{};
+            imgBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            imgBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            imgBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            imgBarrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            imgBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            imgBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            imgBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            imgBarrier.image = cube360DepthImage;
+            imgBarrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, face, 1 };
             vkCmdPipelineBarrier(cmd,
                 VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+                0, 0, nullptr, 0, nullptr, 1, &imgBarrier);
         }
 
         // Render water into the cubemap face (with reflection/refraction disabled via skipEnvMap flag in UBO)
