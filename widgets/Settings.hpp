@@ -11,6 +11,7 @@ public:
         moveSpeed = 2.5f;
         angularSpeedDeg = 45.0f;
         wireframeMode = false;
+        waterWireframeMode = false;
         debugMode = 0;
         normalMappingEnabled = true;
         waterEnabled = true;
@@ -39,6 +40,7 @@ public:
     bool waterEnabled = true;
     bool vegetationEnabled = true;
     bool wireframeMode = false;
+    bool waterWireframeMode = false;
     bool normalMappingEnabled = true;
 
     // Debug visuals

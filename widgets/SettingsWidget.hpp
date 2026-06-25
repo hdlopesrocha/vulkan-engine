@@ -19,6 +19,7 @@ public:
     float getMoveSpeed() const { return settings.moveSpeed; }
     float getAngularSpeedDeg() const { return settings.angularSpeedDeg; }
     bool getWireframeEnabled() const { return settings.wireframeMode; }
+    bool getWaterWireframeEnabled() const { return settings.waterWireframeMode; }
         int getDebugMode() const { return settings.debugMode; }
     bool getNormalMappingEnabled() const { return settings.normalMappingEnabled; }
     bool getWaterEnabled() const { return settings.waterEnabled; }

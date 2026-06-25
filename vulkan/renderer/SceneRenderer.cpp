@@ -334,7 +334,7 @@ void SceneRenderer::drawSolidWireframeOverlay(VulkanApp* app, VkCommandBuffer &c
     solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, solidRenderer->getIndirectRenderer());
 }
 
-void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, float waterTime, bool skipBackFace, VkImageView skyView, VkImageView cubeReflectionView) {
+void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uint32_t frameIdx, VkDescriptorSet perTextureDescriptorSet, bool wireframeEnabled, bool waterWireframeEnabled, float waterTime, bool skipBackFace, VkImageView skyView, VkImageView cubeReflectionView) {
     if (commandBuffer == VK_NULL_HANDLE) {
         std::cerr << "[SceneRenderer::waterPass] commandBuffer is VK_NULL_HANDLE, skipping." << std::endl;
         return;
@@ -373,7 +373,8 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
     // descriptor set that is already referenced by a pending command buffer
     // (VUID-vkUpdateDescriptorSets-None-03047).
 
-    if (wireframeEnabled && waterWireframe && waterWireframe->getPipeline() != VK_NULL_HANDLE) {
+    bool wf = wireframeEnabled || waterWireframeEnabled;
+    if (wf && waterWireframe && waterWireframe->getPipeline() != VK_NULL_HANDLE) {
         // Wireframe path: use WaterRenderer for setup/pass management,
         // but bind the wireframe pipeline instead of the normal one.
         if (!_wg_env_skip) {

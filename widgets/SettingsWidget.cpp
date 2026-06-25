@@ -133,6 +133,10 @@ void SettingsWidget::render() {
             // toggle wireframe rendering
         }
         ImGuiHelpers::SetTooltipIfHovered("Render meshes in wireframe (requires GPU support)");
+        if (ImGui::Checkbox("Water Wireframe", &settings.waterWireframeMode)) {
+            // toggle water wireframe only
+        }
+        ImGuiHelpers::SetTooltipIfHovered("Render water surface in white wireframe");
 
         ImGui::Separator();
         ImGui::Text("Debug Visualisation");
