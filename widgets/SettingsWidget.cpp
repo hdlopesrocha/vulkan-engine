@@ -110,8 +110,8 @@ void SettingsWidget::render() {
         ImGuiHelpers::SetTooltipIfHovered("Global toggle: when disabled, tessellation and displacement are skipped");
         ImGui::Checkbox("Adaptive Tessellation", &settings.adaptiveTessellation);
         ImGuiHelpers::SetTooltipIfHovered("Enable camera-distance driven tessellation level");
-        ImGui::SliderFloat("Tess Min Level", &settings.tessMinLevel, 1.0f, 64.0f, "%.1f");
-        ImGui::SliderFloat("Tess Max Level", &settings.tessMaxLevel, 1.0f, 64.0f, "%.1f");
+        ImGui::SliderFloat("Tessellation Factor", &settings.tessellationFactor, 0.0f, 8.0f, "%.2f");
+        ImGuiHelpers::SetTooltipIfHovered("Multiplies per-material min/max tess levels globally");
         ImGui::SliderFloat("Tess Min Distance", &settings.tessMinDistance, 1.0f, 2048.0f, "%.1f");
         ImGui::SliderFloat("Tess Max Distance", &settings.tessMaxDistance, 1.0f, 2048.0f, "%.1f");
 

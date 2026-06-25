@@ -82,10 +82,12 @@ void main() {
     float dist = length(center - ubo.viewPos.xyz);
 
     // Read per-material tessellation range; near/far distances still come from the global UBO
+    // tessParams.z is a global factor that multiplies the per-material min/max levels
     float nearDist = ubo.tessParams.x;
     float farDist  = ubo.tessParams.y;
-    float minLevel = materials[patchBrushIndex].tessLevelParams.x;
-    float maxLevel = materials[patchBrushIndex].tessLevelParams.y;
+    float factor   = ubo.tessParams.z;
+    float minLevel = materials[patchBrushIndex].tessLevelParams.x * factor;
+    float maxLevel = materials[patchBrushIndex].tessLevelParams.y * factor;
 
     float outer0, outer1, outer2, inner;
     if (!tessEnabled) {

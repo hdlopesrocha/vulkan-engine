@@ -562,8 +562,8 @@ public:
         uboStatic.tessParams = glm::vec4(
             settings.tessMinDistance,
             settings.tessMaxDistance,
-            settings.tessMinLevel,
-            settings.tessMaxLevel
+            settings.tessellationFactor,
+            0.0f
         );
         // passParams: x = isShadowPass, y = tessEnabled, z = nearPlane, w = farPlane
         uboStatic.passParams = glm::vec4(0.0f, settings.tessellationEnabled ? 1.0f : 0.0f, settings.nearPlane, settings.farPlane);

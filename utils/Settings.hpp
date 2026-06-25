@@ -20,8 +20,7 @@ public:
         tessellationEnabled = true;
         shadowTessellationEnabled = true;
         adaptiveTessellation = true;
-        tessMinLevel = 1.0f;
-        tessMaxLevel = 32.0f;
+        tessellationFactor = 1.0f;
         tessMaxDistance = 200.0f;
         tessMinDistance = 1.0f;
         vsyncEnabled = true;
@@ -61,8 +60,7 @@ public:
     bool tessellationEnabled = true;
     bool shadowTessellationEnabled = true;
     bool adaptiveTessellation = true;
-    float tessMinLevel = 1.0f;
-    float tessMaxLevel = 32.0f;
+    float tessellationFactor = 1.0f;
     float tessMaxDistance = 512.0f;
     float tessMinDistance = 1.0f;
 

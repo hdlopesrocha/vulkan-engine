@@ -40,8 +40,7 @@ public:
     bool getTessellationEnabled() const { return settings.tessellationEnabled; }
     bool getShadowTessellationEnabled() const { return settings.shadowTessellationEnabled; }
     bool getAdaptiveTessellation() const { return settings.adaptiveTessellation; }
-    float getTessMinLevel() const { return settings.tessMinLevel; }
-    float getTessMaxLevel() const { return settings.tessMaxLevel; }
+    float getTessellationFactor() const { return settings.tessellationFactor; }
     float getTessMaxDistance() const { return settings.tessMaxDistance; }
     float getTessMinDistance() const { return settings.tessMinDistance; }
     
