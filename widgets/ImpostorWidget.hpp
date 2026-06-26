@@ -1,9 +1,8 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../vulkan/renderer/ImpostorCapture.hpp"
-#include <vulkan/vulkan.h>
-#include <cstdint>
+#include "../services/ImpostorService.hpp"
+#include <memory>
 
 class VulkanApp;
 class VegetationRenderer;
@@ -12,35 +11,19 @@ class VegetationRenderer;
 // of billboard vegetation textures.
 //
 // Usage:
-//   1. Call setVulkanApp() once after Vulkan init.
-//   2. Call setSource() whenever the billboard array textures change (e.g. after bake).
-//   3. Call setVegetationRenderer() to enable automatic wiring after capture.
-//   4. cleanup() must be called before VulkanApp destruction.
+//   1. Construct with shared ImpostorService.
+//   2. The service handles Vulkan lifecycle; just call render() for the UI.
 class ImpostorWidget : public Widget {
 public:
-    ImpostorWidget();
+    ImpostorWidget(std::shared_ptr<ImpostorService> impostorService);
 
-    void setVulkanApp(VulkanApp* app);
-    void setSource(VkImageView albedo, VkImageView normal, VkImageView opacity,
-                   VkSampler sampler, int billboardCount);
-    void setVegetationRenderer(VegetationRenderer* renderer) { vegRenderer = renderer; }
-    // Re-applies setImpostorData to vegRenderer with already-captured data.
-    // Call this after VegetationRenderer::init() if capture happened before init.
-    void rewire();
-    void cleanup();
+    void setVegetationRenderer(VegetationRenderer* renderer)
+        { impostorService->setVegetationRenderer(renderer); }
 
     void render() override;
 
 private:
-    VulkanApp*          vulkanApp   = nullptr;
-    VegetationRenderer* vegRenderer = nullptr;
-
-    // Source billboard arrays (owned externally — BillboardCreator).
-    VkImageView  srcAlbedo   = VK_NULL_HANDLE;
-    VkImageView  srcNormal   = VK_NULL_HANDLE;
-    VkImageView  srcOpacity  = VK_NULL_HANDLE;
-    VkSampler    srcSampler  = VK_NULL_HANDLE;
-    int          billboardCount = 0;
+    std::shared_ptr<ImpostorService> impostorService;
 
     // Active selection in the combo box.
     int  selectedBillboard  = 0;
@@ -52,6 +35,4 @@ private:
     float previewYaw        = 0.0f;
     float previewPitch      = 0.3f;
     int   previewMode       = 0; // 0=albedo, 1=normal, 2=depth
-
-    ImpostorCapture capture;
 };

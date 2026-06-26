@@ -1,73 +1,17 @@
 #include "ImpostorWidget.hpp"
-#include "../vulkan/VulkanApp.hpp"
-#include "../vulkan/renderer/VegetationRenderer.hpp"
 #include <imgui.h>
 #include <glm/trigonometric.hpp>
 #include <cmath>
-#include <cstdio>
 
-ImpostorWidget::ImpostorWidget()
-    : Widget("Impostor Viewer", u8"\uf06e") {}
-
-void ImpostorWidget::setVulkanApp(VulkanApp* app) {
-    vulkanApp = app;
-    capture.init(app);
-}
-
-void ImpostorWidget::setSource(VkImageView albedo, VkImageView normal,
-                                VkImageView opacity, VkSampler sampler,
-                                int numBillboards) {
-    srcAlbedo      = albedo;
-    srcNormal      = normal;
-    srcOpacity     = opacity;
-    srcSampler     = sampler;
-    billboardCount = numBillboards;
-    if (selectedBillboard >= billboardCount)
-        selectedBillboard = 0;
-
-    // Auto-capture all billboard types so impostors work without user interaction.
-    if (vulkanApp && srcAlbedo != VK_NULL_HANDLE && srcSampler != VK_NULL_HANDLE) {
-        capture.captureAll(vulkanApp,
-                           srcAlbedo, srcNormal, srcOpacity, srcSampler,
-                           captureScale);
-        if (vegRenderer && capture.getCaptureArrayView() != VK_NULL_HANDLE) {
-            vegRenderer->setImpostorData(vulkanApp,
-                                         capture.getCaptureArrayView(),
-                                         capture.getCaptureNormalArrayView(),
-                                         capture.getCaptureArraySampler(),
-                                         capture.getCaptureDepthArrayView(),
-                                         capture.getCaptureInvVPCount() > 0 ? capture.getCaptureInvVPBuffer() : VK_NULL_HANDLE);
-        }
-    }
-}
-
-void ImpostorWidget::rewire() {
-    if (vulkanApp && vegRenderer && capture.isReady() &&
-        capture.getCaptureArrayView() != VK_NULL_HANDLE) {
-        vegRenderer->setImpostorData(vulkanApp,
-                                     capture.getCaptureArrayView(),
-                                     capture.getCaptureNormalArrayView(),
-                                     capture.getCaptureArraySampler(),
-                                     capture.getCaptureDepthArrayView(),
-                                     capture.getCaptureInvVPBuffer());
-    }
-}
-
-void ImpostorWidget::cleanup() {
-    capture.cleanup(vulkanApp);
-}
+ImpostorWidget::ImpostorWidget(std::shared_ptr<ImpostorService> svc)
+    : Widget("Impostor Viewer", u8"\uf06e"), impostorService(std::move(svc)) {}
 
 void ImpostorWidget::render() {
     if (!isVisible()) return;
 
     ImGui::Begin(displayTitle().c_str(), &isOpen);
 
-    // ── Source selection ─────────────────────────────────────────────
-    const bool srcReady = (srcAlbedo  != VK_NULL_HANDLE &&
-                           srcNormal  != VK_NULL_HANDLE &&
-                           srcOpacity != VK_NULL_HANDLE &&
-                           srcSampler != VK_NULL_HANDLE &&
-                           billboardCount > 0);
+    const bool srcReady = impostorService && impostorService->isReady();
 
     if (!srcReady) {
         ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f),
@@ -82,7 +26,7 @@ void ImpostorWidget::render() {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(140.0f);
         const char* names[] = { "Foliage (0)", "Grass (1)", "Wild (2)" };
-        const int   nameCount = std::min(billboardCount, 3);
+        const int   nameCount = 3;
         if (selectedBillboard >= nameCount) selectedBillboard = 0;
         ImGui::Combo("##BillboardSel", &selectedBillboard, names, nameCount);
     }
@@ -98,21 +42,10 @@ void ImpostorWidget::render() {
     ImGui::Spacing();
 
     if (ImGui::Button("Capture Impostor Views (All Types)", ImVec2(-1, 0))) {
-        capture.captureAll(vulkanApp,
-                           srcAlbedo, srcNormal, srcOpacity, srcSampler,
-                           captureScale);
-        // Wire captured arrays to VegetationRenderer if available.
-        if (vegRenderer && capture.getCaptureArrayView() != VK_NULL_HANDLE) {
-            vegRenderer->setImpostorData(vulkanApp,
-                                         capture.getCaptureArrayView(),
-                                         capture.getCaptureNormalArrayView(),
-                                         capture.getCaptureArraySampler(),
-                                         capture.getCaptureDepthArrayView(),
-                                         capture.getCaptureInvVPBuffer());
-        }
+        impostorService->captureAll(captureScale);
     }
 
-    if (!capture.isReady()) {
+    if (!impostorService->isReady()) {
         ImGui::Spacing();
         ImGui::TextDisabled("No impostor data captured yet.");
         ImGui::End();
@@ -135,16 +68,16 @@ void ImpostorWidget::render() {
         if (i % columns != 0) ImGui::SameLine();
         VkDescriptorSet ds = VK_NULL_HANDLE;
         if (previewMode == 0)
-            ds = capture.getImGuiDescSet(static_cast<uint32_t>(selectedBillboard), i);
+            ds = impostorService->getImGuiDescSet(static_cast<uint32_t>(selectedBillboard), i);
         else if (previewMode == 1)
-            ds = capture.getImGuiNormalDescSet(static_cast<uint32_t>(selectedBillboard), i);
+            ds = impostorService->getImGuiNormalDescSet(static_cast<uint32_t>(selectedBillboard), i);
         else
-            ds = capture.getImGuiDepthDescSet(static_cast<uint32_t>(selectedBillboard), i);
+            ds = impostorService->getImGuiDepthDescSet(static_cast<uint32_t>(selectedBillboard), i);
         if (ds != VK_NULL_HANDLE) {
             ImGui::PushID(static_cast<int>(i));
             ImGui::Image((ImTextureID)ds, ImVec2(thumbSize, thumbSize));
             if (ImGui::IsItemHovered()) {
-                const glm::vec3& vd = capture.getViewDir(i);
+                const glm::vec3& vd = impostorService->getViewDir(i);
                 ImGui::SetTooltip("View %u\ndir=(%.2f, %.2f, %.2f)", i, vd.x, vd.y, vd.z);
             }
             ImGui::PopID();
@@ -162,15 +95,15 @@ void ImpostorWidget::render() {
     const glm::vec3 previewDir(cosP * std::sin(previewYaw),
                                 std::sin(previewPitch),
                                 cosP * std::cos(previewYaw));
-    const uint32_t closestIdx = capture.closestView(glm::normalize(previewDir));
+    const uint32_t closestIdx = impostorService->closestView(glm::normalize(previewDir));
 
     VkDescriptorSet previewDs = VK_NULL_HANDLE;
     if (previewMode == 0)
-        previewDs = capture.getImGuiDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
+        previewDs = impostorService->getImGuiDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
     else if (previewMode == 1)
-        previewDs = capture.getImGuiNormalDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
+        previewDs = impostorService->getImGuiNormalDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
     else
-        previewDs = capture.getImGuiDepthDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
+        previewDs = impostorService->getImGuiDepthDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
     if (previewDs != VK_NULL_HANDLE) {
         const float previewSize = 256.0f;
         ImGui::Image((ImTextureID)previewDs, ImVec2(previewSize, previewSize));
@@ -192,7 +125,7 @@ void ImpostorWidget::render() {
         ImGui::Text("Yaw          : %.1f deg", glm::degrees(previewYaw));
         ImGui::Text("Pitch        : %.1f deg", glm::degrees(previewPitch));
         {
-            const glm::vec3& d = capture.getViewDir(closestIdx);
+            const glm::vec3& d = impostorService->getViewDir(closestIdx);
             ImGui::Text("Dir          : %.2f  %.2f  %.2f", d.x, d.y, d.z);
         }
         ImGui::EndGroup();
