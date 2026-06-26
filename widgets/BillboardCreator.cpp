@@ -9,20 +9,24 @@
 #include <stb/stb_image.h>
 #include "components/ImGuiHelpers.hpp"
 
-// Constructor moved from header
-BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr)
-    : Widget("Billboard Creator", u8"\uf03a"), billboardManager(billboardMgr), atlasManager(atlasMgr), textureManager(textureMgr) {
+BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr,
+                                   std::shared_ptr<BillboardService> billboardService)
+    : Widget("Billboard Creator", u8"\uf03a"), billboardService(std::move(billboardService)),
+      billboardManager(billboardMgr), atlasManager(atlasMgr), textureManager(textureMgr) {
 }
 
 void BillboardCreator::setVulkanApp(VulkanApp* app) {
     vulkanApp = app;
+    if (billboardService) billboardService->init(app);
     initializeTextures();
 }
 
 void BillboardCreator::initializeTextures() {
     if (!vulkanApp || texturesInitialized) return;
 
-    const uint32_t texSize = 512; // Billboard texture size
+    if (billboardService) billboardService->initializeTextures();
+
+    const uint32_t texSize = 512;
     for (size_t i = 0; i < composedAlbedo.size(); ++i) {
         const std::string suffix = " " + std::to_string(i);
         composedAlbedo[i].init(vulkanApp, texSize, texSize, VK_FORMAT_R8G8B8A8_UNORM, ("Billboard Albedo" + suffix).c_str());
@@ -34,22 +38,8 @@ void BillboardCreator::initializeTextures() {
 
 void BillboardCreator::cleanup() {
     printf("[BillboardCreator] cleanup start: texturesInitialized=%d\n", texturesInitialized ? 1 : 0);
+    if (billboardService) billboardService->cleanup();
     if (texturesInitialized && vulkanApp) {
-        VkDevice device = vulkanApp->getDevice();
-        // Destroy array resources
-        auto destroyAR = [&](VkImage& img, VkDeviceMemory& mem, VkImageView& view) {
-            if (view != VK_NULL_HANDLE) { vulkanApp->resources.removeImageView(view); vkDestroyImageView(device, view, nullptr); view = VK_NULL_HANDLE; }
-            if (img  != VK_NULL_HANDLE) { vulkanApp->resources.removeImage(img);      vkDestroyImage(device, img, nullptr);          img  = VK_NULL_HANDLE; }
-            if (mem  != VK_NULL_HANDLE) { vulkanApp->resources.removeDeviceMemory(mem); vkFreeMemory(device, mem, nullptr);           mem  = VK_NULL_HANDLE; }
-        };
-        destroyAR(billboardAlbedoArrayImage,  billboardAlbedoArrayMemory,  billboardAlbedoArrayView);
-        destroyAR(billboardNormalArrayImage,   billboardNormalArrayMemory,  billboardNormalArrayView);
-        destroyAR(billboardOpacityArrayImage,  billboardOpacityArrayMemory, billboardOpacityArrayView);
-        if (billboardArraySampler != VK_NULL_HANDLE) {
-            vulkanApp->resources.removeSampler(billboardArraySampler);
-            vkDestroySampler(device, billboardArraySampler, nullptr);
-            billboardArraySampler = VK_NULL_HANDLE;
-        }
         for (size_t i = 0; i < composedAlbedo.size(); ++i) {
             composedAlbedo[i].cleanup();
             composedNormal[i].cleanup();
@@ -62,6 +52,7 @@ void BillboardCreator::cleanup() {
 
 void BillboardCreator::invalidateImGuiDescriptors() {
     printf("[BillboardCreator] invalidateImGuiDescriptors: texturesInitialized=%d\n", texturesInitialized ? 1 : 0);
+    if (billboardService) billboardService->invalidateImGuiDescriptors();
     if (!texturesInitialized) return;
     for (size_t i = 0; i < composedAlbedo.size(); ++i) {
         composedAlbedo[i].invalidateImGuiDescriptor();
@@ -94,150 +85,9 @@ void BillboardCreator::bakeAllBillboards() {
         composeBillboard(billboard);
     }
 
-    createBillboardArrayTextures();
-}
-
-void BillboardCreator::createBillboardArrayTextures() {
-    if (!vulkanApp || !texturesInitialized) return;
-
-    VkDevice device = vulkanApp->getDevice();
-    const uint32_t numLayers = static_cast<uint32_t>(composedAlbedo.size()); // 3
-    const uint32_t w = composedAlbedo[0].getWidth();
-    const uint32_t h = composedAlbedo[0].getHeight();
-    const VkFormat fmt = VK_FORMAT_R8G8B8A8_UNORM;
-
-    // Destroy any previously created array resources
-    auto destroyArrayResources = [&](VkImage& img, VkDeviceMemory& mem, VkImageView& view) {
-        if (view != VK_NULL_HANDLE) {
-            vulkanApp->resources.removeImageView(view);
-            vkDestroyImageView(device, view, nullptr);
-            view = VK_NULL_HANDLE;
-        }
-        if (img != VK_NULL_HANDLE) {
-            vulkanApp->resources.removeImage(img);
-            vkDestroyImage(device, img, nullptr);
-            img = VK_NULL_HANDLE;
-        }
-        if (mem != VK_NULL_HANDLE) {
-            vulkanApp->resources.removeDeviceMemory(mem);
-            vkFreeMemory(device, mem, nullptr);
-            mem = VK_NULL_HANDLE;
-        }
-    };
-    destroyArrayResources(billboardAlbedoArrayImage, billboardAlbedoArrayMemory, billboardAlbedoArrayView);
-    destroyArrayResources(billboardNormalArrayImage, billboardNormalArrayMemory, billboardNormalArrayView);
-    destroyArrayResources(billboardOpacityArrayImage, billboardOpacityArrayMemory, billboardOpacityArrayView);
-    if (billboardArraySampler != VK_NULL_HANDLE) {
-        vulkanApp->resources.removeSampler(billboardArraySampler);
-        vkDestroySampler(device, billboardArraySampler, nullptr);
-        billboardArraySampler = VK_NULL_HANDLE;
+    if (billboardService) {
+        billboardService->bakeFromTextures(composedAlbedo, composedNormal, composedOpacity);
     }
-
-    // Helper: create a VkImage (2D array, no mipmaps) + VkImageView + allocate memory
-    auto makeArrayImage = [&](VkImage& outImg, VkDeviceMemory& outMem, VkImageView& outView, const char* name) {
-        VkImageCreateInfo imgInfo{};
-        imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imgInfo.imageType = VK_IMAGE_TYPE_2D;
-        imgInfo.extent = { w, h, 1 };
-        imgInfo.mipLevels = 1;
-        imgInfo.arrayLayers = numLayers;
-        imgInfo.format = fmt;
-        imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imgInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-        imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        if (vkCreateImage(device, &imgInfo, nullptr, &outImg) != VK_SUCCESS)
-            throw std::runtime_error(std::string("BillboardCreator: failed to create array image: ") + name);
-        vulkanApp->resources.addImage(outImg, name);
-
-        VkMemoryRequirements memReq;
-        vkGetImageMemoryRequirements(device, outImg, &memReq);
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        {
-            static constexpr VkDeviceSize kMin = 262144;
-            const VkDeviceSize sz = memReq.size;
-            allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-        }
-        allocInfo.memoryTypeIndex = vulkanApp->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &outMem) != VK_SUCCESS)
-            throw std::runtime_error(std::string("BillboardCreator: failed to allocate array memory: ") + name);
-        vulkanApp->resources.addDeviceMemory(outMem, name);
-        vkBindImageMemory(device, outImg, outMem, 0);
-
-        // Transition all layers UNDEFINED -> SHADER_READ_ONLY_OPTIMAL (will be overwritten per-layer below)
-        vulkanApp->transitionImageLayout(outImg, fmt, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, numLayers);
-
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = outImg;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-        viewInfo.format = fmt;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = numLayers;
-        if (vkCreateImageView(device, &viewInfo, nullptr, &outView) != VK_SUCCESS)
-            throw std::runtime_error(std::string("BillboardCreator: failed to create array image view: ") + name);
-        vulkanApp->resources.addImageView(outView, name);
-    };
-
-    makeArrayImage(billboardAlbedoArrayImage,  billboardAlbedoArrayMemory,  billboardAlbedoArrayView,  "BillboardCreator: albedoArray");
-    makeArrayImage(billboardNormalArrayImage,   billboardNormalArrayMemory,  billboardNormalArrayView,  "BillboardCreator: normalArray");
-    makeArrayImage(billboardOpacityArrayImage,  billboardOpacityArrayMemory, billboardOpacityArrayView, "BillboardCreator: opacityArray");
-
-    // Copy each billboard's composed texture into the corresponding array layer
-    struct ChannelEntry { std::array<EditableTexture, 3>* src; VkImage dst; };
-    ChannelEntry channels[3] = {
-        { &composedAlbedo,  billboardAlbedoArrayImage  },
-        { &composedNormal,  billboardNormalArrayImage  },
-        { &composedOpacity, billboardOpacityArrayImage },
-    };
-    for (auto& ch : channels) {
-        for (uint32_t layer = 0; layer < numLayers; ++layer) {
-            EditableTexture& srcTex = (*ch.src)[layer];
-            VkImage srcImage = srcTex.getImage();
-            vulkanApp->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-                vulkanApp->recordTransitionImageLayoutLayer(cmd, srcImage, fmt,
-                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1);
-                VkImageCopy region{};
-                region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-                region.srcOffset = {0,0,0};
-                region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1 };
-                region.dstOffset = {0,0,0};
-                region.extent = { w, h, 1 };
-                vkCmdCopyImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               ch.dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-                vulkanApp->recordTransitionImageLayoutLayer(cmd, srcImage, fmt,
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
-            });
-        }
-        // Transition entire array to SHADER_READ_ONLY_OPTIMAL
-        vulkanApp->transitionImageLayout(ch.dst, fmt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, numLayers);
-    }
-
-    // Sampler
-    VkSamplerCreateInfo samplerInfo{};
-    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.anisotropyEnable = VK_FALSE;
-    samplerInfo.maxAnisotropy = 1.0f;
-    samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
-    samplerInfo.unnormalizedCoordinates = VK_FALSE;
-    samplerInfo.compareEnable = VK_FALSE;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    if (vkCreateSampler(device, &samplerInfo, nullptr, &billboardArraySampler) != VK_SUCCESS)
-        throw std::runtime_error("BillboardCreator: failed to create array sampler");
-    vulkanApp->resources.addSampler(billboardArraySampler, "BillboardCreator: arraysampler");
-    std::cerr << "[BillboardCreator] billboard array textures created: albedo=" << (void*)billboardAlbedoArrayView
-              << " normal=" << (void*)billboardNormalArrayView
-              << " opacity=" << (void*)billboardOpacityArrayView << std::endl;
 }
 
 const EditableTexture* BillboardCreator::getComposedAlbedoTexture(size_t index) const {

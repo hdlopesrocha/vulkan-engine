@@ -65,6 +65,7 @@
 #include "utils/BillboardManager.hpp"
 #include "utils/AtlasManager.hpp"
 #include "services/TextureMixer.hpp"
+#include "services/BillboardService.hpp"
 #include "utils/ShadowParams.hpp"
 
 class MyApp : public VulkanApp, public IEventHandler {
@@ -1704,7 +1705,8 @@ void MyApp::setupVegetationTextures() {
     // Allocate 3-layer texture arrays for vegetation (foliage, grass, wild)
     vegetationTextureArrayManager.allocate(3, 512, 512, this);
     vegetationAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
-    billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureArrayManager);
+    auto billboardSvc = std::make_shared<BillboardService>();
+    billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, &vegetationTextureArrayManager, billboardSvc);
     // Provide VulkanApp to the creator so it can initialize GPU-backed preview textures
     billboardCreator->setVulkanApp(this);
     impostorWidget = std::make_shared<ImpostorWidget>();
