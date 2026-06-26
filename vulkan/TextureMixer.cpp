@@ -189,6 +189,8 @@ void TextureMixer::pollPendingGenerations(VulkanApp* app) {
 			textureArrayManager->setLayerLayout(0, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 			textureArrayManager->setLayerLayout(1, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 			textureArrayManager->setLayerLayout(2, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			textureArrayManager->setLayerLayout(3, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			textureArrayManager->setLayerLayout(4, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		}
 		if (onTextureGeneratedCallback) onTextureGeneratedCallback();
 		{
@@ -274,8 +276,8 @@ void TextureMixer::cleanup() {
 
 
 void TextureMixer::createComputePipeline(VulkanApp* app) {
-	// Descriptor layout: three storage images (albedo, normal, bump) and three sampler arrays
-	VkDescriptorSetLayoutBinding bindings[6] = {};
+	// Descriptor layout: five storage images (albedo, normal, bump, roughness, ao) and five sampler arrays
+	VkDescriptorSetLayoutBinding bindings[10] = {};
 
 	// binding 0: albedo storage image (writeonly)
 	bindings[0].binding = 0;
@@ -313,17 +315,41 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 	bindings[5].descriptorCount = 1;
 	bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-	VkDescriptorBindingFlags bindingFlags[6] = {};
-	for (int i = 0; i < 6; ++i) bindingFlags[i] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+	// binding 6: roughness sampler2DArray
+	bindings[6].binding = 6;
+	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[6].descriptorCount = 1;
+	bindings[6].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	// binding 7: ao sampler2DArray
+	bindings[7].binding = 7;
+	bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[7].descriptorCount = 1;
+	bindings[7].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	// binding 8: roughness storage image (writeonly)
+	bindings[8].binding = 8;
+	bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[8].descriptorCount = 1;
+	bindings[8].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	// binding 9: ao storage image (writeonly)
+	bindings[9].binding = 9;
+	bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[9].descriptorCount = 1;
+	bindings[9].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	VkDescriptorBindingFlags bindingFlags[10] = {};
+	for (int i = 0; i < 10; ++i) bindingFlags[i] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
 
 	VkDescriptorSetLayoutBindingFlagsCreateInfo flagsCreateInfo{};
 	flagsCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-	flagsCreateInfo.bindingCount = 6;
+	flagsCreateInfo.bindingCount = 10;
 	flagsCreateInfo.pBindingFlags = bindingFlags;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo{};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 6;
+	layoutInfo.bindingCount = 10;
 	layoutInfo.pBindings = bindings;
 	layoutInfo.pNext = &flagsCreateInfo;
 	// BindingFlags uses UPDATE_AFTER_BIND for these bindings; require layout flag
@@ -380,13 +406,13 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	// Estimate descriptor counts based on available array layers (if present).
-	// Each per-layer set writes 3 storage images and 3 combined samplers.
+	// Each per-layer set writes 5 storage images and 5 combined samplers.
 	uint32_t layerAmount = textureArrayManager ? textureArrayManager->layerAmount : 0;
 	uint32_t storageCountEstimate = 128u;
 	uint32_t samplerCountEstimate = 128u;
 	if (layerAmount > 0) {
-		storageCountEstimate = layerAmount * 3 + 16; // 3 storage descriptors per-layer + slack for triple/per-map sets
-		samplerCountEstimate = layerAmount * 3 + 16; // 3 sampler descriptors per-layer + slack
+		storageCountEstimate = layerAmount * 5 + 32; // 5 storage descriptors per-layer + slack for triple/per-map sets
+		samplerCountEstimate = layerAmount * 5 + 32; // 5 sampler descriptors per-layer + slack
 	}
 	poolSizes[0].descriptorCount = storageCountEstimate;
 	poolSizes[1].descriptorCount = samplerCountEstimate;
@@ -408,12 +434,14 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 	// Track compute descriptor pool
 	app->resources.addDescriptorPool(computeDescriptorPool, "TextureMixer: computeDescriptorPool");
 
-	// Create a single descriptor set that binds albedo/normal/bump storage images and samplers
+	// Create a single descriptor set that binds all storage images and samplers
 	createTripleComputeDescriptorSet(app);
 	// Also create per-map descriptor sets so single-map generation is possible
 	createComputeDescriptorSet(0, albedoComputeDescSet, app);
 	createComputeDescriptorSet(1, normalComputeDescSet, app);
 	createComputeDescriptorSet(2, bumpComputeDescSet, app);
+	createComputeDescriptorSet(3, roughnessComputeDescSet, app);
+	createComputeDescriptorSet(4, aoComputeDescSet, app);
 
 	// Pre-allocate per-layer persistent descriptor sets (one per array layer)
 	if (textureArrayManager && textureArrayManager->layerAmount > 0) {
@@ -427,11 +455,13 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 		ainfo.descriptorSetCount = layers;
 		ainfo.pSetLayouts = layouts.data();
 		// Validate that the TextureArrayManager has layer views available
-		if (textureArrayManager->albedoLayerViews.size() < layers || textureArrayManager->normalLayerViews.size() < layers || textureArrayManager->bumpLayerViews.size() < layers) {
+		if (textureArrayManager->albedoLayerViews.size() < layers || textureArrayManager->normalLayerViews.size() < layers || textureArrayManager->bumpLayerViews.size() < layers || textureArrayManager->roughnessLayerViews.size() < layers || textureArrayManager->aoLayerViews.size() < layers) {
 			std::cerr << "[TextureMixer] Warning: textureArrayManager layer view arrays are smaller than layerAmount (expected=" << layers
 					  << " albedo=" << textureArrayManager->albedoLayerViews.size()
 					  << " normal=" << textureArrayManager->normalLayerViews.size()
-					  << " bump=" << textureArrayManager->bumpLayerViews.size() << ")" << std::endl;
+					  << " bump=" << textureArrayManager->bumpLayerViews.size()
+					  << " roughness=" << textureArrayManager->roughnessLayerViews.size()
+					  << " ao=" << textureArrayManager->aoLayerViews.size() << ")" << std::endl;
 			// Avoid allocating per-layer sets if views are not ready
 			return;
 		}
@@ -452,6 +482,8 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 			VkDescriptorImageInfo albedoStorageInfo{}; albedoStorageInfo.imageView = textureArrayManager->albedoLayerViews[i]; albedoStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 			VkDescriptorImageInfo normalStorageInfo{}; normalStorageInfo.imageView = textureArrayManager->normalLayerViews[i]; normalStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 			VkDescriptorImageInfo bumpStorageInfo{}; bumpStorageInfo.imageView = textureArrayManager->bumpLayerViews[i]; bumpStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			VkDescriptorImageInfo roughnessStorageInfo{}; roughnessStorageInfo.imageView = textureArrayManager->roughnessLayerViews[i]; roughnessStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			VkDescriptorImageInfo aoStorageInfo{}; aoStorageInfo.imageView = textureArrayManager->aoLayerViews[i]; aoStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 			// For sampling in the shader (sampler2DArray) we must bind the ARRAY image view
 			// (VK_IMAGE_VIEW_TYPE_2D_ARRAY). Per-layer 2D views are only for storage writes
@@ -461,6 +493,8 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 			VkDescriptorImageInfo albedoSamplerInfo{}; albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view; albedoSamplerInfo.sampler = textureArrayManager->albedoSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 			VkDescriptorImageInfo normalSamplerInfo{}; normalSamplerInfo.imageView = textureArrayManager->normalArray.view; normalSamplerInfo.sampler = textureArrayManager->normalSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 			VkDescriptorImageInfo bumpSamplerInfo{}; bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view; bumpSamplerInfo.sampler = textureArrayManager->bumpSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			VkDescriptorImageInfo roughnessSamplerInfo{}; roughnessSamplerInfo.imageView = textureArrayManager->roughnessArray.view; roughnessSamplerInfo.sampler = textureArrayManager->roughnessSampler; roughnessSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			VkDescriptorImageInfo aoSamplerInfo{}; aoSamplerInfo.imageView = textureArrayManager->aoArray.view; aoSamplerInfo.sampler = textureArrayManager->aoSampler; aoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 			std::vector<VkWriteDescriptorSet> writes;
 			auto mkStor = [&](uint32_t binding, VkDescriptorImageInfo &info){ if (info.imageView == VK_NULL_HANDLE) return; VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = perLayerDescSets[i]; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w.descriptorCount = 1; w.pImageInfo = &info; writes.push_back(w); };
@@ -472,6 +506,10 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 			mkSamp(3, bumpSamplerInfo);
 			mkStor(4, normalStorageInfo);
 			mkStor(5, bumpStorageInfo);
+			mkSamp(6, roughnessSamplerInfo);
+			mkSamp(7, aoSamplerInfo);
+			mkStor(8, roughnessStorageInfo);
+			mkStor(9, aoStorageInfo);
 
 			if (!writes.empty()) {
 				vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
@@ -505,7 +543,7 @@ void TextureMixer::createTripleComputeDescriptorSet(VulkanApp* app) {
 	// Register descriptor set
 	app->resources.addDescriptorSet(tripleComputeDescSet, "TextureMixer: tripleComputeDescSet");
 
-	// Storage image infos: albedo (binding 0), normal (binding 4), bump (binding 5)
+	// Storage image infos: albedo (binding 0), normal (binding 4), bump (binding 5), roughness (binding 8), ao (binding 9)
 	VkDescriptorImageInfo albedoImageInfo{};
 	if (textureArrayManager) albedoImageInfo.imageView = textureArrayManager->albedoArray.view;
 	else albedoImageInfo.imageView = VK_NULL_HANDLE;
@@ -521,10 +559,22 @@ void TextureMixer::createTripleComputeDescriptorSet(VulkanApp* app) {
 	else bumpImageInfo.imageView = VK_NULL_HANDLE;
 	bumpImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-	// Sampler infos for the three arrays (binding 1,2,3)
+	VkDescriptorImageInfo roughnessImageInfo{};
+	if (textureArrayManager) roughnessImageInfo.imageView = textureArrayManager->roughnessArray.view;
+	else roughnessImageInfo.imageView = VK_NULL_HANDLE;
+	roughnessImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+	VkDescriptorImageInfo aoImageInfo{};
+	if (textureArrayManager) aoImageInfo.imageView = textureArrayManager->aoArray.view;
+	else aoImageInfo.imageView = VK_NULL_HANDLE;
+	aoImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+	// Sampler infos for the five arrays (binding 1,2,3,6,7)
 	VkDescriptorImageInfo albedoSamplerInfo{};
 	VkDescriptorImageInfo normalSamplerInfo{};
 	VkDescriptorImageInfo bumpSamplerInfo{};
+	VkDescriptorImageInfo roughnessSamplerInfo{};
+	VkDescriptorImageInfo aoSamplerInfo{};
 
 	if (textureArrayManager) {
 		// Samplers are read-only sources for the compute shader: use GENERAL because
@@ -540,11 +590,21 @@ void TextureMixer::createTripleComputeDescriptorSet(VulkanApp* app) {
 		bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view;
 		bumpSamplerInfo.sampler = textureArrayManager->bumpSampler;
 		bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+		roughnessSamplerInfo.imageView = textureArrayManager->roughnessArray.view;
+		roughnessSamplerInfo.sampler = textureArrayManager->roughnessSampler;
+		roughnessSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+		aoSamplerInfo.imageView = textureArrayManager->aoArray.view;
+		aoSamplerInfo.sampler = textureArrayManager->aoSampler;
+		aoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 	} else {
 		// No TextureArrayManager: leave sampler imageViews null (not supported)
 		albedoSamplerInfo.imageView = VK_NULL_HANDLE; albedoSamplerInfo.sampler = VK_NULL_HANDLE; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		normalSamplerInfo.imageView = VK_NULL_HANDLE; normalSamplerInfo.sampler = VK_NULL_HANDLE; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		bumpSamplerInfo.imageView = VK_NULL_HANDLE; bumpSamplerInfo.sampler = VK_NULL_HANDLE; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		roughnessSamplerInfo.imageView = VK_NULL_HANDLE; roughnessSamplerInfo.sampler = VK_NULL_HANDLE; roughnessSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		aoSamplerInfo.imageView = VK_NULL_HANDLE; aoSamplerInfo.sampler = VK_NULL_HANDLE; aoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	}
 
 	std::vector<VkWriteDescriptorSet> writes;
@@ -585,6 +645,10 @@ void TextureMixer::createTripleComputeDescriptorSet(VulkanApp* app) {
 	addCombinedSampler(3, bumpSamplerInfo);
 	addStorageImage(4, normalImageInfo);
 	addStorageImage(5, bumpImageInfo);
+	addCombinedSampler(6, roughnessSamplerInfo);
+	addCombinedSampler(7, aoSamplerInfo);
+	addStorageImage(8, roughnessImageInfo);
+	addStorageImage(9, aoImageInfo);
 
 	if (!writes.empty()) vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
@@ -611,9 +675,19 @@ void TextureMixer::updateComputeDescriptorSets(VulkanApp* app) {
 	bumpImageInfo.imageView = textureArrayManager->bumpArray.view;
 	bumpImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
+	VkDescriptorImageInfo roughnessImageInfo{};
+	roughnessImageInfo.imageView = textureArrayManager->roughnessArray.view;
+	roughnessImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+	VkDescriptorImageInfo aoImageInfo{};
+	aoImageInfo.imageView = textureArrayManager->aoArray.view;
+	aoImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
 	VkDescriptorImageInfo albedoSamplerInfo{}; albedoSamplerInfo.imageView = textureArrayManager->albedoArray.view; albedoSamplerInfo.sampler = textureArrayManager->albedoSampler; albedoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	VkDescriptorImageInfo normalSamplerInfo{}; normalSamplerInfo.imageView = textureArrayManager->normalArray.view; normalSamplerInfo.sampler = textureArrayManager->normalSampler; normalSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	VkDescriptorImageInfo bumpSamplerInfo{}; bumpSamplerInfo.imageView = textureArrayManager->bumpArray.view; bumpSamplerInfo.sampler = textureArrayManager->bumpSampler; bumpSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	VkDescriptorImageInfo roughnessSamplerInfo{}; roughnessSamplerInfo.imageView = textureArrayManager->roughnessArray.view; roughnessSamplerInfo.sampler = textureArrayManager->roughnessSampler; roughnessSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	VkDescriptorImageInfo aoSamplerInfo{}; aoSamplerInfo.imageView = textureArrayManager->aoArray.view; aoSamplerInfo.sampler = textureArrayManager->aoSampler; aoSamplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 	std::vector<VkWriteDescriptorSet> writes;
 
@@ -648,13 +722,17 @@ void TextureMixer::updateComputeDescriptorSets(VulkanApp* app) {
 		pushSampler(tripleComputeDescSet, 3, &bumpSamplerInfo);
 		pushStorage(tripleComputeDescSet, 4, &normalImageInfo);
 		pushStorage(tripleComputeDescSet, 5, &bumpImageInfo);
+		pushSampler(tripleComputeDescSet, 6, &roughnessSamplerInfo);
+		pushSampler(tripleComputeDescSet, 7, &aoSamplerInfo);
+		pushStorage(tripleComputeDescSet, 8, &roughnessImageInfo);
+		pushStorage(tripleComputeDescSet, 9, &aoImageInfo);
 	}
 
 	// Update per-map descriptor sets if they were allocated
 	if (albedoComputeDescSet != VK_NULL_HANDLE) {
 		pushStorage(albedoComputeDescSet, 0, &albedoImageInfo);
 		pushSampler(albedoComputeDescSet, 1, &albedoSamplerInfo);
-		pushSampler(albedoComputeDescSet, 2, &albedoSamplerInfo); // keep existing behavior (bind same sampler to 2)
+		pushSampler(albedoComputeDescSet, 2, &albedoSamplerInfo);
 	}
 	if (normalComputeDescSet != VK_NULL_HANDLE) {
 		pushStorage(normalComputeDescSet, 0, &normalImageInfo);
@@ -665,6 +743,16 @@ void TextureMixer::updateComputeDescriptorSets(VulkanApp* app) {
 		pushStorage(bumpComputeDescSet, 0, &bumpImageInfo);
 		pushSampler(bumpComputeDescSet, 1, &bumpSamplerInfo);
 		pushSampler(bumpComputeDescSet, 2, &bumpSamplerInfo);
+	}
+	if (roughnessComputeDescSet != VK_NULL_HANDLE) {
+		pushStorage(roughnessComputeDescSet, 0, &roughnessImageInfo);
+		pushSampler(roughnessComputeDescSet, 1, &roughnessSamplerInfo);
+		pushSampler(roughnessComputeDescSet, 2, &roughnessSamplerInfo);
+	}
+	if (aoComputeDescSet != VK_NULL_HANDLE) {
+		pushStorage(aoComputeDescSet, 0, &aoImageInfo);
+		pushSampler(aoComputeDescSet, 1, &aoSamplerInfo);
+		pushSampler(aoComputeDescSet, 2, &aoSamplerInfo);
 	}
 
 	if (!writes.empty()) {
@@ -743,7 +831,9 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet,
 	// Storage image for per-map generation: bind the array view (entire array) and use push constant to select layer
 	if (map == 0) imageInfo.imageView = textureArrayManager->albedoArray.view;
 	else if (map == 1) imageInfo.imageView = textureArrayManager->normalArray.view;
-	else imageInfo.imageView = textureArrayManager->bumpArray.view;
+	else if (map == 2) imageInfo.imageView = textureArrayManager->bumpArray.view;
+	else if (map == 3) imageInfo.imageView = textureArrayManager->roughnessArray.view;
+	else imageInfo.imageView = textureArrayManager->aoArray.view;
 	imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 	VkWriteDescriptorSet descriptorWrite{};
@@ -768,9 +858,15 @@ void TextureMixer::createComputeDescriptorSet(int map, VkDescriptorSet& descSet,
 	} else if (map == 1) {
 		samplerInfo.imageView = textureArrayManager->normalArray.view;
 		samplerInfo.sampler = textureArrayManager->normalSampler;
-	} else {
+	} else if (map == 2) {
 		samplerInfo.imageView = textureArrayManager->bumpArray.view;
 		samplerInfo.sampler = textureArrayManager->bumpSampler;
+	} else if (map == 3) {
+		samplerInfo.imageView = textureArrayManager->roughnessArray.view;
+		samplerInfo.sampler = textureArrayManager->roughnessSampler;
+	} else {
+		samplerInfo.imageView = textureArrayManager->aoArray.view;
+		samplerInfo.sampler = textureArrayManager->aoSampler;
 	}
 	samplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -798,19 +894,21 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 		return; // avoid sampling and writing to the same layer
 	}
 
-	// Choose descriptor set and images to generate based on 'map' (-1 = all, 0=albedo,1=normal,2=bump)
+	// Choose descriptor set and images to generate based on 'map' (-1 = all, 0=albedo,1=normal,2=bump,3=roughness,4=ao)
 	VkDescriptorSet descSet = VK_NULL_HANDLE;
-	bool genA = false, genN = false, genB = false;
+	bool genA = false, genN = false, genB = false, genR = false, genAO = false;
 	// Prefer the triple descriptor set which binds all samplers and result storage images
 	if (tripleComputeDescSet == VK_NULL_HANDLE) {
 		throw std::runtime_error("TextureMixer requires tripleComputeDescSet to be allocated");
 	}
 	// If map == -1 we generate all maps; otherwise only mark the requested one(s)
 	descSet = tripleComputeDescSet;
-	if (map == -1) { genA = genN = genB = true; }
+	if (map == -1) { genA = genN = genB = genR = genAO = true; }
 	else if (map == 0) { genA = true; }
 	else if (map == 1) { genN = true; }
 	else if (map == 2) { genB = true; }
+	else if (map == 3) { genR = true; }
+	else if (map == 4) { genAO = true; }
 	if (descSet == VK_NULL_HANDLE) {
 		std::lock_guard<std::mutex> lkll(logsMutex);
 		logs.emplace_back("No compute descriptor set available for Perlin generation");
@@ -852,6 +950,8 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 			if (genA) textureArrayManager->getImTexture(targetLayer, 0);
 			if (genN) textureArrayManager->getImTexture(targetLayer, 1);
 			if (genB) textureArrayManager->getImTexture(targetLayer, 2);
+			if (genR) textureArrayManager->getImTexture(targetLayer, 3);
+			if (genAO) textureArrayManager->getImTexture(targetLayer, 4);
 
 			// Before recording the async command buffer, ensure any prior generation
 			// that touches this layer has completed. Only wait for layer-specific
@@ -870,10 +970,14 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 				VkImageLayout la = textureArrayManager->getLayerLayout(0, targetLayer);
 				VkImageLayout ln = textureArrayManager->getLayerLayout(1, targetLayer);
 				VkImageLayout lb = textureArrayManager->getLayerLayout(2, targetLayer);
+				VkImageLayout lr = textureArrayManager->getLayerLayout(3, targetLayer);
+				VkImageLayout lao = textureArrayManager->getLayerLayout(4, targetLayer);
 				std::cerr << "[TextureMixer] Debug: targetLayer=" << targetLayer
 						  << " trackedLayouts A=" << layoutName(la)
 						  << " N=" << layoutName(ln)
 						  << " B=" << layoutName(lb)
+						  << " R=" << layoutName(lr)
+						  << " AO=" << layoutName(lao)
 						  << " hasPendingCmds=" << (app ? (int)app->hasPendingCommandBuffers() : 0)
 						  << std::endl;
 			}
@@ -939,6 +1043,22 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
 		preBarriers.push_back(b);
 	}
+	if (genR) {
+		VkImageMemoryBarrier b = mkBarrierLayer(textureArrayManager->roughnessArray.image, targetLayer, 1, textureArrayManager->roughnessArray.mipLevels);
+		b.oldLayout = textureArrayManager->getLayerLayout(3, targetLayer);
+		b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		preBarriers.push_back(b);
+	}
+	if (genAO) {
+		VkImageMemoryBarrier b = mkBarrierLayer(textureArrayManager->aoArray.image, targetLayer, 1, textureArrayManager->aoArray.mipLevels);
+		b.oldLayout = textureArrayManager->getLayerLayout(4, targetLayer);
+		b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		preBarriers.push_back(b);
+	}
 
 	// Also transition all NON-target layers to GENERAL so that the sampler
 	// descriptors (which bind the full array view with imageLayout=GENERAL)
@@ -971,6 +1091,8 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 		if (genA) addNonTargetBarriers(textureArrayManager->albedoArray.image, textureArrayManager->albedoArray.mipLevels, 0);
 		if (genN) addNonTargetBarriers(textureArrayManager->normalArray.image, textureArrayManager->normalArray.mipLevels, 1);
 		if (genB) addNonTargetBarriers(textureArrayManager->bumpArray.image, textureArrayManager->bumpArray.mipLevels, 2);
+		if (genR) addNonTargetBarriers(textureArrayManager->roughnessArray.image, textureArrayManager->roughnessArray.mipLevels, 3);
+		if (genAO) addNonTargetBarriers(textureArrayManager->aoArray.image, textureArrayManager->aoArray.mipLevels, 4);
 	}
 
     		if (!preBarriers.empty()) {
@@ -1022,7 +1144,7 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 				b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 				b.subresourceRange.baseMipLevel = 0;
-				b.subresourceRange.levelCount = 1;
+				b.subresourceRange.levelCount = mipLevels;
 				b.subresourceRange.baseArrayLayer = baseArrayLayer;
 				b.subresourceRange.layerCount = 1;
 				b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
@@ -1034,6 +1156,8 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 			if (genA) mipPrepBarriers.push_back(mkBaseLevelPrep(textureArrayManager->albedoArray.image, targetLayer, textureArrayManager->albedoArray.mipLevels));
 			if (genN) mipPrepBarriers.push_back(mkBaseLevelPrep(textureArrayManager->normalArray.image, targetLayer, textureArrayManager->normalArray.mipLevels));
 			if (genB) mipPrepBarriers.push_back(mkBaseLevelPrep(textureArrayManager->bumpArray.image, targetLayer, textureArrayManager->bumpArray.mipLevels));
+			if (genR) mipPrepBarriers.push_back(mkBaseLevelPrep(textureArrayManager->roughnessArray.image, targetLayer, textureArrayManager->roughnessArray.mipLevels));
+			if (genAO) mipPrepBarriers.push_back(mkBaseLevelPrep(textureArrayManager->aoArray.image, targetLayer, textureArrayManager->aoArray.mipLevels));
 
 			if (!mipPrepBarriers.empty()) {
 				for (auto &b : mipPrepBarriers) {
@@ -1057,6 +1181,12 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 				if (genB && textureArrayManager->bumpArray.mipLevels > 1 && textureArrayManager->bumpArray.image != VK_NULL_HANDLE) {
 					app->recordGenerateMipmaps(cmd, textureArrayManager->bumpArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->bumpArray.mipLevels, 1, targetLayer);
 				}
+				if (genR && textureArrayManager->roughnessArray.mipLevels > 1 && textureArrayManager->roughnessArray.image != VK_NULL_HANDLE) {
+					app->recordGenerateMipmaps(cmd, textureArrayManager->roughnessArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->roughnessArray.mipLevels, 1, targetLayer);
+				}
+				if (genAO && textureArrayManager->aoArray.mipLevels > 1 && textureArrayManager->aoArray.image != VK_NULL_HANDLE) {
+					app->recordGenerateMipmaps(cmd, textureArrayManager->aoArray.image, VK_FORMAT_R8G8B8A8_UNORM, static_cast<int32_t>(width), static_cast<int32_t>(height), textureArrayManager->aoArray.mipLevels, 1, targetLayer);
+				}
 			}
 
 				// ensure final layout is correct for sampling; this is particularly
@@ -1076,13 +1206,17 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 						b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 						return b;
 					};
-					if (genA && textureArrayManager->albedoArray.mipLevels <= 1)
+				if (genA && textureArrayManager->albedoArray.mipLevels <= 1)
 						postBarriers.push_back(mkPost(textureArrayManager->albedoArray.image));
-					if (genN && textureArrayManager->normalArray.mipLevels <= 1)
+				if (genN && textureArrayManager->normalArray.mipLevels <= 1)
 						postBarriers.push_back(mkPost(textureArrayManager->normalArray.image));
-if (genB && textureArrayManager->bumpArray.mipLevels <= 1) {
+				if (genB && textureArrayManager->bumpArray.mipLevels <= 1) {
 					postBarriers.push_back(mkPost(textureArrayManager->bumpArray.image));
 				}
+				if (genR && textureArrayManager->roughnessArray.mipLevels <= 1)
+					postBarriers.push_back(mkPost(textureArrayManager->roughnessArray.image));
+				if (genAO && textureArrayManager->aoArray.mipLevels <= 1)
+					postBarriers.push_back(mkPost(textureArrayManager->aoArray.image));
 				if (!postBarriers.empty()) {
 					for (auto &b : postBarriers) {
 							app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
@@ -1118,6 +1252,8 @@ if (genB && textureArrayManager->bumpArray.mipLevels <= 1) {
 		if (genA) addRestoreBarriers(textureArrayManager->albedoArray.image, textureArrayManager->albedoArray.mipLevels);
 		if (genN) addRestoreBarriers(textureArrayManager->normalArray.image, textureArrayManager->normalArray.mipLevels);
 		if (genB) addRestoreBarriers(textureArrayManager->bumpArray.image, textureArrayManager->bumpArray.mipLevels);
+		if (genR) addRestoreBarriers(textureArrayManager->roughnessArray.image, textureArrayManager->roughnessArray.mipLevels);
+		if (genAO) addRestoreBarriers(textureArrayManager->aoArray.image, textureArrayManager->aoArray.mipLevels);
 		if (!restoreBarriers.empty()) {
 				for (auto &b : restoreBarriers) {
 					app->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, b.newLayout, b.subresourceRange.levelCount, b.subresourceRange.baseArrayLayer, b.subresourceRange.layerCount);
@@ -1133,6 +1269,8 @@ if (genB && textureArrayManager->bumpArray.mipLevels <= 1) {
 		textureArrayManager->setLayerLayout(0, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		textureArrayManager->setLayerLayout(1, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		textureArrayManager->setLayerLayout(2, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		textureArrayManager->setLayerLayout(3, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		textureArrayManager->setLayerLayout(4, targetLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	}
 	if (onTextureGeneratedCallback) {
 		onTextureGeneratedCallback();

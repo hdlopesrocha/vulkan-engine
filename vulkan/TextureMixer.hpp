@@ -94,6 +94,8 @@ private:
     VkDescriptorSet albedoComputeDescSet = VK_NULL_HANDLE;
     VkDescriptorSet normalComputeDescSet = VK_NULL_HANDLE;
     VkDescriptorSet bumpComputeDescSet = VK_NULL_HANDLE;
+    VkDescriptorSet roughnessComputeDescSet = VK_NULL_HANDLE;
+    VkDescriptorSet aoComputeDescSet = VK_NULL_HANDLE;
     // Per-layer persistent descriptor sets (one descriptor set per array layer)
     std::vector<VkDescriptorSet> perLayerDescSets;
     bool hasPerLayerDescSets = false;
@@ -110,11 +112,17 @@ private:
     std::mutex pendingFencesMutex;
     std::vector<std::tuple<VkFence, uint32_t>> pendingFences;
 
+    // If editable textures are represented inside a TextureArrayManager, store the layer index
+    // NOTE: placed BEFORE logs to avoid aliasing with vector internal pointers
+    uint32_t editableLayer = UINT32_MAX;
+
     // Diagnostics: small textual log buffer for UI and a mutex to protect it
     std::mutex logsMutex;
     std::vector<std::string> logs;
 
 public:
+    void setEditableLayer(uint32_t layer) { editableLayer = layer; }
+
     // Query whether a layer currently has an in-flight generation
     bool isLayerGenerationPending(uint32_t layer);
     // Block until generation for a specific layer completes (returns true if waited)
@@ -123,13 +131,6 @@ public:
 
     // Global instance accessor (set on init) so external systems can wait for generations
     static TextureMixer* getGlobalInstance();
-
-    // If editable textures are represented inside a TextureArrayManager, store the layer index
-public:
-    // If editable textures are represented inside a TextureArrayManager, store the layer index
-    uint32_t editableLayer = UINT32_MAX;
-
-    void setEditableLayer(uint32_t layer) { editableLayer = layer; }
     // Return an ImGui descriptor for previewing the requested map (0=albedo,1=normal,2=bump)
     VkDescriptorSet getPreviewDescriptor(int map);
     // Return an ImGui descriptor for previewing the requested map at a specific array layer
