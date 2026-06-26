@@ -300,7 +300,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     poolInfo.pPoolSizes = &poolSize;
     poolInfo.maxSets = 1;
     // Allow freeing individual descriptor sets from this pool
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     VkDescriptorPool descPool = VK_NULL_HANDLE;
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool) != VK_SUCCESS) {
         std::cerr << "[VulkanApp] Failed to create descriptor pool for vegetation compute" << std::endl;
@@ -691,7 +691,7 @@ bool VulkanApp::ensureVegetationComputePipeline() {
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = &poolSize;
     poolInfo.maxSets = 64;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
 
     VkDescriptorPool pool = VK_NULL_HANDLE;
     if (vkCreateDescriptorPool(dev, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
@@ -3838,8 +3838,8 @@ void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
-    // Allow freeing individual descriptor sets (vegetation, etc.)
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    // Allow freeing individual descriptor sets (vegetation, etc.) and support UPDATE_AFTER_BIND layouts
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     // Increase maxSets to support many compute/graphics allocations
     poolInfo.maxSets = uboCount * 16;
 
