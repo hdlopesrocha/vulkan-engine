@@ -296,7 +296,7 @@ public:
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             WrappedPerlinDistortDistanceEffect distortedFunction = WrappedPerlinDistortDistanceEffect(&wrappedFunction, 48.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f);
             //distortedFunction.cacheEnabled = true;
-            opaqueLayer.apply(SDF::opUnion, &distortedFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
+            opaqueLayer.apply(SDF::opUnion, &distortedFunction, model, translate, scale, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
         }
     
         {
@@ -308,7 +308,7 @@ public:
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             WrappedPerlinCarveDistanceEffect carvedFunction = WrappedPerlinCarveDistanceEffect(&wrappedFunction, 64.0f, 0.1f/32.0f, 0.1f, glm::vec3(0), 0.0f, 1.0f);
             //carvedFunction.cacheEnabled = true;
-            opaqueLayer.apply(SDF::opUnion, &carvedFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
+            opaqueLayer.apply(SDF::opUnion, &carvedFunction, model, translate, scale, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
         }
     
         {
@@ -320,7 +320,7 @@ public:
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             WrappedSineDistortDistanceEffect carvedFunction = WrappedSineDistortDistanceEffect(&wrappedFunction, 32.0f, 0.1f/2.0f, glm::vec3(0));
             //carvedFunction.cacheEnabled = true;
-            opaqueLayer.apply(SDF::opUnion, &carvedFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
+            opaqueLayer.apply(SDF::opUnion, &carvedFunction, model, translate, scale, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
         }
     
         {
@@ -331,7 +331,7 @@ public:
             Transformation model(glm::vec3(radius), center, 0,0,0);
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             WrappedVoronoiCarveDistanceEffect distortFunction = WrappedVoronoiCarveDistanceEffect(&wrappedFunction, 64.0f, 64.0f, glm::vec3(0), 0.0f, 1.0f);
-            opaqueLayer.apply(SDF::opUnion, &distortFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
+            opaqueLayer.apply(SDF::opUnion, &distortFunction, model, translate, scale, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
         }
     
         {
@@ -342,7 +342,7 @@ public:
             Transformation model(glm::vec3(radius), center, 0,0,0);
             WrappedSphere wrappedFunction = WrappedSphere(&function);
             WrappedVoronoiCarveDistanceEffect distortFunction = WrappedVoronoiCarveDistanceEffect(&wrappedFunction, 64.0f, 64.0f, glm::vec3(0), 0.0f, -1.0f);
-            opaqueLayer.apply(SDF::opUnion, &distortFunction, model, translate, scale, SimpleBrush(7), minSize*0.25f, simplifier, opaqueHandler);
+            opaqueLayer.apply(SDF::opUnion, &distortFunction, model, translate, scale, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
         }
     
         {

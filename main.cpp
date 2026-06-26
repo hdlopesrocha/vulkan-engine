@@ -175,25 +175,25 @@ public:
         uint32_t layerCount = 32;
 
         textureArrayManager.allocate(layerCount, 1024, 1024, this);
-
-  
         // Use shared TextureTriple defined in TextureArrayManager.hpp
         const std::vector<TextureTriple> textureTriples = {
             { "textures/Wall_Stone_010_basecolor.jpg", "textures/Wall_Stone_010_normal.jpg", "textures/Wall_Stone_010_height.jpg", "textures/Wall_Stone_010_roughness.jpg", "textures/Wall_Stone_010_ambientOcclusion.jpg" },
-            { "textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg" },
-            { "textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg" },
+            { "textures/Ground_Dirt_007_basecolor.jpg", "textures/Ground_Dirt_007_normal.jpg", "textures/Ground_Dirt_007_height.jpg", "textures/Ground_Dirt_007_roughness.jpg", "textures/Ground_Dirt_007_ambientOcclusion.jpg" },
+            { "textures/Dead_leaves_001_COLOR.jpg", "textures/Dead_leaves_001_NRM.jpg", "textures/Dead_leaves_001_DISP.jpg", "textures/Dead_leaves_001_SPEC.jpg", "textures/Dead_leaves_001_OCC.jpg" },
             { "textures/Grass_001_COLOR.jpg", "textures/Grass_001_NORM.jpg", "textures/Grass_001_DISP.jpg", "textures/Grass_001_ROUGH.jpg", "textures/Grass_001_OCC.jpg" },
-            { "textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg" },
+            { "textures/Lava_005_COLOR.jpg", "textures/Lava_005_NORM.jpg", "textures/Lava_005_DISP.jpg", "textures/Lava_005_ROUGH.jpg", "textures/Lava_005_OCC.jpg" },
             { "textures/Metal_Pattern_008_basecolor.jpg", "textures/Metal_Pattern_008_normal.jpg", "textures/Metal_Pattern_008_height.jpg", "textures/Metal_Pattern_008_roughness.jpg", "textures/Metal_Pattern_008_ambientOcclusion.jpg" },
-            { "textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg" },
-            { "textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg" },
+            { "textures/Linoleum_Floor_001_basecolor.jpg", "textures/Linoleum_Floor_001_normal.jpg", "textures/Linoleum_Floor_001_height.jpg", "textures/Linoleum_Floor_001_roughness.jpg", "textures/Linoleum_Floor_001_ambientOcclusion.jpg" },
+            { "textures/Rough_rock_006_COLOR.jpg", "textures/Rough_rock_006_NRM.jpg", "textures/Rough_rock_006_DISP.jpg", "textures/Rough_rock_006_SPEC.jpg", "textures/Rough_rock_006_OCC.jpg" },
             { "textures/Sand_007_basecolor.jpg", "textures/Sand_007_normal.jpg", "textures/Sand_007_height.jpg", "textures/Sand_007_roughness.jpg", "textures/Sand_007_ambientOcclusion.jpg" },
-            { "textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg" },
-            { "textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg" },
-            { "textures/bark_color.jpg", "textures/bark_normal.jpg", "textures/bark_bump.jpg" },
-            { "textures/blocks_color.jpg", "textures/blocks_normal.jpg", "textures/blocks_bump.jpg" },
+            { "textures/Snow_001_COLOR.jpg", "textures/Snow_001_NORM.jpg", "textures/Snow_001_DISP.jpg", "textures/Snow_001_ROUGH.jpg", "textures/Snow_001_OCC.jpg" },
+            { "textures/Sand_002_COLOR.jpg", "textures/Sand_002_NRM.jpg", "textures/Sand_002_DISP.jpg", "textures/Sand_002_SPEC.jpg", "textures/Sand_002_OCC.jpg" },
+            { "textures/Bark_001_COLOR.jpg", "textures/Bark_001_NORM.jpg", "textures/Bark_001_DISP.jpg", "textures/Bark_001_ROUGH.jpg", "textures/Bark_001_OCC.jpg" },
+            { "textures/Concrete_Blocks_013_basecolor.jpg", "textures/Concrete_Blocks_013_normal.jpg", "textures/Concrete_Blocks_013_height.jpg", "textures/Concrete_Blocks_013_roughness.jpg", "textures/Concrete_Blocks_013_ambientOcclusion.jpg" },
             { "textures/Asphalt_001_COLOR.jpg", "textures/Asphalt_001_NRM.jpg", "textures/Asphalt_001_DISP.jpg", "textures/Asphalt_001_SPEC.jpg", "textures/Asphalt_001_OCC.jpg" },
-            { "textures/road_color.jpg", "textures/road_normal.jpg", "textures/road_bump.png" }
+            { "textures/Stone_Floor_002_COLOR.jpg", "textures/Stone_Floor_002_NORM.jpg", "textures/Stone_Floor_002_DISP.jpg", "textures/Stone_Floor_002_SPEC.jpg", "textures/Stone_Floor_002_OCC.jpg" },
+            { "textures/Rock_023_COLOR.jpg", "textures/Rock_023_NORM.jpg", "textures/Rock_023_DISP.jpg", "textures/Rock_023_ROUGH.jpg", "textures/Rock_023_OCC.jpg" },
+
         };
 
         // Bulk load the triples directly using TextureTriple vector already defined above
@@ -253,8 +253,8 @@ public:
         materials[0u].tessMaxLevel = 16.0f;
         materials[0u].tessHeightScale = 8.0f;
         materials[0u].triplanar = true;
-        materials[0u].triplanarScaleU = 0.005f;
-        materials[0u].triplanarScaleV = 0.005f;
+        materials[0u].triplanarScaleU = 0.01f;
+        materials[0u].triplanarScaleV = 0.01f;
         materials[0u].invertHeight = true;
 
         materials[5u].mappingMode = true;
@@ -263,8 +263,8 @@ public:
         materials[5u].tessMaxLevel = 16.0f;
         materials[5u].tessHeightScale = 2.0f;
         materials[5u].triplanar = true;
-        materials[5u].triplanarScaleU = 0.005f;
-        materials[5u].triplanarScaleV = 0.005f;
+        materials[5u].triplanarScaleU = 0.01f;
+        materials[5u].triplanarScaleV = 0.01f;
         materials[5u].invertHeight = true;
         materials[5u].reflectionStrength = 0.8f;
 
@@ -274,8 +274,8 @@ public:
         materials[6u].tessMaxLevel = 1.0f;
         materials[6u].tessHeightScale = 0.0f;
         materials[6u].triplanar = true;
-        materials[6u].triplanarScaleU = 0.005f;
-        materials[6u].triplanarScaleV = 0.005f;
+        materials[6u].triplanarScaleU = 0.01f;
+        materials[6u].triplanarScaleV = 0.01f;
         materials[6u].invertHeight = true;
         materials[6u].reflectionStrength = 1.0f;
 
@@ -290,16 +290,6 @@ public:
         materials[7u].invertHeight = true;
         materials[7u].reflectionStrength = 0.2f;
 
-        materials[14u].mappingMode = true;
-        materials[14u].tessLevel = 5.0f;
-        materials[14u].tessMinLevel = 2.0f;
-        materials[14u].tessMaxLevel = 18.0f;
-        materials[14u].tessHeightScale = 32.0f;
-        materials[14u].triplanar = true;
-        materials[14u].triplanarScaleU = 0.002f;
-        materials[14u].triplanarScaleV = 0.002f;
-        materials[14u].invertHeight = true;
-
         materials[12u].mappingMode = true;
         materials[12u].tessLevel = 16.0f;
         materials[12u].tessMinLevel = 2.0f;
@@ -310,6 +300,26 @@ public:
         materials[12u].triplanarScaleV = 0.002f;
         materials[12u].invertHeight = true;
         materials[12u].reflectionStrength = 0.3f;
+
+        materials[14u].mappingMode = true;
+        materials[14u].tessLevel = 5.0f;
+        materials[14u].tessMinLevel = 2.0f;
+        materials[14u].tessMaxLevel = 16.0f;
+        materials[14u].tessHeightScale = 16.0f;
+        materials[14u].triplanar = true;
+        materials[14u].triplanarScaleU = 0.002f;
+        materials[14u].triplanarScaleV = 0.002f;
+        materials[14u].invertHeight = true;
+
+        materials[15u].mappingMode = true;
+        materials[15u].tessLevel = 5.0f;
+        materials[15u].tessMinLevel = 2.0f;
+        materials[15u].tessMaxLevel = 16.0f;
+        materials[15u].tessHeightScale = 16.0f;
+        materials[15u].triplanar = true;
+        materials[15u].triplanarScaleU = 0.01f;
+        materials[15u].triplanarScaleV = 0.01f;
+        materials[15u].invertHeight = true;
 
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);
