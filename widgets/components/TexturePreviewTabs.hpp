@@ -3,7 +3,7 @@
 #include <imgui.h>
 #include <memory>
 #include <vector>
-#include "../../vulkan/TextureMixer.hpp"
+#include "../../services/TextureMixer.hpp"
 
 namespace ImGuiComponents {
 

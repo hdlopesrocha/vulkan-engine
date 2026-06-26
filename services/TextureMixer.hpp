@@ -1,7 +1,6 @@
 #pragma once
 
-#pragma once
-
+#include "Service.hpp"
 #include <cstdint>
 #include <vulkan/vulkan.h>
 class VulkanApp;
@@ -30,9 +29,12 @@ struct MixerParameters {
 };
 
 
-class TextureMixer {
+class TextureMixer : public Service {
 public:
     TextureMixer();
+
+    void init(VulkanApp* app) override;
+    void cleanup() override;
     
     // New init that accepts an optional TextureArrayManager so compute can sample from arrays
     void init(VulkanApp* app, class TextureArrayManager* textureArrayManager);
@@ -54,8 +56,6 @@ public:
     // Diagnostics: number of pending async generations and a small log buffer
     size_t getPendingGenerationCount();
     std::vector<std::string> consumeLogs();
-
-    void cleanup();
 
     // Query array layer dimensions (0 if none)
     uint32_t getLayerWidth() const;

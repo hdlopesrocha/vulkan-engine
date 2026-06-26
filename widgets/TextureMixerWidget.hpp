@@ -1,6 +1,6 @@
 #pragma once
 #include "Widget.hpp"
-#include "../vulkan/TextureMixer.hpp"
+#include "../services/TextureMixer.hpp"
 
 #include <vector>
 #include <memory>

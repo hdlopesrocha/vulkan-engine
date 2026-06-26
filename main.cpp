@@ -64,7 +64,7 @@
 #include "vulkan/MaterialManager.hpp"
 #include "utils/BillboardManager.hpp"
 #include "utils/AtlasManager.hpp"
-#include "vulkan/TextureMixer.hpp"
+#include "services/TextureMixer.hpp"
 #include "utils/ShadowParams.hpp"
 
 class MyApp : public VulkanApp, public IEventHandler {

@@ -1,9 +1,9 @@
 #include "TextureMixer.hpp"
 
-#include "VulkanApp.hpp"
+#include "../vulkan/VulkanApp.hpp"
 #include "../utils/FileReader.hpp"
-#include "PerlinPushConstants.hpp"
-#include "TextureArrayManager.hpp"
+#include "../vulkan/PerlinPushConstants.hpp"
+#include "../vulkan/TextureArrayManager.hpp"
 #include <algorithm>
 #include <stdexcept>
 #include <mutex>
@@ -50,6 +50,9 @@ TextureMixer::TextureMixer() {}
 // Global instance pointer (set in init)
 static TextureMixer* g_texture_mixer_instance = nullptr;
 TextureMixer* TextureMixer::getGlobalInstance() { return g_texture_mixer_instance; }
+
+void TextureMixer::init(VulkanApp* app) {
+}
 
 void TextureMixer::init(VulkanApp* app, TextureArrayManager* textureArrayManager) {
 	this->textureArrayManager = textureArrayManager;

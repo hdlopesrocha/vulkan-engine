@@ -2,7 +2,7 @@
 
 #include <string>
 #include "components/ScrollablePicker.hpp"
-#include "../vulkan/TextureMixer.hpp"
+#include "../services/TextureMixer.hpp"
 #include "components/ImGuiHelpers.hpp"
 
 void TextureViewer::render() {

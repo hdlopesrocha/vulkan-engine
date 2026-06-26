@@ -667,7 +667,7 @@ void TextureArrayManager::updateLayerFromEditable(VulkanApp* app, uint32_t layer
 	updateLayerFromEditableMap(app, layer, tex, 0);
 }
 
-#include "TextureMixer.hpp"
+#include "../services/TextureMixer.hpp"
 
 void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t layer, const EditableTexture& tex, int map) {
 	if (!a) throw std::runtime_error("TextureArrayManager::updateLayerFromEditableMap: no VulkanApp");
