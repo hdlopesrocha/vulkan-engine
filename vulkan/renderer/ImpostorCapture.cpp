@@ -683,6 +683,7 @@ void ImpostorCapture::createDescSetLayouts(VulkanApp* app) {
                           | VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo info{};
         info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
         info.bindingCount = 1;
         info.pBindings    = &b;
         if (vkCreateDescriptorSetLayout(device, &info, nullptr, &uboDescSetLayout) != VK_SUCCESS)
@@ -701,6 +702,7 @@ void ImpostorCapture::createDescSetLayouts(VulkanApp* app) {
         }
         VkDescriptorSetLayoutCreateInfo info{};
         info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
         info.bindingCount = 3;
         info.pBindings    = bindings;
         if (vkCreateDescriptorSetLayout(device, &info, nullptr, &texDescSetLayout) != VK_SUCCESS)

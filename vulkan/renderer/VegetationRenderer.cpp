@@ -135,6 +135,7 @@ void VegetationRenderer::initCulling(VulkanApp* app) {
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     layoutInfo.bindingCount = 3;
     layoutInfo.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &vegCullDescSetLayout) != VK_SUCCESS)
@@ -177,6 +178,7 @@ void VegetationRenderer::initCulling(VulkanApp* app) {
     poolSize.descriptorCount = 3;
     VkDescriptorPoolCreateInfo poolCI{};
     poolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolCI.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     poolCI.maxSets = 1;
     poolCI.poolSizeCount = 1;
     poolCI.pPoolSizes = &poolSize;
@@ -552,6 +554,7 @@ void VegetationRenderer::init(VulkanApp* app) {
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     layoutInfo.bindingCount = 3;
     layoutInfo.pBindings    = texBindings;
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
@@ -1022,6 +1025,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo info{};
         info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
         info.bindingCount = 2;
         info.pBindings    = bindings;
         if (vkCreateDescriptorSetLayout(device, &info, nullptr, &impostorDescSetLayout) != VK_SUCCESS)
@@ -1077,6 +1081,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         depthBindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo info{};
         info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
         info.bindingCount = 2;
         info.pBindings    = depthBindings;
         if (vkCreateDescriptorSetLayout(device, &info, nullptr, &impostorDepthDescSetLayout) != VK_SUCCESS)

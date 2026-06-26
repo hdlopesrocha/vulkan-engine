@@ -230,6 +230,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     layoutInfo.bindingCount = 3;
     layoutInfo.pBindings = bindings;
 
@@ -3688,6 +3689,7 @@ void VulkanApp::createDescriptorSetLayout() {
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
     layoutInfo.pBindings = bindings.data();
 
@@ -3710,6 +3712,7 @@ void VulkanApp::createDescriptorSetLayout() {
     std::array<VkDescriptorSetLayoutBinding, 1> materialBindings = { bindings[5] };
     VkDescriptorSetLayoutCreateInfo materialLayoutInfo{};
     materialLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    materialLayoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     materialLayoutInfo.bindingCount = static_cast<uint32_t>(materialBindings.size());
     materialLayoutInfo.pBindings = materialBindings.data();
 

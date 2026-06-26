@@ -50,6 +50,7 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
         b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo li{};
         li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
         li.bindingCount = 1;
         li.pBindings = &b;
         if (vkCreateDescriptorSetLayout(device, &li, nullptr, &linearizeDescriptorSetLayout) == VK_SUCCESS) {

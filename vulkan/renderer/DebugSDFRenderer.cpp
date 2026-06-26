@@ -93,6 +93,7 @@ void DebugSDFRenderer::createDescriptorSet(VulkanApp* app) {
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     layoutInfo.bindingCount = 1;
     layoutInfo.pBindings = &instanceBinding;
 
