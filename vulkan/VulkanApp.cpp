@@ -4971,9 +4971,11 @@ void VulkanApp::recreateSwapchain() {
 
     bool imguiInitOk = ImGui_ImplVulkan_Init(&init_info);
     // printf("[ImGui] ImGui_ImplVulkan_Init (recreate) returned %s\\n", imguiInitOk ? "true" : "false");
-    // Re-upload fonts (creates/destroys temporary upload objects)
-    ImGui_ImplVulkan_CreateFontsTexture();
-    ImGui_ImplVulkan_DestroyFontsTexture();
+    // Upload font texture to the new pool. Keep it alive (don't destroy) so the
+    // descriptor set handle is not recycled before the next frame's NewFrame().
+    if (imguiInitOk) {
+        ImGui_ImplVulkan_CreateFontsTexture();
+    }
     if (!imguiInitOk) {
         printf("[ImGui] ERROR: ImGui_ImplVulkan_Init (recreate) failed!\n");
     }
