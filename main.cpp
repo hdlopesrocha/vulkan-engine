@@ -193,6 +193,7 @@ public:
             { "textures/Asphalt_001_COLOR.jpg", "textures/Asphalt_001_NRM.jpg", "textures/Asphalt_001_DISP.jpg", "textures/Asphalt_001_SPEC.jpg", "textures/Asphalt_001_OCC.jpg" },
             { "textures/Stone_Floor_002_COLOR.jpg", "textures/Stone_Floor_002_NORM.jpg", "textures/Stone_Floor_002_DISP.jpg", "textures/Stone_Floor_002_SPEC.jpg", "textures/Stone_Floor_002_OCC.jpg" },
             { "textures/Canyon_Rock_001_COLOR.jpg", "textures/Canyon_Rock_001_NORM.jpg", "textures/Canyon_Rock_001_DISP.jpg", "textures/Canyon_Rock_001_ROUGH.jpg", "textures/Canyon_Rock_001_OCC.jpg" },
+            { "textures/Sapphire_001_COLOR.jpg", "textures/Sapphire_001_NORM.jpg", "textures/Sapphire_001_DISP.jpg", "textures/Sapphire_001_ROUGH.jpg", "textures/Sapphire_001_OCC.jpg" },
 
         };
 
@@ -282,18 +283,18 @@ public:
         materials[7u].mappingMode = true;
         materials[7u].tessLevel = 2.0f;
         materials[7u].tessMinLevel = 2.0f;
-        materials[7u].tessMaxLevel = 20.0f;
-        materials[7u].tessHeightScale = 16.0f;
+        materials[7u].tessMaxLevel = 16.0f;
+        materials[7u].tessHeightScale = 8.0f;
         materials[7u].triplanar = true;
-        materials[7u].triplanarScaleU = 0.002f;
-        materials[7u].triplanarScaleV = 0.002f;
+        materials[7u].triplanarScaleU = 0.01f;
+        materials[7u].triplanarScaleV = 0.01f;
         materials[7u].invertHeight = true;
         materials[7u].reflectionStrength = 0.2f;
 
         materials[12u].mappingMode = true;
-        materials[12u].tessLevel = 16.0f;
+        materials[12u].tessLevel = 6.0f;
         materials[12u].tessMinLevel = 2.0f;
-        materials[12u].tessMaxLevel = 18.0f;
+        materials[12u].tessMaxLevel = 16.0f;
         materials[12u].tessHeightScale = 32.0f;
         materials[12u].triplanar = true;
         materials[12u].triplanarScaleU = 0.002f;
@@ -305,7 +306,7 @@ public:
         materials[14u].tessLevel = 5.0f;
         materials[14u].tessMinLevel = 2.0f;
         materials[14u].tessMaxLevel = 16.0f;
-        materials[14u].tessHeightScale = 16.0f;
+        materials[14u].tessHeightScale = 8.0f;
         materials[14u].triplanar = true;
         materials[14u].triplanarScaleU = 0.002f;
         materials[14u].triplanarScaleV = 0.002f;
@@ -315,11 +316,21 @@ public:
         materials[15u].tessLevel = 5.0f;
         materials[15u].tessMinLevel = 2.0f;
         materials[15u].tessMaxLevel = 16.0f;
-        materials[15u].tessHeightScale = 16.0f;
+        materials[15u].tessHeightScale = 8.0f;
         materials[15u].triplanar = true;
         materials[15u].triplanarScaleU = 0.002f;
         materials[15u].triplanarScaleV = 0.002f;
         materials[15u].invertHeight = true;
+
+        materials[16u].mappingMode = true;
+        materials[16u].tessLevel = 5.0f;
+        materials[16u].tessMinLevel = 2.0f;
+        materials[16u].tessMaxLevel = 16.0f;
+        materials[16u].tessHeightScale = 32.0f;
+        materials[16u].triplanar = true;
+        materials[16u].triplanarScaleU = 0.002f;
+        materials[16u].triplanarScaleV = 0.002f;
+        materials[16u].invertHeight = true;
 
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);
