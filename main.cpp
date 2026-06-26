@@ -179,20 +179,20 @@ public:
   
         // Use shared TextureTriple defined in TextureArrayManager.hpp
         const std::vector<TextureTriple> textureTriples = {
-            { "textures/bricks_color.jpg", "textures/bricks_normal.jpg", "textures/bricks_bump.jpg" },
+            { "textures/Wall_Stone_010_basecolor.jpg", "textures/Wall_Stone_010_normal.jpg", "textures/Wall_Stone_010_height.jpg", "textures/Wall_Stone_010_roughness.jpg", "textures/Wall_Stone_010_ambientOcclusion.jpg" },
             { "textures/dirt_color.jpg", "textures/dirt_normal.jpg", "textures/dirt_bump.jpg" },
             { "textures/forest_color.jpg", "textures/forest_normal.jpg", "textures/forest_bump.jpg" },
-            { "textures/grass_color.jpg", "textures/grass_normal.jpg", "textures/grass_bump.jpg" },
+            { "textures/Grass_001_COLOR.jpg", "textures/Grass_001_NORM.jpg", "textures/Grass_001_DISP.jpg", "textures/Grass_001_ROUGH.jpg", "textures/Grass_001_OCC.jpg" },
             { "textures/lava_color.jpg", "textures/lava_normal.jpg", "textures/lava_bump.jpg" },
-            { "textures/metal_color.jpg", "textures/metal_normal.jpg", "textures/metal_bump.jpg" },
+            { "textures/Metal_Pattern_008_basecolor.jpg", "textures/Metal_Pattern_008_normal.jpg", "textures/Metal_Pattern_008_height.jpg", "textures/Metal_Pattern_008_roughness.jpg", "textures/Metal_Pattern_008_ambientOcclusion.jpg" },
             { "textures/pixel_color.jpg", "textures/pixel_normal.jpg", "textures/pixel_bump.jpg" },
             { "textures/rock_color.jpg", "textures/rock_normal.jpg", "textures/rock_bump.jpg" },
-            { "textures/sand_color.jpg", "textures/sand_normal.jpg", "textures/sand_bump.jpg" },
+            { "textures/Sand_007_basecolor.jpg", "textures/Sand_007_normal.jpg", "textures/Sand_007_height.jpg", "textures/Sand_007_roughness.jpg", "textures/Sand_007_ambientOcclusion.jpg" },
             { "textures/snow_color.jpg", "textures/snow_normal.jpg", "textures/snow_bump.jpg" },
             { "textures/soft_sand_color.jpg", "textures/soft_sand_normal.jpg", "textures/soft_sand_bump.jpg" },
             { "textures/bark_color.jpg", "textures/bark_normal.jpg", "textures/bark_bump.jpg" },
             { "textures/blocks_color.jpg", "textures/blocks_normal.jpg", "textures/blocks_bump.jpg" },
-            { "textures/asphalt_color.jpg", "textures/asphalt_normal.jpg", "textures/asphalt_bump.jpg" },
+            { "textures/Asphalt_001_COLOR.jpg", "textures/Asphalt_001_NRM.jpg", "textures/Asphalt_001_DISP.jpg", "textures/Asphalt_001_SPEC.jpg", "textures/Asphalt_001_OCC.jpg" },
             { "textures/road_color.jpg", "textures/road_normal.jpg", "textures/road_bump.png" }
         };
 
@@ -215,6 +215,8 @@ public:
             textureArrayManager.getImTexture(i, 0);
             textureArrayManager.getImTexture(i, 1);
             textureArrayManager.getImTexture(i, 2);
+            textureArrayManager.getImTexture(i, 3);
+            textureArrayManager.getImTexture(i, 4);
         }
 
         uint32_t editableLayer = (loadedTextureLayers < layerCount) ? loadedTextureLayers : 0u;
@@ -231,6 +233,8 @@ public:
         textureArrayManager.getImTexture(editableLayer, 0);
         textureArrayManager.getImTexture(editableLayer, 1);
         textureArrayManager.getImTexture(editableLayer, 2);
+        textureArrayManager.getImTexture(editableLayer, 3);
+        textureArrayManager.getImTexture(editableLayer, 4);
 
         // Generate textures for all configured mixer entries (async submissions tracked by TextureMixer)
         textureMixer->generateInitialTextures(mixerParams);
@@ -971,7 +975,7 @@ public:
                     VkDescriptorPoolSize ps{};
                     ps.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; ps.descriptorCount = 3;
                     VkDescriptorPoolSize ps2{};
-                    ps2.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps2.descriptorCount = 7;
+                    ps2.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps2.descriptorCount = 9;
                     VkDescriptorPoolSize ps3{};
                     ps3.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; ps3.descriptorCount = 2;
                     VkDescriptorPoolSize poolSizes[] = {ps, ps2, ps3};
@@ -1027,6 +1031,8 @@ public:
                     addImageWriteLocal(1, this->textureArrayManager.albedoSampler, this->textureArrayManager.albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                     addImageWriteLocal(2, this->textureArrayManager.normalSampler, this->textureArrayManager.normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                     addImageWriteLocal(3, this->textureArrayManager.bumpSampler, this->textureArrayManager.bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    addImageWriteLocal(12, this->textureArrayManager.roughnessSampler, this->textureArrayManager.roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    addImageWriteLocal(13, this->textureArrayManager.aoSampler, this->textureArrayManager.aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 }
                 addImageWriteLocal(4, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
                 addImageWriteLocal(8, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);

@@ -3655,11 +3655,27 @@ void VulkanApp::createDescriptorSetLayout() {
     envMapBinding.pImmutableSamplers = nullptr;
     envMapBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 12> bindings = {
+    // binding 12: roughness map array
+    VkDescriptorSetLayoutBinding roughnessSamplerBinding{};
+    roughnessSamplerBinding.binding = 12;
+    roughnessSamplerBinding.descriptorCount = 1;
+    roughnessSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    roughnessSamplerBinding.pImmutableSamplers = nullptr;
+    roughnessSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // binding 13: ambient occlusion map array
+    VkDescriptorSetLayoutBinding aoSamplerBinding{};
+    aoSamplerBinding.binding = 13;
+    aoSamplerBinding.descriptorCount = 1;
+    aoSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    aoSamplerBinding.pImmutableSamplers = nullptr;
+    aoSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 14> bindings = {
         uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
         shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
         waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding,
-        envMapBinding
+        envMapBinding, roughnessSamplerBinding, aoSamplerBinding
     };
     // Fill the material binding at position 5
     bindings[5].binding = 5;
