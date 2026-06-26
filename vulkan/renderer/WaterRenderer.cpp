@@ -307,6 +307,7 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
             std::cerr << "[WaterRenderer] Skipping descriptor pool reset: device not idle (result=" << (int)r << ")" << std::endl;
         }
     }
+    cubemapWaterDepthDS = VK_NULL_HANDLE;
 }
 
 void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex) {
@@ -1154,7 +1155,6 @@ static VkImageView _createDummy1x1ImageView(VulkanApp* app, VkFormat fmt, VkImag
 }
 
 void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat) {
-    if (cubemapWaterPipeline != VK_NULL_HANDLE) return;
     VkDevice device = app->getDevice();
 
     // --- Dummy 1x1 depth (far plane) for back-face depth ---
