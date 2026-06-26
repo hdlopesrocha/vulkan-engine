@@ -1615,14 +1615,30 @@ public:
         }
     }
 
+    void preImGuiShutdown() override {
+        // Free all ImGui descriptor sets BEFORE Shutdown while the old backend data
+        // is still alive. This avoids freeing DS allocated with the old descriptor
+        // set layout through the new backend data after a Shutdown/Init cycle.
+        if (sceneRenderer && sceneRenderer->shadowMapper) {
+            sceneRenderer->shadowMapper->freeImGuiDescriptors();
+        }
+        if (renderTargetsWidget) {
+            renderTargetsWidget->invalidateImGuiDescriptors();
+        }
+        if (billboardCreator) {
+            billboardCreator->invalidateImGuiDescriptors();
+        }
+    }
+
     void onImGuiRecreated() override {
         // Re-create ImGui AddTexture DS for shadow cascades — the old ones used the
         // previous DescriptorSetLayout which was destroyed by ImGui_ImplVulkan_Shutdown.
+        // Old handles were freed by preImGuiShutdown() so recreateImGuiDescriptors
+        // will skip the free and go straight to allocation.
         if (sceneRenderer && sceneRenderer->shadowMapper) {
             sceneRenderer->shadowMapper->recreateImGuiDescriptors();
         }
-        // Invalidate all cached ImGui texture DS in the RenderTargetsWidget so they
-        // are re-created with the new DSL on the next frame.
+        // Widget handles were nulled by preImGuiShutdown(); this is a no-op.
         if (renderTargetsWidget) {
             renderTargetsWidget->invalidateImGuiDescriptors();
         }

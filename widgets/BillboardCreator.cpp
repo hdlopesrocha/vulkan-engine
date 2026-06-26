@@ -60,6 +60,17 @@ void BillboardCreator::cleanup() {
     printf("[BillboardCreator] cleanup done\n");
 }
 
+void BillboardCreator::invalidateImGuiDescriptors() {
+    printf("[BillboardCreator] invalidateImGuiDescriptors: texturesInitialized=%d\n", texturesInitialized ? 1 : 0);
+    if (!texturesInitialized) return;
+    for (size_t i = 0; i < composedAlbedo.size(); ++i) {
+        composedAlbedo[i].invalidateImGuiDescriptor();
+        composedNormal[i].invalidateImGuiDescriptor();
+        composedOpacity[i].invalidateImGuiDescriptor();
+    }
+    printf("[BillboardCreator] invalidateImGuiDescriptors done\n");
+}
+
 size_t BillboardCreator::getComposeIndex() const {
     if (currentBillboardIndex < 0) return 0;
     size_t idx = static_cast<size_t>(currentBillboardIndex);

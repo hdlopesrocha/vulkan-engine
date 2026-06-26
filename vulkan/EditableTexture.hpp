@@ -40,6 +40,11 @@ public:
     
     // Get as TextureImage for TextureManager compatibility
     TextureImage getTextureImage() const;
+
+    // Invalidate the ImGui descriptor (e.g., after ImGui pool is recreated).
+    // Must be called before ImGui_ImplVulkan_Shutdown() while the old pool
+    // is still alive so the descriptor can be properly freed.
+    void invalidateImGuiDescriptor();
     
 private:
     uint32_t width = 0;

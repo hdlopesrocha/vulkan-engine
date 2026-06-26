@@ -83,6 +83,12 @@ void EditableTexture::cleanup() {
 	cpuData.clear();
 }
 
+void EditableTexture::invalidateImGuiDescriptor() {
+    if (imguiDescSet == VK_NULL_HANDLE) return;
+    ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)imguiDescSet);
+    imguiDescSet = VK_NULL_HANDLE;
+}
+
 void EditableTexture::setPixel(uint32_t x, uint32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
 	if (x >= width || y >= height) return;
 	size_t idx = (y * width + x) * bytesPerPixel;
@@ -144,7 +150,7 @@ void EditableTexture::updateGPU(VulkanApp* app) {
 }
 
 void EditableTexture::renderImGui() {
-	if (imguiDescSet != VK_NULL_HANDLE) createImGuiDescriptor();
+	if (imguiDescSet == VK_NULL_HANDLE) createImGuiDescriptor();
 	if (imguiDescSet != VK_NULL_HANDLE) {
 		ImGui::Image((ImTextureID)imguiDescSet, ImVec2((float)width, (float)height));
 	}

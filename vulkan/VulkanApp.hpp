@@ -509,6 +509,9 @@ protected:
         // Called after ImGui is re-initialized (new DSL) during swapchain recreate.
         // Override to re-create any ImGui AddTexture DS that used the old DSL.
         virtual void onImGuiRecreated() {}
+        // Called before ImGui backend shutdown during swapchain recreate.
+        // Override to free any ImGui AddTexture DS while the backend is still alive.
+        virtual void preImGuiShutdown() {}
         // Called after a frame has been submitted/presented. Derived apps may override.
         virtual void postSubmit();
 

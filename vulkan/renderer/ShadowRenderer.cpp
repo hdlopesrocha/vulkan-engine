@@ -315,6 +315,16 @@ void ShadowRenderer::setDepthLayout(uint32_t cascade, VkImageLayout layout) {
     if (cascade < cascadeDepthLayouts.size()) cascadeDepthLayouts[cascade] = layout;
 }
 
+void ShadowRenderer::freeImGuiDescriptors() {
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
+        if (cascades[i].imguiDescSet != VK_NULL_HANDLE) {
+            std::cerr << "[ShadowRenderer::freeImGuiDescriptors] cascade=" << i << " freeing ds=" << (void*)cascades[i].imguiDescSet << std::endl;
+            ImGui_ImplVulkan_RemoveTexture(cascades[i].imguiDescSet);
+            cascades[i].imguiDescSet = VK_NULL_HANDLE;
+        }
+    }
+}
+
 void ShadowRenderer::recreateImGuiDescriptors() {
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
         if (cascades[i].imguiDescSet != VK_NULL_HANDLE) {
@@ -324,6 +334,9 @@ void ShadowRenderer::recreateImGuiDescriptors() {
         if (cascades[i].depthView != VK_NULL_HANDLE && shadowMapSampler != VK_NULL_HANDLE) {
             cascades[i].imguiDescSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
                 shadowMapSampler, cascades[i].depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+            if ((uint64_t)cascades[i].imguiDescSet == 0x6c100000006c1ULL) {
+                std::cerr << "[ShadowRenderer::recreateImGuiDescriptors] cascade=" << i << " *** ALLOCATED BAD HANDLE 0x6c100000006c1 ***" << std::endl;
+            }
         }
     }
 }
