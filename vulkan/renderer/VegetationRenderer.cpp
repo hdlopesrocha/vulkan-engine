@@ -178,10 +178,10 @@ void VegetationRenderer::initCulling(VulkanApp* app) {
     poolSize.descriptorCount = 3;
     VkDescriptorPoolCreateInfo poolCI{};
     poolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolCI.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     poolCI.maxSets = 1;
     poolCI.poolSizeCount = 1;
     poolCI.pPoolSizes = &poolSize;
+    poolCI.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     if (vkCreateDescriptorPool(device, &poolCI, nullptr, &vegCullDescPool) != VK_SUCCESS)
         throw std::runtime_error("failed to create vegetation cull descriptor pool!");
 
@@ -192,6 +192,7 @@ void VegetationRenderer::initCulling(VulkanApp* app) {
     allocInfo.pSetLayouts = &vegCullDescSetLayout;
     if (vkAllocateDescriptorSets(device, &allocInfo, &vegCullDescSet) != VK_SUCCESS)
         throw std::runtime_error("failed to allocate vegetation cull descriptor set!");
+    std::cerr << "[VEG] vegCullDescSet allocated = " << (void*)vegCullDescSet << std::endl;
 }
 
 void VegetationRenderer::consolidateChunks(VulkanApp* app) {
@@ -401,6 +402,7 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegCullPipeline);
+    std::cerr << "[VEG] prepareCull: binding vegCullDescSet=" << (void*)vegCullDescSet << " at compute bind point" << std::endl;
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegCullPipelineLayout, 0, 1, &vegCullDescSet, 0, nullptr);
 
     struct CullPC {
@@ -954,6 +956,7 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
             impostorDepthDrawCounter++;
         }
 
+        std::cerr << "[VEG SHADOW] BEFORE impostor depth bind: veg=" << (void*)vegDescriptorSet << " shadow=" << (void*)shadowDescriptorSet << " impostorDepth=" << (void*)impostorDepthDescSet << std::endl;
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorDepthPipeline);
 
         VkDescriptorSet depthSets[2] = { shadowDescriptorSet, impostorDepthDescSet };

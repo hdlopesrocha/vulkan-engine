@@ -255,6 +255,9 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         if (vkAllocateDescriptorSets(device, &allocInfo, waterDepthDescriptorSets.data()) != VK_SUCCESS) {
             throw std::runtime_error("Failed to allocate water depth descriptor sets!");
         }
+        for (size_t i = 0; i < 2; ++i) {
+            std::cerr << "[RAW ALLOC] WaterRenderer depth: descSet=" << (void*)waterDepthDescriptorSets[i] << " pool=" << (void*)allocInfo.descriptorPool << std::endl;
+        }
         // Register allocated descriptor sets
         for (size_t i = 0; i < 2; ++i) {
             app->resources.addDescriptorSet(waterDepthDescriptorSets[i], "WaterRenderer: waterDepthDescriptorSet");
@@ -1305,6 +1308,8 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
         if (vkAllocateDescriptorSets(device, &ai, &cubemapWaterDepthDS) != VK_SUCCESS) {
             std::cerr << "[WaterRenderer] Warning: Failed to allocate cubemap water depth descriptor set" << std::endl;
             cubemapWaterDepthDS = VK_NULL_HANDLE;
+        } else {
+            std::cerr << "[RAW ALLOC] WaterRenderer cubemap: descSet=" << (void*)cubemapWaterDepthDS << " pool=" << (void*)ai.descriptorPool << std::endl;
         }
     }
 }

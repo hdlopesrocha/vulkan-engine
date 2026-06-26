@@ -940,6 +940,7 @@ void ImpostorCapture::allocateDescSets(VulkanApp* app) {
     allocInfo.pSetLayouts        = layouts;
     if (vkAllocateDescriptorSets(app->getDevice(), &allocInfo, sets) != VK_SUCCESS)
         throw std::runtime_error("ImpostorCapture: vkAllocateDescriptorSets failed");
+    std::cerr << "[RAW ALLOC] ImpostorCapture: uboDescSet=" << (void*)sets[0] << " texDescSet=" << (void*)sets[1] << " pool=" << (void*)allocInfo.descriptorPool << std::endl;
     uboDescSet = sets[0];
     texDescSet = sets[1];
 

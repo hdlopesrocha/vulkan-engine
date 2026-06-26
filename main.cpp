@@ -942,6 +942,7 @@ public:
                         ainfoShared.pSetLayouts = &dsLayout;
                         if (vkAllocateDescriptorSets(device, &ainfoShared, &computeDs) == VK_SUCCESS) {
                             app->resources.addDescriptorSet(computeDs, "Shared: solid360 compute DS");
+                            std::cerr << "[RAW ALLOC] main.cpp:942 shared computeDs=" << (void*)computeDs << " pool=" << (void*)ainfoShared.descriptorPool << std::endl;
                         }
                     }
                     if (computeDs == VK_NULL_HANDLE) {
@@ -960,6 +961,7 @@ public:
                                 throw std::runtime_error("[Async] Failed to allocate compute descriptor set for solid360 task");
                             }
                             app->resources.addDescriptorSet(computeDs, "Temp: solid360 compute DS");
+                            std::cerr << "[RAW ALLOC] main.cpp:956 temp computeDs=" << (void*)computeDs << " pool=" << (void*)ainfo.descriptorPool << std::endl;
                         }
                     }
 
@@ -1022,6 +1024,7 @@ public:
                     if (vkAllocateDescriptorSets(device, &ainfo, &gfxDs) != VK_SUCCESS)
                         throw std::runtime_error("[Async] Failed to allocate gfx descriptor set for solid360 task");
                     app->resources.addDescriptorSet(gfxDs, "Temp: solid360 gfx DS");
+                    std::cerr << "[RAW ALLOC] main.cpp:1023 gfxDs=" << (void*)gfxDs << " pool=" << (void*)ainfo.descriptorPool << std::endl;
                 }
 
                 // Prepare descriptor writes mirroring main descriptor set but using taskUBO.
@@ -1127,6 +1130,7 @@ public:
                 { std::lock_guard<std::mutex> lk(asyncFenceMutex); pendingAsyncFences.push_back(f); }
                 app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app, gfxDs, gfxPool, taskUBO]() {
                     if (gfxPool != VK_NULL_HANDLE) {
+                        std::cerr << "[DEFER FREE] Destroying solid360 gfxPool=" << (void*)gfxPool << " (implicitly frees gfxDs=" << (void*)gfxDs << ")" << std::endl;
                         app->resources.removeDescriptorSet(gfxDs);
                         app->resources.removeDescriptorPool(gfxPool);
                         vkDestroyDescriptorPool(device, gfxPool, nullptr);
@@ -1217,6 +1221,7 @@ public:
                         vkDestroyDescriptorPool(device, taskPool, nullptr);
                         throw std::runtime_error("[Async] Failed to allocate compute descriptor set for backFace task (no fallback allowed)");
                     }
+                    std::cerr << "[RAW ALLOC] main.cpp:1218 backface computeDs=" << (void*)computeDs << " pool=" << (void*)ainfo.descriptorPool << std::endl;
                     app->resources.addDescriptorSet(computeDs, "Temp: backface compute DS");
 
                     // Update descriptor set with buffers: inCmds, outCmds, bounds, visibleCount
@@ -1261,6 +1266,7 @@ public:
                 { std::lock_guard<std::mutex> lk(asyncFenceMutex); pendingAsyncFences.push_back(f); }
                 app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app]() {
                     // Unregister and destroy descriptor set/pool
+                    std::cerr << "[DEFER FREE] Destroying backface taskPool=" << (void*)taskPool << " (implicitly frees computeDs=" << (void*)computeDs << ")" << std::endl;
                     app->resources.removeDescriptorSet(computeDs);
                     if (taskPool != VK_NULL_HANDLE) {
                         app->resources.removeDescriptorPool(taskPool);

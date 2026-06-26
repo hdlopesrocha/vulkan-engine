@@ -127,6 +127,7 @@ void DebugSDFRenderer::createDescriptorSet(VulkanApp* app) {
     if (vkAllocateDescriptorSets(app->getDevice(), &allocInfo, &descriptorSet) != VK_SUCCESS) {
         throw std::runtime_error("DebugSDFRenderer: failed to allocate descriptor set");
     }
+    std::cerr << "[RAW ALLOC] DebugSDFRenderer: descSet=" << (void*)descriptorSet << " pool=" << (void*)allocInfo.descriptorPool << std::endl;
     app->resources.addDescriptorSet(descriptorSet, "DebugSDFRenderer: descriptorSet");
 
     instanceBufferCapacity = 128;

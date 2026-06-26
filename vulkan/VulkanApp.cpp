@@ -457,10 +457,11 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     ainfo.pSetLayouts = &vegComputeDescSetLayout;
     {
         std::lock_guard<std::mutex> lk(vegComputeMutex);
-        if (vkAllocateDescriptorSets(device, &ainfo, &descSet) != VK_SUCCESS) {
-            std::cerr << "[VulkanApp] Failed to allocate vegetation compute descriptor set" << std::endl;
-            return 0;
-        }
+    if (vkAllocateDescriptorSets(device, &ainfo, &descSet) != VK_SUCCESS) {
+        std::cerr << "[VulkanApp::generateVegetationInstancesCompute] Failed to allocate descriptor set!" << std::endl;
+        return 0;
+    }
+    std::cerr << "[RAW ALLOC] generateVegetationInstancesCompute: descSet=" << (void*)descSet << " pool=" << (void*)ainfo.descriptorPool << std::endl;
     }
 
     VkDescriptorBufferInfo vbInfo{ vertexBuffer, 0, VK_WHOLE_SIZE };
@@ -583,6 +584,7 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     deferDestroyUntilFence(f, [device, descSet, this]() {
         if (descSet != VK_NULL_HANDLE) {
             std::lock_guard<std::mutex> lk(vegComputeMutex);
+            std::cerr << "[DEFER FREE] Freeing vegCompute descSet=" << (void*)descSet << std::endl;
             vkFreeDescriptorSets(device, vegComputeDescPool, 1, &descSet);
         }
     });
@@ -1797,6 +1799,11 @@ void VulkanApp::processPendingCommandBuffers() {
                 }
             }
             if (canRun) {
+                if (f == VK_NULL_HANDLE) {
+                    std::cerr << "[PROCESS PENDING] Running deferDestroyUntilAllPending callback at queue size=" << deferredDestroys.size() << std::endl;
+                } else {
+                    std::cerr << "[PROCESS PENDING] Running deferDestroyUntilFence callback fence=" << (void*)f << std::endl;
+                }
                 fn();
                 it = deferredDestroys.erase(it);
             } else ++it;
@@ -3888,6 +3895,7 @@ VkResult VulkanApp::allocateDescriptorSetsThreadSafe(const VkDescriptorSetAlloca
         std::cerr << "[VulkanApp::allocateDescriptorSetsThreadSafe] vkAllocateDescriptorSets failed: " << res << std::endl;
     } else {
         for (uint32_t i = 0; i < pAllocInfo->descriptorSetCount; ++i) {
+            std::cerr << "[RAW ALLOC] allocateDescriptorSetsThreadSafe: descSet=" << (void*)pDescriptorSets[i] << " pool=" << (void*)pAllocInfo->descriptorPool << " count=" << pAllocInfo->descriptorSetCount << std::endl;
             if ((uint64_t)pDescriptorSets[i] == 0x6c100000006c1ULL) {
                 std::cerr << "[VulkanApp::allocateDescriptorSetsThreadSafe] *** ALLOCATED BAD HANDLE 0x6c100000006c1 ***" << std::endl;
             }

@@ -276,6 +276,7 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
         std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to allocate grid descriptor set!" << std::endl;
         return;
     }
+    std::cerr << "[RAW ALLOC] DebugCubeRenderer: descSet=" << (void*)gridDescriptorSet << " pool=" << (void*)allocInfo.descriptorPool << std::endl;
     // Register descriptor set for tracking
     app->resources.addDescriptorSet(gridDescriptorSet, "DebugCubeRenderer: gridDescriptorSet");
     
