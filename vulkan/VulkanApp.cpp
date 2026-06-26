@@ -1064,6 +1064,12 @@ void VulkanApp::initImGui() {
     init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     init_info.Allocator = nullptr;
     init_info.MinAllocationSize = 1024 * 1024; // Pad to 1MB to suppress validation small-allocation warnings
+    init_info.CheckVkResultFn = [](VkResult err) {
+        if (err != VK_SUCCESS) {
+            std::cerr << "[ImGui] Vulkan error: " << err << std::endl;
+            abort();
+        }
+    };
     VkPipelineRenderingCreateInfo imguiPipelineRenderingInfo{};
     imguiPipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     imguiPipelineRenderingInfo.colorAttachmentCount = 1;
@@ -4947,6 +4953,12 @@ void VulkanApp::recreateSwapchain() {
     init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     init_info.Allocator = nullptr;
     init_info.MinAllocationSize = 1024 * 1024; // Pad to 1MB to suppress validation small-allocation warnings
+    init_info.CheckVkResultFn = [](VkResult err) {
+        if (err != VK_SUCCESS) {
+            std::cerr << "[ImGui] Vulkan error: " << err << std::endl;
+            abort();
+        }
+    };
     VkPipelineRenderingCreateInfo imguiPipelineRenderingInfo{};
     imguiPipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     imguiPipelineRenderingInfo.colorAttachmentCount = 1;

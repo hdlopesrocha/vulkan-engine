@@ -184,7 +184,7 @@ public:
             { "textures/Lava_005_COLOR.jpg", "textures/Lava_005_NORM.jpg", "textures/Lava_005_DISP.jpg", "textures/Lava_005_ROUGH.jpg", "textures/Lava_005_OCC.jpg" },
             { "textures/Metal_Pattern_008_basecolor.jpg", "textures/Metal_Pattern_008_normal.jpg", "textures/Metal_Pattern_008_height.jpg", "textures/Metal_Pattern_008_roughness.jpg", "textures/Metal_Pattern_008_ambientOcclusion.jpg" },
             { "textures/Linoleum_Floor_001_basecolor.jpg", "textures/Linoleum_Floor_001_normal.jpg", "textures/Linoleum_Floor_001_height.jpg", "textures/Linoleum_Floor_001_roughness.jpg", "textures/Linoleum_Floor_001_ambientOcclusion.jpg" },
-            { "textures/Rough_rock_006_COLOR.jpg", "textures/Rough_rock_006_NRM.jpg", "textures/Rough_rock_006_DISP.jpg", "textures/Rough_rock_006_SPEC.jpg", "textures/Rough_rock_006_OCC.jpg" },
+            { "textures/Rough_rock_021_COLOR.jpg", "textures/Rough_rock_021_NRM.jpg", "textures/Rough_rock_021_DISP.jpg", "textures/Rough_rock_021_SPEC.jpg", "textures/Rough_rock_021_OCC.jpg" },
             { "textures/Sand_007_basecolor.jpg", "textures/Sand_007_normal.jpg", "textures/Sand_007_height.jpg", "textures/Sand_007_roughness.jpg", "textures/Sand_007_ambientOcclusion.jpg" },
             { "textures/Snow_001_COLOR.jpg", "textures/Snow_001_NORM.jpg", "textures/Snow_001_DISP.jpg", "textures/Snow_001_ROUGH.jpg", "textures/Snow_001_OCC.jpg" },
             { "textures/Sand_002_COLOR.jpg", "textures/Sand_002_NRM.jpg", "textures/Sand_002_DISP.jpg", "textures/Sand_002_SPEC.jpg", "textures/Sand_002_OCC.jpg" },
@@ -194,6 +194,7 @@ public:
             { "textures/Stone_Floor_002_COLOR.jpg", "textures/Stone_Floor_002_NORM.jpg", "textures/Stone_Floor_002_DISP.jpg", "textures/Stone_Floor_002_SPEC.jpg", "textures/Stone_Floor_002_OCC.jpg" },
             { "textures/Canyon_Rock_001_COLOR.jpg", "textures/Canyon_Rock_001_NORM.jpg", "textures/Canyon_Rock_001_DISP.jpg", "textures/Canyon_Rock_001_ROUGH.jpg", "textures/Canyon_Rock_001_OCC.jpg" },
             { "textures/Sapphire_001_COLOR.jpg", "textures/Sapphire_001_NORM.jpg", "textures/Sapphire_001_DISP.jpg", "textures/Sapphire_001_ROUGH.jpg", "textures/Sapphire_001_OCC.jpg" },
+            { "textures/Rough_rock_006_COLOR.jpg", "textures/Rough_rock_006_NRM.jpg", "textures/Rough_rock_006_DISP.jpg", "textures/Rough_rock_006_SPEC.jpg", "textures/Rough_rock_006_OCC.jpg" },
 
         };
 
