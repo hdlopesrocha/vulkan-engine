@@ -152,6 +152,46 @@ void TextureViewer::render() {
 
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Roughness")) {
+            ImTextureID tex = arrayManager->getImTexture(currentIndex, 3);
+            if (tex) {
+                ImGui::Image(tex, ImVec2(previewSize, previewSize));
+            } else {
+                ImGui::Text("Texture preview not available");
+                if (ImGui::Button("Recreate descriptor")) { arrayManager->getImTexture(currentIndex, 3); }
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Choose Roughness (click thumbnail)");
+            {
+                size_t idx = currentIndex;
+                if (ImGuiComponents::ScrollableTexturePicker("PickerRoughness", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 3) : nullptr; }, 48.0f, 2, true, true)) {
+                    currentIndex = idx;
+                }
+            }
+
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("AO")) {
+            ImTextureID tex = arrayManager->getImTexture(currentIndex, 4);
+            if (tex) {
+                ImGui::Image(tex, ImVec2(previewSize, previewSize));
+            } else {
+                ImGui::Text("Texture preview not available");
+                if (ImGui::Button("Recreate descriptor")) { arrayManager->getImTexture(currentIndex, 4); }
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Choose AO (click thumbnail)");
+            {
+                size_t idx = currentIndex;
+                if (ImGuiComponents::ScrollableTexturePicker("PickerAO", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 4) : nullptr; }, 48.0f, 2, true, true)) {
+                    currentIndex = idx;
+                }
+            }
+
+            ImGui::EndTabItem();
+        }
         // Material tab removed from tabs — material UI will be shown under the preview
         ImGui::EndTabBar();
 
@@ -190,6 +230,10 @@ void TextureViewer::render() {
             if (ImGui::SliderFloat("Specular Strength", &mat.specularStrength, 0.0f, 2.0f, "%.2f")) dirty = true;
             if (ImGui::SliderFloat("Shininess", &mat.shininess, 1.0f, 256.0f, "%.0f")) dirty = true;
             if (ImGui::SliderFloat("Reflection Strength", &mat.reflectionStrength, 0.0f, 1.0f, "%.2f")) dirty = true;
+            if (ImGui::SliderFloat("Roughness Factor", &mat.roughnessFactor, 0.0f, 1.0f, "%.2f")) dirty = true;
+            if (ImGui::SliderFloat("AO Factor", &mat.aoFactor, 0.0f, 1.0f, "%.2f")) dirty = true;
+            bool aoEnabled = mat.useAO;
+            if (ImGui::Checkbox("Enable Ambient Occlusion", &aoEnabled)) { mat.useAO = aoEnabled; dirty = true; }
 
             ImGui::Spacing();
             ImGui::Text("Mapping (Tessellation + Bump)");
