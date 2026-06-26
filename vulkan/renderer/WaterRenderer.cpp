@@ -439,9 +439,22 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
 
     // Scene position/world-position (binding 5) — g-buffer world-space position
     // Removed binding for Scene position/world-position texture (g-buffer)
-    
+
+    std::array<VkDescriptorBindingFlags, 5> bindingFlags = {
+        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
+    };
+    VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};
+    bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+    bindingFlagsInfo.bindingCount = static_cast<uint32_t>(bindingFlags.size());
+    bindingFlagsInfo.pBindingFlags = bindingFlags.data();
+
     VkDescriptorSetLayoutCreateInfo depthLayoutInfo{};
     depthLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    depthLayoutInfo.pNext = &bindingFlagsInfo;
     depthLayoutInfo.bindingCount = static_cast<uint32_t>(sceneBindings.size());
     depthLayoutInfo.pBindings = sceneBindings.data();
     depthLayoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
