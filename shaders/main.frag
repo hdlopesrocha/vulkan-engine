@@ -121,6 +121,18 @@ void main() {
         }
     }
 
+    // Sample roughness map (R channel)
+    float r0 = texture(roughnessArray, vec3(uv, float(fragTexIndices.x))).r;
+    float r1 = texture(roughnessArray, vec3(uv, float(fragTexIndices.y))).r;
+    float r2 = texture(roughnessArray, vec3(uv, float(fragTexIndices.z))).r;
+    float roughnessValue = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
+
+    // Sample ambient occlusion map (R channel)
+    float ao0 = texture(aoArray, vec3(uv, float(fragTexIndices.x))).r;
+    float ao1 = texture(aoArray, vec3(uv, float(fragTexIndices.y))).r;
+    float ao2 = texture(aoArray, vec3(uv, float(fragTexIndices.z))).r;
+    float ambientOcclusion = clamp(ao0 * w.x + ao1 * w.y + ao2 * w.z, 0.0, 1.0);
+
     // Lighting calculation
     vec3 toLight = -normalize(ubo.lightDir.xyz);
     float NdotL = max(dot(worldNormal, toLight), 0.0);
@@ -143,7 +155,20 @@ void main() {
     vec4 matFlags1 = materials[fragTexIndices.y].materialFlags;
     vec4 matFlags2 = materials[fragTexIndices.z].materialFlags;
     vec4 blendedMatFlags = matFlags0 * w.x + matFlags1 * w.y + matFlags2 * w.z;
-    vec3 ambient = albedoColor * blendedMatFlags.z;
+    // Ambient occlusion: sample texture value, blend with useAO flag and aoFactor
+    // Blend roughnessAOParams across materials
+    vec4 ra0 = materials[fragTexIndices.x].roughnessAOParams;
+    vec4 ra1 = materials[fragTexIndices.y].roughnessAOParams;
+    vec4 ra2 = materials[fragTexIndices.z].roughnessAOParams;
+    vec4 blendedRA = ra0 * w.x + ra1 * w.y + ra2 * w.z;
+    
+    float useAOf = blendedRA.z;
+    float aoFactor = blendedRA.y;
+    float roughnessFactor = blendedRA.x;
+    
+    float aoBlend = (useAOf > 0.5) ? ambientOcclusion : 1.0;
+    aoBlend = mix(1.0, aoBlend, aoFactor);
+    vec3 ambient = albedoColor * blendedMatFlags.z * aoBlend;
     vec3 diffuse = albedoColor * ubo.lightColor.rgb * NdotL * (1.0 - totalShadow);
 
     // Specular
@@ -157,7 +182,10 @@ void main() {
     // (normal-mapped worldNormal can make NdotL == 0 while still reflecting toward viewer).
     // Clamp shininess to >= 1.0 so pow(x, 0) == 1 never fires.
     float shininess = max(blendedSpec.y, 1.0);
-    float spec = (NdotL > 0.0) ? pow(max(dot(viewDir, reflectDir), 0.0), shininess) : 0.0;
+    // Roughness modulates specular exponent: 0 = smooth (glossy), 1 = rough (diffuse)
+    float specPower = mix(shininess, 1.0, roughnessValue * roughnessFactor);
+    specPower = max(specPower, 1.0);
+    float spec = (NdotL > 0.0) ? pow(max(dot(viewDir, reflectDir), 0.0), specPower) : 0.0;
     vec3 specular = ubo.lightColor.rgb * spec * (1.0 - totalShadow) * blendedSpec.x;
 
     // Environment reflection (360° cubemap) — skipped during cubemap capture
@@ -430,6 +458,14 @@ void main() {
         // Visualize TES-provided face normal (sharp per-triangle normal computed in tessellation evaluation shader)
         vec3 s = normalize(fragSharpNormal);
         outColor = vec4(s * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (debugMode == 32) {
+        outColor = vec4(vec3(roughnessValue), 1.0);
+        return;
+    }
+    if (debugMode == 33) {
+        outColor = vec4(vec3(ambientOcclusion), 1.0);
         return;
     }
     if (debugMode == 49) {

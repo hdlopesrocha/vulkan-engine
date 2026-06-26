@@ -25,6 +25,7 @@ struct MaterialGPU {
     vec4 triplanarParams;  // x = scaleU, y = scaleV, z = triplanarEnabled (0/1)
     vec4 normalParams;     // x = flipNormalY (0/1), y = swapNormalXZ (0/1), z = invertWidth (0/1)
     vec4 tessLevelParams;  // x = minLevel, y = maxLevel, z = reflectionStrength, w = reserved
+    vec4 roughnessAOParams; // x = roughnessFactor, y = aoFactor, z = useAO (1.0/0.0)
 };
 
 layout(std430, set = 0, binding = 5) readonly buffer Materials {

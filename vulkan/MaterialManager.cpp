@@ -11,6 +11,7 @@ static MaterialGPU toGPU(const MaterialProperties &m) {
     out.triplanarParams = glm::vec4(m.triplanarScaleU, m.triplanarScaleV, m.triplanar ? 1.0f : 0.0f, 0.0f);
     out.normalParams = glm::vec4(m.normalFlipY ? 1.0f : 0.0f, m.normalSwapXZ ? 1.0f : 0.0f, m.invertWidth ? 1.0f : 0.0f, 0.0f);
     out.tessLevelParams = glm::vec4(m.tessMinLevel, m.tessMaxLevel, m.reflectionStrength, 0.0f);
+    out.roughnessAOParams = glm::vec4(m.roughnessFactor, m.aoFactor, m.useAO ? 1.0f : 0.0f, 0.0f);
     return out;
 }
 

@@ -31,4 +31,8 @@ struct MaterialProperties {
     bool normalFlipY = false;   // flip normal map Y (green) channel if true
     bool normalSwapXZ = false;  // swap R/B channels (X/Z) if true
         // default: legacy invert behavior for backward compatibility
+
+    float roughnessFactor = 0.5f;
+    float aoFactor = 1.0f;
+    bool useAO = true;
 };

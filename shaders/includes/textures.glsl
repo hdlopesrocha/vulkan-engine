@@ -8,3 +8,5 @@ layout(set = 0, binding = 4) uniform sampler2D shadowMap;
 layout(set = 0, binding = 8) uniform sampler2D shadowMap1;  // cascade 1 (4x ortho0)
 layout(set = 0, binding = 9) uniform sampler2D shadowMap2;  // cascade 2 (16x ortho0)
 layout(set = 0, binding = 11) uniform samplerCube environmentMap;
+layout(set = 0, binding = 12) uniform sampler2DArray roughnessArray;
+layout(set = 0, binding = 13) uniform sampler2DArray aoArray;
