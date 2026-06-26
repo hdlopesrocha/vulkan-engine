@@ -1794,8 +1794,6 @@ void VulkanApp::processPendingCommandBuffers() {
             if (canRun) {
                 if (f == VK_NULL_HANDLE) {
                     std::cerr << "[PROCESS PENDING] Running deferDestroyUntilAllPending callback at queue size=" << deferredDestroys.size() << std::endl;
-                } else {
-                    std::cerr << "[PROCESS PENDING] Running deferDestroyUntilFence callback fence=" << (void*)f << std::endl;
                 }
                 fn();
                 it = deferredDestroys.erase(it);

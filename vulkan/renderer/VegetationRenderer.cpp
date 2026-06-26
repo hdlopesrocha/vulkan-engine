@@ -955,7 +955,6 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
             impostorDepthDrawCounter++;
         }
 
-        std::cerr << "[VEG SHADOW] BEFORE impostor depth bind: veg=" << (void*)vegDescriptorSet << " shadow=" << (void*)shadowDescriptorSet << " impostorDepth=" << (void*)impostorDepthDescSet << std::endl;
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorDepthPipeline);
 
         VkDescriptorSet depthSets[2] = { shadowDescriptorSet, impostorDepthDescSet };
