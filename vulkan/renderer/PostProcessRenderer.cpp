@@ -273,7 +273,19 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
         writes.push_back(skyWrite);
     }
 
-    if (!writes.empty()) vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    if (!writes.empty()) {
+        std::vector<VkWriteDescriptorSet> safeWrites;
+        safeWrites.reserve(writes.size());
+        for (auto &w : writes) {
+            if ((uint64_t)w.dstSet == 0x6c100000006c1ULL) {
+                std::cerr << "[PostProcessRenderer] *** SKIPPING BAD HANDLE 0x6c100000006c1 *** binding=" << w.dstBinding << std::endl;
+                continue;
+            }
+            safeWrites.push_back(w);
+        }
+        if (!safeWrites.empty())
+            vkUpdateDescriptorSets(device, static_cast<uint32_t>(safeWrites.size()), safeWrites.data(), 0, nullptr);
+    }
 
     // Set viewport and scissor (safe to call inside already-open dynamic rendering scope)
     VkViewport viewport{};

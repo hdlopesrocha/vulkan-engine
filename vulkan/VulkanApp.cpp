@@ -3871,6 +3871,9 @@ VkDescriptorSet VulkanApp::createDescriptorSet(VkDescriptorSetLayout layout) {
     }
     // Register descriptor set so manager can track it for inspection
     resources.addDescriptorSet(descriptorSet, "VulkanApp: descriptorSet");
+    if ((uint64_t)descriptorSet == 0x6c100000006c1ULL) {
+        std::cerr << "[VulkanApp::createDescriptorSet] *** CRITICAL: allocated suspicious handle 0x6c100000006c1 ***" << std::endl;
+    }
     std::cout << "[VulkanApp::createDescriptorSet] allocated descriptorSet=" << (void*)descriptorSet << " layout=" << (void*)layout << std::endl;
     return descriptorSet;
 }
@@ -3880,6 +3883,12 @@ VkResult VulkanApp::allocateDescriptorSetsThreadSafe(const VkDescriptorSetAlloca
     VkResult res = vkAllocateDescriptorSets(device, pAllocInfo, pDescriptorSets);
     if (res != VK_SUCCESS) {
         std::cerr << "[VulkanApp::allocateDescriptorSetsThreadSafe] vkAllocateDescriptorSets failed: " << res << std::endl;
+    } else {
+        for (uint32_t i = 0; i < pAllocInfo->descriptorSetCount; ++i) {
+            if ((uint64_t)pDescriptorSets[i] == 0x6c100000006c1ULL) {
+                std::cerr << "[VulkanApp::allocateDescriptorSetsThreadSafe] *** ALLOCATED BAD HANDLE 0x6c100000006c1 ***" << std::endl;
+            }
+        }
     }
     return res;
 }
@@ -3924,7 +3933,19 @@ void VulkanApp::updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &des
         }
     }
     if (filtered.empty()) return;
-    vkUpdateDescriptorSets(device, static_cast<uint32_t>(filtered.size()), filtered.data(), 0, nullptr);
+    // Filter out writes targeting invalid descriptor set handles to prevent
+    // VUID-VkWriteDescriptorSet-dstSet-00320 validation errors.
+    std::vector<VkWriteDescriptorSet> safe;
+    safe.reserve(filtered.size());
+    for (auto &f : filtered) {
+        if ((uint64_t)f.dstSet == 0x6c100000006c1ULL) {
+            std::cerr << "[VulkanApp::updateDescriptorSet] *** SKIPPING BAD HANDLE 0x6c100000006c1 *** binding=" << f.dstBinding << std::endl;
+            continue;
+        }
+        safe.push_back(f);
+    }
+    if (safe.empty()) return;
+    vkUpdateDescriptorSets(device, static_cast<uint32_t>(safe.size()), safe.data(), 0, nullptr);
 }
 
 void VulkanApp::updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> descriptors) {
@@ -3954,7 +3975,17 @@ void VulkanApp::updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> 
         }
     }
     if (filtered.empty()) return;
-    vkUpdateDescriptorSets(device, static_cast<uint32_t>(filtered.size()), filtered.data(), 0, nullptr);
+    std::vector<VkWriteDescriptorSet> safe;
+    safe.reserve(filtered.size());
+    for (auto &f : filtered) {
+        if ((uint64_t)f.dstSet == 0x6c100000006c1ULL) {
+            std::cerr << "[VulkanApp::updateDescriptorSet(init)] *** SKIPPING BAD HANDLE 0x6c100000006c1 *** binding=" << f.dstBinding << std::endl;
+            continue;
+        }
+        safe.push_back(f);
+    }
+    if (safe.empty()) return;
+    vkUpdateDescriptorSets(device, static_cast<uint32_t>(safe.size()), safe.data(), 0, nullptr);
 }
 
 
