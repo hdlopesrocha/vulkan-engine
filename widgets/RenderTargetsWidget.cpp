@@ -562,7 +562,12 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
     }
 
     if (dstView != VK_NULL_HANDLE && dstDescriptor == VK_NULL_HANDLE) {
+        std::cerr << "[RTW] runLinearizePass CALLING AddTexture dstView=" << (void*)dstView << " sampler=" << (void*)previewSampler << std::endl;
         dstDescriptor = ImGui_ImplVulkan_AddTexture(previewSampler, dstView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        std::cerr << "[RTW] runLinearizePass AddTexture RETURNED " << (void*)dstDescriptor << std::endl;
+        if ((uint64_t)dstDescriptor == 0x6c100000006c1ULL) {
+            std::cerr << "[RenderTargetsWidget::runLinearizePass] *** ALLOCATED BAD HANDLE 0x6c100000006c1 ***" << std::endl;
+        }
         dstDescriptorOwned = true;
     }
 
@@ -625,9 +630,11 @@ void RenderTargetsWidget::destroyLinearTargets() {
     auto removeDescIfOwned = [&](VkDescriptorSet &ds, bool &owned) {
         if (ds == VK_NULL_HANDLE) return;
         if (!owned) { ds = VK_NULL_HANDLE; return; }
-        {
-            VkDescriptorSet tmp = ds;
+        VkDescriptorSet tmp = ds;
+        if (a->hasPendingCommandBuffers()) {
             a->deferDestroyUntilAllPending([tmp]() { ImGui_ImplVulkan_RemoveTexture(tmp); });
+        } else {
+            ImGui_ImplVulkan_RemoveTexture(tmp);
         }
         ds = VK_NULL_HANDLE;
         owned = false;
@@ -722,11 +729,11 @@ void RenderTargetsWidget::cleanup() {
     auto removeOwnedDesc = [&](VkDescriptorSet &ds, bool &owned) {
         if (ds == VK_NULL_HANDLE) return;
         if (!owned) { ds = VK_NULL_HANDLE; return; }
-        if (app) {
-            VkDescriptorSet tmp = ds;
+        VkDescriptorSet tmp = ds;
+        if (app && app->hasPendingCommandBuffers()) {
             app->deferDestroyUntilAllPending([tmp](){ ImGui_ImplVulkan_RemoveTexture(tmp); });
         } else {
-            ImGui_ImplVulkan_RemoveTexture(ds);
+            ImGui_ImplVulkan_RemoveTexture(tmp);
         }
         ds = VK_NULL_HANDLE;
         owned = false;
