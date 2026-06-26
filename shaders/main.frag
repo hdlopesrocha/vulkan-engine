@@ -207,6 +207,8 @@ void main() {
         float refStrength2 = materials[fragTexIndices.z].tessLevelParams.z;
         blendedRefStrength = refStrength0 * w.x + refStrength1 * w.y + refStrength2 * w.z;
         envReflection = envColor * envBlend * blendedRefStrength;
+        // Apply global AO and roughness to environment reflection
+        envReflection *= aoBlend * (1.0 - roughnessValue * roughnessFactor);
     }
 
     // Debug visualisation modes (0 = normal render)
