@@ -14,9 +14,11 @@ public:
         waterWireframeMode = false;
         debugMode = 0;
         normalMappingEnabled = true;
+        roughnessEnabled = true;
+        aoEnabled = true;
         waterEnabled = true;
-        vegetationEnabled = false;
-        triplanarThreshold = 0.5f;
+        vegetationEnabled = true;
+        triplanarThreshold = 0.12f;
         triplanarExponent = 1.0f;
         tessellationEnabled = true;
         shadowTessellationEnabled = true;
@@ -30,15 +32,20 @@ public:
         showSDFDebug = false;
         nearPlane = 0.1f;
         farPlane = 8092.0f;
+        impostorDistance = 256.0f;
     }
 
     // Global toggles
     bool enableShadows = true;
+    // Toggle rendering of the main solid scene (terrain/meshes)
+    bool renderSolid = true;
     bool waterEnabled = true;
-    bool vegetationEnabled = false;
+    bool vegetationEnabled = true;
     bool wireframeMode = false;
     bool waterWireframeMode = false;
     bool normalMappingEnabled = true;
+    bool roughnessEnabled = true;
+    bool aoEnabled = true;
 
     // Debug visuals
     bool showDebugCubes = false;
@@ -72,4 +79,8 @@ public:
     // Camera clip planes
     float nearPlane = 0.1f;
     float farPlane = 8092.0f;
+
+    // Impostor rendering: vegetation beyond this distance is drawn as a pre-captured
+    // camera-facing quad.  Set to 0 to disable (default: disabled).
+    float impostorDistance = 100.0f;
 };

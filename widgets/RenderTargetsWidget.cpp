@@ -1,6 +1,6 @@
 #include "RenderTargetsWidget.hpp"
 
-#include "Settings.hpp"
+#include "../utils/Settings.hpp"
 #include "../vulkan/VulkanApp.hpp"
 #include "../vulkan/renderer/SceneRenderer.hpp"
 #include "../vulkan/renderer/SolidRenderer.hpp"

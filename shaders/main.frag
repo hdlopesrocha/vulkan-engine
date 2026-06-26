@@ -25,6 +25,10 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 #include "includes/shadows.glsl"
 
+// Global toggles
+bool roughnessEnabled = ubo.debugParams.y > 0.5;
+bool aoEnabled = ubo.debugParams.z > 0.5;
+
 void main() {
     bool isShadowPass = ubo.passParams.x > 0.5;
     // Provide a default color so early debug/special-case returns still
@@ -126,6 +130,7 @@ void main() {
     float r1 = texture(roughnessArray, vec3(uv, float(fragTexIndices.y))).r;
     float r2 = texture(roughnessArray, vec3(uv, float(fragTexIndices.z))).r;
     float roughnessValue = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
+    if (!roughnessEnabled) roughnessValue = 0.0;
 
     // Sample ambient occlusion map (R channel)
     float ao0 = texture(aoArray, vec3(uv, float(fragTexIndices.x))).r;
@@ -166,7 +171,7 @@ void main() {
     float aoFactor = blendedRA.y;
     float roughnessFactor = blendedRA.x;
     
-    float aoBlend = (useAOf > 0.5) ? ambientOcclusion : 1.0;
+    float aoBlend = (useAOf > 0.5 && aoEnabled) ? ambientOcclusion : 1.0;
     aoBlend = mix(1.0, aoBlend, aoFactor);
     vec3 ambient = albedoColor * blendedMatFlags.z * aoBlend;
     vec3 diffuse = albedoColor * ubo.lightColor.rgb * NdotL * (1.0 - totalShadow);

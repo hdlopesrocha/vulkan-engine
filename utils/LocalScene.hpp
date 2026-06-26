@@ -5,7 +5,7 @@
 #include "../space/OctreeVisibilityChecker.hpp"
 #include "../space/Tesselator.hpp"
 #include "../space/Processor.hpp"
-#include "../widgets/Settings.hpp"
+#include "../utils/Settings.hpp"
 #include <unordered_map>
 #include "LiquidSpaceChangeHandler.hpp"
 #include "SolidSpaceChangeHandler.hpp"

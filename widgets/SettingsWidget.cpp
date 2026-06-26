@@ -79,6 +79,14 @@ void SettingsWidget::render() {
                 // toggled
             }
             ImGuiHelpers::SetTooltipIfHovered("Globally enable/disable normal mapping (normal maps still needed in textures)");
+            if (ImGui::Checkbox("Enable Roughness", &settings.roughnessEnabled)) {
+                // toggled
+            }
+            ImGuiHelpers::SetTooltipIfHovered("Globally enable/disable roughness map influence on specular");
+            if (ImGui::Checkbox("Enable Ambient Occlusion", &settings.aoEnabled)) {
+                // toggled
+            }
+            ImGuiHelpers::SetTooltipIfHovered("Globally enable/disable ambient occlusion mapping");
         if (ImGui::Checkbox("Flip keyboard rotation axes", &settings.flipKeyboardRotation)) {
             // toggled
         }

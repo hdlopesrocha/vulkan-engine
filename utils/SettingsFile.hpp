@@ -1,5 +1,5 @@
 #pragma once
-#include "../widgets/Settings.hpp"
+#include "../utils/Settings.hpp"
 #include <string>
 
 class SettingsFile {

@@ -49,7 +49,7 @@
 #include "widgets/MusicWidget.hpp"
 #include "widgets/components/FilePicker.hpp"
 #include "utils/MainSceneLoader.hpp"
-#include "widgets/Settings.hpp"
+#include "utils/Settings.hpp"
 #include "widgets/WidgetManager.hpp"
 #include "math/Camera.hpp"
 #include "math/Light.hpp"
@@ -631,7 +631,7 @@ public:
         uboStatic.lightSpaceMatrix1 = shadowParams.lightSpaceMatrix[1];
         uboStatic.lightSpaceMatrix2 = shadowParams.lightSpaceMatrix[2];
         // Encode debug/triplanar/tess parameters into the shared UBO
-        uboStatic.debugParams = glm::vec4(static_cast<float>(settings.debugMode), 0.0f, 0.0f, 0.0f);
+        uboStatic.debugParams = glm::vec4(static_cast<float>(settings.debugMode), settings.roughnessEnabled ? 1.0f : 0.0f, settings.aoEnabled ? 1.0f : 0.0f, 0.0f);
         uboStatic.triplanarSettings = glm::vec4(settings.triplanarThreshold, settings.triplanarExponent, 0.0f, 0.0f);
         uboStatic.tessParams = glm::vec4(
             settings.tessMinDistance,
