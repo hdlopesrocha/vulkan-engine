@@ -2,37 +2,8 @@
 
 class Settings {
 public:
-    Settings() { resetToDefaults(); }
-
     void resetToDefaults() {
-        enableShadows = true;
-        flipKeyboardRotation = false;
-        flipGamepadRotation = false;
-        moveSpeed = 2.5f;
-        angularSpeedDeg = 45.0f;
-        wireframeMode = false;
-        waterWireframeMode = false;
-        debugMode = 0;
-        normalMappingEnabled = true;
-        roughnessEnabled = true;
-        aoEnabled = true;
-        waterEnabled = true;
-        vegetationEnabled = true;
-        triplanarThreshold = 0.12f;
-        triplanarExponent = 1.0f;
-        tessellationEnabled = true;
-        shadowTessellationEnabled = true;
-        adaptiveTessellation = true;
-        tessellationFactor = 1.0f;
-        tessMaxDistance = 512.0f;
-        tessMinDistance = 1.0f;
-        vsyncEnabled = true;
-        showDebugCubes = false;
-        showBoundingBoxes = false;
-        showSDFDebug = false;
-        nearPlane = 0.1f;
-        farPlane = 8092.0f;
-        impostorDistance = 256.0f;
+        *this = Settings{};
     }
 
     // Global toggles
@@ -66,8 +37,8 @@ public:
     float triplanarExponent = 1.0f;
 
     // Tessellation
-    bool tessellationEnabled = true;
-    bool shadowTessellationEnabled = true;
+    bool tessellationEnabled = false;
+    bool shadowTessellationEnabled = false;
     bool adaptiveTessellation = true;
     float tessellationFactor = 1.0f;
     float tessMaxDistance = 512.0f;

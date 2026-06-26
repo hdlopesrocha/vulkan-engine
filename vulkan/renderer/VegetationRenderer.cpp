@@ -472,17 +472,16 @@ void VegetationRenderer::onTextureArraysReallocated(VulkanApp* app) {
     if (!app) return;
     if (vegDescriptorSet != VK_NULL_HANDLE) {
         VkDescriptorSet ds = vegDescriptorSet;
-        // Only free descriptor set if it was tracked by the resource manager
+        // Only free descriptor set if it was tracked by the resource manager.
+        // Always defer until all pending command buffers AND in-flight frame
+        // fences signal — the descriptor set may still be referenced by a
+        // previously-submitted frame command buffer.
         if (app->resources.removeDescriptorSet(ds)) {
-            if (app->hasPendingCommandBuffers()) {
-                VkDevice device = app->getDevice();
-                VkDescriptorPool pool = app->getDescriptorPool();
-                app->deferDestroyUntilAllPending([device, pool, ds]() {
-                    vkFreeDescriptorSets(device, pool, 1, &ds);
-                });
-            } else {
-                vkFreeDescriptorSets(app->getDevice(), app->getDescriptorPool(), 1, &ds);
-            }
+            VkDevice device = app->getDevice();
+            VkDescriptorPool pool = app->getDescriptorPool();
+            app->deferDestroyUntilAllPending([device, pool, ds]() {
+                vkFreeDescriptorSets(device, pool, 1, &ds);
+            });
         }
         vegDescriptorSet = VK_NULL_HANDLE;
         vegDescriptorVersion = 0;

@@ -1008,7 +1008,7 @@ public:
                     gfxPoolInfo.poolSizeCount = 3;
                     gfxPoolInfo.pPoolSizes = poolSizes;
                     gfxPoolInfo.maxSets = 1;
-                    gfxPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+                    gfxPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
                     if (vkCreateDescriptorPool(device, &gfxPoolInfo, nullptr, &gfxPool) != VK_SUCCESS)
                         throw std::runtime_error("[Async] Failed to create gfx descriptor pool for solid360 task");
                     app->resources.addDescriptorPool(gfxPool, "Temp: solid360 gfx pool");

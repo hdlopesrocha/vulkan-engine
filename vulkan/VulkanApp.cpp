@@ -787,14 +787,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         // this safe, but the validation layer flags it as SYNC-HAZARD-READ-AFTER-WRITE
         // across command buffers (binding #11).  This is a known false positive.
         if (strstr(msg, "SYNC-HAZARD-READ-AFTER-WRITE") != nullptr && strstr(msg, "binding #11") != nullptr) return VK_FALSE;
-        // VUID-*-commandBuffer-recording: "bound VkDescriptorSet was
-        // destroyed or updated".  This fires during the vegetation shadow impostor
-        // depth pass.  Static analysis shows no descriptor set is modified during
-        // command buffer recording — the sets (shadowDescriptorSets, vegDescriptorSet,
-        // impostorDepthDescSet) are all created at init time and never updated.  The
-        // validation layer may be flagging a stale state from a previous frame or
-        // this may be a false positive on this driver.  Suppress to unblock testing.
-        if (strstr(msg, " destroyed or updated") != nullptr && strstr(msg, "bound VkDescriptorSet") != nullptr) return VK_FALSE;
+
     }
 
     // Only print WARNING and ERROR — suppress INFO/VERBOSE noise
