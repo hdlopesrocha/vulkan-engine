@@ -112,9 +112,13 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 	cleanupTextureImage(app, albedoArray);
 	cleanupTextureImage(app, normalArray);
 	cleanupTextureImage(app, bumpArray);
+	cleanupTextureImage(app, roughnessArray);
+	cleanupTextureImage(app, aoArray);
 	cleanupSampler(app, albedoSampler);
 	cleanupSampler(app, normalSampler);
 	cleanupSampler(app, bumpSampler);
+	cleanupSampler(app, roughnessSampler);
+	cleanupSampler(app, aoSampler);
 	// Remove any ImGui textures and destroy per-layer views
 	// Remove any ImGui textures; if async work is pending defer removal to avoid destroying descriptor sets in use
 	for (auto &tex : albedoImTextures) {
@@ -142,6 +146,30 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 		}
 	}
 	for (auto &tex : bumpImTextures) {
+		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) {
+			VkDescriptorSet ds = (VkDescriptorSet)tex;
+			if (app && app->hasPendingCommandBuffers()) {
+				app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+				tex = nullptr;
+			} else {
+				ImGui_ImplVulkan_RemoveTexture(ds);
+				tex = nullptr;
+			}
+		}
+	}
+	for (auto &tex : roughnessImTextures) {
+		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) {
+			VkDescriptorSet ds = (VkDescriptorSet)tex;
+			if (app && app->hasPendingCommandBuffers()) {
+				app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+				tex = nullptr;
+			} else {
+				ImGui_ImplVulkan_RemoveTexture(ds);
+				tex = nullptr;
+			}
+		}
+	}
+	for (auto &tex : aoImTextures) {
 		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
 			if (app && app->hasPendingCommandBuffers()) {
@@ -197,8 +225,32 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 			}
 		}
 	}
-	albedoLayerViews.clear(); normalLayerViews.clear(); bumpLayerViews.clear();
-	albedoImTextures.clear(); normalImTextures.clear(); bumpImTextures.clear();
+	for (auto &v : roughnessLayerViews) {
+		if (v != VK_NULL_HANDLE) {
+			VkImageView iv = v;
+			if (app && app->hasPendingCommandBuffers()) {
+				app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
+				v = VK_NULL_HANDLE;
+			} else {
+				if (app->resources.removeImageView(iv)) vkDestroyImageView(device, v, nullptr);
+				v = VK_NULL_HANDLE;
+			}
+		}
+	}
+	for (auto &v : aoLayerViews) {
+		if (v != VK_NULL_HANDLE) {
+			VkImageView iv = v;
+			if (app && app->hasPendingCommandBuffers()) {
+				app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
+				v = VK_NULL_HANDLE;
+			} else {
+				if (app->resources.removeImageView(iv)) vkDestroyImageView(device, v, nullptr);
+				v = VK_NULL_HANDLE;
+			}
+		}
+	}
+	albedoLayerViews.clear(); normalLayerViews.clear(); bumpLayerViews.clear(); roughnessLayerViews.clear(); aoLayerViews.clear();
+	albedoImTextures.clear(); normalImTextures.clear(); bumpImTextures.clear(); roughnessImTextures.clear(); aoImTextures.clear();
 	// clear stored app pointer (no longer valid after destroy)
 	this->app = nullptr;
 	// bump version to indicate array resources were destroyed
@@ -221,6 +273,8 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	cleanupTextureImage(app, albedoArray);
 	cleanupTextureImage(app, normalArray);
 	cleanupTextureImage(app, bumpArray);
+	cleanupTextureImage(app, roughnessArray);
+	cleanupTextureImage(app, aoArray);
 
 	// Compute mip level count and create 2D array image
 	uint32_t mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
@@ -324,15 +378,21 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	// Normal and bump maps use UNORM
 	createArray(normalArray, VK_FORMAT_R8G8B8A8_UNORM, false);
 	createArray(bumpArray, VK_FORMAT_R8G8B8A8_UNORM, false);
+	createArray(roughnessArray, VK_FORMAT_R8G8B8A8_UNORM, false);
+	createArray(aoArray, VK_FORMAT_R8G8B8A8_UNORM, false);
 
 	// cleanup existing samplers and create new ones
 	cleanupSampler(app, albedoSampler);
 	cleanupSampler(app, normalSampler);
 	cleanupSampler(app, bumpSampler);
+	cleanupSampler(app, roughnessSampler);
+	cleanupSampler(app, aoSampler);
 
 	albedoSampler = app->createTextureSampler(mipLevels);
 	normalSampler = app->createTextureSampler(mipLevels);
 	bumpSampler = app->createTextureSampler(mipLevels);
+	roughnessSampler = app->createTextureSampler(mipLevels);
+	aoSampler = app->createTextureSampler(mipLevels);
 	// Do NOT store `app` in this manager; callers pass `app` explicitly to GPU operations
 	(void)app; // keep parameter used, but don't retain pointer
 	// initialize layer initialized flags
@@ -343,12 +403,16 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	albedoLayerLayouts.clear(); albedoLayerLayouts.resize(layerAmount, VK_IMAGE_LAYOUT_UNDEFINED);
 	normalLayerLayouts.clear(); normalLayerLayouts.resize(layerAmount, VK_IMAGE_LAYOUT_UNDEFINED);
 	bumpLayerLayouts.clear(); bumpLayerLayouts.resize(layerAmount, VK_IMAGE_LAYOUT_UNDEFINED);
+	roughnessLayerLayouts.clear(); roughnessLayerLayouts.resize(layerAmount, VK_IMAGE_LAYOUT_UNDEFINED);
+	aoLayerLayouts.clear(); aoLayerLayouts.resize(layerAmount, VK_IMAGE_LAYOUT_UNDEFINED);
 
 	// After creating arrays we transitioned all mips/layers to SHADER_READ_ONLY_OPTIMAL above; reflect that state
 	for (uint32_t i = 0; i < layerAmount; ++i) {
 		albedoLayerLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		normalLayerLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		bumpLayerLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		roughnessLayerLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		aoLayerLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	}
 
 	// bump version so users can detect reallocation of GPU resources
@@ -372,7 +436,7 @@ static unsigned char* resizeNearest(const unsigned char* src, int srcW, int srcH
 	return dst;
 }
 
-uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char* normalFile, const char* bumpFile) {
+uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char* normalFile, const char* bumpFile, const char* roughnessFile, const char* aoFile) {
 	if (!a) throw std::runtime_error("TextureArrayManager::load: app is null");
 	if (layerAmount == 0) throw std::runtime_error("TextureArrayManager::load: layerAmount == 0");
 	if (currentLayer >= layerAmount) throw std::runtime_error("TextureArrayManager::load: currentLayer >= layerAmount");
@@ -381,15 +445,63 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 	std::cout << "[TextureArrayManager] Loading textures into layer " << currentLayer << ": "
 			  << (albedoFile ? albedoFile : "(none)") << ", "
 			  << (normalFile ? normalFile : "(none)") << ", "
-			  << (bumpFile ? bumpFile : "(none)") << std::endl;
-	struct Img { const char* path; TextureImage* dstImage; VkFormat format; bool srgb; } imgs[3] = {
-		{ albedoFile, &albedoArray, VK_FORMAT_R8G8B8A8_UNORM, true },
-		{ normalFile, &normalArray, VK_FORMAT_R8G8B8A8_UNORM, false },
-		{ bumpFile,   &bumpArray,   VK_FORMAT_R8G8B8A8_UNORM, false }
+			  << (bumpFile ? bumpFile : "(none)") << ", "
+			  << (roughnessFile ? roughnessFile : "(default)") << ", "
+			  << (aoFile ? aoFile : "(default)") << std::endl;
+	struct Img { const char* path; TextureImage* dstImage; VkFormat format; bool srgb; unsigned char defaultVal[4]; } imgs[5] = {
+		{ albedoFile, &albedoArray, VK_FORMAT_R8G8B8A8_UNORM, true, {0,0,0,255} },
+		{ normalFile, &normalArray, VK_FORMAT_R8G8B8A8_UNORM, false, {128,128,255,255} },
+		{ bumpFile,   &bumpArray,   VK_FORMAT_R8G8B8A8_UNORM, false, {128,128,128,255} },
+		{ roughnessFile, &roughnessArray, VK_FORMAT_R8G8B8A8_UNORM, false, {128,128,128,255} },
+		{ aoFile,     &aoArray,     VK_FORMAT_R8G8B8A8_UNORM, false, {255,255,255,255} }
 	};
 
-	for (int i = 0; i < 3; ++i) {
-		if (!imgs[i].path) continue;
+	auto uploadLayer = [&](int idx, unsigned char* pixelData, VkDeviceSize imageSize) {
+		Buffer staging = a->createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		void* data;
+		vkMapMemory(device, staging.memory, 0, imageSize, 0, &data);
+		memcpy(data, pixelData, static_cast<size_t>(imageSize));
+		vkUnmapMemory(device, staging.memory);
+
+		a->runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd) {
+			a->recordTransitionImageLayoutLayer(cmd, imgs[idx].dstImage->image, imgs[idx].format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, imgs[idx].dstImage->mipLevels, currentLayer, 1);
+			VkBufferImageCopy region{};
+			region.bufferOffset = 0;
+			region.bufferRowLength = 0;
+			region.bufferImageHeight = 0;
+			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			region.imageSubresource.mipLevel = 0;
+			region.imageSubresource.baseArrayLayer = currentLayer;
+			region.imageSubresource.layerCount = 1;
+			region.imageOffset = {0,0,0};
+			region.imageExtent = { width, height, 1 };
+			vkCmdCopyBufferToImage(cmd, staging.buffer, imgs[idx].dstImage->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+		});
+
+		if (imgs[idx].dstImage->mipLevels > 1) {
+			a->generateMipmaps(imgs[idx].dstImage->image, imgs[idx].format, static_cast<int32_t>(width), static_cast<int32_t>(height), imgs[idx].dstImage->mipLevels, 1, currentLayer);
+			setLayerLayout(idx, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		} else {
+			a->runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd2) {
+				a->recordTransitionImageLayoutLayer(cmd2, imgs[idx].dstImage->image, imgs[idx].format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, imgs[idx].dstImage->mipLevels, currentLayer, 1);
+			});
+			setLayerLayout(idx, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		}
+		if (staging.buffer != VK_NULL_HANDLE) { staging.buffer = VK_NULL_HANDLE; }
+		if (staging.memory != VK_NULL_HANDLE) { staging.memory = VK_NULL_HANDLE; }
+	};
+
+	for (int i = 0; i < 5; ++i) {
+		if (!imgs[i].path) {
+			VkDeviceSize imageSize = static_cast<VkDeviceSize>(width) * height * 4;
+			unsigned char* defaultData = new unsigned char[static_cast<size_t>(imageSize)];
+			for (size_t p = 0; p < static_cast<size_t>(width) * height; ++p) {
+				memcpy(defaultData + p * 4, imgs[i].defaultVal, 4);
+			}
+			uploadLayer(i, defaultData, imageSize);
+			delete[] defaultData;
+			continue;
+		}
 		int texW=0, texH=0, texC=0;
 		unsigned char* pixels = stbi_load(imgs[i].path, &texW, &texH, &texC, 4);
 		if (!pixels) {
@@ -404,81 +516,16 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 			resized = true;
 		}
 
-		// If this image is flagged as sRGB (color/albedo), convert to linear before storing as UNORM
 		if (imgs[i].srgb) {
 			convertSRGB8ToLinearInPlace(uploadData, static_cast<size_t>(width) * static_cast<size_t>(height));
 		}
 
-		VkDeviceSize imageSize = static_cast<VkDeviceSize>(width) * height * 4;
-		Buffer staging = a->createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		void* data;
-		vkMapMemory(device, staging.memory, 0, imageSize, 0, &data);
-		memcpy(data, uploadData, static_cast<size_t>(imageSize));
-		vkUnmapMemory(device, staging.memory);
+		uploadLayer(i, uploadData, static_cast<VkDeviceSize>(width) * height * 4);
 
 		if (resized) delete[] uploadData;
 		stbi_image_free(pixels);
-
-		// Build command buffer and perform per-layer copy with barriers on transfer queue
-		a->runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd) {
-
-		// Transition this layer to TRANSFER_DST_OPTIMAL using the app helper
-		// pass VK_IMAGE_LAYOUT_UNDEFINED so the app resolves the effective
-		// old layout (avoid caller-supplied guesses causing validation mismatches).
-		a->recordTransitionImageLayoutLayer(cmd, imgs[i].dstImage->image, imgs[i].format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, imgs[i].dstImage->mipLevels, currentLayer, 1);
-	// Do NOT set the tracked per-layer layout to TRANSFER_DST here; the command
-	// buffer has not yet completed and setting this early can cause other
-	// threads to read a transient TRANSFER_DST state and build incorrect
-	// barriers. The tracked layout will be updated to SHADER_READ_ONLY when
-	// mip generation completes or the final transition runs.
-	VkBufferImageCopy region{};
-	region.bufferOffset = 0;
-	region.bufferRowLength = 0;
-	region.bufferImageHeight = 0;
-	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	region.imageSubresource.mipLevel = 0;
-	region.imageSubresource.baseArrayLayer = currentLayer;
-	region.imageSubresource.layerCount = 1;
-	region.imageOffset = {0,0,0};
-	region.imageExtent = { width, height, 1 };
-
-		vkCmdCopyBufferToImage(cmd, staging.buffer, imgs[i].dstImage->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-		});
-
-		// Generate mipmaps for the uploaded layer (this will transition mip levels to correct layouts)
-		if (imgs[i].dstImage->mipLevels > 1) {
-			a->generateMipmaps(imgs[i].dstImage->image, imgs[i].format, static_cast<int32_t>(width), static_cast<int32_t>(height), imgs[i].dstImage->mipLevels, 1, currentLayer);
-			// mark layer layout as SHADER_READ_ONLY_OPTIMAL after mipgen
-			setLayerLayout(i, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		} else {
-			// single-level: transition layer to SHADER_READ_ONLY_OPTIMAL
-			// Use the transfer queue so the transfer work does not block graphics.
-			a->runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd2) {
-				a->recordTransitionImageLayoutLayer(
-					cmd2,
-					imgs[i].dstImage->image,
-					imgs[i].format,
-					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-					imgs[i].dstImage->mipLevels,
-					currentLayer,
-					1
-				);
-			});
-			// set tracked layout
-			setLayerLayout(i, currentLayer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		}
-		if (staging.buffer != VK_NULL_HANDLE) {
-			// Defer actual destruction to VulkanResourceManager; clear local handles
-			staging.buffer = VK_NULL_HANDLE;
-		}
-		if (staging.memory != VK_NULL_HANDLE) {
-			staging.memory = VK_NULL_HANDLE;
-		}
 	}
 
-	// increment current layer
 	setLayerInitialized(currentLayer, true);
 	return currentLayer++;
 }
@@ -493,7 +540,7 @@ size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureT
 			break;
 		}
 		try {
-			load(a, t.albedo, t.normal, t.bump);
+			load(a, t.albedo, t.normal, t.bump, t.roughness, t.ao);
 			++loaded;
 		} catch (const std::exception &e) {
 			std::cerr << "[TextureArrayManager] Failed to load " << (t.albedo ? t.albedo : "(null)") << ": " << e.what() << std::endl;
@@ -509,6 +556,8 @@ VkImageLayout TextureArrayManager::getLayerLayout(int map, uint32_t layer) const
 		case 0: return (albedoLayerLayouts.size() > layer) ? albedoLayerLayouts[layer] : VK_IMAGE_LAYOUT_UNDEFINED;
 		case 1: return (normalLayerLayouts.size() > layer) ? normalLayerLayouts[layer] : VK_IMAGE_LAYOUT_UNDEFINED;
 		case 2: return (bumpLayerLayouts.size() > layer) ? bumpLayerLayouts[layer] : VK_IMAGE_LAYOUT_UNDEFINED;
+		case 3: return (roughnessLayerLayouts.size() > layer) ? roughnessLayerLayouts[layer] : VK_IMAGE_LAYOUT_UNDEFINED;
+		case 4: return (aoLayerLayouts.size() > layer) ? aoLayerLayouts[layer] : VK_IMAGE_LAYOUT_UNDEFINED;
 		default: return VK_IMAGE_LAYOUT_UNDEFINED;
 	}
 }
@@ -521,6 +570,8 @@ void TextureArrayManager::setLayerLayout(int map, uint32_t layer, VkImageLayout 
 		case 0: if (albedoLayerLayouts.size() > layer) { prev = albedoLayerLayouts[layer]; albedoLayerLayouts[layer] = layout; } break;
 		case 1: if (normalLayerLayouts.size() > layer) { prev = normalLayerLayouts[layer]; normalLayerLayouts[layer] = layout; } break;
 		case 2: if (bumpLayerLayouts.size() > layer) { prev = bumpLayerLayouts[layer]; bumpLayerLayouts[layer] = layout; } break;
+		case 3: if (roughnessLayerLayouts.size() > layer) { prev = roughnessLayerLayouts[layer]; roughnessLayerLayouts[layer] = layout; } break;
+		case 4: if (aoLayerLayouts.size() > layer) { prev = aoLayerLayouts[layer]; aoLayerLayouts[layer] = layout; } break;
 		default: break;
 	}
 	if (prev != layout) {
@@ -561,9 +612,9 @@ uint TextureArrayManager::create(VulkanApp* a) {
 	memset(mapped, 0, static_cast<size_t>(imageSize));
 	vkUnmapMemory(device, staging.memory);
 
-	TextureImage* imgs[3] = { &albedoArray, &normalArray, &bumpArray };
+	TextureImage* imgs[5] = { &albedoArray, &normalArray, &bumpArray, &roughnessArray, &aoArray };
 
-	for (int i = 0; i < 3; ++i) {
+	for (int i = 0; i < 5; ++i) {
 		TextureImage* dst = imgs[i];
 		if (!dst || dst->image == VK_NULL_HANDLE) continue;
 
@@ -635,6 +686,8 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 		case 0: mipLevels = albedoArray.mipLevels; break;
 		case 1: mipLevels = normalArray.mipLevels; break;
 		case 2: mipLevels = bumpArray.mipLevels; break;
+		case 3: mipLevels = roughnessArray.mipLevels; break;
+		case 4: mipLevels = aoArray.mipLevels; break;
 	}
 
 	VkImage srcImage = tex.getImage();
@@ -642,6 +695,8 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 	if (map == 0) dstImage = albedoArray.image;
 	else if (map == 1) dstImage = normalArray.image;
 	else if (map == 2) dstImage = bumpArray.image;
+	else if (map == 3) dstImage = roughnessArray.image;
+	else if (map == 4) dstImage = aoArray.image;
 	else throw std::runtime_error("TextureArrayManager::updateLayerFromEditableMap: invalid map");
 
 	// Transition dst layer to TRANSFER_DST_OPTIMAL for the selected array image and src to TRANSFER_SRC_OPTIMAL
@@ -714,6 +769,8 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 			case 0: texVec = &albedoImTextures; viewVec = &albedoLayerViews; sampler = albedoSampler; break;
 			case 1: texVec = &normalImTextures; viewVec = &normalLayerViews; sampler = normalSampler; break;
 			case 2: texVec = &bumpImTextures; viewVec = &bumpLayerViews; sampler = bumpSampler; break;
+			case 3: texVec = &roughnessImTextures; viewVec = &roughnessLayerViews; sampler = roughnessSampler; break;
+			case 4: texVec = &aoImTextures; viewVec = &aoLayerViews; sampler = aoSampler; break;
 		}
 
 		if (texVec) {
@@ -739,6 +796,8 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 					case 0: arrImg = &albedoArray; break;
 					case 1: arrImg = &normalArray; break;
 					case 2: arrImg = &bumpArray; break;
+					case 3: arrImg = &roughnessArray; break;
+					case 4: arrImg = &aoArray; break;
 				}
 				if (arrImg && arrImg->image != VK_NULL_HANDLE) {
 					VkImageViewCreateInfo viewInfo{};
@@ -802,6 +861,8 @@ ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
 		case 0: viewVec = &albedoLayerViews; texVec = &albedoImTextures; src = &albedoArray; sampler = albedoSampler; break;
 		case 1: viewVec = &normalLayerViews; texVec = &normalImTextures; src = &normalArray; sampler = normalSampler; break;
 		case 2: viewVec = &bumpLayerViews; texVec = &bumpImTextures; src = &bumpArray; sampler = bumpSampler; break;
+		case 3: viewVec = &roughnessLayerViews; texVec = &roughnessImTextures; src = &roughnessArray; sampler = roughnessSampler; break;
+		case 4: viewVec = &aoLayerViews; texVec = &aoImTextures; src = &aoArray; sampler = aoSampler; break;
 		default: return nullptr;
 	}
 
@@ -864,6 +925,8 @@ ImTextureID TextureArrayManager::getImTextureAlpha(size_t layer, int map) {
         case 0: viewVec = &albedoLayerViews; texVec = &albedoImTextures; src = &albedoArray; sampler = albedoSampler; break;
         case 1: viewVec = &normalLayerViews; texVec = &normalImTextures; src = &normalArray; sampler = normalSampler; break;
         case 2: viewVec = &bumpLayerViews; texVec = &bumpImTextures; src = &bumpArray; sampler = bumpSampler; break;
+        case 3: viewVec = &roughnessLayerViews; texVec = &roughnessImTextures; src = &roughnessArray; sampler = roughnessSampler; break;
+        case 4: viewVec = &aoLayerViews; texVec = &aoImTextures; src = &aoArray; sampler = aoSampler; break;
         default: return nullptr;
     }
 

@@ -20,7 +20,7 @@ void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount);
 #include <vector>
 #include <backends/imgui_impl_vulkan.h>
 
-struct TextureTriple { const char* albedo; const char* normal; const char* bump; };
+struct TextureTriple { const char* albedo; const char* normal; const char* bump; const char* roughness = nullptr; const char* ao = nullptr; };
 
 class TextureArrayManager {
 public:
@@ -34,10 +34,14 @@ public:
     TextureImage albedoArray;
     TextureImage normalArray;
     TextureImage bumpArray;
+    TextureImage roughnessArray;
+    TextureImage aoArray;
     // Corresponding samplers for the arrays
     VkSampler albedoSampler = VK_NULL_HANDLE;
     VkSampler normalSampler = VK_NULL_HANDLE;
     VkSampler bumpSampler = VK_NULL_HANDLE;
+    VkSampler roughnessSampler = VK_NULL_HANDLE;
+    VkSampler aoSampler = VK_NULL_HANDLE;
     uint currentLayer = 0;
     // Back-pointer to `VulkanApp` (used for ImGui descriptor creation and legacy convenience methods).
     // Kept for backward compatibility with UI code that calls `getImTexture()` without an app.
@@ -47,9 +51,13 @@ public:
     std::vector<VkImageView> albedoLayerViews;
     std::vector<VkImageView> normalLayerViews;
     std::vector<VkImageView> bumpLayerViews;
+    std::vector<VkImageView> roughnessLayerViews;
+    std::vector<VkImageView> aoLayerViews;
     std::vector<ImTextureID> albedoImTextures;
     std::vector<ImTextureID> normalImTextures;
     std::vector<ImTextureID> bumpImTextures;
+    std::vector<ImTextureID> roughnessImTextures;
+    std::vector<ImTextureID> aoImTextures;
     // Track which layers have been initialized (contains valid data)
     std::vector<char> layerInitialized;
 
@@ -57,6 +65,8 @@ public:
     std::vector<VkImageLayout> albedoLayerLayouts;
     std::vector<VkImageLayout> normalLayerLayouts;
     std::vector<VkImageLayout> bumpLayerLayouts;
+    std::vector<VkImageLayout> roughnessLayerLayouts;
+    std::vector<VkImageLayout> aoLayerLayouts;
 
     TextureArrayManager() = default;
 
@@ -73,20 +83,20 @@ public:
     void destroy(class VulkanApp* app);
 
     // Variant of load/create/update that accepts an explicit VulkanApp instead of relying on an internal pointer
-    uint load(class VulkanApp* app, const char* albedoFile, const char* normalFile, const char* bumpFile);
+    uint load(class VulkanApp* app, const char* albedoFile, const char* normalFile, const char* bumpFile, const char* roughnessFile = nullptr, const char* aoFile = nullptr);
     size_t loadTriples(class VulkanApp* app, const std::vector<TextureTriple> &triples);
     uint create(class VulkanApp* app);
     void updateLayerFromEditable(class VulkanApp* app, uint32_t layer, const class EditableTexture& tex);
     void updateLayerFromEditableMap(class VulkanApp* app, uint32_t layer, const class EditableTexture& tex, int map);
 
-    // Return an ImGui texture handle for a given array layer and map (0=albedo,1=normal,2=bump)
+    // Return an ImGui texture handle for a given array layer and map (0=albedo,1=normal,2=bump,3=roughness,4=ao)
     ImTextureID getImTexture(size_t layer, int map);
     // Variant that returns a descriptor sampling only the alpha channel of the
     // requested layer/map.  Used for visualizing noise or masks (swizzled view).
     ImTextureID getImTextureAlpha(size_t layer, int map);
 
     // Load a triple of images into the current layer and increment the layer counter
-    uint load(const char* albedoFile, const char* normalFile, const char* bumpFile);
+    uint load(const char* albedoFile, const char* normalFile, const char* bumpFile, const char* roughnessFile = nullptr, const char* aoFile = nullptr);
 
     // Convenience: load multiple triples (albedo, normal, bump) into consecutive layers.
     // Returns the number of successfully loaded layers.
@@ -101,7 +111,7 @@ public:
     void setLayerInitialized(uint32_t layer, bool v=true);
     void allocate(uint32_t layers, uint32_t w, uint32_t h, class VulkanApp* app);
 
-    // Query and update per-layer layouts (map: 0=albedo,1=normal,2=bump)
+    // Query and update per-layer layouts (map: 0=albedo,1=normal,2=bump,3=roughness,4=ao)
     VkImageLayout getLayerLayout(int map, uint32_t layer) const;
     void setLayerLayout(int map, uint32_t layer, VkImageLayout layout);
 
