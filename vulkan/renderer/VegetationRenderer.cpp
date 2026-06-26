@@ -35,6 +35,8 @@ void VegetationRenderer::cleanup() {
     chunkInstanceCounts.clear();
     // Clear local handles; central manager handles destruction of Vulkan objects
     vegetationPipeline = VK_NULL_HANDLE;
+    vegetationDepthPipeline = VK_NULL_HANDLE;
+    vegetationDepthPipelineLayout = VK_NULL_HANDLE;
     pipelineLayout = VK_NULL_HANDLE;
     vegetationShadowPipeline = VK_NULL_HANDLE;
     shadowPipelineLayout = VK_NULL_HANDLE;
@@ -614,6 +616,7 @@ void VegetationRenderer::init(VulkanApp* app) {
     bindingDescs[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
     // Attribute descriptions as initializer_list
+    // ── Shading pass pipeline (uses EQUAL depth compare after depth prepass) ──
     auto [pipeline, layout] = app->createGraphicsPipeline(
         { stages[0], stages[1], stages[2] },
         std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
@@ -628,9 +631,9 @@ void VegetationRenderer::init(VulkanApp* app) {
         &pushConstantRange,
         VK_POLYGON_MODE_FILL,
         VK_CULL_MODE_NONE,
-        true, // depthTest
-        true, // depthWrite
-        VK_COMPARE_OP_LESS,
+        false, // depthWrite — shading pass doesn't write depth (handled by prepass)
+        true,  // colorWrite
+        VK_COMPARE_OP_EQUAL, // only shade fragments that passed the depth prepass
         VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
         false,
         {},
@@ -640,9 +643,76 @@ void VegetationRenderer::init(VulkanApp* app) {
     vegetationPipeline = pipeline;
     pipelineLayout = layout;
     if (vegetationPipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE) {
-        std::cerr << "[VEGETATION PIPELINE ERROR] Failed to create vegetation pipeline or layout!" << std::endl;
+        std::cerr << "[VEGETATION PIPELINE ERROR] Failed to create vegetation shading pipeline or layout!" << std::endl;
     } else {
-        std::cerr << "[VEGETATION PIPELINE] Created pipeline=" << (void*)vegetationPipeline << " layout=" << (void*)pipelineLayout << std::endl;
+        std::cerr << "[VEGETATION PIPELINE] Created shading pipeline=" << (void*)vegetationPipeline << " layout=" << (void*)pipelineLayout << std::endl;
+    }
+
+    // ── Depth prepass pipeline (writes depth using minimal fragment shader) ──
+    {
+        auto depthVertCode = FileReader::readFile("shaders/vegetation.vert.spv");
+        auto depthGeomCode = FileReader::readFile("shaders/vegetation.geom.spv");
+        auto depthFragCode = FileReader::readFile("shaders/vegetation_depth.frag.spv");
+        VkShaderModule depthVertShader = app->createShaderModule(depthVertCode);
+        VkShaderModule depthGeomShader = app->createShaderModule(depthGeomCode);
+        VkShaderModule depthFragShader = app->createShaderModule(depthFragCode);
+
+        VkPipelineShaderStageCreateInfo depthVertStage{};
+        depthVertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        depthVertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        depthVertStage.module = depthVertShader;
+        depthVertStage.pName = "main";
+
+        VkPipelineShaderStageCreateInfo depthGeomStage{};
+        depthGeomStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        depthGeomStage.stage = VK_SHADER_STAGE_GEOMETRY_BIT;
+        depthGeomStage.module = depthGeomShader;
+        depthGeomStage.pName = "main";
+
+        VkPipelineShaderStageCreateInfo depthFragStage{};
+        depthFragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        depthFragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        depthFragStage.module = depthFragShader;
+        depthFragStage.pName = "main";
+
+        VkPipelineShaderStageCreateInfo depthStages[] = { depthVertStage, depthGeomStage, depthFragStage };
+
+        auto [depthPipe, depthLayout] = app->createGraphicsPipeline(
+            { depthStages[0], depthStages[1], depthStages[2] },
+            std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
+            std::vector<VkVertexInputAttributeDescription>{
+                VkVertexInputAttributeDescription{ ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+                VkVertexInputAttributeDescription{ ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+                VkVertexInputAttributeDescription{ ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
+                VkVertexInputAttributeDescription{ ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex) },
+                VkVertexInputAttributeDescription{ ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 },
+            },
+            setLayouts,
+            &pushConstantRange,
+            VK_POLYGON_MODE_FILL,
+            VK_CULL_MODE_NONE,
+            true,  // depthWrite — depth prepass writes depth
+            true,  // colorWrite (ignored since noColorAttachment=true)
+            VK_COMPARE_OP_LESS,
+            VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
+            false,
+            {},
+            VK_FORMAT_D32_SFLOAT,
+            true,  // noColorAttachment — depth-only pass
+            false  // depthBiasEnable
+        );
+        vegetationDepthPipeline = depthPipe;
+        vegetationDepthPipelineLayout = depthLayout;
+        if (vegetationDepthPipeline == VK_NULL_HANDLE) {
+            std::cerr << "[VEGETATION DEPTH PIPELINE ERROR] Failed to create depth prepass pipeline!" << std::endl;
+        } else {
+            std::cerr << "[VEGETATION DEPTH PIPELINE] Created depth prepass pipeline=" << (void*)vegetationDepthPipeline << std::endl;
+        }
+
+        // Shader modules tracked by central manager — zero out local handles
+        depthVertShader = VK_NULL_HANDLE;
+        depthGeomShader = VK_NULL_HANDLE;
+        depthFragShader = VK_NULL_HANDLE;
     }
 
     auto [shadowPipeline, shadowLayout] = app->createGraphicsPipeline(
@@ -1013,9 +1083,16 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
     impostorDepthDescPool       = VK_NULL_HANDLE;
     impostorDepthDescSet        = VK_NULL_HANDLE;
 
-    // ── Set 1: impostor color pipeline (albedo + normal arrays) ──────────
+    bool hasImpostorDepth = (depthArray60 != VK_NULL_HANDLE && captureInvVPBuf != VK_NULL_HANDLE);
+    VkCompareOp impCompareOp = hasImpostorDepth ? VK_COMPARE_OP_EQUAL : VK_COMPARE_OP_LESS;
+
+    // ── Set 1: impostor color pipeline (albedo, normal, depth + captureInvVP) ──
+    // Bindings 2-3 provide depth data so the fragment shader can write gl_FragDepth
+    // matching the impostor depth prepass, enabling EQUAL compare deferred shading.
     {
-        VkDescriptorSetLayoutBinding bindings[2]{};
+        uint32_t numBindings = hasImpostorDepth ? 4u : 2u;
+
+        VkDescriptorSetLayoutBinding bindings[4]{};
         bindings[0].binding         = 0;
         bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[0].descriptorCount = 1;
@@ -1024,23 +1101,39 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[1].descriptorCount = 1;
         bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        if (hasImpostorDepth) {
+            bindings[2].binding         = 2;
+            bindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[2].descriptorCount = 1;
+            bindings[2].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings[3].binding         = 3;
+            bindings[3].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            bindings[3].descriptorCount = 1;
+            bindings[3].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
         VkDescriptorSetLayoutCreateInfo info{};
         info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        info.bindingCount = 2;
+        info.bindingCount = numBindings;
         info.pBindings    = bindings;
         if (vkCreateDescriptorSetLayout(device, &info, nullptr, &impostorDescSetLayout) != VK_SUCCESS)
             throw std::runtime_error("VegetationRenderer: impostorDescSetLayout failed");
         app->resources.addDescriptorSetLayout(impostorDescSetLayout, "VegetationRenderer: impostorDescSetLayout");
 
-        VkDescriptorPoolSize sz{};
-        sz.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        sz.descriptorCount = 2;
+        VkDescriptorPoolSize poolSizes[2]{};
+        poolSizes[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSizes[0].descriptorCount = hasImpostorDepth ? 3 : 2;
+        uint32_t numPoolSizes = 1;
+        if (hasImpostorDepth) {
+            poolSizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            poolSizes[1].descriptorCount = 1;
+            numPoolSizes = 2;
+        }
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.maxSets       = 1;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes    = &sz;
+        poolInfo.poolSizeCount = numPoolSizes;
+        poolInfo.pPoolSizes    = poolSizes;
         poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
         if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &impostorDescPool) != VK_SUCCESS)
             throw std::runtime_error("VegetationRenderer: impostorDescPool failed");
@@ -1054,10 +1147,20 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         if (vkAllocateDescriptorSets(device, &alloc, &impostorDescSet) != VK_SUCCESS)
             throw std::runtime_error("VegetationRenderer: impostorDescSet alloc failed");
 
-        VkDescriptorImageInfo imgInfos[2]{};
+        VkDescriptorImageInfo imgInfos[3]{};
         imgInfos[0] = { sampler, albedoArray60, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         imgInfos[1] = { sampler, normalArray60, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkWriteDescriptorSet ws[2]{};
+        if (hasImpostorDepth)
+            imgInfos[2] = { sampler, depthArray60, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+
+        VkDescriptorBufferInfo bufInfo{};
+        if (hasImpostorDepth) {
+            bufInfo.buffer = captureInvVPBuf;
+            bufInfo.offset = 0;
+            bufInfo.range  = VK_WHOLE_SIZE;
+        }
+
+        VkWriteDescriptorSet ws[4]{};
         for (uint32_t i = 0; i < 2; ++i) {
             ws[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             ws[i].dstSet          = impostorDescSet;
@@ -1066,11 +1169,27 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             ws[i].descriptorCount = 1;
             ws[i].pImageInfo      = &imgInfos[i];
         }
-        vkUpdateDescriptorSets(device, 2, ws, 0, nullptr);
+        uint32_t numWrites = 2;
+        if (hasImpostorDepth) {
+            ws[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            ws[2].dstSet          = impostorDescSet;
+            ws[2].dstBinding      = 2;
+            ws[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            ws[2].descriptorCount = 1;
+            ws[2].pImageInfo      = &imgInfos[2];
+            ws[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            ws[3].dstSet          = impostorDescSet;
+            ws[3].dstBinding      = 3;
+            ws[3].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            ws[3].descriptorCount = 1;
+            ws[3].pBufferInfo     = &bufInfo;
+            numWrites = 4;
+        }
+        vkUpdateDescriptorSets(device, numWrites, ws, 0, nullptr);
     }
 
     // ── Set 1 (depth variant): depth array + capture inv VP buffer ──────
-    if (depthArray60 != VK_NULL_HANDLE && captureInvVPBuf != VK_NULL_HANDLE) {
+    if (hasImpostorDepth) {
         VkDescriptorSetLayoutBinding depthBindings[2]{};
         depthBindings[0].binding         = 0;
         depthBindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1263,9 +1382,9 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         &pcRange,
         VK_POLYGON_MODE_FILL,
         VK_CULL_MODE_NONE,
-        false, // depthWrite — impostors drawn after opaque, don't write depth
-        true,  // colorWrite — impostors must output their color
-        VK_COMPARE_OP_LESS,
+        false, // depthWrite — impostors don't write depth (handled by prepass)
+        true,  // colorWrite
+        impCompareOp, // EQUAL when depth data available, LESS as fallback
         VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
         false,
         {},
@@ -1283,9 +1402,9 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
 }
 
 void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
-    if (!app || vegetationPipeline == VK_NULL_HANDLE) {
-        if (!app) std::cerr << "[VEGETATION DRAW ERROR] app is null!" << std::endl;
-        if (vegetationPipeline == VK_NULL_HANDLE) std::cerr << "[VEGETATION DRAW ERROR] Attempted to bind VK_NULL_HANDLE pipeline!" << std::endl;
+    (void)vegetationDescriptorSet;
+    if (!app) {
+        std::cerr << "[VEGETATION DRAW ERROR] app is null!" << std::endl;
         return;
     }
 
@@ -1308,8 +1427,6 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         return;
     }
 
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationPipeline);
-
     // Bind the persistent, already-updated global descriptor set from VulkanApp as set 0
     VkDescriptorSet globalSet = app->getMainDescriptorSet();
     if (globalSet == VK_NULL_HANDLE) {
@@ -1321,9 +1438,8 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         return;
     }
     VkDescriptorSet sets[2] = { globalSet, vegDescriptorSet };
-    //printf("[BIND] VegetationRenderer::draw: layout=%p firstSet=0 count=2 sets=%p %p\n", (void*)pipelineLayout, (void*)sets[0], (void*)sets[1]);
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 2, sets, 0, nullptr);
 
+    // Build push constants (same values for both depth prepass and shading pass)
     WindPushConstants pc{};
     pc.billboardScale     = billboardScale;
     pc.windEnabled        = windSettings.enabled ? 1.0f : 0.0f;
@@ -1361,41 +1477,75 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
     pc.densityParams = glm::vec4(distanceDensitySettings.enabled ? 1.0f : 0.0f, nearDistance, farDistance, minFactor);
     pc.cameraPosAndFalloff = glm::vec4(cameraPos, falloff);
 
-    vkCmdPushConstants(
-        commandBuffer,
-        pipelineLayout,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-        0,
-        sizeof(WindPushConstants),
-        &pc
-    );
+    // ── Helper lambda to issue draw calls ──
+    auto issueDraws = [&](VkCommandBuffer cmd, VkPipelineLayout activeLayout) {
+        vkCmdPushConstants(cmd, activeLayout,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            0, sizeof(WindPushConstants), &pc);
 
-    // Bind instance buffer: either concatenated (GPU culling) or per-chunk (legacy)
-    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-        // ── Consolidated: draw all visible chunks from the compacted indirect buffer ──
-        VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
-        VkDeviceSize offsets[2] = { 0, 0 };
-        vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-        vkCmdDrawIndirectCount(commandBuffer, compactedCmdBuffer.buffer, 0,
-        visibleCountBuffer.buffer, 0, vegNumChunks, sizeof(VkDrawIndirectCommand));
-    } else {
-        // ── Legacy: iterate per-chunk buffers (no GPU culling) ──
-        for (auto& [chunkId, buf] : chunkBuffers) {
-            (void)chunkId;
-            if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
-            if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
-
-            VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
+        if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+            VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
             VkDeviceSize offsets[2] = { 0, 0 };
-            vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-            vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
+            vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
+            vkCmdDrawIndirectCount(cmd, compactedCmdBuffer.buffer, 0,
+                visibleCountBuffer.buffer, 0, vegNumChunks, sizeof(VkDrawIndirectCommand));
+        } else {
+            for (auto& [chunkId, buf] : chunkBuffers) {
+                (void)chunkId;
+                if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
+                if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
+
+                VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
+                VkDeviceSize offsets[2] = { 0, 0 };
+                vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
+                vkCmdDrawIndirect(cmd, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
+            }
         }
+    };
+
+    // ── Depth prepass ──────────────────────────────────────────────────────────
+    // Writes the closest depth for each pixel so the shading pass (EQUAL compare)
+    // only shades the nearest fragments, saving overdraw from overlapping billboards.
+    if (vegetationDepthPipeline != VK_NULL_HANDLE) {
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationDepthPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            vegetationDepthPipelineLayout, 0, 2, sets, 0, nullptr);
+        issueDraws(commandBuffer, vegetationDepthPipelineLayout);
     }
 
-    // ── Impostor pass ────────────────────────────────────────────────────────
+    // ── Impostor depth prepass ─────────────────────────────────────────────────
+    // Writes per-pixel depth from the captured impostor depth array so the depth
+    // buffer contains accurate far-instance geometry. The impostor color pass uses
+    // EQUAL compare so it matches the depth written by this prepass.
+    if (impostorDepthPipeline != VK_NULL_HANDLE &&
+        impostorDepthDescSet  != VK_NULL_HANDLE &&
+        impostorDistance > 0.0f) {
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorDepthPipeline);
+
+        VkDescriptorSet depthSets[2] = { globalSet, impostorDepthDescSet };
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    impostorDepthPipelineLayout, 0, 2, depthSets, 0, nullptr);
+
+        // Override depth bias to 0 for the main pass (shadow pass uses non-zero bias)
+        vkCmdSetDepthBias(commandBuffer, 0.0f, 0.0f, 0.0f);
+
+        issueDraws(commandBuffer, impostorDepthPipelineLayout);
+    }
+
+    // ── Shading pass ───────────────────────────────────────────────────────────
+    // Uses EQUAL depth compare: only the closest fragments (from prepass) are shaded.
+    if (vegetationPipeline != VK_NULL_HANDLE) {
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipelineLayout, 0, 2, sets, 0, nullptr);
+        issueDraws(commandBuffer, pipelineLayout);
+    }
+
+    // ── Impostor color pass ──────────────────────────────────────────────────
     // Draw camera-facing impostor quads for instances beyond impostorDistance.
     // The impostor geom shader skips instances that are too close
-    // (they were already handled by the vegetation pass above).
+    // (they were already handled by the vegetation passes above).
     if (impostorPipeline != VK_NULL_HANDLE &&
         impostorDescSet  != VK_NULL_HANDLE &&
         impostorDistance > 0.0f) {
@@ -1406,7 +1556,6 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     impostorPipelineLayout, 0, 2, impSets, 0, nullptr);
 
-        // Re-push the same push constants using the impostor pipeline layout.
         vkCmdPushConstants(commandBuffer, impostorPipelineLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT
                            | VK_SHADER_STAGE_FRAGMENT_BIT,

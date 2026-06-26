@@ -13,6 +13,7 @@ layout(location = VARY_UV) out vec3 outTexCoord;    // xy=UV, z=float(layerIdx)
 layout(location = VARY_POSWORLD) out vec3 outWorldPos;    // world-space vertex position (for specular)
 layout(location = VARY_FACE_NORMAL) flat out vec3 outFaceNormal; // world-space face normal (toward camera in XZ)
 layout(location = VARY_ROTFRAC) flat out float outRotFrac;   // per-instance Y-rotation fraction [0,1)
+layout(location = VARY_POSLIGHT) flat out vec3 outInstanceOffset; // instance world position (for depth reconstruction)
 
 // Must match SolidParamsUBO — only read the first two fields.
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
@@ -39,14 +40,15 @@ layout(push_constant) uniform PushConstants {
 void main() {
     vec3 worldPos = inWorldPos[0];
     int  billboardIdx = inBillboardIndex[0];
+    outInstanceOffset = worldPos;
 
     vec3 camPos = ubo.viewPos.xyz;
     float dist  = distance(worldPos, camPos);
 
     // Skip if feature disabled OR instance is within near-vegetation distance
     // (the regular vegetation pipeline handles those instances).
-    // Start 15% before impostorDistance to overlap with the vegetation cross-fade zone.
-    if (impostorDistance <= 0.0 || dist < impostorDistance * 0.85) return;
+    // Start 30% before impostorDistance to overlap with the vegetation cross-fade zone.
+    if (impostorDistance <= 0.0 || dist < impostorDistance * 0.50) return;
 
     // Distance-based density thinning — same stochastic model as vegetation.geom.
     float densityFactor = densityFactorForDistance(dist);

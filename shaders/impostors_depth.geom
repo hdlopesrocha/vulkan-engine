@@ -40,7 +40,7 @@ void main() {
     if (impostorDistance <= 0.0) return;
 
     float mainCamDist = distance(cameraPosAndFalloff.xyz, worldPos);
-    if (mainCamDist < impostorDistance * 0.85) return;
+    if (mainCamDist < impostorDistance * 0.50) return;
 
     float densityFactor = densityFactorForDistance(mainCamDist);
     if (densityFactor < 0.9999) {

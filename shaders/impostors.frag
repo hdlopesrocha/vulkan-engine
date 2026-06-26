@@ -8,6 +8,7 @@ layout(location = VARY_UV) in vec3 inTexCoord;
 layout(location = VARY_POSWORLD) in vec3 inWorldPos;
 layout(location = VARY_FACE_NORMAL) flat in vec3 inFaceNormal;
 layout(location = VARY_ROTFRAC) flat in float inRotFrac;
+layout(location = VARY_POSLIGHT) flat in vec3 inInstanceOffset;
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -20,6 +21,14 @@ layout(set = 0, binding = 9) uniform sampler2D shadowMap2;
 // 60-layer impostor arrays: 3 billboard types × 20 Fibonacci views.
 layout(set = 1, binding = 0) uniform sampler2DArray impostorArray;
 layout(set = 1, binding = 1) uniform sampler2DArray impostorNormalArray;
+
+// Depth data for deferred depth test: reconstruct world position from captured
+// depth and write gl_FragDepth so the EQUAL compare in the shading pass matches
+// the depth written by the impostor depth prepass.
+layout(set = 1, binding = 2) uniform sampler2DArray depthArray;
+layout(set = 1, binding = 3) readonly buffer CaptureInvVP {
+    mat4 invVP[];
+};
 
 layout(push_constant) uniform PushConstants {
     float billboardScale;
@@ -40,15 +49,32 @@ vec3 fragPosWorld; // set in main() — required by shadows.glsl cascades 1 & 2
 
 void main() {
     vec4 color = texture(impostorArray, inTexCoord);
-    if (color.a < 0.5) discard;
+    if (color.a < 0.3) discard;
     fragPosWorld = inWorldPos; // must be set before any ShadowCalculation call
+
+    // Reconstruct per-pixel depth from captured depth map so the deferred
+    // depth test (EQUAL compare) shades only the nearest fragments.
+    {
+        int layer = int(inTexCoord.z);
+        float texDepth = texture(depthArray, inTexCoord).r;
+        if (texDepth >= 1.0 || texDepth <= 0.0) discard;
+
+        vec2 ndc_xy = inTexCoord.xy * 2.0 - 1.0;
+        vec4 clipPos = vec4(ndc_xy, texDepth, 1.0);
+        vec4 worldPos = invVP[layer] * clipPos;
+        worldPos /= worldPos.w;
+        worldPos.xyz += inInstanceOffset;
+
+        vec4 camClipPos = ubo.viewProjection * worldPos;
+        gl_FragDepth = clamp(camClipPos.z / camClipPos.w, 0.0, 1.0);
+    }
 
     // Cross-fade with vegetation: dithered fade-in in the transition zone.
     // This is the complement of vegetation.frag's fade-out: together they cover
     // 100% of pixels so the transition is seamless without gaps or doubles.
     if (impostorDistance > 0.0) {
         float dist      = distance(ubo.viewPos.xyz, inWorldPos);
-        float fadeAlpha = 1.0 - smoothstep(impostorDistance * 0.85, impostorDistance * 1.15, dist);
+        float fadeAlpha = 1.0 - smoothstep(impostorDistance * 0.50, impostorDistance * 1.15, dist);
         const int M[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
         float threshold = float(M[(int(gl_FragCoord.y) & 3) * 4 + (int(gl_FragCoord.x) & 3)]) / 16.0;
         if (threshold < fadeAlpha) discard;   // complementary: keep where vegetation discards

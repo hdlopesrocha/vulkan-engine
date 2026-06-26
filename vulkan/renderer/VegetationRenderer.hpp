@@ -141,7 +141,9 @@ public:
 
 private:
     
-    VkPipeline vegetationPipeline = VK_NULL_HANDLE;
+    VkPipeline vegetationPipeline = VK_NULL_HANDLE;          // shading pass (depthWrite=false, EQUAL)
+    VkPipeline vegetationDepthPipeline = VK_NULL_HANDLE;     // depth-only prepass
+    VkPipelineLayout vegetationDepthPipelineLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline vegetationShadowPipeline = VK_NULL_HANDLE;
     VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
