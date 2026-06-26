@@ -131,6 +131,7 @@ shaders: $(OUT_SPVS)
 	@# Copy compiled SPIR-V back to the source shaders/ folder so FileReader can load shaders/*.spv at runtime
 	@mkdir -p shaders
 	@cp -u $(OUT_DIR)/shaders/*.spv shaders/ 2>/dev/null || true
+	@rm shaders/*.spv 2>/dev/null || true
 
 
 # Generic pattern rule for all shader extensions in $(SHADER_EXTS)
