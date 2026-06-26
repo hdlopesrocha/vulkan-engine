@@ -40,7 +40,7 @@ IMGUI_CORE_OBJS := $(patsubst third_party/imgui/%.cpp,$(OBJ_DIR)/imgui/%.o,$(IMG
 IMGUI_BACKEND_OBJS := $(patsubst third_party/imgui/backends/%.cpp,$(OBJ_DIR)/imgui/backends/%.o,$(IMGUI_BACKEND_SRCS))
 IMGUI_OBJS := $(IMGUI_CORE_OBJS) $(IMGUI_BACKEND_OBJS)
 # shader sources and generated SPIR-V
-SRCS := $(wildcard main.cpp utils/*.cpp vulkan/*.cpp vulkan/renderer/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp space/*.cpp) third_party/miniaudio/miniaudio_impl.cpp
+SRCS := $(wildcard main.cpp utils/*.cpp vulkan/*.cpp vulkan/renderer/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp space/*.cpp services/*.cpp) third_party/miniaudio/miniaudio_impl.cpp
 # Exclude legacy utils Camera implementation (migrated to math/Camera)
 SRCS := $(filter-out utils/Camera.cpp,$(SRCS))
 OBJ_DIR := $(OUT_DIR)/obj
@@ -52,7 +52,7 @@ OUT = $(OUT_DIR)/app
 
 # Objects used for the standalone server (exclude the app's main.o and vulkan objects to avoid duplicate main
 # and linking against Vulkan)
-SERVER_OBJS := $(filter-out $(OBJ_DIR)/main.o $(OBJ_DIR)/vulkan/%.o $(OBJ_DIR)/widgets/%.o $(OBJ_DIR)/events/KeyboardPublisher.o $(OBJ_DIR)/events/GamepadPublisher.o,$(OBJS))
+SERVER_OBJS := $(filter-out $(OBJ_DIR)/main.o $(OBJ_DIR)/vulkan/%.o $(OBJ_DIR)/widgets/%.o $(OBJ_DIR)/services/%.o $(OBJ_DIR)/events/KeyboardPublisher.o $(OBJ_DIR)/events/GamepadPublisher.o,$(OBJS))
 
 # Server-specific link flags: now include glfw and vulkan libs for ImGui backends
 SERVER_LIBS := $(LIBS)
@@ -78,7 +78,7 @@ define make-obj-dirs
 	@mkdir -p $(OBJ_DIR)
 	@mkdir -p $(OBJ_DIR)/imgui
 	@mkdir -p $(OBJ_DIR)/imgui/backends
-	@find utils vulkan widgets events math sdf space -type d 2>/dev/null | while read dir; do \
+	@find utils vulkan widgets events math sdf space services -type d 2>/dev/null | while read dir; do \
 		mkdir -p $(OBJ_DIR)/$$dir; \
 	done
 endef
