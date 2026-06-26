@@ -1647,19 +1647,15 @@ void VulkanApp::recordGenerateMipmaps(VkCommandBuffer commandBuffer, VkImage ima
         uint32_t targetLayer = baseArrayLayer + layer;
 
         // ensure base level is in TRANSFER_DST_OPTIMAL before generating mips
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.baseArrayLayer = targetLayer;
-        // oldLayout should match current state; leave as is to satisfy validation
-        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // will be ignored by validation if layouts differ
-        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        barrier.srcAccessMask = 0;
-        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        vkCmdPipelineBarrier(commandBuffer,
-                            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                            0,
-                            0, nullptr,
-                            0, nullptr,
-                            1, &barrier);
+        // Use recordTransitionImageLayoutLayer so the barrier is skipped if
+        // the subresource is already in TRANSFER_DST_OPTIMAL (e.g. after a
+        // compute-shader mip-prep barrier from TextureMixer). When the image
+        // needs a real transition, the helper picks the correct access masks
+        // from the effective old layout.
+        recordTransitionImageLayoutLayer(commandBuffer, image, imageFormat,
+                                         VK_IMAGE_LAYOUT_UNDEFINED,
+                                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                         1, targetLayer, 1);
 
         for (uint32_t i = 1; i < mipLevels; i++) {
             // transition current mip level i to TRANSFER_DST_OPTIMAL from UNDEFINED
