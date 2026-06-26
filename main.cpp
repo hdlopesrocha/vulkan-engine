@@ -205,6 +205,8 @@ public:
             { "textures/Sapphire_001_COLOR.jpg", "textures/Sapphire_001_NORM.jpg", "textures/Sapphire_001_DISP.jpg", "textures/Sapphire_001_ROUGH.jpg", "textures/Sapphire_001_OCC.jpg" },
             { "textures/Rough_rock_006_COLOR.jpg", "textures/Rough_rock_006_NRM.jpg", "textures/Rough_rock_006_DISP.jpg", "textures/Rough_rock_006_SPEC.jpg", "textures/Rough_rock_006_OCC.jpg" },
             { "textures/Crystal_Metal_001_COLOR.jpg", "textures/Crystal_Metal_001_NORM.jpg", "textures/Crystal_Metal_001_DISP.jpg", "textures/Crystal_Metal_001_ROUGH.jpg", "textures/Crystal_Metal_001_OCC.jpg" },
+            { "textures/Sci-fi_Armor_001_basecolor.jpg", "textures/Sci-fi_Armor_001_normal.jpg", "textures/Sci-fi_Armor_001_height.jpg", "textures/Sci-fi_Armor_001_roughness.jpg", "textures/Sci-fi_Armor_001_ambientOcclusion.jpg" },
+            { "textures/Greeble_Techno_002_basecolor.jpg", "textures/Greeble_Techno_002_normal.jpg", "textures/Greeble_Techno_002_height.jpg", "textures/Greeble_Techno_002_roughness.jpg", "textures/Greeble_Techno_002_ambientOcclusion.jpg" },
 
         };
 
@@ -352,6 +354,16 @@ public:
         materials[18u].triplanarScaleU = 0.002f;
         materials[18u].triplanarScaleV = 0.002f;
         materials[18u].invertHeight = true;
+
+        materials[20u].mappingMode = true;
+        materials[20u].tessLevel = 5.0f;
+        materials[20u].tessMinLevel = 2.0f;
+        materials[20u].tessMaxLevel = 16.0f;
+        materials[20u].tessHeightScale = 32.0f;
+        materials[20u].triplanar = true;
+        materials[20u].triplanarScaleU = 0.002f;
+        materials[20u].triplanarScaleV = 0.002f;
+        materials[20u].invertHeight = true;
 
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);

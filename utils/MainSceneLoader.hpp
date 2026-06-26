@@ -137,7 +137,7 @@ public:
             SphereDistanceFunction function = SphereDistanceFunction();
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             WrappedSphere wrappedFunction = WrappedSphere(&function);
-            opaqueLayer.apply(SDF::opSubtraction, &wrappedFunction, model, translate, scale, SimpleBrush(18), minSize, simplifier, opaqueHandler);
+            opaqueLayer.apply(SDF::opSubtraction, &wrappedFunction, model, translate, scale, SimpleBrush(20), minSize, simplifier, opaqueHandler);
         }
 
         {
