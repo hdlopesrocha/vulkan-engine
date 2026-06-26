@@ -1324,6 +1324,9 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
     ri.colorAttachmentCount = 1;
     ri.pColorAttachments = &colorAtt;
     ri.pDepthAttachment = &depthAtt;
+    // Acquire vertex/index buffers outside dynamic rendering (barriers illegal inside)
+    waterIndirectRenderer.acquireBuffers(cmd);
+
     vkCmdBeginRendering(cmd, &ri);
 
     VkViewport vp{0, 0, (float)faceSize, (float)faceSize, 0, 1};
@@ -1387,9 +1390,8 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
         waterGeometryPipelineLayout, 2, 1, &cubemapWaterDepthDS, 0, nullptr);
 
-    // Acquire vertex/index buffers (ensure transfer writes are visible), then draw ALL
-    // water patches without frustum culling (cubemap covers all 6 faces).
-    waterIndirectRenderer.acquireBuffers(cmd);
+    // Draw ALL water patches without frustum culling (cubemap covers all 6 faces).
+    // acquireBuffers was called before BeginRendering above (barriers illegal inside).
     waterIndirectRenderer.drawAll(cmd);
 
     vkCmdEndRendering(cmd);
