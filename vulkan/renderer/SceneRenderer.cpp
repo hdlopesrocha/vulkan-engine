@@ -153,6 +153,7 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
         if (solid360Renderer) {
             solid360Renderer->destroySolid360Targets(app);
             solid360Renderer->createSolid360Targets(app, waterRenderer->getLinearSampler());
+            solid360Renderer->createSolid360Pipelines(app);
         }
     }
     if (postProcessRenderer) {
@@ -642,6 +643,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         // Create cubemap targets now so the image view is available for
         // the environment-map descriptor binding (binding 11) below.
         solid360Renderer->createSolid360Targets(app, waterRenderer->getLinearSampler());
+        solid360Renderer->createSolid360Pipelines(app);
         // Binding 11: environment cubemap for solid-shader reflections
         VkImageView cubeView = solid360Renderer->getSolid360View();
         VkSampler cubeSampler = solid360Renderer->getSolid360Sampler();

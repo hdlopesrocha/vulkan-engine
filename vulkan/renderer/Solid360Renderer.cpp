@@ -1,5 +1,7 @@
 #include "Solid360Renderer.hpp"
 #include "../../utils/FileReader.hpp"
+#include "../ShaderStage.hpp"
+#include "../includes/vertex_layouts.hpp"
 #include <stdexcept>
 #include <iostream>
 
@@ -11,7 +13,25 @@ void Solid360Renderer::init(VulkanApp* app) {
 }
 
 void Solid360Renderer::cleanup(VulkanApp* app) {
-    (void)app;
+    if (app) {
+        VkDevice dev = app->getDevice();
+        if (depthOnlyPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(dev, depthOnlyPipeline, nullptr);
+            depthOnlyPipeline = VK_NULL_HANDLE;
+        }
+        if (depthOnlyPipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(dev, depthOnlyPipelineLayout, nullptr);
+            depthOnlyPipelineLayout = VK_NULL_HANDLE;
+        }
+        if (equalComparePipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(dev, equalComparePipeline, nullptr);
+            equalComparePipeline = VK_NULL_HANDLE;
+        }
+        if (equalComparePipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(dev, equalComparePipelineLayout, nullptr);
+            equalComparePipelineLayout = VK_NULL_HANDLE;
+        }
+    }
     cube360ColorImage = VK_NULL_HANDLE;
     cube360ColorMemory = VK_NULL_HANDLE;
     for (auto& v : cube360FaceViews) v = VK_NULL_HANDLE;
@@ -174,6 +194,85 @@ void Solid360Renderer::destroySolid360Targets(VulkanApp* app) {
     }
 }
 
+void Solid360Renderer::createSolid360Pipelines(VulkanApp* app) {
+    if (!app) return;
+
+    ShaderStage vertexShader = ShaderStage(
+        app->createShaderModule(FileReader::readFile("shaders/main.vert.spv")),
+        VK_SHADER_STAGE_VERTEX_BIT
+    );
+    ShaderStage tescShader = ShaderStage(
+        app->createShaderModule(FileReader::readFile("shaders/main.tesc.spv")),
+        VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
+    );
+    ShaderStage teseShader = ShaderStage(
+        app->createShaderModule(FileReader::readFile("shaders/main.tese.spv")),
+        VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
+    );
+    // Depth-only pipeline uses a lightweight fragment shader
+    ShaderStage depthFragmentShader = ShaderStage(
+        app->createShaderModule(FileReader::readFile("shaders/depth_only.frag.spv")),
+        VK_SHADER_STAGE_FRAGMENT_BIT
+    );
+    // Color pass uses the full terrain fragment shader
+    ShaderStage mainFragmentShader = ShaderStage(
+        app->createShaderModule(FileReader::readFile("shaders/main.frag.spv")),
+        VK_SHADER_STAGE_FRAGMENT_BIT
+    );
+
+    std::vector<VkDescriptorSetLayout> setLayouts;
+    if (app->getDescriptorSetLayout() != VK_NULL_HANDLE)
+        setLayouts.push_back(app->getDescriptorSetLayout());
+
+    // Depth-only pipeline: lightweight fragment shader, no color attachment, depth write, LESS compare
+    {
+        auto [pipeline, layout] = app->createGraphicsPipeline(
+            { vertexShader.info, tescShader.info, teseShader.info, depthFragmentShader.info },
+            std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
+            vk_layouts::defaultAttributes(),
+            setLayouts,
+            nullptr,
+            VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT,
+            true, false,                    // depthWrite=true, colorWrite=false
+            VK_COMPARE_OP_LESS,
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            false,
+            {},                             // no color formats
+            VK_FORMAT_D32_SFLOAT,
+            true                            // noColorAttachment=true
+        );
+        depthOnlyPipeline = pipeline;
+        depthOnlyPipelineLayout = layout;
+    }
+
+    // EQUAL-compare color pipeline: full fragment shader, color write, EQUAL depth compare, no depth write
+    {
+        auto [pipeline, layout] = app->createGraphicsPipeline(
+            { vertexShader.info, tescShader.info, teseShader.info, mainFragmentShader.info },
+            std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
+            vk_layouts::defaultAttributes(),
+            setLayouts,
+            nullptr,
+            VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT,
+            false, true,                    // depthWrite=false, colorWrite=true
+            VK_COMPARE_OP_LESS_OR_EQUAL,
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            false,
+            { app->getSwapchainImageFormat() },
+            VK_FORMAT_D32_SFLOAT
+        );
+        equalComparePipeline = pipeline;
+        equalComparePipelineLayout = layout;
+    }
+
+    // Clear local handles; destruction via VulkanResourceManager
+    mainFragmentShader.info.module = VK_NULL_HANDLE;
+    depthFragmentShader.info.module = VK_NULL_HANDLE;
+    teseShader.info.module = VK_NULL_HANDLE;
+    tescShader.info.module = VK_NULL_HANDLE;
+    vertexShader.info.module = VK_NULL_HANDLE;
+}
+
 void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                                      SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
                                      SolidRenderer* solidRenderer,
@@ -269,74 +368,88 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             ind.prepareCullWithDescriptor(cmd, faceVP, computeDs, compactIndirectBuffer, visibleCountBuffer);
         }
 
-        VkClearValue clears[2];
-        clears[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-        clears[1].depthStencil = {1.0f, 0};
+        // ── Single rendering instance: depth pre-pass then color pass ──
+        {
+            VkClearValue colorClear{};
+            colorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+            VkClearValue depthClear{};
+            depthClear.depthStencil = {1.0f, 0};
 
-        VkRenderingAttachmentInfo colorAtt{};
-        colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        colorAtt.imageView = cube360FaceViews[face];
-        colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        colorAtt.clearValue = clears[0];
+            VkRenderingAttachmentInfo colorAtt{};
+            colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            colorAtt.imageView = cube360FaceViews[face];
+            colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            colorAtt.clearValue = colorClear;
 
-        VkRenderingAttachmentInfo depthAtt{};
-        depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        depthAtt.imageView = cube360DepthViews[face];
-        depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAtt.clearValue = clears[1];
+            VkRenderingAttachmentInfo depthAtt{};
+            depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            depthAtt.imageView = cube360DepthViews[face];
+            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            depthAtt.clearValue = depthClear;
 
-        VkRenderingInfo renderingInfo{};
-        renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        renderingInfo.renderArea.offset = {0, 0};
-        renderingInfo.renderArea.extent = {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE};
-        renderingInfo.layerCount = 1;
-        renderingInfo.colorAttachmentCount = 1;
-        renderingInfo.pColorAttachments = &colorAtt;
-        renderingInfo.pDepthAttachment = &depthAtt;
+            VkRenderingInfo renderingInfo{};
+            renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            renderingInfo.renderArea.offset = {0, 0};
+            renderingInfo.renderArea.extent = {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE};
+            renderingInfo.layerCount = 1;
+            renderingInfo.colorAttachmentCount = 1;
+            renderingInfo.pColorAttachments = &colorAtt;
+            renderingInfo.pDepthAttachment = &depthAtt;
 
-        vkCmdBeginRendering(cmd, &renderingInfo);
+            vkCmdBeginRendering(cmd, &renderingInfo);
 
-        VkViewport viewport{0.0f, 0.0f, (float)CUBE360_FACE_SIZE, (float)CUBE360_FACE_SIZE, 0.0f, 1.0f};
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        VkRect2D scissor{{0, 0}, {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE}};
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
+            VkViewport viewport{0.0f, 0.0f, (float)CUBE360_FACE_SIZE, (float)CUBE360_FACE_SIZE, 0.0f, 1.0f};
+            vkCmdSetViewport(cmd, 0, 1, &viewport);
+            VkRect2D scissor{{0, 0}, {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE}};
+            vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-        if (skyRenderer) {
-            VkPipeline skyPipe = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyGridPipeline() : skyRenderer->getSkyPipeline();
-            VkPipelineLayout skyLayout = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyGridPipelineLayout() : skyRenderer->getSkyPipelineLayout();
-            if (skyPipe != VK_NULL_HANDLE && skyLayout != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipe);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
-                const auto& skyVBO = skyRenderer->getSkyVBO();
-                if (skyVBO.vertexBuffer.buffer != VK_NULL_HANDLE && skyVBO.indexCount > 0) {
-                    VkBuffer vbs[] = {skyVBO.vertexBuffer.buffer};
-                    VkDeviceSize offsets[] = {0};
-                    vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
-                    vkCmdBindIndexBuffer(cmd, skyVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-                    vkCmdDrawIndexed(cmd, skyVBO.indexCount, 1, 0, 0, 0);
-                }
-            }
-        }
-
-        if (solidRenderer) {
-            VkPipeline gfxPipe = solidRenderer->getGraphicsPipeline();
-            VkPipelineLayout gfxLayout = solidRenderer->getGraphicsPipelineLayout();
-            if (gfxPipe != VK_NULL_HANDLE && gfxLayout != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxPipe);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
+            // Depth pre-pass: lightweight shader, writes only depth
+            if (solidRenderer && depthOnlyPipeline != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipelineLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
                 if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
                     solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
                 } else {
                     solidRenderer->getIndirectRenderer().drawPrepared(cmd, 0);
                 }
             }
-        }
 
-        vkCmdEndRendering(cmd);
+            // Color pass: full shader, LESS_OR_EQUAL compare with no depth write
+            // (only shades fragments at the depth written by the prepass)
+            if (solidRenderer && equalComparePipeline != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, equalComparePipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, equalComparePipelineLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
+                if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
+                    solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
+                } else {
+                    solidRenderer->getIndirectRenderer().drawPrepared(cmd, 0);
+                }
+            }
+
+            // Sky on top with LESS compare (fills background where no solid geometry exists)
+            if (skyRenderer) {
+                VkPipeline skyPipe = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyGridPipeline() : skyRenderer->getSkyPipeline();
+                VkPipelineLayout skyLayout = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyGridPipelineLayout() : skyRenderer->getSkyPipelineLayout();
+                if (skyPipe != VK_NULL_HANDLE && skyLayout != VK_NULL_HANDLE) {
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipe);
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
+                    const auto& skyVBO = skyRenderer->getSkyVBO();
+                    if (skyVBO.vertexBuffer.buffer != VK_NULL_HANDLE && skyVBO.indexCount > 0) {
+                        VkBuffer vbs[] = {skyVBO.vertexBuffer.buffer};
+                        VkDeviceSize offsets[] = {0};
+                        vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
+                        vkCmdBindIndexBuffer(cmd, skyVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+                        vkCmdDrawIndexed(cmd, skyVBO.indexCount, 1, 0, 0, 0);
+                    }
+                }
+            }
+
+            vkCmdEndRendering(cmd);
+        }
 
         // Render water into the cubemap face (with reflection/refraction disabled via skipEnvMap flag in UBO).
         // Depth stays in ATTACHMENT_OPTIMAL; renderWaterIntoCubemap uses the dummy depth for shader sampling

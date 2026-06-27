@@ -18,6 +18,9 @@ public:
 
     void setWaterRenderer(WaterRenderer* wr) { waterRenderer = wr; }
 
+    // Create depth-only and EQUAL-compare pipelines for deferred depth testing
+    void createSolid360Pipelines(VulkanApp* app);
+
     void renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                         SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
                         SolidRenderer* solidRenderer,
@@ -48,6 +51,12 @@ public:
 private:
     WaterRenderer* waterRenderer = nullptr;
     static constexpr uint32_t CUBE360_FACE_SIZE = 512;
+
+    // Deferred depth test pipelines
+    VkPipeline depthOnlyPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout depthOnlyPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline equalComparePipeline = VK_NULL_HANDLE;
+    VkPipelineLayout equalComparePipelineLayout = VK_NULL_HANDLE;
 
     VkImage cube360ColorImage = VK_NULL_HANDLE;
     VkDeviceMemory cube360ColorMemory = VK_NULL_HANDLE;
