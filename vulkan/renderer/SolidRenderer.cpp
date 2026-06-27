@@ -251,6 +251,42 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     depthPrePassPipeline = depthPipeline;
     depthPrePassPipelineLayout = depthLayout;
 
+    // Deferred depth test pipelines: depth-only (no color) and color-only (no depth write, LESS_OR_EQUAL)
+    {
+        // Depth-only: lightweight depth_only.frag, no color attachment
+        ShaderStage depthFrag = ShaderStage(
+            app->createShaderModule(FileReader::readFile("shaders/depth_only.frag.spv")),
+            VK_SHADER_STAGE_FRAGMENT_BIT
+        );
+        auto [dp, dl] = app->createGraphicsPipeline(
+            { vertexShader.info, tescShader.info, teseShader.info, depthFrag.info },
+            std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
+            vk_layouts::defaultAttributes(),
+            setLayouts, nullptr,
+            VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT,
+            true, false, VK_COMPARE_OP_LESS, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            false, {}, VK_FORMAT_D32_SFLOAT, true
+        );
+        deferredDepthPipeline = dp;
+        deferredDepthPipelineLayout = dl;
+        depthFrag.info.module = VK_NULL_HANDLE;
+    }
+    {
+        // Color-only: full main.frag, LESS_OR_EQUAL compare, no depth write
+        auto [cp, cl] = app->createGraphicsPipeline(
+            { vertexShader.info, tescShader.info, teseShader.info, fragmentShader.info },
+            std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
+            vk_layouts::defaultAttributes(),
+            setLayouts, nullptr,
+            VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT,
+            false, true, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            false, { app->getSwapchainImageFormat() }, VK_FORMAT_D32_SFLOAT
+        );
+        deferredColorPipeline = cp;
+        deferredColorPipelineLayout = cl;
+    }
+    deferredPipelinesCreated = true;
+
     // Clear local shader module references; destruction handled by VulkanResourceManager
     teseShader.info.module = VK_NULL_HANDLE;
     tescShader.info.module = VK_NULL_HANDLE;
@@ -364,6 +400,30 @@ void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp
     indirectRenderer.drawPrepared(commandBuffer);
 }
 
+void SolidRenderer::drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet descSet) {
+    if (!appArg || deferredDepthPipeline == VK_NULL_HANDLE) return;
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipeline);
+    VkViewport viewport{0.0f, 0.0f, (float)appArg->getWidth(), (float)appArg->getHeight(), 0.0f, 1.0f};
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    VkRect2D scissor{{0, 0}, {(uint32_t)appArg->getWidth(), (uint32_t)appArg->getHeight()}};
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+    if (descSet != VK_NULL_HANDLE)
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);
+    indirectRenderer.drawPrepared(commandBuffer);
+}
+
+void SolidRenderer::drawColor(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet descSet) {
+    if (!appArg || deferredColorPipeline == VK_NULL_HANDLE) return;
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipeline);
+    VkViewport viewport{0.0f, 0.0f, (float)appArg->getWidth(), (float)appArg->getHeight(), 0.0f, 1.0f};
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    VkRect2D scissor{{0, 0}, {(uint32_t)appArg->getWidth(), (uint32_t)appArg->getHeight()}};
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+    if (descSet != VK_NULL_HANDLE)
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
+    indirectRenderer.drawPrepared(commandBuffer);
+}
+
 void SolidRenderer::cleanup(VulkanApp* app) {
     if (app == nullptr) return;
     // Ensure render targets (images, views, framebuffers) are released
@@ -372,6 +432,18 @@ void SolidRenderer::cleanup(VulkanApp* app) {
     graphicsPipelineLayout = VK_NULL_HANDLE;
     depthPrePassPipeline = VK_NULL_HANDLE;
     depthPrePassPipelineLayout = VK_NULL_HANDLE;
+    if (deferredPipelinesCreated) {
+        VkDevice dev = app->getDevice();
+        if (deferredDepthPipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(dev, deferredDepthPipeline, nullptr);
+        if (deferredDepthPipelineLayout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(dev, deferredDepthPipelineLayout, nullptr);
+        if (deferredColorPipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(dev, deferredColorPipeline, nullptr);
+        if (deferredColorPipelineLayout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(dev, deferredColorPipelineLayout, nullptr);
+        deferredPipelinesCreated = false;
+    }
 
     // Remove meshes
     for (auto &entry : solidChunks) {

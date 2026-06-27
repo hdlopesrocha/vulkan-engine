@@ -34,6 +34,7 @@ public:
 
     // Offscreen solid pass outputs
     VkImageView getColorView(uint32_t frameIndex) const { return solidColorImageViews[frameIndex]; }
+    VkImage getColorImage(uint32_t frameIndex) const { return solidColorImages[frameIndex]; }
     VkImageView getDepthView(uint32_t frameIndex) const { return solidDepthImageViews[frameIndex]; }
     VkImage getDepthImage(uint32_t frameIndex) const { return solidDepthImages[frameIndex]; }
 
@@ -52,6 +53,12 @@ public:
     }
     VkPipeline getGraphicsPipeline() const { return graphicsPipeline; }
     VkPipelineLayout getGraphicsPipelineLayout() const { return graphicsPipelineLayout; }
+
+    // Deferred depth test: draw only depth (no color)
+    void drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet);
+    // Deferred depth test: draw only color with LESS_OR_EQUAL compare, no depth write
+    void drawColor(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet);
+
 private:
     
     IndirectRenderer indirectRenderer;
@@ -59,6 +66,13 @@ private:
     VkPipelineLayout graphicsPipelineLayout = VK_NULL_HANDLE;
     VkPipeline depthPrePassPipeline = VK_NULL_HANDLE;
     VkPipelineLayout depthPrePassPipelineLayout = VK_NULL_HANDLE;
+
+    // Deferred depth test pipelines
+    VkPipeline deferredDepthPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout deferredDepthPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline deferredColorPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout deferredColorPipelineLayout = VK_NULL_HANDLE;
+    bool deferredPipelinesCreated = false;
 
     std::unordered_map<NodeID, Model3DVersion> solidChunks;
 

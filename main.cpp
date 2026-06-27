@@ -788,115 +788,210 @@ public:
                 }
             }
 
-            sceneRenderer->solidRenderer->beginPass(commandBuffer, frameIdx, colorClear, depthClear, this);
+        // ── Instance 1: Deferred depth pre-pass (no color attachment) ──
+        // All solid + vegetation + impostor geometry writes depth to the same buffer.
+        {
+            VkRenderingAttachmentInfo depthAtt{};
+            depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            depthAtt.imageView = sceneRenderer->solidRenderer->getDepthView(frameIdx);
+            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            depthAtt.clearValue = depthClear;
 
-        // Render sky first inside the solid pass so water composites on top of (sky + solid).
-        // skyRenderer->render() temporarily overwrites the UBO with sky-specific values,
-        // so we must re-upload the main UBO afterward.
-        if (sceneRenderer->skyRenderer) {
-            SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
-            sceneRenderer->skyRenderer->render(this, commandBuffer, getMainDescriptorSet(),
-                sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
+            VkRenderingInfo ri{};
+            ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            ri.renderArea.offset = {0, 0};
+            ri.renderArea.extent = {static_cast<uint32_t>(getWidth()), static_cast<uint32_t>(getHeight())};
+            ri.layerCount = 1;
+            ri.colorAttachmentCount = 0;
+            ri.pColorAttachments = nullptr;
+            ri.pDepthAttachment = &depthAtt;
 
-            // Restore the main UBO that sky rendering overwrote
-            void* data;
-            vkMapMemory(getDevice(), sceneRenderer->mainUniformBuffers[frameIdx].memory, 0, sizeof(UniformObject), 0, &data);
-            memcpy(data, &uboStatic, sizeof(UniformObject));
-            vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffers[frameIdx].memory);
-        }
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 5);
+            vkCmdBeginRendering(commandBuffer, &ri);
 
-        // Sky is now rendered inside the solid pass above, before solid geometry.
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
-        sceneRenderer->mainPass(this, commandBuffer, frameIdx, waterEnabled, getMainDescriptorSet(), sceneRenderer->mainUniformBuffers[frameIdx], true, settings.wireframeMode,
-            viewProj, uboStatic, true, false, true, 0, 0.0f, 0.0f);
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
+            // Solid geometry depth
+            sceneRenderer->solidRenderer->drawDepth(commandBuffer, this, getMainDescriptorSet());
 
-        // Always write vegetation timestamps at 8-9 so the query read never fails.
-        // The draw() function writes finer-grained 10-11 for the impostor split.
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 8);
-        if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
-            sceneRenderer->vegetationRenderer->draw(this, commandBuffer, getMainDescriptorSet(), viewProj, camera.getPosition(),
-                (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE) ? queryPools[frameIdx] : VK_NULL_HANDLE,
-                10, 12);
-        }
-        if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 9);
-
-        // Render debug cubes for expanded octree nodes, node instances, and vegetation density centers.
-        const bool showOctreeDebug = octreeExplorerWidget && octreeExplorerWidget->getShowDebugCubes();
-        const bool showVegetationDensityDebug = false;
-        if (showOctreeDebug || showVegetationDensityDebug) {
-            std::vector<DebugCubeRenderer::CubeWithColor> debugCubes;
-            // Add widget-expanded cubes when explorer is visible
-            if (showOctreeDebug && octreeExplorerWidget->isVisible()) {
-                const auto& widgetCubes = octreeExplorerWidget->getExpandedCubes();
-                debugCubes.reserve(widgetCubes.size());
-                for (const auto& wc : widgetCubes) {
-                    // Convert BoundingCube -> BoundingBox for renderer
-                    debugCubes.push_back({BoundingBox(wc.cube.getMin(), wc.cube.getMax()), wc.color});
-                }
+            // Vegetation + impostor depth
+            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 8);
+            if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
+                sceneRenderer->vegetationRenderer->drawDepth(this, commandBuffer, viewProj, camera.getPosition());
             }
+            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 9);
+
+            vkCmdEndRendering(commandBuffer);
+        }
+
+        // Note: no barrier needed between instances — vkCmdEndRendering makes depth
+        // writes available; Instance 2's LOAD_OP_LOAD waits on them.
+
+        // Transition color to COLOR_ATTACHMENT_OPTIMAL for Instance 2 below.
+        {
+            VkImage solidColorImg = sceneRenderer->solidRenderer->getColorImage(frameIdx);
+            if (solidColorImg != VK_NULL_HANDLE) {
+                VkImageMemoryBarrier2 barrier{};
+                barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                barrier.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                barrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                barrier.image = solidColorImg;
+                barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+                VkDependencyInfo dep{};
+                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep.imageMemoryBarrierCount = 1;
+                dep.pImageMemoryBarriers = &barrier;
+                vkCmdPipelineBarrier2(commandBuffer, &dep);
+                setImageLayoutTracked(solidColorImg, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
+            }
+        }
+
+        // ── Instance 2: Color pass (load depth from prepass, LESS_OR_EQUAL compare) ──
+        {
+            VkRenderingAttachmentInfo colorAtt{};
+            colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            colorAtt.imageView = sceneRenderer->solidRenderer->getColorView(frameIdx);
+            colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            colorAtt.clearValue = colorClear;
+
+            VkRenderingAttachmentInfo depthAtt{};
+            depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            depthAtt.imageView = sceneRenderer->solidRenderer->getDepthView(frameIdx);
+            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depthAtt.clearValue = depthClear;
+
+            VkRenderingInfo ri{};
+            ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            ri.renderArea.offset = {0, 0};
+            ri.renderArea.extent = {static_cast<uint32_t>(getWidth()), static_cast<uint32_t>(getHeight())};
+            ri.layerCount = 1;
+            ri.colorAttachmentCount = 1;
+            ri.pColorAttachments = &colorAtt;
+            ri.pDepthAttachment = &depthAtt;
+
+            vkCmdBeginRendering(commandBuffer, &ri);
+
+            // Sky first (background, no depth write)
+            if (sceneRenderer->skyRenderer) {
+                SkySettings::Mode skyMode = sceneRenderer->getSkySettings().mode;
+                sceneRenderer->skyRenderer->render(this, commandBuffer, getMainDescriptorSet(),
+                    sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
+                // Restore the main UBO that sky rendering overwrote
+                void* data;
+                vkMapMemory(getDevice(), sceneRenderer->mainUniformBuffers[frameIdx].memory, 0, sizeof(UniformObject), 0, &data);
+                memcpy(data, &uboStatic, sizeof(UniformObject));
+                vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffers[frameIdx].memory);
+            }
+            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 5);
+
+            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
+
+            // Solid geometry color (LESS_OR_EQUAL, no depth write)
+            sceneRenderer->solidRenderer->drawColor(commandBuffer, this, getMainDescriptorSet());
+
+            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
+
+            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 8);
+
+            // Vegetation + impostor color (LESS_OR_EQUAL, no depth write)
+            if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
+                sceneRenderer->vegetationRenderer->drawColor(this, commandBuffer, viewProj, camera.getPosition());
+            }
+
+            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 9);
+
+            // Debug renders on top
+            const bool showOctreeDebug = octreeExplorerWidget && octreeExplorerWidget->getShowDebugCubes();
             if (showOctreeDebug) {
-                // Append node cubes produced by change handlers (post-tessellation)
-                auto nodeCubes = sceneRenderer->getDebugNodeCubes();
-                debugCubes.reserve(debugCubes.size() + nodeCubes.size());
-                for (auto &nc : nodeCubes) debugCubes.push_back(nc);
-            }
-            if (showVegetationDensityDebug && sceneRenderer->vegetationRenderer) {
-                auto densityCubes = sceneRenderer->vegetationRenderer->getDensityDebugCubes(camera.getPosition());
-                debugCubes.reserve(debugCubes.size() + densityCubes.size());
-                for (auto &cube : densityCubes) debugCubes.push_back(cube);
-            }
-
-            if (!debugCubes.empty()) {
-                sceneRenderer->debugCubeRenderer->setCubes(debugCubes);
-                sceneRenderer->debugCubeRenderer->render(this, commandBuffer, getMainDescriptorSet());
-            }
-        }
-
-        // Render per-mesh bounding boxes (if enabled in settings)
-        if (settings.showBoundingBoxes && sceneRenderer && sceneRenderer->boundingBoxRenderer) {
-            std::vector<DebugCubeRenderer::CubeWithColor> boxes;
-            auto gatherBoxesFrom = [&](const IndirectRenderer &ir, const glm::vec3 &color){
-                auto infos = ir.getActiveMeshInfos();
-                boxes.reserve(boxes.size() + infos.size());
-                for (const auto &mi : infos) {
-                    // Object-space AABB (meshes are not transformed by per-mesh model matrices)
-                    glm::vec3 worldMin = glm::vec3(mi.boundsMin);
-                    glm::vec3 worldMax = glm::vec3(mi.boundsMax);
-                    boxes.push_back({BoundingBox(worldMin, worldMax), color});
+                std::vector<DebugCubeRenderer::CubeWithColor> debugCubes;
+                if (showOctreeDebug && octreeExplorerWidget->isVisible()) {
+                    const auto& widgetCubes = octreeExplorerWidget->getExpandedCubes();
+                    debugCubes.reserve(widgetCubes.size());
+                    for (const auto& wc : widgetCubes)
+                        debugCubes.push_back({BoundingBox(wc.cube.getMin(), wc.cube.getMax()), wc.color});
                 }
-            };
-
-            gatherBoxesFrom(sceneRenderer->solidRenderer->getIndirectRenderer(), glm::vec3(0.0f, 1.0f, 0.0f));
-            gatherBoxesFrom(sceneRenderer->waterRenderer->getIndirectRenderer(), glm::vec3(0.0f, 0.5f, 1.0f));
-        
-
-            if (!boxes.empty()) {
-                sceneRenderer->boundingBoxRenderer->setCubes(boxes);
-                sceneRenderer->boundingBoxRenderer->render(this, commandBuffer, getMainDescriptorSet());
+                if (showOctreeDebug) {
+                    auto nodeCubes = sceneRenderer->getDebugNodeCubes();
+                    debugCubes.reserve(debugCubes.size() + nodeCubes.size());
+                    for (auto &nc : nodeCubes) debugCubes.push_back(nc);
+                }
+                if (!debugCubes.empty()) {
+                    sceneRenderer->debugCubeRenderer->setCubes(debugCubes);
+                    sceneRenderer->debugCubeRenderer->render(this, commandBuffer, getMainDescriptorSet());
+                }
             }
-        }
 
-        // Render leaf-node SDF cube faces (if enabled in settings)
-        if (settings.showSDFDebug && sceneRenderer && sceneRenderer->debugSDFRenderer) {
-            auto sdfCubes = sceneRenderer->getDebugSDFCubes();
-            if (!sdfCubes.empty()) {
-                sceneRenderer->debugSDFRenderer->setCubes(sdfCubes);
-                sceneRenderer->debugSDFRenderer->render(this, commandBuffer, getMainDescriptorSet());
+            if (settings.showBoundingBoxes && sceneRenderer && sceneRenderer->boundingBoxRenderer) {
+                std::vector<DebugCubeRenderer::CubeWithColor> boxes;
+                auto gatherBoxesFrom = [&](const IndirectRenderer &ir, const glm::vec3 &color){
+                    auto infos = ir.getActiveMeshInfos();
+                    boxes.reserve(boxes.size() + infos.size());
+                    for (const auto &mi : infos)
+                        boxes.push_back({BoundingBox(glm::vec3(mi.boundsMin), glm::vec3(mi.boundsMax)), color});
+                };
+                gatherBoxesFrom(sceneRenderer->solidRenderer->getIndirectRenderer(), glm::vec3(0.0f, 1.0f, 0.0f));
+                gatherBoxesFrom(sceneRenderer->waterRenderer->getIndirectRenderer(), glm::vec3(0.0f, 0.5f, 1.0f));
+                if (!boxes.empty()) {
+                    sceneRenderer->boundingBoxRenderer->setCubes(boxes);
+                    sceneRenderer->boundingBoxRenderer->render(this, commandBuffer, getMainDescriptorSet());
+                }
             }
-        }
 
-            // If wireframe overlay mode is enabled, draw wireframe last so it appears on top
+            if (settings.showSDFDebug && sceneRenderer && sceneRenderer->debugSDFRenderer) {
+                auto sdfCubes = sceneRenderer->getDebugSDFCubes();
+                if (!sdfCubes.empty()) {
+                    sceneRenderer->debugSDFRenderer->setCubes(sdfCubes);
+                    sceneRenderer->debugSDFRenderer->render(this, commandBuffer, getMainDescriptorSet());
+                }
+            }
+
             if (settings.wireframeMode && sceneRenderer) {
                 sceneRenderer->drawSolidWireframeOverlay(this, commandBuffer, frameIdx, getMainDescriptorSet(), settings.wireframeMode);
             }
-            sceneRenderer->solidRenderer->endPass(commandBuffer, frameIdx, this);
+
+            vkCmdEndRendering(commandBuffer);
+        }
+
+        // Transition offscreen targets to SHADER_READ_ONLY for subsequent sampling (water, compositing)
+        {
+            VkImage solidColorImg = sceneRenderer->solidRenderer->getColorImage(frameIdx);
+            VkImage solidDepthImg = sceneRenderer->solidRenderer->getDepthImage(frameIdx);
+            if (solidColorImg != VK_NULL_HANDLE) {
+                VkImageMemoryBarrier colorBarrier{};
+                colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                colorBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                colorBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                colorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                colorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                colorBarrier.image = solidColorImg;
+                colorBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+                colorBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                colorBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                vkCmdPipelineBarrier(commandBuffer,
+                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0, 0, nullptr, 0, nullptr, 1, &colorBarrier);
+                setImageLayoutTracked(solidColorImg, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+            }
+            if (solidDepthImg != VK_NULL_HANDLE) {
+                recordTransitionImageLayoutLayer(commandBuffer, solidDepthImg, VK_FORMAT_D32_SFLOAT,
+                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            }
+        }
 
         // Update the water scene descriptor set BEFORE launching async tasks.
         // The backFace async task binds waterDepthDescriptorSets[frameIdx] in its submitted

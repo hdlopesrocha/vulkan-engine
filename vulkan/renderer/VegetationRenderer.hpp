@@ -100,6 +100,10 @@ public:
               VkQueryPool queryPool = VK_NULL_HANDLE,
               uint32_t queryRealIndex = 0,
               uint32_t queryImpostorIndex = 0);
+    // Deferred depth test: draw vegetation + impostor depth only (no color)
+    void drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos);
+    // Deferred depth test: draw vegetation + impostor color only (LESS_OR_EQUAL, no depth write)
+    void drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos);
     void recordReadBarriers(VkCommandBuffer& commandBuffer);
     
     // Draw vegetation to shadow map using light-space matrix in the bound UBO.
@@ -250,4 +254,6 @@ private:
 
     void initCulling(VulkanApp* app);
     void destroyCulling();
+    void issueDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, const WindPushConstants& pc);
+    WindPushConstants buildWindPushConstants(const glm::vec3& cameraPos) const;
 };

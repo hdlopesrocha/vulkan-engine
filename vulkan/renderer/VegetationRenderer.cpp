@@ -633,7 +633,7 @@ void VegetationRenderer::init(VulkanApp* app) {
         VK_CULL_MODE_NONE,
         false, // depthWrite — shading pass doesn't write depth (handled by prepass)
         true,  // colorWrite
-        VK_COMPARE_OP_EQUAL, // only shade fragments that passed the depth prepass
+        VK_COMPARE_OP_LESS_OR_EQUAL, // shade fragments at depth from prepass
         VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
         false,
         {},
@@ -1084,7 +1084,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
     impostorDepthDescSet        = VK_NULL_HANDLE;
 
     bool hasImpostorDepth = (depthArray60 != VK_NULL_HANDLE && captureInvVPBuf != VK_NULL_HANDLE);
-    VkCompareOp impCompareOp = hasImpostorDepth ? VK_COMPARE_OP_EQUAL : VK_COMPARE_OP_LESS;
+    VkCompareOp impCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 
     // ── Set 1: impostor color pipeline (albedo, normal, depth + captureInvVP) ──
     // Bindings 2-3 provide depth data so the fragment shader can write gl_FragDepth
@@ -1407,48 +1407,16 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
                               uint32_t queryRealIndex,
                               uint32_t queryImpostorIndex) {
     (void)vegetationDescriptorSet;
-    if (!app) {
-        std::cerr << "[VEGETATION DRAW ERROR] app is null!" << std::endl;
-        return;
-    }
+    drawDepth(app, commandBuffer, viewProj, cameraPos);
+    drawColor(app, commandBuffer, viewProj, cameraPos);
+}
 
-    // Early-out when there are no chunks to draw.  Pending chunks are
-    // drained in MyApp::update() so chunkBuffers is already populated
-    // when preRenderPass records read barriers before beginPass.
-    if (chunkBuffers.empty()) return;
-
-    if (billboardAlbedoView  == VK_NULL_HANDLE ||
-        billboardNormalView  == VK_NULL_HANDLE ||
-        billboardOpacityView == VK_NULL_HANDLE ||
-        billboardArraySampler == VK_NULL_HANDLE) {
-        std::cerr << "[VEGETATION DRAW ERROR] billboard array textures not ready, skipping draw." << std::endl;
-        return;
-    }
-
-    // Ensure vegetation descriptor set is present and up-to-date
-    if (!ensureVegDescriptorSet(app)) {
-        std::cerr << "[VEGETATION DRAW ERROR] vegDescriptorSet not ready, skipping draw." << std::endl;
-        return;
-    }
-
-    // Bind the persistent, already-updated global descriptor set from VulkanApp as set 0
-    VkDescriptorSet globalSet = app->getMainDescriptorSet();
-    if (globalSet == VK_NULL_HANDLE) {
-        std::cerr << "[VEGETATION DRAW ERROR] globalSet (main descriptor set) is VK_NULL_HANDLE!" << std::endl;
-        return;
-    }
-    if (vegDescriptorSet == VK_NULL_HANDLE) {
-        std::cerr << "[VEGETATION DRAW ERROR] vegDescriptorSet is VK_NULL_HANDLE, skipping draw." << std::endl;
-        return;
-    }
-    VkDescriptorSet sets[2] = { globalSet, vegDescriptorSet };
-
-    // Build push constants (same values for both depth prepass and shading pass)
+VegetationRenderer::WindPushConstants VegetationRenderer::buildWindPushConstants(const glm::vec3& cameraPos) const {
     WindPushConstants pc{};
     pc.billboardScale     = billboardScale;
     pc.windEnabled        = windSettings.enabled ? 1.0f : 0.0f;
     pc.windTime           = windTimeSeconds;
-    pc.impostorDistance   = impostorDistance; // 0 = impostor disabled (near geometry only)
+    pc.impostorDistance   = impostorDistance;
 
     glm::vec2 windDir = windSettings.direction;
     const float len2 = windDir.x * windDir.x + windDir.y * windDir.y;
@@ -1456,143 +1424,112 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         const float invLen = 1.0f / std::sqrt(len2);
         windDir *= invLen;
     }
-
     pc.windDirAndStrength = glm::vec4(windDir.x, 0.0f, windDir.y, std::max(0.0f, windSettings.strength));
     pc.windNoise = glm::vec4(
         std::max(0.00001f, windSettings.baseFrequency),
         std::max(0.0f, windSettings.speed),
         std::max(0.00001f, windSettings.gustFrequency),
-        std::max(0.0f, windSettings.gustStrength)
-    );
+        std::max(0.0f, windSettings.gustStrength));
     pc.windShape = glm::vec4(
         std::max(0.0f, windSettings.skewAmount),
         std::clamp(windSettings.trunkStiffness, 0.0f, 1.0f),
         std::max(0.001f, windSettings.noiseScale),
-        std::max(0.0f, windSettings.verticalFlutter)
-    );
+        std::max(0.0f, windSettings.verticalFlutter));
     pc.windTurbulence = glm::vec4(std::max(0.0f, windSettings.turbulence), 0.0f, 0.0f, 0.0f);
     const float nearDistance = std::max(0.0f, distanceDensitySettings.fullDensityDistance);
     const float farDistance = std::max(nearDistance + 1.0f, distanceDensitySettings.minDensityDistance);
     const float minFactor = std::clamp(distanceDensitySettings.minDensityFactor, 0.0f, 1.0f);
     const float safeMinFactor = std::max(minFactor, 0.0001f);
     const float falloff = (distanceDensitySettings.enabled && minFactor < 1.0f)
-        ? (-std::log(safeMinFactor) / (farDistance - nearDistance))
-        : 0.0f;
+        ? (-std::log(safeMinFactor) / (farDistance - nearDistance)) : 0.0f;
     pc.densityParams = glm::vec4(distanceDensitySettings.enabled ? 1.0f : 0.0f, nearDistance, farDistance, minFactor);
     pc.cameraPosAndFalloff = glm::vec4(cameraPos, falloff);
+    return pc;
+}
 
-    // ── Helper lambda to issue draw calls ──
-    auto issueDraws = [&](VkCommandBuffer cmd, VkPipelineLayout activeLayout) {
-        vkCmdPushConstants(cmd, activeLayout,
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            0, sizeof(WindPushConstants), &pc);
-
-        if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-            VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
+void VegetationRenderer::issueDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, const WindPushConstants& pc) {
+    vkCmdPushConstants(cmd, activeLayout,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        0, sizeof(WindPushConstants), &pc);
+    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+        VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
+        VkDeviceSize offsets[2] = { 0, 0 };
+        vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
+        vkCmdDrawIndirectCount(cmd, compactedCmdBuffer.buffer, 0,
+            visibleCountBuffer.buffer, 0, vegNumChunks, sizeof(VkDrawIndirectCommand));
+    } else {
+        for (auto& [chunkId, buf] : chunkBuffers) {
+            (void)chunkId;
+            if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
+            if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
+            VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
             VkDeviceSize offsets[2] = { 0, 0 };
             vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
-            vkCmdDrawIndirectCount(cmd, compactedCmdBuffer.buffer, 0,
-                visibleCountBuffer.buffer, 0, vegNumChunks, sizeof(VkDrawIndirectCommand));
-        } else {
-            for (auto& [chunkId, buf] : chunkBuffers) {
-                (void)chunkId;
-                if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
-                if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
-
-                VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
-                VkDeviceSize offsets[2] = { 0, 0 };
-                vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
-                vkCmdDrawIndirect(cmd, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
-            }
+            vkCmdDrawIndirect(cmd, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
         }
-    };
+    }
+}
 
-    // ── Real billboard passes (depth prepass + shading) ────────────────────────
-    if (queryPool != VK_NULL_HANDLE)
-        vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, queryRealIndex);
-    // Writes the closest depth for each pixel so the shading pass (EQUAL compare)
-    // only shades the nearest fragments, saving overdraw from overlapping billboards.
+void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
+    (void)viewProj;
+    if (!app) return;
+    if (chunkBuffers.empty()) return;
+    if (billboardAlbedoView == VK_NULL_HANDLE || billboardNormalView == VK_NULL_HANDLE ||
+        billboardOpacityView == VK_NULL_HANDLE || billboardArraySampler == VK_NULL_HANDLE) return;
+    if (!ensureVegDescriptorSet(app)) return;
+    VkDescriptorSet globalSet = app->getMainDescriptorSet();
+    if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
+    WindPushConstants pc = buildWindPushConstants(cameraPos);
+    VkDescriptorSet sets[2] = { globalSet, vegDescriptorSet };
+
+    // Depth prepass
     if (vegetationDepthPipeline != VK_NULL_HANDLE) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationDepthPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             vegetationDepthPipelineLayout, 0, 2, sets, 0, nullptr);
-        issueDraws(commandBuffer, vegetationDepthPipelineLayout);
+        issueDraws(commandBuffer, vegetationDepthPipelineLayout, pc);
     }
 
-    // ── Impostor depth prepass ─────────────────────────────────────────────────
-    // Writes per-pixel depth from the captured impostor depth array so the depth
-    // buffer contains accurate far-instance geometry. The impostor color pass uses
-    // EQUAL compare so it matches the depth written by this prepass.
+    // Impostor depth prepass
     if (impostorDepthPipeline != VK_NULL_HANDLE &&
-        impostorDepthDescSet  != VK_NULL_HANDLE &&
-        impostorDistance > 0.0f) {
-
+        impostorDepthDescSet != VK_NULL_HANDLE && impostorDistance > 0.0f) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorDepthPipeline);
-
         VkDescriptorSet depthSets[2] = { globalSet, impostorDepthDescSet };
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     impostorDepthPipelineLayout, 0, 2, depthSets, 0, nullptr);
-
-        // Override depth bias to 0 for the main pass (shadow pass uses non-zero bias)
         vkCmdSetDepthBias(commandBuffer, 0.0f, 0.0f, 0.0f);
-
-        issueDraws(commandBuffer, impostorDepthPipelineLayout);
+        issueDraws(commandBuffer, impostorDepthPipelineLayout, pc);
     }
+}
 
-    // ── Shading pass ───────────────────────────────────────────────────────────
-    // Uses EQUAL depth compare: only the closest fragments (from prepass) are shaded.
+void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
+    (void)viewProj;
+    if (!app) return;
+    if (chunkBuffers.empty()) return;
+    if (billboardAlbedoView == VK_NULL_HANDLE || billboardNormalView == VK_NULL_HANDLE ||
+        billboardOpacityView == VK_NULL_HANDLE || billboardArraySampler == VK_NULL_HANDLE) return;
+    if (!ensureVegDescriptorSet(app)) return;
+    VkDescriptorSet globalSet = app->getMainDescriptorSet();
+    if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
+    WindPushConstants pc = buildWindPushConstants(cameraPos);
+    VkDescriptorSet sets[2] = { globalSet, vegDescriptorSet };
+
+    // Shading pass
     if (vegetationPipeline != VK_NULL_HANDLE) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             pipelineLayout, 0, 2, sets, 0, nullptr);
-        issueDraws(commandBuffer, pipelineLayout);
+        issueDraws(commandBuffer, pipelineLayout, pc);
     }
-    if (queryPool != VK_NULL_HANDLE)
-        vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, queryRealIndex + 1);
-
-    // ── Impostor passes (depth prepass + color) ──────────────────────────────
-    if (queryPool != VK_NULL_HANDLE)
-        vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, queryImpostorIndex);
-    // ── Impostor color pass ──────────────────────────────────────────────────
-    // Draw camera-facing impostor quads for instances beyond impostorDistance.
-    // The impostor geom shader skips instances that are too close
-    // (they were already handled by the vegetation passes above).
+    // Impostor color pass
     if (impostorPipeline != VK_NULL_HANDLE &&
-        impostorDescSet  != VK_NULL_HANDLE &&
-        impostorDistance > 0.0f) {
-
+        impostorDescSet != VK_NULL_HANDLE && impostorDistance > 0.0f) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorPipeline);
-
         VkDescriptorSet impSets[2] = { globalSet, impostorDescSet };
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     impostorPipelineLayout, 0, 2, impSets, 0, nullptr);
-
-        vkCmdPushConstants(commandBuffer, impostorPipelineLayout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT
-                           | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(WindPushConstants), &pc);
-
-        if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-            VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
-            VkDeviceSize offsets[2] = { 0, 0 };
-            vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-            vkCmdDrawIndirectCount(commandBuffer, compactedCmdBuffer.buffer, 0,
-                visibleCountBuffer.buffer, 0, vegNumChunks, sizeof(VkDrawIndirectCommand));
-        } else {
-            for (auto& [chunkId, buf] : chunkBuffers) {
-                (void)chunkId;
-                if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
-                if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
-
-                VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
-                VkDeviceSize offsets[2] = { 0, 0 };
-                vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-                vkCmdDrawIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
-            }
-        }
+        issueDraws(commandBuffer, impostorPipelineLayout, pc);
     }
-    if (queryPool != VK_NULL_HANDLE)
-        vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, queryImpostorIndex + 1);
 }
 
 void VegetationRenderer::generateChunkInstances(NodeID chunkId,
