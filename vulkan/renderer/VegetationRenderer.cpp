@@ -1401,7 +1401,11 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         std::cerr << "[VegetationRenderer] Impostor pipeline created: " << (void*)impostorPipeline << "\n";
 }
 
-void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
+void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet,
+                              const glm::mat4& viewProj, const glm::vec3& cameraPos,
+                              VkQueryPool queryPool,
+                              uint32_t queryRealIndex,
+                              uint32_t queryImpostorIndex) {
     (void)vegetationDescriptorSet;
     if (!app) {
         std::cerr << "[VEGETATION DRAW ERROR] app is null!" << std::endl;
@@ -1503,7 +1507,9 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
         }
     };
 
-    // ── Depth prepass ──────────────────────────────────────────────────────────
+    // ── Real billboard passes (depth prepass + shading) ────────────────────────
+    if (queryPool != VK_NULL_HANDLE)
+        vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, queryRealIndex);
     // Writes the closest depth for each pixel so the shading pass (EQUAL compare)
     // only shades the nearest fragments, saving overdraw from overlapping billboards.
     if (vegetationDepthPipeline != VK_NULL_HANDLE) {
@@ -1541,7 +1547,12 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
             pipelineLayout, 0, 2, sets, 0, nullptr);
         issueDraws(commandBuffer, pipelineLayout);
     }
+    if (queryPool != VK_NULL_HANDLE)
+        vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, queryRealIndex + 1);
 
+    // ── Impostor passes (depth prepass + color) ──────────────────────────────
+    if (queryPool != VK_NULL_HANDLE)
+        vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, queryImpostorIndex);
     // ── Impostor color pass ──────────────────────────────────────────────────
     // Draw camera-facing impostor quads for instances beyond impostorDistance.
     // The impostor geom shader skips instances that are too close
@@ -1580,6 +1591,8 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
             }
         }
     }
+    if (queryPool != VK_NULL_HANDLE)
+        vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, queryImpostorIndex + 1);
 }
 
 void VegetationRenderer::generateChunkInstances(NodeID chunkId,

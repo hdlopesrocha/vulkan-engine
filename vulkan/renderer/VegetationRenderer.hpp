@@ -92,7 +92,14 @@ public:
     void clearAllInstances();
 
     // Draw all visible vegetation chunks with GPU frustum culling.
-    void draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos);
+    // If queryPool != VK_NULL_HANDLE, writes GPU timestamps:
+    //   queryRealIndex .. queryRealIndex+1  = real billboard passes (depth prepass + shading)
+    //   queryImpostorIndex .. queryImpostorIndex+1 = impostor passes (impostor depth + color)
+    void draw(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet vegetationDescriptorSet,
+              const glm::mat4& viewProj, const glm::vec3& cameraPos,
+              VkQueryPool queryPool = VK_NULL_HANDLE,
+              uint32_t queryRealIndex = 0,
+              uint32_t queryImpostorIndex = 0);
     void recordReadBarriers(VkCommandBuffer& commandBuffer);
     
     // Draw vegetation to shadow map using light-space matrix in the bound UBO.
