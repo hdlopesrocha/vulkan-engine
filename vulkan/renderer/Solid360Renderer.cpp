@@ -368,12 +368,70 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             ind.prepareCullWithDescriptor(cmd, faceVP, computeDs, compactIndirectBuffer, visibleCountBuffer);
         }
 
-        // ── Single rendering instance: depth pre-pass then color pass ──
+        // ── Instance 1: Depth pre-pass (no color attachment, lightweight shader) ──
+        {
+            VkClearValue depthClear{};
+            depthClear.depthStencil = {1.0f, 0};
+
+            VkRenderingAttachmentInfo depthAtt{};
+            depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            depthAtt.imageView = cube360DepthViews[face];
+            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            depthAtt.clearValue = depthClear;
+
+            VkRenderingInfo renderingInfo{};
+            renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            renderingInfo.renderArea.offset = {0, 0};
+            renderingInfo.renderArea.extent = {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE};
+            renderingInfo.layerCount = 1;
+            renderingInfo.colorAttachmentCount = 0;
+            renderingInfo.pColorAttachments = nullptr;
+            renderingInfo.pDepthAttachment = &depthAtt;
+
+            vkCmdBeginRendering(cmd, &renderingInfo);
+
+            VkViewport viewport{0.0f, 0.0f, (float)CUBE360_FACE_SIZE, (float)CUBE360_FACE_SIZE, 0.0f, 1.0f};
+            vkCmdSetViewport(cmd, 0, 1, &viewport);
+            VkRect2D scissor{{0, 0}, {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE}};
+            vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+            if (solidRenderer && depthOnlyPipeline != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipelineLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
+                if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
+                    solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
+                } else {
+                    solidRenderer->getIndirectRenderer().drawPrepared(cmd, 0);
+                }
+            }
+
+            vkCmdEndRendering(cmd);
+        }
+
+        // Barrier: make depth writes from instance 1 visible to instance 2
+        {
+            VkImageMemoryBarrier depthBarrier{};
+            depthBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            depthBarrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            depthBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            depthBarrier.image = cube360DepthImage;
+            depthBarrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, face, 1 };
+            depthBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            depthBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            vkCmdPipelineBarrier(cmd,
+                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &depthBarrier);
+        }
+
+        // ── Instance 2: Color pass with depth load ──
         {
             VkClearValue colorClear{};
             colorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-            VkClearValue depthClear{};
-            depthClear.depthStencil = {1.0f, 0};
 
             VkRenderingAttachmentInfo colorAtt{};
             colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -387,9 +445,9 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             depthAtt.imageView = cube360DepthViews[face];
             depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            depthAtt.clearValue = depthClear;
+            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depthAtt.clearValue = {1.0f, 0};
 
             VkRenderingInfo renderingInfo{};
             renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -407,18 +465,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             VkRect2D scissor{{0, 0}, {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE}};
             vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-            // Depth pre-pass: lightweight shader, writes only depth
-            if (solidRenderer && depthOnlyPipeline != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipeline);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipelineLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
-                if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
-                    solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
-                } else {
-                    solidRenderer->getIndirectRenderer().drawPrepared(cmd, 0);
-                }
-            }
-
-            // Color pass: full shader, LESS_OR_EQUAL compare with no depth write
+            // Solid geometry: LESS_OR_EQUAL compare, no depth write
             // (only shades fragments at the depth written by the prepass)
             if (solidRenderer && equalComparePipeline != VK_NULL_HANDLE) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, equalComparePipeline);
@@ -430,7 +477,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                 }
             }
 
-            // Sky on top with LESS compare (fills background where no solid geometry exists)
+            // Sky: LESS compare, no depth write (fills background where no solid geometry exists)
             if (skyRenderer) {
                 VkPipeline skyPipe = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyGridPipeline() : skyRenderer->getSkyPipeline();
                 VkPipelineLayout skyLayout = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyGridPipelineLayout() : skyRenderer->getSkyPipelineLayout();
