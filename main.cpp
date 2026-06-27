@@ -788,6 +788,31 @@ public:
                 }
             }
 
+        // Transition depth to DEPTH_STENCIL_ATTACHMENT_OPTIMAL for Instance 1 below.
+        // (The previous frame left it in SHADER_READ_ONLY after the water pass.)
+        {
+            VkImage solidDepthImg = sceneRenderer->solidRenderer->getDepthImage(frameIdx);
+            if (solidDepthImg != VK_NULL_HANDLE) {
+                VkImageMemoryBarrier2 barrier{};
+                barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                barrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+                barrier.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
+                barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                                      | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+                barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                barrier.image = solidDepthImg;
+                barrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+                VkDependencyInfo dep{};
+                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep.imageMemoryBarrierCount = 1;
+                dep.pImageMemoryBarriers = &barrier;
+                vkCmdPipelineBarrier2(commandBuffer, &dep);
+                setImageLayoutTracked(solidDepthImg, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+            }
+        }
+
         // ── Instance 1: Deferred depth pre-pass (no color attachment) ──
         // All solid + vegetation + impostor geometry writes depth to the same buffer.
         {
@@ -966,52 +991,36 @@ public:
             vkCmdEndRendering(commandBuffer);
         }
 
-        // Transition offscreen targets to SHADER_READ_ONLY for subsequent sampling (water, compositing)
-        // Use vkCmdPipelineBarrier2 to properly handle image-layout-transition ordering
-        // after vkCmdEndRendering's implicit layout transitions.
+        // Transition color to SHADER_READ_ONLY for water pass compositing.
+        // Depth stays in DEPTH_STENCIL_ATTACHMENT_OPTIMAL — the water pass's
+        // initializeGeomDepthFromSceneDepth handles scene depth layout itself
+        // (transitions to TRANSFER_SRC, copies, then transitions to SHADER_READ_ONLY).
         {
             VkImage solidColorImg = sceneRenderer->solidRenderer->getColorImage(frameIdx);
-            VkImage solidDepthImg = sceneRenderer->solidRenderer->getDepthImage(frameIdx);
-            uint32_t barrierCount = 0;
-            VkImageMemoryBarrier2 barriers[2]{};
-
             if (solidColorImg != VK_NULL_HANDLE) {
-                barriers[barrierCount].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                barriers[barrierCount].srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-                barriers[barrierCount].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-                barriers[barrierCount].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-                barriers[barrierCount].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-                barriers[barrierCount].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                barriers[barrierCount].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                barriers[barrierCount].image = solidColorImg;
-                barriers[barrierCount].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-                ++barrierCount;
-            }
-            if (solidDepthImg != VK_NULL_HANDLE) {
-                barriers[barrierCount].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                barriers[barrierCount].srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-                barriers[barrierCount].srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                barriers[barrierCount].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-                barriers[barrierCount].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-                barriers[barrierCount].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                barriers[barrierCount].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                barriers[barrierCount].image = solidDepthImg;
-                barriers[barrierCount].subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
-                ++barrierCount;
-            }
-
-            if (barrierCount > 0) {
+                VkImageMemoryBarrier2 barrier{};
+                barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                barrier.image = solidColorImg;
+                barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
                 VkDependencyInfo dep{};
                 dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                dep.imageMemoryBarrierCount = barrierCount;
-                dep.pImageMemoryBarriers = barriers;
+                dep.imageMemoryBarrierCount = 1;
+                dep.pImageMemoryBarriers = &barrier;
                 vkCmdPipelineBarrier2(commandBuffer, &dep);
-            }
-
-            if (solidColorImg != VK_NULL_HANDLE)
                 setImageLayoutTracked(solidColorImg, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+            }
+            // Depth: stays in DEPTH_STENCIL_ATTACHMENT_OPTIMAL after endRendering.
+            // Update tracked layout so recordTransitionImageLayoutLayer in the water
+            // pass reads the correct state.
+            VkImage solidDepthImg = sceneRenderer->solidRenderer->getDepthImage(frameIdx);
             if (solidDepthImg != VK_NULL_HANDLE)
-                setImageLayoutTracked(solidDepthImg, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+                setImageLayoutTracked(solidDepthImg, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
         }
 
         // Update the water scene descriptor set BEFORE launching async tasks.
