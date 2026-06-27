@@ -967,30 +967,51 @@ public:
         }
 
         // Transition offscreen targets to SHADER_READ_ONLY for subsequent sampling (water, compositing)
+        // Use vkCmdPipelineBarrier2 to properly handle image-layout-transition ordering
+        // after vkCmdEndRendering's implicit layout transitions.
         {
             VkImage solidColorImg = sceneRenderer->solidRenderer->getColorImage(frameIdx);
             VkImage solidDepthImg = sceneRenderer->solidRenderer->getDepthImage(frameIdx);
+            uint32_t barrierCount = 0;
+            VkImageMemoryBarrier2 barriers[2]{};
+
             if (solidColorImg != VK_NULL_HANDLE) {
-                VkImageMemoryBarrier colorBarrier{};
-                colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                colorBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                colorBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                colorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                colorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                colorBarrier.image = solidColorImg;
-                colorBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-                colorBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                colorBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                vkCmdPipelineBarrier(commandBuffer,
-                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                    0, 0, nullptr, 0, nullptr, 1, &colorBarrier);
-                setImageLayoutTracked(solidColorImg, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+                barriers[barrierCount].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                barriers[barrierCount].srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                barriers[barrierCount].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                barriers[barrierCount].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                barriers[barrierCount].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                barriers[barrierCount].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                barriers[barrierCount].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                barriers[barrierCount].image = solidColorImg;
+                barriers[barrierCount].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+                ++barrierCount;
             }
             if (solidDepthImg != VK_NULL_HANDLE) {
-                recordTransitionImageLayoutLayer(commandBuffer, solidDepthImg, VK_FORMAT_D32_SFLOAT,
-                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+                barriers[barrierCount].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                barriers[barrierCount].srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+                barriers[barrierCount].srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                barriers[barrierCount].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                barriers[barrierCount].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                barriers[barrierCount].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                barriers[barrierCount].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                barriers[barrierCount].image = solidDepthImg;
+                barriers[barrierCount].subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+                ++barrierCount;
             }
+
+            if (barrierCount > 0) {
+                VkDependencyInfo dep{};
+                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep.imageMemoryBarrierCount = barrierCount;
+                dep.pImageMemoryBarriers = barriers;
+                vkCmdPipelineBarrier2(commandBuffer, &dep);
+            }
+
+            if (solidColorImg != VK_NULL_HANDLE)
+                setImageLayoutTracked(solidColorImg, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+            if (solidDepthImg != VK_NULL_HANDLE)
+                setImageLayoutTracked(solidDepthImg, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
         }
 
         // Update the water scene descriptor set BEFORE launching async tasks.
