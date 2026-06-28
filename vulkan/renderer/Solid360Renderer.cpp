@@ -16,18 +16,22 @@ void Solid360Renderer::cleanup(VulkanApp* app) {
     if (app) {
         VkDevice dev = app->getDevice();
         if (depthOnlyPipeline != VK_NULL_HANDLE) {
+            app->resources.removePipeline(depthOnlyPipeline);
             vkDestroyPipeline(dev, depthOnlyPipeline, nullptr);
             depthOnlyPipeline = VK_NULL_HANDLE;
         }
         if (depthOnlyPipelineLayout != VK_NULL_HANDLE) {
+            app->resources.removePipelineLayout(depthOnlyPipelineLayout);
             vkDestroyPipelineLayout(dev, depthOnlyPipelineLayout, nullptr);
             depthOnlyPipelineLayout = VK_NULL_HANDLE;
         }
         if (equalComparePipeline != VK_NULL_HANDLE) {
+            app->resources.removePipeline(equalComparePipeline);
             vkDestroyPipeline(dev, equalComparePipeline, nullptr);
             equalComparePipeline = VK_NULL_HANDLE;
         }
         if (equalComparePipelineLayout != VK_NULL_HANDLE) {
+            app->resources.removePipelineLayout(equalComparePipelineLayout);
             vkDestroyPipelineLayout(dev, equalComparePipelineLayout, nullptr);
             equalComparePipelineLayout = VK_NULL_HANDLE;
         }

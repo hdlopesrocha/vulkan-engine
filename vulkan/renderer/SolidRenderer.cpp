@@ -434,14 +434,22 @@ void SolidRenderer::cleanup(VulkanApp* app) {
     depthPrePassPipelineLayout = VK_NULL_HANDLE;
     if (deferredPipelinesCreated) {
         VkDevice dev = app->getDevice();
-        if (deferredDepthPipeline != VK_NULL_HANDLE)
+        if (deferredDepthPipeline != VK_NULL_HANDLE) {
+            app->resources.removePipeline(deferredDepthPipeline);
             vkDestroyPipeline(dev, deferredDepthPipeline, nullptr);
-        if (deferredDepthPipelineLayout != VK_NULL_HANDLE)
+        }
+        if (deferredDepthPipelineLayout != VK_NULL_HANDLE) {
+            app->resources.removePipelineLayout(deferredDepthPipelineLayout);
             vkDestroyPipelineLayout(dev, deferredDepthPipelineLayout, nullptr);
-        if (deferredColorPipeline != VK_NULL_HANDLE)
+        }
+        if (deferredColorPipeline != VK_NULL_HANDLE) {
+            app->resources.removePipeline(deferredColorPipeline);
             vkDestroyPipeline(dev, deferredColorPipeline, nullptr);
-        if (deferredColorPipelineLayout != VK_NULL_HANDLE)
+        }
+        if (deferredColorPipelineLayout != VK_NULL_HANDLE) {
+            app->resources.removePipelineLayout(deferredColorPipelineLayout);
             vkDestroyPipelineLayout(dev, deferredColorPipelineLayout, nullptr);
+        }
         deferredPipelinesCreated = false;
     }
 

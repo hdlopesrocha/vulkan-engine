@@ -652,13 +652,13 @@ public:
                     profileSolidDraw     = msDiff(tsA[7], tsA[6]);
                     profileVegetationReal = msDiff(tsA[9], tsA[8]);
                 }
-                // Group B: indices 10-13 (written inside VegetationRenderer::draw, optional)
-                //   10-11 = real billboard passes, 12-13 = impostor passes
+                // Group B: indices 10-13 (written by main command buffer for color pass)
+                //   10-11 = vegetation/impostor color pass, 12-13 = reserved
                 uint64_t tsB[4] = {};
                 if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 10, 4,
                         sizeof(tsB), tsB, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS
                         && timestampPeriod > 0.0f) {
-                    profileVegetationImpostor = msDiff(tsB[3], tsB[2]);
+                    profileVegetationImpostor = msDiff(tsB[1], tsB[0]);
                 }
                 // Group C: indices 14-17 (always written by main command buffer)
                 uint64_t tsC[4] = {};
@@ -876,29 +876,6 @@ public:
             }
         }
 
-        // Transition color to COLOR_ATTACHMENT_OPTIMAL for Instance 2 below.
-        {
-            VkImage solidColorImg = sceneRenderer->solidRenderer->getColorImage(frameIdx);
-            if (solidColorImg != VK_NULL_HANDLE) {
-                VkImageMemoryBarrier2 barrier{};
-                barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                barrier.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-                barrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-                barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-                barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                barrier.image = solidColorImg;
-                barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-                VkDependencyInfo dep{};
-                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                dep.imageMemoryBarrierCount = 1;
-                dep.pImageMemoryBarriers = &barrier;
-                vkCmdPipelineBarrier2(commandBuffer, &dep);
-                setImageLayoutTracked(solidColorImg, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
-            }
-        }
-
         // ── Instance 2: Color pass (load depth from prepass, LESS_OR_EQUAL compare) ──
         {
             VkRenderingAttachmentInfo colorAtt{};
@@ -952,7 +929,7 @@ public:
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 8);
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 10);
 
             // Vegetation + impostor color (LESS_OR_EQUAL, no depth write)
             if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
@@ -960,7 +937,7 @@ public:
             }
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
-                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 9);
+                vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 11);
 
             // Debug renders on top
             const bool showOctreeDebug = octreeExplorerWidget && octreeExplorerWidget->getShowDebugCubes();

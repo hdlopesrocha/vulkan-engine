@@ -11,7 +11,7 @@ public:
     // Toggle rendering of the main solid scene (terrain/meshes)
     bool renderSolid = true;
     bool waterEnabled = true;
-    bool vegetationEnabled = false;
+    bool vegetationEnabled = true;
     bool wireframeMode = false;
     bool waterWireframeMode = false;
     bool normalMappingEnabled = true;
@@ -53,5 +53,5 @@ public:
 
     // Impostor rendering: vegetation beyond this distance is drawn as a pre-captured
     // camera-facing quad.  Set to 0 to disable (default: disabled).
-    float impostorDistance = 100.0f;
+    float impostorDistance = 512.0f;
 };
