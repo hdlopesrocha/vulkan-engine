@@ -126,17 +126,33 @@ void main() {
     }
 
     // Sample roughness map (R channel)
-    float r0 = texture(roughnessArray, vec3(uv, float(fragTexIndices.x))).r;
-    float r1 = texture(roughnessArray, vec3(uv, float(fragTexIndices.y))).r;
-    float r2 = texture(roughnessArray, vec3(uv, float(fragTexIndices.z))).r;
-    float roughnessValue = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
+    float roughnessValue;
+    if (usedTriplanar) {
+        float r0 = computeTriplanarRoughness(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN);
+        float r1 = computeTriplanarRoughness(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN);
+        float r2 = computeTriplanarRoughness(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN);
+        roughnessValue = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
+    } else {
+        float r0 = texture(roughnessArray, vec3(uv, float(fragTexIndices.x))).r;
+        float r1 = texture(roughnessArray, vec3(uv, float(fragTexIndices.y))).r;
+        float r2 = texture(roughnessArray, vec3(uv, float(fragTexIndices.z))).r;
+        roughnessValue = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
+    }
     if (!roughnessEnabled) roughnessValue = 0.0;
 
     // Sample ambient occlusion map (R channel)
-    float ao0 = texture(aoArray, vec3(uv, float(fragTexIndices.x))).r;
-    float ao1 = texture(aoArray, vec3(uv, float(fragTexIndices.y))).r;
-    float ao2 = texture(aoArray, vec3(uv, float(fragTexIndices.z))).r;
-    float ambientOcclusion = clamp(ao0 * w.x + ao1 * w.y + ao2 * w.z, 0.0, 1.0);
+    float ambientOcclusion;
+    if (usedTriplanar) {
+        float ao0 = computeTriplanarAO(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN);
+        float ao1 = computeTriplanarAO(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN);
+        float ao2 = computeTriplanarAO(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN);
+        ambientOcclusion = clamp(ao0 * w.x + ao1 * w.y + ao2 * w.z, 0.0, 1.0);
+    } else {
+        float ao0 = texture(aoArray, vec3(uv, float(fragTexIndices.x))).r;
+        float ao1 = texture(aoArray, vec3(uv, float(fragTexIndices.y))).r;
+        float ao2 = texture(aoArray, vec3(uv, float(fragTexIndices.z))).r;
+        ambientOcclusion = clamp(ao0 * w.x + ao1 * w.y + ao2 * w.z, 0.0, 1.0);
+    }
 
     // Lighting calculation
     vec3 toLight = -normalize(ubo.lightDir.xyz);

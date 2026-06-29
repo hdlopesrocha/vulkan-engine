@@ -80,6 +80,26 @@ vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int brushInde
     return normalize(nmX * w.x + nmY * w.y + nmZ * w.z);
 }
 
+// Sample roughness using triplanar projection (R channel)
+float computeTriplanarRoughness(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN) {
+    vec2 uvX, uvY, uvZ;
+    computeTriplanarUVs(fragPosWorld, brushIndex, geomN, uvX, uvY, uvZ);
+    float rX = triW.x > 0.0 ? texture(roughnessArray, vec3(uvX, float(brushIndex))).r : 0.0;
+    float rY = triW.y > 0.0 ? texture(roughnessArray, vec3(uvY, float(brushIndex))).r : 0.0;
+    float rZ = triW.z > 0.0 ? texture(roughnessArray, vec3(uvZ, float(brushIndex))).r : 0.0;
+    return rX * triW.x + rY * triW.y + rZ * triW.z;
+}
+
+// Sample ambient occlusion using triplanar projection (R channel)
+float computeTriplanarAO(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN) {
+    vec2 uvX, uvY, uvZ;
+    computeTriplanarUVs(fragPosWorld, brushIndex, geomN, uvX, uvY, uvZ);
+    float aX = triW.x > 0.0 ? texture(aoArray, vec3(uvX, float(brushIndex))).r : 0.0;
+    float aY = triW.y > 0.0 ? texture(aoArray, vec3(uvY, float(brushIndex))).r : 0.0;
+    float aZ = triW.z > 0.0 ? texture(aoArray, vec3(uvZ, float(brushIndex))).r : 0.0;
+    return aX * triW.x + aY * triW.y + aZ * triW.z;
+}
+
 vec4 computeTriplanarTangent(in ivec3 texIndices, in vec3 matWeights, in vec3 geomN, in vec3 triW, in vec3 fragPosWorld, in vec2 fragUV, in vec3 N, out vec3 T, out vec3 B) {
     // Calculate tangent and bitangent from UV derivatives
     vec3 dpdx = dFdx(fragPosWorld);

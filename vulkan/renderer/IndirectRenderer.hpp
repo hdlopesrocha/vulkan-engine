@@ -95,8 +95,6 @@ public:
     void drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws = 0);
     void drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer compactBuffer, VkBuffer visibleCountBuffer, uint32_t maxDraws = 0);
     void bindBuffers(VkCommandBuffer cmd);
-    // Draw all meshes (no GPU frustum culling) — uses the full indirect buffer.
-    void drawAll(VkCommandBuffer cmd);
     void drawIndirectOnly(VkCommandBuffer cmd, VulkanApp* app, uint32_t maxDraws = 0);
     void drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pipelineLayout, uint32_t maxDraws = 0);
 

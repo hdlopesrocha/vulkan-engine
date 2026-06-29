@@ -1408,9 +1408,9 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
         waterGeometryPipelineLayout, 2, 1, &cubemapWaterDepthDS, 0, nullptr);
 
-    // Draw ALL water patches without frustum culling (cubemap covers all 6 faces).
+    // Draw water patches using GPU frustum culling from the main camera pass.
     // acquireBuffers was called before BeginRendering above (barriers illegal inside).
-    waterIndirectRenderer.drawAll(cmd);
+    waterIndirectRenderer.drawPrepared(cmd);
 
     vkCmdEndRendering(cmd);
 }
