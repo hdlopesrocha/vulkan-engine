@@ -384,7 +384,8 @@ public:
 
     void setup() override {
         sceneRenderer = new SceneRenderer();
-        shadowParams.shadowMapSize = sceneRenderer->shadowMapper->getShadowMapSize();
+        for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i)
+            shadowParams.shadowMapSizes[i] = sceneRenderer->shadowMapper->getShadowMapSize(i);
         // Initialize application-owned water params with two default elements
         waterParams.push_back(WaterParams{}); // Add a third layer to demonstrate pagination in UI even without texture arrays
         {

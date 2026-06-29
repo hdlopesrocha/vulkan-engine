@@ -11,7 +11,9 @@
 
 struct ShadowParams {
     float orthoSize = 1024.0f;
-    uint32_t shadowMapSize = 8192;
+    // Per-cascade shadow map resolution set by ShadowRenderer.
+    // Defaults here are overwritten at init from ShadowRenderer.
+    uint32_t shadowMapSizes[SHADOW_CASCADE_COUNT] = {2048, 1024, 512};
     glm::mat4 lightSpaceMatrix[SHADOW_CASCADE_COUNT];
 
     void update(const glm::vec3& camPos, Light& light,
@@ -49,14 +51,15 @@ struct ShadowParams {
             splits[i] = glm::mix(logSplit, uniformSplit, 0.5f);
         }
 
-        // ---- 3. Shared light view matrix ----
-        // Use the frustum center as the look-at target for consistent orientation.
-        glm::vec3 frustumCenter(0.0f);
-        for (const auto& c : corners) frustumCenter += c;
-        frustumCenter /= 8.0f;
-
-        glm::vec3 lightPos = frustumCenter - lightDir * farPlane * 2.0f;
-        glm::mat4 lightView = glm::lookAt(lightPos, frustumCenter, worldUp);
+        // ---- 3. Stable light view matrix ----
+        // For a directional light (sun) the light space must be stable across
+        // frames so that texel snapping prevents shadow swimming.  Anchor the
+        // lookAt target to world origin — the per-cascade ortho frustum will
+        // still follow the camera, but within a fixed light-space grid.
+        glm::mat4 lightView = glm::lookAt(
+            -lightDir * farPlane * 2.0f,
+            glm::vec3(0.0f),
+            worldUp);
         light.setViewMatrix(lightView);
 
         // ---- 4. Per-cascade AABB in light space ----
@@ -107,12 +110,15 @@ struct ShadowParams {
             maxLS.y += padY;
 
             // ---- 5. Texel snap ----
-            float snapX = (maxLS.x - minLS.x) / (float)shadowMapSize;
-            float snapY = (maxLS.y - minLS.y) / (float)shadowMapSize;
+            // Use per-cascade resolution so each cascade snaps to its own
+            // texel grid in the stable light space.
+            float res = (float)shadowMapSizes[i];
+            float snapX = (maxLS.x - minLS.x) / res;
+            float snapY = (maxLS.y - minLS.y) / res;
             minLS.x = std::floor(minLS.x / snapX) * snapX;
             minLS.y = std::floor(minLS.y / snapY) * snapY;
-            maxLS.x = minLS.x + snapX * (float)shadowMapSize;
-            maxLS.y = minLS.y + snapY * (float)shadowMapSize;
+            maxLS.x = minLS.x + snapX * res;
+            maxLS.y = minLS.y + snapY * res;
 
             // ---- 6. Orthographic projection ----
             // glm::ortho with GLM_FORCE_DEPTH_ZERO_TO_ONE maps:
