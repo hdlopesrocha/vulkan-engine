@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 #include <mutex>
 #include <condition_variable>
+#include <vector>
 #include <cstddef>
 
 class StagingRingBuffer {
@@ -23,15 +24,19 @@ public:
     VkBuffer buffer() const { return ringBuffer_; }
 
 private:
+    struct FreeBlock {
+        VkDeviceSize offset;
+        VkDeviceSize size;
+    };
+
     VkDevice         device_ = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     VkBuffer         ringBuffer_ = VK_NULL_HANDLE;
     VkDeviceMemory   ringMemory_ = VK_NULL_HANDLE;
     void*            mappedPtr_ = nullptr;
     VkDeviceSize     capacity_ = 0;
-    VkDeviceSize     head_ = 0;
-    VkDeviceSize     tail_ = 0;
     VkDeviceSize     bytesInUse_ = 0;
+    std::vector<FreeBlock> freeList_;
     std::mutex mutex_;
     std::condition_variable cv_;
 };

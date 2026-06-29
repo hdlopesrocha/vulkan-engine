@@ -33,7 +33,12 @@ void IndirectRenderer::publishPendingTransfer(VulkanApp* app) {
     if (pendingTransfer.fence == VK_NULL_HANDLE) return;
     VkDevice dev = app->getDevice();
 
-    vkWaitForFences(dev, 1, &pendingTransfer.fence, VK_TRUE, UINT64_MAX);
+    // processPendingCommandBuffers owns the fence lifecycle — it will
+    // free the command buffer and destroy the fence once signaled.
+    // If the fence is no longer tracked, the work is already done.
+    if (app->resources.find((uintptr_t)pendingTransfer.fence).has_value()) {
+        vkWaitForFences(dev, 1, &pendingTransfer.fence, VK_TRUE, UINT64_MAX);
+    }
     // Meta-buffers (indirect/draw-count) are append-only: a new mesh's
     // entry is only written once.  Calling doUploadMeshMetaBuffers
     // after the vertex/index data lands on the GPU is safe even when
@@ -46,13 +51,22 @@ void IndirectRenderer::publishPendingTransfer(VulkanApp* app) {
         if (app->resources.removeDeviceMemory(pendingTransfer.stagingBuffer.memory))
             vkFreeMemory(dev, pendingTransfer.stagingBuffer.memory, nullptr);
     }
-    vkDestroyFence(dev, pendingTransfer.fence, nullptr);
+
+    // Do NOT destroy the fence — processPendingCommandBuffers handles it.
     pendingTransfer = {};
 }
 
 void IndirectRenderer::pollPendingTransfers(VulkanApp* app) {
     if (pendingTransfer.fence == VK_NULL_HANDLE) return;
-    VkResult r = vkGetFenceStatus(app->getDevice(), pendingTransfer.fence);
+    VkDevice dev = app->getDevice();
+    // If processPendingCommandBuffers already cleaned up the fence, the
+    // transfer is done — skip vkGetFenceStatus on the destroyed handle.
+    if (!app->resources.find((uintptr_t)pendingTransfer.fence).has_value()) {
+        std::lock_guard<std::mutex> lock(mutex);
+        publishPendingTransfer(app);
+        return;
+    }
+    VkResult r = vkGetFenceStatus(dev, pendingTransfer.fence);
     if (r == VK_NOT_READY) return;
     std::lock_guard<std::mutex> lock(mutex);
     publishPendingTransfer(app);

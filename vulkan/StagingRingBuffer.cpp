@@ -2,15 +2,16 @@
 #include <cstring>
 #include <stdexcept>
 #include <iostream>
+#include <algorithm>
 
 void StagingRingBuffer::init(VkDevice device, VkPhysicalDevice physicalDevice, VkDeviceSize size) {
     if (ringBuffer_ != VK_NULL_HANDLE) return;
     device_ = device;
     physicalDevice_ = physicalDevice;
     capacity_ = size;
-    head_ = 0;
-    tail_ = 0;
     bytesInUse_ = 0;
+    freeList_.clear();
+    freeList_.push_back({0, capacity_});
 
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -63,7 +64,6 @@ void StagingRingBuffer::init(VkDevice device, VkPhysicalDevice physicalDevice, V
 
 void StagingRingBuffer::cleanup(VkDevice device) {
     std::lock_guard<std::mutex> lock(mutex_);
-    // vkFreeMemory implicitly unmaps — no explicit vkUnmapMemory needed.
     mappedPtr_ = nullptr;
     if (ringMemory_ != VK_NULL_HANDLE) {
         vkFreeMemory(device, ringMemory_, nullptr);
@@ -73,10 +73,9 @@ void StagingRingBuffer::cleanup(VkDevice device) {
         vkDestroyBuffer(device, ringBuffer_, nullptr);
         ringBuffer_ = VK_NULL_HANDLE;
     }
-    head_ = 0;
-    tail_ = 0;
     bytesInUse_ = 0;
     capacity_ = 0;
+    freeList_.clear();
     device_ = VK_NULL_HANDLE;
 }
 
@@ -87,49 +86,32 @@ StagingRingBuffer::Allocation StagingRingBuffer::allocate(VkDeviceSize size) {
 
     std::unique_lock<std::mutex> lock(mutex_);
 
-    // If not enough space, return empty allocation. The caller must retry
-    // after pending transfers complete and release their ring buffer regions.
-    // Blocking via cv_.wait() would deadlock because release() callbacks are
-    // processed in drawFrame(), which requires the main thread to return from
-    // update() — but allocate() is called from update().
     if (bytesInUse_ + alignedSize > capacity_) {
         return {};
     }
 
-    // If ring is completely free, reset to beginning
-    if (bytesInUse_ == 0) {
-        head_ = 0;
-        tail_ = 0;
+    // First-fit: find the first free block large enough
+    for (auto it = freeList_.begin(); it != freeList_.end(); ++it) {
+        if (it->size >= alignedSize) {
+            Allocation alloc;
+            alloc.offset = it->offset;
+            alloc.mappedPtr = static_cast<char*>(mappedPtr_) + it->offset;
+
+            if (it->size == alignedSize) {
+                freeList_.erase(it);
+            } else {
+                it->offset += alignedSize;
+                it->size -= alignedSize;
+            }
+            bytesInUse_ += alignedSize;
+            return alloc;
+        }
     }
 
-    // Try to fit after head (no wrap)
-    if (head_ + alignedSize <= capacity_) {
-        Allocation alloc;
-        alloc.offset = head_;
-        alloc.mappedPtr = static_cast<char*>(mappedPtr_) + head_;
-        head_ += alignedSize;
-        bytesInUse_ += alignedSize;
-        return alloc;
-    }
-
-    // Must wrap: only safe if the beginning is free (tail_ has advanced past it).
-    // Out-of-order releases can leave tail_ behind, so we must check that the
-    // space at the beginning is actually available. If tail_ < alignedSize,
-    // the beginning still has in-use data and wrapping would cause corruption.
-    if (tail_ >= alignedSize) {
-        Allocation alloc;
-        alloc.offset = 0;
-        alloc.mappedPtr = mappedPtr_;
-        head_ = alignedSize;
-        bytesInUse_ += alignedSize;
-        return alloc;
-    }
-
-    // Cannot fit — ring is fragmented. Return empty allocation.
-    // Caller must handle this by falling back to a dedicated staging buffer.
+    // No contiguous free region large enough
     std::cerr << "[StagingRingBuffer] allocation of " << alignedSize
-              << " bytes failed: head=" << head_ << " tail=" << tail_
-              << " capacity=" << capacity_ << " inUse=" << bytesInUse_ << std::endl;
+              << " bytes failed: capacity=" << capacity_ << " inUse=" << bytesInUse_
+              << " freeBlocks=" << freeList_.size() << std::endl;
     return {};
 }
 
@@ -138,16 +120,53 @@ void StagingRingBuffer::release(VkDeviceSize offset, VkDeviceSize size) {
     const VkDeviceSize alignment = 16;
     VkDeviceSize alignedSize = (size + alignment - 1) & ~(alignment - 1);
     std::lock_guard<std::mutex> lock(mutex_);
-    if (alignedSize <= bytesInUse_) {
-        bytesInUse_ -= alignedSize;
-        // Advance tail past contiguous freed regions at the front
-        if (offset == tail_) {
-            tail_ += alignedSize;
-        }
-        if (bytesInUse_ == 0) {
-            head_ = 0;
-            tail_ = 0;
+
+    if (alignedSize > bytesInUse_) {
+        std::cerr << "[StagingRingBuffer] release underflow: offset=" << offset
+                  << " alignedSize=" << alignedSize << " bytesInUse=" << bytesInUse_ << std::endl;
+        return;
+    }
+    bytesInUse_ -= alignedSize;
+
+    // Insert into free list, merge with adjacent blocks, keep sorted by offset.
+    auto it = freeList_.begin();
+    while (it != freeList_.end() && it->offset < offset) ++it;
+
+    // Check merge with previous block
+    bool mergedPrev = false;
+    if (it != freeList_.begin()) {
+        auto prev = it - 1;
+        if (prev->offset + prev->size == offset) {
+            prev->size += alignedSize;
+            offset = prev->offset;
+            alignedSize = prev->size;
+            mergedPrev = true;
         }
     }
+
+    // Check merge with next block
+    bool mergedNext = false;
+    if (it != freeList_.end() && offset + alignedSize == it->offset) {
+        if (mergedPrev) {
+            auto prev = it - 1;
+            prev->size += it->size;
+            freeList_.erase(it);
+        } else {
+            it->offset = offset;
+            it->size += alignedSize;
+            mergedNext = true;
+        }
+    }
+
+    if (!mergedPrev && !mergedNext) {
+        freeList_.insert(it, {offset, alignedSize});
+    }
+
+    // If completely empty, coalesce into a single block for cleanliness.
+    if (bytesInUse_ == 0) {
+        freeList_.clear();
+        freeList_.push_back({0, capacity_});
+    }
+
     cv_.notify_one();
 }
