@@ -12,13 +12,12 @@
 #include "../includes/locations.hpp"
 #include "../includes/vertex_layouts.hpp"
 
+static constexpr VkFormat EVSM_FORMAT = VK_FORMAT_R32G32B32A32_SFLOAT;
+
 ShadowRenderer::ShadowRenderer(uint32_t shadowMapSize)
     : shadowMapSize(shadowMapSize) {}
 
-ShadowRenderer::~ShadowRenderer() {
-    // Don't call cleanup() here - it should be called explicitly before device destruction
-    // The member variables are set to VK_NULL_HANDLE after cleanup, so this is safe
-}
+ShadowRenderer::~ShadowRenderer() {}
 
 VkDescriptorSetLayout ShadowRenderer::getShadowDescriptorSetLayout(VulkanApp* app) const {
     return app->getDescriptorSetLayout();
@@ -27,12 +26,11 @@ VkDescriptorSetLayout ShadowRenderer::getShadowDescriptorSetLayout(VulkanApp* ap
 void ShadowRenderer::init(VulkanApp* app) {
     createShadowMaps(app);
     createShadowPipeline(app);
+    createBlurResources(app);
 }
 
 void ShadowRenderer::cleanup(VulkanApp* app) {
     VkDevice device = app->getDevice();
-
-    // If asynchronous submissions are active, defer destruction of resources
     bool pending = app->hasPendingCommandBuffers();
 
     for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
@@ -45,32 +43,41 @@ void ShadowRenderer::cleanup(VulkanApp* app) {
             }
             cascades[i].imguiDescSet = VK_NULL_HANDLE;
         }
+        cascades[i].colorView = VK_NULL_HANDLE;
+        cascades[i].colorImage = VK_NULL_HANDLE;
+        cascades[i].colorMemory = VK_NULL_HANDLE;
         cascades[i].depthView = VK_NULL_HANDLE;
         cascades[i].depthImage = VK_NULL_HANDLE;
         cascades[i].depthMemory = VK_NULL_HANDLE;
     }
 
-    // Do not destroy Vulkan objects here; the VulkanResourceManager owns
-    // destruction. Clear local handles to avoid accidental use.
     shadowMapSampler = VK_NULL_HANDLE;
-    dummyDepthView = VK_NULL_HANDLE;
-    dummyDepthImage = VK_NULL_HANDLE;
-    dummyDepthMemory = VK_NULL_HANDLE;
+    dummyColorView = VK_NULL_HANDLE;
+    dummyColorImage = VK_NULL_HANDLE;
+    dummyColorMemory = VK_NULL_HANDLE;
     shadowPipeline = VK_NULL_HANDLE;
     shadowPipelineLayout = VK_NULL_HANDLE;
 
-    // staging resources handled by centralized cleanup
-
+    // Blur resources cleared; central manager handles destruction
+    blurPipeline = VK_NULL_HANDLE;
+    blurPipelineLayout = VK_NULL_HANDLE;
+    blurDescSetLayout = VK_NULL_HANDLE;
+    blurDescPool = VK_NULL_HANDLE;
+    for (auto& ds : blurHorizontalDS) ds = VK_NULL_HANDLE;
+    blurVerticalDS = VK_NULL_HANDLE;
+    blurTempView = VK_NULL_HANDLE;
+    blurTempImage = VK_NULL_HANDLE;
+    blurTempMemory = VK_NULL_HANDLE;
 }
 
 void ShadowRenderer::createShadowMaps(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
-    // Create a single sampler shared by all cascades
+    // Sampler with LINEAR filtering for EVSM bilinear moment sampling
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_NEAREST;
-    samplerInfo.minFilter = VK_FILTER_NEAREST;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
     samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -81,35 +88,43 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
     samplerInfo.compareOp = VK_COMPARE_OP_LESS;
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     if (vkCreateSampler(device, &samplerInfo, nullptr, &shadowMapSampler) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create shadow map sampler!");
+        throw std::runtime_error("failed to create EVSM shadow map sampler!");
     }
-    app->resources.addSampler(shadowMapSampler, "ShadowRenderer: shadowMapSampler");
+    app->resources.addSampler(shadowMapSampler, "ShadowRenderer: EVSM sampler");
 
     for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {
         auto& cas = cascades[c];
         std::string tag = "ShadowRenderer cascade " + std::to_string(c);
 
-        // --- Depth image ---
+        // --- EVSM color image (RGBA32F for moments) ---
+        RendererUtils::createImage2D(device, app, shadowMapSize, shadowMapSize,
+            EVSM_FORMAT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            (tag + " EVSM color").c_str(), cas.colorImage, cas.colorMemory, cas.colorView);
+
+        app->transitionImageLayoutLayer(cas.colorImage, EVSM_FORMAT,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+
+        // --- Depth image (for depth testing during shadow rendering) ---
         RendererUtils::createImage2D(device, app, shadowMapSize, shadowMapSize,
             VK_FORMAT_D32_SFLOAT,
             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             VK_IMAGE_ASPECT_DEPTH_BIT,
             (tag + " depth").c_str(), cas.depthImage, cas.depthMemory, cas.depthView);
 
-        // Transition depth to READ_ONLY so the render pass starts from a valid layout
-        // Use the centralized helper so the authoritative layout map is updated.
-        app->transitionImageLayoutLayer(cas.depthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 1, 0, 1);
+        app->transitionImageLayoutLayer(cas.depthImage, VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 1, 0, 1);
 
-        // Track that this cascade's depth image is now in READ_ONLY layout
         cascadeDepthLayouts[c] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
         // ImGui descriptor for shadow map visualisation
         cas.imguiDescSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
-            shadowMapSampler, cas.depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+            shadowMapSampler, cas.colorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
     std::cerr << "[ShadowRenderer] Created " << SHADOW_CASCADE_COUNT
-              << " cascade shadow maps (" << shadowMapSize << "x" << shadowMapSize << " each)" << std::endl;
+              << " cascade EVSM maps (" << shadowMapSize << "x" << shadowMapSize << " each)" << std::endl;
 }
 
 VkImage ShadowRenderer::getDepthImage(uint32_t cascade) const {
@@ -118,7 +133,7 @@ VkImage ShadowRenderer::getDepthImage(uint32_t cascade) const {
 }
 
 void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
-    // Create a depth-only dynamic rendering pipeline for shadow passes.
+    // Create an EVSM pipeline: outputs RGBA32F color moments + depth test
     ShaderStage vertexShader(
         app->createShaderModule(FileReader::readFile("shaders/main.vert.spv")),
         VK_SHADER_STAGE_VERTEX_BIT);
@@ -128,8 +143,8 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
     ShaderStage teseShader(
         app->createShaderModule(FileReader::readFile("shaders/main.tese.spv")),
         VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
-    ShaderStage fragmentShader(
-        app->createShaderModule(FileReader::readFile("shaders/main.frag.spv")),
+    ShaderStage evsmFragment(
+        app->createShaderModule(FileReader::readFile("shaders/shadow_evsm.frag.spv")),
         VK_SHADER_STAGE_FRAGMENT_BIT);
 
     std::vector<VkDescriptorSetLayout> setLayouts;
@@ -137,7 +152,7 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
         setLayouts.push_back(app->getDescriptorSetLayout());
 
     auto [pipeline, layout] = app->createGraphicsPipeline(
-        { vertexShader.info, tescShader.info, teseShader.info, fragmentShader.info },
+        { vertexShader.info, tescShader.info, teseShader.info, evsmFragment.info },
         std::vector<VkVertexInputBindingDescription>{
             VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX }
         },
@@ -147,42 +162,166 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
         VK_POLYGON_MODE_FILL,
         VK_CULL_MODE_NONE,
         true,   // depthWrite
-        false,  // colorWrite (shadow pass only needs depth)
+        true,   // colorWrite (EVSM moments)
         VK_COMPARE_OP_LESS_OR_EQUAL,
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
         false,
-        {},
+        std::vector<VkFormat>{EVSM_FORMAT},
         VK_FORMAT_D32_SFLOAT,
-        true,  // noColorAttachment: depth-only dynamic rendering
-        true   // depthBiasEnable: push shadow depths away from light
+        false,  // noColorAttachment = false (we HAVE a color attachment)
+        true    // depthBiasEnable
     );
     shadowPipeline = pipeline;
     shadowPipelineLayout = layout;
-    std::cerr << "[ShadowRenderer] createShadowPipeline: pipeline=" << (void*)shadowPipeline
+    std::cerr << "[ShadowRenderer] EVSM pipeline: " << (void*)shadowPipeline
               << " layout=" << (void*)shadowPipelineLayout << std::endl;
 
-    // Clean up local shader module references (VulkanResourceManager owns them)
-    vertexShader.info.module  = VK_NULL_HANDLE;
-    tescShader.info.module    = VK_NULL_HANDLE;
-    teseShader.info.module    = VK_NULL_HANDLE;
-    fragmentShader.info.module = VK_NULL_HANDLE;
+    vertexShader.info.module   = VK_NULL_HANDLE;
+    tescShader.info.module     = VK_NULL_HANDLE;
+    teseShader.info.module     = VK_NULL_HANDLE;
+    evsmFragment.info.module   = VK_NULL_HANDLE;
 
-    // ── Create a tiny 1×1 D32_SFLOAT image that stays in READ_ONLY layout
-    //    so the shadow descriptor set can bind it at binding 4 without a layout
-    //    mismatch during the shadow pass (the real shadow map is being written).
+    // ── Create a tiny 1×1 RGBA32F image + depth dummy kept in READ_ONLY layouts
+    //    so the main descriptor set can bind it at 4/8/9 without a layout
+    //    mismatch during the shadow pass (the real EVSM maps are being written).
     {
         VkDevice device = app->getDevice();
-
         RendererUtils::createImage2D(device, app, 1, 1,
-            VK_FORMAT_D32_SFLOAT,
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            VK_IMAGE_ASPECT_DEPTH_BIT,
-            "ShadowRenderer: dummyDepth", dummyDepthImage, dummyDepthMemory, dummyDepthView);
+            EVSM_FORMAT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            "ShadowRenderer: dummyColor", dummyColorImage, dummyColorMemory, dummyColorView);
 
-        // Transition to DEPTH_STENCIL_READ_ONLY_OPTIMAL once at init
-        app->transitionImageLayoutLayer(dummyDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 1, 0, 1);
-        // Ensure authoritative tracked layout reflects the synchronous transition
-        app->setImageLayoutTracked(dummyDepthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 0, 1);
+        app->transitionImageLayoutLayer(dummyColorImage, EVSM_FORMAT,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        app->setImageLayoutTracked(dummyColorImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+    }
+}
+
+void ShadowRenderer::createBlurResources(VulkanApp* app) {
+    VkDevice device = app->getDevice();
+
+    // Descriptor set layout: one combined image sampler (the EVSM texture to blur)
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo dslInfo{};
+    dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dslInfo.bindingCount = 1;
+    dslInfo.pBindings = &binding;
+    if (vkCreateDescriptorSetLayout(device, &dslInfo, nullptr, &blurDescSetLayout) != VK_SUCCESS)
+        throw std::runtime_error("ShadowRenderer: failed to create blur descriptor set layout");
+    app->resources.addDescriptorSetLayout(blurDescSetLayout, "ShadowRenderer: blurDescSetLayout");
+
+    // Pipeline layout
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcRange.offset = 0;
+    pcRange.size = sizeof(float); // direction: 0 = horizontal, 1 = vertical
+
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts = &blurDescSetLayout;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges = &pcRange;
+    if (vkCreatePipelineLayout(device, &plInfo, nullptr, &blurPipelineLayout) != VK_SUCCESS)
+        throw std::runtime_error("ShadowRenderer: failed to create blur pipeline layout");
+    app->resources.addPipelineLayout(blurPipelineLayout, "ShadowRenderer: blurPipelineLayout");
+
+    // Fullscreen vertex + blur fragment shader
+    ShaderStage vertShader(
+        app->createShaderModule(FileReader::readFile("shaders/fullscreen.vert.spv")),
+        VK_SHADER_STAGE_VERTEX_BIT);
+    ShaderStage fragShader(
+        app->createShaderModule(FileReader::readFile("shaders/evsm_blur.frag.spv")),
+        VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    RendererUtils::FullscreenPipelineOpts opts{};
+    opts.colorAttachmentCount = 1;
+    blurPipeline = RendererUtils::buildFullscreenPipeline(
+        device, app, EVSM_FORMAT, VK_FORMAT_UNDEFINED,
+        blurPipelineLayout,
+        { vertShader.info, fragShader.info },
+        opts, "ShadowRenderer: blurPipeline");
+
+    vertShader.info.module = VK_NULL_HANDLE;
+    fragShader.info.module = VK_NULL_HANDLE;
+
+    // Create dedicated descriptor pool for blur (4 sets: 3 cascade h-blur + 1 v-blur)
+    VkDescriptorPoolSize blurPoolSize{};
+    blurPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    blurPoolSize.descriptorCount = 4;
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.maxSets = 4;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &blurPoolSize;
+    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &blurDescPool) != VK_SUCCESS)
+        throw std::runtime_error("ShadowRenderer: failed to create blur descriptor pool");
+    app->resources.addDescriptorPool(blurDescPool, "ShadowRenderer: blurDescPool");
+
+    // Temporary image for blur ping-pong (same size as cascades) — MUST be created
+    // before the DS writes below so blurTempView is valid.
+    RendererUtils::createImage2D(device, app, shadowMapSize, shadowMapSize,
+        EVSM_FORMAT,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        "ShadowRenderer: blurTemp", blurTempImage, blurTempMemory, blurTempView);
+
+    app->transitionImageLayoutLayer(blurTempImage, EVSM_FORMAT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+    app->setImageLayoutTracked(blurTempImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+
+    // Allocate vertical-blur DS (always reads blurTempImage) and write it
+    {
+        VkDescriptorSetAllocateInfo alloc{};
+        alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc.descriptorPool = blurDescPool;
+        alloc.descriptorSetCount = 1;
+        alloc.pSetLayouts = &blurDescSetLayout;
+        if (vkAllocateDescriptorSets(device, &alloc, &blurVerticalDS) != VK_SUCCESS)
+            throw std::runtime_error("ShadowRenderer: failed to allocate blurVerticalDS");
+
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.sampler = shadowMapSampler;
+        imgInfo.imageView = blurTempView;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = blurVerticalDS;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &imgInfo;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    }
+
+    // Allocate one horizontal-blur DS per cascade (reads cascade color image)
+    for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
+        VkDescriptorSetAllocateInfo alloc{};
+        alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc.descriptorPool = blurDescPool;
+        alloc.descriptorSetCount = 1;
+        alloc.pSetLayouts = &blurDescSetLayout;
+        if (vkAllocateDescriptorSets(device, &alloc, &blurHorizontalDS[c]) != VK_SUCCESS)
+            throw std::runtime_error("ShadowRenderer: failed to allocate blurHorizontalDS");
+
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.sampler = shadowMapSampler;
+        imgInfo.imageView = cascades[c].colorView;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = blurHorizontalDS[c];
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &imgInfo;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
     }
 }
 
@@ -190,31 +329,37 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     currentLightSpaceMatrix = lightSpaceMatrix;
     auto& cas = cascades[cascadeIndex];
 
-    // Transition depth: DEPTH_STENCIL_READ_ONLY_OPTIMAL → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-    if (cas.depthImage != VK_NULL_HANDLE) {
-        VkImageLayout oldLayout = (cascadeIndex < cascadeDepthLayouts.size())
+    // Transition EVSM color image: SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
+    app->recordTransitionImageLayoutLayer(commandBuffer, cas.colorImage, EVSM_FORMAT,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
+
+    // Transition depth: READ_ONLY → ATTACHMENT_OPTIMAL
+    {
+        VkImageMemoryBarrier depthBarrier{};
+        depthBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        depthBarrier.oldLayout = (cascadeIndex < cascadeDepthLayouts.size())
             ? cascadeDepthLayouts[cascadeIndex]
             : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        if (oldLayout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-            VkImageMemoryBarrier depthBarrier{};
-            depthBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            depthBarrier.oldLayout = oldLayout;
-            depthBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depthBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            depthBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            depthBarrier.image = cas.depthImage;
-            depthBarrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
-            depthBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            depthBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            vkCmdPipelineBarrier(commandBuffer,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                0, 0, nullptr, 0, nullptr, 1, &depthBarrier);
-            if (app) app->setImageLayoutTracked(cas.depthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
-        }
-        if (cascadeIndex < cascadeDepthLayouts.size())
-            cascadeDepthLayouts[cascadeIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        depthBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        depthBarrier.image = cas.depthImage;
+        depthBarrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        app->recordTransitionImageLayoutLayer(commandBuffer, cas.depthImage, VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
+        cascadeDepthLayouts[cascadeIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
+
+    // Begin dynamic rendering with color + depth attachments
+    VkClearValue clearColor = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = cas.colorView;
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue = clearColor;
 
     VkRenderingAttachmentInfo depthAttachment{};
     depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -229,8 +374,8 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     renderingInfo.renderArea.offset = {0, 0};
     renderingInfo.renderArea.extent = {shadowMapSize, shadowMapSize};
     renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 0;
-    renderingInfo.pColorAttachments = nullptr;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
     renderingInfo.pDepthAttachment = &depthAttachment;
 
     vkCmdBeginRendering(commandBuffer, &renderingInfo);
@@ -256,36 +401,17 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     }
 }
 
-void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer, 
-                                 const VertexBufferObject& vbo, VkDescriptorSet descriptorSet) {
-
-    // Bind descriptor sets: bind the provided per-instance/main descriptor set at set 0.
-    // Do NOT bind the material-only descriptor set at set 0 because shadow pipelines are
-    // created with only the main descriptor set layout. Binding an incompatible set
-    // to set 0 causes validation errors.
-    VkPipelineLayout layout = app->getPipelineLayout();
-    if (shadowPipelineLayout != VK_NULL_HANDLE) layout = shadowPipelineLayout;
-    if (descriptorSet != VK_NULL_HANDLE) {
-        //printf("[BIND] ShadowRenderer::render: layout=%p firstSet=0 count=1 sets=%p\n", (void*)layout, (void*)descriptorSet);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptorSet, 0, nullptr);
-    }
-    
-    // Bind vertex/index buffers
-    VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
-    VkDeviceSize offsets[] = { 0 };
-    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-    vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    
-    // Draw
-    vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
-}
-
 void ShadowRenderer::endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex) {
     vkCmdEndRendering(commandBuffer);
 
-    // Transition depth: DEPTH_STENCIL_ATTACHMENT_OPTIMAL → DEPTH_STENCIL_READ_ONLY_OPTIMAL
     auto& cas = cascades[cascadeIndex];
-    if (cas.depthImage != VK_NULL_HANDLE) {
+
+    // Transition EVSM color: COLOR_ATTACHMENT → SHADER_READ_ONLY
+    app->recordTransitionImageLayoutLayer(commandBuffer, cas.colorImage, EVSM_FORMAT,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+
+    // Transition depth: ATTACHMENT → READ_ONLY
+    {
         VkImageMemoryBarrier depthBarrier{};
         depthBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         depthBarrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -293,17 +419,125 @@ void ShadowRenderer::endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer
         depthBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         depthBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         depthBarrier.image = cas.depthImage;
-        depthBarrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
-        depthBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        depthBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(commandBuffer,
-            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &depthBarrier);
-        if (app) app->setImageLayoutTracked(cas.depthImage, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 0, 1);
-        if (cascadeIndex < cascadeDepthLayouts.size())
-            cascadeDepthLayouts[cascadeIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        app->recordTransitionImageLayoutLayer(commandBuffer, cas.depthImage, VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 1, 0, 1);
+        cascadeDepthLayouts[cascadeIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     }
+}
+
+void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex) {
+    auto& cas = cascades[cascadeIndex];
+
+    // ── Horizontal blur: read cascade color → write to blurTemp ──
+    // Transition blurTemp: SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
+    app->recordTransitionImageLayoutLayer(commandBuffer, blurTempImage, EVSM_FORMAT,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
+
+    // Horizontal blur pass (reads cascade color via pre-allocated blurHorizontalDS[cascadeIndex])
+    {
+        VkRenderingAttachmentInfo colorAtt{};
+        colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colorAtt.imageView = blurTempView;
+        colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+        VkRenderingInfo ri{};
+        ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        ri.renderArea.offset = {0, 0};
+        ri.renderArea.extent = {shadowMapSize, shadowMapSize};
+        ri.layerCount = 1;
+        ri.colorAttachmentCount = 1;
+        ri.pColorAttachments = &colorAtt;
+
+        vkCmdBeginRendering(commandBuffer, &ri);
+
+        VkViewport vp{};
+        vp.width = (float)shadowMapSize;
+        vp.height = (float)shadowMapSize;
+        vp.maxDepth = 1.0f;
+        vkCmdSetViewport(commandBuffer, 0, 1, &vp);
+        VkRect2D sc{};
+        sc.extent = {shadowMapSize, shadowMapSize};
+        vkCmdSetScissor(commandBuffer, 0, 1, &sc);
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            blurPipelineLayout, 0, 1, &blurHorizontalDS[cascadeIndex], 0, nullptr);
+
+        float dir = 0.0f; // horizontal
+        vkCmdPushConstants(commandBuffer, blurPipelineLayout,
+            VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &dir);
+
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        vkCmdEndRendering(commandBuffer);
+    }
+
+    // Transition blurTemp: COLOR_ATTACHMENT → SHADER_READ_ONLY
+    app->recordTransitionImageLayoutLayer(commandBuffer, blurTempImage, EVSM_FORMAT,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+
+    // ── Vertical blur: read blurTemp → write back to cascade color ──
+    // Transition cascade color: SHADER_READ_ONLY → COLOR_ATTACHMENT
+    app->recordTransitionImageLayoutLayer(commandBuffer, cas.colorImage, EVSM_FORMAT,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
+
+    // Vertical blur pass (reads blurTemp via pre-allocated blurVerticalDS)
+    {
+        VkRenderingAttachmentInfo colorAtt{};
+        colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colorAtt.imageView = cas.colorView;
+        colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+        VkRenderingInfo ri{};
+        ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        ri.renderArea.offset = {0, 0};
+        ri.renderArea.extent = {shadowMapSize, shadowMapSize};
+        ri.layerCount = 1;
+        ri.colorAttachmentCount = 1;
+        ri.pColorAttachments = &colorAtt;
+
+        vkCmdBeginRendering(commandBuffer, &ri);
+        VkViewport blurVp{0,0,(float)shadowMapSize,(float)shadowMapSize,0,1};
+        vkCmdSetViewport(commandBuffer, 0, 1, &blurVp);
+        VkRect2D blurSc{{0,0},{shadowMapSize,shadowMapSize}};
+        vkCmdSetScissor(commandBuffer, 0, 1, &blurSc);
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            blurPipelineLayout, 0, 1, &blurVerticalDS, 0, nullptr);
+
+        float dir = 1.0f; // vertical
+        vkCmdPushConstants(commandBuffer, blurPipelineLayout,
+            VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &dir);
+
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        vkCmdEndRendering(commandBuffer);
+    }
+
+    // Transition cascade color + blurTemp back to SHADER_READ_ONLY for next cascade
+    app->recordTransitionImageLayoutLayer(commandBuffer, cas.colorImage, EVSM_FORMAT,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+    app->recordTransitionImageLayoutLayer(commandBuffer, blurTempImage, EVSM_FORMAT,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+}
+
+void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer,
+                                 const VertexBufferObject& vbo, VkDescriptorSet descriptorSet) {
+    VkPipelineLayout layout = app->getPipelineLayout();
+    if (shadowPipelineLayout != VK_NULL_HANDLE) layout = shadowPipelineLayout;
+    if (descriptorSet != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptorSet, 0, nullptr);
+    }
+
+    VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };
+    VkDeviceSize offsets[] = { 0 };
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+    vkCmdBindIndexBuffer(commandBuffer, vbo.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+    vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0);
 }
 
 VkImageLayout ShadowRenderer::getDepthLayout(uint32_t cascade) const {
@@ -318,7 +552,6 @@ void ShadowRenderer::setDepthLayout(uint32_t cascade, VkImageLayout layout) {
 void ShadowRenderer::freeImGuiDescriptors() {
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
         if (cascades[i].imguiDescSet != VK_NULL_HANDLE) {
-            std::cerr << "[ShadowRenderer::freeImGuiDescriptors] cascade=" << i << " freeing ds=" << (void*)cascades[i].imguiDescSet << std::endl;
             ImGui_ImplVulkan_RemoveTexture(cascades[i].imguiDescSet);
             cascades[i].imguiDescSet = VK_NULL_HANDLE;
         }
@@ -331,12 +564,9 @@ void ShadowRenderer::recreateImGuiDescriptors() {
             ImGui_ImplVulkan_RemoveTexture(cascades[i].imguiDescSet);
             cascades[i].imguiDescSet = VK_NULL_HANDLE;
         }
-        if (cascades[i].depthView != VK_NULL_HANDLE && shadowMapSampler != VK_NULL_HANDLE) {
+        if (cascades[i].colorView != VK_NULL_HANDLE && shadowMapSampler != VK_NULL_HANDLE) {
             cascades[i].imguiDescSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
-                shadowMapSampler, cascades[i].depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-            if ((uint64_t)cascades[i].imguiDescSet == 0x6c100000006c1ULL) {
-                std::cerr << "[ShadowRenderer::recreateImGuiDescriptors] cascade=" << i << " *** ALLOCATED BAD HANDLE 0x6c100000006c1 ***" << std::endl;
-            }
+                shadowMapSampler, cascades[i].colorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
     }
 }

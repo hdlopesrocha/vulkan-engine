@@ -1263,9 +1263,9 @@ public:
                     addImageWriteLocal(12, this->textureArrayManager.roughnessSampler, this->textureArrayManager.roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                     addImageWriteLocal(13, this->textureArrayManager.aoSampler, this->textureArrayManager.aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 }
-                addImageWriteLocal(4, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-                addImageWriteLocal(8, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-                addImageWriteLocal(9, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+                addImageWriteLocal(4, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                addImageWriteLocal(8, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                addImageWriteLocal(9, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 // Binding 11: environment cubemap (reuse the same cubemap being rendered;
                 // reflections will sample the previous frame's content, avoiding feedback).
                 if (this->sceneRenderer->solid360Renderer) {

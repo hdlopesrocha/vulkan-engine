@@ -148,7 +148,7 @@ void main() {
     if (ubo.shadowEffects.w > 0.5) {
         if (NdotL > 0.01) {
             float bias = max(0.002 * (1.0 - NdotL), 0.0005);
-            shadow = ShadowCalculation(adjustedPosLightSpace, bias);
+            shadow = ShadowCalculation(adjustedPosLightSpace, fragPosWorld, bias);
         } else {
             shadow = 1.0;
         }

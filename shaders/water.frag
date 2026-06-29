@@ -312,7 +312,7 @@ void main() {
         float NdotL = max(dot(normal, lightDir), 0.0);
         if (NdotL > 0.01) {
             float bias = max(0.002 * (1.0 - NdotL), 0.0005);
-            shadow = ShadowCalculation(fragPosLightSpace, bias);
+            shadow = ShadowCalculation(fragPosLightSpace, fragPosWorld, bias);
         } else {
             shadow = 1.0;
         }

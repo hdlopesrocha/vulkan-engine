@@ -209,10 +209,13 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
     for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {
         glm::mat4 lsMatrix = cascadeMatrices[c];
 
-        // Upload a shadow-specific UBO: viewProjection = cascade lightSpaceMatrix, passParams.x = 1.0
+        // Upload a shadow-specific UBO: viewProjection = cascade lightSpaceMatrix.
+        // passParams.x MUST be 0 so the TES computes fragPosWorld (needed by the EVSM
+        // fragment shader to produce correct moments).  With passParams.x=1 the TES
+        // outputs fragPosWorld = vec3(0) → EVSM gets garbage depth → no shadows.
         UniformObject shadowUBO = uboStatic;
         shadowUBO.viewProjection = lsMatrix;
-        shadowUBO.passParams.x = 1.0f;
+        shadowUBO.passParams.x = 0.0f;
 
         // Wait for previous cascade draws to finish reading the UBO
         {
@@ -237,6 +240,11 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
                 VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                 0, 1, &memBarrier, 0, nullptr, 0, nullptr);
         }
+
+        // Per-cascade GPU frustum culling: run the compute-based cull pass
+        // with the cascade's light-space matrix BEFORE beginShadowPass
+        // (vkCmdPipelineBarrier not allowed inside dynamic rendering).
+        solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, lsMatrix);
 
         // Acquire vegetation instance/indirect buffers before
         // vkCmdBeginRendering (barriers illegal inside dynamic rendering).
@@ -266,7 +274,10 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         if (solidShadowPipeline != VK_NULL_HANDLE) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowPipeline);
         }
-        solidRenderer->getIndirectRenderer().drawAll(commandBuffer);
+        // Draw only meshes visible in this cascade (compacted by prepareCull above)
+        auto& shadowIR = solidRenderer->getIndirectRenderer();
+        shadowIR.bindBuffers(commandBuffer);
+        shadowIR.drawIndirectOnly(commandBuffer, shadowMapper->getShadowPipelineLayout(), 0);
 
         // Vegetation shadow pass: drawn after solid so its 2-buffer vertex
         // bindings don't leak into the solid draw.
@@ -276,7 +287,15 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         }
 
         shadowMapper->endShadowPass(app, commandBuffer, c);
+
+        // EVSM separable blur for this cascade (horizontal + vertical)
+        shadowMapper->blurCascade(app, commandBuffer, c);
     }
+
+    // Restore GPU culling for the main camera frustum (was overwritten by
+    // per-cascade prepareCull calls above) so drawPrepared in the main pass
+    // uses the correct visible set.
+    solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection);
 
     // Restore the main UBO so subsequent passes see the original data.
     // Wait for all shadow cascade draws to finish reading the UBO first.
@@ -589,9 +608,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     } else {
         std::cerr << "[SceneRenderer::init] No TextureArrayManager set — skipping texture array descriptor writes" << std::endl;
     }
-    addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-    addImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-    addImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    addImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    addImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     // Create and bind Materials SSBO at binding 5. Require an external MaterialManager.
     materialManagerPtr = materialManager;
@@ -764,9 +783,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             addShadowImageWrite(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             addShadowImageWrite(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
-        addShadowImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-        addShadowImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-        addShadowImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        addShadowImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addShadowImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addShadowImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         // Binding 11: environment cubemap (if available) for shadow passes that use the same layout
         if (solid360Renderer) {
@@ -908,9 +927,9 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 
     // Shadow map samplers (bindings 4, 8, 9) for all cascades
     if (shadowMapper) {
-        addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-        addImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-        addImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
     // Materials SSBO (binding 5) — refresh from MaterialManager in case the buffer
