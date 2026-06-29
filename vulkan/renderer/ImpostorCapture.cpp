@@ -112,6 +112,7 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
     };
     destroyBuf(captureVertBuf, captureVertMem);
     destroyBuf(captureInstBuf, captureInstMem);
+    destroyBuf(captureIdxBuf, captureIdxMem);
 
     // Framebuffers removed - using dynamic rendering
 
@@ -370,12 +371,12 @@ void ImpostorCapture::capture(VulkanApp* app,
                                     capturePipelineLayout, 0, 2, sets, 1, &dynOffset);
 
             vkCmdPushConstants(cb, capturePipelineLayout,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT
-                               | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(CapturePC), &pc);
 
             vkCmdBindVertexBuffers(cb, 0, 2, vbs, offsets);
-            vkCmdDraw(cb, 1, NUM_INSTANCES, 0, 0);
+            vkCmdBindIndexBuffer(cb, captureIdxBuf, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cb, captureIdxCount, NUM_INSTANCES, 0, 0, 0);
 
             vkCmdEndRendering(cb);
 
@@ -714,38 +715,32 @@ void ImpostorCapture::createDescSetLayouts(VulkanApp* app) {
 void ImpostorCapture::createPipeline(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
-    auto vertCode = FileReader::readFile("shaders/capture.vert.spv");
-    auto geomCode = FileReader::readFile("shaders/vegetation.geom.spv");
+    // Use vegetation.vert for billboard expansion (same 24-corner + indexed approach).
+    auto vertCode = FileReader::readFile("shaders/vegetation.vert.spv");
     auto fragCode = FileReader::readFile("shaders/capture.frag.spv");
 
     VkShaderModule vertShader = app->createShaderModule(vertCode);
-    VkShaderModule geomShader = app->createShaderModule(geomCode);
     VkShaderModule fragShader = app->createShaderModule(fragCode);
 
-    VkPipelineShaderStageCreateInfo stages[3]{};
+    VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = vertShader;
     stages[0].pName  = "main";
     stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage  = VK_SHADER_STAGE_GEOMETRY_BIT;
-    stages[1].module = geomShader;
+    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragShader;
     stages[1].pName  = "main";
-    stages[2].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[2].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[2].module = fragShader;
-    stages[2].pName  = "main";
 
     VkVertexInputBindingDescription bindingDescs[2]{};
     bindingDescs[0] = { 0, sizeof(Vertex),    VK_VERTEX_INPUT_RATE_VERTEX   };
     bindingDescs[1] = { 1, sizeof(float) * 4, VK_VERTEX_INPUT_RATE_INSTANCE };
 
-    // Attribute list matching `shaders/capture.vert` (full standard vertex format).
+    // Attribute list matching vegetation.vert (tangent at ATTR_COLOR).
     std::vector<VkVertexInputAttributeDescription> attrs = {
         VkVertexInputAttributeDescription{ ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
         VkVertexInputAttributeDescription{ ATTR_COLOR, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
         VkVertexInputAttributeDescription{ ATTR_UV,  0, VK_FORMAT_R32G32_SFLOAT,    offsetof(Vertex, texCoord) },
-        VkVertexInputAttributeDescription{ ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
         VkVertexInputAttributeDescription{ ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex) },
         VkVertexInputAttributeDescription{ ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 },
     };
@@ -759,7 +754,7 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     VkPipelineViewportStateCreateInfo viewportState{};
     viewportState.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -802,8 +797,7 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     depthStencil.depthCompareOp   = VK_COMPARE_OP_LESS;
 
     VkPushConstantRange pcRange{};
-    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT
-                       | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pcRange.size       = sizeof(CapturePC);
 
     VkDescriptorSetLayout layouts[2] = { uboDescSetLayout, texDescSetLayout };
@@ -819,7 +813,7 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
 
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.stageCount          = 3;
+    pipelineInfo.stageCount          = 2;
     pipelineInfo.pStages             = stages;
     pipelineInfo.pVertexInputState   = &vertexInput;
     pipelineInfo.pInputAssemblyState = &inputAssembly;
@@ -848,8 +842,6 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
 
     app->resources.removeShaderModule(vertShader);
     vkDestroyShaderModule(device, vertShader, nullptr);
-    app->resources.removeShaderModule(geomShader);
-    vkDestroyShaderModule(device, geomShader, nullptr);
     app->resources.removeShaderModule(fragShader);
     vkDestroyShaderModule(device, fragShader, nullptr);
 }
@@ -866,17 +858,52 @@ void ImpostorCapture::createUBO(VulkanApp* app) {
 }
 
 void ImpostorCapture::createCaptureBuffers(VulkanApp* app) {
-    // Single base vertex — the geometry shader uses the instance position,
-    // but a vertex buffer binding is still required by the pipeline.
-    Vertex v;
-    v.position = glm::vec3(0.0f);
-    v.normal   = glm::vec3(0.0f, 1.0f, 0.0f);
-    v.texCoord = glm::vec2(0.5f);
-    v.brushIndex = 0;
-    Buffer vb = app->createDeviceLocalBuffer(&v, sizeof(Vertex),
+    VkDevice device = app->getDevice();
+
+    // 24 corner vertices for the 6-plane billboard mesh (same layout as vegetation).
+    const glm::vec3 baseTangents[6] = {
+        {0,0,1}, {-1,0,0}, {0,0,-1}, {1,0,0}, {1,0,0}, {0,0,1}
+    };
+    const glm::vec3 outwardDirs[4] = {
+        {1,0,0}, {0,0,1}, {-1,0,0}, {0,0,-1}
+    };
+    const glm::vec3 worldUp(0,1,0);
+    constexpr float hs = 0.5f, h = 1.0f, tilt = 1.0f;
+
+    std::vector<Vertex> verts(24);
+    for (int p = 0; p < 6; ++p) {
+        glm::vec3 tangent = baseTangents[p];
+        glm::vec3 outward = (p < 4) ? outwardDirs[p] : glm::vec3(0.0f);
+        int base = p * 4;
+        auto corner = [&](int ci, glm::vec3 off, glm::vec2 uv) {
+            verts[base + ci].position = off;
+            verts[base + ci].color = tangent;
+            verts[base + ci].texCoord = uv;
+            verts[base + ci].brushIndex = (p << 8) | ci;
+        };
+        corner(0, -tangent * hs,                    glm::vec2(0,1));
+        corner(1,  tangent * hs,                    glm::vec2(1,1));
+        corner(2, -tangent * hs + worldUp * h + outward * tilt, glm::vec2(0,0));
+        corner(3,  tangent * hs + worldUp * h + outward * tilt, glm::vec2(1,0));
+    }
+    Buffer vb = app->createDeviceLocalBuffer(verts.data(), verts.size() * sizeof(Vertex),
                                               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     captureVertBuf = vb.buffer;
     captureVertMem = vb.memory;
+
+    // 36-index triangle list.
+    std::vector<uint32_t> idx(36);
+    for (int p = 0; p < 6; ++p) {
+        int b = p * 4;
+        int ib = p * 6;
+        idx[ib + 0] = b + 0; idx[ib + 1] = b + 1; idx[ib + 2] = b + 2;
+        idx[ib + 3] = b + 1; idx[ib + 4] = b + 3; idx[ib + 5] = b + 2;
+    }
+    Buffer idxBuf = app->createDeviceLocalBuffer(idx.data(), idx.size() * sizeof(uint32_t),
+                                                  VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    captureIdxBuf = idxBuf.buffer;
+    captureIdxMem = idxBuf.memory;
+    captureIdxCount = 36;
 
     // Instance buffer: 1 vec4 (xyz=world pos, w=billboardIndex), host-visible.
     Buffer ib = app->createBuffer(NUM_INSTANCES * sizeof(glm::vec4),

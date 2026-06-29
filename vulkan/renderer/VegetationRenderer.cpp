@@ -678,7 +678,7 @@ void VegetationRenderer::init(VulkanApp* app) {
 
     // ── EVSM shadow pipeline (writes moments via shadow_evsm.frag ──
     {
-        auto shadowVertCode = FileReader::readFile("shaders/vegetation.vert.spv");
+        auto shadowVertCode = FileReader::readFile("shaders/vegetation_shadow.vert.spv");
         auto shadowFragCode = FileReader::readFile("shaders/shadow_evsm.frag.spv");
         VkShaderModule shadowVertShader = app->createShaderModule(shadowVertCode);
         VkShaderModule shadowFragShader = app->createShaderModule(shadowFragCode);

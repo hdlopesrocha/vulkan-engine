@@ -115,6 +115,9 @@ private:
     VkDeviceMemory captureVertMem = VK_NULL_HANDLE;
     VkBuffer       captureInstBuf = VK_NULL_HANDLE;
     VkDeviceMemory captureInstMem = VK_NULL_HANDLE;
+    VkBuffer       captureIdxBuf = VK_NULL_HANDLE;
+    VkDeviceMemory captureIdxMem = VK_NULL_HANDLE;
+    uint32_t       captureIdxCount = 0;
 
     // Descriptor pool + two descriptor sets (UBO dynamic + texture samplers).
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
