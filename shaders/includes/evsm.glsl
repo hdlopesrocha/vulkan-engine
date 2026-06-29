@@ -1,9 +1,9 @@
-// VSM sampling (no exponential warp) — Chebyshev inequality on raw depth moments.
-// The shadow map stores: R = depth, G = depth², B/A unused.
-//
-// Bias is SUBTRACTED from the test depth (making it shallower) so that
-// fragments at the exact occluder depth satisfy t <= M1 → lit.  This
-// mirrors PCF's bias semantics.
+// EVSM sampling — Chebyshev inequality on dual-depth exponential moments.
+// The shadow map stores: R = exp(c*z), G = exp(2*c*z), B = exp(-c*z), A = exp(-2*c*z)
+// Bias is subtracted from the test depth (making it shallower) so that
+// fragments at the exact occluder depth satisfy t <= M1 → lit.
+
+const float EVSM_C = 2.0;
 
 float chebyshevUpperBound(vec2 moments, float t) {
     if (t <= moments.x) return 1.0;
@@ -16,8 +16,15 @@ float chebyshevUpperBound(vec2 moments, float t) {
 
 float ShadowEVSM(sampler2D smap, vec3 projCoords, float bias) {
     float fragDepth = clamp(projCoords.z, 0.0, 1.0) - bias;
+
+    float posDepth = exp( EVSM_C * fragDepth);
+    float negDepth = exp(-EVSM_C * fragDepth);
+
     vec4 moments = texture(smap, projCoords.xy);
 
-    float prob = chebyshevUpperBound(moments.xy, fragDepth);
-    return 1.0 - prob;
+    float posProb = chebyshevUpperBound(moments.xy, posDepth);
+    float negProb = chebyshevUpperBound(moments.zw, negDepth);
+
+    float shadow = min(posProb, negProb);
+    return 1.0 - shadow;
 }

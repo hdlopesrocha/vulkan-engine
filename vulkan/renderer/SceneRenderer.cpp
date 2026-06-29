@@ -284,9 +284,6 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         }
 
         shadowMapper->endShadowPass(app, commandBuffer, c);
-
-        // EVSM separable blur for this cascade (horizontal + vertical)
-        shadowMapper->blurCascade(app, commandBuffer, c);
     }
 
     // Restore the main UBO so subsequent passes see the original data.
