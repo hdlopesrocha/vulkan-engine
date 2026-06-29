@@ -52,82 +52,69 @@ struct ShadowParams {
         }
 
         // ---- 3. Stable light view matrix ----
-        // For a directional light (sun) the light space must be stable across
-        // frames so that texel snapping prevents shadow swimming.  Anchor the
-        // lookAt target to world origin — the per-cascade ortho frustum will
-        // still follow the camera, but within a fixed light-space grid.
+        // Use a fixed light view anchored to world origin so the light-space
+        // coordinate system never changes between frames.  This makes texel
+        // snapping trivially stable and prevents shadow swimming.
         glm::mat4 lightView = glm::lookAt(
             -lightDir * farPlane * 2.0f,
             glm::vec3(0.0f),
             worldUp);
         light.setViewMatrix(lightView);
 
-        // ---- 4. Per-cascade AABB in light space ----
-        // The standard CSM approach computes a tight orthographic frustum for
-        // each cascade by projecting the view frustum slice into light space,
-        // then extending the Z-range toward the light to catch all potential
-        // shadow casters.
-        const float padFraction = 0.15f;
-
+        // ---- 4. Per-cascade orthographic bounds in stable light space ----
         for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
-            // Interpolation factors for this cascade's near and far slice
+            float res = (float)shadowMapSizes[i];
+
+            // Frustum-slice corners for this cascade
             float tNear = (splits[i] - nearPlane) / (farPlane - nearPlane);
             float tFar  = (splits[i + 1] - nearPlane) / (farPlane - nearPlane);
 
-            // Compute the 8 corners of the frustum slice
             std::array<glm::vec3, 8> sliceCorners;
             for (int j = 0; j < 4; ++j) {
                 sliceCorners[j]     = glm::mix(corners[j], corners[j + 4], tNear);
                 sliceCorners[j + 4] = glm::mix(corners[j], corners[j + 4], tFar);
             }
 
-            // Transform to light space and compute AABB
-            glm::vec3 minLS( FLT_MAX);
-            glm::vec3 maxLS(-FLT_MAX);
+            // AABB in light space  (minLS.z = farthest, maxLS.z = nearest)
+            glm::vec3 minLS( FLT_MAX), maxLS(-FLT_MAX);
             for (const auto& c : sliceCorners) {
                 glm::vec4 ls = lightView * glm::vec4(c, 1.0f);
                 minLS = glm::min(minLS, glm::vec3(ls));
                 maxLS = glm::max(maxLS, glm::vec3(ls));
             }
 
-            // Extend Z-range toward the light to capture shadow casters between
-            // the light and the visible frustum slice.  Without this extension,
-            // objects closer to the light than the view frustum (e.g. geometry
-            // behind the camera or above the camera) are missed and can't cast
-            // shadows.  Clamp near plane to at least 1 unit from the light for
-            // depth precision.
+            // Centre the XY bounds on the cascade centroid so the ortho
+            // frustum is symmetric around the visible slice.
+            glm::vec3 centroid = (minLS + maxLS) * 0.5f;
+            glm::vec3 halfExt = (maxLS - minLS) * 0.5f;
+            minLS = centroid - halfExt;
+            maxLS = centroid + halfExt;
+
+            // Extend Z toward the light (more positive Z = toward the light)
+            // to ensure casters between the light and the visible slice are
+            // captured.
             maxLS.z = std::max(maxLS.z, -1.0f);
+            halfExt = (maxLS - minLS) * 0.5f;
 
-            // Pad XY bounds by a fraction of the Z-range to catch shadow
-            // casters that are outside the view frustum in XY but can still
-            // cast shadows into it.
+            // Pad XY by a fraction of the Z-range to catch shadow casters
+            // that are outside the view frustum in XY.
             float zRange = maxLS.z - minLS.z;
-            float padX = zRange * 0.1f;
-            float padY = zRange * 0.1f;
-            minLS.x -= padX;
-            maxLS.x += padX;
-            minLS.y -= padY;
-            maxLS.y += padY;
+            float pad = zRange * 0.1f;
+            halfExt.x += pad;
+            halfExt.y += pad;
 
-            // ---- 5. Texel snap ----
-            // Use per-cascade resolution so each cascade snaps to its own
-            // texel grid in the stable light space.
-            float res = (float)shadowMapSizes[i];
-            float snapX = (maxLS.x - minLS.x) / res;
-            float snapY = (maxLS.y - minLS.y) / res;
-            minLS.x = std::floor(minLS.x / snapX) * snapX;
-            minLS.y = std::floor(minLS.y / snapY) * snapY;
-            maxLS.x = minLS.x + snapX * res;
-            maxLS.y = minLS.y + snapY * res;
+            // ---- 5. Texel snap (snap the centroid) ----
+            float snapX = (halfExt.x * 2.0f) / res;
+            float snapY = (halfExt.y * 2.0f) / res;
+            centroid.x = std::floor(centroid.x / snapX) * snapX;
+            centroid.y = std::floor(centroid.y / snapY) * snapY;
 
             // ---- 6. Orthographic projection ----
-            // glm::ortho with GLM_FORCE_DEPTH_ZERO_TO_ONE maps:
-            //   Z_view = -near  → depth 0
-            //   Z_view = -far   → depth 1
-            // minLS.z is the farthest (most negative), maxLS.z is the nearest.
-            float nearVal = -maxLS.z;
-            float farVal  = -minLS.z;
-            glm::mat4 proj = glm::ortho(minLS.x, maxLS.x, minLS.y, maxLS.y, nearVal, farVal);
+            glm::mat4 proj = glm::ortho(
+                centroid.x - halfExt.x, centroid.x + halfExt.x,
+                centroid.y - halfExt.y, centroid.y + halfExt.y,
+                -(centroid.z + halfExt.z),  // near (most positive Z → smallest distance)
+                -(centroid.z - halfExt.z)); // far  (most negative Z → largest distance)
 
             light.setProjection(proj);
             lightSpaceMatrix[i] = light.getViewProjectionMatrix();

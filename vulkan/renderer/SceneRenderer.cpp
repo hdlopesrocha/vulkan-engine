@@ -165,7 +165,7 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
 }
 
 SceneRenderer::SceneRenderer() :
-    shadowMapper(std::make_unique<ShadowRenderer>(8192)),
+    shadowMapper(std::make_unique<ShadowRenderer>(2048)),
     waterRenderer(std::make_unique<WaterRenderer>()),
     postProcessRenderer(std::make_unique<PostProcessRenderer>()),
     skyRenderer(std::make_unique<SkyRenderer>()),
