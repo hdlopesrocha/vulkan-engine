@@ -14,8 +14,8 @@
 
 static constexpr VkFormat EVSM_FORMAT = VK_FORMAT_R32G32B32A32_SFLOAT;
 
-ShadowRenderer::ShadowRenderer(uint32_t shadowMapSize)
-    : shadowMapSize(shadowMapSize) {}
+ShadowRenderer::ShadowRenderer(uint32_t maxShadowMapSize)
+    : shadowMapSizes{maxShadowMapSize, maxShadowMapSize / 2, maxShadowMapSize / 4} {}
 
 ShadowRenderer::~ShadowRenderer() {}
 
@@ -93,11 +93,12 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
     app->resources.addSampler(shadowMapSampler, "ShadowRenderer: EVSM sampler");
 
     for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {
+        uint32_t size = shadowMapSizes[c];
         auto& cas = cascades[c];
         std::string tag = "ShadowRenderer cascade " + std::to_string(c);
 
         // --- EVSM color image (RGBA32F for moments) ---
-        RendererUtils::createImage2D(device, app, shadowMapSize, shadowMapSize,
+        RendererUtils::createImage2D(device, app, size, size,
             EVSM_FORMAT,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT,
@@ -107,7 +108,7 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
 
         // --- Depth image (for depth testing during shadow rendering) ---
-        RendererUtils::createImage2D(device, app, shadowMapSize, shadowMapSize,
+        RendererUtils::createImage2D(device, app, size, size,
             VK_FORMAT_D32_SFLOAT,
             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             VK_IMAGE_ASPECT_DEPTH_BIT,
@@ -124,7 +125,9 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
     }
 
     std::cerr << "[ShadowRenderer] Created " << SHADOW_CASCADE_COUNT
-              << " cascade EVSM maps (" << shadowMapSize << "x" << shadowMapSize << " each)" << std::endl;
+              << " cascade EVSM maps (" << shadowMapSizes[0] << "x" << shadowMapSizes[0]
+              << "/" << shadowMapSizes[1] << "x" << shadowMapSizes[1]
+              << "/" << shadowMapSizes[2] << "x" << shadowMapSizes[2] << ")" << std::endl;
 }
 
 VkImage ShadowRenderer::getDepthImage(uint32_t cascade) const {
@@ -264,9 +267,9 @@ void ShadowRenderer::createBlurResources(VulkanApp* app) {
         throw std::runtime_error("ShadowRenderer: failed to create blur descriptor pool");
     app->resources.addDescriptorPool(blurDescPool, "ShadowRenderer: blurDescPool");
 
-    // Temporary image for blur ping-pong (same size as cascades) — MUST be created
+    // Temporary image for blur ping-pong (sized for the largest cascade) — MUST be created
     // before the DS writes below so blurTempView is valid.
-    RendererUtils::createImage2D(device, app, shadowMapSize, shadowMapSize,
+    RendererUtils::createImage2D(device, app, shadowMapSizes[0], shadowMapSizes[0],
         EVSM_FORMAT,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
@@ -327,6 +330,7 @@ void ShadowRenderer::createBlurResources(VulkanApp* app) {
 
 void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex, const glm::mat4& lightSpaceMatrix) {
     currentLightSpaceMatrix = lightSpaceMatrix;
+    uint32_t size = shadowMapSizes[cascadeIndex];
     auto& cas = cascades[cascadeIndex];
 
     // Transition EVSM color image: SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
@@ -372,7 +376,7 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     VkRenderingInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = {shadowMapSize, shadowMapSize};
+    renderingInfo.renderArea.extent = {size, size};
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = 1;
     renderingInfo.pColorAttachments = &colorAttachment;
@@ -383,15 +387,15 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     VkViewport shadowViewport{};
     shadowViewport.x = 0.0f;
     shadowViewport.y = 0.0f;
-    shadowViewport.width = (float)shadowMapSize;
-    shadowViewport.height = (float)shadowMapSize;
+    shadowViewport.width = (float)size;
+    shadowViewport.height = (float)size;
     shadowViewport.minDepth = 0.0f;
     shadowViewport.maxDepth = 1.0f;
     vkCmdSetViewport(commandBuffer, 0, 1, &shadowViewport);
 
     VkRect2D shadowScissor{};
     shadowScissor.offset = {0, 0};
-    shadowScissor.extent = {shadowMapSize, shadowMapSize};
+    shadowScissor.extent = {size, size};
     vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
 
     vkCmdSetDepthBias(commandBuffer, 1.5f, 0.0f, 2.5f);
@@ -426,6 +430,7 @@ void ShadowRenderer::endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer
 }
 
 void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, uint32_t cascadeIndex) {
+    uint32_t size = shadowMapSizes[cascadeIndex];
     auto& cas = cascades[cascadeIndex];
 
     // ── Horizontal blur: read cascade color → write to blurTemp ──
@@ -445,7 +450,7 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
         VkRenderingInfo ri{};
         ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
         ri.renderArea.offset = {0, 0};
-        ri.renderArea.extent = {shadowMapSize, shadowMapSize};
+        ri.renderArea.extent = {size, size};
         ri.layerCount = 1;
         ri.colorAttachmentCount = 1;
         ri.pColorAttachments = &colorAtt;
@@ -453,12 +458,12 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
         vkCmdBeginRendering(commandBuffer, &ri);
 
         VkViewport vp{};
-        vp.width = (float)shadowMapSize;
-        vp.height = (float)shadowMapSize;
+        vp.width = (float)size;
+        vp.height = (float)size;
         vp.maxDepth = 1.0f;
         vkCmdSetViewport(commandBuffer, 0, 1, &vp);
         VkRect2D sc{};
-        sc.extent = {shadowMapSize, shadowMapSize};
+        sc.extent = {size, size};
         vkCmdSetScissor(commandBuffer, 0, 1, &sc);
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline);
@@ -494,15 +499,15 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
         VkRenderingInfo ri{};
         ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
         ri.renderArea.offset = {0, 0};
-        ri.renderArea.extent = {shadowMapSize, shadowMapSize};
+        ri.renderArea.extent = {size, size};
         ri.layerCount = 1;
         ri.colorAttachmentCount = 1;
         ri.pColorAttachments = &colorAtt;
 
         vkCmdBeginRendering(commandBuffer, &ri);
-        VkViewport blurVp{0,0,(float)shadowMapSize,(float)shadowMapSize,0,1};
+        VkViewport blurVp{0,0,(float)size,(float)size,0,1};
         vkCmdSetViewport(commandBuffer, 0, 1, &blurVp);
-        VkRect2D blurSc{{0,0},{shadowMapSize,shadowMapSize}};
+        VkRect2D blurSc{{0,0},{size,size}};
         vkCmdSetScissor(commandBuffer, 0, 1, &blurSc);
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline);

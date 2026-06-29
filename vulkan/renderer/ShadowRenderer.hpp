@@ -6,7 +6,7 @@
 
 class ShadowRenderer {
 public:
-    ShadowRenderer(uint32_t shadowMapSize = 2048);
+    ShadowRenderer(uint32_t maxShadowMapSize = 2048);
     ~ShadowRenderer();
     void init(VulkanApp* app);
     void cleanup(VulkanApp* app);
@@ -19,7 +19,8 @@ public:
     VkImageView getShadowMapView(uint32_t cascade = 0) const { return cascades[cascade].colorView; }
     VkSampler getShadowMapSampler() const { return shadowMapSampler; }
     VkDescriptorSet getImGuiDescriptorSet(uint32_t cascade = 0) const { return cascades[cascade].imguiDescSet; }
-    uint32_t getShadowMapSize() const { return shadowMapSize; }
+    uint32_t getShadowMapSize(uint32_t cascade = 0) const { return shadowMapSizes[cascade]; }
+    uint32_t getMaxShadowMapSize() const { return shadowMapSizes[0]; }
     VkDescriptorSetLayout getShadowDescriptorSetLayout(VulkanApp* app) const;
     VkRenderPass getShadowRenderPass() const { return VK_NULL_HANDLE; }
     VkFramebuffer getShadowFramebuffer(uint32_t cascade = 0) const { return VK_NULL_HANDLE; }
@@ -32,7 +33,7 @@ public:
     void freeImGuiDescriptors();
     void recreateImGuiDescriptors();
 private:
-    uint32_t shadowMapSize;
+    uint32_t shadowMapSizes[SHADOW_CASCADE_COUNT];
 
     // Per-cascade resources (EVSM color image + depth image for depth testing)
     struct CascadeResources {
