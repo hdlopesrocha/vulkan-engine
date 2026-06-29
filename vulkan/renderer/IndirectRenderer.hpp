@@ -80,6 +80,12 @@ public:
 
 public:
   
+    // Poll for completion of an in-flight async transfer and publish
+    // the results (update meta-buffers, etc.).  Call once per frame
+    // before acquireBuffers so deferred publications are visible to
+    // the current frame's draws.
+    void pollPendingTransfers(VulkanApp* app);
+
     // Acquire vertex/index buffers from the transfer queue. Must be called once
     // per frame before draws. Records a buffer memory barrier with no QFO
     // (VK_QUEUE_FAMILY_IGNORED — buffers are CONCURRENT) to make transfer
@@ -131,7 +137,16 @@ public:
     std::vector<MeshInfo> getActiveMeshInfos() const;
 
 private:
+    struct PendingTransfer {
+        VkFence fence = VK_NULL_HANDLE;
+        Buffer stagingBuffer = {};
+    };
+    PendingTransfer pendingTransfer = {};
+
     mutable std::mutex mutex;
+    void publishPendingTransfer(VulkanApp* app);
+    // Unlocked variant — caller must hold mutex.
+    void doUploadMeshMetaBuffers(VulkanApp* app);
     uint32_t nextId = 1;
     std::unordered_map<uint32_t, MeshInfo> meshes; // nodeId -> MeshInfo
 

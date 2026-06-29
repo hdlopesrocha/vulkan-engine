@@ -29,6 +29,35 @@ void recordTransferWriteRelease(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSi
 }
 } // anonymous namespace
 
+void IndirectRenderer::publishPendingTransfer(VulkanApp* app) {
+    if (pendingTransfer.fence == VK_NULL_HANDLE) return;
+    VkDevice dev = app->getDevice();
+
+    vkWaitForFences(dev, 1, &pendingTransfer.fence, VK_TRUE, UINT64_MAX);
+    // Meta-buffers (indirect/draw-count) are append-only: a new mesh's
+    // entry is only written once.  Calling doUploadMeshMetaBuffers
+    // after the vertex/index data lands on the GPU is safe even when
+    // earlier entries were written in a prior upload.
+    doUploadMeshMetaBuffers(app);
+
+    if (pendingTransfer.stagingBuffer.buffer != VK_NULL_HANDLE) {
+        if (app->resources.removeBuffer(pendingTransfer.stagingBuffer.buffer))
+            vkDestroyBuffer(dev, pendingTransfer.stagingBuffer.buffer, nullptr);
+        if (app->resources.removeDeviceMemory(pendingTransfer.stagingBuffer.memory))
+            vkFreeMemory(dev, pendingTransfer.stagingBuffer.memory, nullptr);
+    }
+    vkDestroyFence(dev, pendingTransfer.fence, nullptr);
+    pendingTransfer = {};
+}
+
+void IndirectRenderer::pollPendingTransfers(VulkanApp* app) {
+    if (pendingTransfer.fence == VK_NULL_HANDLE) return;
+    VkResult r = vkGetFenceStatus(app->getDevice(), pendingTransfer.fence);
+    if (r == VK_NOT_READY) return;
+    std::lock_guard<std::mutex> lock(mutex);
+    publishPendingTransfer(app);
+}
+
 void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
     VkBufferMemoryBarrier barriers[4]{};
     uint32_t count = 0;
@@ -36,7 +65,7 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
     auto addBarrier = [&](VkBuffer buf, VkAccessFlags dstAccess) {
         if (buf == VK_NULL_HANDLE) return;
         barriers[count].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        barriers[count].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+        barriers[count].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
         barriers[count].dstAccessMask = dstAccess;
         barriers[count].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barriers[count].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -53,7 +82,7 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
 
     if (count > 0) {
         vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_HOST_BIT,
+            VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
             0, 0, nullptr, count, barriers, 0, nullptr);
     }
@@ -294,12 +323,40 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
             }
             vkUnmapMemory(app->getDevice(), staging.memory);
 
-            // Drain the queue so the validation layer sees the previous
-            // frame's reads complete before this copy writes.  Called
-            // only during mesh uploads, not every frame.
-            app->queueWaitIdle();
-
-            app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+            // Submit the staging→device-local copy asynchronously and
+            // defer the meta-buffer write until the fence signals.
+            // The meta-buffer (indirect + bounds) is append-only, so
+            // publishing it later is safe: in-flight draws that already
+            // reference earlier offsets still see valid data.
+            if (pendingTransfer.fence != VK_NULL_HANDLE) {
+                publishPendingTransfer(app);
+            }
+            pendingTransfer.fence = app->runSingleTimeCommandsAsync([&](VkCommandBuffer cmd) {
+                // Barrier: prior vertex/index reads must complete before
+                // the transfer writes to those buffers.
+                VkBufferMemoryBarrier vb{};
+                vb.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                vb.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                vb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                vb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                vb.offset = 0;
+                vb.size = VK_WHOLE_SIZE;
+                if (doVertexUpload) {
+                    vb.srcAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+                    vb.buffer = vertexBuffer.buffer;
+                    vkCmdPipelineBarrier(cmd,
+                        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        0, 0, nullptr, 1, &vb, 0, nullptr);
+                }
+                if (doIndexUpload) {
+                    vb.srcAccessMask = VK_ACCESS_INDEX_READ_BIT;
+                    vb.buffer = indexBuffer.buffer;
+                    vkCmdPipelineBarrier(cmd,
+                        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        0, 0, nullptr, 1, &vb, 0, nullptr);
+                }
                 VkDeviceSize o = 0;
                 if (doVertexUpload) {
                     VkBufferCopy vCopy{};
@@ -316,12 +373,7 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
                     vkCmdCopyBuffer(cmd, staging.buffer, indexBuffer.buffer, 1, &iCopy);
                 }
             });
-
-            VkDevice dev = app->getDevice();
-            if (app->resources.removeBuffer(staging.buffer))
-                vkDestroyBuffer(dev, staging.buffer, nullptr);
-            if (app->resources.removeDeviceMemory(staging.memory))
-                vkFreeMemory(dev, staging.memory, nullptr);
+            pendingTransfer.stagingBuffer = staging;
         }
     }
     return true;
@@ -341,13 +393,18 @@ bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
     if (!uploadMeshVerticesAndIndices(app, meshId)) {
         return false;
     }
-    uploadMeshMetaBuffers(app);
+    // uploadMeshMetaBuffers deferred until pendingTransfer fence signals.
     return true;
 }
 
 // Write all mesh indirect/model/bounds buffers for all active meshes
 void IndirectRenderer::uploadMeshMetaBuffers(VulkanApp* app) {
     std::lock_guard<std::mutex> guard(mutex);
+    doUploadMeshMetaBuffers(app);
+}
+
+// Unlocked variant — caller must hold mutex.
+void IndirectRenderer::doUploadMeshMetaBuffers(VulkanApp* app) {
     if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
 
     // Append-only: skip already-written entries to avoid rewriting data
@@ -390,7 +447,12 @@ void IndirectRenderer::uploadMeshMetaBuffers(VulkanApp* app) {
 
 void IndirectRenderer::rebuild(VulkanApp* app) {
     std::lock_guard<std::mutex> guard(mutex);
-    
+
+    // Publish any pending async upload before rebuilding.
+    if (pendingTransfer.fence != VK_NULL_HANDLE) {
+        publishPendingTransfer(app);
+    }
+
     size_t activeMeshCount = 0;
     for (const auto& kv : meshes) if (kv.second.active) ++activeMeshCount;
 #if 0
@@ -518,11 +580,9 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             }
             vkUnmapMemory(app->getDevice(), staging.memory);
 
-            // Drain the queue so the validation layer sees the previous
-            // frame's reads complete before this copy writes.  Called
-            // only during mesh uploads, not every frame.
-            app->queueWaitIdle();
-
+            // Copy to freshly-created device-local buffers that have never
+            // been read by any prior command, so no WRITE_AFTER_READ hazard.
+            // queueWaitIdle is unnecessary (just stalls the pipeline).
             app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
                 VkDeviceSize off = 0;
                 if (doVertexUpload) {
