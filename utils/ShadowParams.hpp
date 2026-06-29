@@ -109,12 +109,16 @@ struct ShadowParams {
             centroid.x = std::floor(centroid.x / snapX) * snapX;
             centroid.y = std::floor(centroid.y / snapY) * snapY;
 
-            // ---- 6. Orthographic projection ----
+            // ---- 6. Orthographic projection using the actual AABB Z bounds ----
+            // Use maxLS.z/minLS.z directly (updated after extension) instead of
+            // centroid ± halfExt, because the centroid was computed from the
+            // original bounds before the Z extension and would give a wrong near plane.
+            float nearVal = -maxLS.z;
+            float farVal  = -minLS.z;
             glm::mat4 proj = glm::ortho(
                 centroid.x - halfExt.x, centroid.x + halfExt.x,
                 centroid.y - halfExt.y, centroid.y + halfExt.y,
-                -(centroid.z + halfExt.z),  // near (most positive Z → smallest distance)
-                -(centroid.z - halfExt.z)); // far  (most negative Z → largest distance)
+                nearVal, farVal);
 
             light.setProjection(proj);
             lightSpaceMatrix[i] = light.getViewProjectionMatrix();

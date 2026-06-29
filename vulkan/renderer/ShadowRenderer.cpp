@@ -267,8 +267,8 @@ void ShadowRenderer::createBlurResources(VulkanApp* app) {
         throw std::runtime_error("ShadowRenderer: failed to create blur descriptor pool");
     app->resources.addDescriptorPool(blurDescPool, "ShadowRenderer: blurDescPool");
 
-    // Temporary image for blur ping-pong (fixed 8192×8192 as requested)
-    RendererUtils::createImage2D(device, app, 8192, 8192,
+    // Temporary image for blur ping-pong (sized for the largest cascade)
+    RendererUtils::createImage2D(device, app, shadowMapSizes[0], shadowMapSizes[0],
         EVSM_FORMAT,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
