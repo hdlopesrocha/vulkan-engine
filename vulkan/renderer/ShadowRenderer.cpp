@@ -394,7 +394,7 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     shadowScissor.extent = {shadowMapSize, shadowMapSize};
     vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
 
-    vkCmdSetDepthBias(commandBuffer, 0.0f, 0.0f, 0.0f);
+    vkCmdSetDepthBias(commandBuffer, 1.5f, 0.0f, 2.5f);
 
     if (shadowPipeline != VK_NULL_HANDLE) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);

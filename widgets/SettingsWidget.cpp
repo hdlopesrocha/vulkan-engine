@@ -26,9 +26,7 @@ void SettingsWidget::render() {
             ImGui::SliderFloat("Base Ortho Size", &shadowParams->orthoSize, 10.0f, 2048.0f, "%.0f");
             ImGuiHelpers::SetTooltipIfHovered("Shadow camera orthographic size for the base cascade");
             for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
-                ImGui::Text("  Cascade %d: ortho = %.1f (x%.0f)", i,
-                    shadowParams->orthoSize * shadowParams->cascadeMultipliers[i],
-                    shadowParams->cascadeMultipliers[i]);
+                ImGui::Text("  Cascade %d", i);
             }
         }
 

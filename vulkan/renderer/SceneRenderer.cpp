@@ -287,6 +287,9 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         }
 
         shadowMapper->endShadowPass(app, commandBuffer, c);
+
+        // Apply separable Gaussian blur (EVSM moment filtering) to reduce noise
+        shadowMapper->blurCascade(app, commandBuffer, c);
     }
 
     // Restore GPU culling for the main camera frustum (was overwritten by

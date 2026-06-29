@@ -384,6 +384,7 @@ public:
 
     void setup() override {
         sceneRenderer = new SceneRenderer();
+        shadowParams.shadowMapSize = sceneRenderer->shadowMapper->getShadowMapSize();
         // Initialize application-owned water params with two default elements
         waterParams.push_back(WaterParams{}); // Add a third layer to demonstrate pagination in UI even without texture arrays
         {
@@ -546,7 +547,7 @@ public:
         glm::mat4 proj = glm::perspective(glm::radians(60.0f), aspectRatio, settings.nearPlane, settings.farPlane);
         proj[1][1] *= -1; // Vulkan Y-flip
         camera.setProjection(proj);
-        shadowParams.update(camera.getPosition(), light);
+        shadowParams.update(camera.getPosition(), light, camera.getViewProjectionMatrix(), settings.nearPlane, settings.farPlane);
         
         // Position camera to view the terrain
         printf("[Camera Setup] Final Position: (%.1f, %.1f, %.1f)\n", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
@@ -601,7 +602,7 @@ public:
         nunchukPublisher.update();
         eventManager.processQueued();
 
-        shadowParams.update(camera.getPosition(), light);
+        shadowParams.update(camera.getPosition(), light, camera.getViewProjectionMatrix(), settings.nearPlane, settings.farPlane);
 
         // Drain the pending mesh queue populated by the background scene-loading
         // thread.  GPU uploads happen here on the main thread so newly generated
