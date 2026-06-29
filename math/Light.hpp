@@ -40,6 +40,7 @@ public:
     void setProjection(const glm::mat4 &proj) { projection = proj; }
     glm::mat4 getProjection() const { return projection; }
     void setTarget(const glm::vec3& target, float orthoSize = 1024.0f);
+    void setViewMatrix(const glm::mat4 &vm) { viewMatrix = vm; }
     glm::mat4 getViewMatrix() const { return viewMatrix; }
     glm::mat4 getViewProjectionMatrix() const { return projection * viewMatrix; }
 

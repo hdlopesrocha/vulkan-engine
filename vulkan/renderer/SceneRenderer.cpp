@@ -241,10 +241,9 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
                 0, 1, &memBarrier, 0, nullptr, 0, nullptr);
         }
 
-        // Per-cascade GPU frustum culling: run the compute-based cull pass
-        // with the cascade's light-space matrix BEFORE beginShadowPass
-        // (vkCmdPipelineBarrier not allowed inside dynamic rendering).
-        solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, lsMatrix);
+        // Draw all solid geometry for this cascade (no per-cascade culling).
+        // Using drawAll instead of per-cascade prepareCull+drawIndirectOnly
+        // avoids potential culling issues that can cause missing shadows.
 
         // Acquire vegetation instance/indirect buffers before
         // vkCmdBeginRendering (barriers illegal inside dynamic rendering).
@@ -274,10 +273,8 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         if (solidShadowPipeline != VK_NULL_HANDLE) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowPipeline);
         }
-        // Draw only meshes visible in this cascade (compacted by prepareCull above)
-        auto& shadowIR = solidRenderer->getIndirectRenderer();
-        shadowIR.bindBuffers(commandBuffer);
-        shadowIR.drawIndirectOnly(commandBuffer, shadowMapper->getShadowPipelineLayout(), 0);
+        // Draw all meshes for this cascade (no per-cascade culling)
+        solidRenderer->getIndirectRenderer().drawAll(commandBuffer);
 
         // Vegetation shadow pass: drawn after solid so its 2-buffer vertex
         // bindings don't leak into the solid draw.
@@ -291,11 +288,6 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         // EVSM separable blur for this cascade (horizontal + vertical)
         shadowMapper->blurCascade(app, commandBuffer, c);
     }
-
-    // Restore GPU culling for the main camera frustum (was overwritten by
-    // per-cascade prepareCull calls above) so drawPrepared in the main pass
-    // uses the correct visible set.
-    solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection);
 
     // Restore the main UBO so subsequent passes see the original data.
     // Wait for all shadow cascade draws to finish reading the UBO first.
