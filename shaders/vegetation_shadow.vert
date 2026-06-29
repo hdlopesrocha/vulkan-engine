@@ -39,6 +39,13 @@ void main() {
     int cornerType = inCornerNormalData & 0xFF;
 
     vec3 worldPos = instanceData.xyz;
+
+    if (impostorDistance > 0.0 && distance(cameraPosAndFalloff.xyz, worldPos) >= impostorDistance) {
+        outWorldPos = worldPos;
+        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
     float rotFrac = fract(instanceData.w);
     float theta = rotFrac * 6.28318530718;
     float cosT = cos(theta);

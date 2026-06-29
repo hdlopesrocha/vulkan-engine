@@ -6,10 +6,7 @@ layout(location = ATTR_UV) in vec2 inCornerUV;
 layout(location = ATTR_INSTANCE) in vec4 instanceData; // xyz=world pos, w=billboard index + rotFrac
 
 layout(location = VARY_UV) out vec3 outTexCoord;
-layout(location = VARY_POSWORLD) out vec3 outWorldPos;
-layout(location = VARY_FACE_NORMAL) flat out vec3 outFaceNormal;
-layout(location = VARY_ROTFRAC) flat out float outRotFrac;
-layout(location = VARY_POSLIGHT) flat out vec3 outInstanceOffset;
+layout(location = VARY_TANGENTWS) flat out vec3 outInstanceOffset;
 
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
     mat4 viewProjection;
@@ -36,24 +33,25 @@ void main() {
     vec3 worldPos = instanceData.xyz;
     int billboardIdx = int(floor(instanceData.w));
     float rotFrac = fract(instanceData.w);
-    outRotFrac = rotFrac;
 
-    vec3 camPos = ubo.viewPos.xyz;
-    float dist = distance(worldPos, camPos);
-
-    if (impostorDistance <= 0.0 || dist < impostorDistance * 0.50) {
-        outTexCoord = vec3(0.0); outWorldPos = worldPos; outFaceNormal = vec3(0.0, 1.0, 0.0);
-        outInstanceOffset = worldPos;
+    if (impostorDistance <= 0.0) {
+        outTexCoord = vec3(0.0); outInstanceOffset = worldPos;
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         return;
     }
 
-    float densityFactor = densityFactorForDistance(dist);
+    float mainCamDist = distance(cameraPosAndFalloff.xyz, worldPos);
+    if (mainCamDist < impostorDistance * 0.50) {
+        outTexCoord = vec3(0.0); outInstanceOffset = worldPos;
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        return;
+    }
+
+    float densityFactor = densityFactorForDistance(mainCamDist);
     if (densityFactor < 0.9999) {
         float keep = perlin2d_hash13(vec3(worldPos.xz * 0.03125, float(billboardIdx) + worldPos.y * 0.0078125));
         if (keep > densityFactor) {
-            outTexCoord = vec3(0.0); outWorldPos = worldPos; outFaceNormal = vec3(0.0, 1.0, 0.0);
-            outInstanceOffset = worldPos;
+            outTexCoord = vec3(0.0); outInstanceOffset = worldPos;
             gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
             return;
         }
@@ -64,7 +62,7 @@ void main() {
     const float goldenAngle = 3.14159265358979323846 * (3.0 - 2.2360679774997896);
     const int NUM_VIEWS = 20;
 
-    vec3 toCamera = normalize(camPos - worldPos);
+    vec3 toCamera = normalize(ubo.viewPos.xyz - worldPos);
 
     float instTheta = rotFrac * 6.28318530718;
     float cI = cos(instTheta);
@@ -106,15 +104,11 @@ void main() {
     right = right * (scaledBillboard * kHalf);
     vec3 up = upDir * (scaledBillboard * kHalf);
 
-    vec3 faceNorm = toCamera;
-    outFaceNormal = faceNorm;
-
     float u = inCornerUV.x;
     float v = inCornerUV.y;
     vec3 offset = (u - 0.5) * 2.0 * right + (0.5 - v) * 2.0 * up;
     vec3 finalPos = center + offset;
 
     outTexCoord = vec3(inCornerUV.x, inCornerUV.y, float(layerIdx));
-    outWorldPos = finalPos;
     gl_Position = ubo.viewProjection * vec4(finalPos, 1.0);
 }

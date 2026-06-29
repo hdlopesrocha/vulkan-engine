@@ -65,6 +65,11 @@ void VegetationRenderer::cleanup() {
     billboardVBO.indexBuffer.buffer = VK_NULL_HANDLE;
     billboardVBO.indexBuffer.memory = VK_NULL_HANDLE;
     billboardVBO.indexCount = 0;
+    impostorVBO.vertexBuffer.buffer = VK_NULL_HANDLE;
+    impostorVBO.vertexBuffer.memory = VK_NULL_HANDLE;
+    impostorVBO.indexBuffer.buffer = VK_NULL_HANDLE;
+    impostorVBO.indexBuffer.memory = VK_NULL_HANDLE;
+    impostorVBO.indexCount = 0;
     appPtr = nullptr;
     destroyCulling();
 }
@@ -86,25 +91,30 @@ void VegetationRenderer::destroyCulling() {
             vkFreeMemory(device, chunkMetaBuffer.memory, nullptr);
         chunkMetaBuffer = {};
     }
-    if (compactedCmdBuffer.buffer != VK_NULL_HANDLE) {
-        if (appPtr->resources.removeBuffer(compactedCmdBuffer.buffer))
-            vkDestroyBuffer(device, compactedCmdBuffer.buffer, nullptr);
-        if (appPtr->resources.removeDeviceMemory(compactedCmdBuffer.memory))
-            vkFreeMemory(device, compactedCmdBuffer.memory, nullptr);
-        compactedCmdBuffer = {};
-    }
-    if (visibleCountBuffer.buffer != VK_NULL_HANDLE) {
-        if (appPtr->resources.removeBuffer(visibleCountBuffer.buffer))
-            vkDestroyBuffer(device, visibleCountBuffer.buffer, nullptr);
-        if (appPtr->resources.removeDeviceMemory(visibleCountBuffer.memory))
-            vkFreeMemory(device, visibleCountBuffer.memory, nullptr);
-        visibleCountBuffer = {};
-        visibleCountMapped = nullptr;
+    for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
+        if (compactedCmdBuffers[f].buffer != VK_NULL_HANDLE) {
+            if (appPtr->resources.removeBuffer(compactedCmdBuffers[f].buffer))
+                vkDestroyBuffer(device, compactedCmdBuffers[f].buffer, nullptr);
+            if (appPtr->resources.removeDeviceMemory(compactedCmdBuffers[f].memory))
+                vkFreeMemory(device, compactedCmdBuffers[f].memory, nullptr);
+            compactedCmdBuffers[f] = {};
+        }
+        if (visibleCountBuffers[f].buffer != VK_NULL_HANDLE) {
+            if (visibleCountMapped[f] && appPtr) {
+                vkUnmapMemory(device, visibleCountBuffers[f].memory);
+                visibleCountMapped[f] = nullptr;
+            }
+            if (appPtr->resources.removeBuffer(visibleCountBuffers[f].buffer))
+                vkDestroyBuffer(device, visibleCountBuffers[f].buffer, nullptr);
+            if (appPtr->resources.removeDeviceMemory(visibleCountBuffers[f].memory))
+                vkFreeMemory(device, visibleCountBuffers[f].memory, nullptr);
+            visibleCountBuffers[f] = {};
+        }
+        vegCullDescSets[f] = VK_NULL_HANDLE;
     }
     if (vegCullDescPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(device, vegCullDescPool, nullptr);
         vegCullDescPool = VK_NULL_HANDLE;
-        vegCullDescSet = VK_NULL_HANDLE;
     }
     // Pipeline and layouts are tracked by central manager — just clear handles
     vegCullPipeline = VK_NULL_HANDLE;
@@ -177,24 +187,27 @@ void VegetationRenderer::initCulling(VulkanApp* app) {
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = 3;
+    poolSize.descriptorCount = VEG_CULL_FRAMES * 3;
     VkDescriptorPoolCreateInfo poolCI{};
     poolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolCI.maxSets = 1;
+    poolCI.maxSets = VEG_CULL_FRAMES;
     poolCI.poolSizeCount = 1;
     poolCI.pPoolSizes = &poolSize;
     poolCI.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     if (vkCreateDescriptorPool(device, &poolCI, nullptr, &vegCullDescPool) != VK_SUCCESS)
         throw std::runtime_error("failed to create vegetation cull descriptor pool!");
 
+    std::array<VkDescriptorSetLayout, VEG_CULL_FRAMES> layouts;
+    layouts.fill(vegCullDescSetLayout);
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = vegCullDescPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &vegCullDescSetLayout;
-    if (vkAllocateDescriptorSets(device, &allocInfo, &vegCullDescSet) != VK_SUCCESS)
-        throw std::runtime_error("failed to allocate vegetation cull descriptor set!");
-    std::cerr << "[VEG] vegCullDescSet allocated = " << (void*)vegCullDescSet << std::endl;
+    allocInfo.descriptorSetCount = VEG_CULL_FRAMES;
+    allocInfo.pSetLayouts = layouts.data();
+    if (vkAllocateDescriptorSets(device, &allocInfo, vegCullDescSets.data()) != VK_SUCCESS)
+        throw std::runtime_error("failed to allocate vegetation cull descriptor sets!");
+    for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f)
+        std::cerr << "[VEG] vegCullDescSet[" << f << "] = " << (void*)vegCullDescSets[f] << std::endl;
 }
 
 void VegetationRenderer::consolidateChunks(VulkanApp* app) {
@@ -228,23 +241,22 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    // Allocate compacted cmd buffer (device-local storage + indirect)
+    // Allocate triple-buffered compacted cmd buffers and visible count buffers
+    // (matches IndirectRenderer pattern to avoid CPU/GPU races on single-buffered resources).
     VkDeviceSize compactedSize = std::max(256u, numChunks) * sizeof(VkDrawIndexedIndirectCommand);
-    if (compactedCmdBuffer.buffer == VK_NULL_HANDLE)
-        compactedCmdBuffer = app->createBuffer(compactedSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-    // Allocate visible count buffer (host-visible for CPU reset, storage for compute, indirect for vkCmdDrawIndirectCount)
-    if (visibleCountBuffer.buffer == VK_NULL_HANDLE)
-        visibleCountBuffer = app->createBuffer(sizeof(uint32_t),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    // Map visible count and initialize to 0
-    if (visibleCountMapped == nullptr && visibleCountBuffer.memory != VK_NULL_HANDLE) {
-        vkMapMemory(device, visibleCountBuffer.memory, 0, sizeof(uint32_t), 0, reinterpret_cast<void**>(&visibleCountMapped));
-        *visibleCountMapped = 0;
+    for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
+        if (compactedCmdBuffers[f].buffer == VK_NULL_HANDLE)
+            compactedCmdBuffers[f] = app->createBuffer(compactedSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (visibleCountBuffers[f].buffer == VK_NULL_HANDLE) {
+            visibleCountBuffers[f] = app->createBuffer(sizeof(uint32_t),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            vkMapMemory(device, visibleCountBuffers[f].memory, 0, sizeof(uint32_t), 0,
+                        reinterpret_cast<void**>(&visibleCountMapped[f]));
+            *visibleCountMapped[f] = 0;
+        }
     }
 
     // Build per-chunk metadata on CPU
@@ -341,59 +353,63 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     memcpy(data, metaArray.data(), vegNumChunks * sizeof(ChunkMeta));
     vkUnmapMemory(device, chunkMetaBuffer.memory);
 
-    // Update descriptor set with the new buffers
+    // Update each frame's descriptor set with its per-frame compact + count buffers.
+    // The meta buffer (chunkMetaBuffer) is shared across all frames (read-only).
     VkDescriptorBufferInfo metaBI{};
     metaBI.buffer = chunkMetaBuffer.buffer;
     metaBI.offset = 0;
     metaBI.range = VK_WHOLE_SIZE;
 
-    VkDescriptorBufferInfo compactedBI{};
-    compactedBI.buffer = compactedCmdBuffer.buffer;
-    compactedBI.offset = 0;
-    compactedBI.range = VK_WHOLE_SIZE;
+    for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
+        VkDescriptorBufferInfo compactedBI{};
+        compactedBI.buffer = compactedCmdBuffers[f].buffer;
+        compactedBI.offset = 0;
+        compactedBI.range = VK_WHOLE_SIZE;
 
-    VkDescriptorBufferInfo countBI{};
-    countBI.buffer = visibleCountBuffer.buffer;
-    countBI.offset = 0;
-    countBI.range = VK_WHOLE_SIZE;
+        VkDescriptorBufferInfo countBI{};
+        countBI.buffer = visibleCountBuffers[f].buffer;
+        countBI.offset = 0;
+        countBI.range = VK_WHOLE_SIZE;
 
-    VkWriteDescriptorSet writes[3]{};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = vegCullDescSet;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[0].pBufferInfo = &metaBI;
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = vegCullDescSet;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[1].pBufferInfo = &compactedBI;
-    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = vegCullDescSet;
-    writes[2].dstBinding = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[2].pBufferInfo = &countBI;
-    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+        VkWriteDescriptorSet writes[3]{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = vegCullDescSets[f];
+        writes[0].dstBinding = 0;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[0].pBufferInfo = &metaBI;
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = vegCullDescSets[f];
+        writes[1].dstBinding = 1;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[1].pBufferInfo = &compactedBI;
+        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet = vegCullDescSets[f];
+        writes[2].dstBinding = 2;
+        writes[2].descriptorCount = 1;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[2].pBufferInfo = &countBI;
+        vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+    }
 
     vegConsolidationDirty = false;
 }
 
 void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj) {
+    vegCullCurrentSlot = vegCullFrameIndex % VEG_CULL_FRAMES;
+    vegCullFrameIndex++;
+    uint32_t f = vegCullCurrentSlot;
     // Consolidate if chunks have changed since last consolidation
     if (vegConsolidationDirty && !chunkBuffers.empty()) {
-        // Cannot consolidate here (needs a command buffer submit + wait).
-        // Consolidation must happen outside the hot path (e.g. after scene load).
-        // If not consolidated, the draw functions will use the legacy per-chunk path.
         return;
     }
     if (vegCullPipeline == VK_NULL_HANDLE || vegNumChunks == 0) return;
-    if (compactedCmdBuffer.buffer == VK_NULL_HANDLE || visibleCountBuffer.buffer == VK_NULL_HANDLE) return;
+    if (compactedCmdBuffers[f].buffer == VK_NULL_HANDLE || visibleCountBuffers[f].buffer == VK_NULL_HANDLE) return;
 
-    // Reset visible count
-    if (visibleCountMapped) *visibleCountMapped = 0;
+    // Reset visible count via CPU mapped pointer — safe because triple-buffering
+    // guarantees this frame's buffer hasn't been touched for at least 2 frames.
+    if (visibleCountMapped[f]) *visibleCountMapped[f] = 0;
 
     // Barrier: ensure prior GPU writes to meta/concatenated are visible
     VkMemoryBarrier barrier{};
@@ -404,8 +420,7 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegCullPipeline);
-    std::cerr << "[VEG] prepareCull: binding vegCullDescSet=" << (void*)vegCullDescSet << " at compute bind point" << std::endl;
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegCullPipelineLayout, 0, 1, &vegCullDescSet, 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegCullPipelineLayout, 0, 1, &vegCullDescSets[f], 0, nullptr);
 
     struct CullPC {
         glm::mat4 viewProj;
@@ -772,6 +787,21 @@ void VegetationRenderer::init(VulkanApp* app) {
         billboardVBO.indexCount = 36;
     }
 
+    // Build impostor quad mesh: 4 vertices forming a unit-square with UV corners.
+    // The vertex shader scales and orients these into camera-facing billboards.
+    if (impostorVBO.vertexBuffer.buffer == VK_NULL_HANDLE) {
+        std::vector<Vertex> impVerts(4);
+        impVerts[0] = Vertex(glm::vec3(-1.0f, -1.0f, 0.0f), glm::vec3(0.0f), glm::vec2(0.0f, 1.0f), 0); // BL
+        impVerts[1] = Vertex(glm::vec3( 1.0f, -1.0f, 0.0f), glm::vec3(0.0f), glm::vec2(1.0f, 1.0f), 0); // BR
+        impVerts[2] = Vertex(glm::vec3(-1.0f,  1.0f, 0.0f), glm::vec3(0.0f), glm::vec2(0.0f, 0.0f), 0); // TL
+        impVerts[3] = Vertex(glm::vec3( 1.0f,  1.0f, 0.0f), glm::vec3(0.0f), glm::vec2(1.0f, 0.0f), 0); // TR
+        impostorVBO.vertexBuffer = app->createVertexBuffer(impVerts);
+
+        std::vector<uint32_t> impIdx = { 0, 1, 2, 1, 3, 2 };
+        impostorVBO.indexBuffer = app->createIndexBuffer(impIdx);
+        impostorVBO.indexCount = 6;
+    }
+
     // Instances are generated exclusively via compute shader; no CPU uploads
     // are performed here.
 }
@@ -992,12 +1022,15 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
     );
 
     // Draw: consolidated (GPU culling) or legacy per-chunk path.
-    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+    uint32_t sf = vegCullCurrentSlot;
+    vkCmdBindIndexBuffer(commandBuffer, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
+        compactedCmdBuffers[sf].buffer != VK_NULL_HANDLE && visibleCountBuffers[sf].buffer != VK_NULL_HANDLE) {
         VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
         VkDeviceSize offsets[2] = { 0, 0 };
         vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-        cmdDrawIndexedIndirectCount(commandBuffer, compactedCmdBuffer.buffer, 0,
-        visibleCountBuffer.buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
+        cmdDrawIndexedIndirectCount(commandBuffer, compactedCmdBuffers[sf].buffer, 0,
+        visibleCountBuffers[sf].buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
     } else {
         static int shadowDrawLogCounter = 0;
         int chunksDrawn = 0;
@@ -1019,18 +1052,10 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
     }
 
     // ── Impostor depth pass ────────────────────────────────────────────────────
-    // Draw camera-facing quads with per-pixel depth from the captured depth array,
-    // so impostors cast accurate shadows onto the scene.
     if (impostorDepthPipeline != VK_NULL_HANDLE &&
         impostorDepthDescSet  != VK_NULL_HANDLE &&
-        impostorDistance > 0.0f) {
-
-        static int impostorDepthDrawCounter = 0;
-        if (impostorDepthDrawCounter < 5) {
-            std::cerr << "[VEGETATION SHADOW DRAW] Impostor depth pass active, drawing "
-                      << chunkBuffers.size() << " chunks\n";
-            impostorDepthDrawCounter++;
-        }
+        impostorDistance > 0.0f && impostorVBO.vertexBuffer.buffer != VK_NULL_HANDLE &&
+        !chunkBuffers.empty()) {
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorDepthPipeline);
 
@@ -1039,27 +1064,24 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
                     impostorDepthPipelineLayout, 0, 2, depthSets, 0, nullptr);
 
         vkCmdPushConstants(commandBuffer, impostorDepthPipelineLayout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT
-                           | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(WindPushConstants), &pc);
 
+        vkCmdBindIndexBuffer(commandBuffer, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        VkBuffer impVbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
+        VkDeviceSize impOffsets[2] = { 0, 0 };
         if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-            VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
-            VkDeviceSize offsets[2] = { 0, 0 };
-            vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-            cmdDrawIndexedIndirectCount(commandBuffer, compactedCmdBuffer.buffer, 0,
-                visibleCountBuffer.buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
-        } else {
-            for (auto& [chunkId, buf] : chunkBuffers) {
-                (void)chunkId;
-                if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
-                if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
-
-                VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
-                VkDeviceSize offsets[2] = { 0, 0 };
-                vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-                vkCmdDrawIndexedIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
+            impVbs[1] = concatenatedInstanceBuffer.buffer;
+            vkCmdBindVertexBuffers(commandBuffer, 0, 2, impVbs, impOffsets);
+        }
+        for (auto& [chunkId, buf] : chunkBuffers) {
+            (void)chunkId;
+            if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
+            if (concatenatedInstanceBuffer.buffer == VK_NULL_HANDLE) {
+                impVbs[1] = buf.buffer;
+                vkCmdBindVertexBuffers(commandBuffer, 0, 2, impVbs, impOffsets);
             }
+            vkCmdDrawIndexed(commandBuffer, 6, static_cast<uint32_t>(buf.count), 0, 0, 0);
         }
     }
 }
@@ -1264,27 +1286,21 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         vkUpdateDescriptorSets(device, 2, ws, 0, nullptr);
 
         // ── Build impostor depth pipeline ────────────────────────────────
-        auto depthVertCode = FileReader::readFile("shaders/impostors.vert.spv");
-        auto depthGeomCode = FileReader::readFile("shaders/impostors_depth.geom.spv");
+        auto depthVertCode = FileReader::readFile("shaders/impostors_depth.vert.spv");
         auto depthFragCode = FileReader::readFile("shaders/impostors_depth.frag.spv");
 
         VkShaderModule depthVertMod = app->createShaderModule(depthVertCode);
-        VkShaderModule depthGeomMod = app->createShaderModule(depthGeomCode);
         VkShaderModule depthFragMod = app->createShaderModule(depthFragCode);
 
-        VkPipelineShaderStageCreateInfo depthStages[3]{};
+        VkPipelineShaderStageCreateInfo depthStages[2]{};
         depthStages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         depthStages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
         depthStages[0].module = depthVertMod;
         depthStages[0].pName  = "main";
         depthStages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        depthStages[1].stage  = VK_SHADER_STAGE_GEOMETRY_BIT;
-        depthStages[1].module = depthGeomMod;
+        depthStages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+        depthStages[1].module = depthFragMod;
         depthStages[1].pName  = "main";
-        depthStages[2].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        depthStages[2].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-        depthStages[2].module = depthFragMod;
-        depthStages[2].pName  = "main";
 
         VkVertexInputBindingDescription depthBindingDescs[2]{};
         depthBindingDescs[0] = { 0, sizeof(Vertex),       VK_VERTEX_INPUT_RATE_VERTEX   };
@@ -1295,19 +1311,15 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             impostorDepthDescSetLayout
         };
         VkPushConstantRange depthPCRange{};
-        depthPCRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT
-                                | VK_SHADER_STAGE_FRAGMENT_BIT;
+        depthPCRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         depthPCRange.offset     = 0;
         depthPCRange.size       = sizeof(WindPushConstants);
 
         auto [depthPipe, depthLayout] = app->createGraphicsPipeline(
-            { depthStages[0], depthStages[1], depthStages[2] },
+            { depthStages[0], depthStages[1] },
             std::vector<VkVertexInputBindingDescription>{ depthBindingDescs[0], depthBindingDescs[1] },
             {
-                { ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, position) },
-                { ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, (uint32_t)offsetof(Vertex, normal)   },
                 { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
-                { ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT,    (uint32_t)offsetof(Vertex, brushIndex) },
                 { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
             },
             depthSetLayouts,
@@ -1317,7 +1329,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             true,  // depthWrite — write correct per-pixel depth to shadow map
             false, // colorWrite — depth-only pass
             VK_COMPARE_OP_LESS,
-            VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
             false,
             {},
             VK_FORMAT_D32_SFLOAT,
@@ -1334,13 +1346,11 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             std::cerr << "[VegetationRenderer] Impostor depth pipeline created: " << (void*)impostorDepthPipeline << "\n";
     }
 
-    // ── Build impostor color pipeline (same vertex input as vegetation) ───
+    // ── Build impostor color pipeline ───────────────────────────────────
     auto vertCode = FileReader::readFile("shaders/impostors.vert.spv");
-    auto geomCode = FileReader::readFile("shaders/impostors.geom.spv");
     auto fragCode = FileReader::readFile("shaders/impostors.frag.spv");
 
     VkShaderModule vertShader = app->createShaderModule(vertCode);
-    VkShaderModule geomShader = app->createShaderModule(geomCode);
     VkShaderModule fragShader = app->createShaderModule(fragCode);
 
     VkPipelineShaderStageCreateInfo vertStage{};
@@ -1348,12 +1358,6 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
     vertStage.stage  = VK_SHADER_STAGE_VERTEX_BIT;
     vertStage.module = vertShader;
     vertStage.pName  = "main";
-
-    VkPipelineShaderStageCreateInfo geomStage{};
-    geomStage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    geomStage.stage  = VK_SHADER_STAGE_GEOMETRY_BIT;
-    geomStage.module = geomShader;
-    geomStage.pName  = "main";
 
     VkPipelineShaderStageCreateInfo fragStage{};
     fragStage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1370,19 +1374,15 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         impostorDescSetLayout
     };
     VkPushConstantRange pcRange{};
-    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT
-                       | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pcRange.offset     = 0;
     pcRange.size       = sizeof(WindPushConstants);
 
     auto [impPipeline, impLayout] = app->createGraphicsPipeline(
-        { vertStage, geomStage, fragStage },
+        { vertStage, fragStage },
         std::vector<VkVertexInputBindingDescription>{ bindingDescs[0], bindingDescs[1] },
         {
-            { ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(Vertex, position) },
-            { ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, (uint32_t)offsetof(Vertex, normal)   },
             { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
-            { ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT,    (uint32_t)offsetof(Vertex, brushIndex) },
             { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
         },
         impSetLayouts,
@@ -1392,7 +1392,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         false, // depthWrite — impostors don't write depth (handled by prepass)
         true,  // colorWrite
         impCompareOp, // EQUAL when depth data available, LESS as fallback
-        VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
         false,
         {},
         VK_FORMAT_D32_SFLOAT,
@@ -1454,19 +1454,20 @@ VegetationRenderer::WindPushConstants VegetationRenderer::buildWindPushConstants
     return pc;
 }
 
-void VegetationRenderer::issueDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc) {
+void VegetationRenderer::issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc) {
+    uint32_t f = vegCullCurrentSlot;
     vkCmdPushConstants(cmd, activeLayout, pushConstantStages, 0, sizeof(WindPushConstants), &pc);
     if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE || billboardVBO.indexBuffer.buffer == VK_NULL_HANDLE) return;
     VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
     VkDeviceSize offsets[2] = { 0, 0 };
     vkCmdBindIndexBuffer(cmd, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
+        compactedCmdBuffers[f].buffer != VK_NULL_HANDLE && visibleCountBuffers[f].buffer != VK_NULL_HANDLE) {
         vbs[1] = concatenatedInstanceBuffer.buffer;
         vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
-        // Consolidated path uses multi-draw indirect count
         if (cmdDrawIndexedIndirectCount) {
-            cmdDrawIndexedIndirectCount(cmd, compactedCmdBuffer.buffer, 0,
-                visibleCountBuffer.buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
+            cmdDrawIndexedIndirectCount(cmd, compactedCmdBuffers[f].buffer, 0,
+                visibleCountBuffers[f].buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
         }
     } else {
         for (auto& [chunkId, buf] : chunkBuffers) {
@@ -1475,6 +1476,31 @@ void VegetationRenderer::issueDraws(VkCommandBuffer cmd, VkPipelineLayout active
             vbs[1] = buf.buffer;
             vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
             vkCmdDrawIndexedIndirect(cmd, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
+        }
+    }
+}
+
+void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc) {
+    vkCmdPushConstants(cmd, activeLayout, pushConstantStages, 0, sizeof(WindPushConstants), &pc);
+    if (impostorVBO.vertexBuffer.buffer == VK_NULL_HANDLE || impostorVBO.indexBuffer.buffer == VK_NULL_HANDLE) return;
+    VkBuffer vbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
+    VkDeviceSize offsets[2] = { 0, 0 };
+    vkCmdBindIndexBuffer(cmd, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+        vbs[1] = concatenatedInstanceBuffer.buffer;
+        vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
+        for (auto& [chunkId, buf] : chunkBuffers) {
+            (void)chunkId;
+            if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
+            vkCmdDrawIndexed(cmd, 6, static_cast<uint32_t>(buf.count), 0, 0, 0);
+        }
+    } else {
+        for (auto& [chunkId, buf] : chunkBuffers) {
+            (void)chunkId;
+            if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
+            vbs[1] = buf.buffer;
+            vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
+            vkCmdDrawIndexed(cmd, 6, static_cast<uint32_t>(buf.count), 0, 0, 0);
         }
     }
 }
@@ -1496,7 +1522,7 @@ void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffe
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationDepthPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             vegetationDepthPipelineLayout, 0, 2, sets, 0, nullptr);
-        issueDraws(commandBuffer, vegetationDepthPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
+        issueVegetationDraws(commandBuffer, vegetationDepthPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }
 
     // Impostor depth prepass
@@ -1507,7 +1533,7 @@ void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffe
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     impostorDepthPipelineLayout, 0, 2, depthSets, 0, nullptr);
         vkCmdSetDepthBias(commandBuffer, 0.0f, 0.0f, 0.0f);
-        issueDraws(commandBuffer, impostorDepthPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
+        issueImpostorDraws(commandBuffer, impostorDepthPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }
 }
 
@@ -1528,7 +1554,7 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             pipelineLayout, 0, 2, sets, 0, nullptr);
-        issueDraws(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
+        issueVegetationDraws(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }
     // Impostor color pass
     if (impostorPipeline != VK_NULL_HANDLE &&
@@ -1537,7 +1563,7 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
         VkDescriptorSet impSets[2] = { globalSet, impostorDescSet };
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     impostorPipelineLayout, 0, 2, impSets, 0, nullptr);
-        issueDraws(commandBuffer, impostorPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
+        issueImpostorDraws(commandBuffer, impostorPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }
 }
 
@@ -1820,8 +1846,9 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 instanceData[oi + 1] = pos.y;
                 instanceData[oi + 2] = pos.z;
                 instanceData[oi + 3] = float(bi) + rf;
-            }
-        }
+    }
+
+}
 
         const VkDeviceSize bufSize = instanceData.size() * sizeof(float);
 

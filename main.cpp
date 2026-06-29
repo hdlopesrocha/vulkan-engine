@@ -724,7 +724,7 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 0);
         if (sceneRenderer) {
-            sceneRenderer->shadowPass(this, commandBuffer, getMainDescriptorSet(), sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.vegetationEnabled);
+            sceneRenderer->shadowPass(this, commandBuffer, getMainDescriptorSet(), frameIdx, sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, settings.enableShadows, settings.vegetationEnabled);
         }
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 1);

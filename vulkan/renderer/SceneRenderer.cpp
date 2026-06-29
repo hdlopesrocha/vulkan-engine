@@ -187,7 +187,7 @@ SceneRenderer::~SceneRenderer() {
     // VulkanApp instance.
 }
 
-void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool vegetationEnabled) {
+void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, VkDescriptorSet mainDescriptorSet, uint32_t frameIdx, Buffer &mainUniformBuffer, const UniformObject &uboStatic, bool shadowsEnabled, bool vegetationEnabled) {
     static bool firstCall = true;
     if (firstCall) {
         firstCall = false;
@@ -258,7 +258,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         VkPipelineLayout layout = shadowMapper->getShadowPipelineLayout();
         VkDescriptorSet ds = VK_NULL_HANDLE;
         if (!shadowDescriptorSets.empty()) {
-            uint32_t idx = app->getCurrentFrame() % static_cast<uint32_t>(shadowDescriptorSets.size());
+            uint32_t idx = frameIdx % static_cast<uint32_t>(shadowDescriptorSets.size());
             ds = shadowDescriptorSets[idx];
         }
         if (layout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {

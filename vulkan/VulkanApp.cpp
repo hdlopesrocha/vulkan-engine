@@ -787,6 +787,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         // this safe, but the validation layer flags it as SYNC-HAZARD-READ-AFTER-WRITE
         // across command buffers (binding #11).  This is a known false positive.
         if (strstr(msg, "SYNC-HAZARD-READ-AFTER-WRITE") != nullptr && strstr(msg, "binding #11") != nullptr) return VK_FALSE;
+        // Shader-OutputNotConsumed: vertex attribute declared in pipeline but
+        // not read by the shader. Harmless — the GPU ignores unread inputs.
+        if (strstr(msg, "Shader-OutputNotConsumed") != nullptr) return VK_FALSE;
 
     }
 

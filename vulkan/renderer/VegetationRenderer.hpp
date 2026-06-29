@@ -149,6 +149,7 @@ public:
     // GPU frustum culling: dispatch compute shader that culls chunks against
     // viewProj and compacts visible draw commands. Must be called OUTSIDE any
     // render pass (compute dispatches are illegal inside dynamic rendering).
+    // Auto-cycles through triple-buffered culling slots internally.
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj);
 
 private:
@@ -206,6 +207,11 @@ private:
     // the instance data.
     VertexBufferObject billboardVBO;
 
+    // Separate VBO for impostor quads (4 vertices, 6 indices, unit-square
+    // UV corners).  Expanded per-instance in the vertex shader without a
+    // geometry shader.
+    VertexBufferObject impostorVBO;
+
     WindSettings windSettings;
     DistanceDensitySettings distanceDensitySettings;
     float windTimeSeconds = 0.0f;
@@ -239,22 +245,28 @@ private:
 
     Buffer concatenatedInstanceBuffer;  // all instances concatenated (vec4 per element)
     Buffer chunkMetaBuffer;             // ChunkMeta[] on GPU
-    Buffer compactedCmdBuffer;          // output VkDrawIndirectCommand[] (compacted visible chunks)
-    Buffer visibleCountBuffer;          // atomic counter (uint32_t)
-    uint32_t* visibleCountMapped = nullptr;
+    // Triple-buffered culling resources to prevent CPU/GPU race conditions
+    // (same pattern as IndirectRenderer::MAX_CULL_FRAMES).
+    static constexpr uint32_t VEG_CULL_FRAMES = 3;
+    std::array<Buffer, VEG_CULL_FRAMES> compactedCmdBuffers;
+    std::array<Buffer, VEG_CULL_FRAMES> visibleCountBuffers;
+    mutable std::array<uint32_t*, VEG_CULL_FRAMES> visibleCountMapped = {nullptr, nullptr, nullptr};
 
     // Culling compute pipeline
     VkPipeline            vegCullPipeline       = VK_NULL_HANDLE;
     VkPipelineLayout      vegCullPipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout vegCullDescSetLayout  = VK_NULL_HANDLE;
     VkDescriptorPool      vegCullDescPool       = VK_NULL_HANDLE;
-    VkDescriptorSet       vegCullDescSet        = VK_NULL_HANDLE;
+    std::array<VkDescriptorSet, VEG_CULL_FRAMES> vegCullDescSets = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
 
     uint32_t vegNumChunks = 0;             // number of chunks in the consolidated metadata
+    uint32_t vegCullFrameIndex = 0;        // auto-cycling frame index for triple buffering
+    uint32_t vegCullCurrentSlot = 0;       // slot selected for current frame's cull + draws
     bool vegConsolidationDirty = true;     // rebuild concatenated buffer + metadata
 
     void initCulling(VulkanApp* app);
     void destroyCulling();
-    void issueDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
+    void issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
+    void issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
     WindPushConstants buildWindPushConstants(const glm::vec3& cameraPos) const;
 };

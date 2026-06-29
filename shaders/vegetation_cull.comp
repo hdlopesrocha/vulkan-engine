@@ -12,10 +12,10 @@ struct ChunkMeta {
 };
 
 struct DrawCmd {
-    uint indexCount;      // 29 indices (6 triangle strips w/ primitive restart)
+    uint indexCount;
     uint instanceCount;
     uint firstIndex;
-    int  vertexOffset;    // signed
+    int  vertexOffset;
     uint firstInstance;
 };
 
@@ -79,7 +79,7 @@ void main() {
     uint dst = atomicAdd(count, 1);
 
     DrawCmd cmd;
-    cmd.indexCount = 29;        // 6 × 4 vertices + 5 primitive restarts
+    cmd.indexCount = 36;
     cmd.instanceCount = chunk.instanceCount;
     cmd.firstIndex = 0;
     cmd.vertexOffset = 0;
