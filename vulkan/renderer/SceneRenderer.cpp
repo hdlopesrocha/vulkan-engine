@@ -380,13 +380,6 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
     bool _wg_env_skip = (_wg_dis && _wg_dis[0] != '\0');
     if (_wg_env_skip) std::cerr << "[SceneRenderer] VULKAN_DISABLE_WATERGEOM set; skipping water geometry operations" << std::endl;
 
-    // Initialize water geometry depth from the scene depth so water geometry
-    // rasterization can depth-test against solid geometry and avoid rendering
-    // water where it is occluded by solids.
-    if (waterRenderer && !_wg_env_skip) {
-        waterRenderer->initializeGeomDepthFromSceneDepth(app, commandBuffer, frameIdx, sceneDepthImage);
-    }
-
     // Scene textures were already bound before the async back-face/solid360 tasks were
     // launched (see main.cpp), so we must NOT call updateSceneTexturesBinding here.
     // Calling it after the async tasks submit their command buffers would update a

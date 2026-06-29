@@ -347,11 +347,10 @@ void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint
     depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     depthAttachment.imageView = depthView;
     depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    // We expect the water geometry depth image to be initialized from the
-    // scene depth by the caller (SceneRenderer) before this pass begins.
-    // Use LOAD so previously-copied scene depth is preserved and depth tests
-    // will cull water fragments occluded by solid geometry.
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    // Clear depth to 1.0 so all water fragments pass the depth test (water
+    // compositing in the forward pass handles solid-geometry occlusion).
+    // No scene-depth copy is needed.
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     depthAttachment.clearValue.depthStencil = {1.0f, 0};
 
@@ -725,10 +724,10 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     depthAttachment.imageView = waterGeomDepthImageViews[frameIndex];
     depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    // Preserve the previously-copied scene depth so hardware depth testing
-    // will reject water fragments occluded by solids. Use LOAD instead of
-    // CLEAR so the copy remains effective.
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    // Clear depth to 1.0 so every water fragment passes the depth test
+    // (self-occlusion only). Forward-pass depth-test handles solid occlusion.
+    // No scene-depth copy is needed.
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     depthAttachment.clearValue.depthStencil = {1.0f, 0};
 
@@ -1318,7 +1317,8 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
                                             VkImageView colorView, VkImageView depthView,
                                             VkDescriptorSet descriptorSet0,
                                             VkDescriptorSet materialDs,
-                                            uint32_t faceSize) {
+                                            uint32_t faceSize,
+                                            VkBuffer waterCompactBuffer, VkBuffer waterVisibleCountBuffer) {
     if (!appPtr || cubemapWaterPipeline == VK_NULL_HANDLE || cubemapWaterDepthDS == VK_NULL_HANDLE) return;
     VkDevice device = appPtr->getDevice();
 
@@ -1408,9 +1408,8 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
         waterGeometryPipelineLayout, 2, 1, &cubemapWaterDepthDS, 0, nullptr);
 
-    // Draw water patches using GPU frustum culling from the main camera pass.
-    // acquireBuffers was called before BeginRendering above (barriers illegal inside).
-    waterIndirectRenderer.drawPrepared(cmd);
+    // Draw water patches using per-face cull results (dedicated buffers, no race with main pass).
+    waterIndirectRenderer.drawPreparedWithBuffers(cmd, waterCompactBuffer, waterVisibleCountBuffer);
 
     vkCmdEndRendering(cmd);
 }
