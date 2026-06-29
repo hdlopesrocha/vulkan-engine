@@ -1186,6 +1186,65 @@ public:
                     // Cull is deferred to renderSolid360 which runs per-face
                 }
 
+                // Set up per-task water cull buffers + compute descriptor (isolated from main pass)
+                IndirectRenderer &waterInd = this->sceneRenderer->waterRenderer->getIndirectRenderer();
+                uint32_t waterNumCmds = static_cast<uint32_t>(waterInd.getMeshCount());
+                bool hasWater = (waterNumCmds > 0 && waterInd.getIndirectBuffer().buffer != VK_NULL_HANDLE);
+                Buffer waterCompact{};
+                Buffer waterVisible{};
+                VkDescriptorPool waterTaskPool = VK_NULL_HANDLE;
+                VkDescriptorSet waterComputeDs = VK_NULL_HANDLE;
+                if (hasWater) {
+                    VkDeviceSize wcSize = sizeof(VkDrawIndexedIndirectCommand) * waterNumCmds;
+                    waterCompact = app->createBuffer(wcSize,
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                    waterVisible = app->createBuffer(sizeof(uint32_t),
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+                    VkDescriptorPoolSize wPoolSize{};
+                    wPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    wPoolSize.descriptorCount = 4;
+                    VkDescriptorPoolCreateInfo wPoolInfo{};
+                    wPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                    wPoolInfo.poolSizeCount = 1;
+                    wPoolInfo.pPoolSizes = &wPoolSize;
+                    wPoolInfo.maxSets = 1;
+                    wPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+
+                    VkDescriptorSetLayout wDsLayout = waterInd.getComputeDescriptorSetLayout();
+                    if (wDsLayout != VK_NULL_HANDLE) {
+                        vkCreateDescriptorPool(device, &wPoolInfo, nullptr, &waterTaskPool);
+                        app->resources.addDescriptorPool(waterTaskPool, "Temp: water360 cull pool");
+                        VkDescriptorSetAllocateInfo wAinfo{};
+                        wAinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                        wAinfo.descriptorPool = waterTaskPool;
+                        wAinfo.descriptorSetCount = 1;
+                        wAinfo.pSetLayouts = &wDsLayout;
+                        if (vkAllocateDescriptorSets(device, &wAinfo, &waterComputeDs) == VK_SUCCESS) {
+                            app->resources.addDescriptorSet(waterComputeDs, "Temp: water360 compute DS");
+
+                            VkDescriptorBufferInfo wInBuf{}; wInBuf.buffer = waterInd.getIndirectBuffer().buffer; wInBuf.offset = 0; wInBuf.range = VK_WHOLE_SIZE;
+                            VkDescriptorBufferInfo wOutBuf{}; wOutBuf.buffer = waterCompact.buffer; wOutBuf.offset = 0; wOutBuf.range = VK_WHOLE_SIZE;
+                            VkDescriptorBufferInfo wBoundsBuf{}; wBoundsBuf.buffer = waterInd.getBoundsBuffer().buffer; wBoundsBuf.offset = 0; wBoundsBuf.range = VK_WHOLE_SIZE;
+                            VkDescriptorBufferInfo wCountBuf{}; wCountBuf.buffer = waterVisible.buffer; wCountBuf.offset = 0; wCountBuf.range = VK_WHOLE_SIZE;
+
+                            VkWriteDescriptorSet wWrites[4]{};
+                            wWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                            wWrites[0].dstSet = waterComputeDs;
+                            wWrites[0].dstBinding = 0;
+                            wWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                            wWrites[0].descriptorCount = 1;
+                            wWrites[0].pBufferInfo = &wInBuf;
+                            wWrites[1] = wWrites[0]; wWrites[1].dstBinding = 1; wWrites[1].pBufferInfo = &wOutBuf;
+                            wWrites[2] = wWrites[0]; wWrites[2].dstBinding = 2; wWrites[2].pBufferInfo = &wBoundsBuf;
+                            wWrites[3] = wWrites[0]; wWrites[3].dstBinding = 3; wWrites[3].pBufferInfo = &wCountBuf;
+                            vkUpdateDescriptorSets(device, 4, wWrites, 0, nullptr);
+                        }
+                    }
+                }
+
                 // Render solid360 using per-task compact/visible buffers when available
                 SkySettings::Mode skyMode360 = this->sceneRenderer->getSkySettings().mode;
 
@@ -1330,13 +1389,16 @@ public:
                     taskUBO, ubo360,
                     computeDs,
                     taskCompact.buffer,
-                    taskVisible.buffer);
+                    taskVisible.buffer,
+                    waterComputeDs,
+                    waterCompact.buffer,
+                    waterVisible.buffer);
 
                 this->profileSolid360 = std::chrono::duration<float, std::milli>(
                     std::chrono::high_resolution_clock::now() - tSolid360).count();
                 VkFence f = app->submitCommandBufferAsync(cmd, &semSolid360);
                 { std::lock_guard<std::mutex> lk(asyncFenceMutex); pendingAsyncFences.push_back(f); }
-                app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app, gfxDs, gfxPool, taskUBO, myApp]() {
+                app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app, gfxDs, gfxPool, taskUBO, myApp, waterTaskPool, waterComputeDs, waterCompact, waterVisible]() {
                     if (gfxPool != VK_NULL_HANDLE && gfxDs != VK_NULL_HANDLE) {
                         myApp->freeSolid360Gfx.push_back({gfxPool, gfxDs});
                     }
@@ -1366,6 +1428,30 @@ public:
                     if (taskUBO.memory != VK_NULL_HANDLE) {
                         app->resources.removeDeviceMemory(taskUBO.memory);
                         vkFreeMemory(device, taskUBO.memory, nullptr);
+                    }
+                    if (waterTaskPool != VK_NULL_HANDLE && waterComputeDs != VK_NULL_HANDLE) {
+                        vkFreeDescriptorSets(device, waterTaskPool, 1, &waterComputeDs);
+                        app->resources.removeDescriptorSet(waterComputeDs);
+                    }
+                    if (waterTaskPool != VK_NULL_HANDLE) {
+                        vkDestroyDescriptorPool(device, waterTaskPool, nullptr);
+                        app->resources.removeDescriptorPool(waterTaskPool);
+                    }
+                    if (waterCompact.buffer != VK_NULL_HANDLE) {
+                        app->resources.removeBuffer(waterCompact.buffer);
+                        vkDestroyBuffer(device, waterCompact.buffer, nullptr);
+                    }
+                    if (waterCompact.memory != VK_NULL_HANDLE) {
+                        app->resources.removeDeviceMemory(waterCompact.memory);
+                        vkFreeMemory(device, waterCompact.memory, nullptr);
+                    }
+                    if (waterVisible.buffer != VK_NULL_HANDLE) {
+                        app->resources.removeBuffer(waterVisible.buffer);
+                        vkDestroyBuffer(device, waterVisible.buffer, nullptr);
+                    }
+                    if (waterVisible.memory != VK_NULL_HANDLE) {
+                        app->resources.removeDeviceMemory(waterVisible.memory);
+                        vkFreeMemory(device, waterVisible.memory, nullptr);
                     }
                 });
             });

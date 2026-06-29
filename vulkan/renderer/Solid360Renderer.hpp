@@ -28,7 +28,10 @@ public:
                         Buffer& uniformBuffer, const UniformObject& ubo,
                         VkDescriptorSet computeDs = VK_NULL_HANDLE,
                         VkBuffer compactIndirectBuffer = VK_NULL_HANDLE,
-                        VkBuffer visibleCountBuffer = VK_NULL_HANDLE);
+                        VkBuffer visibleCountBuffer = VK_NULL_HANDLE,
+                        VkDescriptorSet waterComputeDs = VK_NULL_HANDLE,
+                        VkBuffer waterCompactIndirectBuffer = VK_NULL_HANDLE,
+                        VkBuffer waterVisibleCountBuffer = VK_NULL_HANDLE);
 
     // Return the cubemap view for reflection sampling
     VkImageView getSolid360View() const { return cube360CubeView; }

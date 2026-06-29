@@ -283,7 +283,9 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                                      VkDescriptorSet mainDescriptorSet,
                                      Buffer& uniformBuffer, const UniformObject& ubo,
                                      VkDescriptorSet computeDs,
-                                     VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer) {
+                                     VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer,
+                                     VkDescriptorSet waterComputeDs,
+                                     VkBuffer waterCompactIndirectBuffer, VkBuffer waterVisibleCountBuffer) {
     if (!app || cmd == VK_NULL_HANDLE) return;
     if (cube360FaceViews[0] == VK_NULL_HANDLE) return;
 
@@ -370,6 +372,10 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         if (computeDs != VK_NULL_HANDLE && compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
             auto &ind = solidRenderer->getIndirectRenderer();
             ind.prepareCullWithDescriptor(cmd, faceVP, computeDs, compactIndirectBuffer, visibleCountBuffer);
+        }
+        // Per-face water cull with dedicated buffers (no race with main pass)
+        if (waterRenderer && waterComputeDs != VK_NULL_HANDLE && waterCompactIndirectBuffer != VK_NULL_HANDLE && waterVisibleCountBuffer != VK_NULL_HANDLE) {
+            waterRenderer->getIndirectRenderer().prepareCullWithDescriptor(cmd, faceVP, waterComputeDs, waterCompactIndirectBuffer, waterVisibleCountBuffer);
         }
 
         // ── Instance 1: Depth pre-pass (no color, lightweight depth_only.frag) ──
@@ -494,7 +500,8 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             waterRenderer->renderWaterIntoCubemap(cmd,
                 cube360FaceViews[face], cube360DepthViews[face],
                 mainDescriptorSet, app->getMaterialDescriptorSet(),
-                CUBE360_FACE_SIZE);
+                CUBE360_FACE_SIZE,
+                waterCompactIndirectBuffer, waterVisibleCountBuffer);
         }
 
         // Barrier: ensure previous face's draw finishes reading compact/visible

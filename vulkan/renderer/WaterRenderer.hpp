@@ -97,7 +97,8 @@ public:
                                 VkImageView colorView, VkImageView depthView,
                                 VkDescriptorSet descriptorSet0,
                                 VkDescriptorSet materialDs,
-                                uint32_t faceSize);
+                                uint32_t faceSize,
+                                VkBuffer waterCompactBuffer, VkBuffer waterVisibleCountBuffer);
 
     // Prepare render state (UBO upload, descriptor update, pre-barrier).
     // Call this before beginWaterGeometryPass when manually recording commands.
