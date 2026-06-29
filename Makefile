@@ -232,7 +232,7 @@ cloc:
 	@echo "Running cloc to count lines of code..."
 	@# Exclude runtime bins and third_party from the count; print to terminal (no file)
 	@if command -v cloc >/dev/null 2>&1; then \
-		cloc --exclude-dir=$(OUT_DIR),third_party .; \
+		cloc --exclude-dir=$(OUT_DIR),third_party --exclude-ext=tex .; \
 	else \
 		echo "cloc not found on PATH. Install it (e.g. sudo apt install cloc) to get a detailed LOC report."; \
 	fi
