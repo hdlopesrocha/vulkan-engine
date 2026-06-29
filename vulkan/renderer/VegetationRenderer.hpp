@@ -110,6 +110,7 @@ public:
     // Camera position is used for distance-based LOD; viewProj is the camera's
     // view-projection for GPU frustum culling (matching solid shadow culling).
     void drawShadow(VulkanApp* app, VkCommandBuffer& commandBuffer, VkDescriptorSet shadowDescriptorSet, const glm::mat4& viewProj, const glm::vec3& cameraPos);
+    PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
 
     // Stats helpers
     size_t getChunkCount() const { return chunkInstanceCounts.size(); }
@@ -254,6 +255,6 @@ private:
 
     void initCulling(VulkanApp* app);
     void destroyCulling();
-    void issueDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, const WindPushConstants& pc);
+    void issueDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
     WindPushConstants buildWindPushConstants(const glm::vec3& cameraPos) const;
 };

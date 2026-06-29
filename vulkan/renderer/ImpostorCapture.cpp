@@ -714,7 +714,7 @@ void ImpostorCapture::createDescSetLayouts(VulkanApp* app) {
 void ImpostorCapture::createPipeline(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
-    auto vertCode = FileReader::readFile("shaders/vegetation.vert.spv");
+    auto vertCode = FileReader::readFile("shaders/capture.vert.spv");
     auto geomCode = FileReader::readFile("shaders/vegetation.geom.spv");
     auto fragCode = FileReader::readFile("shaders/capture.frag.spv");
 
@@ -740,15 +740,14 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     bindingDescs[0] = { 0, sizeof(Vertex),    VK_VERTEX_INPUT_RATE_VERTEX   };
     bindingDescs[1] = { 1, sizeof(float) * 4, VK_VERTEX_INPUT_RATE_INSTANCE };
 
-    // Use a minimal attribute list that matches `shaders/vegetation.vert`.
-    // `vegetation.vert` does not declare a color attribute, so avoid
-    // providing ATTR_COLOR here to prevent "attribute not consumed" warnings.
+    // Attribute list matching `shaders/capture.vert` (full standard vertex format).
     std::vector<VkVertexInputAttributeDescription> attrs = {
         VkVertexInputAttributeDescription{ ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+        VkVertexInputAttributeDescription{ ATTR_COLOR, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color) },
         VkVertexInputAttributeDescription{ ATTR_UV,  0, VK_FORMAT_R32G32_SFLOAT,    offsetof(Vertex, texCoord) },
         VkVertexInputAttributeDescription{ ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
         VkVertexInputAttributeDescription{ ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex) },
-        VkVertexInputAttributeDescription{ ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 }
+        VkVertexInputAttributeDescription{ ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 },
     };
 
     VkPipelineVertexInputStateCreateInfo vertexInput{};
