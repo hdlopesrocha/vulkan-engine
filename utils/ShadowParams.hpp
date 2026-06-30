@@ -83,41 +83,39 @@ struct ShadowParams {
                 maxLS = glm::max(maxLS, glm::vec3(ls));
             }
 
-            // Centre the XY bounds on the cascade centroid so the ortho
-            // frustum is symmetric around the visible slice.
-            glm::vec3 centroid = (minLS + maxLS) * 0.5f;
-            glm::vec3 halfExt = (maxLS - minLS) * 0.5f;
-            minLS = centroid - halfExt;
-            maxLS = centroid + halfExt;
-
             // Extend Z toward the light (more positive Z = toward the light)
             // to ensure casters between the light and the visible slice are
             // captured.
             maxLS.z = std::max(maxLS.z, -1.0f);
-            halfExt = (maxLS - minLS) * 0.5f;
 
             // Pad XY by a fraction of the Z-range to catch shadow casters
             // that are outside the view frustum in XY.
             float zRange = maxLS.z - minLS.z;
             float pad = zRange * 0.1f;
-            halfExt.x += pad;
-            halfExt.y += pad;
+            minLS.x -= pad;
+            minLS.y -= pad;
+            maxLS.x += pad;
+            maxLS.y += pad;
 
-            // ---- 5. Texel snap (snap the centroid) ----
-            float snapX = (halfExt.x * 2.0f) / res;
-            float snapY = (halfExt.y * 2.0f) / res;
-            centroid.x = std::floor(centroid.x / snapX) * snapX;
-            centroid.y = std::floor(centroid.y / snapY) * snapY;
+            // ---- 5. Texel-snap the AABB edges ----
+            // Snap minLS down to the nearest texel boundary and recompute
+            // maxLS so the orthographic frustum size is always a multiple
+            // of the texel size.  This keeps the projection stable across
+            // frames (no sub-texel jitter) even when the frustum slice AABB
+            // changes size.
+            float snapX = (maxLS.x - minLS.x) / res;
+            float snapY = (maxLS.y - minLS.y) / res;
+            minLS.x = std::floor(minLS.x / snapX) * snapX;
+            minLS.y = std::floor(minLS.y / snapY) * snapY;
+            maxLS.x = minLS.x + snapX * res;
+            maxLS.y = minLS.y + snapY * res;
 
-            // ---- 6. Orthographic projection using the actual AABB Z bounds ----
-            // Use maxLS.z/minLS.z directly (updated after extension) instead of
-            // centroid ± halfExt, because the centroid was computed from the
-            // original bounds before the Z extension and would give a wrong near plane.
+            // ---- 6. Orthographic projection from the snapped AABB ----
             float nearVal = -maxLS.z;
             float farVal  = -minLS.z;
             glm::mat4 proj = glm::ortho(
-                centroid.x - halfExt.x, centroid.x + halfExt.x,
-                centroid.y - halfExt.y, centroid.y + halfExt.y,
+                minLS.x, maxLS.x,
+                minLS.y, maxLS.y,
                 nearVal, farVal);
 
             light.setProjection(proj);
