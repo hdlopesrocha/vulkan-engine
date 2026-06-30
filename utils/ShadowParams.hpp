@@ -91,30 +91,31 @@ struct ShadowParams {
             // Pad XY by a fraction of the Z-range to catch shadow casters
             // that are outside the view frustum in XY.
             float zRange = maxLS.z - minLS.z;
-            float pad = zRange * 0.1f;
+            float pad = zRange * 0.15f;
             minLS.x -= pad;
             minLS.y -= pad;
             maxLS.x += pad;
             maxLS.y += pad;
 
-            // ---- 5. Texel-snap the AABB edges outward ----
-            // Snap minLS down (floor) and maxLS up (ceil) to texel boundaries
-            // so the orthographic frustum always covers the original AABB.
-            // The size becomes a multiple of snapX/snapY, keeping the
-            // projection stable across frames while never dropping coverage.
-            float snapX = (maxLS.x - minLS.x) / res;
-            float snapY = (maxLS.y - minLS.y) / res;
-            minLS.x = std::floor(minLS.x / snapX) * snapX;
-            minLS.y = std::floor(minLS.y / snapY) * snapY;
-            maxLS.x = std::ceil(maxLS.x / snapX) * snapX;
-            maxLS.y = std::ceil(maxLS.y / snapY) * snapY;
+            // ---- 5. Centroid-based orthographic frustum ----
+            // Symmetric frustum centered on the cascade centroid with full
+            // coverage from the padded AABB.  No texel snapping — the stable
+            // light view matrix anchored to world origin keeps the light-space
+            // coordinate system fixed, which prevents shadow swimming even
+            // without snapping.  Varying the snap grid per frame from AABB
+            // changes caused more visible jitter than it prevented.
+            glm::vec3 centroid = (minLS + maxLS) * 0.5f;
+            glm::vec3 halfExt = (maxLS - minLS) * 0.5f;
 
-            // ---- 6. Orthographic projection from the snapped AABB ----
+            // ---- 6. Orthographic projection ----
+            // nearVal/farVal are derived directly from the (possibly extended
+            // and padded) Z bounds, not from centroid ± halfExt.z which would
+            // be stale after the Z extension above.
             float nearVal = -maxLS.z;
             float farVal  = -minLS.z;
             glm::mat4 proj = glm::ortho(
-                minLS.x, maxLS.x,
-                minLS.y, maxLS.y,
+                centroid.x - halfExt.x, centroid.x + halfExt.x,
+                centroid.y - halfExt.y, centroid.y + halfExt.y,
                 nearVal, farVal);
 
             light.setProjection(proj);
