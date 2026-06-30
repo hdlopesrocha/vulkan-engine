@@ -74,6 +74,7 @@ void WaterRenderer::cleanup(VulkanApp* app) {
     // Clear local handles; VulkanResourceManager is responsible for actual destruction
     destroyRenderTargets(app);
     waterGeometryPipeline = VK_NULL_HANDLE;
+    waterDepthPrePassPipeline = VK_NULL_HANDLE;
     waterDepthDescriptorPool = VK_NULL_HANDLE;
     waterDepthDescriptorSetLayout = VK_NULL_HANDLE;
     waterGeometryPipelineLayout = VK_NULL_HANDLE;
@@ -623,7 +624,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = VK_TRUE;
     depthStencil.depthWriteEnable = VK_TRUE;   // Enable water-against-water occlusion in this pass
-    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
 
@@ -681,6 +682,23 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
         app->resources.addPipeline(waterGeometryPipeline, "WaterRenderer: waterGeometryPipeline");
         std::cout << "[WaterRenderer] Created water geometry pipeline (dynamic rendering, 1 color attachment)" << std::endl;
     }
+
+    // Create depth pre-pass pipeline (same shaders, no color writes)
+    {
+        auto dpColorBlend = colorBlendAttachments;
+        dpColorBlend[0].colorWriteMask = 0;
+        VkPipelineColorBlendStateCreateInfo dpBlending = colorBlending;
+        dpBlending.pAttachments = dpColorBlend.data();
+        pipelineInfo.pColorBlendState = &dpBlending;
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &waterDepthPrePassPipeline) != VK_SUCCESS) {
+            std::cerr << "[WaterRenderer] Warning: Failed to create water depth pre-pass pipeline" << std::endl;
+            waterDepthPrePassPipeline = VK_NULL_HANDLE;
+        } else {
+            app->resources.addPipeline(waterDepthPrePassPipeline, "WaterRenderer: waterDepthPrePassPipeline");
+            std::cout << "[WaterRenderer] Created water depth pre-pass pipeline" << std::endl;
+        }
+    }
+    pipelineInfo.pColorBlendState = &colorBlending; // restore
 
     // Clear local shader module references; destruction handled by VulkanResourceManager
     vertModule = VK_NULL_HANDLE;
@@ -1067,40 +1085,35 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
 
     beginWaterGeometryPass(cmd, frameIndex);
 
-    // Bind the water geometry pipeline and descriptor sets before issuing draw commands
-    if (waterGeometryPipeline != VK_NULL_HANDLE) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeometryPipeline);
-
-        // Bind each set individually so a VK_NULL_HANDLE material set is
-        // never passed to vkCmdBindDescriptorSets (that causes a GPU hang).
-
-        // Set 0: main UBO + texture samplers + water params
-        VkDescriptorSet mainDs = app->getMainDescriptorSet();
-        if (mainDs != VK_NULL_HANDLE) {
-            //printf("[BIND] WaterRenderer::render: layout=%p firstSet=0 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)mainDs);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
-        }
-
-        // Set 1: materials SSBO — only bind if available (shader doesn't use it)
-        VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
-        if (materialDs != VK_NULL_HANDLE) {
-            //printf("[BIND] WaterRenderer::render: layout=%p firstSet=1 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)materialDs);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
-        }
-
-        // Set 2: scene depth textures (color + depth)
-        VkDescriptorSet sceneDs = waterDepthDescriptorSets[frameIndex];
-        if (sceneDs != VK_NULL_HANDLE) {
-            //printf("[BIND] WaterRenderer::render: layout=%p firstSet=2 count=1 sets=%p\n", (void*)waterGeometryPipelineLayout, (void*)sceneDs);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
-        }
+    // Bind descriptor sets (shared between depth pre-pass and main pass)
+    VkDescriptorSet mainDs = app->getMainDescriptorSet();
+    if (mainDs != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
+    }
+    VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
+    if (materialDs != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
+    }
+    VkDescriptorSet sceneDs = waterDepthDescriptorSets[frameIndex];
+    if (sceneDs != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
     }
 
-    // Indirect rendering for water geometry
-    waterIndirectRenderer.drawPrepared(cmd);
+    // Depth pre-pass: only write depth, no color output
+    if (waterDepthPrePassPipeline != VK_NULL_HANDLE) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterDepthPrePassPipeline);
+        waterIndirectRenderer.drawPrepared(cmd);
+    }
+
+    // Main geometry pass
+    if (waterGeometryPipeline != VK_NULL_HANDLE) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeometryPipeline);
+        waterIndirectRenderer.drawPrepared(cmd);
+    }
+
     endWaterGeometryPass(cmd);
 
     postRenderBarrier(cmd, frameIndex);

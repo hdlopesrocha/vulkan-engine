@@ -190,6 +190,7 @@ private:
 
     // Pipelines
     VkPipeline waterGeometryPipeline = VK_NULL_HANDLE;
+    VkPipeline waterDepthPrePassPipeline = VK_NULL_HANDLE;
     VkPipeline cubemapWaterPipeline = VK_NULL_HANDLE;
     
     // Water geometry pipeline layout (includes depth texture binding)
