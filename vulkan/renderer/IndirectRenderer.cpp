@@ -510,6 +510,12 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     size_t neededIndexCap = mergedIndices.size() + mergedIndices.size() / 4 + 4096;
     size_t neededMeshCap = activeMeshCount + activeMeshCount / 4 + 64;
     
+    // Save old capacities before potentially updating them (used to decide
+    // whether existing GPU buffers can be reused vs. needing recreation).
+    size_t oldVertexCapacity = vertexCapacity;
+    size_t oldIndexCapacity = indexCapacity;
+    size_t oldMeshCapacity = meshCapacity;
+
     // Use max of current capacity or needed capacity (never shrink)
     if (neededVertexCap > vertexCapacity) vertexCapacity = neededVertexCap;
     if (neededIndexCap > indexCapacity) indexCapacity = neededIndexCap;
@@ -530,52 +536,56 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         printedBufferInfo = true;
     }
     if (mergedVertices.empty() || mergedIndices.empty()) {
+        // Free existing buffers — schedule deferred destruction so in-flight
+        // GPU work completes before the memory is reclaimed.
         if (vertexBuffer.buffer != VK_NULL_HANDLE || vertexBuffer.memory != VK_NULL_HANDLE) {
-            // Schedule safe destruction of the old vertex buffer and its memory
             scheduleDestroyBuffer(vertexBuffer);
             vertexBuffer = {};
         }
         if (indexBuffer.buffer != VK_NULL_HANDLE || indexBuffer.memory != VK_NULL_HANDLE) {
-            // Schedule safe destruction of the old index buffer and its memory
             scheduleDestroyBuffer(indexBuffer);
             indexBuffer = {};
         }
         vertexCapacity = 0;
         indexCapacity = 0;
     } else {
-        // Recreate vertex/index buffers with capacity-based sizing
-        if (vertexBuffer.buffer != VK_NULL_HANDLE || vertexBuffer.memory != VK_NULL_HANDLE) {
-            scheduleDestroyBuffer(vertexBuffer);
-            vertexBuffer = {};
+        // Determine whether the existing GPU buffers still have enough room.
+        bool needNewVertexBuffer = (vertexBuffer.buffer == VK_NULL_HANDLE) || (vertexCapacity > oldVertexCapacity);
+        bool needNewIndexBuffer = (indexBuffer.buffer == VK_NULL_HANDLE) || (indexCapacity > oldIndexCapacity);
+
+        if (needNewVertexBuffer || needNewIndexBuffer) {
+            // Capacity grew — destroy old buffers (deferred) and create new larger ones.
+            if (vertexBuffer.buffer != VK_NULL_HANDLE || vertexBuffer.memory != VK_NULL_HANDLE) {
+                scheduleDestroyBuffer(vertexBuffer);
+                vertexBuffer = {};
+            }
+            if (indexBuffer.buffer != VK_NULL_HANDLE || indexBuffer.memory != VK_NULL_HANDLE) {
+                scheduleDestroyBuffer(indexBuffer);
+                indexBuffer = {};
+            }
+
+            VkDeviceSize vertexBufferSize = vertexCapacity * sizeof(Vertex);
+            vertexBuffer = app->createBuffer(vertexBufferSize,
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+            VkDeviceSize indexBufferSize = indexCapacity * sizeof(uint32_t);
+            indexBuffer = app->createBuffer(indexBufferSize,
+                VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         }
-        if (indexBuffer.buffer != VK_NULL_HANDLE || indexBuffer.memory != VK_NULL_HANDLE) {
-            scheduleDestroyBuffer(indexBuffer);
-            indexBuffer = {};
-        }
-        
-        // Create device-local vertex buffer. HOST_VISIBLE on RADV iGPU
-        // lacks TCP-read permission in the GPU page table (even with
-        // EXCLUSIVE sharing), causing GPUVM PERMISSION_FAULTS.
-        VkDeviceSize vertexBufferSize = vertexCapacity * sizeof(Vertex);
-        vertexBuffer = app->createBuffer(vertexBufferSize,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        
-        // Create device-local index buffer (same rationale).
-        VkDeviceSize indexBufferSize = indexCapacity * sizeof(uint32_t);
-        indexBuffer = app->createBuffer(indexBufferSize,
-            VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        
-        // Upload current data via direct memcpy — no staging buffers or
-        // vkCmdCopyBuffer needed. HOST_VISIBLE|HOST_COHERENT memory is
-        // immediately visible to the GPU on integrated/shared-memory GPUs.
+        // else: existing buffers already have sufficient capacity — reuse them
+        //       in-place, avoiding the memory spike of old+new allocations.
+
+        // Upload current data via staging → device-local copy.
+        // runSingleTimeCommands waits for the fence, so any in-flight GPU
+        // reads of the existing buffer are guaranteed complete before the
+        // transfer writes — no WRITE_AFTER_READ hazard.
         bool doVertexUpload = !mergedVertices.empty();
         bool doIndexUpload = !mergedIndices.empty();
         VkDeviceSize vertexDataSize = mergedVertices.size() * sizeof(Vertex);
         VkDeviceSize indexDataSize = mergedIndices.size() * sizeof(uint32_t);
 
-        // Staging copy: device-local buffers need staging → GPU copy.
         if (doVertexUpload || doIndexUpload) {
             VkDeviceSize stagingSize = (doVertexUpload ? vertexDataSize : 0)
                                      + (doIndexUpload  ? indexDataSize  : 0);
@@ -594,9 +604,6 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             }
             vkUnmapMemory(app->getDevice(), staging.memory);
 
-            // Copy to freshly-created device-local buffers that have never
-            // been read by any prior command, so no WRITE_AFTER_READ hazard.
-            // queueWaitIdle is unnecessary (just stalls the pipeline).
             app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
                 VkDeviceSize off = 0;
                 if (doVertexUpload) {
@@ -641,20 +648,24 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // Use host-visible memory for AMD RADV driver compatibility
     VkDeviceSize indirectBufferSize = sizeof(VkDrawIndexedIndirectCommand) * meshCapacity;
     VkDeviceSize indirectDataSize = sizeof(VkDrawIndexedIndirectCommand) * indirectCommands.size();
-    if (indirectBuffer.buffer != VK_NULL_HANDLE || indirectBuffer.memory != VK_NULL_HANDLE) {
-        scheduleDestroyBuffer(indirectBuffer);
-        indirectBuffer = {};
-    }
-    if (meshCapacity > 0) {
-        indirectBuffer = app->createBuffer(indirectBufferSize, 
-            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (indirectDataSize > 0) {
-            void* data;
-            vkMapMemory(app->getDevice(), indirectBuffer.memory, 0, indirectDataSize, 0, &data);
-            memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
-            vkUnmapMemory(app->getDevice(), indirectBuffer.memory);
+    bool needNewIndirectBuffer = (indirectBuffer.buffer == VK_NULL_HANDLE) || (meshCapacity > oldMeshCapacity);
+    if (needNewIndirectBuffer) {
+        if (indirectBuffer.buffer != VK_NULL_HANDLE || indirectBuffer.memory != VK_NULL_HANDLE) {
+            scheduleDestroyBuffer(indirectBuffer);
+            indirectBuffer = {};
         }
+        if (meshCapacity > 0) {
+            indirectBuffer = app->createBuffer(indirectBufferSize, 
+                VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }
+    }
+    // Write data to the (existing or newly-created) indirect buffer
+    if (indirectBuffer.buffer != VK_NULL_HANDLE && indirectDataSize > 0) {
+        void* data;
+        vkMapMemory(app->getDevice(), indirectBuffer.memory, 0, indirectDataSize, 0, &data);
+        memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
+        vkUnmapMemory(app->getDevice(), indirectBuffer.memory);
     }
 
     // Mark per-mesh indirect offsets (byte offsets inside indirect buffer).
@@ -680,20 +691,23 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     }
     VkDeviceSize boundsBufferSize = sizeof(glm::vec4) * meshCapacity * 2;
     VkDeviceSize boundsDataSize = sizeof(glm::vec4) * boundsData.size();
-    if (boundsBuffer.buffer != VK_NULL_HANDLE || boundsBuffer.memory != VK_NULL_HANDLE) {
-        scheduleDestroyBuffer(boundsBuffer);
-        boundsBuffer = {};
-    }
-    if (meshCapacity > 0) {
-        // Use host-visible memory for bounds - updated when meshes change
-        boundsBuffer = app->createBuffer(boundsBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (boundsDataSize > 0) {
-            void* bdata;
-            vkMapMemory(app->getDevice(), boundsBuffer.memory, 0, boundsDataSize, 0, &bdata);
-            memcpy(bdata, boundsData.data(), (size_t)boundsDataSize);
-            vkUnmapMemory(app->getDevice(), boundsBuffer.memory);
+    bool needNewBoundsBuffer = (boundsBuffer.buffer == VK_NULL_HANDLE) || (meshCapacity > oldMeshCapacity);
+    if (needNewBoundsBuffer) {
+        if (boundsBuffer.buffer != VK_NULL_HANDLE || boundsBuffer.memory != VK_NULL_HANDLE) {
+            scheduleDestroyBuffer(boundsBuffer);
+            boundsBuffer = {};
         }
+        if (meshCapacity > 0) {
+            boundsBuffer = app->createBuffer(boundsBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }
+    }
+    // Write data to the (existing or newly-created) bounds buffer
+    if (boundsBuffer.buffer != VK_NULL_HANDLE && boundsDataSize > 0) {
+        void* bdata;
+        vkMapMemory(app->getDevice(), boundsBuffer.memory, 0, boundsDataSize, 0, &bdata);
+        memcpy(bdata, boundsData.data(), (size_t)boundsDataSize);
+        vkUnmapMemory(app->getDevice(), boundsBuffer.memory);
     }
 
     // Create/resize compact indirect buffer (storage + indirect usage)
