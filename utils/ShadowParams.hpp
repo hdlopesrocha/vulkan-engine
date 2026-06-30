@@ -97,18 +97,17 @@ struct ShadowParams {
             maxLS.x += pad;
             maxLS.y += pad;
 
-            // ---- 5. Texel-snap the AABB edges ----
-            // Snap minLS down to the nearest texel boundary and recompute
-            // maxLS so the orthographic frustum size is always a multiple
-            // of the texel size.  This keeps the projection stable across
-            // frames (no sub-texel jitter) even when the frustum slice AABB
-            // changes size.
+            // ---- 5. Texel-snap the AABB edges outward ----
+            // Snap minLS down (floor) and maxLS up (ceil) to texel boundaries
+            // so the orthographic frustum always covers the original AABB.
+            // The size becomes a multiple of snapX/snapY, keeping the
+            // projection stable across frames while never dropping coverage.
             float snapX = (maxLS.x - minLS.x) / res;
             float snapY = (maxLS.y - minLS.y) / res;
             minLS.x = std::floor(minLS.x / snapX) * snapX;
             minLS.y = std::floor(minLS.y / snapY) * snapY;
-            maxLS.x = minLS.x + snapX * res;
-            maxLS.y = minLS.y + snapY * res;
+            maxLS.x = std::ceil(maxLS.x / snapX) * snapX;
+            maxLS.y = std::ceil(maxLS.y / snapY) * snapY;
 
             // ---- 6. Orthographic projection from the snapped AABB ----
             float nearVal = -maxLS.z;
