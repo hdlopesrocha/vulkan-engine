@@ -48,7 +48,7 @@ bool aabbVisible(mat4 mvp, vec3 minp, vec3 maxp) {
     planes[1] = row3 - row0; // right
     planes[2] = row3 + row1; // bottom
     planes[3] = row3 - row1; // top
-    planes[4] = row3 + row2; // near (Vulkan NDC z in [0,w])
+    planes[4] = row2; // near (Vulkan NDC z in [0,w])
     planes[5] = row3 - row2; // far
 
     // For each plane, normalize and test the AABB's most positive vertex

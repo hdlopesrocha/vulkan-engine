@@ -983,16 +983,37 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         printedOnce = true;
     }
     
-    // Reset visible count to zero via persistent host mapping — avoids
-    // vkCmdFillBuffer + TRANSFER_BIT barrier which is unreliable on RADV.
-    if (visibleCountMapped[currentCullFrame]) {
-        *visibleCountMapped[currentCullFrame] = 0;
+    // Barrier A: ensure prior indirect-draw reads of visibleCount complete
+    // before the GPU transfer (vkCmdUpdateBuffer) writes 0.  Without this the
+    // transfer write races with the previous cascade's draw reading the count.
+    {
+        VkBufferMemoryBarrier readBarrier{};
+        readBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        readBarrier.srcAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        readBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        readBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        readBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        readBarrier.buffer = visibleCount.buffer;
+        readBarrier.offset = 0;
+        readBarrier.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 1, &readBarrier, 0, nullptr);
     }
 
-    // Barrier: ensure any prior indirect-draw reads of compactBuf / visibleCount
-    // (e.g. from a shadow pass that ran earlier in this command buffer) are
-    // complete before the compute shader writes to these buffers. Without this,
-    // validation layers report WRITE_AFTER_READ hazards.
+    // Reset visible count to zero via GPU-side transfer so each prepareCull
+    // starts from a clean slate on the GPU timeline.  A CPU host write
+    // (HOST_COHERENT) is overwritten by the previous cascade's atomicAdd
+    // before the GPU executes, causing each subsequent compute to start from
+    // the accumulated count rather than 0.  vkCmdUpdateBuffer is proven
+    // reliable (used for per-cascade UBO updates in the same codebase).
+    uint32_t zeroCount = 0;
+    vkCmdUpdateBuffer(cmd, visibleCount.buffer, 0, sizeof(zeroCount), &zeroCount);
+
+    // Barrier B: ensure the transfer write (zeroCount) and any prior
+    // indirect-draw reads of compactBuf are complete before the compute
+    // shader writes to both buffers.
     {
         VkBufferMemoryBarrier preBarriers[2] = {};
         preBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -1006,9 +1027,11 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 
         preBarriers[1] = preBarriers[0];
         preBarriers[1].buffer = visibleCount.buffer;
+        preBarriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        preBarriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 
         vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, 0, nullptr, 2, preBarriers, 0, nullptr);
     }
