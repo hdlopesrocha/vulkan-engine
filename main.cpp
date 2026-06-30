@@ -172,11 +172,17 @@ public:
     std::unique_ptr<UniqueOctreeChangeHandler> sceneUniqueLiquidHandler;
     std::thread sceneProcessThread; // tessellates chunks after octree is built
 
-    // Free lists to avoid per-frame create/destroy of async task descriptor pools+sets
+    // Pre-allocated descriptor pool+set rings to avoid per-frame create/destroy
+    static constexpr uint32_t ASYNC_RING_SIZE = 3;
     struct PoolSetPair { VkDescriptorPool pool; VkDescriptorSet set; };
-    std::vector<PoolSetPair> freeSolid360Compute;
-    std::vector<PoolSetPair> freeSolid360Gfx;
-    std::vector<PoolSetPair> freeBackface;
+    PoolSetPair cachedSolid360Compute[ASYNC_RING_SIZE]{};
+    PoolSetPair cachedSolid360Gfx[ASYNC_RING_SIZE]{};
+    PoolSetPair cachedWater360Compute[ASYNC_RING_SIZE]{};
+    PoolSetPair cachedBackfaceCompute[ASYNC_RING_SIZE]{};
+    uint32_t ringSolid360Compute = 0;
+    uint32_t ringSolid360Gfx = 0;
+    uint32_t ringWater360Compute = 0;
+    uint32_t ringBackfaceCompute = 0;
 
     ~MyApp() {
         if (sceneProcessThread.joinable()) sceneProcessThread.join();
@@ -574,6 +580,7 @@ public:
                 }
             }
         }
+        preAllocateAsyncDescriptorPools();
         generateMapPending = true; // Trigger initial map generation on first frame so user sees something without needing to click 
     }
 
@@ -581,6 +588,8 @@ public:
     void setupVegetationTextures();
     // Move scene-loading into its own method for clarity
     void setupScene();
+    // Pre-allocate descriptor pool+set rings for async tasks
+    void preAllocateAsyncDescriptorPools();
     // Rebuild the brush preview scene from Brush3dWidget entries
     void rebuildBrushScene();
     // Clear GPU meshes, reset octrees and regenerate via MainSceneLoader
@@ -1086,7 +1095,6 @@ public:
             launchedSolid360 = true;
             asyncTasks.emplace_back([this, viewProj, frameIdx, &semSolid360]() {
                 VulkanApp* app = this;
-                MyApp* myApp = this;
                 VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo beginInfo{};
                 beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1101,6 +1109,24 @@ public:
                 bool hasGeometry = (numCmds > 0 && ind.getIndirectBuffer().buffer != VK_NULL_HANDLE);
 
                 VkDevice device = app->getDevice();
+                auto lazyComputeSlot = [&](PoolSetPair* ring, uint32_t& idx, VkDescriptorSetLayout layout, const char* label) -> PoolSetPair& {
+                    auto& s = ring[idx++ % ASYNC_RING_SIZE];
+                    if (s.pool != VK_NULL_HANDLE) return s;
+                    if (layout == VK_NULL_HANDLE) return s;
+                    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 };
+                    VkDescriptorPoolCreateInfo pci{};
+                    pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                    pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
+                    pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+                    vkCreateDescriptorPool(device, &pci, nullptr, &s.pool);
+                    app->resources.addDescriptorPool(s.pool, label);
+                    VkDescriptorSetAllocateInfo ai{};
+                    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                    ai.descriptorPool = s.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &layout;
+                    vkAllocateDescriptorSets(device, &ai, &s.set);
+                    app->resources.addDescriptorSet(s.set, label);
+                    return s;
+                };
                 Buffer taskCompact{};
                 Buffer taskVisible{};
                 VkDescriptorPool taskPool = VK_NULL_HANDLE;
@@ -1115,16 +1141,6 @@ public:
                     taskVisible = app->createBuffer(sizeof(uint32_t),
                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-                    VkDescriptorPoolSize poolSize{};
-                    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    poolSize.descriptorCount = 4;
-                    VkDescriptorPoolCreateInfo poolInfo{};
-                    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                    poolInfo.poolSizeCount = 1;
-                    poolInfo.pPoolSizes = &poolSize;
-                    poolInfo.maxSets = 1;
-                    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
 
                     VkDescriptorSetLayout dsLayout = ind.getComputeDescriptorSetLayout();
                     VkDescriptorPool sharedPool = ind.getComputeDescriptorPool();
@@ -1142,30 +1158,9 @@ public:
                         }
                     }
                     if (computeDs == VK_NULL_HANDLE) {
-                        if (!freeSolid360Compute.empty()) {
-                            auto cached = freeSolid360Compute.back();
-                            freeSolid360Compute.pop_back();
-                            taskPool = cached.pool;
-                            computeDs = cached.set;
-                        } else {
-                            if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &taskPool) != VK_SUCCESS)
-                                throw std::runtime_error("[Async] Failed to create descriptor pool for solid360 task");
-                            app->resources.addDescriptorPool(taskPool, "Temp: solid360 cull pool");
-                            if (dsLayout != VK_NULL_HANDLE) {
-                                VkDescriptorSetAllocateInfo ainfo{};
-                                ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                                ainfo.descriptorPool = taskPool;
-                                ainfo.descriptorSetCount = 1;
-                                ainfo.pSetLayouts = &dsLayout;
-                                if (vkAllocateDescriptorSets(device, &ainfo, &computeDs) != VK_SUCCESS) {
-                                    app->resources.removeDescriptorPool(taskPool);
-                                    vkDestroyDescriptorPool(device, taskPool, nullptr);
-                                    throw std::runtime_error("[Async] Failed to allocate compute descriptor set for solid360 task");
-                                }
-                                app->resources.addDescriptorSet(computeDs, "Temp: solid360 compute DS");
-                            std::cerr << "[ALLOC] solid360 compute pool=" << (void*)taskPool << " set=" << (void*)computeDs << std::endl;
-                            }
-                        }
+                        auto& slot = lazyComputeSlot(cachedSolid360Compute, ringSolid360Compute, dsLayout, "Lazy cachedSolid360Compute");
+                        taskPool = slot.pool;
+                        computeDs = slot.set;
                     }
 
                     VkDescriptorBufferInfo inBuf{}; inBuf.buffer = ind.getIndirectBuffer().buffer; inBuf.offset = 0; inBuf.range = VK_WHOLE_SIZE;
@@ -1204,45 +1199,28 @@ public:
                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-                    VkDescriptorPoolSize wPoolSize{};
-                    wPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    wPoolSize.descriptorCount = 4;
-                    VkDescriptorPoolCreateInfo wPoolInfo{};
-                    wPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                    wPoolInfo.poolSizeCount = 1;
-                    wPoolInfo.pPoolSizes = &wPoolSize;
-                    wPoolInfo.maxSets = 1;
-                    wPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-
                     VkDescriptorSetLayout wDsLayout = waterInd.getComputeDescriptorSetLayout();
                     if (wDsLayout != VK_NULL_HANDLE) {
-                        vkCreateDescriptorPool(device, &wPoolInfo, nullptr, &waterTaskPool);
-                        app->resources.addDescriptorPool(waterTaskPool, "Temp: water360 cull pool");
-                        VkDescriptorSetAllocateInfo wAinfo{};
-                        wAinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                        wAinfo.descriptorPool = waterTaskPool;
-                        wAinfo.descriptorSetCount = 1;
-                        wAinfo.pSetLayouts = &wDsLayout;
-                        if (vkAllocateDescriptorSets(device, &wAinfo, &waterComputeDs) == VK_SUCCESS) {
-                            app->resources.addDescriptorSet(waterComputeDs, "Temp: water360 compute DS");
+                        auto& slot = lazyComputeSlot(cachedWater360Compute, ringWater360Compute, wDsLayout, "Lazy cachedWater360Compute");
+                        waterTaskPool = slot.pool;
+                        waterComputeDs = slot.set;
 
-                            VkDescriptorBufferInfo wInBuf{}; wInBuf.buffer = waterInd.getIndirectBuffer().buffer; wInBuf.offset = 0; wInBuf.range = VK_WHOLE_SIZE;
-                            VkDescriptorBufferInfo wOutBuf{}; wOutBuf.buffer = waterCompact.buffer; wOutBuf.offset = 0; wOutBuf.range = VK_WHOLE_SIZE;
-                            VkDescriptorBufferInfo wBoundsBuf{}; wBoundsBuf.buffer = waterInd.getBoundsBuffer().buffer; wBoundsBuf.offset = 0; wBoundsBuf.range = VK_WHOLE_SIZE;
-                            VkDescriptorBufferInfo wCountBuf{}; wCountBuf.buffer = waterVisible.buffer; wCountBuf.offset = 0; wCountBuf.range = VK_WHOLE_SIZE;
+                        VkDescriptorBufferInfo wInBuf{}; wInBuf.buffer = waterInd.getIndirectBuffer().buffer; wInBuf.offset = 0; wInBuf.range = VK_WHOLE_SIZE;
+                        VkDescriptorBufferInfo wOutBuf{}; wOutBuf.buffer = waterCompact.buffer; wOutBuf.offset = 0; wOutBuf.range = VK_WHOLE_SIZE;
+                        VkDescriptorBufferInfo wBoundsBuf{}; wBoundsBuf.buffer = waterInd.getBoundsBuffer().buffer; wBoundsBuf.offset = 0; wBoundsBuf.range = VK_WHOLE_SIZE;
+                        VkDescriptorBufferInfo wCountBuf{}; wCountBuf.buffer = waterVisible.buffer; wCountBuf.offset = 0; wCountBuf.range = VK_WHOLE_SIZE;
 
-                            VkWriteDescriptorSet wWrites[4]{};
-                            wWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                            wWrites[0].dstSet = waterComputeDs;
-                            wWrites[0].dstBinding = 0;
-                            wWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                            wWrites[0].descriptorCount = 1;
-                            wWrites[0].pBufferInfo = &wInBuf;
-                            wWrites[1] = wWrites[0]; wWrites[1].dstBinding = 1; wWrites[1].pBufferInfo = &wOutBuf;
-                            wWrites[2] = wWrites[0]; wWrites[2].dstBinding = 2; wWrites[2].pBufferInfo = &wBoundsBuf;
-                            wWrites[3] = wWrites[0]; wWrites[3].dstBinding = 3; wWrites[3].pBufferInfo = &wCountBuf;
-                            vkUpdateDescriptorSets(device, 4, wWrites, 0, nullptr);
-                        }
+                        VkWriteDescriptorSet wWrites[4]{};
+                        wWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                        wWrites[0].dstSet = waterComputeDs;
+                        wWrites[0].dstBinding = 0;
+                        wWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                        wWrites[0].descriptorCount = 1;
+                        wWrites[0].pBufferInfo = &wInBuf;
+                        wWrites[1] = wWrites[0]; wWrites[1].dstBinding = 1; wWrites[1].pBufferInfo = &wOutBuf;
+                        wWrites[2] = wWrites[0]; wWrites[2].dstBinding = 2; wWrites[2].pBufferInfo = &wBoundsBuf;
+                        wWrites[3] = wWrites[0]; wWrites[3].dstBinding = 3; wWrites[3].pBufferInfo = &wCountBuf;
+                        vkUpdateDescriptorSets(device, 4, wWrites, 0, nullptr);
                     }
                 }
 
@@ -1258,38 +1236,10 @@ public:
                 // with the shared main descriptor pool across frames.
                 VkDescriptorPool gfxPool = VK_NULL_HANDLE;
                 VkDescriptorSet gfxDs = VK_NULL_HANDLE;
-                if (!freeSolid360Gfx.empty()) {
-                    auto cached = freeSolid360Gfx.back();
-                    freeSolid360Gfx.pop_back();
-                    gfxPool = cached.pool;
-                    gfxDs = cached.set;
-                } else {
-                    VkDescriptorPoolSize ps{};
-                    ps.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; ps.descriptorCount = 3;
-                    VkDescriptorPoolSize ps2{};
-                    ps2.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps2.descriptorCount = 9;
-                    VkDescriptorPoolSize ps3{};
-                    ps3.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; ps3.descriptorCount = 2;
-                    VkDescriptorPoolSize poolSizes[] = {ps, ps2, ps3};
-                    VkDescriptorPoolCreateInfo gfxPoolInfo{};
-                    gfxPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                    gfxPoolInfo.poolSizeCount = 3;
-                    gfxPoolInfo.pPoolSizes = poolSizes;
-                    gfxPoolInfo.maxSets = 1;
-                    gfxPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-                    if (vkCreateDescriptorPool(device, &gfxPoolInfo, nullptr, &gfxPool) != VK_SUCCESS)
-                        throw std::runtime_error("[Async] Failed to create gfx descriptor pool for solid360 task");
-                    app->resources.addDescriptorPool(gfxPool, "Temp: solid360 gfx pool");
-                    VkDescriptorSetAllocateInfo ainfo{};
-                    ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                    ainfo.descriptorPool = gfxPool;
-                    ainfo.descriptorSetCount = 1;
-                    VkDescriptorSetLayout layout = app->getDescriptorSetLayout();
-                    ainfo.pSetLayouts = &layout;
-                    if (vkAllocateDescriptorSets(device, &ainfo, &gfxDs) != VK_SUCCESS)
-                        throw std::runtime_error("[Async] Failed to allocate gfx descriptor set for solid360 task");
-                    app->resources.addDescriptorSet(gfxDs, "Temp: solid360 gfx DS");
-                    std::cerr << "[ALLOC] solid360 gfx pool=" << (void*)gfxPool << " set=" << (void*)gfxDs << std::endl;
+                {
+                    auto& slot = cachedSolid360Gfx[ringSolid360Gfx++ % ASYNC_RING_SIZE];
+                    gfxPool = slot.pool;
+                    gfxDs = slot.set;
                 }
 
                 // Prepare descriptor writes mirroring main descriptor set but using taskUBO.
@@ -1399,13 +1349,7 @@ public:
                     std::chrono::high_resolution_clock::now() - tSolid360).count();
                 VkFence f = app->submitCommandBufferAsync(cmd, &semSolid360);
                 { std::lock_guard<std::mutex> lk(asyncFenceMutex); pendingAsyncFences.push_back(f); }
-                app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app, gfxDs, gfxPool, taskUBO, myApp, waterTaskPool, waterComputeDs, waterCompact, waterVisible]() {
-                    if (gfxPool != VK_NULL_HANDLE && gfxDs != VK_NULL_HANDLE) {
-                        myApp->freeSolid360Gfx.push_back({gfxPool, gfxDs});
-                    }
-                    if (taskPool != VK_NULL_HANDLE && computeDs != VK_NULL_HANDLE) {
-                        myApp->freeSolid360Compute.push_back({taskPool, computeDs});
-                    }
+                app->deferDestroyUntilFence(f, [device, taskCompact, taskVisible, app, taskUBO, waterCompact, waterVisible]() {
                     if (taskCompact.buffer != VK_NULL_HANDLE) {
                         app->resources.removeBuffer(taskCompact.buffer);
                         vkDestroyBuffer(device, taskCompact.buffer, nullptr);
@@ -1429,14 +1373,6 @@ public:
                     if (taskUBO.memory != VK_NULL_HANDLE) {
                         app->resources.removeDeviceMemory(taskUBO.memory);
                         vkFreeMemory(device, taskUBO.memory, nullptr);
-                    }
-                    if (waterTaskPool != VK_NULL_HANDLE && waterComputeDs != VK_NULL_HANDLE) {
-                        vkFreeDescriptorSets(device, waterTaskPool, 1, &waterComputeDs);
-                        app->resources.removeDescriptorSet(waterComputeDs);
-                    }
-                    if (waterTaskPool != VK_NULL_HANDLE) {
-                        vkDestroyDescriptorPool(device, waterTaskPool, nullptr);
-                        app->resources.removeDescriptorPool(waterTaskPool);
                     }
                     if (waterCompact.buffer != VK_NULL_HANDLE) {
                         app->resources.removeBuffer(waterCompact.buffer);
@@ -1463,7 +1399,6 @@ public:
             launchedBackFace = true;
             asyncTasks.emplace_back([this, viewProj, frameIdx, &semBackFace]() {
                 VulkanApp* app = this;
-                MyApp* myApp = this;
                 VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo beginInfo{};
                 beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1487,45 +1422,31 @@ public:
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
                 VkDevice device = app->getDevice();
+                auto lazyComputeSlot = [&](PoolSetPair* ring, uint32_t& idx, VkDescriptorSetLayout layout, const char* label) -> PoolSetPair& {
+                    auto& s = ring[idx++ % ASYNC_RING_SIZE];
+                    if (s.pool != VK_NULL_HANDLE) return s;
+                    if (layout == VK_NULL_HANDLE) return s;
+                    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 };
+                    VkDescriptorPoolCreateInfo pci{};
+                    pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                    pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
+                    pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+                    vkCreateDescriptorPool(device, &pci, nullptr, &s.pool);
+                    app->resources.addDescriptorPool(s.pool, label);
+                    VkDescriptorSetAllocateInfo ai{};
+                    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                    ai.descriptorPool = s.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &layout;
+                    vkAllocateDescriptorSets(device, &ai, &s.set);
+                    app->resources.addDescriptorSet(s.set, label);
+                    return s;
+                };
                 VkDescriptorPool taskPool = VK_NULL_HANDLE;
                 VkDescriptorSet computeDs = VK_NULL_HANDLE;
-                VkDescriptorSetLayout dsLayout = ind.getComputeDescriptorSetLayout();
-                if (!freeBackface.empty()) {
-                    auto cached = freeBackface.back();
-                    freeBackface.pop_back();
-                    taskPool = cached.pool;
-                    computeDs = cached.set;
-                } else {
-                    // Create a small temporary descriptor pool for this task
-                    VkDescriptorPoolSize poolSize{};
-                    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    poolSize.descriptorCount = 4;
-                    VkDescriptorPoolCreateInfo poolInfo{};
-                    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                    poolInfo.poolSizeCount = 1;
-                    poolInfo.pPoolSizes = &poolSize;
-                    poolInfo.maxSets = 1;
-                    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-                    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &taskPool) != VK_SUCCESS) {
-                        throw std::runtime_error("[Async] Failed to create descriptor pool for backFace task (no fallback allowed)");
-                    }
-                    app->resources.addDescriptorPool(taskPool, "Temp: backface cull pool");
-
-                    // Allocate descriptor set from IndirectRenderer's compute layout
-                    if (dsLayout != VK_NULL_HANDLE) {
-                        VkDescriptorSetAllocateInfo ainfo{};
-                        ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                        ainfo.descriptorPool = taskPool;
-                        ainfo.descriptorSetCount = 1;
-                        ainfo.pSetLayouts = &dsLayout;
-                        if (vkAllocateDescriptorSets(device, &ainfo, &computeDs) != VK_SUCCESS) {
-                            app->resources.removeDescriptorPool(taskPool);
-                            vkDestroyDescriptorPool(device, taskPool, nullptr);
-                            throw std::runtime_error("[Async] Failed to allocate compute descriptor set for backFace task (no fallback allowed)");
-                        }
-                        app->resources.addDescriptorSet(computeDs, "Temp: backface compute DS");
-                        std::cerr << "[ALLOC] backface pool=" << (void*)taskPool << " set=" << (void*)computeDs << std::endl;
-                    }
+                {
+                    VkDescriptorSetLayout bfLayout = ind.getComputeDescriptorSetLayout();
+                    auto& slot = lazyComputeSlot(cachedBackfaceCompute, ringBackfaceCompute, bfLayout, "Lazy cachedBackfaceCompute");
+                    taskPool = slot.pool;
+                    computeDs = slot.set;
                 }
 
                 // Update descriptor set with buffers: inCmds, outCmds, bounds, visibleCount
@@ -1572,10 +1493,7 @@ public:
                 // Submit and schedule cleanup of temporary resources after fence signals
                 VkFence f = app->submitCommandBufferAsync(cmd, &semBackFace);
                 { std::lock_guard<std::mutex> lk(asyncFenceMutex); pendingAsyncFences.push_back(f); }
-                app->deferDestroyUntilFence(f, [device, taskPool, computeDs, taskCompact, taskVisible, app, myApp]() {
-                    if (taskPool != VK_NULL_HANDLE && computeDs != VK_NULL_HANDLE) {
-                        myApp->freeBackface.push_back({taskPool, computeDs});
-                    }
+                app->deferDestroyUntilFence(f, [device, taskCompact, taskVisible, app]() {
                     if (taskCompact.buffer != VK_NULL_HANDLE) {
                         app->resources.removeBuffer(taskCompact.buffer);
                         vkDestroyBuffer(device, taskCompact.buffer, nullptr);
@@ -1918,11 +1836,12 @@ public:
                 queryPools[f] = VK_NULL_HANDLE;
             }
         }
-        // Free-list pools are still tracked by VulkanResourceManager, so
-        // resources.cleanup() will destroy them. Just clear our staging vectors.
-        freeSolid360Compute.clear();
-        freeSolid360Gfx.clear();
-        freeBackface.clear();
+        // Pre-allocated ring pools are tracked by VulkanResourceManager, so
+        // resources.cleanup() will destroy them. Just zero our arrays.
+        for (auto& slot : cachedSolid360Compute) slot = {};
+        for (auto& slot : cachedSolid360Gfx) slot = {};
+        for (auto& slot : cachedWater360Compute) slot = {};
+        for (auto& slot : cachedBackfaceCompute) slot = {};
 
         // NOTE: Vulkan-owned objects for global managers are now cleaned up by
         // `VulkanResourceManager::cleanup(device)`. Avoid calling manager-level
@@ -2130,6 +2049,105 @@ void MyApp::setupVegetationTextures() {
             billboardCreator->getOpacityArrayView(),
             billboardCreator->getArraySampler(),
             static_cast<int>(billboardManager.getBillboardCount()));
+    }
+}
+
+// Implementation: pre-allocate descriptor pool+set rings for async tasks
+void MyApp::preAllocateAsyncDescriptorPools() {
+    VkDevice device = getDevice();
+
+    auto allocateComputeRing = [&](PoolSetPair* ring, VkDescriptorSetLayout dsLayout, const char* label) {
+        if (dsLayout == VK_NULL_HANDLE) return;
+        VkDescriptorPoolSize poolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 };
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.maxSets = 1;
+        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+        for (uint32_t i = 0; i < ASYNC_RING_SIZE; ++i) {
+            VkDescriptorPool pool;
+            if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
+                std::cerr << "[Async] Failed to pre-allocate " << label << " pool " << i << "\n";
+                ring[i] = {};
+                continue;
+            }
+            { std::string s = std::string(label) + " ring #" + std::to_string(i); resources.addDescriptorPool(pool, s.c_str()); }
+            VkDescriptorSet set;
+            VkDescriptorSetAllocateInfo ainfo{};
+            ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            ainfo.descriptorPool = pool;
+            ainfo.descriptorSetCount = 1;
+            ainfo.pSetLayouts = &dsLayout;
+            if (vkAllocateDescriptorSets(device, &ainfo, &set) != VK_SUCCESS) {
+                resources.removeDescriptorPool(pool);
+                vkDestroyDescriptorPool(device, pool, nullptr);
+                std::cerr << "[Async] Failed to pre-allocate " << label << " set " << i << "\n";
+                ring[i] = {};
+                continue;
+            }
+            { std::string s = std::string(label) + " DS #" + std::to_string(i); resources.addDescriptorSet(set, s.c_str()); }
+            ring[i] = {pool, set};
+        }
+    };
+
+    // Solid360 compute (from solid renderer's indirect cull layout)
+    if (sceneRenderer && sceneRenderer->solidRenderer) {
+        auto& solidInd = sceneRenderer->solidRenderer->getIndirectRenderer();
+        allocateComputeRing(cachedSolid360Compute, solidInd.getComputeDescriptorSetLayout(), "cachedSolid360Compute");
+    }
+
+    // Solid360 gfx (from app's main material layout)
+    {
+        VkDescriptorSetLayout gfxLayout = getDescriptorSetLayout();
+        if (gfxLayout != VK_NULL_HANDLE) {
+            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 };
+            VkDescriptorPoolSize ps2{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9 };
+            VkDescriptorPoolSize ps3{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 };
+            VkDescriptorPoolSize poolSizes[] = {ps, ps2, ps3};
+            for (uint32_t i = 0; i < ASYNC_RING_SIZE; ++i) {
+                VkDescriptorPoolCreateInfo poolInfo{};
+                poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                poolInfo.poolSizeCount = 3;
+                poolInfo.pPoolSizes = poolSizes;
+                poolInfo.maxSets = 1;
+                poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+                VkDescriptorPool pool;
+                if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
+                    std::cerr << "[Async] Failed to pre-allocate cachedSolid360Gfx pool " << i << "\n";
+                    cachedSolid360Gfx[i] = {};
+                    continue;
+                }
+                { std::string s = "cachedSolid360Gfx ring #" + std::to_string(i); resources.addDescriptorPool(pool, s.c_str()); }
+                VkDescriptorSet set;
+                VkDescriptorSetAllocateInfo ainfo{};
+                ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                ainfo.descriptorPool = pool;
+                ainfo.descriptorSetCount = 1;
+                ainfo.pSetLayouts = &gfxLayout;
+                if (vkAllocateDescriptorSets(device, &ainfo, &set) != VK_SUCCESS) {
+                    resources.removeDescriptorPool(pool);
+                    vkDestroyDescriptorPool(device, pool, nullptr);
+                    std::cerr << "[Async] Failed to pre-allocate cachedSolid360Gfx set " << i << "\n";
+                    cachedSolid360Gfx[i] = {};
+                    continue;
+                }
+                { std::string s = "cachedSolid360Gfx DS #" + std::to_string(i); resources.addDescriptorSet(set, s.c_str()); }
+                cachedSolid360Gfx[i] = {pool, set};
+            }
+        }
+    }
+
+    // Water360 compute (from water renderer's indirect cull layout)
+    if (sceneRenderer && sceneRenderer->waterRenderer) {
+        auto& waterInd = sceneRenderer->waterRenderer->getIndirectRenderer();
+        allocateComputeRing(cachedWater360Compute, waterInd.getComputeDescriptorSetLayout(), "cachedWater360Compute");
+    }
+
+    // Backface compute (same layout as water compute)
+    if (sceneRenderer && sceneRenderer->waterRenderer) {
+        auto& waterInd = sceneRenderer->waterRenderer->getIndirectRenderer();
+        allocateComputeRing(cachedBackfaceCompute, waterInd.getComputeDescriptorSetLayout(), "cachedBackfaceCompute");
     }
 }
 
