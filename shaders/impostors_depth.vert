@@ -86,9 +86,9 @@ void main() {
 
     int layerIdx = clamp(billboardIdx, 0, 2) * NUM_VIEWS + bestIdx;
 
-    float scaledBillboard = billboardScale * vegetationHeightScale(worldPos.xz);
+    float hs = vegetationHeightScale(worldPos.xz);
 
-    vec3 center = worldPos + vec3(0.0, scaledBillboard * 0.5, 0.0);
+    vec3 center = worldPos + vec3(0.0, billboardScale * 0.5, 0.0);
     vec3 worldUp = vec3(0.0, 1.0, 0.0);
 
     vec3 right;
@@ -100,15 +100,22 @@ void main() {
     }
     vec3 upDir = normalize(cross(toCamera, right));
 
-    const float kHalf = 1.44338;
-    right = right * (scaledBillboard * kHalf);
-    vec3 up = upDir * (scaledBillboard * kHalf);
+    float quadHalfW = 0.75 * billboardScale * hs;
+    float quadHalfH = 0.5  * billboardScale;
+    right = right * quadHalfW;
+    vec3 up = upDir * quadHalfH;
 
     float u = inCornerUV.x;
     float v = inCornerUV.y;
     vec3 offset = (u - 0.5) * 2.0 * right + (0.5 - v) * 2.0 * up;
     vec3 finalPos = center + offset;
 
-    outTexCoord = vec3(inCornerUV.x, inCornerUV.y, float(layerIdx));
+    float uFrac = hs * 1.5 / (2.886751346);
+    float vFrac = 1.0 / (2.886751346);
+    float vOff  = 0.5 - 0.5 / (2.886751346);
+    outTexCoord = vec3(0.5 + (inCornerUV.x - 0.5) * uFrac,
+                       inCornerUV.y * vFrac + vOff,
+                       float(layerIdx));
+    outInstanceOffset = worldPos;
     gl_Position = ubo.viewProjection * vec4(finalPos, 1.0);
 }

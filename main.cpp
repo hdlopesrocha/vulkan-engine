@@ -825,7 +825,7 @@ public:
         }
 
         // ── Instance 1: Deferred depth pre-pass (no color attachment) ──
-        // All solid + vegetation + impostor geometry writes depth to the same buffer.
+        // Solid + vegetation write depth; impostors use single-pass (depth+color in Instance 2).
         {
             VkRenderingAttachmentInfo depthAtt{};
             depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -849,7 +849,7 @@ public:
             // Solid geometry depth
             sceneRenderer->solidRenderer->drawDepth(commandBuffer, this, getMainDescriptorSet());
 
-            // Vegetation + impostor depth
+            // Vegetation depth (impostors render depth+color in Instance 2)
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 8);
             if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
@@ -887,7 +887,7 @@ public:
             }
         }
 
-        // ── Instance 2: Color pass (load depth from prepass, LESS_OR_EQUAL compare) ──
+        // ── Instance 2: Color pass (load depth from prepass, LESS compare for impostors) ──
         {
             VkRenderingAttachmentInfo colorAtt{};
             colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -942,7 +942,7 @@ public:
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 10);
 
-            // Vegetation + impostor color (LESS_OR_EQUAL, no depth write)
+            // Vegetation color + impostor color+depth (single-pass depth write)
             if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
                 sceneRenderer->vegetationRenderer->drawColor(this, commandBuffer, viewProj, camera.getPosition());
             }

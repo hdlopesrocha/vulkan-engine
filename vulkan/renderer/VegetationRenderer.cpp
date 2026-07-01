@@ -263,7 +263,6 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     std::vector<ChunkMeta> metaArray(numChunks);
     uint32_t instanceOffset = 0;
     uint32_t chunkIdx = 0;
-    float halfExtent = std::max(8.0f, billboardScale * 0.35f);
 
     // Create a temporary command buffer for GPU copy operations
     VkCommandBufferAllocateInfo allocInfo{};
@@ -286,8 +285,8 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
         ChunkMeta& meta = metaArray[chunkIdx];
         meta.instanceOffset = instanceOffset;
         meta.instanceCount = static_cast<uint32_t>(buf.count);
-        meta.aabbMin = buf.center - glm::vec3(halfExtent);
-        meta.aabbMax = buf.center + glm::vec3(halfExtent);
+        meta.aabbMin = buf.aabbMin;
+        meta.aabbMax = buf.aabbMax;
         meta.pad0 = 0.0f;
         meta.pad1 = 0.0f;
 
@@ -852,7 +851,6 @@ float VegetationRenderer::computeDensityFactor(float distanceToCamera) const {
 std::vector<DebugCubeRenderer::CubeWithColor> VegetationRenderer::getDensityDebugCubes(const glm::vec3& cameraPos) const {
     std::vector<DebugCubeRenderer::CubeWithColor> cubes;
     cubes.reserve(chunkBuffers.size());
-    const float halfExtent = std::max(8.0f, billboardScale * 0.35f);
 
     for (const auto& [chunkId, buf] : chunkBuffers) {
         (void)chunkId;
@@ -862,8 +860,8 @@ std::vector<DebugCubeRenderer::CubeWithColor> VegetationRenderer::getDensityDebu
 
         const float densityFactor = computeDensityFactor(glm::distance(buf.center, cameraPos));
         const glm::vec3 color = glm::mix(glm::vec3(1.0f, 0.15f, 0.15f), glm::vec3(0.15f, 1.0f, 0.2f), densityFactor);
-        const glm::vec3 minPoint = buf.center - glm::vec3(halfExtent);
-        const glm::vec3 maxPoint = buf.center + glm::vec3(halfExtent);
+        const glm::vec3 minPoint = buf.aabbMin;
+        const glm::vec3 maxPoint = buf.aabbMax;
         cubes.push_back({BoundingBox(minPoint, maxPoint), color});
     }
 
@@ -1113,11 +1111,10 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
     impostorDepthDescSet        = VK_NULL_HANDLE;
 
     bool hasImpostorDepth = (depthArray60 != VK_NULL_HANDLE && captureInvVPBuf != VK_NULL_HANDLE);
-    VkCompareOp impCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 
     // ── Set 1: impostor color pipeline (albedo, normal, depth + captureInvVP) ──
-    // Bindings 2-3 provide depth data so the fragment shader can write gl_FragDepth
-    // matching the impostor depth prepass, enabling EQUAL compare deferred shading.
+    // Bindings 2-3 provide depth data so the fragment shader writes gl_FragDepth.
+    // Single-pass rendering: depthWrite=true, LESS compare (no separate depth prepass).
     {
         uint32_t numBindings = hasImpostorDepth ? 4u : 2u;
 
@@ -1334,9 +1331,8 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             {},
             VK_FORMAT_D32_SFLOAT,
             true,  // noColorAttachment
-            true   // depthBiasEnable
+            false  // depthBiasEnable (false to match color pass, avoiding precision mismatch with EQUAL compare)
         );
-
         impostorDepthPipeline       = depthPipe;
         impostorDepthPipelineLayout = depthLayout;
 
@@ -1389,9 +1385,9 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         &pcRange,
         VK_POLYGON_MODE_FILL,
         VK_CULL_MODE_NONE,
-        false, // depthWrite — impostors don't write depth (handled by prepass)
+        true,  // depthWrite — single-pass: impostor writes both color and depth
         true,  // colorWrite
-        impCompareOp, // EQUAL when depth data available, LESS as fallback
+        VK_COMPARE_OP_LESS, // LESS compare against depth prepass (solid + veg)
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
         false,
         {},
@@ -1525,16 +1521,6 @@ void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffe
         issueVegetationDraws(commandBuffer, vegetationDepthPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }
 
-    // Impostor depth prepass
-    if (impostorDepthPipeline != VK_NULL_HANDLE &&
-        impostorDepthDescSet != VK_NULL_HANDLE && impostorDistance > 0.0f) {
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorDepthPipeline);
-        VkDescriptorSet depthSets[2] = { globalSet, impostorDepthDescSet };
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    impostorDepthPipelineLayout, 0, 2, depthSets, 0, nullptr);
-        vkCmdSetDepthBias(commandBuffer, 0.0f, 0.0f, 0.0f);
-        issueImpostorDraws(commandBuffer, impostorDepthPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
-    }
 }
 
 void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::mat4& viewProj, const glm::vec3& cameraPos) {
@@ -1803,6 +1789,18 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
 
         std::vector<float> instanceData(instanceCount * 4, 0.0f);
 
+        const float maxBillboardRadius = billboardScale * 2.1f; // max heightScale (1.4) × max corner offset (1.5)
+
+        // Compute AABB from vertex positions (conservatively bounds all instance anchors)
+        glm::vec3 aabbMin( std::numeric_limits<float>::max());
+        glm::vec3 aabbMax(-std::numeric_limits<float>::max());
+        for (const auto& pos : pc.positions) {
+            aabbMin = glm::min(aabbMin, pos);
+            aabbMax = glm::max(aabbMax, pos);
+        }
+        aabbMin -= glm::vec3(maxBillboardRadius);
+        aabbMax += glm::vec3(maxBillboardRadius);
+
         for (uint32_t tri = 0; tri < triCount; ++tri) {
             const uint32_t tb = tri * 3;
             const uint32_t i0 = pc.grassIndices[tb + 0];
@@ -1918,6 +1916,8 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         ibuf.indirectBuffer = indirect.buffer;
         ibuf.indirectMemory = indirect.memory;
         ibuf.center         = pc.chunkCenter;
+        ibuf.aabbMin        = aabbMin;
+        ibuf.aabbMax        = aabbMax;
         ibuf.count          = instanceCount;
         chunkBuffers[pc.chunkId] = ibuf;
         chunkInstanceCounts[pc.chunkId] = instanceCount;

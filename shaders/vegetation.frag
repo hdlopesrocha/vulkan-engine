@@ -126,5 +126,5 @@ void main() {
 
     // Final colour: leaf over nearest-leaf background, lit by world-space normal.
     outColor.rgb = mix(bgAlbedo, leafAlbedo.rgb, weight) * lighting;
-    outColor.a   = weight;
+    outColor.a   = 1.0;
 }

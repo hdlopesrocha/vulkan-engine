@@ -6,8 +6,8 @@
 |---------|--------|
 | `make` / `make all` | Release build (app + server + shaders, ImGui enabled, `-O3 -march=native`) |
 | `make debug` | Debug build (`-O0 -g -DDEBUG`, no ImGui) |
-| `make run` | Release build + run `bin/app` (CWD is `bin/`) |
-| `make run-debug` | Debug build + run |
+| `make run` | Release build + run `bin/app` (CWD is `bin/`, never close the app or use timeouts, the program is always closed by the user) |
+| `make run-debug` | Debug build + run | (Never close the app or use timeouts, the program is always closed by the user)
 | `make shaders` | Compile `shaders/*.{vert,frag,geom,comp,tesc,tese}` → `bin/shaders/*.spv` via `glslc` (fallback `glslangValidator`) |
 | `make server` | Build headless `bin/server` (no Vulkan/UI linkage, no widgets) |
 | `make clean` | Remove `bin/` and generated SPIR-V |

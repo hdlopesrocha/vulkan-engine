@@ -46,6 +46,8 @@ void main() {
 
     // Dithered cross-fade with vegetation (complementary to vegetation depth).
     // Only write depth for pixels that the impostor color pass would shade.
+    // Note: uses inInstanceOffset (flat, single per instance) instead of
+    // the per-fragment worldPos so the distance matches the color pass exactly.
     if (impostorDistance > 0.0) {
         float dist       = distance(ubo.viewPos.xyz, inInstanceOffset);
         float fadeAlpha  = 1.0 - smoothstep(impostorDistance * 0.50, impostorDistance * 1.15, dist);

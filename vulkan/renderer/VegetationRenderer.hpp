@@ -180,6 +180,8 @@ private:
         VkBuffer indirectBuffer = VK_NULL_HANDLE; // indirect draw command
         VkDeviceMemory indirectMemory = VK_NULL_HANDLE;
         glm::vec3 center = glm::vec3(0.0f);
+        glm::vec3 aabbMin = glm::vec3(0.0f);
+        glm::vec3 aabbMax = glm::vec3(0.0f);
         size_t count = 0;
     };
     std::unordered_map<NodeID, InstanceBuffer> chunkBuffers;

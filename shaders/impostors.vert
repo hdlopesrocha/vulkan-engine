@@ -88,9 +88,13 @@ void main() {
 
     int layerIdx = clamp(billboardIdx, 0, 2) * NUM_VIEWS + bestIdx;
 
-    float scaledBillboard = billboardScale * vegetationHeightScale(worldPos.xz);
+    float hs = vegetationHeightScale(worldPos.xz);
 
-    vec3 center = worldPos + vec3(0.0, scaledBillboard * 0.5, 0.0);
+    // Match the capture setup: the plant was captured at heightScale=1.0 with a
+    // fixed-size square framebuffer. The plant occupies only 34.6% of the image
+    // height (top/bottom 32.7% are clear).  Adjust the quad size and UV mapping
+    // to crop the empty margins and align the captured plant to the instance.
+    vec3 center = worldPos + vec3(0.0, billboardScale * 0.5, 0.0);
     vec3 worldUp = vec3(0.0, 1.0, 0.0);
 
     vec3 right;
@@ -102,9 +106,12 @@ void main() {
     }
     vec3 upDir = normalize(cross(toCamera, right));
 
-    const float kHalf = 1.44338;
-    right = right * (scaledBillboard * kHalf);
-    vec3 up = upDir * (scaledBillboard * kHalf);
+    // Quad size: width matches the plant's horizontal extent (1.5 × billboardScale × hs),
+    // height matches the captured plant height (billboardScale, not hs).
+    float quadHalfW = 0.75 * billboardScale * hs;
+    float quadHalfH = 0.5  * billboardScale;
+    right = right * quadHalfW;
+    vec3 up = upDir * quadHalfH;
 
     vec3 faceNorm = toCamera;
     outFaceNormal = faceNorm;
@@ -114,7 +121,15 @@ void main() {
     vec3 offset = (u - 0.5) * 2.0 * right + (0.5 - v) * 2.0 * up;
     vec3 finalPos = center + offset;
 
-    outTexCoord = vec3(inCornerUV.x, inCornerUV.y, float(layerIdx));
+    // Crop UV to the plant's bounding box within the captured image.
+    // The plant occupies UV.V in [0.327, 0.673] (vertical) and UV.U projects
+    // via the instance's world-space position × hs (horizontal).
+    float uFrac = hs * 1.5 / (2.886751346); // hs * 1.5 / (2 * 2.5 * tan(30°))
+    float vFrac = 1.0 / (2.886751346);      // billboardScale / (2 * 2.5 * billboardScale * tan(30°))
+    float vOff  = 0.5 - 0.5 / (2.886751346);
+    outTexCoord = vec3(0.5 + (inCornerUV.x - 0.5) * uFrac,
+                       inCornerUV.y * vFrac + vOff,
+                       float(layerIdx));
     outWorldPos = finalPos;
     gl_Position = ubo.viewProjection * vec4(finalPos, 1.0);
 }
