@@ -1908,8 +1908,21 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         std::memcpy(idata, &drawCmd, sizeof(VkDrawIndexedIndirectCommand));
         vkUnmapMemory(app->getDevice(), stagingIndirect.memory);
 
-        // Copy staging → device-local on the graphics queue, synchronous.
-        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+        // Copy staging → device-local on the graphics queue, async.
+        // The lambda captures everything needed for deferred cleanup.
+        VkDevice dev = app->getDevice();
+        NodeID chunkId = pc.chunkId;
+        // Keep the old chunk visible until the new one is ready
+        auto prevIt = chunkBuffers.find(chunkId);
+        InstanceBuffer oldBuf;
+        bool hasOld = false;
+        if (prevIt != chunkBuffers.end()) {
+            oldBuf = prevIt->second;
+            hasOld = true;
+            // Don't erase — old chunk stays visible during async copy
+        }
+
+        VkFence fence = app->runSingleTimeCommandsAsync([&](VkCommandBuffer cmd) {
             VkBufferCopy copyRegion{};
             copyRegion.size = bufSize;
             vkCmdCopyBuffer(cmd, stagingInst.buffer, instBuf.buffer, 1, &copyRegion);
@@ -1919,30 +1932,53 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
             vkCmdCopyBuffer(cmd, stagingIndirect.buffer, indirect.buffer, 1, &indirectCopy);
         });
 
-        // Destroy staging buffers immediately (copy completed synchronously).
-        VkDevice dev = app->getDevice();
-        if (app->resources.removeBuffer(stagingInst.buffer))
-            vkDestroyBuffer(dev, stagingInst.buffer, nullptr);
-        if (app->resources.removeDeviceMemory(stagingInst.memory))
-            vkFreeMemory(dev, stagingInst.memory, nullptr);
-        if (app->resources.removeBuffer(stagingIndirect.buffer))
-            vkDestroyBuffer(dev, stagingIndirect.buffer, nullptr);
-        if (app->resources.removeDeviceMemory(stagingIndirect.memory))
-            vkFreeMemory(dev, stagingIndirect.memory, nullptr);
+        app->deferDestroyUntilFence(fence, [this, dev, app, stagingInst, stagingIndirect,
+                                             instBuf, indirect, chunkId, instanceCount,
+                                             aabbMin, aabbMax, pc, hasOld, oldBuf]() {
+            // Destroy staging buffers now that the copy is done
+            if (app->resources.removeBuffer(stagingInst.buffer))
+                vkDestroyBuffer(dev, stagingInst.buffer, nullptr);
+            if (app->resources.removeDeviceMemory(stagingInst.memory))
+                vkFreeMemory(dev, stagingInst.memory, nullptr);
+            if (app->resources.removeBuffer(stagingIndirect.buffer))
+                vkDestroyBuffer(dev, stagingIndirect.buffer, nullptr);
+            if (app->resources.removeDeviceMemory(stagingIndirect.memory))
+                vkFreeMemory(dev, stagingIndirect.memory, nullptr);
 
-        destroyInstanceBuffer(pc.chunkId, app);
+            // Destroy the old instance buffer for this chunk
+            if (hasOld) {
+                if (oldBuf.buffer != VK_NULL_HANDLE) {
+                    if (app->resources.removeBuffer(oldBuf.buffer))
+                        vkDestroyBuffer(dev, oldBuf.buffer, nullptr);
+                }
+                if (oldBuf.memory != VK_NULL_HANDLE) {
+                    if (app->resources.removeDeviceMemory(oldBuf.memory))
+                        vkFreeMemory(dev, oldBuf.memory, nullptr);
+                }
+                if (oldBuf.indirectBuffer != VK_NULL_HANDLE) {
+                    if (app->resources.removeBuffer(oldBuf.indirectBuffer))
+                        vkDestroyBuffer(dev, oldBuf.indirectBuffer, nullptr);
+                }
+                if (oldBuf.indirectMemory != VK_NULL_HANDLE) {
+                    if (app->resources.removeDeviceMemory(oldBuf.indirectMemory))
+                        vkFreeMemory(dev, oldBuf.indirectMemory, nullptr);
+                }
+            }
 
-        InstanceBuffer ibuf;
-        ibuf.buffer         = instBuf.buffer;
-        ibuf.memory         = instBuf.memory;
-        ibuf.indirectBuffer = indirect.buffer;
-        ibuf.indirectMemory = indirect.memory;
-        ibuf.center         = pc.chunkCenter;
-        ibuf.aabbMin        = aabbMin;
-        ibuf.aabbMax        = aabbMax;
-        ibuf.count          = instanceCount;
-        chunkBuffers[pc.chunkId] = ibuf;
-        chunkInstanceCounts[pc.chunkId] = instanceCount;
+            // Publish new chunk (replaces old)
+            InstanceBuffer ibuf;
+            ibuf.buffer         = instBuf.buffer;
+            ibuf.memory         = instBuf.memory;
+            ibuf.indirectBuffer = indirect.buffer;
+            ibuf.indirectMemory = indirect.memory;
+            ibuf.center         = pc.chunkCenter;
+            ibuf.aabbMin        = aabbMin;
+            ibuf.aabbMax        = aabbMax;
+            ibuf.count          = instanceCount;
+            chunkBuffers[chunkId] = ibuf;
+            chunkInstanceCounts[chunkId] = instanceCount;
+            vegConsolidationDirty = true;
+        });
     }
 }
 
