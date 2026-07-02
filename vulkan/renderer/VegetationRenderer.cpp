@@ -1087,7 +1087,8 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         &pc
     );
 
-    // Draw: consolidated (GPU culling) or legacy per-chunk path.
+    // Draw consolidated via GPU culling only (no per-chunk fallback).
+    // New chunks appear gradually as they are uploaded and consolidated.
     uint32_t sf = vegCullCurrentSlot;
     vkCmdBindIndexBuffer(commandBuffer, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
     if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
@@ -1097,24 +1098,6 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
         cmdDrawIndexedIndirectCount(commandBuffer, compactedCmdBuffers[sf].buffer, 0,
         visibleCountBuffers[sf].buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
-    } else {
-        static int shadowDrawLogCounter = 0;
-        int chunksDrawn = 0;
-        for (auto& [chunkId, buf] : chunkBuffers) {
-            (void)chunkId;
-            if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
-            if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) continue;
-
-            VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, buf.buffer };
-            VkDeviceSize offsets[2] = { 0, 0 };
-            vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-            vkCmdDrawIndexedIndirect(commandBuffer, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
-            chunksDrawn++;
-        }
-        if (shadowDrawLogCounter < 5) {
-            std::cerr << "[VEGETATION SHADOW DRAW] chunksDrawn=" << chunksDrawn << " totalChunks=" << chunkBuffers.size() << std::endl;
-            shadowDrawLogCounter++;
-        }
     }
 
     // ── Impostor depth pass ────────────────────────────────────────────────────
@@ -1136,19 +1119,14 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         vkCmdBindIndexBuffer(commandBuffer, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
         VkBuffer impVbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
         VkDeviceSize impOffsets[2] = { 0, 0 };
-        bool consolidated = !vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0;
-        if (consolidated) {
+        if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
             impVbs[1] = concatenatedInstanceBuffer.buffer;
             vkCmdBindVertexBuffers(commandBuffer, 0, 2, impVbs, impOffsets);
-        }
-        for (auto& [chunkId, buf] : chunkBuffers) {
-            (void)chunkId;
-            if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-            if (!consolidated) {
-                impVbs[1] = buf.buffer;
-                vkCmdBindVertexBuffers(commandBuffer, 0, 2, impVbs, impOffsets);
+            for (auto& [chunkId, buf] : chunkBuffers) {
+                (void)chunkId;
+                if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
+                vkCmdDrawIndexed(commandBuffer, 6, static_cast<uint32_t>(buf.count), 0, 0, 0);
             }
-            vkCmdDrawIndexed(commandBuffer, 6, static_cast<uint32_t>(buf.count), 0, 0, 0);
         }
     }
 }
@@ -1534,14 +1512,6 @@ void VegetationRenderer::issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLay
             cmdDrawIndexedIndirectCount(cmd, compactedCmdBuffers[f].buffer, 0,
                 visibleCountBuffers[f].buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
         }
-    } else {
-        for (auto& [chunkId, buf] : chunkBuffers) {
-            (void)chunkId;
-            if (buf.buffer == VK_NULL_HANDLE || buf.indirectBuffer == VK_NULL_HANDLE || buf.count == 0) continue;
-            vbs[1] = buf.buffer;
-            vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
-            vkCmdDrawIndexedIndirect(cmd, buf.indirectBuffer, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
-        }
     }
 }
 
@@ -1551,21 +1521,12 @@ void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayou
     VkBuffer vbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
     VkDeviceSize offsets[2] = { 0, 0 };
     vkCmdBindIndexBuffer(cmd, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    bool consolidated = !vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0;
-    if (consolidated) {
+    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
         vbs[1] = concatenatedInstanceBuffer.buffer;
         vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
         for (auto& [chunkId, buf] : chunkBuffers) {
             (void)chunkId;
             if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-            vkCmdDrawIndexed(cmd, 6, static_cast<uint32_t>(buf.count), 0, 0, 0);
-        }
-    } else {
-        for (auto& [chunkId, buf] : chunkBuffers) {
-            (void)chunkId;
-            if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-            vbs[1] = buf.buffer;
-            vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
             vkCmdDrawIndexed(cmd, 6, static_cast<uint32_t>(buf.count), 0, 0, 0);
         }
     }
