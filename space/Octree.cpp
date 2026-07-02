@@ -582,14 +582,11 @@ bool Octree::isThreadNode(float length, float minSize, int threadSize) const {
     return minSize*threadSize < length;
 }
 
-void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, ThreadContext * threadContext, NodeOperationResult childResult[8]) {
+void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, ThreadContext * threadContext, NodeOperationResult childResult[8], bool fromPool) {
     float childLength = frame.cube.getLengthX()*0.5f;
-    bool isChildThread = isThreadNode(childLength, args.minSize, 16);
+    bool isChildThread = !fromPool && isThreadNode(childLength, args.minSize, 16);
     bool isChildChunk = isChunkNode(childLength);
     std::vector<std::future<void>> futures;
-    if(isChildThread) {
-        futures.reserve(8);
-    }
 
     OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
     OctreeNode * node = frame.node;
@@ -632,7 +629,7 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
             NodeOperationResult * result = &childResult[i];
             futures.push_back(threadPool.enqueue([this, childFrame, args, result]() {
                 ThreadContext localThreadContext(childFrame.cube);
-                shape(*result, childFrame, args, &localThreadContext);
+                shape(*result, childFrame, args, &localThreadContext, true);
             }));
         } else {
             shape(childResult[i], childFrame, args, threadContext);
@@ -647,7 +644,7 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
     }
 }
 
-void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext) {    
+void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext, bool fromPool) {    
     r.node = frame.node;
     const float length = frame.cube.getLengthX();
     const bool isShapeLeaf = length <= args.minSize;
@@ -675,7 +672,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         const ContainmentType check = args.function->check(frame.cube, args.model, args.minSize);
         process = check != ContainmentType::Disjoint;  
         if(process) {    
-            shapeChildren(frame, args, threadContext, children);
+            shapeChildren(frame, args, threadContext, children, fromPool);
             bool childResultSolid = true;
             bool childResultEmpty = true;
             bool childShapeSolid = true;

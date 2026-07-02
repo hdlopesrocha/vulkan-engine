@@ -39,8 +39,7 @@ public:
     void expand(const ShapeArgs &args);
     void apply(float (*operation)(float, float), WrappedSignedDistanceFunction *function, const Transformation model, glm::vec4 translate, glm::vec4 scale, const TexturePainter &painter, float minSize, Simplifier &simplifier, const OctreeChangeHandler &changeHandler);
     void reset();
-    void shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext);
-        void iterate(IteratorHandler &handler);
+    void shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext, bool fromPool = false);        void iterate(IteratorHandler &handler);
         void iterateFlat(IteratorHandler &handler);
         void iterate(IteratorHandler &handler, OctreeNodeData data);
         void iterateFlat(IteratorHandler &handler, OctreeNodeData data);
@@ -67,7 +66,7 @@ private:
     void buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], ThreadContext * threadContext) const;
     void buildResultSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], float resultSDF[8], ThreadContext * threadContext) const;
     float evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float> * threadContext, glm::vec3 p) const;
-    void shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, ThreadContext * threadContext, NodeOperationResult childResult[8]);
+    void shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, ThreadContext * threadContext, NodeOperationResult childResult[8], bool fromPool = false);
 };
 
 
