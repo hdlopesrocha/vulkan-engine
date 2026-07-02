@@ -305,24 +305,69 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     uint32_t numChunks = static_cast<uint32_t>(chunkBuffers.size());
 
     VkDeviceSize concatSize = totalInstances * sizeof(glm::vec4);
-    if (concatenatedInstanceBuffer.buffer == VK_NULL_HANDLE) {
-        concatenatedInstanceBuffer = app->createBuffer(concatSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    {
+        bool needsCreate = concatenatedInstanceBuffer.buffer == VK_NULL_HANDLE;
+        if (!needsCreate) {
+            VkMemoryRequirements reqs;
+            vkGetBufferMemoryRequirements(device, concatenatedInstanceBuffer.buffer, &reqs);
+            if (reqs.size < concatSize) needsCreate = true;
+        }
+        if (needsCreate) {
+            if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE) {
+                app->resources.removeBuffer(concatenatedInstanceBuffer.buffer);
+                vkDestroyBuffer(device, concatenatedInstanceBuffer.buffer, nullptr);
+                app->resources.removeDeviceMemory(concatenatedInstanceBuffer.memory);
+                vkFreeMemory(device, concatenatedInstanceBuffer.memory, nullptr);
+                concatenatedInstanceBuffer = {};
+            }
+            concatenatedInstanceBuffer = app->createBuffer(concatSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
     }
 
     VkDeviceSize metaSize = numChunks * sizeof(ChunkMeta);
-    if (chunkMetaBuffer.buffer == VK_NULL_HANDLE)
-        chunkMetaBuffer = app->createBuffer(metaSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    {
+        bool needsCreate = chunkMetaBuffer.buffer == VK_NULL_HANDLE;
+        if (!needsCreate) {
+            VkMemoryRequirements reqs;
+            vkGetBufferMemoryRequirements(device, chunkMetaBuffer.buffer, &reqs);
+            if (reqs.size < metaSize) needsCreate = true;
+        }
+        if (needsCreate) {
+            if (chunkMetaBuffer.buffer != VK_NULL_HANDLE) {
+                app->resources.removeBuffer(chunkMetaBuffer.buffer);
+                vkDestroyBuffer(device, chunkMetaBuffer.buffer, nullptr);
+                app->resources.removeDeviceMemory(chunkMetaBuffer.memory);
+                vkFreeMemory(device, chunkMetaBuffer.memory, nullptr);
+                chunkMetaBuffer = {};
+            }
+            chunkMetaBuffer = app->createBuffer(metaSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }
+    }
 
     VkDeviceSize compactedSize = std::max(256u, numChunks) * sizeof(VkDrawIndexedIndirectCommand);
     for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
-        if (compactedCmdBuffers[f].buffer == VK_NULL_HANDLE)
+        bool needsCreate = compactedCmdBuffers[f].buffer == VK_NULL_HANDLE;
+        if (!needsCreate) {
+            VkMemoryRequirements reqs;
+            vkGetBufferMemoryRequirements(device, compactedCmdBuffers[f].buffer, &reqs);
+            if (reqs.size < compactedSize) needsCreate = true;
+        }
+        if (needsCreate) {
+            if (compactedCmdBuffers[f].buffer != VK_NULL_HANDLE) {
+                app->resources.removeBuffer(compactedCmdBuffers[f].buffer);
+                vkDestroyBuffer(device, compactedCmdBuffers[f].buffer, nullptr);
+                app->resources.removeDeviceMemory(compactedCmdBuffers[f].memory);
+                vkFreeMemory(device, compactedCmdBuffers[f].memory, nullptr);
+                compactedCmdBuffers[f] = {};
+            }
             compactedCmdBuffers[f] = app->createBuffer(compactedSize,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
         if (visibleCountBuffers[f].buffer == VK_NULL_HANDLE) {
             visibleCountBuffers[f] = app->createBuffer(sizeof(uint32_t),
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
