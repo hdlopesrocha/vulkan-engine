@@ -175,14 +175,18 @@ public:
     // Pre-allocated descriptor pool+set rings to avoid per-frame create/destroy
     static constexpr uint32_t ASYNC_RING_SIZE = 3;
     struct PoolSetPair { VkDescriptorPool pool; VkDescriptorSet set; };
-    PoolSetPair cachedSolid360Compute[ASYNC_RING_SIZE]{};
-    PoolSetPair cachedSolid360Gfx[ASYNC_RING_SIZE]{};
-    PoolSetPair cachedWater360Compute[ASYNC_RING_SIZE]{};
     PoolSetPair cachedBackfaceCompute[ASYNC_RING_SIZE]{};
-    uint32_t ringSolid360Compute = 0;
-    uint32_t ringSolid360Gfx = 0;
-    uint32_t ringWater360Compute = 0;
     uint32_t ringBackfaceCompute = 0;
+
+    // Persistent cubemap resources (used inline on main CB, no async race)
+    Buffer cube360UBO{};
+    Buffer cube360Compact{};
+    Buffer cube360Visible{};
+    Buffer cube360WaterCompact{};
+    Buffer cube360WaterVisible{};
+    VkDescriptorSet cube360GfxDs = VK_NULL_HANDLE;
+    VkDescriptorSet cube360ComputeDs = VK_NULL_HANDLE;
+    VkDescriptorSet cube360WaterComputeDs = VK_NULL_HANDLE;
 
     ~MyApp() {
         if (sceneProcessThread.joinable()) sceneProcessThread.join();
@@ -753,6 +757,30 @@ public:
         const bool waterEnabled = settings.waterEnabled;
         const bool vegetationEnabled = settings.vegetationEnabled;
 
+        // ── Cubemap render on main CB (after shadow pass, reads fresh shadow maps) ──
+        if (waterEnabled && sceneRenderer && sceneRenderer->solid360Renderer) {
+            ensureCubemapResources();
+
+            UniformObject ubo360 = uboStatic;
+            ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
+
+            auto tCubemap = std::chrono::high_resolution_clock::now();
+            this->sceneRenderer->solid360Renderer->renderSolid360(
+                this, commandBuffer,
+                this->sceneRenderer->skyRenderer.get(), this->sceneRenderer->getSkySettings().mode,
+                this->sceneRenderer->solidRenderer.get(),
+                cube360GfxDs,
+                cube360UBO, ubo360,
+                cube360ComputeDs,
+                cube360Compact.buffer,
+                cube360Visible.buffer,
+                cube360WaterComputeDs,
+                cube360WaterCompact.buffer,
+                cube360WaterVisible.buffer);
+            this->profileSolid360 = std::chrono::duration<float, std::milli>(
+                std::chrono::high_resolution_clock::now() - tCubemap).count();
+        }
+
         // Render sky + solids/vegetation into the solid offscreen framebuffer (one per frame)
 
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -775,9 +803,9 @@ public:
                 sceneRenderer->vegetationRenderer->recordReadBarriers(commandBuffer);
             }
 
-            // Ensure the 360° cubemap writes (from the async task submitted
-            // earlier on the same queue) are visible to the solid shader's
-            // environment-map sampler.
+            // Ensure the 360° cubemap writes (from the renderSolid360 call above
+            // on the same CB) are visible to the solid shader's environment-map
+            // sampler.
             if (sceneRenderer && sceneRenderer->solid360Renderer) {
                 VkImage cubeImg = sceneRenderer->solid360Renderer->getCube360ColorImage();
                 if (cubeImg != VK_NULL_HANDLE) {
@@ -1085,314 +1113,8 @@ public:
                 }
             }
         } threadJoiner(asyncTasks);
-        bool launchedSolid360 = false;
         bool launchedBackFace = false;
-        VkSemaphore semSolid360 = VK_NULL_HANDLE;
         VkSemaphore semBackFace = VK_NULL_HANDLE;
-
-        // 360° cubemap (sky + solid)
-        if (waterEnabled && sceneRenderer && sceneRenderer->solid360Renderer) {
-            launchedSolid360 = true;
-            asyncTasks.emplace_back([this, viewProj, frameIdx, &semSolid360]() {
-                VulkanApp* app = this;
-                VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
-                VkCommandBufferBeginInfo beginInfo{};
-                beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
-                    std::cerr << "[Async] vkBeginCommandBuffer failed for solid360\n";
-                    app->freeCommandBuffer(cmd);
-                    return;
-                }
-                IndirectRenderer &ind = this->sceneRenderer->solidRenderer->getIndirectRenderer();
-                uint32_t numCmds = static_cast<uint32_t>(ind.getMeshCount());
-                bool hasGeometry = (numCmds > 0 && ind.getIndirectBuffer().buffer != VK_NULL_HANDLE);
-
-                VkDevice device = app->getDevice();
-                auto lazyComputeSlot = [&](PoolSetPair* ring, uint32_t& idx, VkDescriptorSetLayout layout, const char* label) -> PoolSetPair& {
-                    auto& s = ring[idx++ % ASYNC_RING_SIZE];
-                    if (s.pool != VK_NULL_HANDLE) return s;
-                    if (layout == VK_NULL_HANDLE) return s;
-                    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 };
-                    VkDescriptorPoolCreateInfo pci{};
-                    pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                    pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
-                    pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-                    vkCreateDescriptorPool(device, &pci, nullptr, &s.pool);
-                    app->resources.addDescriptorPool(s.pool, label);
-                    VkDescriptorSetAllocateInfo ai{};
-                    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                    ai.descriptorPool = s.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &layout;
-                    vkAllocateDescriptorSets(device, &ai, &s.set);
-                    app->resources.addDescriptorSet(s.set, label);
-                    return s;
-                };
-                Buffer taskCompact{};
-                Buffer taskVisible{};
-                VkDescriptorPool taskPool = VK_NULL_HANDLE;
-                VkDescriptorSet computeDs = VK_NULL_HANDLE;
-
-                // Set up per-task buffers + compute descriptor for per-face culling
-                if (hasGeometry) {
-                    VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * numCmds;
-                    taskCompact = app->createBuffer(compactSize,
-                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                    taskVisible = app->createBuffer(sizeof(uint32_t),
-                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-                    VkDescriptorSetLayout dsLayout = ind.getComputeDescriptorSetLayout();
-                    VkDescriptorPool sharedPool = ind.getComputeDescriptorPool();
-                    if (dsLayout != VK_NULL_HANDLE && sharedPool != VK_NULL_HANDLE) {
-                        static std::mutex shared_compute_desc_pool_alloc_mutex;
-                        std::lock_guard<std::mutex> sharedLock(shared_compute_desc_pool_alloc_mutex);
-                        VkDescriptorSetAllocateInfo ainfoShared{};
-                        ainfoShared.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                        ainfoShared.descriptorPool = sharedPool;
-                        ainfoShared.descriptorSetCount = 1;
-                        ainfoShared.pSetLayouts = &dsLayout;
-                        if (vkAllocateDescriptorSets(device, &ainfoShared, &computeDs) == VK_SUCCESS) {
-                            app->resources.addDescriptorSet(computeDs, "Shared: solid360 compute DS");
-                            std::cerr << "[RAW ALLOC] main.cpp:942 shared computeDs=" << (void*)computeDs << " pool=" << (void*)ainfoShared.descriptorPool << std::endl;
-                        }
-                    }
-                    if (computeDs == VK_NULL_HANDLE) {
-                        auto& slot = lazyComputeSlot(cachedSolid360Compute, ringSolid360Compute, dsLayout, "Lazy cachedSolid360Compute");
-                        taskPool = slot.pool;
-                        computeDs = slot.set;
-                    }
-
-                    VkDescriptorBufferInfo inBuf{}; inBuf.buffer = ind.getIndirectBuffer().buffer; inBuf.offset = 0; inBuf.range = VK_WHOLE_SIZE;
-                    VkDescriptorBufferInfo outBuf{}; outBuf.buffer = taskCompact.buffer; outBuf.offset = 0; outBuf.range = VK_WHOLE_SIZE;
-                    VkDescriptorBufferInfo boundsBuf{}; boundsBuf.buffer = ind.getBoundsBuffer().buffer; boundsBuf.offset = 0; boundsBuf.range = VK_WHOLE_SIZE;
-                    VkDescriptorBufferInfo countBuf{}; countBuf.buffer = taskVisible.buffer; countBuf.offset = 0; countBuf.range = VK_WHOLE_SIZE;
-
-                    VkWriteDescriptorSet writes[4]{};
-                    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    writes[0].dstSet = computeDs;
-                    writes[0].dstBinding = 0;
-                    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    writes[0].descriptorCount = 1;
-                    writes[0].pBufferInfo = &inBuf;
-                    writes[1] = writes[0]; writes[1].dstBinding = 1; writes[1].pBufferInfo = &outBuf;
-                    writes[2] = writes[0]; writes[2].dstBinding = 2; writes[2].pBufferInfo = &boundsBuf;
-                    writes[3] = writes[0]; writes[3].dstBinding = 3; writes[3].pBufferInfo = &countBuf;
-                    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
-                    // Cull is deferred to renderSolid360 which runs per-face
-                }
-
-                // Set up per-task water cull buffers + compute descriptor (isolated from main pass)
-                IndirectRenderer &waterInd = this->sceneRenderer->waterRenderer->getIndirectRenderer();
-                uint32_t waterNumCmds = static_cast<uint32_t>(waterInd.getMeshCount());
-                bool hasWater = (waterNumCmds > 0 && waterInd.getIndirectBuffer().buffer != VK_NULL_HANDLE);
-                Buffer waterCompact{};
-                Buffer waterVisible{};
-                VkDescriptorPool waterTaskPool = VK_NULL_HANDLE;
-                VkDescriptorSet waterComputeDs = VK_NULL_HANDLE;
-                if (hasWater) {
-                    VkDeviceSize wcSize = sizeof(VkDrawIndexedIndirectCommand) * waterNumCmds;
-                    waterCompact = app->createBuffer(wcSize,
-                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                    waterVisible = app->createBuffer(sizeof(uint32_t),
-                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-                    VkDescriptorSetLayout wDsLayout = waterInd.getComputeDescriptorSetLayout();
-                    if (wDsLayout != VK_NULL_HANDLE) {
-                        auto& slot = lazyComputeSlot(cachedWater360Compute, ringWater360Compute, wDsLayout, "Lazy cachedWater360Compute");
-                        waterTaskPool = slot.pool;
-                        waterComputeDs = slot.set;
-
-                        VkDescriptorBufferInfo wInBuf{}; wInBuf.buffer = waterInd.getIndirectBuffer().buffer; wInBuf.offset = 0; wInBuf.range = VK_WHOLE_SIZE;
-                        VkDescriptorBufferInfo wOutBuf{}; wOutBuf.buffer = waterCompact.buffer; wOutBuf.offset = 0; wOutBuf.range = VK_WHOLE_SIZE;
-                        VkDescriptorBufferInfo wBoundsBuf{}; wBoundsBuf.buffer = waterInd.getBoundsBuffer().buffer; wBoundsBuf.offset = 0; wBoundsBuf.range = VK_WHOLE_SIZE;
-                        VkDescriptorBufferInfo wCountBuf{}; wCountBuf.buffer = waterVisible.buffer; wCountBuf.offset = 0; wCountBuf.range = VK_WHOLE_SIZE;
-
-                        VkWriteDescriptorSet wWrites[4]{};
-                        wWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                        wWrites[0].dstSet = waterComputeDs;
-                        wWrites[0].dstBinding = 0;
-                        wWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                        wWrites[0].descriptorCount = 1;
-                        wWrites[0].pBufferInfo = &wInBuf;
-                        wWrites[1] = wWrites[0]; wWrites[1].dstBinding = 1; wWrites[1].pBufferInfo = &wOutBuf;
-                        wWrites[2] = wWrites[0]; wWrites[2].dstBinding = 2; wWrites[2].pBufferInfo = &wBoundsBuf;
-                        wWrites[3] = wWrites[0]; wWrites[3].dstBinding = 3; wWrites[3].pBufferInfo = &wCountBuf;
-                        vkUpdateDescriptorSets(device, 4, wWrites, 0, nullptr);
-                    }
-                }
-
-                // Render solid360 using per-task compact/visible buffers when available
-                SkySettings::Mode skyMode360 = this->sceneRenderer->getSkySettings().mode;
-
-                // Create a per-task UBO + descriptor set so async recording does not
-                // race with the application's main per-frame UBOs.
-                Buffer taskUBO = app->createBuffer(sizeof(UniformObject),
-                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                // Allocate gfxDs from a per-task pool to avoid handle-reuse races
-                // with the shared main descriptor pool across frames.
-                VkDescriptorPool gfxPool = VK_NULL_HANDLE;
-                VkDescriptorSet gfxDs = VK_NULL_HANDLE;
-                {
-                    auto& slot = cachedSolid360Gfx[ringSolid360Gfx++ % ASYNC_RING_SIZE];
-                    gfxPool = slot.pool;
-                    gfxDs = slot.set;
-                }
-
-                // Prepare descriptor writes mirroring main descriptor set but using taskUBO.
-                // All buffer infos must be heap-allocated because their pointers
-                // are stored in gfxWrites and later freed in the cleanup loop.
-                std::vector<VkWriteDescriptorSet> gfxWrites;
-                VkDescriptorBufferInfo* uboInfo = new VkDescriptorBufferInfo{ taskUBO.buffer, 0, sizeof(UniformObject) };
-                VkWriteDescriptorSet uboWrite{};
-                uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                uboWrite.dstSet = gfxDs;
-                uboWrite.dstBinding = 0;
-                uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                uboWrite.descriptorCount = 1;
-                uboWrite.pBufferInfo = uboInfo;
-                gfxWrites.push_back(uboWrite);
-
-                // Helper to add image writes (allocate infos per-write)
-                auto addImageWriteLocal = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
-                    if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
-                    VkDescriptorImageInfo* info = new VkDescriptorImageInfo();
-                    info->sampler = sampler; info->imageView = view; info->imageLayout = layout;
-                    VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    w.dstSet = gfxDs; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                    w.descriptorCount = 1; w.pImageInfo = info;
-                    gfxWrites.push_back(w);
-                };
-
-                if (this->textureArrayManager.albedoSampler != VK_NULL_HANDLE) {
-                    addImageWriteLocal(1, this->textureArrayManager.albedoSampler, this->textureArrayManager.albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    addImageWriteLocal(2, this->textureArrayManager.normalSampler, this->textureArrayManager.normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    addImageWriteLocal(3, this->textureArrayManager.bumpSampler, this->textureArrayManager.bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    addImageWriteLocal(12, this->textureArrayManager.roughnessSampler, this->textureArrayManager.roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    addImageWriteLocal(13, this->textureArrayManager.aoSampler, this->textureArrayManager.aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                }
-                addImageWriteLocal(4, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                addImageWriteLocal(8, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                addImageWriteLocal(9, this->sceneRenderer->shadowMapper->getShadowMapSampler(), this->sceneRenderer->shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                // Binding 11: environment cubemap (reuse the same cubemap being rendered;
-                // reflections will sample the previous frame's content, avoiding feedback).
-                if (this->sceneRenderer->solid360Renderer) {
-                    VkImageView cubeView = this->sceneRenderer->solid360Renderer->getSolid360View();
-                    VkSampler cubeSampler = this->sceneRenderer->solid360Renderer->getSolid360Sampler();
-                    if (cubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE) {
-                        addImageWriteLocal(11, cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    }
-                }
-
-                // Buffer infos must be heap-allocated (like addImageWriteLocal does for
-                // images) because they are stored by pointer in gfxWrites and must
-                // remain valid until updateDescriptorSet() consumes them below.
-                if (this->sceneRenderer->materialsBuffer.buffer != VK_NULL_HANDLE) {
-                    VkDescriptorBufferInfo* matInfo = new VkDescriptorBufferInfo{ this->sceneRenderer->materialsBuffer.buffer, 0, VK_WHOLE_SIZE };
-                    VkWriteDescriptorSet matWrite{}; matWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    matWrite.dstSet = gfxDs; matWrite.dstBinding = 5; matWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    matWrite.descriptorCount = 1; matWrite.pBufferInfo = matInfo;
-                    gfxWrites.push_back(matWrite);
-                }
-                if (this->sceneRenderer->waterParamsBuffer_.buffer != VK_NULL_HANDLE) {
-                    VkDescriptorBufferInfo* waterInfo = new VkDescriptorBufferInfo{ this->sceneRenderer->waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE };
-                    VkWriteDescriptorSet waterWrite{}; waterWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    waterWrite.dstSet = gfxDs; waterWrite.dstBinding = 7; waterWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    waterWrite.descriptorCount = 1; waterWrite.pBufferInfo = waterInfo;
-                    gfxWrites.push_back(waterWrite);
-                }
-                // Sky UBO (binding 6) — required by sky pipeline used in solid360 rendering
-                {
-                    Buffer skyBuf = this->sceneRenderer->skyRenderer->getSkyUniformBuffer();
-                    if (skyBuf.buffer != VK_NULL_HANDLE) {
-                        VkDescriptorBufferInfo* skyInfo = new VkDescriptorBufferInfo{ skyBuf.buffer, 0, sizeof(SkyUniform) };
-                        VkWriteDescriptorSet skyWrite{}; skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                        skyWrite.dstSet = gfxDs; skyWrite.dstBinding = 6; skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                        skyWrite.descriptorCount = 1; skyWrite.pBufferInfo = skyInfo;
-                        gfxWrites.push_back(skyWrite);
-                    }
-                }
-                if (this->sceneRenderer->waterRenderUBOBuffer_.buffer != VK_NULL_HANDLE) {
-                    VkDescriptorBufferInfo* wrInfo = new VkDescriptorBufferInfo{ this->sceneRenderer->waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO) };
-                    VkWriteDescriptorSet wrWrite{}; wrWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    wrWrite.dstSet = gfxDs; wrWrite.dstBinding = 10; wrWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                    wrWrite.descriptorCount = 1; wrWrite.pBufferInfo = wrInfo;
-                    gfxWrites.push_back(wrWrite);
-                }
-
-                app->updateDescriptorSet(gfxWrites);
-                for (auto &w : gfxWrites) { if (w.pImageInfo) delete w.pImageInfo; if (w.pBufferInfo) delete w.pBufferInfo; }
-
-                // Disable environment-map sampling during cubemap capture to avoid
-                // feedback loops and layout mismatches (the current face is in
-                // COLOR_ATTACHMENT_OPTIMAL, not SHADER_READ_ONLY_OPTIMAL).
-                auto tSolid360 = std::chrono::high_resolution_clock::now();
-                UniformObject ubo360 = this->uboStatic;
-                ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
-                this->sceneRenderer->solid360Renderer->renderSolid360(
-                    app, cmd,
-                    this->sceneRenderer->skyRenderer.get(), skyMode360,
-                    this->sceneRenderer->solidRenderer.get(),
-                    gfxDs,
-                    taskUBO, ubo360,
-                    computeDs,
-                    taskCompact.buffer,
-                    taskVisible.buffer,
-                    waterComputeDs,
-                    waterCompact.buffer,
-                    waterVisible.buffer);
-
-                this->profileSolid360 = std::chrono::duration<float, std::milli>(
-                    std::chrono::high_resolution_clock::now() - tSolid360).count();
-                VkFence f = app->submitCommandBufferAsync(cmd, &semSolid360);
-                { std::lock_guard<std::mutex> lk(asyncFenceMutex); pendingAsyncFences.push_back(f); }
-                app->deferDestroyUntilFence(f, [device, taskCompact, taskVisible, app, taskUBO, waterCompact, waterVisible]() {
-                    if (taskCompact.buffer != VK_NULL_HANDLE) {
-                        app->resources.removeBuffer(taskCompact.buffer);
-                        vkDestroyBuffer(device, taskCompact.buffer, nullptr);
-                    }
-                    if (taskCompact.memory != VK_NULL_HANDLE) {
-                        app->resources.removeDeviceMemory(taskCompact.memory);
-                        vkFreeMemory(device, taskCompact.memory, nullptr);
-                    }
-                    if (taskVisible.buffer != VK_NULL_HANDLE) {
-                        app->resources.removeBuffer(taskVisible.buffer);
-                        vkDestroyBuffer(device, taskVisible.buffer, nullptr);
-                    }
-                    if (taskVisible.memory != VK_NULL_HANDLE) {
-                        app->resources.removeDeviceMemory(taskVisible.memory);
-                        vkFreeMemory(device, taskVisible.memory, nullptr);
-                    }
-                    if (taskUBO.buffer != VK_NULL_HANDLE) {
-                        app->resources.removeBuffer(taskUBO.buffer);
-                        vkDestroyBuffer(device, taskUBO.buffer, nullptr);
-                    }
-                    if (taskUBO.memory != VK_NULL_HANDLE) {
-                        app->resources.removeDeviceMemory(taskUBO.memory);
-                        vkFreeMemory(device, taskUBO.memory, nullptr);
-                    }
-                    if (waterCompact.buffer != VK_NULL_HANDLE) {
-                        app->resources.removeBuffer(waterCompact.buffer);
-                        vkDestroyBuffer(device, waterCompact.buffer, nullptr);
-                    }
-                    if (waterCompact.memory != VK_NULL_HANDLE) {
-                        app->resources.removeDeviceMemory(waterCompact.memory);
-                        vkFreeMemory(device, waterCompact.memory, nullptr);
-                    }
-                    if (waterVisible.buffer != VK_NULL_HANDLE) {
-                        app->resources.removeBuffer(waterVisible.buffer);
-                        vkDestroyBuffer(device, waterVisible.buffer, nullptr);
-                    }
-                    if (waterVisible.memory != VK_NULL_HANDLE) {
-                        app->resources.removeDeviceMemory(waterVisible.memory);
-                        vkFreeMemory(device, waterVisible.memory, nullptr);
-                    }
-                });
-            });
-        }
 
         // Back-face depth for water
         if (waterEnabled && sceneRenderer && sceneRenderer->backFaceRenderer) {
@@ -1641,7 +1363,7 @@ public:
                     ImGui::Text("Backface*:     %.2f", profileBackface);
                     ImGui::Text("ImGui:         %.2f", profileImGui);
                     ImGui::Text("GPU Total:     %.2f", gpuTotal);
-                    ImGui::Text("* = CPU-timed (async pass)");
+                    ImGui::Text("* = CPU-timed");
                     ImGui::Separator();
                     ImGui::Text("--- CPU Timing (ms) ---");
                     ImGui::Text("FPS:           %.1f", profileFps);
@@ -1838,9 +1560,6 @@ public:
         }
         // Pre-allocated ring pools are tracked by VulkanResourceManager, so
         // resources.cleanup() will destroy them. Just zero our arrays.
-        for (auto& slot : cachedSolid360Compute) slot = {};
-        for (auto& slot : cachedSolid360Gfx) slot = {};
-        for (auto& slot : cachedWater360Compute) slot = {};
         for (auto& slot : cachedBackfaceCompute) slot = {};
 
         // NOTE: Vulkan-owned objects for global managers are now cleaned up by
@@ -1901,6 +1620,9 @@ public:
             return;
         }
     }
+    // Ensure persistent cubemap rendering resources are allocated
+    void ensureCubemapResources();
+
     // Called by VulkanApp after a frame has been submitted
     void postSubmit() override;
 };
@@ -2090,59 +1812,6 @@ void MyApp::preAllocateAsyncDescriptorPools() {
             ring[i] = {pool, set};
         }
     };
-
-    // Solid360 compute (from solid renderer's indirect cull layout)
-    if (sceneRenderer && sceneRenderer->solidRenderer) {
-        auto& solidInd = sceneRenderer->solidRenderer->getIndirectRenderer();
-        allocateComputeRing(cachedSolid360Compute, solidInd.getComputeDescriptorSetLayout(), "cachedSolid360Compute");
-    }
-
-    // Solid360 gfx (from app's main material layout)
-    {
-        VkDescriptorSetLayout gfxLayout = getDescriptorSetLayout();
-        if (gfxLayout != VK_NULL_HANDLE) {
-            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 };
-            VkDescriptorPoolSize ps2{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9 };
-            VkDescriptorPoolSize ps3{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 };
-            VkDescriptorPoolSize poolSizes[] = {ps, ps2, ps3};
-            for (uint32_t i = 0; i < ASYNC_RING_SIZE; ++i) {
-                VkDescriptorPoolCreateInfo poolInfo{};
-                poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                poolInfo.poolSizeCount = 3;
-                poolInfo.pPoolSizes = poolSizes;
-                poolInfo.maxSets = 1;
-                poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-                VkDescriptorPool pool;
-                if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
-                    std::cerr << "[Async] Failed to pre-allocate cachedSolid360Gfx pool " << i << "\n";
-                    cachedSolid360Gfx[i] = {};
-                    continue;
-                }
-                { std::string s = "cachedSolid360Gfx ring #" + std::to_string(i); resources.addDescriptorPool(pool, s.c_str()); }
-                VkDescriptorSet set;
-                VkDescriptorSetAllocateInfo ainfo{};
-                ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                ainfo.descriptorPool = pool;
-                ainfo.descriptorSetCount = 1;
-                ainfo.pSetLayouts = &gfxLayout;
-                if (vkAllocateDescriptorSets(device, &ainfo, &set) != VK_SUCCESS) {
-                    resources.removeDescriptorPool(pool);
-                    vkDestroyDescriptorPool(device, pool, nullptr);
-                    std::cerr << "[Async] Failed to pre-allocate cachedSolid360Gfx set " << i << "\n";
-                    cachedSolid360Gfx[i] = {};
-                    continue;
-                }
-                { std::string s = "cachedSolid360Gfx DS #" + std::to_string(i); resources.addDescriptorSet(set, s.c_str()); }
-                cachedSolid360Gfx[i] = {pool, set};
-            }
-        }
-    }
-
-    // Water360 compute (from water renderer's indirect cull layout)
-    if (sceneRenderer && sceneRenderer->waterRenderer) {
-        auto& waterInd = sceneRenderer->waterRenderer->getIndirectRenderer();
-        allocateComputeRing(cachedWater360Compute, waterInd.getComputeDescriptorSetLayout(), "cachedWater360Compute");
-    }
 
     // Backface compute (same layout as water compute)
     if (sceneRenderer && sceneRenderer->waterRenderer) {
@@ -2455,6 +2124,238 @@ void MyApp::loadSceneFromFile(const std::string& path) {
             octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
         std::cout << "[MyApp::loadSceneFromFile] Scene tessellation complete\n";
     });
+}
+
+void MyApp::ensureCubemapResources() {
+    VkDevice device = getDevice();
+
+    // 1. UBO buffer
+    if (cube360UBO.buffer == VK_NULL_HANDLE) {
+        cube360UBO = createBuffer(sizeof(UniformObject),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    }
+
+    // Helper to destroy and recreate a buffer if its size is insufficient
+    auto ensureBufferSize = [&](Buffer& buf, VkDeviceSize needed,
+                                VkBufferUsageFlags usage, const char* label) {
+        if (buf.buffer != VK_NULL_HANDLE) {
+            VkMemoryRequirements reqs;
+            vkGetBufferMemoryRequirements(device, buf.buffer, &reqs);
+            if (reqs.size >= needed) return; // already large enough
+            resources.removeBuffer(buf.buffer);
+            vkDestroyBuffer(device, buf.buffer, nullptr);
+            resources.removeDeviceMemory(buf.memory);
+            vkFreeMemory(device, buf.memory, nullptr);
+            buf = Buffer{};
+        }
+        buf = createBuffer(needed, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    };
+
+    // 2. Solid culling buffers (reallocate if mesh count grew)
+    IndirectRenderer &solidInd = sceneRenderer->solidRenderer->getIndirectRenderer();
+    uint32_t solidCmds = std::max(static_cast<uint32_t>(solidInd.getMeshCount()), 1u);
+    VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * solidCmds;
+    ensureBufferSize(cube360Compact, compactSize,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+        "cube360Compact");
+    ensureBufferSize(cube360Visible, std::max(sizeof(uint32_t), VkDeviceSize(4)),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+        "cube360Visible");
+
+    // 3. Water culling buffers (reallocate if mesh count grew)
+    IndirectRenderer &waterInd = sceneRenderer->waterRenderer->getIndirectRenderer();
+    uint32_t waterCmds = std::max(static_cast<uint32_t>(waterInd.getMeshCount()), 1u);
+    VkDeviceSize waterCompactSize = sizeof(VkDrawIndexedIndirectCommand) * waterCmds;
+    ensureBufferSize(cube360WaterCompact, waterCompactSize,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+        "cube360WaterCompact");
+    ensureBufferSize(cube360WaterVisible, std::max(sizeof(uint32_t), VkDeviceSize(4)),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+        "cube360WaterVisible");
+
+    // 4. Graphics descriptor set (mirrors main DS but uses cube360UBO)
+    if (cube360GfxDs == VK_NULL_HANDLE) {
+        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 };
+        VkDescriptorPoolSize ps2{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9 };
+        VkDescriptorPoolSize ps3{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 };
+        VkDescriptorPoolSize poolSizes[] = {ps, ps2, ps3};
+
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 3;
+        poolInfo.pPoolSizes = poolSizes;
+        poolInfo.maxSets = 1;
+        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+
+        VkDescriptorPool gfxPool;
+        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &gfxPool) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create cubemap GFX descriptor pool");
+        resources.addDescriptorPool(gfxPool, "cubemap gfx pool");
+
+        VkDescriptorSetLayout gfxLayout = getDescriptorSetLayout();
+        VkDescriptorSetAllocateInfo ainfo{};
+        ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ainfo.descriptorPool = gfxPool;
+        ainfo.descriptorSetCount = 1;
+        ainfo.pSetLayouts = &gfxLayout;
+        if (vkAllocateDescriptorSets(device, &ainfo, &cube360GfxDs) != VK_SUCCESS)
+            throw std::runtime_error("Failed to allocate cubemap GFX descriptor set");
+        resources.addDescriptorSet(cube360GfxDs, "cubemap gfx DS");
+
+        // Write descriptor set bindings (same as main DS but with cube360UBO)
+        std::vector<VkWriteDescriptorSet> gfxWrites;
+        VkDescriptorBufferInfo* uboInfo = new VkDescriptorBufferInfo{ cube360UBO.buffer, 0, sizeof(UniformObject) };
+        VkWriteDescriptorSet uboWrite{};
+        uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        uboWrite.dstSet = cube360GfxDs;
+        uboWrite.dstBinding = 0;
+        uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        uboWrite.descriptorCount = 1;
+        uboWrite.pBufferInfo = uboInfo;
+        gfxWrites.push_back(uboWrite);
+
+        auto addImageWrite = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
+            if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
+            VkDescriptorImageInfo* info = new VkDescriptorImageInfo();
+            info->sampler = sampler; info->imageView = view; info->imageLayout = layout;
+            VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = cube360GfxDs; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            w.descriptorCount = 1; w.pImageInfo = info;
+            gfxWrites.push_back(w);
+        };
+
+        if (textureArrayManager.albedoSampler != VK_NULL_HANDLE) {
+            addImageWrite(1, textureArrayManager.albedoSampler, textureArrayManager.albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImageWrite(2, textureArrayManager.normalSampler, textureArrayManager.normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImageWrite(3, textureArrayManager.bumpSampler, textureArrayManager.bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImageWrite(12, textureArrayManager.roughnessSampler, textureArrayManager.roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImageWrite(13, textureArrayManager.aoSampler, textureArrayManager.aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+        addImageWrite(4, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImageWrite(8, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImageWrite(9, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        if (sceneRenderer->solid360Renderer) {
+            VkImageView cubeView = sceneRenderer->solid360Renderer->getSolid360View();
+            VkSampler cubeSampler = sceneRenderer->solid360Renderer->getSolid360Sampler();
+            if (cubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE)
+                addImageWrite(11, cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+
+        if (sceneRenderer->materialsBuffer.buffer != VK_NULL_HANDLE) {
+            VkDescriptorBufferInfo* matInfo = new VkDescriptorBufferInfo{ sceneRenderer->materialsBuffer.buffer, 0, VK_WHOLE_SIZE };
+            VkWriteDescriptorSet matWrite{}; matWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            matWrite.dstSet = cube360GfxDs; matWrite.dstBinding = 5; matWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            matWrite.descriptorCount = 1; matWrite.pBufferInfo = matInfo;
+            gfxWrites.push_back(matWrite);
+        }
+        if (sceneRenderer->waterParamsBuffer_.buffer != VK_NULL_HANDLE) {
+            VkDescriptorBufferInfo* waterInfo = new VkDescriptorBufferInfo{ sceneRenderer->waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE };
+            VkWriteDescriptorSet waterWrite{}; waterWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            waterWrite.dstSet = cube360GfxDs; waterWrite.dstBinding = 7; waterWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            waterWrite.descriptorCount = 1; waterWrite.pBufferInfo = waterInfo;
+            gfxWrites.push_back(waterWrite);
+        }
+        {
+            Buffer skyBuf = sceneRenderer->skyRenderer->getSkyUniformBuffer();
+            if (skyBuf.buffer != VK_NULL_HANDLE) {
+                VkDescriptorBufferInfo* skyInfo = new VkDescriptorBufferInfo{ skyBuf.buffer, 0, sizeof(SkyUniform) };
+                VkWriteDescriptorSet skyWrite{}; skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                skyWrite.dstSet = cube360GfxDs; skyWrite.dstBinding = 6; skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                skyWrite.descriptorCount = 1; skyWrite.pBufferInfo = skyInfo;
+                gfxWrites.push_back(skyWrite);
+            }
+        }
+        if (sceneRenderer->waterRenderUBOBuffer_.buffer != VK_NULL_HANDLE) {
+            VkDescriptorBufferInfo* wrInfo = new VkDescriptorBufferInfo{ sceneRenderer->waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO) };
+            VkWriteDescriptorSet wrWrite{}; wrWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            wrWrite.dstSet = cube360GfxDs; wrWrite.dstBinding = 10; wrWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            wrWrite.descriptorCount = 1; wrWrite.pBufferInfo = wrInfo;
+            gfxWrites.push_back(wrWrite);
+        }
+
+        vkUpdateDescriptorSets(device, static_cast<uint32_t>(gfxWrites.size()), gfxWrites.data(), 0, nullptr);
+        for (auto &w : gfxWrites) { if (w.pImageInfo) delete w.pImageInfo; if (w.pBufferInfo) delete w.pBufferInfo; }
+    }
+
+    // 5. Solid compute descriptor set — allocate lazily, always refresh buffer bindings
+    {
+        VkDescriptorSetLayout dsLayout = solidInd.getComputeDescriptorSetLayout();
+        if (dsLayout != VK_NULL_HANDLE && cube360ComputeDs == VK_NULL_HANDLE) {
+            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 };
+            VkDescriptorPoolCreateInfo pci{};
+            pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
+            pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+            VkDescriptorPool pool;
+            if (vkCreateDescriptorPool(device, &pci, nullptr, &pool) == VK_SUCCESS) {
+                resources.addDescriptorPool(pool, "cubemap compute pool");
+                VkDescriptorSetAllocateInfo ai{};
+                ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                ai.descriptorPool = pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &dsLayout;
+                if (vkAllocateDescriptorSets(device, &ai, &cube360ComputeDs) == VK_SUCCESS)
+                    resources.addDescriptorSet(cube360ComputeDs, "cubemap compute DS");
+            }
+        }
+        if (cube360ComputeDs != VK_NULL_HANDLE) {
+            VkDescriptorBufferInfo inBuf{}; inBuf.buffer = solidInd.getIndirectBuffer().buffer; inBuf.offset = 0; inBuf.range = VK_WHOLE_SIZE;
+            VkDescriptorBufferInfo outBuf{}; outBuf.buffer = cube360Compact.buffer; outBuf.offset = 0; outBuf.range = VK_WHOLE_SIZE;
+            VkDescriptorBufferInfo boundsBuf{}; boundsBuf.buffer = solidInd.getBoundsBuffer().buffer; boundsBuf.offset = 0; boundsBuf.range = VK_WHOLE_SIZE;
+            VkDescriptorBufferInfo countBuf{}; countBuf.buffer = cube360Visible.buffer; countBuf.offset = 0; countBuf.range = VK_WHOLE_SIZE;
+
+            VkWriteDescriptorSet writes[4]{};
+            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet = cube360ComputeDs;
+            writes[0].dstBinding = 0;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[0].descriptorCount = 1;
+            writes[0].pBufferInfo = &inBuf;
+            writes[1] = writes[0]; writes[1].dstBinding = 1; writes[1].pBufferInfo = &outBuf;
+            writes[2] = writes[0]; writes[2].dstBinding = 2; writes[2].pBufferInfo = &boundsBuf;
+            writes[3] = writes[0]; writes[3].dstBinding = 3; writes[3].pBufferInfo = &countBuf;
+            vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+        }
+    }
+
+    // 6. Water compute descriptor set
+    {
+        VkDescriptorSetLayout wDsLayout = waterInd.getComputeDescriptorSetLayout();
+        if (wDsLayout != VK_NULL_HANDLE && cube360WaterComputeDs == VK_NULL_HANDLE) {
+            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 };
+            VkDescriptorPoolCreateInfo pci{};
+            pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
+            pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+            VkDescriptorPool pool;
+            if (vkCreateDescriptorPool(device, &pci, nullptr, &pool) == VK_SUCCESS) {
+                resources.addDescriptorPool(pool, "cubemap water compute pool");
+                VkDescriptorSetAllocateInfo ai{};
+                ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                ai.descriptorPool = pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &wDsLayout;
+                if (vkAllocateDescriptorSets(device, &ai, &cube360WaterComputeDs) == VK_SUCCESS)
+                    resources.addDescriptorSet(cube360WaterComputeDs, "cubemap water compute DS");
+            }
+        }
+        if (cube360WaterComputeDs != VK_NULL_HANDLE) {
+            VkDescriptorBufferInfo wInBuf{}; wInBuf.buffer = waterInd.getIndirectBuffer().buffer; wInBuf.offset = 0; wInBuf.range = VK_WHOLE_SIZE;
+            VkDescriptorBufferInfo wOutBuf{}; wOutBuf.buffer = cube360WaterCompact.buffer; wOutBuf.offset = 0; wOutBuf.range = VK_WHOLE_SIZE;
+            VkDescriptorBufferInfo wBoundsBuf{}; wBoundsBuf.buffer = waterInd.getBoundsBuffer().buffer; wBoundsBuf.offset = 0; wBoundsBuf.range = VK_WHOLE_SIZE;
+            VkDescriptorBufferInfo wCountBuf{}; wCountBuf.buffer = cube360WaterVisible.buffer; wCountBuf.offset = 0; wCountBuf.range = VK_WHOLE_SIZE;
+
+            VkWriteDescriptorSet wWrites[4]{};
+            wWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            wWrites[0].dstSet = cube360WaterComputeDs;
+            wWrites[0].dstBinding = 0;
+            wWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            wWrites[0].descriptorCount = 1;
+            wWrites[0].pBufferInfo = &wInBuf;
+            wWrites[1] = wWrites[0]; wWrites[1].dstBinding = 1; wWrites[1].pBufferInfo = &wOutBuf;
+            wWrites[2] = wWrites[0]; wWrites[2].dstBinding = 2; wWrites[2].pBufferInfo = &wBoundsBuf;
+            wWrites[3] = wWrites[0]; wWrites[3].dstBinding = 3; wWrites[3].pBufferInfo = &wCountBuf;
+            vkUpdateDescriptorSets(device, 4, wWrites, 0, nullptr);
+        }
+    }
 }
 
 void MyApp::postSubmit() {
