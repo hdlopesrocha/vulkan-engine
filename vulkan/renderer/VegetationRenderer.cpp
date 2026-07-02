@@ -460,6 +460,9 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
 }
 
 void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj) {
+    // Flush any pending async batch first (publishes chunks and sets dirty)
+    if (batchFence != VK_NULL_HANDLE) flushAsyncBatch(appPtr);
+
     vegCullCurrentSlot = vegCullFrameIndex % VEG_CULL_FRAMES;
     vegCullFrameIndex++;
     uint32_t f = vegCullCurrentSlot;
@@ -1953,47 +1956,64 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         std::memcpy(idata, &drawCmd, sizeof(VkDrawIndexedIndirectCommand));
         vkUnmapMemory(app->getDevice(), stagingIndirect.memory);
 
-        // Copy staging → device-local on the graphics queue, async.
-        // The lambda captures everything needed for deferred cleanup.
-        // Copy staging → device-local on the graphics queue, synchronous.
-        // processPendingChunks runs before preRenderPass so any in-flight GPU
-        // work from the previous frame is complete (fence was waited in drawFrame).
-        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-            VkBufferCopy copyRegion{};
-            copyRegion.size = bufSize;
-            vkCmdCopyBuffer(cmd, stagingInst.buffer, instBuf.buffer, 1, &copyRegion);
+        pendingBatch.push_back({ stagingInst, instBuf, stagingIndirect, indirect,
+                                 bufSize, pc.chunkId, instanceCount,
+                                 aabbMin, aabbMax, pc.chunkCenter });
+    }
 
-            VkBufferCopy indirectCopy{};
-            indirectCopy.size = sizeof(VkDrawIndexedIndirectCommand);
-            vkCmdCopyBuffer(cmd, stagingIndirect.buffer, indirect.buffer, 1, &indirectCopy);
+    // Flush all batched copies in a single async submission
+    if (!pendingBatch.empty()) {
+        batchFence = app->runSingleTimeCommandsAsync([&](VkCommandBuffer cmd) {
+            for (auto& c : pendingBatch) {
+                VkBufferCopy cr{};
+                cr.size = c.bufSize;
+                vkCmdCopyBuffer(cmd, c.stagingInst.buffer, c.instBuf.buffer, 1, &cr);
+                VkBufferCopy icr{};
+                icr.size = sizeof(VkDrawIndexedIndirectCommand);
+                vkCmdCopyBuffer(cmd, c.stagingIndirect.buffer, c.indirect.buffer, 1, &icr);
+            }
         });
+        // No semaphore — main CB doesn't wait for the batch.
+        // flushAsyncBatch checks the fence before consolidateChunks runs.
+    }
+}
 
-        // Destroy staging buffers immediately (copy completed synchronously).
-        VkDevice dev = app->getDevice();
-        if (app->resources.removeBuffer(stagingInst.buffer))
-            vkDestroyBuffer(dev, stagingInst.buffer, nullptr);
-        if (app->resources.removeDeviceMemory(stagingInst.memory))
-            vkFreeMemory(dev, stagingInst.memory, nullptr);
-        if (app->resources.removeBuffer(stagingIndirect.buffer))
-            vkDestroyBuffer(dev, stagingIndirect.buffer, nullptr);
-        if (app->resources.removeDeviceMemory(stagingIndirect.memory))
-            vkFreeMemory(dev, stagingIndirect.memory, nullptr);
+void VegetationRenderer::flushAsyncBatch(VulkanApp* app) {
+    if (batchFence == VK_NULL_HANDLE || pendingBatch.empty()) return;
+    VkDevice device = app->getDevice();
+    VkResult res = vkGetFenceStatus(device, batchFence);
+    if (res == VK_NOT_READY) return; // GPU still copying — defer
 
-        destroyInstanceBuffer(pc.chunkId, app);
+    vkDestroyFence(device, batchFence, nullptr);
+    batchFence = VK_NULL_HANDLE;
+
+    VkDevice dev = app->getDevice();
+    for (auto& c : pendingBatch) {
+        if (app->resources.removeBuffer(c.stagingInst.buffer))
+            vkDestroyBuffer(dev, c.stagingInst.buffer, nullptr);
+        if (app->resources.removeDeviceMemory(c.stagingInst.memory))
+            vkFreeMemory(dev, c.stagingInst.memory, nullptr);
+        if (app->resources.removeBuffer(c.stagingIndirect.buffer))
+            vkDestroyBuffer(dev, c.stagingIndirect.buffer, nullptr);
+        if (app->resources.removeDeviceMemory(c.stagingIndirect.memory))
+            vkFreeMemory(dev, c.stagingIndirect.memory, nullptr);
+
+        destroyInstanceBuffer(c.chunkId, app);
 
         InstanceBuffer ibuf;
-        ibuf.buffer         = instBuf.buffer;
-        ibuf.memory         = instBuf.memory;
-        ibuf.indirectBuffer = indirect.buffer;
-        ibuf.indirectMemory = indirect.memory;
-        ibuf.center         = pc.chunkCenter;
-        ibuf.aabbMin        = aabbMin;
-        ibuf.aabbMax        = aabbMax;
-        ibuf.count          = instanceCount;
-        chunkBuffers[pc.chunkId] = ibuf;
-        chunkInstanceCounts[pc.chunkId] = instanceCount;
+        ibuf.buffer         = c.instBuf.buffer;
+        ibuf.memory         = c.instBuf.memory;
+        ibuf.indirectBuffer = c.indirect.buffer;
+        ibuf.indirectMemory = c.indirect.memory;
+        ibuf.center         = c.center;
+        ibuf.aabbMin        = c.aabbMin;
+        ibuf.aabbMax        = c.aabbMax;
+        ibuf.count          = c.instanceCount;
+        chunkBuffers[c.chunkId] = ibuf;
+        chunkInstanceCounts[c.chunkId] = c.instanceCount;
         vegConsolidationDirty = true;
     }
+    pendingBatch.clear();
 }
 
 void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, VkFence completionFence) {

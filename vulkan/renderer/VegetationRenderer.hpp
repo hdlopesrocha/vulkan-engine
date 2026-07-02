@@ -273,6 +273,18 @@ private:
     VkDeviceSize pendingMetaSize = 0;
     bool consolidationPending = false;
 
+    // Batched async chunk upload: one fence, deferred publish
+    struct PendingBatchCopy {
+        Buffer stagingInst, instBuf, stagingIndirect, indirect;
+        VkDeviceSize bufSize;
+        NodeID chunkId;
+        uint32_t instanceCount;
+        glm::vec3 aabbMin, aabbMax, center;
+    };
+    VkFence batchFence = VK_NULL_HANDLE;
+    std::vector<PendingBatchCopy> pendingBatch;
+    void flushAsyncBatch(VulkanApp* app);
+
     void initCulling(VulkanApp* app);
     void destroyCulling();
     void issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
