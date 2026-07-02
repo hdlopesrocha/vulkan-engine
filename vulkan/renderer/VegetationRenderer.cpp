@@ -1042,7 +1042,7 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
     // Draw: consolidated (GPU culling) or legacy per-chunk path.
     uint32_t sf = vegCullCurrentSlot;
     vkCmdBindIndexBuffer(commandBuffer, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
+    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
         compactedCmdBuffers[sf].buffer != VK_NULL_HANDLE && visibleCountBuffers[sf].buffer != VK_NULL_HANDLE) {
         VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer };
         VkDeviceSize offsets[2] = { 0, 0 };
@@ -1088,14 +1088,15 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         vkCmdBindIndexBuffer(commandBuffer, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
         VkBuffer impVbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
         VkDeviceSize impOffsets[2] = { 0, 0 };
-        if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+        bool consolidated = !vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0;
+        if (consolidated) {
             impVbs[1] = concatenatedInstanceBuffer.buffer;
             vkCmdBindVertexBuffers(commandBuffer, 0, 2, impVbs, impOffsets);
         }
         for (auto& [chunkId, buf] : chunkBuffers) {
             (void)chunkId;
             if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-            if (concatenatedInstanceBuffer.buffer == VK_NULL_HANDLE) {
+            if (!consolidated) {
                 impVbs[1] = buf.buffer;
                 vkCmdBindVertexBuffers(commandBuffer, 0, 2, impVbs, impOffsets);
             }
@@ -1477,7 +1478,7 @@ void VegetationRenderer::issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLay
     VkBuffer vbs[2] = { billboardVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
     VkDeviceSize offsets[2] = { 0, 0 };
     vkCmdBindIndexBuffer(cmd, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
+    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
         compactedCmdBuffers[f].buffer != VK_NULL_HANDLE && visibleCountBuffers[f].buffer != VK_NULL_HANDLE) {
         vbs[1] = concatenatedInstanceBuffer.buffer;
         vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
@@ -1502,7 +1503,8 @@ void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayou
     VkBuffer vbs[2] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE };
     VkDeviceSize offsets[2] = { 0, 0 };
     vkCmdBindIndexBuffer(cmd, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+    bool consolidated = !vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0;
+    if (consolidated) {
         vbs[1] = concatenatedInstanceBuffer.buffer;
         vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
         for (auto& [chunkId, buf] : chunkBuffers) {
