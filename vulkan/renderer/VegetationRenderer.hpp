@@ -281,9 +281,7 @@ private:
         uint32_t instanceCount;
         glm::vec3 aabbMin, aabbMax, center;
     };
-    VkFence batchFence = VK_NULL_HANDLE;
     std::vector<PendingBatchCopy> pendingBatch;
-    void flushAsyncBatch(VulkanApp* app);
 
     void initCulling(VulkanApp* app);
     void destroyCulling();
