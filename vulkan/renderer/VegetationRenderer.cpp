@@ -1960,7 +1960,17 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         // in drawFrame), so data is visible to draws in this same frame.
         VkDevice dev = app->getDevice();
         NodeID chunkId = pc.chunkId;
-        destroyInstanceBuffer(chunkId, app);
+
+        // Capture old buffer handles (if any) to destroy after the copy completes
+        InstanceBuffer oldBuf;
+        bool hasOld = false;
+        {
+            auto prevIt = chunkBuffers.find(chunkId);
+            if (prevIt != chunkBuffers.end()) {
+                oldBuf = prevIt->second;
+                hasOld = true;
+            }
+        }
 
         VkFence fence = app->runSingleTimeCommandsAsync([&](VkCommandBuffer cmd) {
             VkBufferCopy copyRegion{};
@@ -1987,8 +1997,9 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         chunkInstanceCounts[chunkId] = instanceCount;
         vegConsolidationDirty = true;
 
-        // Only defer staging destruction until the fence signals
-        app->deferDestroyUntilFence(fence, [dev, app, stagingInst, stagingIndirect]() {
+        // Defer staging + old-buffer destruction until fence signals (GPU done)
+        app->deferDestroyUntilFence(fence, [dev, app, stagingInst, stagingIndirect,
+                                             hasOld, oldBuf]() {
             if (app->resources.removeBuffer(stagingInst.buffer))
                 vkDestroyBuffer(dev, stagingInst.buffer, nullptr);
             if (app->resources.removeDeviceMemory(stagingInst.memory))
@@ -1997,6 +2008,25 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 vkDestroyBuffer(dev, stagingIndirect.buffer, nullptr);
             if (app->resources.removeDeviceMemory(stagingIndirect.memory))
                 vkFreeMemory(dev, stagingIndirect.memory, nullptr);
+
+            if (hasOld) {
+                if (oldBuf.buffer != VK_NULL_HANDLE) {
+                    if (app->resources.removeBuffer(oldBuf.buffer))
+                        vkDestroyBuffer(dev, oldBuf.buffer, nullptr);
+                }
+                if (oldBuf.memory != VK_NULL_HANDLE) {
+                    if (app->resources.removeDeviceMemory(oldBuf.memory))
+                        vkFreeMemory(dev, oldBuf.memory, nullptr);
+                }
+                if (oldBuf.indirectBuffer != VK_NULL_HANDLE) {
+                    if (app->resources.removeBuffer(oldBuf.indirectBuffer))
+                        vkDestroyBuffer(dev, oldBuf.indirectBuffer, nullptr);
+                }
+                if (oldBuf.indirectMemory != VK_NULL_HANDLE) {
+                    if (app->resources.removeDeviceMemory(oldBuf.indirectMemory))
+                        vkFreeMemory(dev, oldBuf.indirectMemory, nullptr);
+                }
+            }
         });
     }
 }
