@@ -586,9 +586,9 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
     float childLength = frame.cube.getLengthX()*0.5f;
     bool isChildThread = isThreadNode(childLength, args.minSize, 16);
     bool isChildChunk = isChunkNode(childLength);
-    std::vector<std::thread> threads;
+    std::vector<std::future<void>> futures;
     if(isChildThread) {
-        threads.reserve(8);
+        futures.reserve(8);
     }
 
     OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
@@ -599,7 +599,7 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
 
     int brushIndex = node ? node->vertex.brushIndex : frame.brushIndex;
 
-    // Iterate nodes and spawn threads for child processing
+    // Iterate nodes and submit threaded children to the pool
     for (uint i = 0; i < 8; ++i) {
         OctreeNode * child = children[i];
         if(node!=NULL && child == node) {
@@ -630,10 +630,10 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
         if(isChildThread) {
             ++threadsCreated;
             NodeOperationResult * result = &childResult[i];
-            threads.emplace_back([this, childFrame, args, result]() {
-            ThreadContext localThreadContext(childFrame.cube);
-            shape(*result, childFrame, args, &localThreadContext);
-            });
+            futures.push_back(threadPool.enqueue([this, childFrame, args, result]() {
+                ThreadContext localThreadContext(childFrame.cube);
+                shape(*result, childFrame, args, &localThreadContext);
+            }));
         } else {
             shape(childResult[i], childFrame, args, threadContext);
         }
@@ -641,8 +641,8 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
     
     }
     if(isChildThread) {
-        for(std::thread &t : threads) {
-            if(t.joinable()) t.join();
+        for(auto &f : futures) {
+            f.wait();
         }
     }
 }
