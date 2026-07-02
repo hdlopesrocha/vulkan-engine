@@ -266,6 +266,13 @@ private:
     uint32_t vegCullCurrentSlot = 0;       // slot selected for current frame's cull + draws
     bool vegConsolidationDirty = true;     // rebuild concatenated buffer + metadata
 
+    // Pipelined consolidation: reuse a single fence, defer metadata upload
+    VkFence consolidationFence = VK_NULL_HANDLE;
+    VkCommandBuffer consolidationCopyCmd = VK_NULL_HANDLE;
+    std::vector<ChunkMeta> pendingMeta;
+    VkDeviceSize pendingMetaSize = 0;
+    bool consolidationPending = false;
+
     void initCulling(VulkanApp* app);
     void destroyCulling();
     void issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);

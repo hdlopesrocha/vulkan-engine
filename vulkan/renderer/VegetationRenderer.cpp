@@ -120,6 +120,21 @@ void VegetationRenderer::destroyCulling() {
     vegCullPipeline = VK_NULL_HANDLE;
     vegCullPipelineLayout = VK_NULL_HANDLE;
     vegCullDescSetLayout = VK_NULL_HANDLE;
+    if (consolidationFence != VK_NULL_HANDLE) {
+        vkWaitForFences(device, 1, &consolidationFence, VK_TRUE, UINT64_MAX);
+        if (consolidationCopyCmd != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(device, appPtr->getCommandPool(), 1, &consolidationCopyCmd);
+            consolidationCopyCmd = VK_NULL_HANDLE;
+        }
+        vkDestroyFence(device, consolidationFence, nullptr);
+        consolidationFence = VK_NULL_HANDLE;
+    } else if (consolidationCopyCmd != VK_NULL_HANDLE) {
+        vkFreeCommandBuffers(device, appPtr->getCommandPool(), 1, &consolidationCopyCmd);
+        consolidationCopyCmd = VK_NULL_HANDLE;
+    }
+    pendingMeta.clear();
+    pendingMetaSize = 0;
+    consolidationPending = false;
     vegNumChunks = 0;
     vegConsolidationDirty = true;
 }
@@ -215,10 +230,73 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     if (!app) return;
     auto device = app->getDevice();
 
+    // ── Phase 1: Finalize previous consolidation (check fence, upload meta) ──
+    if (consolidationPending) {
+        if (consolidationFence != VK_NULL_HANDLE) {
+            VkResult res = vkGetFenceStatus(device, consolidationFence);
+            if (res == VK_NOT_READY) {
+                vegConsolidationDirty = true;
+                return; // still in flight — defer everything
+            }
+            // Free the completed copy command buffer
+            if (consolidationCopyCmd != VK_NULL_HANDLE) {
+                vkFreeCommandBuffers(device, app->getCommandPool(), 1, &consolidationCopyCmd);
+                consolidationCopyCmd = VK_NULL_HANDLE;
+            }
+            vkDestroyFence(device, consolidationFence, nullptr);
+            consolidationFence = VK_NULL_HANDLE;
+        }
+        // Upload metadata for the now-completed copy
+        if (pendingMetaSize > 0 && chunkMetaBuffer.buffer != VK_NULL_HANDLE) {
+            void* data;
+            vkMapMemory(device, chunkMetaBuffer.memory, 0, pendingMetaSize, 0, &data);
+            memcpy(data, pendingMeta.data(), pendingMetaSize);
+            vkUnmapMemory(device, chunkMetaBuffer.memory);
+        }
+        // Update each frame's descriptor set
+        for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
+            VkDescriptorBufferInfo metaBI{};
+            metaBI.buffer = chunkMetaBuffer.buffer;
+            metaBI.offset = 0;
+            metaBI.range = VK_WHOLE_SIZE;
+            VkDescriptorBufferInfo compactedBI{};
+            compactedBI.buffer = compactedCmdBuffers[f].buffer;
+            compactedBI.offset = 0;
+            compactedBI.range = VK_WHOLE_SIZE;
+            VkDescriptorBufferInfo countBI{};
+            countBI.buffer = visibleCountBuffers[f].buffer;
+            countBI.offset = 0;
+            countBI.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet writes[3]{};
+            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet = vegCullDescSets[f];
+            writes[0].dstBinding = 0;
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[0].pBufferInfo = &metaBI;
+            writes[1] = writes[0];
+            writes[1].dstBinding = 1;
+            writes[1].pBufferInfo = &compactedBI;
+            writes[2] = writes[0];
+            writes[2].dstBinding = 2;
+            writes[2].pBufferInfo = &countBI;
+            vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+        }
+        consolidationPending = false;
+        pendingMetaSize = 0;
+        pendingMeta.clear();
+        vegConsolidationDirty = false; // metadata now valid, cull may resume
+        // Phase 1 done — fall through to Phase 2 only if chunks changed again
+        if (vegNumChunks > 0 && !chunkBuffers.empty()) {
+            // Chunks still match — no new consolidation needed
+            return;
+        }
+    }
+
+    // ── Phase 2: Start a new consolidation (only if chunks changed) ──
     // Ensure compute pipeline exists
     initCulling(app);
 
-    // Count total instances
     size_t totalInstances = 0;
     for (const auto& kv : chunkInstanceCounts)
         totalInstances += kv.second;
@@ -226,7 +304,6 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
 
     uint32_t numChunks = static_cast<uint32_t>(chunkBuffers.size());
 
-    // Allocate concatenated instance buffer (device-local, used as vertex buffer binding 1)
     VkDeviceSize concatSize = totalInstances * sizeof(glm::vec4);
     if (concatenatedInstanceBuffer.buffer == VK_NULL_HANDLE) {
         concatenatedInstanceBuffer = app->createBuffer(concatSize,
@@ -234,15 +311,12 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     }
 
-    // Allocate chunk meta buffer (host-visible for initial upload)
     VkDeviceSize metaSize = numChunks * sizeof(ChunkMeta);
     if (chunkMetaBuffer.buffer == VK_NULL_HANDLE)
         chunkMetaBuffer = app->createBuffer(metaSize,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    // Allocate triple-buffered compacted cmd buffers and visible count buffers
-    // (matches IndirectRenderer pattern to avoid CPU/GPU races on single-buffered resources).
     VkDeviceSize compactedSize = std::max(256u, numChunks) * sizeof(VkDrawIndexedIndirectCommand);
     for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
         if (compactedCmdBuffers[f].buffer == VK_NULL_HANDLE)
@@ -264,7 +338,6 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     uint32_t instanceOffset = 0;
     uint32_t chunkIdx = 0;
 
-    // Create a temporary command buffer for GPU copy operations
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -281,7 +354,6 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     for (const auto& [chunkId, buf] : chunkBuffers) {
         (void)chunkId;
         if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-
         ChunkMeta& meta = metaArray[chunkIdx];
         meta.instanceOffset = instanceOffset;
         meta.instanceCount = static_cast<uint32_t>(buf.count);
@@ -289,19 +361,15 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
         meta.aabbMax = buf.aabbMax;
         meta.pad0 = 0.0f;
         meta.pad1 = 0.0f;
-
-        // Copy instance data from per-chunk buffer to concatenated buffer
         VkBufferCopy copyRegion{};
         copyRegion.srcOffset = 0;
         copyRegion.dstOffset = instanceOffset * sizeof(glm::vec4);
         copyRegion.size = buf.count * sizeof(glm::vec4);
         vkCmdCopyBuffer(copyCmd, buf.buffer, concatenatedInstanceBuffer.buffer, 1, &copyRegion);
-
         instanceOffset += static_cast<uint32_t>(buf.count);
         chunkIdx++;
     }
-
-    vegNumChunks = chunkIdx; // actual number of valid chunks processed
+    vegNumChunks = chunkIdx;
 
     if (vegNumChunks == 0) {
         vkEndCommandBuffer(copyCmd);
@@ -317,82 +385,33 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
         vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
         vkDestroyFence(device, fence, nullptr);
         vkFreeCommandBuffers(device, app->getCommandPool(), 1, &copyCmd);
-        vegConsolidationDirty = false;
         return;
     }
 
-    // Insert barrier: transfer writes visible to vertex input (for draw)
     VkMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-    vkCmdPipelineBarrier(copyCmd,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-        0, 1, &barrier, 0, nullptr, 0, nullptr);
-
+    vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
     vkEndCommandBuffer(copyCmd);
+
+    // Submit copy with the persistent fence (no wait — pipelined)
+    VkFenceCreateInfo fenceCI{};
+    fenceCI.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    vkCreateFence(device, &fenceCI, nullptr, &consolidationFence);
 
     VkSubmitInfo submit{};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &copyCmd;
-    VkFence fence;
-    VkFenceCreateInfo fenceCI{};
-    fenceCI.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    vkCreateFence(device, &fenceCI, nullptr, &fence);
-    vkQueueSubmit(app->getGraphicsQueue(), 1, &submit, fence);
-    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
-    vkDestroyFence(device, fence, nullptr);
-    vkFreeCommandBuffers(device, app->getCommandPool(), 1, &copyCmd);
+    vkQueueSubmit(app->getGraphicsQueue(), 1, &submit, consolidationFence);
 
-    // Upload metadata to GPU
-    void* data;
-    vkMapMemory(device, chunkMetaBuffer.memory, 0, metaSize, 0, &data);
-    memcpy(data, metaArray.data(), vegNumChunks * sizeof(ChunkMeta));
-    vkUnmapMemory(device, chunkMetaBuffer.memory);
-
-    // Update each frame's descriptor set with its per-frame compact + count buffers.
-    // The meta buffer (chunkMetaBuffer) is shared across all frames (read-only).
-    VkDescriptorBufferInfo metaBI{};
-    metaBI.buffer = chunkMetaBuffer.buffer;
-    metaBI.offset = 0;
-    metaBI.range = VK_WHOLE_SIZE;
-
-    for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
-        VkDescriptorBufferInfo compactedBI{};
-        compactedBI.buffer = compactedCmdBuffers[f].buffer;
-        compactedBI.offset = 0;
-        compactedBI.range = VK_WHOLE_SIZE;
-
-        VkDescriptorBufferInfo countBI{};
-        countBI.buffer = visibleCountBuffers[f].buffer;
-        countBI.offset = 0;
-        countBI.range = VK_WHOLE_SIZE;
-
-        VkWriteDescriptorSet writes[3]{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = vegCullDescSets[f];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[0].pBufferInfo = &metaBI;
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = vegCullDescSets[f];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[1].pBufferInfo = &compactedBI;
-        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[2].dstSet = vegCullDescSets[f];
-        writes[2].dstBinding = 2;
-        writes[2].descriptorCount = 1;
-        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[2].pBufferInfo = &countBI;
-        vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
-    }
-
-    vegConsolidationDirty = false;
+    // Buffer metadata for deferred upload (after fence signals)
+    pendingMeta = std::move(metaArray);
+    pendingMetaSize = vegNumChunks * sizeof(ChunkMeta);
+    consolidationPending = true;
+    consolidationCopyCmd = copyCmd; // free in Phase 1 after fence signals
 }
 
 void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj) {
@@ -401,7 +420,8 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
     uint32_t f = vegCullCurrentSlot;
     // Consolidate if chunks have changed since last consolidation
     if (vegConsolidationDirty && !chunkBuffers.empty()) {
-        return;
+        consolidateChunks(appPtr);
+        if (vegConsolidationDirty) return; // fence still in flight, skip cull
     }
     if (vegCullPipeline == VK_NULL_HANDLE || vegNumChunks == 0) return;
     if (compactedCmdBuffers[f].buffer == VK_NULL_HANDLE || visibleCountBuffers[f].buffer == VK_NULL_HANDLE) return;
@@ -1863,7 +1883,7 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         // On RADV iGPUs, vertex reads go through TCP (Texture Cache/Pipe),
         // and host-visible pages lack TCP-read permission → GPUVM fault.
         Buffer instBuf = app->createBuffer(bufSize,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
         // Indirect buffer: device-local, avoids same TCP-read issue.
