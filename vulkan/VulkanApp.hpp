@@ -133,6 +133,7 @@ private:
     public:
         // Public accessor for command pool (needed for buffer transfers)
         VkCommandPool getCommandPool() const { return commandPool; }
+        VkCommandPool getTransientCommandPool() const { return transientCommandPool; }
     // Application main graphics pipeline (owner: app / main.cpp)
     VkPipeline appGraphicsPipeline = VK_NULL_HANDLE;
     // texture and descriptor

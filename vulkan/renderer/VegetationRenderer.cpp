@@ -123,13 +123,13 @@ void VegetationRenderer::destroyCulling() {
     if (consolidationFence != VK_NULL_HANDLE) {
         vkWaitForFences(device, 1, &consolidationFence, VK_TRUE, UINT64_MAX);
         if (consolidationCopyCmd != VK_NULL_HANDLE) {
-            vkFreeCommandBuffers(device, appPtr->getCommandPool(), 1, &consolidationCopyCmd);
+            vkFreeCommandBuffers(device, appPtr->getTransientCommandPool(), 1, &consolidationCopyCmd);
             consolidationCopyCmd = VK_NULL_HANDLE;
         }
         vkDestroyFence(device, consolidationFence, nullptr);
         consolidationFence = VK_NULL_HANDLE;
     } else if (consolidationCopyCmd != VK_NULL_HANDLE) {
-        vkFreeCommandBuffers(device, appPtr->getCommandPool(), 1, &consolidationCopyCmd);
+        vkFreeCommandBuffers(device, appPtr->getTransientCommandPool(), 1, &consolidationCopyCmd);
         consolidationCopyCmd = VK_NULL_HANDLE;
     }
     pendingMeta.clear();
@@ -240,7 +240,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             }
             // Free the completed copy command buffer
             if (consolidationCopyCmd != VK_NULL_HANDLE) {
-                vkFreeCommandBuffers(device, app->getCommandPool(), 1, &consolidationCopyCmd);
+                vkFreeCommandBuffers(device, app->getTransientCommandPool(), 1, &consolidationCopyCmd);
                 consolidationCopyCmd = VK_NULL_HANDLE;
             }
             vkDestroyFence(device, consolidationFence, nullptr);
@@ -386,7 +386,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandPool = app->getCommandPool();
+    allocInfo.commandPool = app->getTransientCommandPool();
     allocInfo.commandBufferCount = 1;
     VkCommandBuffer copyCmd;
     vkAllocateCommandBuffers(device, &allocInfo, &copyCmd);
@@ -429,7 +429,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
         vkQueueSubmit(app->getGraphicsQueue(), 1, &submit, fence);
         vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
         vkDestroyFence(device, fence, nullptr);
-        vkFreeCommandBuffers(device, app->getCommandPool(), 1, &copyCmd);
+        vkFreeCommandBuffers(device, app->getTransientCommandPool(), 1, &copyCmd);
         return;
     }
 
