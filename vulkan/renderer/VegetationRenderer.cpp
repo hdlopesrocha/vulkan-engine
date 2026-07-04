@@ -1608,7 +1608,7 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     VkDeviceSize instanceBufferSize = static_cast<VkDeviceSize>(instanceCount) * sizeof(float) * 4; // vec4
     bufInfo.size = instanceBufferSize;
-    bufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(device, &bufInfo, nullptr, &instanceBuffer) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create instance storage buffer");
