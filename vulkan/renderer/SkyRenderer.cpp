@@ -299,6 +299,9 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     skyUbo.passParams = glm::vec4(0.0f);
     app->updateUniformBuffer(uniformBuffer, &skyUbo, sizeof(UniformObject));
 
+    // Guard against invalid image handles (pre-existing RADV issue)
+    if (skyColorImages[frameIndex] == VK_NULL_HANDLE) return;
+
     // Transition color image: tracked layout → COLOR_ATTACHMENT_OPTIMAL
     {
         VkImageMemoryBarrier2 barrier{};
