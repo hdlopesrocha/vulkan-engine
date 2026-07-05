@@ -305,12 +305,12 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
                 compactedCmdBuffers[f] = {};
             }
             compactedCmdBuffers[f] = app->createBuffer(compactedSize,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         }
         if (visibleCountBuffers[f].buffer == VK_NULL_HANDLE) {
             visibleCountBuffers[f] = app->createBuffer(sizeof(uint32_t),
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             vkMapMemory(device, visibleCountBuffers[f].memory, 0, sizeof(uint32_t), 0,
                         reinterpret_cast<void**>(&visibleCountMapped[f]));
@@ -415,39 +415,50 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
     if (vegCullPipeline == VK_NULL_HANDLE || vegNumChunks == 0) return;
     if (compactedCmdBuffers[f].buffer == VK_NULL_HANDLE || visibleCountBuffers[f].buffer == VK_NULL_HANDLE) return;
 
-    // Reset visible count via CPU mapped pointer — safe because triple-buffering
-    // guarantees this frame's buffer hasn't been touched for at least 2 frames.
-    if (visibleCountMapped[f]) *visibleCountMapped[f] = 0;
+    // Upload every chunk as a visible draw command via vkCmdUpdateBuffer
+    // (GPU-side transfer, bypasses the compute cull shader that crashes on RADV).
+    uint32_t count = 0;
+    {
+        // Build draw commands on the stack and upload in one batch
+        VkDrawIndexedIndirectCommand cmds[256];
+        uint32_t instanceOff = 0;
+        for (auto& [cid, buf] : chunkBuffers) {
+            (void)cid;
+            if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
+            cmds[count].indexCount = 36;
+            cmds[count].instanceCount = buf.count;
+            cmds[count].firstIndex = 0;
+            cmds[count].vertexOffset = 0;
+            cmds[count].firstInstance = instanceOff;
+            instanceOff += buf.count;
+            count++;
+            if (count >= vegNumChunks) break;
+        }
+        VkDeviceSize upSize = count * sizeof(VkDrawIndexedIndirectCommand);
+        if (upSize > 0) {
+            vkCmdUpdateBuffer(cmd, compactedCmdBuffers[f].buffer, 0, upSize, cmds);
+        }
+    }
 
-    // Barrier: make staging copy visible before compute shader reads meta
-    VkMemoryBarrier barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+    // Write visible count
+    vkCmdUpdateBuffer(cmd, visibleCountBuffers[f].buffer, 0, sizeof(count), &count);
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegCullPipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegCullPipelineLayout, 0, 1, &vegCullDescSets[f], 0, nullptr);
-
-    struct CullPC {
-        glm::mat4 viewProj;
-        uint32_t numChunks;
-    } pc;
-    pc.viewProj = viewProj;
-    pc.numChunks = vegNumChunks;
-    vkCmdPushConstants(cmd, vegCullPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPC), &pc);
-
-    uint32_t groups = (vegNumChunks + 63) / 64;
-    vkCmdDispatch(cmd, groups, 1, 1);
-
-    // Barrier: compute writes (compacted buffer + visible count) visible to indirect draw
-    VkMemoryBarrier postBarrier{};
-    postBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    postBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    postBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1, &postBarrier, 0, nullptr, 0, nullptr);
+    // Barrier: make transfer writes visible to indirect draw
+    {
+        VkBufferMemoryBarrier barriers[2] = {};
+        barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barriers[0].dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        barriers[0].buffer = compactedCmdBuffers[f].buffer;
+        barriers[0].offset = 0;
+        barriers[0].size = VK_WHOLE_SIZE;
+        barriers[1] = barriers[0];
+        barriers[1].buffer = visibleCountBuffers[f].buffer;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            0, 0, nullptr, 2, barriers, 0, nullptr);
+    }
 }
 
 void VegetationRenderer::setTextureArrayManager(TextureArrayManager* mgr, VulkanApp* app) {
