@@ -1364,7 +1364,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             { evsmColorFormat }, // one color attachment (EVSM RGBA32F)
             VK_FORMAT_D32_SFLOAT,
             false, // hasColorAttachment
-            false  // depthBiasEnable
+            true   // depthBiasEnable — match regular shadow pipeline to avoid acne
         );
         impostorShadowPipeline       = shadowPipe;
         impostorShadowPipelineLayout = shadowLayout;
