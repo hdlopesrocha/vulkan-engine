@@ -259,11 +259,24 @@ void SkyRenderer::createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_
 }
 
 void SkyRenderer::destroyOffscreenTargets(VulkanApp* app) {
-    (void)app;
+    if (!app) return;
+    VkDevice device = app->getDevice();
     for (int i = 0; i < 2; ++i) {
-        skyColorImageViews[i] = VK_NULL_HANDLE;
-        skyColorImages[i] = VK_NULL_HANDLE;
-        skyColorMemories[i] = VK_NULL_HANDLE;
+        if (skyColorImages[i] != VK_NULL_HANDLE) {
+            if (app->resources.removeImage(skyColorImages[i]))
+                vkDestroyImage(device, skyColorImages[i], nullptr);
+            skyColorImages[i] = VK_NULL_HANDLE;
+        }
+        if (skyColorMemories[i] != VK_NULL_HANDLE) {
+            if (app->resources.removeDeviceMemory(skyColorMemories[i]))
+                vkFreeMemory(device, skyColorMemories[i], nullptr);
+            skyColorMemories[i] = VK_NULL_HANDLE;
+        }
+        if (skyColorImageViews[i] != VK_NULL_HANDLE) {
+            if (app->resources.removeImageView(skyColorImageViews[i]))
+                vkDestroyImageView(device, skyColorImageViews[i], nullptr);
+            skyColorImageViews[i] = VK_NULL_HANDLE;
+        }
         skyColorLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
     skyEquirectPipeline = VK_NULL_HANDLE;

@@ -160,6 +160,7 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
         postProcessRenderer->setRenderSize(width, height);
     }
     if (skyRenderer) {
+        skyRenderer->destroyOffscreenTargets(app);
         skyRenderer->createOffscreenTargets(app, width, height);
     }
 }
