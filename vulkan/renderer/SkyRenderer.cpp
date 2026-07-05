@@ -276,7 +276,7 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
                                    VkDescriptorSet descriptorSet, Buffer &uniformBuffer,
                                    const UniformObject &ubo, const glm::mat4 &viewProjection,
                                    SkySettings::Mode skyMode) {
-    if (skyColorImageViews[frameIndex] == VK_NULL_HANDLE)
+    if (frameIndex >= skyColorImages.size() || skyColorImageViews[frameIndex] == VK_NULL_HANDLE)
         return;
     if (skyEquirectPipeline == VK_NULL_HANDLE || skyEquirectPipelineLayout == VK_NULL_HANDLE)
         return;
