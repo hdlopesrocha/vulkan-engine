@@ -20,6 +20,7 @@
 
 #include "vulkan.hpp"
 #include "VulkanResourceManager.hpp"
+#include "VmaContext.hpp"
 
 class VulkanApp {
     public:
@@ -105,6 +106,9 @@ class VulkanApp {
     std::vector<VkFence> inFlightFences;
     // track which fence is using each swapchain image (to avoid writing to an image in use)
     static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
+
+    VmaContext vma;
+    bool vmaReady = false;
 
     std::vector<VkFence> imagesInFlight;
     // frame index for round-robin CPU frames-in-flight

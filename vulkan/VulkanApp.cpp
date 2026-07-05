@@ -169,6 +169,8 @@ void VulkanApp::initVulkan() {
     createSurface();
     pickPhysicalDevice();
     createLogicalDevice();
+    vma.init(instance, physicalDevice, device);
+    vmaReady = true;
     createSwapchain();
     createImageViews();
     createDescriptorSetLayout();
@@ -972,6 +974,7 @@ void VulkanApp::cleanup() {
     }
     printf("[VulkanApp] about to vkDestroyDevice(device=%p)\n", (void*)device);
         resources.cleanup(device);
+        vma.destroy();
         if (device != VK_NULL_HANDLE) {
         // Ensure the device is idle and no further commands are executing
         deviceWaitIdle();
