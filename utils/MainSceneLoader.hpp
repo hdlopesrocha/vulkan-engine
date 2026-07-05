@@ -266,7 +266,7 @@ public:
             BoxDistanceFunction function = BoxDistanceFunction();
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             WrappedBox wrappedFunction = WrappedBox(&function);
-            opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(6), minSize*0.1f, simplifier, opaqueHandler);
+            opaqueLayer.apply(SDF::opUnion, &wrappedFunction, model, translate, scale, SimpleBrush(6), minSize*0.5f, simplifier, opaqueHandler);
         }
 
     
