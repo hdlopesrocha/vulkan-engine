@@ -177,8 +177,10 @@ private:
     struct InstanceBuffer {
         VkBuffer buffer = VK_NULL_HANDLE; // instance data
         VkDeviceMemory memory = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
         VkBuffer indirectBuffer = VK_NULL_HANDLE; // indirect draw command
         VkDeviceMemory indirectMemory = VK_NULL_HANDLE;
+        VmaAllocation indirectAllocation = VK_NULL_HANDLE;
         glm::vec3 center = glm::vec3(0.0f);
         glm::vec3 aabbMin = glm::vec3(0.0f);
         glm::vec3 aabbMax = glm::vec3(0.0f);

@@ -75,39 +75,24 @@ void VegetationRenderer::cleanup() {
 }
 
 void VegetationRenderer::destroyCulling() {
-    auto device = appPtr ? appPtr->getDevice() : VK_NULL_HANDLE;
-    if (device == VK_NULL_HANDLE) return;
+    if (!appPtr) return;
+    VkDevice device = appPtr->getDevice();
     if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE) {
-        if (appPtr->resources.removeBuffer(concatenatedInstanceBuffer.buffer))
-            vkDestroyBuffer(device, concatenatedInstanceBuffer.buffer, nullptr);
-        if (appPtr->resources.removeDeviceMemory(concatenatedInstanceBuffer.memory))
-            vkFreeMemory(device, concatenatedInstanceBuffer.memory, nullptr);
+        appPtr->destroyBuffer(concatenatedInstanceBuffer);
         concatenatedInstanceBuffer = {};
     }
     if (chunkMetaBuffer.buffer != VK_NULL_HANDLE) {
-        if (appPtr->resources.removeBuffer(chunkMetaBuffer.buffer))
-            vkDestroyBuffer(device, chunkMetaBuffer.buffer, nullptr);
-        if (appPtr->resources.removeDeviceMemory(chunkMetaBuffer.memory))
-            vkFreeMemory(device, chunkMetaBuffer.memory, nullptr);
+        appPtr->destroyBuffer(chunkMetaBuffer);
         chunkMetaBuffer = {};
     }
     for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
         if (compactedCmdBuffers[f].buffer != VK_NULL_HANDLE) {
-            if (appPtr->resources.removeBuffer(compactedCmdBuffers[f].buffer))
-                vkDestroyBuffer(device, compactedCmdBuffers[f].buffer, nullptr);
-            if (appPtr->resources.removeDeviceMemory(compactedCmdBuffers[f].memory))
-                vkFreeMemory(device, compactedCmdBuffers[f].memory, nullptr);
+            appPtr->destroyBuffer(compactedCmdBuffers[f]);
             compactedCmdBuffers[f] = {};
         }
         if (visibleCountBuffers[f].buffer != VK_NULL_HANDLE) {
-            if (visibleCountMapped[f] && appPtr) {
-                vkUnmapMemory(device, visibleCountBuffers[f].memory);
-                visibleCountMapped[f] = nullptr;
-            }
-            if (appPtr->resources.removeBuffer(visibleCountBuffers[f].buffer))
-                vkDestroyBuffer(device, visibleCountBuffers[f].buffer, nullptr);
-            if (appPtr->resources.removeDeviceMemory(visibleCountBuffers[f].memory))
-                vkFreeMemory(device, visibleCountBuffers[f].memory, nullptr);
+            visibleCountMapped[f] = nullptr;
+            appPtr->destroyBuffer(visibleCountBuffers[f]);
             visibleCountBuffers[f] = {};
         }
         vegCullDescSets[f] = VK_NULL_HANDLE;
@@ -249,10 +234,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
         }
         if (needsCreate) {
             if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE) {
-                app->resources.removeBuffer(concatenatedInstanceBuffer.buffer);
-                vkDestroyBuffer(device, concatenatedInstanceBuffer.buffer, nullptr);
-                app->resources.removeDeviceMemory(concatenatedInstanceBuffer.memory);
-                vkFreeMemory(device, concatenatedInstanceBuffer.memory, nullptr);
+                app->destroyBuffer(concatenatedInstanceBuffer);
                 concatenatedInstanceBuffer = {};
             }
             concatenatedInstanceBuffer = app->createBuffer(concatSize,
@@ -271,10 +253,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
         }
         if (needsCreate) {
             if (chunkMetaBuffer.buffer != VK_NULL_HANDLE) {
-                app->resources.removeBuffer(chunkMetaBuffer.buffer);
-                vkDestroyBuffer(device, chunkMetaBuffer.buffer, nullptr);
-                app->resources.removeDeviceMemory(chunkMetaBuffer.memory);
-                vkFreeMemory(device, chunkMetaBuffer.memory, nullptr);
+                app->destroyBuffer(chunkMetaBuffer);
                 chunkMetaBuffer = {};
             }
             chunkMetaBuffer = app->createBuffer(metaSize,
@@ -293,10 +272,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
         }
         if (needsCreate) {
             if (compactedCmdBuffers[f].buffer != VK_NULL_HANDLE) {
-                app->resources.removeBuffer(compactedCmdBuffers[f].buffer);
-                vkDestroyBuffer(device, compactedCmdBuffers[f].buffer, nullptr);
-                app->resources.removeDeviceMemory(compactedCmdBuffers[f].memory);
-                vkFreeMemory(device, compactedCmdBuffers[f].memory, nullptr);
+                app->destroyBuffer(compactedCmdBuffers[f]);
                 compactedCmdBuffers[f] = {};
             }
             compactedCmdBuffers[f] = app->createBuffer(compactedSize,
@@ -307,8 +283,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             visibleCountBuffers[f] = app->createBuffer(sizeof(uint32_t),
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            vkMapMemory(device, visibleCountBuffers[f].memory, 0, sizeof(uint32_t), 0,
-                        reinterpret_cast<void**>(&visibleCountMapped[f]));
+            visibleCountMapped[f] = static_cast<uint32_t*>(visibleCountBuffers[f].map(0));
             *visibleCountMapped[f] = 0;
         }
     }
@@ -342,9 +317,9 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         void* data;
-        vkMapMemory(device, staging.memory, 0, upSize, 0, &data);
+        data = staging.map(0);
         memcpy(data, metaArray.data(), upSize);
-        vkUnmapMemory(device, staging.memory);
+        staging.unmap(); // VMA persistent mapping
 
         app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
             VkBufferCopy region{};
@@ -352,11 +327,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             vkCmdCopyBuffer(cmd, staging.buffer, chunkMetaBuffer.buffer, 1, &region);
         });
 
-        VkDevice dev = device;
-        if (app->resources.removeBuffer(staging.buffer))
-            vkDestroyBuffer(dev, staging.buffer, nullptr);
-        if (app->resources.removeDeviceMemory(staging.memory))
-            vkFreeMemory(dev, staging.memory, nullptr);
+        app->destroyBuffer(staging);
     }
 
     // Copy per-chunk instance data into the concatenated buffer (GPU→GPU)
@@ -1667,6 +1638,7 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     ibuf.memory = instanceMemory;
     ibuf.indirectBuffer = indirectBuffer;
     ibuf.indirectMemory = indirectMemory;
+    ibuf.indirectAllocation = indirect.allocation;
     ibuf.center = chunkCenter;
     ibuf.count = expected;
     chunkBuffers[chunkId] = ibuf;
@@ -1675,19 +1647,8 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
 
     // Transfer input buffers (vertex/index) — the fence is already signaled
     // (vkWaitForFences above), so destroy them immediately.
-    VkDevice dev = device;
-    if (vertexBuffer.buffer != VK_NULL_HANDLE) {
-        if (app->resources.removeBuffer(vertexBuffer.buffer)) vkDestroyBuffer(dev, vertexBuffer.buffer, nullptr);
-    }
-    if (vertexBuffer.memory != VK_NULL_HANDLE) {
-        if (app->resources.removeDeviceMemory(vertexBuffer.memory)) vkFreeMemory(dev, vertexBuffer.memory, nullptr);
-    }
-    if (indexBuffer.buffer != VK_NULL_HANDLE) {
-        if (app->resources.removeBuffer(indexBuffer.buffer)) vkDestroyBuffer(dev, indexBuffer.buffer, nullptr);
-    }
-    if (indexBuffer.memory != VK_NULL_HANDLE) {
-        if (app->resources.removeDeviceMemory(indexBuffer.memory)) vkFreeMemory(dev, indexBuffer.memory, nullptr);
-    }
+    app->destroyBuffer(vertexBuffer);
+    app->destroyBuffer(indexBuffer);
 }
 
 // ── CPU-side instance generation ─────────────────────────────────────────────
@@ -1860,9 +1821,9 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         void* mapped = nullptr;
-        vkMapMemory(app->getDevice(), stagingInst.memory, 0, bufSize, 0, &mapped);
+        mapped = stagingInst.map(0);
         std::memcpy(mapped, instanceData.data(), size_t(bufSize));
-        vkUnmapMemory(app->getDevice(), stagingInst.memory);
+        stagingInst.unmap(); // VMA persistent mapping
 
         // Device-local instance buffer: GPU reads via vertex input.
         // On RADV iGPUs, vertex reads go through TCP (Texture Cache/Pipe),
@@ -1887,9 +1848,9 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         drawCmd.vertexOffset  = 0;
         drawCmd.firstInstance = 0;
         void* idata = nullptr;
-        vkMapMemory(app->getDevice(), stagingIndirect.memory, 0, sizeof(VkDrawIndexedIndirectCommand), 0, &idata);
+        idata = stagingIndirect.map(0);
         std::memcpy(idata, &drawCmd, sizeof(VkDrawIndexedIndirectCommand));
-        vkUnmapMemory(app->getDevice(), stagingIndirect.memory);
+        stagingIndirect.unmap(); // VMA persistent mapping
 
         pendingBatch.push_back({ stagingInst, instBuf, stagingIndirect, indirect,
                                  bufSize, pc.chunkId, instanceCount,
@@ -1910,25 +1871,21 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 vkCmdCopyBuffer(cmd, c.stagingIndirect.buffer, c.indirect.buffer, 1, &icr);
             }
         });
-        app->deferDestroyUntilFence(fence, [this, dev = app->getDevice(), app,
-                                             batch = std::move(batch)]() {
+        app->deferDestroyUntilFence(fence, [this, app,
+                                             batch = std::move(batch)]() mutable {
             for (auto& c : batch) {
-                if (app->resources.removeBuffer(c.stagingInst.buffer))
-                    vkDestroyBuffer(dev, c.stagingInst.buffer, nullptr);
-                if (app->resources.removeDeviceMemory(c.stagingInst.memory))
-                    vkFreeMemory(dev, c.stagingInst.memory, nullptr);
-                if (app->resources.removeBuffer(c.stagingIndirect.buffer))
-                    vkDestroyBuffer(dev, c.stagingIndirect.buffer, nullptr);
-                if (app->resources.removeDeviceMemory(c.stagingIndirect.memory))
-                    vkFreeMemory(dev, c.stagingIndirect.memory, nullptr);
+                app->destroyBuffer(c.stagingInst);
+                app->destroyBuffer(c.stagingIndirect);
 
                 destroyInstanceBuffer(c.chunkId, app);
 
                 InstanceBuffer ibuf;
                 ibuf.buffer         = c.instBuf.buffer;
                 ibuf.memory         = c.instBuf.memory;
+                ibuf.allocation     = c.instBuf.allocation;
                 ibuf.indirectBuffer = c.indirect.buffer;
                 ibuf.indirectMemory = c.indirect.memory;
+                ibuf.indirectAllocation = c.indirect.allocation;
                 ibuf.center         = c.center;
                 ibuf.aabbMin        = c.aabbMin;
                 ibuf.aabbMax        = c.aabbMax;
@@ -1961,18 +1918,19 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, V
     // before command buffer submission, so no in-flight work references them.
     // The GPU path (generateChunkInstances) waits synchronously on the fence
     // before returning, so the GPU is done by the time we reach here.
-    VkDevice dev = app->getDevice();
-    if (old.buffer != VK_NULL_HANDLE) {
-        if (app->resources.removeBuffer(old.buffer)) vkDestroyBuffer(dev, old.buffer, nullptr);
+    {
+        Buffer tmpBuf{};
+        tmpBuf.buffer = old.buffer;
+        tmpBuf.memory = old.memory;
+        tmpBuf.allocation = old.allocation;
+        app->destroyBuffer(tmpBuf);
     }
-    if (old.memory != VK_NULL_HANDLE) {
-        if (app->resources.removeDeviceMemory(old.memory)) vkFreeMemory(dev, old.memory, nullptr);
-    }
-    if (old.indirectBuffer != VK_NULL_HANDLE) {
-        if (app->resources.removeBuffer(old.indirectBuffer)) vkDestroyBuffer(dev, old.indirectBuffer, nullptr);
-    }
-    if (old.indirectMemory != VK_NULL_HANDLE) {
-        if (app->resources.removeDeviceMemory(old.indirectMemory)) vkFreeMemory(dev, old.indirectMemory, nullptr);
+    {
+        Buffer tmpBuf{};
+        tmpBuf.buffer = old.indirectBuffer;
+        tmpBuf.memory = old.indirectMemory;
+        tmpBuf.allocation = old.indirectAllocation;
+        app->destroyBuffer(tmpBuf);
     }
 }
 
