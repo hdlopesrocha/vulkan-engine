@@ -230,16 +230,11 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     }
 
     // ── Phase 2: Start a new consolidation ──
-    std::cerr << "[VEG CONSOLIDATE] Phase 2 start" << std::endl;
     initCulling(app);
-    std::cerr << "[VEG CONSOLIDATE] initCulling done" << std::endl;
 
     size_t totalInstances = 0;
-    for (const auto& kv : chunkInstanceCounts) {
-        std::cerr << "[VEG CONSOLIDATE] chunkInstanceCounts: " << kv.first << " = " << kv.second << std::endl;
+    for (const auto& kv : chunkInstanceCounts)
         totalInstances += kv.second;
-    }
-    std::cerr << "[VEG CONSOLIDATE] totalInstances=" << totalInstances << " numChunks=" << chunkBuffers.size() << std::endl;
     if (totalInstances == 0) return;
 
     uint32_t numChunks = static_cast<uint32_t>(chunkBuffers.size());
