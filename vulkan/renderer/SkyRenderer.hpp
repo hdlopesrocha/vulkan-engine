@@ -41,7 +41,13 @@ public:
                          SkySettings::Mode skyMode);
 
     // Access offscreen sky color view for sampling
-    VkImageView getSkyView(uint32_t frameIndex) const { return skyColorImageViews[std::min<size_t>(frameIndex, skyColorImageViews.size() - 1)]; }
+    VkImageView getSkyView(uint32_t frameIndex) const {
+        if (frameIndex < skyColorImageViews.size() && skyColorImageViews[frameIndex] != VK_NULL_HANDLE)
+            return skyColorImageViews[frameIndex];
+        for (size_t i = skyColorImageViews.size(); i-- > 0; )
+            if (skyColorImageViews[i] != VK_NULL_HANDLE) return skyColorImageViews[i];
+        return VK_NULL_HANDLE;
+    }
 
     // Accessors for external renderers (cubemap 360 uses sky VBO + pipeline)
     VkPipeline getSkyPipeline() const { return skyPipeline; }
@@ -63,7 +69,7 @@ private:
     std::unique_ptr<SkySphere> skySphere;
     VertexBufferObject skyVBO;
 
-    // --- Offscreen equirectangular sky resources (2 frames) ---
+    // --- Offscreen equirectangular sky resources (2 frames, clamp index) ---
     std::array<VkImage, 2> skyColorImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkDeviceMemory, 2> skyColorMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkImageView, 2> skyColorImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};

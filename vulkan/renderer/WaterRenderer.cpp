@@ -832,9 +832,10 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     // Sky color (binding 2)
     imageInfos[2].sampler = linearSampler;
     if (skyImageView == VK_NULL_HANDLE) {
-        throw std::runtime_error("WaterRenderer requires a valid skyImageView (no fallback allowed)");
+        imageInfos[2].imageView = colorImageView; // fallback to scene color
+    } else {
+        imageInfos[2].imageView = skyImageView;
     }
-    imageInfos[2].imageView = skyImageView;
     imageInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     // Water back-face depth (binding 3) — prefer explicit `backFaceDepthView` if provided.
