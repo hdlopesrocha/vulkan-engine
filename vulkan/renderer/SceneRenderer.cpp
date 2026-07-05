@@ -906,6 +906,8 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     std::vector<VkWriteDescriptorSet> writes;
     std::vector<VkDescriptorImageInfo> imageInfos;
     std::vector<VkDescriptorBufferInfo> bufferInfos;
+    imageInfos.reserve(16);
+    bufferInfos.reserve(8);
 
     // Helper to add image write (stack-allocated, no heap)
     auto addImageWrite = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
@@ -968,6 +970,8 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
             std::vector<VkWriteDescriptorSet> shadowWrites;
             std::vector<VkDescriptorImageInfo> sImg;
             std::vector<VkDescriptorBufferInfo> sBuf;
+            sImg.reserve(8);
+            sBuf.reserve(4);
             auto addImg = [&](uint32_t b, VkSampler sm, VkImageView vw, VkImageLayout ly) {
                 if (vw == VK_NULL_HANDLE || sm == VK_NULL_HANDLE) return;
                 sImg.push_back({sm, vw, ly});
