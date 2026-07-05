@@ -27,14 +27,6 @@ void TextureViewer::render() {
     ImGui::SameLine(); if (ImGui::Button("Next") && currentIndex + 1 < tc) ++currentIndex;
     ImGui::SameLine(); int idxInput = static_cast<int>(currentIndex);
     ImGui::NewLine();
-    ImGui::Text("Choose Albedo (click thumbnail)");
-    {
-        size_t idx = currentIndex;
-        if (ImGuiComponents::ScrollableTexturePicker("PickerAlbedo", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 0) : 0; }, 48.0f, false, true)) {
-            currentIndex = idx;
-        }
-    }
-
 
     if (ImGui::InputInt("##tex_idx", &idxInput)) {
         if (idxInput < 0) idxInput = 0;
