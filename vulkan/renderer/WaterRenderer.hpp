@@ -74,7 +74,6 @@ public:
     // depth image by copying depth values. This allows the water geometry
     // pass to depth-test against solid geometry so water is only rasterized
     // where it is visible in front of solids.
-    void initializeGeomDepthFromSceneDepth(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImage sceneDepthImage);
 
     
     // Get the water geometry pipeline (for rendering water to G-buffer)
