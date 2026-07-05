@@ -233,6 +233,9 @@ private:
     VkDescriptorSetLayout impostorDepthDescSetLayout  = VK_NULL_HANDLE;
     VkDescriptorPool      impostorDepthDescPool       = VK_NULL_HANDLE;
     VkDescriptorSet       impostorDepthDescSet        = VK_NULL_HANDLE;
+    // Impostor EVSM shadow pipeline (color + depth write, uses impostors_shadow.frag)
+    VkPipeline            impostorShadowPipeline       = VK_NULL_HANDLE;
+    VkPipelineLayout      impostorShadowPipelineLayout = VK_NULL_HANDLE;
 
     float                 impostorDistance       = 0.0f;
     VkRenderPass          storedSolidRenderPass  = VK_NULL_HANDLE;

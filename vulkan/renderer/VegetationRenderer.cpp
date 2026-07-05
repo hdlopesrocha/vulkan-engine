@@ -1041,19 +1041,25 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         visibleCountBuffers[sf].buffer, 0, vegNumChunks, sizeof(VkDrawIndexedIndirectCommand));
     }
 
-    // ── Impostor depth pass ────────────────────────────────────────────────────
-    if (impostorDepthPipeline != VK_NULL_HANDLE &&
+    // ── Impostor shadow pass (EVSM color + depth) ─────────────────────────────
+    // Uses impostors_shadow.frag which reprojects captured depth into light space
+    // and writes EVSM moments so impostors cast shadows.
+    VkPipeline impostorShadowPipe = (impostorShadowPipeline != VK_NULL_HANDLE)
+                                  ? impostorShadowPipeline : impostorDepthPipeline;
+    VkPipelineLayout impostorShadowLayout = (impostorShadowPipelineLayout != VK_NULL_HANDLE)
+                                          ? impostorShadowPipelineLayout : impostorDepthPipelineLayout;
+    if (impostorShadowPipe != VK_NULL_HANDLE &&
         impostorDepthDescSet  != VK_NULL_HANDLE &&
         impostorDistance > 0.0f && impostorVBO.vertexBuffer.buffer != VK_NULL_HANDLE &&
         !chunkBuffers.empty()) {
 
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorDepthPipeline);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowPipe);
 
         VkDescriptorSet depthSets[2] = { shadowDescriptorSet, impostorDepthDescSet };
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    impostorDepthPipelineLayout, 0, 2, depthSets, 0, nullptr);
+                    impostorShadowLayout, 0, 2, depthSets, 0, nullptr);
 
-        vkCmdPushConstants(commandBuffer, impostorDepthPipelineLayout,
+        vkCmdPushConstants(commandBuffer, impostorShadowLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(WindPushConstants), &pc);
 
@@ -1099,6 +1105,8 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
     impostorDepthDescSetLayout  = VK_NULL_HANDLE;
     impostorDepthDescPool       = VK_NULL_HANDLE;
     impostorDepthDescSet        = VK_NULL_HANDLE;
+    impostorShadowPipeline      = VK_NULL_HANDLE;
+    impostorShadowPipelineLayout = VK_NULL_HANDLE;
 
     bool hasImpostorDepth = (depthArray60 != VK_NULL_HANDLE && captureInvVPBuf != VK_NULL_HANDLE);
 
@@ -1330,6 +1338,46 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             std::cerr << "[VegetationRenderer] WARNING: impostor depth pipeline creation failed\n";
         else
             std::cerr << "[VegetationRenderer] Impostor depth pipeline created: " << (void*)impostorDepthPipeline << "\n";
+
+        // ── Build impostor shadow EVSM pipeline (color+depth write) ──────
+        auto shadowFragCode = FileReader::readFile("shaders/impostors_shadow.frag.spv");
+        VkShaderModule shadowFragMod = app->createShaderModule(shadowFragCode);
+        depthStages[1].module = shadowFragMod;  // reuse depthStages array, swap frag
+
+        VkFormat evsmColorFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
+        auto [shadowPipe, shadowLayout] = app->createGraphicsPipeline(
+            { depthStages[0], depthStages[1] },
+            std::vector<VkVertexInputBindingDescription>{ depthBindingDescs[0], depthBindingDescs[1] },
+            {
+                { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
+                { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
+            },
+            depthSetLayouts,
+            &depthPCRange,
+            VK_POLYGON_MODE_FILL,
+            VK_CULL_MODE_NONE,
+            true,  // depthWrite
+            true,  // colorWrite — write EVSM moments
+            VK_COMPARE_OP_LESS,
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            false,
+            { evsmColorFormat }, // one color attachment (EVSM RGBA32F)
+            VK_FORMAT_D32_SFLOAT,
+            false, // hasColorAttachment
+            false  // depthBiasEnable
+        );
+        impostorShadowPipeline       = shadowPipe;
+        impostorShadowPipelineLayout = shadowLayout;
+
+        if (impostorShadowPipeline == VK_NULL_HANDLE)
+            std::cerr << "[VegetationRenderer] WARNING: impostor shadow pipeline creation failed\n";
+        else
+            std::cerr << "[VegetationRenderer] Impostor shadow pipeline created: " << (void*)impostorShadowPipeline << "\n";
+
+        // Destroy the temporary shadow frag module (stages were copied by pipeline creation).
+        // depthFragMod (impostors_depth.frag) is kept alive by resources and destroyed later.
+        app->resources.removeShaderModule(shadowFragMod);
+        vkDestroyShaderModule(device, shadowFragMod, nullptr);
     }
 
     // ── Build impostor color pipeline ───────────────────────────────────
