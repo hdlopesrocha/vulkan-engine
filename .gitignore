@@ -87,3 +87,4 @@ Thumbs.db
 
 # debug information files
 *.dwo
+.deepcode/
