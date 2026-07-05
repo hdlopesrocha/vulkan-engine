@@ -364,6 +364,23 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             vkFreeMemory(dev, staging.memory, nullptr);
     }
 
+    // Copy per-chunk instance data into the concatenated buffer (GPU→GPU)
+    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+            uint32_t off = 0;
+            for (const auto& [cid, buf] : chunkBuffers) {
+                (void)cid;
+                if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
+                VkBufferCopy region{};
+                region.srcOffset = 0;
+                region.dstOffset = off * sizeof(glm::vec4);
+                region.size = buf.count * sizeof(glm::vec4);
+                vkCmdCopyBuffer(cmd, buf.buffer, concatenatedInstanceBuffer.buffer, 1, &region);
+                off += buf.count;
+            }
+        });
+    }
+
     // Update descriptor sets
     for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
         VkDescriptorBufferInfo metaBI{};
@@ -1074,10 +1091,12 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
             impVbs[1] = concatenatedInstanceBuffer.buffer;
             vkCmdBindVertexBuffers(commandBuffer, 0, 2, impVbs, impOffsets);
+            uint32_t instOff = 0;
             for (auto& [chunkId, buf] : chunkBuffers) {
                 (void)chunkId;
                 if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-                vkCmdDrawIndexed(commandBuffer, 6, static_cast<uint32_t>(buf.count), 0, 0, 0);
+                vkCmdDrawIndexed(commandBuffer, 6, static_cast<uint32_t>(buf.count), 0, 0, instOff);
+                instOff += buf.count;
             }
         }
     }
@@ -1476,10 +1495,12 @@ void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayou
     if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
         vbs[1] = concatenatedInstanceBuffer.buffer;
         vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offsets);
+        uint32_t instOff = 0;
         for (auto& [chunkId, buf] : chunkBuffers) {
             (void)chunkId;
             if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-            vkCmdDrawIndexed(cmd, 6, static_cast<uint32_t>(buf.count), 0, 0, 0);
+            vkCmdDrawIndexed(cmd, 6, static_cast<uint32_t>(buf.count), 0, 0, instOff);
+            instOff += buf.count;
         }
     }
 }
