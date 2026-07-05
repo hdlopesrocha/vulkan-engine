@@ -188,7 +188,7 @@ void VegetationAtlasEditor::render() {
 
         // Preview area with actual texture
         if (vegetationTextureManager && currentTextureIndex < (int)vegetationTextureManager->layerAmount) {
-            ImTextureID texID = nullptr;
+            ImTextureID texID = 0;
             try {
                 texID = vegetationTextureManager->getImTexture((size_t)currentTextureIndex, currentTextureView);
             } catch (...) {

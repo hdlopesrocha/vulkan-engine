@@ -10,7 +10,7 @@ void RenderTexturePreviewTabs(const char* id, std::shared_ptr<TextureMixer> text
         if (ImGui::BeginTabItem("Albedo")) {
             activeMap = 0;
             // Determine texture to preview
-            ImTextureID texID = nullptr;
+            ImTextureID texID = 0;
             if (!mixerParams.empty() && textures) {
                 MixerParameters &mp = mixerParams[currentMixerIndex];
                 uint32_t layer = static_cast<uint32_t>(mp.targetLayer);
@@ -31,7 +31,7 @@ void RenderTexturePreviewTabs(const char* id, std::shared_ptr<TextureMixer> text
         }
         if (ImGui::BeginTabItem("Normal")) {
             activeMap = 1;
-            ImTextureID texID = nullptr;
+            ImTextureID texID = 0;
             if (!mixerParams.empty() && textures) {
                 MixerParameters &mp = mixerParams[currentMixerIndex];
                 uint32_t layer = static_cast<uint32_t>(mp.targetLayer);
@@ -52,7 +52,7 @@ void RenderTexturePreviewTabs(const char* id, std::shared_ptr<TextureMixer> text
         }
         if (ImGui::BeginTabItem("Bump")) {
             activeMap = 2;
-            ImTextureID texID = nullptr;
+            ImTextureID texID = 0;
             if (!mixerParams.empty() && textures) {
                 MixerParameters &mp = mixerParams[currentMixerIndex];
                 uint32_t layer = static_cast<uint32_t>(mp.targetLayer);

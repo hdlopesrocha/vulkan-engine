@@ -12,9 +12,9 @@ struct Triple {
     VkSampler normalSampler = VK_NULL_HANDLE;
     TextureImage height;
     VkSampler heightSampler = VK_NULL_HANDLE;
-    ImTextureID albedoTexID = nullptr;
-    ImTextureID normalTexID = nullptr;
-    ImTextureID heightTexID = nullptr;
+    ImTextureID albedoTexID = 0;
+    ImTextureID normalTexID = 0;
+    ImTextureID heightTexID = 0;
     MaterialProperties material;
     bool ownsResources = true;
 };

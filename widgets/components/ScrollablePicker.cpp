@@ -26,7 +26,7 @@ bool ScrollableTexturePicker(const char* id, size_t count, size_t &currentIndex,
             ImGui::Dummy(ImVec2(thumb, thumb));
         } else {
             if (i == currentIndex) {
-                if (ImGui::ImageButton(img, ImVec2(thumb, thumb))) { currentIndex = i; changed = true; }
+                if (ImGui::ImageButton("##img", img, ImVec2(thumb, thumb))) { currentIndex = i; changed = true; }
                 // framed border
                 ImVec2 mn = ImGui::GetItemRectMin();
                 ImVec2 mx = ImGui::GetItemRectMax();
@@ -35,7 +35,7 @@ bool ScrollableTexturePicker(const char* id, size_t count, size_t &currentIndex,
                 dl->AddRect(mn, mx, borderCol, 4.0f, 0, 3.0f);
                 if (centerOnSelection) ImGui::SetScrollHereX(0.5f);
             } else {
-                if (ImGui::ImageButton(img, ImVec2(thumb, thumb))) { currentIndex = i; changed = true; if (centerOnSelection) ImGui::SetScrollHereX(0.5f); }
+                if (ImGui::ImageButton("##img", img, ImVec2(thumb, thumb))) { currentIndex = i; changed = true; if (centerOnSelection) ImGui::SetScrollHereX(0.5f); }
             }
             if (showTooltip && ImGui::IsItemHovered()) {
                 ImGuiHelpers::SetTooltipIfHovered("%zu");

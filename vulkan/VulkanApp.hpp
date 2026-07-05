@@ -437,6 +437,7 @@ protected:
         // Public getters for runtime inspection (used by widgets)
         VkInstance getInstance() const { return instance; }
         VkPhysicalDevice getPhysicalDevice() const { return physicalDevice; }
+        VmaAllocator getVmaAllocator() const { return vma.allocator; }
         VkQueue getGraphicsQueue() const { return graphicsQueue; }
         VkQueue getPresentQueue() const { return presentQueue; }
         VkSwapchainKHR getSwapchain() const { return swapchain; }

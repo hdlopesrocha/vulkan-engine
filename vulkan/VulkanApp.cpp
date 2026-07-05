@@ -25,10 +25,7 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
     if (!stagingAlloc.mappedPtr) {
         // Ring buffer exhausted or fragmented — fall back to dedicated staging buffer
         Buffer stagingBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        void* mapped;
-        vkMapMemory(device, stagingBuffer.memory, 0, size, 0, &mapped);
-        memcpy(mapped, data, (size_t)size);
-        vkUnmapMemory(device, stagingBuffer.memory);
+        memcpy(stagingBuffer.mappedData, data, (size_t)size);
 
         Buffer gpuBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
@@ -39,11 +36,15 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
         });
 
         deferDestroyUntilFence(fence, [dev = device, sb = stagingBuffer, this]() {
-            if (sb.buffer != VK_NULL_HANDLE) {
-                if (resources.removeBuffer(sb.buffer)) vkDestroyBuffer(dev, sb.buffer, nullptr);
-            }
-            if (sb.memory != VK_NULL_HANDLE) {
-                if (resources.removeDeviceMemory(sb.memory)) vkFreeMemory(dev, sb.memory, nullptr);
+            if (sb.allocation && vma.allocator) {
+                vmaDestroyBuffer(vma.allocator, sb.buffer, sb.allocation);
+            } else {
+                if (sb.buffer != VK_NULL_HANDLE) {
+                    if (resources.removeBuffer(sb.buffer)) vkDestroyBuffer(dev, sb.buffer, nullptr);
+                }
+                if (sb.memory != VK_NULL_HANDLE) {
+                    if (resources.removeDeviceMemory(sb.memory)) vkFreeMemory(dev, sb.memory, nullptr);
+                }
             }
         });
 
@@ -1035,7 +1036,11 @@ void VulkanApp::initImGui() {
 
     // Ensure a default font is present, then merge an icon font (FontAwesome) into it.
     // Place a TTF at fonts/fa-solid-900.ttf (free subset) if you want icons.
-    io.Fonts->AddFontDefault();
+    {
+        ImFontConfig defaultCfg;
+        defaultCfg.SizePixels = 13.0f;
+        io.Fonts->AddFontDefault(&defaultCfg);
+    }
     {
         ImFontConfig fontCfg;
         fontCfg.MergeMode = true;
@@ -1064,7 +1069,6 @@ void VulkanApp::initImGui() {
     init_info.DescriptorPool = imguiDescriptorPool;
     init_info.MinImageCount = 2;
     init_info.ImageCount = static_cast<uint32_t>(swapchainImages.size());
-    init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     init_info.Allocator = nullptr;
     init_info.MinAllocationSize = 1024 * 1024; // Pad to 1MB to suppress validation small-allocation warnings
     init_info.CheckVkResultFn = [](VkResult err) {
@@ -1079,8 +1083,9 @@ void VulkanApp::initImGui() {
     imguiPipelineRenderingInfo.pColorAttachmentFormats = &swapchainImageFormat;
     imguiPipelineRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
     imguiPipelineRenderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    init_info.PipelineInfoMain.PipelineRenderingCreateInfo = imguiPipelineRenderingInfo;
     init_info.UseDynamicRendering = true;
-    init_info.PipelineRenderingCreateInfo = imguiPipelineRenderingInfo;
 
     bool imguiInitOk = ImGui_ImplVulkan_Init(&init_info);
     // Expose this VulkanApp instance to the ImGui backend so it can route
@@ -1088,9 +1093,7 @@ void VulkanApp::initImGui() {
     setImGuiVulkanApp(this);
     printf("[ImGui] ImGui_ImplVulkan_Init returned %s\n", imguiInitOk ? "true" : "false");
 
-    // upload fonts (API differs between ImGui versions)
-    ImGui_ImplVulkan_CreateFontsTexture();
-    ImGui_ImplVulkan_DestroyFontsTexture();
+    // Fonts are uploaded automatically by the backend on first NewFrame()
     if (!imguiInitOk) {
         printf("[ImGui] ERROR: ImGui_ImplVulkan_Init failed!\n");
     }
@@ -3416,12 +3419,9 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
 
     // create staging buffer containing all layers consecutively
     Buffer stagingBuffer = createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    void* data;
-    vkMapMemory(device, stagingBuffer.memory, 0, imageSize, 0, &data);
     for (uint32_t i = 0; i < layerCount; ++i) {
-        memcpy((unsigned char*)data + layerSize * i, layersData[i], layerSize);
+        memcpy((unsigned char*)stagingBuffer.mappedData + layerSize * i, layersData[i], layerSize);
     }
-    vkUnmapMemory(device, stagingBuffer.memory);
 
     for (auto p : layersData) stbi_image_free(p);
 
@@ -3523,14 +3523,7 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
     generateMipmaps(textureImage.image, chosenFormat, texWidth, texHeight, textureImage.mipLevels, layerCount);
 
     // Transfer completed synchronously; destroy staging resources now.
-    if (stagingBuffer.buffer != VK_NULL_HANDLE) {
-        if (resources.removeBuffer(stagingBuffer.buffer)) vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
-        stagingBuffer.buffer = VK_NULL_HANDLE;
-    }
-    if (stagingBuffer.memory != VK_NULL_HANDLE) {
-        if (resources.removeDeviceMemory(stagingBuffer.memory)) vkFreeMemory(device, stagingBuffer.memory, nullptr);
-        stagingBuffer.memory = VK_NULL_HANDLE;
-    }
+    destroyBuffer(stagingBuffer);
 
     // create view for array texture
     VkImageViewCreateInfo viewInfo{};
@@ -4274,18 +4267,20 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     VmaAllocationCreateInfo allocCI{};
     allocCI.usage = VMA_MEMORY_USAGE_AUTO;
     if (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
-        allocCI.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-        if (properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-            allocCI.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+        allocCI.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                      | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     }
     if (properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
         allocCI.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
     VmaAllocation allocation;
-    if (vmaCreateBuffer(vma.allocator, &bufferInfo, &allocCI, &buffer.buffer, &allocation, nullptr) != VK_SUCCESS)
+    VmaAllocationInfo allocInfo;
+    if (vmaCreateBuffer(vma.allocator, &bufferInfo, &allocCI, &buffer.buffer, &allocation, &allocInfo) != VK_SUCCESS)
         throw std::runtime_error("failed to create buffer with VMA!");
+
     buffer.allocation = allocation;
-    buffer.memory = VK_NULL_HANDLE;
+    buffer.mappedData = allocInfo.pMappedData;
+    buffer.memory = allocInfo.deviceMemory;
 
     resources.addBufferVma(buffer.buffer, allocation, "VulkanApp: buffer.buffer");
     return buffer;
@@ -4297,28 +4292,22 @@ void VulkanApp::destroyBuffer(Buffer& buf) {
     if (buf.allocation && vma.allocator) {
         resources.removeBuffer(buf.buffer);
         vmaDestroyBuffer(vma.allocator, buf.buffer, buf.allocation);
-    } else if (buf.buffer != VK_NULL_HANDLE) {
-        resources.removeBuffer(buf.buffer);
-        vkDestroyBuffer(device, buf.buffer, nullptr);
-    }
-    if (buf.memory != VK_NULL_HANDLE) {
-        resources.removeDeviceMemory(buf.memory);
-        vkFreeMemory(device, buf.memory, nullptr);
+    } else {
+        if (buf.buffer != VK_NULL_HANDLE) {
+            resources.removeBuffer(buf.buffer);
+            vkDestroyBuffer(device, buf.buffer, nullptr);
+        }
+        if (buf.memory != VK_NULL_HANDLE) {
+            resources.removeDeviceMemory(buf.memory);
+            vkFreeMemory(device, buf.memory, nullptr);
+        }
     }
     buf = {};
 }
 
 void VulkanApp::updateUniformBuffer(Buffer &uniform, void *data, size_t dataSize) {
     // Defensive: ensure memory is valid before mapping
-    if (uniform.memory == VK_NULL_HANDLE) {
-        std::cerr << "[updateUniformBuffer] Error: attempt to map VK_NULL_HANDLE memory (buffer=" << uniform.buffer << ")" << std::endl;
-        return;
-    }
-    // map the exact size requested by the caller so different uniform sizes are supported
-    void* bufferData;
-    vkMapMemory(device, uniform.memory, 0, dataSize, 0, &bufferData);
-    memcpy(bufferData, data, dataSize);
-    vkUnmapMemory(device, uniform.memory);
+    memcpy(uniform.mappedData, data, dataSize);
 }
 
 Buffer VulkanApp::createVertexBuffer(const std::vector<Vertex> &vertices) {
@@ -4329,11 +4318,7 @@ Buffer VulkanApp::createVertexBuffer(const std::vector<Vertex> &vertices) {
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     
-    
-    void* data;
-    vkMapMemory(device, stagingBuffer.memory, 0, bufferSize, 0, &data);
-    memcpy(data, vertices.data(), (size_t)bufferSize);
-    vkUnmapMemory(device, stagingBuffer.memory);
+    memcpy(stagingBuffer.mappedData, vertices.data(), (size_t)bufferSize);
     
     // Create device-local vertex buffer for fast GPU access
     Buffer vertexBuffer = createBuffer(bufferSize, 
@@ -4348,14 +4333,7 @@ Buffer VulkanApp::createVertexBuffer(const std::vector<Vertex> &vertices) {
     });
     
     // Transfer completed synchronously; destroy staging resources now.
-    if (stagingBuffer.buffer != VK_NULL_HANDLE) {
-        if (resources.removeBuffer(stagingBuffer.buffer)) vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
-        stagingBuffer.buffer = VK_NULL_HANDLE;
-    }
-    if (stagingBuffer.memory != VK_NULL_HANDLE) {
-        if (resources.removeDeviceMemory(stagingBuffer.memory)) vkFreeMemory(device, stagingBuffer.memory, nullptr);
-        stagingBuffer.memory = VK_NULL_HANDLE;
-    }
+    destroyBuffer(stagingBuffer);
     
     return vertexBuffer;
 }
@@ -4399,10 +4377,7 @@ Buffer VulkanApp::createIndexBuffer(const std::vector<uint> &indices) {
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     
-    void* data;
-    vkMapMemory(device, stagingBuffer.memory, 0, bufferSize, 0, &data);
-    memcpy(data, indices.data(), (size_t)bufferSize);
-    vkUnmapMemory(device, stagingBuffer.memory);
+    memcpy(stagingBuffer.mappedData, indices.data(), (size_t)bufferSize);
     
     // Create device-local index buffer for fast GPU access
     Buffer indexBuffer = createBuffer(bufferSize, 
@@ -4417,14 +4392,7 @@ Buffer VulkanApp::createIndexBuffer(const std::vector<uint> &indices) {
     });
     
     // Transfer completed synchronously; destroy staging resources now.
-    if (stagingBuffer.buffer != VK_NULL_HANDLE) {
-        if (resources.removeBuffer(stagingBuffer.buffer)) vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
-        stagingBuffer.buffer = VK_NULL_HANDLE;
-    }
-    if (stagingBuffer.memory != VK_NULL_HANDLE) {
-        if (resources.removeDeviceMemory(stagingBuffer.memory)) vkFreeMemory(device, stagingBuffer.memory, nullptr);
-        stagingBuffer.memory = VK_NULL_HANDLE;
-    }
+    destroyBuffer(stagingBuffer);
     
     return indexBuffer;
 }
@@ -4435,10 +4403,7 @@ Buffer VulkanApp::createDeviceLocalBuffer(const void* data, VkDeviceSize size, V
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     
-    void* mapped;
-    vkMapMemory(device, stagingBuffer.memory, 0, size, 0, &mapped);
-    memcpy(mapped, data, (size_t)size);
-    vkUnmapMemory(device, stagingBuffer.memory);
+    memcpy(stagingBuffer.mappedData, data, (size_t)size);
     
     // Create device-local buffer for fast GPU access
     Buffer gpuBuffer = createBuffer(size, 
@@ -4471,14 +4436,7 @@ Buffer VulkanApp::createDeviceLocalBuffer(const void* data, VkDeviceSize size, V
     });
     
     // Transfer completed synchronously; destroy staging resources now.
-    if (stagingBuffer.buffer != VK_NULL_HANDLE) {
-        if (resources.removeBuffer(stagingBuffer.buffer)) vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
-        stagingBuffer.buffer = VK_NULL_HANDLE;
-    }
-    if (stagingBuffer.memory != VK_NULL_HANDLE) {
-        if (resources.removeDeviceMemory(stagingBuffer.memory)) vkFreeMemory(device, stagingBuffer.memory, nullptr);
-        stagingBuffer.memory = VK_NULL_HANDLE;
-    }
+    destroyBuffer(stagingBuffer);
     
     return gpuBuffer;
 }
@@ -4488,10 +4446,7 @@ Buffer VulkanApp::createDeviceLocalBufferExclusive(const void* data, VkDeviceSiz
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    void* mapped;
-    vkMapMemory(device, stagingBuffer.memory, 0, size, 0, &mapped);
-    memcpy(mapped, data, (size_t)size);
-    vkUnmapMemory(device, stagingBuffer.memory);
+    memcpy(stagingBuffer.mappedData, data, (size_t)size);
 
     Buffer gpuBuffer{};
     VkBufferCreateInfo bufferInfo{};
@@ -4538,12 +4493,7 @@ Buffer VulkanApp::createDeviceLocalBufferExclusive(const void* data, VkDeviceSiz
         vkCmdPipelineBarrier2(cmd, &depInfo);
     });
 
-    if (stagingBuffer.buffer != VK_NULL_HANDLE) {
-        if (resources.removeBuffer(stagingBuffer.buffer)) vkDestroyBuffer(device, stagingBuffer.buffer, nullptr);
-    }
-    if (stagingBuffer.memory != VK_NULL_HANDLE) {
-        if (resources.removeDeviceMemory(stagingBuffer.memory)) vkFreeMemory(device, stagingBuffer.memory, nullptr);
-    }
+    destroyBuffer(stagingBuffer);
     return gpuBuffer;
 }
 
@@ -5094,7 +5044,6 @@ void VulkanApp::recreateSwapchain() {
     init_info.DescriptorPool = imguiDescriptorPool;
     init_info.MinImageCount = 2;
     init_info.ImageCount = static_cast<uint32_t>(swapchainImages.size());
-    init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     init_info.Allocator = nullptr;
     init_info.MinAllocationSize = 1024 * 1024; // Pad to 1MB to suppress validation small-allocation warnings
     init_info.CheckVkResultFn = [](VkResult err) {
@@ -5109,17 +5058,14 @@ void VulkanApp::recreateSwapchain() {
     imguiPipelineRenderingInfo.pColorAttachmentFormats = &swapchainImageFormat;
     imguiPipelineRenderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
     imguiPipelineRenderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    init_info.PipelineInfoMain.PipelineRenderingCreateInfo = imguiPipelineRenderingInfo;
     init_info.UseDynamicRendering = true;
-    init_info.PipelineRenderingCreateInfo = imguiPipelineRenderingInfo;
 
 
     bool imguiInitOk = ImGui_ImplVulkan_Init(&init_info);
     // printf("[ImGui] ImGui_ImplVulkan_Init (recreate) returned %s\\n", imguiInitOk ? "true" : "false");
-    // Upload font texture to the new pool. Keep it alive (don't destroy) so the
-    // descriptor set handle is not recycled before the next frame's NewFrame().
-    if (imguiInitOk) {
-        ImGui_ImplVulkan_CreateFontsTexture();
-    }
+    // Fonts are uploaded automatically by the backend on first NewFrame()
     if (!imguiInitOk) {
         printf("[ImGui] ERROR: ImGui_ImplVulkan_Init (recreate) failed!\n");
     }

@@ -755,11 +755,11 @@ void RenderTargetsWidget::cleanup() {
     // Destroy persistent staging buffers (VulkanApp::createBuffer registers them with resource manager)
     // Unmap persistent staging buffers; if GPU work is pending, defer unmap until safe
     if (stagingReadPtr && app && stagingReadBuffer.memory != VK_NULL_HANDLE) {
-        vkUnmapMemory(app->getDevice(), stagingReadBuffer.memory);
+        stagingReadBuffer.unmap(); // VMA persistent mapping
         stagingReadPtr = nullptr;
     }
     if (stagingUploadPtr && app && stagingUploadBuffer.memory != VK_NULL_HANDLE) {
-        vkUnmapMemory(app->getDevice(), stagingUploadBuffer.memory);
+        stagingUploadBuffer.unmap(); // VMA persistent mapping
         stagingUploadPtr = nullptr;
     }
     // Drop local buffer handles; actual destruction managed by VulkanResourceManager
@@ -823,20 +823,36 @@ void RenderTargetsWidget::cleanup() {
 
     auto destroyBufferAndMemory = [&](Buffer &buf) {
         if (buf.buffer == VK_NULL_HANDLE) return;
-        VkBuffer tmpBuf = buf.buffer;
-        VkDeviceMemory tmpMem = buf.memory;
         VkDevice device = a ? a->getDevice() : VK_NULL_HANDLE;
-        if (a && a->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [device, tmpBuf, tmpMem, a](){
+        VkBuffer tmpBuf = buf.buffer;
+        VmaAllocation tmpAlloc = buf.allocation;
+        VkDeviceMemory tmpMem = buf.memory;
+        if (tmpAlloc && a) {
+            if (a && a->hasPendingCommandBuffers()) {
+                VkFence f = VK_NULL_HANDLE;
+                uint32_t fi = a->getCurrentFrame();
+                if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
+                a->deferDestroyUntilFence(f, [a, tmpBuf, tmpAlloc](){
+                    a->resources.removeBuffer(tmpBuf);
+                    vmaDestroyBuffer(a->getVmaAllocator(), tmpBuf, tmpAlloc);
+                });
+            } else {
+                a->resources.removeBuffer(tmpBuf);
+                vmaDestroyBuffer(a->getVmaAllocator(), tmpBuf, tmpAlloc);
+            }
+        } else {
+            if (a && a->hasPendingCommandBuffers()) {
+                VkFence f = VK_NULL_HANDLE;
+                uint32_t fi = a->getCurrentFrame();
+                if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
+                a->deferDestroyUntilFence(f, [device, tmpBuf, tmpMem, a](){
+                    if (a->resources.removeBuffer(tmpBuf)) vkDestroyBuffer(device, tmpBuf, nullptr);
+                    if (a->resources.removeDeviceMemory(tmpMem)) vkFreeMemory(device, tmpMem, nullptr);
+                });
+            } else {
                 if (a->resources.removeBuffer(tmpBuf)) vkDestroyBuffer(device, tmpBuf, nullptr);
                 if (a->resources.removeDeviceMemory(tmpMem)) vkFreeMemory(device, tmpMem, nullptr);
-            });
-        } else {
-            if (a->resources.removeBuffer(tmpBuf)) vkDestroyBuffer(device, tmpBuf, nullptr);
-            if (a->resources.removeDeviceMemory(tmpMem)) vkFreeMemory(device, tmpMem, nullptr);
+            }
         }
         buf = {};
     };
@@ -850,11 +866,11 @@ void RenderTargetsWidget::cleanup() {
 
     // Destroy persistent staging buffers
     if (stagingReadPtr && app && stagingReadBuffer.memory != VK_NULL_HANDLE) {
-        vkUnmapMemory(app->getDevice(), stagingReadBuffer.memory);
+        stagingReadBuffer.unmap(); // VMA persistent mapping
         stagingReadPtr = nullptr;
     }
     if (stagingUploadPtr && app && stagingUploadBuffer.memory != VK_NULL_HANDLE) {
-        vkUnmapMemory(app->getDevice(), stagingUploadBuffer.memory);
+        stagingUploadBuffer.unmap(); // VMA persistent mapping
         stagingUploadPtr = nullptr;
     }
     destroyBufferAndMemory(stagingReadBuffer);

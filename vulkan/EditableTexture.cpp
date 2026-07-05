@@ -133,10 +133,7 @@ void EditableTexture::updateGPU(VulkanApp* app) {
 
 	Buffer staging = app->createBuffer(bufSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-	void* data;
-	vkMapMemory(device, staging.memory, 0, bufSize, 0, &data);
-	memcpy(data, cpuData.data(), bufSize);
-	vkUnmapMemory(device, staging.memory);
+	memcpy(staging.mappedData, cpuData.data(), bufSize);
 
 	app->transitionImageLayout(image, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 	app->copyBufferToImage(staging.buffer, image, width, height);
@@ -180,8 +177,7 @@ TextureImage EditableTexture::getTextureImage() const {
 
 void EditableTexture::createImGuiDescriptor() {
 	if (imguiDescSet != VK_NULL_HANDLE) return;
-	ImTextureID id = ImGui_ImplVulkan_AddTexture(sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	imguiDescSet = (VkDescriptorSet)id;
+	imguiDescSet = ImGui_ImplVulkan_AddTexture(sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	if (imguiDescSet == VK_NULL_HANDLE) {
 		printf("[EditableTexture] Failed to create ImGui descriptor for '%s'\n", name.c_str());
 	} else {

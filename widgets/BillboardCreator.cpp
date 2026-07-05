@@ -362,7 +362,7 @@ void BillboardCreator::renderBillboardPreview(Billboard* billboard) {
     const size_t composeIndex = getComposeIndex();
 
     // Get the composed texture to display
-    ImTextureID composedTexID = nullptr;
+    ImTextureID composedTexID = 0;
     if (previewTextureView == 0) {
         composedTexID = (ImTextureID)composedAlbedo[composeIndex].getImGuiDescriptorSet();
     } else if (previewTextureView == 1) {

@@ -30,7 +30,7 @@ void TextureViewer::render() {
     ImGui::Text("Choose Albedo (click thumbnail)");
     {
         size_t idx = currentIndex;
-        if (ImGuiComponents::ScrollableTexturePicker("PickerAlbedo", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 0) : nullptr; }, 48.0f, false, true)) {
+        if (ImGuiComponents::ScrollableTexturePicker("PickerAlbedo", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 0) : 0; }, 48.0f, false, true)) {
             currentIndex = idx;
         }
     }
@@ -77,7 +77,7 @@ void TextureViewer::render() {
             ImGui::Text("Choose Albedo (click thumbnail)");
             {
                 size_t idx = currentIndex;
-                if (ImGuiComponents::ScrollableTexturePicker("PickerAlbedo", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 0) : nullptr; }, 48.0f, 2, true, true)) {
+                if (ImGuiComponents::ScrollableTexturePicker("PickerAlbedo", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 0) : 0; }, 48.0f, 2, true, true)) {
                     currentIndex = idx;
                     // Touch generator: enqueue generate for the current viewer selection to ensure preview is up-to-date
                     if (arrayManager && textureMixer) {
@@ -115,7 +115,7 @@ void TextureViewer::render() {
             ImGui::Text("Choose Normal (click thumbnail)");
             {
                 size_t idx = currentIndex;
-                if (ImGuiComponents::ScrollableTexturePicker("PickerNormal", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 1) : nullptr; }, 48.0f, 2, true, true)) {
+                if (ImGuiComponents::ScrollableTexturePicker("PickerNormal", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 1) : 0; }, 48.0f, 2, true, true)) {
                     currentIndex = idx;
                 }
             }
@@ -145,7 +145,7 @@ void TextureViewer::render() {
             ImGui::Text("Choose Height (click thumbnail)");
             {
                 size_t idx = currentIndex;
-                if (ImGuiComponents::ScrollableTexturePicker("PickerHeight", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 2) : nullptr; }, 48.0f, 2, true, true)) {
+                if (ImGuiComponents::ScrollableTexturePicker("PickerHeight", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 2) : 0; }, 48.0f, 2, true, true)) {
                     currentIndex = idx;
                 }
             }
@@ -165,7 +165,7 @@ void TextureViewer::render() {
             ImGui::Text("Choose Roughness (click thumbnail)");
             {
                 size_t idx = currentIndex;
-                if (ImGuiComponents::ScrollableTexturePicker("PickerRoughness", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 3) : nullptr; }, 48.0f, 2, true, true)) {
+                if (ImGuiComponents::ScrollableTexturePicker("PickerRoughness", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 3) : 0; }, 48.0f, 2, true, true)) {
                     currentIndex = idx;
                 }
             }
@@ -185,7 +185,7 @@ void TextureViewer::render() {
             ImGui::Text("Choose AO (click thumbnail)");
             {
                 size_t idx = currentIndex;
-                if (ImGuiComponents::ScrollableTexturePicker("PickerAO", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 4) : nullptr; }, 48.0f, 2, true, true)) {
+                if (ImGuiComponents::ScrollableTexturePicker("PickerAO", arrayManager ? arrayManager->layerAmount : 0, idx, [this](size_t l){ return arrayManager ? arrayManager->getImTexture(l, 4) : 0; }, 48.0f, 2, true, true)) {
                     currentIndex = idx;
                 }
             }

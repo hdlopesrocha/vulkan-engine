@@ -67,11 +67,11 @@ void TextureMixerWidget::render() {
             ImTextureID sTex = (ImTextureID)textures->getPreviewDescriptor(activeMap, mp.secondaryTextureIdx);
             // Make the primary/secondary previews clickable so they become the main preview source
             if (pTex) {
-                if (ImGui::ImageButton(pTex, ImVec2(128,128))) { mp.primaryTextureIdx = mp.primaryTextureIdx; previewSource = 1; }
+                if (ImGui::ImageButton("##primary", pTex, ImVec2(128,128))) { mp.primaryTextureIdx = mp.primaryTextureIdx; previewSource = 1; }
             } else ImGui::Dummy(ImVec2(128,128));
             ImGui::NextColumn();
             if (sTex) {
-                if (ImGui::ImageButton(sTex, ImVec2(128,128))) { mp.secondaryTextureIdx = mp.secondaryTextureIdx; previewSource = 2; }
+                if (ImGui::ImageButton("##secondary", sTex, ImVec2(128,128))) { mp.secondaryTextureIdx = mp.secondaryTextureIdx; previewSource = 2; }
             } else ImGui::Dummy(ImVec2(128,128));
             ImGui::NextColumn();
             ImGui::Columns(1);

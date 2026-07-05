@@ -126,10 +126,10 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
 			if (app && app->hasPendingCommandBuffers()) {
 				app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-				tex = nullptr;
+				tex = 0;
 			} else {
 				ImGui_ImplVulkan_RemoveTexture(ds);
-				tex = nullptr;
+				tex = 0;
 			}
 		}
 	}
@@ -138,10 +138,10 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
 			if (app && app->hasPendingCommandBuffers()) {
 				app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-				tex = nullptr;
+				tex = 0;
 			} else {
 				ImGui_ImplVulkan_RemoveTexture(ds);
-				tex = nullptr;
+				tex = 0;
 			}
 		}
 	}
@@ -150,10 +150,10 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
 			if (app && app->hasPendingCommandBuffers()) {
 				app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-				tex = nullptr;
+				tex = 0;
 			} else {
 				ImGui_ImplVulkan_RemoveTexture(ds);
-				tex = nullptr;
+				tex = 0;
 			}
 		}
 	}
@@ -162,10 +162,10 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
 			if (app && app->hasPendingCommandBuffers()) {
 				app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-				tex = nullptr;
+				tex = 0;
 			} else {
 				ImGui_ImplVulkan_RemoveTexture(ds);
-				tex = nullptr;
+				tex = 0;
 			}
 		}
 	}
@@ -174,10 +174,10 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
 			if (app && app->hasPendingCommandBuffers()) {
 				app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-				tex = nullptr;
+				tex = 0;
 			} else {
 				ImGui_ImplVulkan_RemoveTexture(ds);
-				tex = nullptr;
+				tex = 0;
 			}
 		}
 	}
@@ -458,10 +458,7 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 
 	auto uploadLayer = [&](int idx, unsigned char* pixelData, VkDeviceSize imageSize) {
 		Buffer staging = a->createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		void* data;
-		vkMapMemory(device, staging.memory, 0, imageSize, 0, &data);
-		memcpy(data, pixelData, static_cast<size_t>(imageSize));
-		vkUnmapMemory(device, staging.memory);
+		memcpy(staging.mappedData, pixelData, static_cast<size_t>(imageSize));
 
 		a->runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd) {
 			a->recordTransitionImageLayoutLayer(cmd, imgs[idx].dstImage->image, imgs[idx].format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, imgs[idx].dstImage->mipLevels, currentLayer, 1);
@@ -607,10 +604,7 @@ uint TextureArrayManager::create(VulkanApp* a) {
 
 	// create a zeroed staging buffer
 	Buffer staging = a->createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	void* mapped = nullptr;
-	vkMapMemory(device, staging.memory, 0, imageSize, 0, &mapped);
-	memset(mapped, 0, static_cast<size_t>(imageSize));
-	vkUnmapMemory(device, staging.memory);
+	memset(staging.mappedData, 0, static_cast<size_t>(imageSize));
 
 	TextureImage* imgs[5] = { &albedoArray, &normalArray, &bumpArray, &roughnessArray, &aoArray };
 
@@ -774,7 +768,7 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 		}
 
 		if (texVec) {
-			if (texVec->size() != layerAmount) texVec->resize(layerAmount, nullptr);
+			if (texVec->size() != layerAmount) texVec->resize(layerAmount, 0);
 			if (viewVec->size() != layerAmount) viewVec->resize(layerAmount, VK_NULL_HANDLE);
 
 			// If an ImGui descriptor exists for this layer, remove it so we can recreate a fresh one
@@ -782,10 +776,10 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 			VkDescriptorSet ds = (VkDescriptorSet)(*texVec)[layer];
 			if (a && a->hasPendingCommandBuffers()) {
 				a->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-				(*texVec)[layer] = nullptr;
+				(*texVec)[layer] = 0;
 			} else {
 				ImGui_ImplVulkan_RemoveTexture(ds);
-				(*texVec)[layer] = nullptr;
+				(*texVec)[layer] = 0;
 			}
 			}
 
@@ -831,8 +825,7 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 
 			// Create new ImGui descriptor for this layer
 			if (!(*texVec)[layer] && (*viewVec)[layer] && sampler != VK_NULL_HANDLE) {
-				ImTextureID id = ImGui_ImplVulkan_AddTexture(sampler, (*viewVec)[layer], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-				(*texVec)[layer] = id;
+				(*texVec)[layer] = (ImTextureID)ImGui_ImplVulkan_AddTexture(sampler, (*viewVec)[layer], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 			}
 		}
 	}
@@ -848,9 +841,9 @@ void TextureArrayManager::setLayerInitialized(uint32_t layer, bool v) {
 }
 
 ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
-	if (layer >= layerAmount) return nullptr;
+	if (layer >= layerAmount) return 0;
 	VulkanApp* a = this->app;
-	if (!a) return nullptr;
+	if (!a) return 0;
 	VkDevice device = a->getDevice();
 
 	std::vector<VkImageView>* viewVec = nullptr;
@@ -863,12 +856,12 @@ ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
 		case 2: viewVec = &bumpLayerViews; texVec = &bumpImTextures; src = &bumpArray; sampler = bumpSampler; break;
 		case 3: viewVec = &roughnessLayerViews; texVec = &roughnessImTextures; src = &roughnessArray; sampler = roughnessSampler; break;
 		case 4: viewVec = &aoLayerViews; texVec = &aoImTextures; src = &aoArray; sampler = aoSampler; break;
-		default: return nullptr;
+		default: return 0;
 	}
 
 	// ensure vectors are sized
 	if (viewVec->size() != layerAmount) viewVec->resize(layerAmount, VK_NULL_HANDLE);
-	if (texVec->size() != layerAmount) texVec->resize(layerAmount, nullptr);
+	if (texVec->size() != layerAmount) texVec->resize(layerAmount, 0);
 
 	// if ImTextureID already created, return it
 	if ((*texVec)[layer]) return (*texVec)[layer];
@@ -891,7 +884,7 @@ ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
 		// Use the source image's format where possible
 		// Attempt to read format from src - not stored publicly here; assume appropriate format
 		if (vkCreateImageView(device, &viewInfo, nullptr, &(*viewVec)[layer]) != VK_SUCCESS) {
-			return nullptr;
+			return 0;
 		}
 				std::cerr << "[TextureArrayManager] createLayerView: view=" << (void*)(*viewVec)[layer]
 						  << " image=" << (void*)src->image
@@ -902,9 +895,8 @@ ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
 	}
 
 	// create ImGui texture (descriptor set) for this view
-	ImTextureID id = ImGui_ImplVulkan_AddTexture(sampler, (*viewVec)[layer], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	(*texVec)[layer] = id;
-	return id;
+	(*texVec)[layer] = (ImTextureID)ImGui_ImplVulkan_AddTexture(sampler, (*viewVec)[layer], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	return (*texVec)[layer];
 }
 
 // -----------------------------------------------------------------------------
@@ -912,9 +904,9 @@ ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
 // -----------------------------------------------------------------------------
 
 ImTextureID TextureArrayManager::getImTextureAlpha(size_t layer, int map) {
-    if (layer >= layerAmount) return nullptr;
+    if (layer >= layerAmount) return 0;
     VulkanApp* a = this->app;
-    if (!a) return nullptr;
+    if (!a) return 0;
     VkDevice device = a->getDevice();
 
     std::vector<VkImageView>* viewVec = nullptr;
@@ -927,12 +919,12 @@ ImTextureID TextureArrayManager::getImTextureAlpha(size_t layer, int map) {
         case 2: viewVec = &bumpLayerViews; texVec = &bumpImTextures; src = &bumpArray; sampler = bumpSampler; break;
         case 3: viewVec = &roughnessLayerViews; texVec = &roughnessImTextures; src = &roughnessArray; sampler = roughnessSampler; break;
         case 4: viewVec = &aoLayerViews; texVec = &aoImTextures; src = &aoArray; sampler = aoSampler; break;
-        default: return nullptr;
+        default: return 0;
     }
 
     // ensure vectors are sized for new alpha views too (reuse same slots)
     if (viewVec->size() != layerAmount) viewVec->resize(layerAmount, VK_NULL_HANDLE);
-    if (texVec->size() != layerAmount) texVec->resize(layerAmount, nullptr);
+    if (texVec->size() != layerAmount) texVec->resize(layerAmount, 0);
 
     if ((*texVec)[layer]) return (*texVec)[layer];
 
@@ -953,7 +945,7 @@ ImTextureID TextureArrayManager::getImTextureAlpha(size_t layer, int map) {
         viewInfo.subresourceRange.baseArrayLayer = static_cast<uint32_t>(layer);
         viewInfo.subresourceRange.layerCount = 1;
         if (vkCreateImageView(device, &viewInfo, nullptr, &(*viewVec)[layer]) != VK_SUCCESS) {
-            return nullptr;
+            return 0;
         }
         std::cerr << "[TextureArrayManager] createAlphaLayerView: view=" << (void*)(*viewVec)[layer]
                   << " image=" << (void*)src->image
@@ -962,7 +954,6 @@ ImTextureID TextureArrayManager::getImTextureAlpha(size_t layer, int map) {
         if (a) a->resources.addImageView((*viewVec)[layer], "TextureArrayManager: alphaLayerView");
     }
 
-    ImTextureID id2 = ImGui_ImplVulkan_AddTexture(sampler, (*viewVec)[layer], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    (*texVec)[layer] = id2;
-    return id2;
+    (*texVec)[layer] = (ImTextureID)ImGui_ImplVulkan_AddTexture(sampler, (*viewVec)[layer], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return (*texVec)[layer];
 }
