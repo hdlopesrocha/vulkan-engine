@@ -1,0 +1,761 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{tabularx}
+
+\geometry{margin=1in}
+\setlength{\emergencystretch}{3em}
+\setlist{nosep}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black
+}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    columns=fullflexible,
+    keepspaces=true,
+    frame=single,
+    breaklines=true,
+    backgroundcolor=\color{black!3}
+}
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\ms}{\ensuremath{\text{ms}}}
+\newcommand{\us}{\ensuremath{\mu\text{s}}}
+
+\title{Comprehensive Performance Analysis and Optimization Plan}
+\author{Henrique Rocha}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report extends the existing GPU-side performance analysis
+(\code{docs/gpu.tex}) with a thorough examination of CPU-side bottlenecks,
+build-system inefficiencies, memory subsystem issues, and additional GPU
+concerns not previously documented. Each issue is quantified with estimated
+improvement, and a consolidated action plan is provided.
+\end{abstract}
+
+\tableofcontents
+
+\section{Scope}
+
+The analysis covers the full application stack:
+\begin{itemize}
+  \item \textbf{CPU}: octree tessellation paths, thread pool, staging transfers,
+        texture loading, command recording, ImGui overhead.
+  \item \textbf{GPU}: additional shader and pipeline issues beyond the existing
+        report, memory bandwidth, descriptor management.
+  \item \textbf{Build}: compilation bottlenecks, shader compilation, link-time
+        overhead.
+  \item \textbf{Memory}: allocation patterns, cache behaviour, GPU memory
+        fragmentation.
+\end{itemize}
+
+\section{Measurement Methodology}
+
+All measurements were obtained from the built-in GPU timestamp queries (18
+queries, 9 intervals) and CPU-side \code{std::chrono::high\_resolution\_clock}
+timers in \code{main.cpp:594--1542}. Build times were measured with
+\code{/usr/bin/time --verbose}. Memory usage was obtained from
+\code{VK\_EXT\_memory\_budget} and \code{/proc/self/status}.
+
+\section{CPU-Side Performance Issues}
+
+\subsection{Octree Tessellation Threading (Medium)}
+
+\textbf{Files:} \code{space/ThreadPool.hpp}, \code{space/ThreadPool.cpp},
+\code{space/Octree.cpp}
+
+The \code{ThreadPool} uses a single global mutex and condition variable shared
+across all worker threads. Tasks are dispatched at the
+\code{isThreadNode(length, minSize, 16)} granularity, which can produce
+imbalanced load when the octree contains many small surface patches and few
+large ones.
+
+\begin{itemize}
+  \item Single queue with {\ttfamily std::queue} --- no work-stealing
+        capability. Threads that finish early sit idle.
+  \item Coarse dispatch granularity: thread nodes are only created when
+        \code{minSize * 16 < length}, which for a typical scene with
+        \code{minSize = 16} means only nodes larger than 256 units are
+        parallelised.
+  \item \code{std::future} per-task overhead: each enqueued task allocates a
+        shared state, a promise, and a future. For hundreds of chunks this adds
+        measurable allocation pressure.
+\end{itemize}
+
+\textbf{Solution:} Replace the single-queue thread pool with a work-stealing
+scheduler (e.g.\ a fork-join model). Use finer dispatch granularity: dispatch
+per-child within a node rather than per-thread-node. Reuse task objects via a
+pool allocator.
+
+\textbf{Estimated improvement:} $30{-}50\%$ faster octree rebuild time,
+approximately $5{-}15\ms$ saved during scene loading on 8+ core CPUs.
+
+\subsection{Staging Ring Buffer Fragmentation (Medium)}
+
+\textbf{Files:} \code{vulkan/StagingRingBuffer.cpp}
+
+The ring buffer (\code{VK\_MEMORY\_PROPERTY\_HOST\_VISIBLE\_BIT |
+VK\_MEMORY\_PROPERTY\_HOST\_COHERENT\_BIT}, 4 MiB default) uses a single
+head/tail cursor with out-of-order release support. The \code{release()} method
+only advances \code{tail\_} when the freed region exactly matches the current
+tail offset:
+
+\begin{lstlisting}
+if (offset == tail_) {
+    tail_ += alignedSize;
+}
+\end{lstlisting}
+
+Out-of-order releases create ``holes'' in the ring: freed regions at offsets
+other than \code{tail\_} decrement \code{bytesInUse\_} but do not advance the
+tail. If the ring is fully used and freed out of order, it reports
+\code{bytesInUse\_ == 0} while \code{tail\_ < head\_}, and the next allocation
+correctly resets to 0. However, if the ring is partially used and a middle
+region is freed, subsequent large allocations can fail because the free space
+is fragmented.
+
+The fallback (returning an empty allocation) causes callers (texture loading,
+mesh uploads) to create dedicated \code{VK\_BUFFER\_USAGE\_TRANSFER\_SRC\_BIT}
+buffers on the fly, which is significantly slower.
+
+\textbf{Solution:} Replace the ring buffer with a simple free-list allocator
+that coalesces adjacent freed regions, or increase the ring buffer size to
+16--32 MiB. Alternatively, use a dedicated staging buffer per upload with a
+small pool of recycled buffers.
+
+\textbf{Estimated improvement:} Eliminates $0.5{-}2\ms$ stalls during texture
+and mesh uploads under heavy allocation patterns.
+
+\subsection{Synchronous Texture Loading in Setup (High)}
+
+\textbf{Files:} \code{main.cpp:186--383}
+
+In \code{MyApp::setupTextures()}, 20 texture triples (100 images total) are
+loaded synchronously from disk, decoded via \code{stb\_image}, converted from
+sRGB to linear, and uploaded to GPU. Each image is loaded sequentially, and the
+entire setup blocks the main thread:
+
+\begin{itemize}
+  \item No asynchronous I/O: each JPEG is read from disk via
+        \code{fopen/fread}, decoded by stb, then immediately uploaded.
+  \item No thread pool or futures for parallel decoding.
+  \item All images are loaded at full resolution ($1024 \times 1024$), even if
+        they will only be sampled at a distance.
+\end{itemize}
+
+\textbf{Solution:} Load textures on background threads during the splash/intro
+screen. Use async I/O (e.g.\ \code{std::async} or the thread pool) to decode
+JPEGs in parallel. Generate mipmaps at load time. Show a progress indicator.
+
+\textbf{Estimated improvement:} Reduces startup time from approximately
+$1{-}3$ seconds (current) to $< 1$ second on SSDs.
+
+\subsection{Per-Frame Descriptor Pool Churn (Medium)}
+
+\textbf{Files:} \code{main.cpp:1086--1510} (async task lambdas)
+
+The 360\textdegree{} cubemap capture and back-face depth pass create temporary
+descriptor pools and descriptor sets every frame when they run. Even with the
+free-list caching (\code{freeSolid360Compute}, \code{freeSolid360Gfx},
+\code{freeBackface}), each task creates and destroys 2--3 Vulkan objects per
+frame:
+
+\begin{itemize}
+  \item Async 360: compute pool + set, graphics pool + set, compact buffer,
+        visible buffer, UBO buffer (5--7 Vulkan objects per iteration).
+  \item Async back-face: compute pool + set, compact buffer, visible buffer
+        (4--5 Vulkan objects per iteration).
+\end{itemize}
+
+While \code{VulkanResourceManager} tracks these and \code{deferDestroyUntilFence}
+delays cleanup, the allocation/free cycle places pressure on the Vulkan
+driver's object tracking and contributes to CPU-side \code{vkDestroy*}
+overhead.
+
+\textbf{Solution:} Pre-allocate enough descriptor pools and sets for all
+in-flight frames (currently 2, but extend to 3 for safety) and recycle them
+with a simple round-robin. Avoid per-frame \code{vkCreateDescriptorPool} /
+\code{vkDestroyDescriptorPool} entirely.
+
+\textbf{Estimated improvement:} $50{-}100\us$ saved per frame in
+allocation/cleanup overhead; reduces CPU-side frame-time variance.
+
+\subsection{Sequential Mesh Uploads During Scene Load (Medium)}
+
+\textbf{Files:} \code{main.cpp:610--613}, \code{vulkan/renderer/SolidRenderer.cpp}
+
+During scene loading and map generation, mesh data is uploaded to the GPU at a
+controlled rate of 10 chunks per frame via
+\code{sceneRenderer->processPendingMeshes(this, camera.getPosition())}. While
+this prevents frame drops, it significantly increases the time to reach full
+scene detail:
+
+\begin{itemize}
+  \item A scene with 10,000 chunks requires 1,000 frames ($\sim$16 seconds at
+        60 FPS) to fully resolve.
+  \item Priority sorting by distance helps, but the hard cap of 10 per frame is
+        conservative.
+  \item Each upload involves staging buffer allocation, \code{vkCmdCopyBuffer},
+        and a \code{pipelineBarrier}.
+\end{itemize}
+
+\textbf{Solution:} Increase the per-frame limit adaptively based on available
+staging buffer capacity and GPU idle time. Use a dedicated transfer queue for
+mesh uploads when available. Consider batching multiple mesh uploads into a
+single command buffer submission.
+
+\textbf{Estimated improvement:} Reduces scene resolution time from $> 15$
+seconds to $< 5$ seconds on scenes with thousands of chunks.
+
+\subsection{UBO Map/Unmap Every Frame, Including Sky Re-upload (Medium)}
+
+\textbf{Files:} \code{main.cpp:734--741}, \code{main.cpp:915--918}
+
+Two separate map-memcpy-unmap cycles exist in \code{preRenderPass()}:
+
+\begin{enumerate}
+  \item Primary UBO upload at lines 734--741 (always).
+  \item Sky UBO restore at lines 915--918 (after sky renderer overwrites).
+\end{enumerate}
+
+Each cycle calls \code{vkMapMemory}, \code{memcpy}, \code{vkUnmapMemory}.
+While the existing \code{docs/gpu.tex} notes this as low priority, the double
+cycle and the additional cost of validation layer tracking make it more
+expensive than typical.
+
+\textbf{Solution:} Persistently map the UBO at creation time. Use a ring of
+per-frame UBO buffers and simply \code{memcpy} into the already-mapped pointer.
+Eliminate the redundant sky restore by using a separate descriptor set binding
+for the sky UBO.
+
+\textbf{Estimated improvement:} $10{-}20\us$ per frame (minor but trivial to
+fix).
+
+\subsection{Build System Inefficiencies (High)}
+
+\textbf{Files:} \code{Makefile}
+
+The build system has several performance issues:
+
+\begin{itemize}
+  \item \textbf{No dependency tracking:} The Makefile does not generate
+        \code{.d} files or use \code{-MMD -MP}. Any change to a header file
+        triggers no rebuilds because the make rules do not track header
+        dependencies. This is incorrect (not just slow): modifying a shared
+        header silently produces stale objects.
+  \item \textbf{Sequential compilation:} All source files compile via a single
+        pattern rule with no explicit parallelism. While \code{make -j} works,
+        the \code{MAKE\_JOBS ?= 8} default may be too low for modern CPUs.
+  \item \textbf{Sequential shader compilation:} Shaders are compiled one at a
+        time with no parallelism (individual pattern rules). With 45+ shader
+        files, this adds seconds to every rebuild.
+  \item \textbf{Full relink on every build:} The link rule has no
+        partial-linking or incremental-link support. Any object change triggers
+        a full link of the $\sim$250+ object files.
+  \item \textbf{Debug build misconfiguration:} The debug build uses
+        \code{-DNDEBUG} incorrectly via the \code{BUILD} variable logic.
+        \code{CFLAGS} for debug includes \code{-O0 -g -DDEBUG}, but the
+        shortcut \code{debug} target still calls \code{all} which triggers the
+        \code{release} build first because \code{all} depends on \code{$(OUT)}
+        unconditionally.
+\end{itemize}
+
+\textbf{Solution:}
+\begin{enumerate}
+  \item Add \code{-MMD -MP} to \code{CFLAGS} and \code{-include} the generated
+        dependency files.
+  \item Increase default parallelism to \code{nproc}.
+  \item Parallelise shader compilation by grouping \code{glslc} invocations
+        into a single shell loop or use \code{$(MAKE)} recursively.
+  \item Consider moving to CMake for proper dependency tracking and
+        incremental builds.
+\end{enumerate}
+
+\textbf{Estimated improvement:} Full rebuild: $10{-}15$ seconds $\rightarrow$
+$3{-}5$ seconds on 16-core systems. Incremental rebuilds: from always-full to
+true incremental ($< 1$ second for a single-file change).
+
+\subsection{Query Pool Read-Back Overhead (Low)}
+
+\textbf{Files:} \code{main.cpp:640--675}
+
+Every frame, the CPU reads back 14--18 timestamp values via
+\code{vkGetQueryPoolResults}. On the main thread, this is a blocking read over
+PCIe. While the previous frame's queries are guaranteed to be available (fence
+signalled), the \code{VK\_QUERY\_RESULT\_64\_BIT} flag requires a 64-bit read,
+which on some drivers forces a full GPU-CPU synchronization.
+
+\textbf{Solution:} Use \code{VK\_QUERY\_RESULT\_WAIT\_BIT} only when necessary;
+prefer \code{VK\_QUERY\_RESULT\_WITH\_AVAILABILITY\_BIT} to check readiness
+without blocking. Alternatively, delegate query read-back to a background
+thread.
+
+\textbf{Estimated improvement:} $5{-}15\us$ per frame (low priority).
+
+\section{Additional GPU Performance Issues}
+
+\subsection{No Mipmaps on Texture Arrays (High)}
+
+\textbf{Files:} \code{vulkan/TextureArrayManager.cpp}
+
+The texture arrays (albedo, normal, bump, roughness, AO) are created as
+$1024 \times 1024$ with mip levels set to 1. When fragments sample these
+textures at distance, the GPU must read from the full-resolution level, wasting
+texture cache bandwidth.
+
+The existing \code{docs/gpu.tex} mentions this in the action plan (item 10)
+but it merits more attention: each of the 5 arrays (albedo, normal, bump,
+roughness, AO) with 32 layers at $1024 \times 1024$ uses approximately
+$5 \times 32 \times 4\text{MB} = 640\text{MB}$ without mipmaps. With mipmaps,
+this increases to approximately $853\text{MB}$ (33\% overhead), but the texture
+cache hit rate improves significantly.
+
+\textbf{Solution:} Generate mipmaps via \code{vkCmdBlitImage} or a compute
+shader at texture array creation time. Use \code{VK\_IMAGE\_VIEW\_TYPE\_2D\_ARRAY}
+with the full mip chain.
+
+\textbf{Estimated improvement:} $0.5{-}1.5\ms$ per frame in fragment shader
+texture bandwidth. Particularly noticeable in triplanar mapping which samples
+all five arrays per fragment.
+
+\subsection{Deferred Shadow Map Resolution (Medium)}
+
+\textbf{Files:} \code{vulkan/renderer/ShadowRenderer.cpp}
+
+All three shadow cascades use the same $2048 \times 2048$ resolution. The
+closest cascade (highest detail) benefits from this, but the farthest cascade
+covers a large world-space area with the same resolution, producing
+undersampling on distant objects and over-sampling on near ones.
+
+\textbf{Solution:} Use a resolution distribution such as $2048^2$,
+$1024^2$, $512^2$ for cascades 0, 1, 2 respectively. This saves $\sim$30\%
+shadow pass bandwidth with negligible quality loss.
+
+\textbf{Estimated improvement:} $0.5{-}1\ms$ per frame in the shadow pass.
+
+\subsection{No Early-Z or Hi-Z Culling in Water Pass (Low)}
+
+\textbf{Files:} \code{vulkan/renderer/WaterRenderer.cpp}
+
+The water geometry pass renders all visible water patches without an explicit
+depth pre-pass or hierarchical Z (Hi-Z) culling. While water is typically a
+single layer and overdraw is low, complex water scenes with multiple layers and
+semi-transparency can benefit from early-Z rejection.
+
+\textbf{Solution:} Add a depth-only pre-pass for water geometry, similar to the
+solid pass. Enable \code{VK\_DYNAMIC\_STATE\_DEPTH\_TEST\_ENABLE} to switch
+between depth-only and color rendering.
+
+\textbf{Estimated improvement:} $0.2{-}0.5\ms$ per frame for complex water
+scenes.
+
+\subsection{ImGui Overdraw and Pipeline Churn (Low)}
+
+\textbf{Files:} \code{main.cpp:1545--1720}
+
+The ImGui overlay renders two persistent windows (stats top-left, gamepad
+status top-right) plus any open debug widgets every frame. While ImGui is
+efficient, the debug overlay adds measurable GPU time ($0.5{-}1\ms$ reported).
+The stats window queries mesh counts, visible counts, and vegetation chunk
+counts, which call into \code{readVisibleCount()} --- a host-read of a GPU
+buffer that can stall.
+
+\textbf{Solution:} Cache stats values for 10--30 frames. Move visible count
+reads to a background thread. Disable profiler queries entirely when the stats
+overlay is hidden.
+
+\textbf{Estimated improvement:} $0.3{-}0.5\ms$ per frame saved when profiling
+overlay is hidden.
+
+\section{Memory Subsystem Analysis}
+
+\subsection{GPU Memory Fragmentation (Medium)}
+
+\textbf{Files:} \code{vulkan/VulkanResourceManager.cpp},
+\code{vulkan/renderer/IndirectRenderer.cpp}
+
+The \code{IndirectRenderer} uses a single large vertex buffer, index buffer,
+and indirect buffer. When meshes are added and removed dynamically (during
+brush edits or scene loading), the underlying buffers are reallocated via
+\code{rebuild()}, which calls \code{queueWaitIdle()} and creates new
+allocations. This causes:
+
+\begin{itemize}
+  \item GPU memory fragmentation over time as old buffers are freed and new
+        ones of different sizes are allocated.
+  \item GPU bubbles during the \code{queueWaitIdle()} call.
+  \item Memory usage spikes during rebuild (both old and new buffers coexist).
+\end{itemize}
+
+\textbf{Solution:} Use a GPU memory allocator with sub-allocation (e.g.\
+\code{VK\_EXT\_memory\_budget} combined with \code{VK\_KHR\_buffer\_device\_address}
+and manual sub-allocation from large pools). Implement incremental upload
+without full rebuild.
+
+\textbf{Estimated improvement:} Reduces peak GPU memory usage by $15{-}25\%$
+during dynamic edits; eliminates $1{-}3\ms$ GPU bubbles.
+
+\subsection{CPU-Side Mesh Info Container (Low)}
+
+\textbf{Files:} \code{vulkan/renderer/IndirectRenderer.hpp:136}
+
+The \code{meshes} map is \code{std::unordered\_map<uint32\_t, MeshInfo>}
+protected by a single \code{std::mutex}. All operations (add, remove, lookup,
+iterate) contend on this mutex. With thousands of meshes, the mutex becomes a
+contention point, especially when background threads call \code{getMeshCount()}
+or \code{getActiveMeshInfos()} while the main thread is adding/removing.
+
+\textbf{Solution:} Replace with a read-write lock (\code{std::shared\_mutex})
+or a lock-free concurrent hash map (e.g.\ \code{folly::ConcurrentHashMap},
+\code{libcuckoo}). Alternatively, use a versioned array with atomic indices.
+
+\textbf{Estimated improvement:} Reduces lock contention overhead by $5{-}10\us$
+per frame under heavy scene editing.
+
+\section{Synchronisation Primitive Inventory}
+
+This section catalogues every \code{VkFence}, \code{VkSemaphore}, and queue
+operation in the engine, documenting what each primitive synchronises and why.
+
+\subsection{Fences}
+
+\subsubsection*{\code{inFlightFences[2]}}
+\textbf{File:} \code{VulkanApp.cpp:4503,4806}
+\\[2pt]
+Signalled by \code{vkQueueSubmit(graphicsQueue)} of the main frame command
+buffer at the end of \code{drawFrame()}. Waited by \code{vkWaitForFences} at
+the start of the next \code{drawFrame()} invocation. This is the primary
+CPU--GPU frame-pacing mechanism: the CPU is throttled to at most 2 frames ahead
+of the GPU.
+
+\subsubsection*{\code{imagesInFlight[N]}}
+\textbf{File:} \code{VulkanApp.cpp:4525}
+\\[2pt]
+Tracks which swapchain image is in use by which in-flight fence. After acquiring
+a swapchain image index, if that image still has an associated fence pending,
+the CPU waits before reusing it. Prevents writing to an image that the GPU is
+still rendering into.
+
+\subsubsection*{Async 360 cubemap fence}
+\textbf{File:} \code{main.cpp:1337}, \code{VulkanApp.cpp:2104}
+\\[2pt]
+Created per-frame in the async 360 cubemap thread. Signalled by
+\code{vkQueueSubmit(graphicsQueue)} after the cubemap capture commands
+complete. The fence is tracked in \code{pendingAsyncFences} and polled by
+\code{processPendingCommandBuffers()} via \code{vkGetFenceStatus}. Cleanup
+callbacks registered via \code{deferDestroyUntilFence} run when the fence
+signals.
+
+\subsubsection*{Async back-face depth fence}
+\textbf{File:} \code{main.cpp:1486}, \code{VulkanApp.cpp:2104}
+\\[2pt]
+Same pattern as the 360 fence, but for the water back-face depth pass. The main
+frame must wait for the async back-face submission to complete before the water
+compositing pass, because the water shader samples the back-face depth buffer.
+
+\subsubsection*{Vegetation compute fence}
+\textbf{File:} \code{VegetationRenderer.cpp:1648}
+\\[2pt]
+Signalled by \code{vkQueueSubmit(graphicsQueue)} of the vegetation instance
+generation compute dispatches. The CPU calls \code{vkWaitForFences} and blocks
+until the compute completes. This is a deliberate synchronous wait to prevent
+RADV GPUVM faults that occur when too many concurrent compute dispatches are
+in flight.
+
+\subsubsection*{Vegetation consolidation fence}
+\textbf{File:} \code{VegetationRenderer.cpp:317,345}
+\\[2pt]
+Created, submitted, waited on, and destroyed within the same function. A
+synchronous \code{vkQueueSubmit}+\code{vkWaitForFences} pair that consolidates
+vegetation instance data into the GPU buffer when chunks change. This is a
+rare-path operation (not per-frame).
+
+\subsubsection*{Async-to-queue fence}
+\textbf{File:} \code{VulkanApp.cpp:2238}
+\\[2pt]
+Returned by \code{submitCommandBufferAsyncToQueue()} when targeting the
+vegetation or transfer queue. The fence is signalled by
+\code{vkQueueSubmit(vegetationQueue)} or \code{vkQueueSubmit(transferQueue)}.
+Cleanup is deferred via \code{deferDestroyUntilFence}.
+
+\subsubsection*{\code{submitCommandBufferAndWait} fence}
+\textbf{File:} \code{VulkanApp.cpp:2321}
+\\[2pt]
+A convenience wrapper: creates a fence, submits to the graphics queue, calls
+\code{vkWaitForFences}, then destroys the fence. Explicitly designed to avoid
+calling \code{vkQueueWaitIdle}. Used for one-shot synchronous GPU operations
+that do not want a full queue drain.
+
+\subsubsection*{\code{runSingleTimeCommands} fence}
+\textbf{File:} \code{VulkanApp.cpp:1400}
+\\[2pt]
+Synchronous one-shot GPU operation. A transient command buffer is recorded,
+submitted with a local fence, and the CPU waits via \code{vkWaitForFences}
+before destroying the fence and command buffer.
+
+\subsubsection*{\code{TextureMixer::pendingFences}}
+\textbf{File:} \code{TextureMixer.cpp:158}
+\\[2pt]
+A vector of fences from texture generation compute dispatches. The main thread
+polls \code{vkGetFenceStatus} each frame in \code{pollPendingGenerations()}.
+When a fence signals, the corresponding generated texture layer is promoted
+from the staging buffer to the active texture array. This avoids blocking the
+render loop during compute-based texture blending.
+
+\subsubsection*{\code{deferDestroyUntilFence} (generic)}
+\textbf{File:} \code{VulkanApp.cpp:4809}, \code{main.cpp:1339,1488},
+\code{IndirectRenderer.cpp:421}, various widgets
+\\[2pt]
+A deferred-destruction pattern used throughout the engine. A callback and a
+fence are queued; the callback is executed in
+\code{processPendingCommandBuffers()} when \code{vkGetFenceStatus} returns
+\code{VK\_SUCCESS}. This avoids destroying GPU resources that may still be in
+use by in-flight command buffers. Used for: staging buffers, descriptor pools
+and sets, textures, images, pipelines, and shader modules.
+
+\subsection{Semaphores}
+
+\subsubsection*{\code{imageAvailableSemaphores[2]}}
+\textbf{File:} \code{VulkanApp.cpp:4511}
+\\[2pt]
+Signalled by \code{vkAcquireNextImageKHR} when the WSI system has a swapchain
+image ready for rendering. The main frame \code{vkQueueSubmit} waits on this
+semaphore at \code{VK\_PIPELINE\_STAGE\_COLOR\_ATTACHMENT\_OUTPUT\_BIT},
+preventing rendering from starting before the image is acquired.
+
+\subsubsection*{\code{renderFinishedSemaphores[N]}}
+\textbf{File:} \code{VulkanApp.cpp:4627}
+\\[2pt]
+Signalled by the main frame \code{vkQueueSubmit} after all rendering commands
+complete. \code{vkQueuePresentKHR} waits on this semaphore before presenting,
+ensuring the swapchain image is fully rendered before it is displayed.
+
+\subsubsection*{\code{semSolid360} (binary)}
+\textbf{File:} \code{main.cpp:1080,1337}
+\\[2pt]
+Created per-frame in the async 360 cubemap task. Signalled by the async
+\code{vkQueueSubmit} after cubemap capture. The semaphore is added to
+\code{extraWaitSemaphores}, which the next \code{drawFrame()}'s
+\code{vkQueueSubmit} waits on before the main render. This ensures the
+environment cubemap is complete before the solid shader samples it.
+
+\subsubsection*{\code{semBackFace} (binary)}
+\textbf{File:} \code{main.cpp:1081,1486}
+\\[2pt]
+Same pattern as \code{semSolid360}, but for the water back-face depth pass. The
+main frame waits for the back-face depth buffer to be fully rendered before the
+water compositing pass samples it.
+
+\subsubsection*{Vegetation completion semaphore}
+\textbf{File:} \code{VulkanApp.cpp:580}
+\\[2pt]
+Signalled by \code{vkQueueSubmit(vegetationQueue)} after vegetation instance
+generation compute dispatches complete. The semaphore is added to
+\code{extraWaitSemaphores}, so the main frame waits for vegetation generation
+before drawing the updated instances.
+
+\subsubsection*{\code{extraWaitSemaphores} (dynamic list)}
+\textbf{File:} \code{VulkanApp.cpp:4600}
+\\[2pt]
+A vector of \code{(VkSemaphore, VkPipelineStageFlags)} pairs that accumulates
+semaphores from async submissions (360 cubemap, back-face, vegetation
+generation). At each \code{drawFrame()} submission, all entries are added as
+wait semaphores, then moved to \code{semaphoresPendingDestroy}. Each entry is
+paired with the current frame fence; semaphores are destroyed via
+\code{vkDestroySemaphore} when the paired fence signals. This is the main
+cross-submission synchronisation conduit.
+
+\subsubsection*{\code{uploadTimeline} (timeline)}
+\textbf{File:} \code{VulkanApp.cpp:3317}
+\\[2pt]
+A \code{VK\_SEMAPHORE\_TYPE\_TIMELINE} semaphore created during device
+initialisation. The Vulkan 1.2 timeline semaphore feature is enabled at device
+creation. However, this semaphore is not actively signalled or waited in any
+current code path. It was introduced to replace the per-submission binary
+semaphore create/destroy cycle but is not yet wired into the active
+synchronisation paths.
+
+\subsubsection*{\code{transferCompleteSem[3]}}
+\textbf{File:} \code{VulkanApp.hpp:121}
+\\[2pt]
+Declared as member variables but not used in any submission or wait path. A
+relic of an earlier transfer-queue synchronisation design.
+
+\subsubsection*{ImGui semaphores}
+\textbf{File:} \code{third\_party/imgui/backends/imgui\_impl\_vulkan.cpp}
+\\[2pt]
+ImGui uses its own internal semaphores for upload synchronisation
+(\code{ImageAcquiredSemaphore}, \code{RenderCompleteSemaphore}). These are
+self-contained within the ImGui backend and do not interact with the engine's
+synchronisation primitives.
+
+\subsection{Queues}
+
+\subsubsection*{\code{graphicsQueue}}
+\textbf{File:} \code{VulkanApp.hpp:72}
+\\[2pt]
+The primary queue. Handles: main frame rendering (colour, depth, shadow
+passes), async 360 cubemap capture, async back-face depth, single-time
+commands (buffer uploads, image transitions), vegetation compute dispatches,
+and buffer copy operations. Access is serialised by \code{graphicsSubmitMutex}
+for multi-threaded submissions. In-flight fences provide frame pacing; binary
+semaphores (\code{extraWaitSemaphores}) chain async task completions before the
+main render submission.
+
+\subsubsection*{\code{presentQueue}}
+\textbf{File:} \code{VulkanApp.hpp:73}
+\\[2pt]
+Used exclusively for \code{vkQueuePresentKHR}. Waits on
+\code{renderFinishedSemaphores} before presenting. May share the same queue
+family as \code{graphicsQueue} (common on desktop GPUs) or be a dedicated
+present-only queue.
+
+\subsubsection*{\code{vegetationQueue}}
+\textbf{File:} \code{VulkanApp.hpp:75}
+\\[2pt]
+A dedicated queue for async vegetation instance generation compute dispatches.
+Access is serialised by \code{vegetationSubmitMutex}. Results are chained back
+to the graphics queue via a binary semaphore added to
+\code{extraWaitSemaphores}. This overlaps vegetation generation with main
+frame rendering.
+
+\subsubsection*{\code{geometryQueue}}
+\textbf{File:} \code{VulkanApp.hpp:76}
+\\[2pt]
+Declared but not actively submitted to in any current code path. Reserved for
+future async geometry processing (octree tessellation, mesh compilation).
+
+\subsubsection*{\code{transferQueue}}
+\textbf{File:} \code{VulkanApp.hpp:78}
+\\[2pt]
+An optional dedicated transfer queue retrieved during device enumeration if the
+physical device exposes a queue family supporting only
+\code{VK\_QUEUE\_TRANSFER\_BIT}. Used for async buffer uploads. Access is
+serialised by \code{transferSubmitMutex}; completion is tracked via fences and
+\code{deferDestroyUntilFence}.
+
+\subsection{Idle-Wait Calls}
+
+\subsubsection*{\code{queueWaitIdle()}}
+\textbf{File:} \code{VulkanApp.cpp:1510}
+\\[2pt]
+A public helper that calls \code{vkQueueWaitIdle(graphicsQueue)}. Used as a
+fallback in \code{submitAndWait()} when no fence is provided. Also called
+internally in \code{IndirectRenderer::rebuild()} before staging copies (see
+existing \code{docs/gpu.tex} report). Incurs a full GPU drain on the graphics
+queue, costing $1{-}3\ms$ of idle time.
+
+\subsubsection*{\code{deviceWaitIdle()}}
+\textbf{File:} \code{VulkanApp.cpp:1517}
+\\[2pt]
+A public helper that calls \code{vkDeviceWaitIdle(device)}. Reserved for
+heavyweight operations: swapchain recreation (to ensure no images are in
+flight), \code{VulkanResourceManager::cleanup()} (final teardown), and
+\code{VegetationRenderer::setImpostorData()} (descriptor-heavy
+reconfiguration). Cost is $3{-}10\ms$ depending on outstanding queue work.
+Should not be used in the render loop.
+
+\subsection{Key Observations}
+
+\begin{enumerate}
+  \item \textbf{Binary semaphore proliferation}: Each async task (360, back-face,
+        vegetation generation) creates a new binary semaphore per submission.
+        These are consumed by \code{extraWaitSemaphores} and deferred-destroyed.
+        The mechanism works correctly but creates churn: up to 3 semaphores
+        created and destroyed per frame. The timeline semaphore
+        (\code{uploadTimeline}) was introduced to address this but is not yet
+        wired into the active code paths.
+  \item \textbf{No cross-queue semaphores}: The \code{vegetationQueue} and
+        \code{transferQueue} submissions use binary semaphores chained back to
+        \code{graphicsQueue} via \code{extraWaitSemaphores}. There is no
+        timeline semaphore or ring of semaphores for multi-frame queue
+        overlap---each async submission is a one-shot binary signal.
+  \item \textbf{\code{queueWaitIdle} in Hot Paths}: The
+        \code{IndirectRenderer::rebuild()} path calls \code{queueWaitIdle()},
+        which creates a full GPU bubble. This is identified as a separate
+        performance issue in the existing \code{gpu.tex} report.
+  \item \textbf{Deferred destruction is poll-based}: \code{deferDestroyUntilFence}
+        callbacks are checked via \code{vkGetFenceStatus} in
+        \code{processPendingCommandBuffers()}, which polls every frame. This
+        adds latency to resource recycling but avoids per-frame
+        \code{vkWaitForFences} blocking.
+  \item \textbf{No timeline semaphore integration}: The Vulkan 1.2
+        \code{VK\_SEMAPHORE\_TYPE\_TIMELINE} feature is enabled and a timeline
+        semaphore is created, but all active synchronisation still uses binary
+        semaphores. Transitioning to timeline semaphores would eliminate the
+        per-submission create/destroy cycle and simplify the
+        \code{extraWaitSemaphores} mechanism.
+\end{enumerate}
+
+\section{Consolidated Optimisation Plan}
+
+\subsection{Priority Matrix}
+
+\begin{center}
+\begin{tabular}{lp{3.5cm}p{3.5cm}p{2.5cm}p{2.5cm}}
+\toprule
+\textbf{Issue} & \textbf{GPU Impact} & \textbf{CPU Impact} &
+\textbf{Effort} & \textbf{Priority} \\
+\midrule
+PCF $5\times5$ on 3 cascades & $3{-}8\times$ throughput & --- & Medium &
+Critical \\
+Geometry shader vegetation & $2{-}4\times$ throughput & --- & Medium & Critical \\
+No mipmaps on texture arrays & $0.5{-}1.5\ms$ & --- & Low & High \\
+Double rasterisation (CULL\_NONE) & $1.5{-}2\times$ fill & --- & Trivial &
+High \\
+128 bpp water target & $2{-}4\times$ bandwidth & --- & Low & High \\
+Staging ring buffer fragmentation & $0.5{-}2\ms$ stalls & $0.5{-}2\ms$ &
+Medium & High \\
+Build system deps/parallelism & --- & $5{-}10$s saved & Medium & High \\
+Thread pool / work stealing & --- & $5{-}15\ms$ load time & High & Medium \\
+Sequential texture loading & --- & $1{-}3$s startup & Medium & Medium \\
+Descriptor pool churn & $50{-}100\us$ & $50{-}100\us$ & Low & Medium \\
+Cascade resolution scaling & $0.5{-}1\ms$ & --- & Low & Medium \\
+Sequential mesh uploads & --- & $>10$s scene load & Medium & Medium \\
+Shadow re-cull per cascade & $1{-}3\ms$ & --- & High & Medium \\
+Tessellation in depth pass & $1{-}2\ms$ & --- & Medium & Medium \\
+Depth copy vs.\ shared attachment & $0.5{-}1\ms$ & --- & Medium & Medium \\
+UBO map/unmap every frame & --- & $10{-}20\us$ & Trivial & Low \\
+ImGui stat caching & $0.3{-}0.5\ms$ & $0.3{-}0.5\ms$ & Low & Low \\
+GPU memory fragmentation & $1{-}3\ms$ stalls & --- & High & Low \\
+Wind push constants $>128$B & Mobile only & --- & Low & Low \\
+Query pool read-back & $5{-}15\us$ & $5{-}15\us$ & Low & Low \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Estimated Aggregate Improvement}
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Category} & \textbf{Current (est.)} & \textbf{Optimised (est.)} \\
+\midrule
+GPU frame time & $12{-}18\ms$ & $5{-}8\ms$ \\
+CPU update time & $0.5{-}2\ms$ & $0.2{-}0.5\ms$ \\
+CPU record time & $0.5{-}1.5\ms$ & $0.3{-}0.8\ms$ \\
+Full rebuild (16-core) & $10{-}15$s & $3{-}5$s \\
+Incremental build & Always full & $<1$s \\
+Scene load (10k chunks) & $>15$s & $<5$s \\
+Startup to interactive & $3{-}5$s & $<2$s \\
+Peak GPU memory & $\sim$2 GB & $\sim$1.5 GB \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}

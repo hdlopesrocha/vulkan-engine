@@ -1,0 +1,468 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{parskip}
+
+\definecolor{codegray}{gray}{0.9}
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{codegray},
+    breaklines=true,
+    frame=single,
+    numbers=none,
+}
+
+\title{\vspace{-2cm}GPU Performance \& Locking Analysis\\
+       \large Vulkan Engine -- Perf Report \#03}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+
+This report analyses GPU-side performance bottlenecks, CPU--GPU
+synchronisation stalls, and locking contention in the Vulkan engine. The
+findings are drawn from a full source-code audit of all mutexes, fences,
+semaphores, barriers, staging paths, compute dispatches, and threading
+infrastructure.
+
+\section{Critical Issues}
+
+\subsection{VegetationRenderer::consolidateChunks() -- Per-Frame Stall}
+
+\textbf{Location:} \texttt{vulkan/renderer/VegetationRenderer.cpp:316--346}
+
+\textbf{Severity: CRITICAL}
+
+This function is called inside \texttt{recordRead\-Barriers()}, which is
+invoked from the main rendering path every frame. It creates a
+\texttt{VkFence}, submits a \texttt{vkCmdCopyBuffer} command via
+\texttt{vkQueueSubmit}, and then immediately calls
+\texttt{vkWaitForFences(device, 1, \&fence, VK\_TRUE, UINT64\_MAX)} on the
+\textbf{CPU}. The stall blocks until the GPU finishes the copy, which adds a
+full pipeline drain to every frame where vegetation chunks have changed.
+
+\textbf{Fix:} Reuse a single fence instead of creating a new one per call.
+Signal it during the previous frame's geometry compute pass and check it
+non-blockingly at the start of the next frame. The copy uploads should be
+pipelined across frames so the CPU never blocks on the GPU.
+
+\subsection{Octree Node Content -- Data Race in Worker Threads}
+
+\textbf{Location:} \texttt{space/Octree.cpp:589--647}
+
+\textbf{Severity: CRITICAL}
+
+The \texttt{shapeChildren()} method spawns raw \texttt{std::thread} objects to
+process child nodes in parallel. Each thread writes to fields of the shared
+\texttt{OctreeNode} (\texttt{sdf[8]}, \texttt{bits}, \texttt{vertex},
+\texttt{blockId}, \texttt{version}) without any mutual exclusion. The
+\texttt{Octree::mutex} declared at line~34 of \texttt{Octree.hpp} is
+\textbf{never acquired anywhere} in the codebase.
+
+\textbf{Fix:} Either acquire \texttt{Octree::mutex} in critical sections, use
+per-node atomics, or restructure the algorithm so each worker thread works on
+independent nodes that do not alias in memory.
+
+\subsection{New Thread Per Recursive Call}
+
+\textbf{Location:} \texttt{space/Octree.cpp:589--647}
+
+\textbf{Severity: CRITICAL}
+
+\texttt{shapeChildren()} creates \texttt{std::thread} objects dynamically for
+every non-leaf node that exceeds \texttt{minSize * 16}. Thread creation
+(setup, TLS, stack allocation) and destruction overhead is incurred
+repeatedly during recursive octree construction. With 8~children per node
+and multiple levels of recursion, this can oversubscribe the CPU
+dramatically.
+
+The existing \texttt{ThreadPool} (\texttt{space/ThreadPool.hpp}) sits
+unused---it is only consumed by the commented-out
+\texttt{iterateParallelBFS} code path. All octree worker threads should be
+submitted to the pool instead.
+
+\subsection{Allocator Contention -- Centralised Bottleneck}
+
+\textbf{Location:} \texttt{space/Allocator.tpp:34--48}
+
+\textbf{Severity: CRITICAL}
+
+The \texttt{Allocator<OctreeNode>} uses a single \texttt{std::shared\_mutex}
+to protect its internal free list. Every \texttt{allocate()} call takes an
+exclusive (\texttt{unique\_lock}) acquisition. When multiple worker threads
+race to allocate new octree nodes (which happens constantly during
+\texttt{shapeChildren}), all allocation is serialised on this single lock
+point.
+
+\texttt{deallocate()} also holds the exclusive lock and performs an
+O(blocks) linear scan in debug builds to validate the pointer, extending the
+hold time further.
+
+\textbf{Fix:} Introduce per-thread slab caching (e.g.\ a thread-local free
+list) with a fallback to the shared pool. This eliminates the centralised
+bottleneck for the common case.
+
+\section{High-Severity Issues}
+
+\subsection{Synchronous Submit-and-Wait Pattern (runSingleTimeCommands)}
+
+\textbf{Location:} \texttt{vulkan/VulkanApp.cpp:1351--1435}
+
+\textbf{Severity: HIGH}
+
+\texttt{runSingleTime\-Commands()} is the most widely used utility for
+one-shot GPU work (buffer uploads, texture copies, meta-buffer updates).
+Every call:
+\begin{enumerate}
+\item Creates a fence.
+\item Allocates a command buffer from the shared \texttt{transientPool}
+      (under \texttt{transientPoolMutex}).
+\item Records the caller's commands.
+\item Submits to the graphics queue (under \texttt{graphicsSubmitMutex}).
+\item Calls \texttt{vkWaitForFences()} and blocks the CPU.
+\item Destroys the fence and frees the command buffer.
+\end{enumerate}
+
+This pattern is used extensively in \texttt{IndirectRenderer::rebuild()},
+\texttt{IndirectRenderer::upload\-Mesh\-VerticesAndIndices()},
+\texttt{VegetationRenderer} instance uploads, \texttt{createDeviceLocalBuffer}
+variants, and \texttt{TextureArray\-Manager} operations. Every invocation
+blocks the calling thread until the GPU is done.
+
+\textbf{Fix:} Convert hot-path callers to an async submission API
+(\texttt{submit\-Command\-BufferAsync}) that returns a fence for lazy
+synchronisation. Batch small uploads into a single submission.
+
+\subsection{Per-Frame UBO Upload via Map/Unmap}
+
+\textbf{Location:} \texttt{main.cpp:746--748}
+
+\textbf{Severity: HIGH}
+
+The main uniform buffer object (UBO) is uploaded every frame via
+\texttt{vkMapMemory}~+~\texttt{memcpy}~+~\texttt{vkUnmapMemory}. This is
+unnecessary on virtually all modern Vulkan drivers, which support persistent
+mapping. The map/unmap pair adds driver overhead on every frame.
+
+\textbf{Fix:} Map the UBO memory once at creation time and keep it
+persistently mapped.
+
+\subsection{Per-Frame Full-Resolution Depth Copies}
+
+\textbf{Location:}
+\texttt{vulkan/renderer/WaterRenderer.cpp:838},
+\texttt{vulkan/renderer/WaterBackFaceRenderer.cpp:332}
+
+\textbf{Severity: HIGH}
+
+Both the water renderer and the back-face renderer issue
+\texttt{vkCmdCopyImage} to copy the entire scene depth buffer into a
+separate image every frame. At 1920~$\times$~1080 this copies \textasciitilde8
+MiB per frame over the GPU bus, consuming memory bandwidth and adding a
+barrier synchronisation point.
+
+\textbf{Fix:} Use Vulkan input attachments (\texttt{VK\_ATTACHMENT\_LOAD\_OP\_LOAD})
+to read the depth buffer during a subpass, or share depth via
+\texttt{VK\_IMAGE\_LAYOUT\_DEPTH\_STENCIL\_READ\_ONLY\_OPTIMAL} instead of
+copying.
+
+\subsection{Legacy Barriers Instead of Synchronization2}
+
+\textbf{Location:} 43 instances across the codebase
+(\texttt{IndirectRenderer.cpp}, \texttt{VegetationRenderer.cpp},
+\texttt{SolidRenderer.cpp}, \texttt{SkyRenderer.cpp},
+\texttt{WaterRenderer.cpp}, \texttt{Solid360Renderer.cpp},
+\texttt{SceneRenderer.cpp}, \texttt{VulkanApp.cpp})
+
+\textbf{Severity: HIGH}
+
+The project's \texttt{AGENTS.md} mandates {\itshape Synchronization2
+everywhere}, yet 43 calls to the legacy \texttt{vkCmdPipelineBarrier()} API
+remain. Two of these---
+\texttt{IndirectRenderer.cpp:25} and line~1095---use
+\texttt{VK\_PIPELINE\_STAGE\_ALL\_COMMANDS\_BIT} as the source stage mask,
+which is a full pipeline stall on the GPU.
+
+\textbf{Fix:} Convert all legacy barriers to
+\texttt{VkImageMemoryBarrier2}/\texttt{vkCmdPipelineBarrier2} with
+fine-grained stage masks.
+
+\subsection{Per-Frame Descriptor Set Heap Allocations}
+
+\textbf{Location:} \texttt{vulkan/renderer/SceneRenderer.cpp:901--902}
+
+\textbf{Severity: HIGH}
+
+\texttt{updateTexture\-DescriptorSet()} allocates
+\texttt{VkDescriptorImageInfo} and \texttt{VkDescriptorBufferInfo} on the
+heap (via \texttt{new}) for every descriptor write, then deletes them
+immediately after \texttt{vkUpdateDescriptorSets}. This causes heap
+allocation pressure in the per-frame update path.
+
+\textbf{Fix:} Store descriptor info structures as member variables or use
+a ring-buffer allocator for write data.
+
+\subsection{ThreadPool Single-Mutex Bottleneck}
+
+\textbf{Location:} \texttt{space/ThreadPool.hpp:33},
+\texttt{space/ThreadPool.cpp:13}
+
+\textbf{Severity: HIGH}
+
+Every \texttt{enqueue()} and every worker's dequeue contend on the single
+\texttt{queue\_mutex}. With N worker threads, all N+1 threads (producers +
+consumers) serialise on this mutex. There is no work-stealing or per-thread
+queue.
+
+\textbf{Fix:} Replace with a lock-free MPMC queue (e.g.\ moodycamel
+ConcurrentQueue, or a simple \texttt{std::atomic}-based queue adapted from
+the literature). If the ThreadPool remains unused (only consumed by dead
+code), remove it entirely.
+
+\subsection{graphicsSubmitMutex Held During Blocking Wait}
+
+\textbf{Location:} \texttt{vulkan/VulkanApp.cpp:1387--1421}
+
+\textbf{Severity: HIGH}
+
+\texttt{runSingleTime\-Commands()} acquires \texttt{graphics\-Submit\-Mutex}
+before calling \texttt{vkQueueSubmit} and does not release it until after
+\texttt{vkWaitForFences} returns. While the mutex is held, no other thread
+can submit to the graphics queue, including the main render thread.
+
+\textbf{Fix:} Release the queue mutex before waiting on the fence. The
+submission has already been dispatched to the driver; the fence wait does
+not need the mutex.
+
+\subsection{Per-Frame Fence Wait (drawFrame)}
+
+\textbf{Location:} \texttt{vulkan/VulkanApp.cpp:4518}
+
+\textbf{Severity: HIGH}
+
+The \texttt{drawFrame()} function waits on the in-flight fence at the start
+of every frame. With only 2 frames in flight
+(\texttt{MAX\_FRAMES\_IN\_FLIGHT = 2}), the GPU often finishes the previous
+frame before the CPU is ready, so this wait usually returns immediately. The
+low frame count limits the opportunity for CPU--GPU overlap.
+
+\textbf{Fix:} Increase to 3 frames in flight and adjust the number of
+offscreen render-target sets accordingly.
+
+\subsection{No Vulkan Memory Allocator}
+
+\textbf{Location:} ~30~direct\texttt{vkAllocateMemory} calls across the
+codebase
+
+\textbf{Severity: HIGH}
+
+Every buffer and image allocation goes through \texttt{vkAllocateMemory}
+directly. This causes driver overhead from many small kernel calls and
+potential fragmentation. A Vulkan Memory Allocator (VMA) library would
+batch allocations, sub-allocate from larger chunks, and reduce driver
+overhead.
+
+\section{Medium-Severity Issues}
+
+\subsection{StagingRingBuffer Silent Allocation Failure}
+
+\textbf{Location:} \texttt{vulkan/StagingRingBuffer.cpp:87--91}
+
+\textbf{Severity: MEDIUM}
+
+When the ring buffer is exhausted (total 4~MiB), \texttt{allocate()} returns
+an empty handle without blocking. Callers must fall back to creating a
+dedicated staging buffer (which incurs allocation + map + unmap overhead).
+The \texttt{cv\_} condition variable is notified on \texttt{release()} but
+\texttt{allocate()} never actually waits on it.
+
+\textbf{Fix:} Increase the ring buffer size (e.g.\ to 32~MiB) and allow
+callers to block on the condition variable, removing the need for dedicated
+staging buffer fallbacks.
+
+\subsection{Per-Frame Query Pool Readback}
+
+\textbf{Location:} \texttt{main.cpp:657--681}
+
+\textbf{Severity: MEDIUM}
+
+\texttt{vkGetQueryPoolResults} is called every frame to read back GPU
+timestamps. When results are not yet available, this can cause a partial
+CPU stall. The query pool readback runs inside the render-loop hot path.
+
+\textbf{Fix:} Use a ring of query pools (one per frame in flight) and defer
+the readback by one frame, or make the readback asynchronous with a separate
+staging buffer.
+
+\subsection{async UniformBuffer mapping per-frame}
+
+\textbf{Location:} \texttt{main.cpp:746--748}
+
+\textbf{Severity: MEDIUM}
+
+The UBO for the main uniform (view, projection, time, etc.) is mapped,
+written, and unmapped every frame. Persistent mapping eliminates the
+map/unmap calls.
+
+\subsection{Std::sort Inside processPendingMeshes}
+
+\textbf{Location:} \texttt{vulkan/renderer/SceneRenderer.cpp:1030--1035}
+
+\textbf{Severity: MEDIUM}
+
+The pending mesh queue is sorted by camera distance every frame with
+\texttt{std::sort} (O(n log n)) while holding \texttt{pending\-MeshMutex}.
+Under heavy tessellation load, the queue can grow large and this sort
+consumes significant CPU time.
+
+\textbf{Fix:} Use a priority queue or a small fixed-capacity buffer with
+linear scan for the top-K items instead of full sort.
+
+\subsection{Copy on Write Not Used for VkDescriptorSetLayout}
+
+\textbf{Location:} \texttt{vulkan/VulkanApp.cpp:452--493}
+
+The per-chunk vegetation generation compute dispatches create and allocate a
+separate descriptor set, then free it after dispatch. These small allocation
+and deallocation operations add up.
+
+\textbf{Fix:} Use a ring of pre-allocated descriptor sets for the chunk
+generation path.
+
+\subsection{allocatePrimaryCommandBuffer Creates Pool Per Call}
+
+\textbf{Location:} \texttt{vulkan/VulkanApp.cpp:2466--2490}
+
+\textbf{Severity: MEDIUM}
+
+The \texttt{allocatePrimary\-CommandBuffer()} function creates a new
+command pool for every async command buffer allocation. This is
+unnecessary overhead.
+
+\textbf{Fix:} Use a pool ring (one per frame in flight) with reset.
+
+\subsection{Kernel Thread Sanity}
+
+\textbf{Location:} \texttt{space/IteratorHandler.cpp:35}
+
+The worker loop in \texttt{iterateParallelBFS()} uses
+\texttt{std::this\_thread::yield()} inside a busy loop. This code path is
+currently dead (commented out in \texttt{Octree.cpp:800}).
+
+\subsection{WrappedSignedDistanceFunction Cache is Thread-Unsafe}
+
+\textbf{Location:} \texttt{sdf/WrappedSignedDistanceFunction.hpp:21--22}
+
+The \texttt{cacheSDF} member and its \texttt{mtx} are declared, but the
+cache is disabled by default (\texttt{cacheEnabled = false}) and the
+\texttt{mtx} appears to never be acquired in implementations. If the cache
+were enabled, concurrent reads/writes from worker threads during octree
+shaping would cause data races.
+
+\subsection{Potential ABBA Lock Ordering}
+
+\textbf{Location:}
+\texttt{vulkan/VulkanApp.cpp:2073} and \texttt{line~2009}
+
+\texttt{submitCommandBufferAsync()} acquires \texttt{graphicsSubmitMutex}
+then \texttt{pendingCmdMutex} (order A). \texttt{throttleIfTooManyPending()}
+acquires \texttt{pendingCmdMutex} then calls
+\texttt{waitForAllPendingCommandBuffers()} (order B). If the wait function
+acquires \texttt{graphicsSubmitMutex}, this is a deadlock.
+
+\textbf{Fix:} Verify \texttt{waitForAllPendingCommandBuffers} does not
+acquire \texttt{graphicsSubmitMutex}, or use \texttt{std::lock()} to acquire
+both mutexes atomically.
+
+\section{Unused Mutexes (Dead Code)}
+
+\begin{itemize}
+\item \textbf{\texttt{Octree::mutex}} (\texttt{space/Octree.hpp:34})\\
+      Declared but never acquired anywhere. The octree's internal data is
+      accessed from multiple threads without any lock.
+\item \textbf{\texttt{ThreadContext::mutex}} (\texttt{space/ThreadContext.hpp:35})\\
+      Declared but never acquired. The caches it was intended to protect
+      are thread-local anyway (each worker has its own \texttt{ThreadContext}).
+\item \textbf{\texttt{WrappedSignedDistanceFunction::mtx}}
+      (\texttt{sdf/WrappedSignedDistanceFunction.hpp:22})\\
+      Declared but implementations do not acquire it. Cache is disabled by
+      default anyway.
+\item \textbf{\texttt{ThreadPool}} (\texttt{space/ThreadPool.hpp})\\
+      The entire thread pool infrastructure is unused in production; its
+      only consumer (\texttt{iterateParallelBFS}) is commented out.
+\item \textbf{\texttt{ConcurrentQueue}} (\texttt{space/ConcurrentQueue.hpp})\\
+      Only consumed by the dead \texttt{iterateParallelBFS} path.
+\end{itemize}
+
+\section{GPU Pipeline Summary}
+
+The main rendering pipeline consists of the following stages, executed in
+order each frame:
+
+\begin{enumerate}
+\item \textbf{Shadow map generation}~-- 3 cascade EVSM rendered via
+      dedicated depth-only passes with GPU frustum culling.
+\item \textbf{Depth pre-pass (Instance~1)}~-- solid geometry + real
+      vegetation write depth. No color attachment.
+\item \textbf{Color pass (Instance~2)}~-- sky, solid geometry
+      (\texttt{LOAD\_OP\_LOAD} depth, no depth write), vegetation, and
+      impostors (single-pass depth+color).
+\item \textbf{Water pass}~-- copies the scene depth, renders water
+      geometry and refraction, composites over the scene color.
+\item \textbf{ImGui}~-- rendered into a separate swapchain pass.
+\end{enumerate}
+
+\subsection{Compute Dispatches}
+
+\begin{itemize}
+\item \textbf{Vegetation GPU cull}~-- one dispatch per frame
+      (\texttt{VK\_PIPELINE\_BIND\_POINT\_COMPUTE}) with 64-wide workgroups.
+\item \textbf{Indirect renderer GPU cull}~-- one dispatch per frame per
+      renderer (solid, water, shadow cascades). 64-wide workgroups with
+      72-byte push constants.
+\item \textbf{Texture mixer}~-- dispatches for procedural texture
+      generation on the compute queue. Separate command pool per queue.
+\item \textbf{Vegetation instance generation}~-- per-chunk compute
+      dispatches during chunk processing. Loops to handle
+      \texttt{maxComputeWorkGroupCount} limits.
+\end{itemize}
+
+\section{Recommendations (Ordered by Impact)}
+
+\begin{enumerate}
+\item \textbf{Eliminate the \texttt{consolidateChunks()} per-frame stall.}
+      Pipeline the vegetation chunk uploads across frames so the CPU never
+      blocks on GPU copies.
+\item \textbf{Fix the octree data race.} Acquire \texttt{Octree::mutex} (or
+      equivalent) in worker threads or restructure to avoid shared mutable
+      state.
+\item \textbf{Replace \texttt{std::thread} with ThreadPool} in
+      \texttt{shapeChildren()} to eliminate per-call thread creation
+      overhead.
+\item \textbf{Add per-thread slab caching to the Allocator} to remove the
+      centralised \texttt{shared\_mutex} bottleneck.
+\item \textbf{Release \texttt{graphicsSubmitMutex} before waiting on
+      fences} in \texttt{runSingleTimeCommands}.
+\item \textbf{Convert the 43 legacy barriers to Synchronization2} with
+      fine-grained stage masks.
+\item \textbf{Persistently map the main UBO} to avoid per-frame
+      map/unmap driver calls.
+\item \textbf{Replace per-frame depth copies} (water, back-face) with
+      input attachments or shared depth reads.
+\item \textbf{Integrate Vulkan Memory Allocator} to batch
+      \texttt{vkAllocateMemory} calls.
+\item \textbf{Remove dead code}: unused mutexes, unused ThreadPool,
+      unused ConcurrentQueue.
+\end{enumerate}
+
+\end{document}
