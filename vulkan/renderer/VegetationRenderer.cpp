@@ -455,6 +455,21 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
     // Write visible count
     vkCmdUpdateBuffer(cmd, visibleCountBuffers[f].buffer, 0, sizeof(count), &count);
 
+    // Barrier: make depth writes visible to tessellation evaluation shader
+    {
+        VkMemoryBarrier2 depthBarrier{};
+        depthBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        depthBarrier.srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
+        depthBarrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        depthBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT;
+        depthBarrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &depthBarrier;
+        vkCmdPipelineBarrier2(cmd, &dep);
+    }
+
     // Barrier: make transfer writes visible to indirect draw
     {
         VkBufferMemoryBarrier2 barriers[2] = {};
