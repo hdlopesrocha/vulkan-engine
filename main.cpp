@@ -747,12 +747,9 @@ public:
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 1);
 
-        // Upload UBO to GPU
+        // Upload UBO to GPU (VMA persistently mapped — no map/unmap needed)
         if (sceneRenderer) {
-            void* data;
-            data = sceneRenderer->mainUniformBuffers[frameIdx].map(0);
-            memcpy(data, &uboStatic, sizeof(UniformObject));
-            sceneRenderer->mainUniformBuffers[frameIdx].unmap(); // VMA persistent mapping
+            memcpy(sceneRenderer->mainUniformBuffers[frameIdx].mappedData, &uboStatic, sizeof(UniformObject));
         } else {
             std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping UBO upload\n";
         }
