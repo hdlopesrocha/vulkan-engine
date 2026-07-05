@@ -14,10 +14,10 @@
 // Sub-renderer accessors removed: SceneRenderer now owns back-face and 360 renderers.
 
 // Global image layout tracking for WaterRenderer render targets
-static VkImageLayout sceneColorImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
-static VkImageLayout sceneDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
-static VkImageLayout waterDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
-static VkImageLayout waterGeomDepthImageLayouts[2] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+static VkImageLayout sceneColorImageLayouts[3] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+static VkImageLayout sceneDepthImageLayouts[3] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+static VkImageLayout waterDepthImageLayouts[3] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+static VkImageLayout waterGeomDepthImageLayouts[3] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
 
 WaterRenderer::WaterRenderer() {}
 
@@ -137,13 +137,13 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     sceneColorImageLayouts[1] = VK_IMAGE_LAYOUT_UNDEFINED;
     sceneDepthImageLayouts[0] = VK_IMAGE_LAYOUT_UNDEFINED;
     sceneDepthImageLayouts[1] = VK_IMAGE_LAYOUT_UNDEFINED;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         waterDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
         waterGeomDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     // Create per-frame scene offscreen render targets (2 sets for 2 frames in flight)
-    for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
+    for (int frameIdx = 0; frameIdx < 3; ++frameIdx) {
         createImage(app->getSwapchainImageFormat(),
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
@@ -172,7 +172,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         }
     }
 
-    for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
+    for (int frameIdx = 0; frameIdx < 3; ++frameIdx) {
         createImage(VK_FORMAT_R32G32B32A32_SFLOAT,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
@@ -235,11 +235,11 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     };
 
     // Transition scene color images
-    for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
+    for (int frameIdx = 0; frameIdx < 3; ++frameIdx) {
         transitionImageLayout(sceneColorImages[frameIdx], app->getSwapchainImageFormat(), sceneColorImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
         transitionImageLayout(sceneDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, sceneDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
     }
-    for (int frameIdx = 0; frameIdx < 2; ++frameIdx) {
+    for (int frameIdx = 0; frameIdx < 3; ++frameIdx) {
         transitionImageLayout(waterDepthImages[frameIdx], VK_FORMAT_R32G32B32A32_SFLOAT, waterDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
         transitionImageLayout(waterGeomDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, waterGeomDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
     }
@@ -256,11 +256,11 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         if (vkAllocateDescriptorSets(device, &allocInfo, waterDepthDescriptorSets.data()) != VK_SUCCESS) {
             throw std::runtime_error("Failed to allocate water depth descriptor sets!");
         }
-        for (size_t i = 0; i < 2; ++i) {
+        for (size_t i = 0; i < 3; ++i) {
             std::cerr << "[RAW ALLOC] WaterRenderer depth: descSet=" << (void*)waterDepthDescriptorSets[i] << " pool=" << (void*)allocInfo.descriptorPool << std::endl;
         }
         // Register allocated descriptor sets
-        for (size_t i = 0; i < 2; ++i) {
+        for (size_t i = 0; i < 3; ++i) {
             app->resources.addDescriptorSet(waterDepthDescriptorSets[i], "WaterRenderer: waterDepthDescriptorSet");
         }
         
@@ -278,7 +278,7 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
     VulkanApp* appPtr = app;
     // Clear per-frame image handles; actual Vulkan destruction
     // will be performed by the VulkanResourceManager.
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         sceneColorImages[i] = VK_NULL_HANDLE;
         sceneColorMemories[i] = VK_NULL_HANDLE;
         sceneColorImageViews[i] = VK_NULL_HANDLE;
@@ -286,7 +286,7 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
         sceneDepthMemories[i] = VK_NULL_HANDLE;
         sceneDepthImageViews[i] = VK_NULL_HANDLE;
     }
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         waterDepthImages[i] = VK_NULL_HANDLE;
         waterDepthMemories[i] = VK_NULL_HANDLE;
         waterDepthImageViews[i] = VK_NULL_HANDLE;
@@ -314,7 +314,7 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
 void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex) {
     if (!app) return;
     if (cmd == VK_NULL_HANDLE) return;
-    if (frameIndex >= 2) return;
+    if (frameIndex >= 3) return;
 
     // Only clear the water offscreen targets (color + depth) using dynamic
     // rendering with loadOp = CLEAR. This is safe and does not require
@@ -377,16 +377,16 @@ void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint
 }
 
 VkImageLayout WaterRenderer::getWaterGeomDepthLayout(uint32_t frameIndex) const {
-    if (frameIndex < 2) return waterGeomDepthImageLayouts[frameIndex];
+    if (frameIndex < 3) return waterGeomDepthImageLayouts[frameIndex];
     return VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 void WaterRenderer::setWaterGeomDepthLayout(uint32_t frameIndex, VkImageLayout layout) {
-    if (frameIndex < 2) waterGeomDepthImageLayouts[frameIndex] = layout;
+    if (frameIndex < 3) waterGeomDepthImageLayouts[frameIndex] = layout;
 }
 
 VkImageLayout WaterRenderer::getSceneDepthLayout(uint32_t frameIndex) const {
-    if (frameIndex < 2) return sceneDepthImageLayouts[frameIndex];
+    if (frameIndex < 3) return sceneDepthImageLayouts[frameIndex];
     return VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
@@ -711,7 +711,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
 
 void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIndex) {
     if (waterGeometryPipeline == VK_NULL_HANDLE) return;
-    if (frameIndex >= 2) return;
+    if (frameIndex >= 3) return;
     if (waterDepthImages[frameIndex] == VK_NULL_HANDLE) return;
 
     activeWaterFrameIndex = frameIndex;

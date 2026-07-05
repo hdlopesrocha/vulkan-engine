@@ -244,7 +244,7 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
         app->resources.addImageView(view, "WaterBackFaceRenderer: view");
     };
 
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         createImage(VK_FORMAT_D32_SFLOAT,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT,
@@ -258,7 +258,7 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
         }
     }
 
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         // Keep the layout we recorded above (do not reset to UNDEFINED).
         // Resetting here caused later callers to emit fallback transitions
         // that disagreed with the app-tracked authoritative layout.
@@ -269,7 +269,7 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
 
 void WaterBackFaceRenderer::destroyRenderTargets(VulkanApp* app) {
     (void)app;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         backFaceDepthImages[i] = VK_NULL_HANDLE;
         backFaceDepthMemories[i] = VK_NULL_HANDLE;
         backFaceDepthImageViews[i] = VK_NULL_HANDLE;

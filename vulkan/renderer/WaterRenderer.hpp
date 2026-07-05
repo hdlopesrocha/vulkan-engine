@@ -54,7 +54,7 @@ public:
     // Depth image view used as the depth/stencil attachment for the water geometry pass
     VkImageView getWaterGeomDepthView(uint32_t frameIndex) const { return waterGeomDepthImageViews[frameIndex]; }
     // Expose the raw water geometry depth image (for layout transitions and sampling)
-    VkImage getWaterGeomDepthImage(uint32_t frameIndex) const { return (frameIndex < 2) ? waterGeomDepthImages[frameIndex] : VK_NULL_HANDLE; }
+    VkImage getWaterGeomDepthImage(uint32_t frameIndex) const { return (frameIndex < 3) ? waterGeomDepthImages[frameIndex] : VK_NULL_HANDLE; }
     // Accessors for renderer-tracked layouts (used by widgets to record correct barriers)
     VkImageLayout getWaterGeomDepthLayout(uint32_t frameIndex) const;
     void setWaterGeomDepthLayout(uint32_t frameIndex, VkImageLayout layout);
@@ -162,29 +162,23 @@ private:
 
     // Scene offscreen render target (render main scene here before water)
     // Per-frame offscreen render targets for main scene (color + depth) - 2 frames in flight
-    std::array<VkImage, 2> sceneColorImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkDeviceMemory, 2> sceneColorMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageView, 2> sceneColorImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImage, 2> sceneDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkDeviceMemory, 2> sceneDepthMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageView, 2> sceneDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-
+    std::array<VkImage, 3> sceneColorImages;
+    std::array<VkDeviceMemory, 3> sceneColorMemories;
+    std::array<VkImageView, 3> sceneColorImageViews;
+    std::array<VkImage, 3> sceneDepthImages;
+    std::array<VkDeviceMemory, 3> sceneDepthMemories;
+    std::array<VkImageView, 3> sceneDepthImageViews;
 
     // Offscreen render targets for water geometry pass
-    std::array<VkImage, 2> waterDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkDeviceMemory, 2> waterDepthMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageView, 2> waterDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    // Alternate view that swizzles alpha (linear depth) into RGB for debug display
-    std::array<VkImageView, 2> waterDepthAlphaImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkImage, 3> waterDepthImages;
+    std::array<VkDeviceMemory, 3> waterDepthMemories;
+    std::array<VkImageView, 3> waterDepthImageViews;
+    std::array<VkImageView, 3> waterDepthAlphaImageViews;
 
-    // (Normals and mask images removed — water pass now only outputs a single color target)
-    
     // Water geometry pass depth buffer (per-frame)
-    std::array<VkImage, 2> waterGeomDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkDeviceMemory, 2> waterGeomDepthMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageView, 2> waterGeomDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-
-
+    std::array<VkImage, 3> waterGeomDepthImages;
+    std::array<VkDeviceMemory, 3> waterGeomDepthMemories;
+    std::array<VkImageView, 3> waterGeomDepthImageViews;
 
     // Pipelines
     VkPipeline waterGeometryPipeline = VK_NULL_HANDLE;
@@ -197,8 +191,8 @@ private:
     // Descriptor set for water geometry (scene depth texture)
     VkDescriptorSetLayout waterDepthDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool waterDepthDescriptorPool = VK_NULL_HANDLE;
-    // Per-frame descriptor sets for scene textures (2 frames in flight)
-    std::array<VkDescriptorSet, 2> waterDepthDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    // Per-frame descriptor sets for scene textures (3 frames in flight)
+    std::array<VkDescriptorSet, 3> waterDepthDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
 
     // Cubemap water pass resources
     VkDescriptorSet cubemapWaterDepthDS = VK_NULL_HANDLE; // set 2 descriptor for cubemap water pass

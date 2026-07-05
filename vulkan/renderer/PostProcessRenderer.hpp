@@ -41,7 +41,7 @@ private:
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-    static constexpr uint32_t FRAMES_IN_FLIGHT = 2;
+    static constexpr uint32_t FRAMES_IN_FLIGHT = 3;
     std::array<VkDescriptorSet, FRAMES_IN_FLIGHT> descriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
     Buffer uniformBuffer;
