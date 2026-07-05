@@ -119,134 +119,80 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 	cleanupSampler(app, bumpSampler);
 	cleanupSampler(app, roughnessSampler);
 	cleanupSampler(app, aoSampler);
-	// Remove any ImGui textures and destroy per-layer views
-	// Remove any ImGui textures; if async work is pending defer removal to avoid destroying descriptor sets in use
+	// Remove any ImGui textures and destroy per-layer views.
+	// Always defer removal to avoid destroying descriptor sets that may still
+	// be referenced by the current frame's (or any in-flight) command buffer.
 	for (auto &tex : albedoImTextures) {
 		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
-			if (app && app->hasPendingCommandBuffers()) {
-				app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-				tex = 0;
-			} else {
-				ImGui_ImplVulkan_RemoveTexture(ds);
-				tex = 0;
-			}
+			if (app) app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+			tex = 0;
 		}
 	}
 	for (auto &tex : normalImTextures) {
 		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
-			if (app && app->hasPendingCommandBuffers()) {
-				app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-				tex = 0;
-			} else {
-				ImGui_ImplVulkan_RemoveTexture(ds);
-				tex = 0;
-			}
+			if (app) app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+			tex = 0;
 		}
 	}
 	for (auto &tex : bumpImTextures) {
 		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
-			if (app && app->hasPendingCommandBuffers()) {
-				app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-				tex = 0;
-			} else {
-				ImGui_ImplVulkan_RemoveTexture(ds);
-				tex = 0;
-			}
+			if (app) app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+			tex = 0;
 		}
 	}
 	for (auto &tex : roughnessImTextures) {
 		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
-			if (app && app->hasPendingCommandBuffers()) {
-				app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-				tex = 0;
-			} else {
-				ImGui_ImplVulkan_RemoveTexture(ds);
-				tex = 0;
-			}
+			if (app) app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+			tex = 0;
 		}
 	}
 	for (auto &tex : aoImTextures) {
 		if (tex && (VkDescriptorSet)tex != VK_NULL_HANDLE) {
 			VkDescriptorSet ds = (VkDescriptorSet)tex;
-			if (app && app->hasPendingCommandBuffers()) {
-				app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-				tex = 0;
-			} else {
-				ImGui_ImplVulkan_RemoveTexture(ds);
-				tex = 0;
-			}
+			if (app) app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+			tex = 0;
 		}
 	}
 	VkDevice device = app->getDevice();
-	// Destroy per-layer views; defer if async submissions are active
+	// Destroy per-layer views; always defer to avoid destroying resources that
+	// the current frame may still reference.
 	for (auto &v : albedoLayerViews) {
 		if (v != VK_NULL_HANDLE) {
 			VkImageView iv = v;
-			if (app && app->hasPendingCommandBuffers()) {
-				std::cerr << "[TextureArrayManager] deferring vkDestroyImageView(" << (void*)iv << ") for albedoLayerViews until pending cmds complete" << std::endl;
-				app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
-				v = VK_NULL_HANDLE;
-			} else {
-				std::cerr << "[TextureArrayManager] destroying vkDestroyImageView(" << (void*)iv << ") for albedoLayerViews now" << std::endl;
-				if (app->resources.removeImageView(iv)) vkDestroyImageView(device, v, nullptr);
-				v = VK_NULL_HANDLE;
-			}
+			app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
+			v = VK_NULL_HANDLE;
 		}
 	}
 	for (auto &v : normalLayerViews) {
 		if (v != VK_NULL_HANDLE) {
 			VkImageView iv = v;
-			if (app && app->hasPendingCommandBuffers()) {
-				std::cerr << "[TextureArrayManager] deferring vkDestroyImageView(" << (void*)iv << ") for normalLayerViews until pending cmds complete" << std::endl;
-				app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
-				v = VK_NULL_HANDLE;
-			} else {
-				std::cerr << "[TextureArrayManager] destroying vkDestroyImageView(" << (void*)iv << ") for normalLayerViews now" << std::endl;
-				if (app->resources.removeImageView(iv)) vkDestroyImageView(device, v, nullptr);
-				v = VK_NULL_HANDLE;
-			}
+			app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
+			v = VK_NULL_HANDLE;
 		}
 	}
 	for (auto &v : bumpLayerViews) {
 		if (v != VK_NULL_HANDLE) {
 			VkImageView iv = v;
-			if (app && app->hasPendingCommandBuffers()) {
-				std::cerr << "[TextureArrayManager] deferring vkDestroyImageView(" << (void*)iv << ") for bumpLayerViews until pending cmds complete" << std::endl;
-				app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
-				v = VK_NULL_HANDLE;
-			} else {
-				std::cerr << "[TextureArrayManager] destroying vkDestroyImageView(" << (void*)iv << ") for bumpLayerViews now" << std::endl;
-				if (app->resources.removeImageView(iv)) vkDestroyImageView(device, v, nullptr);
-				v = VK_NULL_HANDLE;
-			}
+			app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
+			v = VK_NULL_HANDLE;
 		}
 	}
 	for (auto &v : roughnessLayerViews) {
 		if (v != VK_NULL_HANDLE) {
 			VkImageView iv = v;
-			if (app && app->hasPendingCommandBuffers()) {
-				app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
-				v = VK_NULL_HANDLE;
-			} else {
-				if (app->resources.removeImageView(iv)) vkDestroyImageView(device, v, nullptr);
-				v = VK_NULL_HANDLE;
-			}
+			app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
+			v = VK_NULL_HANDLE;
 		}
 	}
 	for (auto &v : aoLayerViews) {
 		if (v != VK_NULL_HANDLE) {
 			VkImageView iv = v;
-			if (app && app->hasPendingCommandBuffers()) {
-				app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
-				v = VK_NULL_HANDLE;
-			} else {
-				if (app->resources.removeImageView(iv)) vkDestroyImageView(device, v, nullptr);
-				v = VK_NULL_HANDLE;
-			}
+			app->deferDestroyUntilAllPending([device, iv, app](){ if (app->resources.removeImageView(iv)) vkDestroyImageView(device, iv, nullptr); });
+			v = VK_NULL_HANDLE;
 		}
 	}
 	albedoLayerViews.clear(); normalLayerViews.clear(); bumpLayerViews.clear(); roughnessLayerViews.clear(); aoLayerViews.clear();
@@ -771,16 +717,12 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 			if (texVec->size() != layerAmount) texVec->resize(layerAmount, 0);
 			if (viewVec->size() != layerAmount) viewVec->resize(layerAmount, VK_NULL_HANDLE);
 
-			// If an ImGui descriptor exists for this layer, remove it so we can recreate a fresh one
+			// If an ImGui descriptor exists for this layer, remove it so we can recreate a fresh one.
+			// Always defer to avoid freeing descriptor sets that the current frame may still reference.
 			if ((*texVec)[layer] && (VkDescriptorSet)(*texVec)[layer] != VK_NULL_HANDLE) {
 			VkDescriptorSet ds = (VkDescriptorSet)(*texVec)[layer];
-			if (a && a->hasPendingCommandBuffers()) {
-				a->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-				(*texVec)[layer] = 0;
-			} else {
-				ImGui_ImplVulkan_RemoveTexture(ds);
-				(*texVec)[layer] = 0;
-			}
+			if (a) a->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+			(*texVec)[layer] = 0;
 			}
 
 			// Ensure a per-layer view exists (create if missing)
