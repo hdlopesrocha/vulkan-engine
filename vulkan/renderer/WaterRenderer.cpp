@@ -133,10 +133,10 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     };
     
     // Reset layout tracking (use file-scope static variables)
-    sceneColorImageLayouts[0] = VK_IMAGE_LAYOUT_UNDEFINED;
-    sceneColorImageLayouts[1] = VK_IMAGE_LAYOUT_UNDEFINED;
-    sceneDepthImageLayouts[0] = VK_IMAGE_LAYOUT_UNDEFINED;
-    sceneDepthImageLayouts[1] = VK_IMAGE_LAYOUT_UNDEFINED;
+    for (int i = 0; i < 3; ++i) {
+        sceneColorImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        sceneDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
     for (int i = 0; i < 3; ++i) {
         waterDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
         waterGeomDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -246,11 +246,11 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
 
     // Allocate and update per-frame descriptor sets for scene textures
     if (waterDepthDescriptorSetLayout != VK_NULL_HANDLE && linearSampler != VK_NULL_HANDLE) {
-        std::vector<VkDescriptorSetLayout> layouts(2, waterDepthDescriptorSetLayout);
+        std::vector<VkDescriptorSetLayout> layouts(3, waterDepthDescriptorSetLayout);
         VkDescriptorSetAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = waterDepthDescriptorPool;  // Use dedicated pool, not app pool
-        allocInfo.descriptorSetCount = 2;
+        allocInfo.descriptorPool = waterDepthDescriptorPool;
+        allocInfo.descriptorSetCount = 3;
         allocInfo.pSetLayouts = layouts.data();
         
         if (vkAllocateDescriptorSets(device, &allocInfo, waterDepthDescriptorSets.data()) != VK_SUCCESS) {
