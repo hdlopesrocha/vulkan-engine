@@ -219,26 +219,32 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
 
         // Wait for previous cascade draws to finish reading the UBO
         {
-            VkMemoryBarrier preBarrier{};
-            preBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            preBarrier.srcAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-            preBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            vkCmdPipelineBarrier(commandBuffer,
-                VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                VK_PIPELINE_STAGE_TRANSFER_BIT,
-                0, 1, &preBarrier, 0, nullptr, 0, nullptr);
+            VkMemoryBarrier2 preBarrier{};
+            preBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+            preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+            preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            VkDependencyInfo depInfo{};
+            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            depInfo.memoryBarrierCount = 1;
+            depInfo.pMemoryBarriers = &preBarrier;
+            vkCmdPipelineBarrier2(commandBuffer, &depInfo);
         }
 
         vkCmdUpdateBuffer(commandBuffer, mainUniformBuffer.buffer, 0, sizeof(UniformObject), &shadowUBO);
         {
-            VkMemoryBarrier memBarrier{};
-            memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            memBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-            vkCmdPipelineBarrier(commandBuffer,
-                VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+            VkMemoryBarrier2 memBarrier{};
+            memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+            memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            memBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT;
+            VkDependencyInfo depInfo{};
+            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            depInfo.memoryBarrierCount = 1;
+            depInfo.pMemoryBarriers = &memBarrier;
+            vkCmdPipelineBarrier2(commandBuffer, &depInfo);
         }
 
         // Per-cascade GPU frustum culling: run the compute-based cull pass
@@ -300,26 +306,32 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
     // Restore the main UBO so subsequent passes see the original data.
     // Wait for all shadow cascade draws to finish reading the UBO first.
     {
-        VkMemoryBarrier preBarrier{};
-        preBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        preBarrier.srcAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-        preBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        vkCmdPipelineBarrier(commandBuffer,
-            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 1, &preBarrier, 0, nullptr, 0, nullptr);
+        VkMemoryBarrier2 preBarrier{};
+        preBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+        preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.memoryBarrierCount = 1;
+        depInfo.pMemoryBarriers = &preBarrier;
+        vkCmdPipelineBarrier2(commandBuffer, &depInfo);
     }
 
     vkCmdUpdateBuffer(commandBuffer, mainUniformBuffer.buffer, 0, sizeof(UniformObject), &uboStatic);
     {
-        VkMemoryBarrier memBarrier{};
-        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        memBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-        vkCmdPipelineBarrier(commandBuffer,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+        VkMemoryBarrier2 memBarrier{};
+        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT;
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.memoryBarrierCount = 1;
+        depInfo.pMemoryBarriers = &memBarrier;
+        vkCmdPipelineBarrier2(commandBuffer, &depInfo);
     }
 }
 

@@ -321,44 +321,53 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
 
         // Wait for previous face's draws to finish reading the UBO before overwriting it
         {
-            VkMemoryBarrier preBarrier{};
-            preBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            preBarrier.srcAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-            preBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            vkCmdPipelineBarrier(cmd,
-                VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                VK_PIPELINE_STAGE_TRANSFER_BIT,
-                0, 1, &preBarrier, 0, nullptr, 0, nullptr);
+            VkMemoryBarrier2 preBarrier{};
+            preBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+            preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+            preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            VkDependencyInfo dep{};
+            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep.memoryBarrierCount = 1;
+            dep.pMemoryBarriers = &preBarrier;
+            vkCmdPipelineBarrier2(cmd, &dep);
         }
 
         vkCmdUpdateBuffer(cmd, uniformBuffer.buffer, 0, sizeof(UniformObject), &faceUBO);
 
-        VkMemoryBarrier memBarrier{};
-        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        memBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+        VkMemoryBarrier2 memBarrier{};
+        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT;
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &memBarrier;
+        vkCmdPipelineBarrier2(cmd, &dep);
 
         // Transition color layer: tracked layout → COLOR_ATTACHMENT_OPTIMAL
         {
-            VkImageMemoryBarrier colorBarrier{};
-            colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            VkImageMemoryBarrier2 colorBarrier{};
+            colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
             colorBarrier.oldLayout = cube360ColorLayouts[face];
             colorBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             colorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             colorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             colorBarrier.image = cube360ColorImage;
             colorBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, face, 1 };
+            colorBarrier.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
             colorBarrier.srcAccessMask = (cube360ColorLayouts[face] == VK_IMAGE_LAYOUT_UNDEFINED)
-                ? 0 : VK_ACCESS_SHADER_READ_BIT;
-            colorBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            vkCmdPipelineBarrier(cmd,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                0, 0, nullptr, 0, nullptr, 1, &colorBarrier);
+                ? 0 : VK_ACCESS_2_SHADER_READ_BIT;
+            colorBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            colorBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            VkDependencyInfo dep{};
+            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep.imageMemoryBarrierCount = 1;
+            dep.pImageMemoryBarriers = &colorBarrier;
+            vkCmdPipelineBarrier2(cmd, &dep);
         }
 
         // Transition depth layer: tracked layout → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
@@ -507,46 +516,54 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         // Barrier: ensure previous face's draw finishes reading compact/visible
         // buffers before next face's cull overwrites them
         {
-            VkBufferMemoryBarrier b[2]{};
+            VkBufferMemoryBarrier2 b[2]{};
             uint32_t bc = 0;
             if (compactIndirectBuffer != VK_NULL_HANDLE) {
-                b[bc].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-                b[bc].srcAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-                b[bc].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                b[bc].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                b[bc].srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+                b[bc].srcAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+                b[bc].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                b[bc].dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
                 b[bc].buffer = compactIndirectBuffer;
                 b[bc].size = VK_WHOLE_SIZE; ++bc;
             }
             if (visibleCountBuffer != VK_NULL_HANDLE) {
-                b[bc].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-                b[bc].srcAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-                b[bc].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                b[bc].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                b[bc].srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+                b[bc].srcAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+                b[bc].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                b[bc].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
                 b[bc].buffer = visibleCountBuffer;
                 b[bc].size = VK_WHOLE_SIZE; ++bc;
             }
             if (bc > 0) {
-                vkCmdPipelineBarrier(cmd,
-                    VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-                    0, 0, nullptr, bc, b, 0, nullptr);
+                VkDependencyInfo dep{};
+                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep.bufferMemoryBarrierCount = bc;
+                dep.pBufferMemoryBarriers = b;
+                vkCmdPipelineBarrier2(cmd, &dep);
             }
         }
 
         // Transition color: COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
         {
-            VkImageMemoryBarrier colorBarrier{};
-            colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            VkImageMemoryBarrier2 colorBarrier{};
+            colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
             colorBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             colorBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             colorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             colorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             colorBarrier.image = cube360ColorImage;
             colorBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, face, 1 };
-            colorBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            colorBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            vkCmdPipelineBarrier(cmd,
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0, 0, nullptr, 0, nullptr, 1, &colorBarrier);
+            colorBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            colorBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            colorBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            colorBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            VkDependencyInfo dep{};
+            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep.imageMemoryBarrierCount = 1;
+            dep.pImageMemoryBarriers = &colorBarrier;
+            vkCmdPipelineBarrier2(cmd, &dep);
         }
         cube360ColorLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -559,26 +576,32 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
     // Cubemap rendering complete; cubemap image view is available for sampling.
     // Wait for all face draws to finish reading the UBO before restoring it
     {
-        VkMemoryBarrier preBarrier{};
-        preBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        preBarrier.srcAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-        preBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 1, &preBarrier, 0, nullptr, 0, nullptr);
+        VkMemoryBarrier2 preBarrier{};
+        preBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        preBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        preBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+        preBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        preBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &preBarrier;
+        vkCmdPipelineBarrier2(cmd, &dep);
     }
 
     vkCmdUpdateBuffer(cmd, uniformBuffer.buffer, 0, sizeof(UniformObject), &ubo);
     {
-        VkMemoryBarrier memBarrier{};
-        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        memBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+        VkMemoryBarrier2 memBarrier{};
+        memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        memBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT;
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &memBarrier;
+        vkCmdPipelineBarrier2(cmd, &dep);
     }
 
     // Global same-layout barrier: make all per-face COLOR_ATTACHMENT_WRITEs

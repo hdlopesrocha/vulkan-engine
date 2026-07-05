@@ -462,19 +462,22 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
 
     // Barrier: make transfer writes visible to indirect draw
     {
-        VkBufferMemoryBarrier barriers[2] = {};
-        barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barriers[0].dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        VkBufferMemoryBarrier2 barriers[2] = {};
+        barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        barriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        barriers[0].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
         barriers[0].buffer = compactedCmdBuffers[f].buffer;
         barriers[0].offset = 0;
         barriers[0].size = VK_WHOLE_SIZE;
         barriers[1] = barriers[0];
         barriers[1].buffer = visibleCountBuffers[f].buffer;
-        vkCmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-            0, 0, nullptr, 2, barriers, 0, nullptr);
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.bufferMemoryBarrierCount = 2;
+        depInfo.pBufferMemoryBarriers = barriers;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
     }
 }
 
@@ -927,7 +930,7 @@ float VegetationRenderer::getAverageDensityFactor(const glm::vec3& cameraPos) co
 void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
     if (commandBuffer == VK_NULL_HANDLE) return;
 
-    std::vector<VkBufferMemoryBarrier> readBarriers;
+    std::vector<VkBufferMemoryBarrier2> readBarriers;
     readBarriers.reserve(chunkBuffers.size() * 2);
     for (const auto& [chunkId, buf] : chunkBuffers) {
         (void)chunkId;
@@ -937,10 +940,12 @@ void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
         // via mapped HOST_VISIBLE memory).  Without this barrier the GPU may
         // read uninitialized billboardIndex values, producing out-of-bounds
         // texture-array accesses that cause RADV GPUVM faults (TCP read).
-        VkBufferMemoryBarrier instanceBarrier{};
-        instanceBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        instanceBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-        instanceBarrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+        VkBufferMemoryBarrier2 instanceBarrier{};
+        instanceBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        instanceBarrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        instanceBarrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+        instanceBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+        instanceBarrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
         instanceBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         instanceBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         instanceBarrier.buffer = buf.buffer;
@@ -948,10 +953,12 @@ void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
         instanceBarrier.size = VK_WHOLE_SIZE;
         readBarriers.push_back(instanceBarrier);
 
-        VkBufferMemoryBarrier indirectBarrier{};
-        indirectBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        indirectBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-        indirectBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        VkBufferMemoryBarrier2 indirectBarrier{};
+        indirectBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        indirectBarrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        indirectBarrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+        indirectBarrier.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        indirectBarrier.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
         indirectBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         indirectBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         indirectBarrier.buffer = buf.indirectBuffer;
@@ -961,12 +968,11 @@ void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
     }
     if (readBarriers.empty()) return;
 
-    vkCmdPipelineBarrier(commandBuffer,
-        VK_PIPELINE_STAGE_HOST_BIT,
-        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-        0, 0, nullptr,
-        static_cast<uint32_t>(readBarriers.size()), readBarriers.data(),
-        0, nullptr);
+    VkDependencyInfo depInfo{};
+    depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    depInfo.bufferMemoryBarrierCount = static_cast<uint32_t>(readBarriers.size());
+    depInfo.pBufferMemoryBarriers = readBarriers.data();
+    vkCmdPipelineBarrier2(commandBuffer, &depInfo);
 }
 
 
