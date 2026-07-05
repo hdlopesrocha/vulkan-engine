@@ -21,7 +21,7 @@ public:
     void renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                             IndirectRenderer& indirect, VkPipelineLayout pipelineLayout,
                                               VkDescriptorSet mainDs, VkDescriptorSet materialDs, VkDescriptorSet sceneDs,
-                                              VkImage sceneDepthImage, VkImageView sceneDepthImageView,
+                                              VkImage sceneDepthImage,
                                               VkBuffer compactIndirectBuffer = VK_NULL_HANDLE,
                                               VkBuffer visibleCountBuffer = VK_NULL_HANDLE);
     // Map the application frame index into the internal double-buffered arrays.

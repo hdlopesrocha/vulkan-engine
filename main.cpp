@@ -1200,7 +1200,6 @@ public:
 
                 // Render back-face pass using the per-task compact/visible buffers so draws consume the cull results
                 auto tBackface = std::chrono::high_resolution_clock::now();
-                VkImageView bfDepthView = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
                 this->sceneRenderer->backFaceRenderer->renderBackFacePass(app, cmd, frameIdx,
                                             ind,
                                             this->sceneRenderer->waterRenderer->getWaterGeometryPipelineLayout(),
@@ -1208,7 +1207,6 @@ public:
                                             app->getMaterialDescriptorSet(),
                                             this->sceneRenderer->waterRenderer->getWaterDepthDescriptorSet(frameIdx),
                                             this->sceneRenderer->solidRenderer->getDepthImage(frameIdx),
-                                            bfDepthView,
                                             (computeDs != VK_NULL_HANDLE) ? taskCompact.buffer : VK_NULL_HANDLE,
                                             (computeDs != VK_NULL_HANDLE) ? taskVisible.buffer : VK_NULL_HANDLE);
 

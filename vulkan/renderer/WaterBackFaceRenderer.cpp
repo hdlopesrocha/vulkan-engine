@@ -280,29 +280,79 @@ void WaterBackFaceRenderer::destroyRenderTargets(VulkanApp* app) {
 void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                                               IndirectRenderer& indirect, VkPipelineLayout pipelineLayout,
                                               VkDescriptorSet mainDs, VkDescriptorSet materialDs, VkDescriptorSet sceneDs,
-                                              VkImage sceneDepthImage, VkImageView sceneDepthImageView,
+                                              VkImage sceneDepthImage,
                                               VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer) {
     if (!app || cmd == VK_NULL_HANDLE) return;
     if (backFacePipeline == VK_NULL_HANDLE) return;
     if (frameIndex >= backFaceDepthImages.size()) return;
     if (backFaceDepthImages[frameIndex] == VK_NULL_HANDLE) return;
 
-    // Use the scene depth image directly as the depth attachment (no copy).
-    // Transition scene depth to ATTACHMENT_OPTIMAL for depth testing.
-    // The scene depth was left in SHADER_READ_ONLY_OPTIMAL after the solid pass.
-    if (sceneDepthImage != VK_NULL_HANDLE) {
-        app->recordTransitionImageLayoutLayer(cmd, sceneDepthImage, VK_FORMAT_D32_SFLOAT,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            1, 0, 1);
-    }
-    if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-        if (!app) {
-            throw std::runtime_error("WaterBackFaceRenderer::renderBackFacePass requires VulkanApp (no fallback allowed)");
+    // If a scene depth image is provided, copy its depth values into the
+    // back-face depth target so the back-face pass depth-tests against solid
+    // geometry and will only write where the water is visible in front of
+    // solids. Otherwise fall back to clearing to 1.0 as before.
+    bool copiedFromScene = false;
+    // Allow disabling the scene->backface depth copy for binary-search debugging
+    const char* dis = std::getenv("VULKAN_DISABLE_DEPTH_COPY");
+    if (dis && dis[0] != '\0') {
+#if 0
+        std::cerr << "[WaterBackFaceRenderer] VULKAN_DISABLE_DEPTH_COPY set; skipping back-face depth copy for frame " << frameIndex << std::endl;
+#endif
+    } else if (sceneDepthImage != VK_NULL_HANDLE) {
+        // Transition scene depth -> TRANSFER_SRC and back-face depth -> TRANSFER_DST
+        app->recordTransitionImageLayoutLayer(cmd, sceneDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1); 
+        app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
+
+#if 0
+        std::cerr << "[WaterBackFaceRenderer] copying depth src=" << (void*)sceneDepthImage
+                    << " dst=" << (void*)backFaceDepthImages[frameIndex]
+                    << " extent=" << renderWidth << "x" << renderHeight << " frame=" << frameIndex << std::endl;
+        std::cerr << "  app swapchain size=" << app->getWidth() << "x" << app->getHeight()
+                    << " trackedLayouts: src=" << (int)app->getImageLayoutTracked(sceneDepthImage, 0)
+                    << " dst=" << (int)app->getImageLayoutTracked(backFaceDepthImages[frameIndex], 0) << std::endl;
+        if (renderWidth != static_cast<uint32_t>(app->getWidth()) || renderHeight != static_cast<uint32_t>(app->getHeight())) {
+            std::cerr << "  [WaterBackFaceRenderer] WARNING: back-face render size (" << renderWidth << "x" << renderHeight
+                        << ") differs from app swapchain (" << app->getWidth() << "x" << app->getHeight() << ")" << std::endl;
         }
-        app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
-                             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                             1, 0, 1);
+#endif
+
+        VkImageCopy copyRegion{};
+        copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        copyRegion.srcSubresource.mipLevel = 0;
+        copyRegion.srcSubresource.baseArrayLayer = 0;
+        copyRegion.srcSubresource.layerCount = 1;
+        copyRegion.srcOffset = {0,0,0};
+        copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        copyRegion.dstSubresource.mipLevel = 0;
+        copyRegion.dstSubresource.baseArrayLayer = 0;
+        copyRegion.dstSubresource.layerCount = 1;
+        copyRegion.dstOffset = {0,0,0};
+        copyRegion.extent = { renderWidth, renderHeight, 1 };
+
+        vkCmdCopyImage(cmd, sceneDepthImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       backFaceDepthImages[frameIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &copyRegion);
+
+        // Transition back-face depth -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL for rendering
+        app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
         backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        // Transition scene depth back to shader-read for sampling by water shaders
+        app->recordTransitionImageLayoutLayer(cmd, sceneDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+
+        copiedFromScene = true;
+    } else {
+        if (backFaceDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+            if (!app) {
+                throw std::runtime_error("WaterBackFaceRenderer::renderBackFacePass requires VulkanApp (no fallback allowed)");
+            }
+            // Let VulkanApp determine the effective old layout (pass UNDEFINED)
+            // so the centralized tracker can consider pending/tracked state.
+            app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
+                                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                 1, 0, 1);
+            backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        }
     }
 
     VkClearValue bfClear{};
@@ -310,9 +360,9 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
 
     VkRenderingAttachmentInfo depthAtt{};
     depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depthAtt.imageView = (sceneDepthImageView != VK_NULL_HANDLE) ? sceneDepthImageView : backFaceDepthImageViews[frameIndex];
+    depthAtt.imageView = backFaceDepthImageViews[frameIndex];
     depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depthAtt.loadOp = (sceneDepthImageView != VK_NULL_HANDLE) ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAtt.loadOp = copiedFromScene ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     depthAtt.clearValue = bfClear;
 
@@ -364,13 +414,11 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
 
     // Transition depth: DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
     if (app) {
-        VkImage depthImg = (sceneDepthImage != VK_NULL_HANDLE) ? sceneDepthImage : backFaceDepthImages[frameIndex];
-        app->recordTransitionImageLayoutLayer(cmd, depthImg, VK_FORMAT_D32_SFLOAT,
+        app->recordTransitionImageLayoutLayer(cmd, backFaceDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
             VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             1, 0, 1);
     }
-    if (sceneDepthImage == VK_NULL_HANDLE)
-        backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 void WaterBackFaceRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex) {
