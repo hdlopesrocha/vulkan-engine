@@ -3315,7 +3315,7 @@ std::vector<VkCommandBuffer> VulkanApp::createCommandBuffers() {
 void VulkanApp::createSyncObjects() {
     // Create semaphores per frame-in-flight to avoid reuse before presentation completes.
     // Fences are per frame-in-flight for CPU-GPU synchronization.
-    const uint32_t MAX_FRAMES_IN_FLIGHT = 3;
+    const uint32_t MAX_FRAMES_IN_FLIGHT = VulkanApp::MAX_FRAMES_IN_FLIGHT;
     const uint32_t numImages = static_cast<uint32_t>(swapchainImages.size());
 
     VkSemaphoreCreateInfo semaphoreInfo{};
@@ -3746,7 +3746,7 @@ void VulkanApp::createDescriptorSetLayout() {
     resources.addDescriptorSetLayout(descriptorSetLayout, "VulkanApp: descriptorSetLayout");
 
     // Allocate the main UBO/sampler/materials descriptor sets (one per frame)
-    const uint32_t MAIN_DESC_SETS = 3; // match MAX_FRAMES_IN_FLIGHT used elsewhere
+    const uint32_t MAIN_DESC_SETS = MAX_FRAMES_IN_FLIGHT;
     mainDescriptorSets.clear();
     mainDescriptorSets.resize(MAIN_DESC_SETS);
     for (uint32_t i = 0; i < MAIN_DESC_SETS; ++i) {

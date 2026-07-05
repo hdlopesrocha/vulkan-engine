@@ -38,10 +38,11 @@ public:
 
 private:
     VkPipeline backFacePipeline = VK_NULL_HANDLE;
-    std::array<VkImage, 3> backFaceDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkDeviceMemory, 3> backFaceDepthMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageView, 3> backFaceDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageLayout, 3> backFaceDepthImageLayouts = {VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
+    static constexpr uint32_t FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
+    std::array<VkImage, FRAMES> backFaceDepthImages = {};
+    std::array<VkDeviceMemory, FRAMES> backFaceDepthMemories = {};
+    std::array<VkImageView, FRAMES> backFaceDepthImageViews = {};
+    std::array<VkImageLayout, FRAMES> backFaceDepthImageLayouts = {};
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
     VulkanApp* appPtr = nullptr;

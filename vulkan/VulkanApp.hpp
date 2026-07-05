@@ -104,6 +104,8 @@ class VulkanApp {
     std::vector<VkSemaphore> renderFinishedSemaphores;
     std::vector<VkFence> inFlightFences;
     // track which fence is using each swapchain image (to avoid writing to an image in use)
+    static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
+
     std::vector<VkFence> imagesInFlight;
     // frame index for round-robin CPU frames-in-flight
     uint32_t currentFrame = 0;

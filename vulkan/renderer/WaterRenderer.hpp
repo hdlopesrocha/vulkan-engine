@@ -162,23 +162,20 @@ private:
 
     // Scene offscreen render target (render main scene here before water)
     // Per-frame offscreen render targets for main scene (color + depth) - 2 frames in flight
-    std::array<VkImage, 3> sceneColorImages;
-    std::array<VkDeviceMemory, 3> sceneColorMemories;
-    std::array<VkImageView, 3> sceneColorImageViews;
-    std::array<VkImage, 3> sceneDepthImages;
-    std::array<VkDeviceMemory, 3> sceneDepthMemories;
-    std::array<VkImageView, 3> sceneDepthImageViews;
-
-    // Offscreen render targets for water geometry pass
-    std::array<VkImage, 3> waterDepthImages;
-    std::array<VkDeviceMemory, 3> waterDepthMemories;
-    std::array<VkImageView, 3> waterDepthImageViews;
-    std::array<VkImageView, 3> waterDepthAlphaImageViews;
-
-    // Water geometry pass depth buffer (per-frame)
-    std::array<VkImage, 3> waterGeomDepthImages;
-    std::array<VkDeviceMemory, 3> waterGeomDepthMemories;
-    std::array<VkImageView, 3> waterGeomDepthImageViews;
+    static constexpr uint32_t FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
+    std::array<VkImage, FRAMES> sceneColorImages;
+    std::array<VkDeviceMemory, FRAMES> sceneColorMemories;
+    std::array<VkImageView, FRAMES> sceneColorImageViews;
+    std::array<VkImage, FRAMES> sceneDepthImages;
+    std::array<VkDeviceMemory, FRAMES> sceneDepthMemories;
+    std::array<VkImageView, FRAMES> sceneDepthImageViews;
+    std::array<VkImage, FRAMES> waterDepthImages;
+    std::array<VkDeviceMemory, FRAMES> waterDepthMemories;
+    std::array<VkImageView, FRAMES> waterDepthImageViews;
+    std::array<VkImageView, FRAMES> waterDepthAlphaImageViews;
+    std::array<VkImage, FRAMES> waterGeomDepthImages;
+    std::array<VkDeviceMemory, FRAMES> waterGeomDepthMemories;
+    std::array<VkImageView, FRAMES> waterGeomDepthImageViews;
 
     // Pipelines
     VkPipeline waterGeometryPipeline = VK_NULL_HANDLE;
@@ -192,7 +189,7 @@ private:
     VkDescriptorSetLayout waterDepthDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool waterDepthDescriptorPool = VK_NULL_HANDLE;
     // Per-frame descriptor sets for scene textures (3 frames in flight)
-    std::array<VkDescriptorSet, 3> waterDepthDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkDescriptorSet, FRAMES> waterDepthDescriptorSets = {};
 
     // Cubemap water pass resources
     VkDescriptorSet cubemapWaterDepthDS = VK_NULL_HANDLE; // set 2 descriptor for cubemap water pass

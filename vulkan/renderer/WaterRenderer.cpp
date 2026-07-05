@@ -14,10 +14,10 @@
 // Sub-renderer accessors removed: SceneRenderer now owns back-face and 360 renderers.
 
 // Global image layout tracking for WaterRenderer render targets
-static VkImageLayout sceneColorImageLayouts[3] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
-static VkImageLayout sceneDepthImageLayouts[3] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
-static VkImageLayout waterDepthImageLayouts[3] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
-static VkImageLayout waterGeomDepthImageLayouts[3] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
+static VkImageLayout sceneColorImageLayouts[VulkanApp::MAX_FRAMES_IN_FLIGHT] = {};
+static VkImageLayout sceneDepthImageLayouts[VulkanApp::MAX_FRAMES_IN_FLIGHT] = {};
+static VkImageLayout waterDepthImageLayouts[VulkanApp::MAX_FRAMES_IN_FLIGHT] = {};
+static VkImageLayout waterGeomDepthImageLayouts[VulkanApp::MAX_FRAMES_IN_FLIGHT] = {};
 
 WaterRenderer::WaterRenderer() {}
 
