@@ -109,7 +109,7 @@ void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearV
     if (!app) throw std::runtime_error("SolidRenderer::beginPass requires valid VulkanApp");
 
     // Transition color image: SHADER_READ_ONLY_OPTIMAL → COLOR_ATTACHMENT_OPTIMAL
-    if (solidColorImages[frameIndex] != VK_NULL_HANDLE) {
+    if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
         VkImageMemoryBarrier2 colorBarrier{};
         colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
         colorBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -118,10 +118,11 @@ void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearV
         colorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         colorBarrier.image = solidColorImages[frameIndex];
         colorBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        colorBarrier.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
         colorBarrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-        colorBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         colorBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        colorBarrier.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        colorBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+
         VkDependencyInfo depInfo{};
         depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         depInfo.imageMemoryBarrierCount = 1;
@@ -172,7 +173,7 @@ void SolidRenderer::endPass(VkCommandBuffer cmd, uint32_t frameIndex, VulkanApp*
     vkCmdEndRendering(cmd);
 
     // Transition color: COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
-    if (solidColorImages[frameIndex] != VK_NULL_HANDLE) {
+    if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
         VkImageMemoryBarrier2 colorBarrier{};
         colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
         colorBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
