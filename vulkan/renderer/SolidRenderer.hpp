@@ -33,10 +33,10 @@ public:
 
 
     // Offscreen solid pass outputs
-    VkImageView getColorView(uint32_t frameIndex) const { return solidColorImageViews[frameIndex]; }
-    VkImage getColorImage(uint32_t frameIndex) const { return solidColorImages[frameIndex]; }
-    VkImageView getDepthView(uint32_t frameIndex) const { return solidDepthImageViews[frameIndex]; }
-    VkImage getDepthImage(uint32_t frameIndex) const { return solidDepthImages[frameIndex]; }
+    VkImageView getColorView(uint32_t frameIndex) const { return (frameIndex < solidColorImageViews.size()) ? solidColorImageViews[frameIndex] : (solidColorImageViews.empty() ? VK_NULL_HANDLE : solidColorImageViews.back()); }
+    VkImage getColorImage(uint32_t frameIndex) const { return (frameIndex < solidColorImages.size()) ? solidColorImages[frameIndex] : (solidColorImages.empty() ? VK_NULL_HANDLE : solidColorImages.back()); }
+    VkImageView getDepthView(uint32_t frameIndex) const { return (frameIndex < solidDepthImageViews.size()) ? solidDepthImageViews[frameIndex] : (solidDepthImageViews.empty() ? VK_NULL_HANDLE : solidDepthImageViews.back()); }
+    VkImage getDepthImage(uint32_t frameIndex) const { return (frameIndex < solidDepthImages.size()) ? solidDepthImages[frameIndex] : (solidDepthImages.empty() ? VK_NULL_HANDLE : solidDepthImages.back()); }
 
 public:
     // Public accessor for nodeModelVersions (read-only)
@@ -76,7 +76,7 @@ private:
 
     std::unordered_map<NodeID, Model3DVersion> solidChunks;
 
-    // Offscreen framebuffer resources (2 frames in flight)
+    // Offscreen framebuffer resources (2 frames in flight, clamp index for 3-frame safety)
     std::array<VkImage, 2> solidColorImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkDeviceMemory, 2> solidColorMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkImageView, 2> solidColorImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
