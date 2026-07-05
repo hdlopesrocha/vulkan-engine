@@ -788,67 +788,6 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
     }
 }
 
-void WaterRenderer::initializeGeomDepthFromSceneDepth(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImage sceneDepthImage) {
-    if (!app || cmd == VK_NULL_HANDLE) return;
-    if (frameIndex >= 2) return;
-    if (sceneDepthImage == VK_NULL_HANDLE) return;
-    if (waterGeomDepthImages[frameIndex] == VK_NULL_HANDLE) return;
-
-    // Allow disabling depth-image copy for rapid binary-search debugging
-    const char* dis = std::getenv("VULKAN_DISABLE_DEPTH_COPY");
-    if (dis && dis[0] != '\0') {
-        std::cerr << "[WaterRenderer] VULKAN_DISABLE_DEPTH_COPY set; skipping depth copy for frame " << frameIndex << std::endl;
-        return;
-    }
-
-
-    app->recordTransitionImageLayoutLayer(cmd, sceneDepthImage, VK_FORMAT_D32_SFLOAT,
-        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1, 0, 1);
-
-    app->recordTransitionImageLayoutLayer(cmd, waterGeomDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
-        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
-
-#if 0
-    // Debug: log copy parameters and tracked layouts to help diagnose GPU faults
-    std::cerr << "[WaterRenderer] initializeGeomDepthFromSceneDepth: copying depth src=" << (void*)sceneDepthImage
-                << " dst=" << (void*)waterGeomDepthImages[frameIndex]
-                << " extent=" << renderWidth << "x" << renderHeight << " frame=" << frameIndex << std::endl;
-    std::cerr << "  app swapchain size=" << app->getWidth() << "x" << app->getHeight()
-                << " trackedLayouts: src=" << (int)app->getImageLayoutTracked(sceneDepthImage, 0)
-                << " dst=" << (int)app->getImageLayoutTracked(waterGeomDepthImages[frameIndex], 0) << std::endl;
-    if (renderWidth != static_cast<uint32_t>(app->getWidth()) || renderHeight != static_cast<uint32_t>(app->getHeight())) {
-        std::cerr << "  [WaterRenderer] WARNING: water render size (" << renderWidth << "x" << renderHeight
-                    << ") differs from app swapchain (" << app->getWidth() << "x" << app->getHeight() << ")" << std::endl;
-    }
-#endif
-
-    VkImageCopy copyRegion{};
-    copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    copyRegion.srcSubresource.mipLevel = 0;
-    copyRegion.srcSubresource.baseArrayLayer = 0;
-    copyRegion.srcSubresource.layerCount = 1;
-    copyRegion.srcOffset = {0,0,0};
-    copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    copyRegion.dstSubresource.mipLevel = 0;
-    copyRegion.dstSubresource.baseArrayLayer = 0;
-    copyRegion.dstSubresource.layerCount = 1;
-    copyRegion.dstOffset = {0,0,0};
-    copyRegion.extent = { renderWidth, renderHeight, 1 };
-
-    vkCmdCopyImage(cmd, sceneDepthImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                   waterGeomDepthImages[frameIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
-
-
-    app->recordTransitionImageLayoutLayer(cmd, waterGeomDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
-    waterGeomDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-
-    app->recordTransitionImageLayoutLayer(cmd, sceneDepthImage, VK_FORMAT_D32_SFLOAT,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
-
-}
-
 // Back-face pass is owned and executed by SceneRenderer via its WaterBackFaceRenderer.
 
 void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView, VkImageView backFaceDepthView, VkImageView cube360View) {

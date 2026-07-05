@@ -8,6 +8,8 @@ app
 *.obj
 *.lo
 *.la
+*.pdf
+*.aux
 
 # Static and shared libraries
 *.a
