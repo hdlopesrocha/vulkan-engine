@@ -650,38 +650,41 @@ public:
 
         uint32_t frameIdx = getCurrentFrame();
 
-        // Profiling: read previous frame's query results (fence guaranteed signaled), then reset for this frame
+        // Profiling: read previous frame's query results (with availability flag to
+        // avoid even partial driver stalls), then reset for this frame.
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE) {
             if (queryPoolReady[frameIdx]) {
                 auto msDiff = [&](uint64_t endTs, uint64_t startTs) -> float {
                     return static_cast<float>(endTs - startTs) * timestampPeriod * 1e-6f;
                 };
                 // Group A: indices 0-9 (always written by main command buffer)
-                uint64_t tsA[10] = {};
+                struct { uint64_t value; uint64_t availability; } tsA[10] = {};
                 if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 0, 10,
-                        sizeof(tsA), tsA, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS
+                        sizeof(tsA), tsA, sizeof(tsA[0]),
+                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS
                         && timestampPeriod > 0.0f) {
-                    profileShadow        = msDiff(tsA[1], tsA[0]);
-                    profileMainCull      = msDiff(tsA[3], tsA[2]);
-                    profileSky           = msDiff(tsA[5], tsA[4]);
-                    profileSolidDraw     = msDiff(tsA[7], tsA[6]);
-                    profileVegetationReal = msDiff(tsA[9], tsA[8]);
+                    if (tsA[0].availability) profileShadow        = msDiff(tsA[1].value, tsA[0].value);
+                    if (tsA[2].availability) profileMainCull      = msDiff(tsA[3].value, tsA[2].value);
+                    if (tsA[4].availability) profileSky           = msDiff(tsA[5].value, tsA[4].value);
+                    if (tsA[6].availability) profileSolidDraw     = msDiff(tsA[7].value, tsA[6].value);
+                    if (tsA[8].availability) profileVegetationReal = msDiff(tsA[9].value, tsA[8].value);
                 }
                 // Group B: indices 10-13 (written by main command buffer for color pass)
-                //   10-11 = vegetation/impostor color pass, 12-13 = reserved
-                uint64_t tsB[4] = {};
+                struct { uint64_t value; uint64_t availability; } tsB[4] = {};
                 if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 10, 4,
-                        sizeof(tsB), tsB, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS
+                        sizeof(tsB), tsB, sizeof(tsB[0]),
+                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS
                         && timestampPeriod > 0.0f) {
-                    profileVegetationImpostor = msDiff(tsB[1], tsB[0]);
+                    if (tsB[0].availability) profileVegetationImpostor = msDiff(tsB[1].value, tsB[0].value);
                 }
                 // Group C: indices 14-17 (always written by main command buffer)
-                uint64_t tsC[4] = {};
+                struct { uint64_t value; uint64_t availability; } tsC[4] = {};
                 if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 14, 4,
-                        sizeof(tsC), tsC, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS
+                        sizeof(tsC), tsC, sizeof(tsC[0]),
+                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS
                         && timestampPeriod > 0.0f) {
-                    profileWater = msDiff(tsC[1], tsC[0]);
-                    profileImGui = msDiff(tsC[3], tsC[2]);
+                    if (tsC[0].availability) profileWater = msDiff(tsC[1].value, tsC[0].value);
+                    if (tsC[2].availability) profileImGui = msDiff(tsC[3].value, tsC[2].value);
                 }
             }
             vkCmdResetQueryPool(commandBuffer, queryPools[frameIdx], 0, QUERY_COUNT);
