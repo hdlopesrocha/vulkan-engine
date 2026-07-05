@@ -6,6 +6,7 @@ layout(location = ATTR_UV) in vec2 inCornerUV;
 layout(location = ATTR_INSTANCE) in vec4 instanceData; // xyz=world pos, w=billboard index + rotFrac
 
 layout(location = VARY_UV) out vec3 outTexCoord;
+layout(location = VARY_POSWORLD) out vec3 outWorldPos;
 layout(location = VARY_TANGENTWS) flat out vec3 outInstanceOffset;
 
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
@@ -116,6 +117,7 @@ void main() {
     outTexCoord = vec3(0.5 + (inCornerUV.x - 0.5) * uFrac,
                        inCornerUV.y * vFrac + vOff,
                        float(layerIdx));
+    outWorldPos = finalPos;
     outInstanceOffset = worldPos;
     gl_Position = ubo.viewProjection * vec4(finalPos, 1.0);
 }

@@ -1,23 +1,19 @@
 #version 450
 
-// Impostor EVSM shadow pass: reprojects captured depth into light space
-// and writes EVSM moments so impostors cast shadows.
+// Impostor EVSM shadow pass: uses vertex position from vertex shader
+// to write EVSM moments. Matches shadow_evsm.frag logic.
 
 #include "includes/locations.glsl"
 
-layout(location = VARY_UV) in vec3 inTexCoord;  // xy=UV, z=float(layerIdx)
+layout(location = VARY_POSWORLD) in vec3 inWorldPos;
 layout(location = VARY_TANGENTWS) flat in vec3 inInstanceOffset;
 
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
-    mat4 viewProjection; // light VP
+    mat4 viewProjection;
     vec4 viewPos;
 } ubo;
 
-layout(set = 1, binding = 0) uniform sampler2DArray depthArray;
-
-layout(set = 1, binding = 1) readonly buffer CaptureInvVP {
-    mat4 invVP[];
-};
+layout(location = FRAG_OUT_COLOR) out vec4 outEVSM;
 
 layout(push_constant) uniform PushConstants {
     float billboardScale;
@@ -32,24 +28,8 @@ layout(push_constant) uniform PushConstants {
     vec4 cameraPosAndFalloff;
 };
 
-layout(location = FRAG_OUT_COLOR) out vec4 outEVSM;
-
 void main() {
-    int layer = int(inTexCoord.z);
-
-    float texDepth = texture(depthArray, inTexCoord).r;
-    if (texDepth >= 1.0 || texDepth <= 0.0) discard;
-
-    // Reconstruct world position from captured depth.
-    vec2 ndc_xy = inTexCoord.xy * 2.0 - 1.0;
-    vec4 clipPos = vec4(ndc_xy, texDepth, 1.0);
-    vec4 worldPos = invVP[layer] * clipPos;
-    worldPos /= worldPos.w;
-
-    // Translate from capture origin to instance position.
-    worldPos.xyz += inInstanceOffset;
-
-    // Dithered cross-fade with vegetation (same as depth pass).
+    // Dithered cross-fade (same as impostors_depth.frag).
     if (impostorDistance > 0.0) {
         float dist       = distance(ubo.viewPos.xyz, inInstanceOffset);
         float fadeAlpha  = 1.0 - smoothstep(impostorDistance * 0.50, impostorDistance * 1.15, dist);
@@ -58,11 +38,10 @@ void main() {
         if (threshold < fadeAlpha) discard;
     }
 
-    // Reproject to light space and compute EVSM moments.
-    vec4 lsPos = ubo.viewProjection * worldPos;
+    // Project vertex position to light space (identical to shadow_evsm.frag).
+    vec4 lsPos = ubo.viewProjection * vec4(inWorldPos, 1.0);
     float depth = clamp(lsPos.z / lsPos.w, 0.0, 1.0);
 
-    // Write depth for the shadow mapper's depth test.
     gl_FragDepth = depth;
 
     // EVSM moments: exp(c*d), exp(2c*d), exp(-c*d), exp(-2c*d)
