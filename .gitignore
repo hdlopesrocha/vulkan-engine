@@ -25,6 +25,7 @@ app
 /bin/
 /dist/
 /scenes/
+/third_party/
 
 # Logs and runtime files
 *.log

@@ -338,6 +338,7 @@ protected:
 
     public:
         Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties);
+        void destroyBuffer(Buffer& buf);
         TextureImage createTextureImage(const char * filename);
     TextureImage createTextureImageArray(const std::vector<std::string>& filenames, bool srgb = false);
         VkSampler createTextureSampler(uint32_t mipLevels);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
+#include "../third_party/VulkanMemoryAllocator/include/vk_mem_alloc.h"
 #include <vector>
 #include <string>
 #include <mutex>
@@ -92,6 +93,10 @@ public:
     bool removeSampler(VkSampler s);
     bool removeFramebuffer(VkFramebuffer fb);
     bool removeBuffer(VkBuffer b);
+    // VMA-aware tracking
+    void setAllocator(VmaAllocator alloc) { vmaAlloc = alloc; }
+    void addBufferVma(VkBuffer buf, VmaAllocation alloc, const char* desc = nullptr);
+    bool removeBufferVma(VkBuffer buf);
     bool removePipeline(VkPipeline p);
     bool removePipelineLayout(VkPipelineLayout pl);
     bool removeShaderModule(VkShaderModule m);
@@ -124,6 +129,9 @@ private:
     ResourceMap<VkCommandPool> commandPools;
         // Optional metadata: record array layer counts for images created as 2D arrays or cubemaps
         std::unordered_map<uintptr_t, uint32_t> imageArrayLayers;
+    // VMA allocation tracking: buffer handle -> VmaAllocation
+    std::unordered_map<uintptr_t, VmaAllocation> vmaAllocations;
+    VmaAllocator vmaAlloc = VK_NULL_HANDLE;
 
 public:
 };

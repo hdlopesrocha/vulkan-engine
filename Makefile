@@ -198,16 +198,15 @@ install:
 						libcwiid-dev
 	# 2. Clone Dear ImGui
 	mkdir -p third_party
-	wget -q "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/master/include/vk_mem_alloc.h" -O third_party/vk_mem_alloc.h && wc -l third_party/vk_mem_alloc.h
-	mkdir -p third_party/miniaudio
-	@if [ ! -f third_party/miniaudio/miniaudio.h ]; then \
-		curl -L https://raw.githubusercontent.com/mackron/miniaudio/master/miniaudio.h -o third_party/miniaudio/miniaudio.h; \
-	fi
+
+	cd third_party
+	git clone https://github.com/ocornut/imgui.git
+	git clone https://github.com/mackron/miniaudio.git
+	git clone https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+
 	@if [ ! -f third_party/miniaudio/miniaudio_impl.cpp ]; then \
 		printf '#define MINIAUDIO_IMPLEMENTATION\n#include "miniaudio.h"\n' > third_party/miniaudio/miniaudio_impl.cpp; \
 	fi
-	cd third_party
-	git clone https://github.com/ocornut/imgui.git
 	cd imgui
 
 	# 3. Compile ImGui core + backends

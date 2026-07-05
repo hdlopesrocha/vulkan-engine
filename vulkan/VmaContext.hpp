@@ -3,7 +3,7 @@
 
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
-#include "../third_party/vk_mem_alloc.h"
+#include "../third_party/VulkanMemoryAllocator/include/vk_mem_alloc.h"
 
 class VmaContext {
 public:

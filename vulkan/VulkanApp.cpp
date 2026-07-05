@@ -171,6 +171,7 @@ void VulkanApp::initVulkan() {
     createLogicalDevice();
     vma.init(instance, physicalDevice, device);
     vmaReady = true;
+    resources.setAllocator(vma.allocator);
     createSwapchain();
     createImageViews();
     createDescriptorSetLayout();
@@ -4268,39 +4269,44 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size;
     bufferInfo.usage = usage;
-    // Always use EXCLUSIVE sharing.  runSingleTimeCommandsOnTransfer routes
-    // to the graphics queue, so cross-queue sharing with the transfer family
-    // is never needed.  VK_SHARING_MODE_CONCURRENT on RADV strips TCP-read
-    // permission from GPU page-table entries, causing GPUVM PERMISSION_FAULTS
-    // when compute shaders read the buffer via the Texture Cache/Pipe.
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer.buffer) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create buffer!");
+    VmaAllocationCreateInfo allocCI{};
+    allocCI.usage = VMA_MEMORY_USAGE_AUTO;
+    if (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+        allocCI.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+        if (properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+            allocCI.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
     }
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(device, buffer.buffer, &memRequirements);
+    if (properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+        allocCI.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    static constexpr VkDeviceSize kMin = 262144;
-    VkDeviceSize alignedSize = (memRequirements.size < kMin) ? kMin
-        : (memRequirements.size >= 1048576 ? memRequirements.size : memRequirements.size + 1);
-    allocInfo.allocationSize = alignedSize;
-    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+    VmaAllocation allocation;
+    if (vmaCreateBuffer(vma.allocator, &bufferInfo, &allocCI, &buffer.buffer, &allocation, nullptr) != VK_SUCCESS)
+        throw std::runtime_error("failed to create buffer with VMA!");
+    buffer.allocation = allocation;
+    buffer.memory = VK_NULL_HANDLE;
 
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &buffer.memory) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate buffer memory!");
-    }
-
-    vkBindBufferMemory(device, buffer.buffer, buffer.memory, 0);
-    // Register buffer and its memory so the VulkanResourceManager tracks them
-    resources.addBuffer(buffer.buffer, "VulkanApp: buffer.buffer");
-    resources.addDeviceMemory(buffer.memory, "VulkanApp: buffer.memory");
+    resources.addBufferVma(buffer.buffer, allocation, "VulkanApp: buffer.buffer");
     return buffer;
 }
 
 
+
+void VulkanApp::destroyBuffer(Buffer& buf) {
+    if (buf.allocation && vma.allocator) {
+        resources.removeBuffer(buf.buffer);
+        vmaDestroyBuffer(vma.allocator, buf.buffer, buf.allocation);
+    } else if (buf.buffer != VK_NULL_HANDLE) {
+        resources.removeBuffer(buf.buffer);
+        vkDestroyBuffer(device, buf.buffer, nullptr);
+    }
+    if (buf.memory != VK_NULL_HANDLE) {
+        resources.removeDeviceMemory(buf.memory);
+        vkFreeMemory(device, buf.memory, nullptr);
+    }
+    buf = {};
+}
 
 void VulkanApp::updateUniformBuffer(Buffer &uniform, void *data, size_t dataSize) {
     // Defensive: ensure memory is valid before mapping
