@@ -2403,6 +2403,12 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             }
         }
 
+        if (effectiveOld > 7 && effectiveOld < 1000000000u) {
+            std::cerr << "[VulkanApp] WARNING: invalid effectiveOld " << effectiveOld
+                      << " for image " << (void*)image << ", clamping to UNDEFINED" << std::endl;
+            effectiveOld = VK_IMAGE_LAYOUT_UNDEFINED;
+        }
+
         // If the tracked layout already matches the requested final layout,
         // no barrier is required.
         if (effectiveOld == newLayout) {
@@ -2603,17 +2609,19 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
                     // KHR/EXT extension layouts have values in 1000000000+ range.
                     // Catch truly corrupted values (small positive numbers that aren't
                     // valid core layouts 0-5 or the KHR attachment layout 7).
-                    if (tracked > 7 && tracked < 1000000000u) {
-                        std::cerr << "[VulkanApp] WARNING: invalid tracked layout " << tracked
-                                  << " for image " << (void*)image << ", clamping to UNDEFINED" << std::endl;
-                        tracked = VK_IMAGE_LAYOUT_UNDEFINED;
-                    }
                     effectiveOld = tracked;
                 }
             } else {
                 // Initialize tracking for this layer from caller's oldLayout.
                 imageLayerLayouts[key] = oldLayout;
             }
+        }
+
+        // Guard against corrupted effectiveOld (from caller or tracked map)
+        if (effectiveOld > 7 && effectiveOld < 1000000000u) {
+            std::cerr << "[VulkanApp] WARNING: invalid effectiveOld " << effectiveOld
+                      << " for image " << (void*)image << ", clamping to UNDEFINED" << std::endl;
+            effectiveOld = VK_IMAGE_LAYOUT_UNDEFINED;
         }
 
         // If this command buffer has previously recorded layout updates for
@@ -2969,6 +2977,12 @@ void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkIma
             } else {
                 imageLayerLayouts[key] = oldLayout;
             }
+        }
+
+        if (effectiveOld > 7 && effectiveOld < 1000000000u) {
+            std::cerr << "[VulkanApp] WARNING: invalid effectiveOld " << effectiveOld
+                      << " for image " << (void*)image << ", clamping to UNDEFINED" << std::endl;
+            effectiveOld = VK_IMAGE_LAYOUT_UNDEFINED;
         }
 
         // If the authoritative (tracked) layout already equals the requested
