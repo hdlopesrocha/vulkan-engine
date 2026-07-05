@@ -92,23 +92,16 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
         uboDescSet = texDescSet = VK_NULL_HANDLE;
     }
 
-    // UBO buffer.
-    if (uboMapped) { vkUnmapMemory(device, uboMemory); uboMapped = nullptr; }
-    if (uboBuffer != VK_NULL_HANDLE) {
-        app->resources.removeBuffer(uboBuffer);
-        vkDestroyBuffer(device, uboBuffer, nullptr);
-        uboBuffer = VK_NULL_HANDLE;
-    }
-    if (uboMemory != VK_NULL_HANDLE) {
-        app->resources.removeDeviceMemory(uboMemory);
-        vkFreeMemory(device, uboMemory, nullptr);
-        uboMemory = VK_NULL_HANDLE;
-    }
+    // UBO buffer (VMA-managed, destroyed by resource manager on cleanup).
+    // Clear local handles to prevent double-free.
+    uboMapped = nullptr;
+    uboBuffer = VK_NULL_HANDLE;
+    uboMemory = VK_NULL_HANDLE;
 
-    // Capture vertex/instance buffers.
+    // Capture vertex/instance buffers (VMA-managed, destroyed by resource manager on cleanup).
     auto destroyBuf = [&](VkBuffer& b, VkDeviceMemory& m) {
-        if (b != VK_NULL_HANDLE) { app->resources.removeBuffer(b); vkDestroyBuffer(device, b, nullptr); b = VK_NULL_HANDLE; }
-        if (m != VK_NULL_HANDLE) { app->resources.removeDeviceMemory(m); vkFreeMemory(device, m, nullptr); m = VK_NULL_HANDLE; }
+        b = VK_NULL_HANDLE;
+        m = VK_NULL_HANDLE;
     };
     destroyBuf(captureVertBuf, captureVertMem);
     destroyBuf(captureInstBuf, captureInstMem);
@@ -190,21 +183,10 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
     if (captureDepthImage  != VK_NULL_HANDLE) { app->resources.removeImage(captureDepthImage);       vkDestroyImage(device, captureDepthImage, nullptr);  captureDepthImage  = VK_NULL_HANDLE; }
     if (captureDepthMemory != VK_NULL_HANDLE) { app->resources.removeDeviceMemory(captureDepthMemory); vkFreeMemory(device, captureDepthMemory, nullptr); captureDepthMemory = VK_NULL_HANDLE; }
 
-    // Capture inv VP storage buffer.
-    if (captureInvVPMapped != nullptr) {
-        vkUnmapMemory(device, captureInvVPMemory);
-        captureInvVPMapped = nullptr;
-    }
-    if (captureInvVPBuffer != VK_NULL_HANDLE) {
-        app->resources.removeBuffer(captureInvVPBuffer);
-        vkDestroyBuffer(device, captureInvVPBuffer, nullptr);
-        captureInvVPBuffer = VK_NULL_HANDLE;
-    }
-    if (captureInvVPMemory != VK_NULL_HANDLE) {
-        app->resources.removeDeviceMemory(captureInvVPMemory);
-        vkFreeMemory(device, captureInvVPMemory, nullptr);
-        captureInvVPMemory = VK_NULL_HANDLE;
-    }
+    // Capture inv VP storage buffer (VMA-managed, cleared to avoid double-free).
+    captureInvVPMapped = nullptr;
+    captureInvVPBuffer = VK_NULL_HANDLE;
+    captureInvVPMemory = VK_NULL_HANDLE;
 
     capturedTypes = 0;
     initDone = false;
@@ -243,9 +225,7 @@ void ImpostorCapture::capture(VulkanApp* app,
     {
         const glm::vec4 inst(0.0f, 0.0f, 0.0f, float(billboardType));
         void* mapped;
-        vkMapMemory(app->getDevice(), captureInstMem, 0, sizeof(inst), 0, &mapped);
-        std::memcpy(mapped, &inst, sizeof(inst));
-        vkUnmapMemory(app->getDevice(), captureInstMem);
+        std::memcpy(captureInstMapped, &inst, sizeof(inst));
     }
 
     // Pre-compute all 20 UBOs.
@@ -853,8 +833,8 @@ void ImpostorCapture::createUBO(VulkanApp* app) {
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     uboBuffer = buf.buffer;
+    uboMapped = buf.mappedData;
     uboMemory = buf.memory;
-    vkMapMemory(app->getDevice(), uboMemory, 0, totalSize, 0, &uboMapped);
 }
 
 void ImpostorCapture::createCaptureBuffers(VulkanApp* app) {
@@ -906,10 +886,12 @@ void ImpostorCapture::createCaptureBuffers(VulkanApp* app) {
     captureIdxCount = 36;
 
     // Instance buffer: 1 vec4 (xyz=world pos, w=billboardIndex), host-visible.
+    // Needs VERTEX_BUFFER_BIT because it's bound as vertex buffer binding 1.
     Buffer ib = app->createBuffer(NUM_INSTANCES * sizeof(glm::vec4),
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     captureInstBuf = ib.buffer;
+    captureInstMapped = ib.mappedData;
     captureInstMem = ib.memory;
 }
 
@@ -919,8 +901,8 @@ void ImpostorCapture::createCaptureInvVPBuffer(VulkanApp* app) {
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     captureInvVPBuffer = buf.buffer;
+    captureInvVPMapped = buf.mappedData;
     captureInvVPMemory = buf.memory;
-    vkMapMemory(app->getDevice(), captureInvVPMemory, 0, totalSize, 0, &captureInvVPMapped);
 }
 
 void ImpostorCapture::createSceneSampler(VulkanApp* app) {

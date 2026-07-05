@@ -114,6 +114,7 @@ private:
     VkBuffer       captureVertBuf = VK_NULL_HANDLE;
     VkDeviceMemory captureVertMem = VK_NULL_HANDLE;
     VkBuffer       captureInstBuf = VK_NULL_HANDLE;
+    void*          captureInstMapped = nullptr;
     VkDeviceMemory captureInstMem = VK_NULL_HANDLE;
     VkBuffer       captureIdxBuf = VK_NULL_HANDLE;
     VkDeviceMemory captureIdxMem = VK_NULL_HANDLE;
