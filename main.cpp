@@ -79,7 +79,7 @@ public:
     // Shared brush entries edited by Brush3dWidget (owned by MyApp)
     Brush3dManager brushManager;
     static constexpr uint32_t QUERY_COUNT = 18; // 9 intervals × 2 timestamps each
-    std::array<VkQueryPool, 2> queryPools = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkQueryPool, 3> queryPools = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
     bool queryPoolReady[2] = {false, false};
     float timestampPeriod = 0.0f;
     bool profilingEnabled = true;
@@ -578,7 +578,7 @@ public:
                 qpci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
                 qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
                 qpci.queryCount = QUERY_COUNT;
-                for (uint32_t f = 0; f < 2; ++f) {
+                for (uint32_t f = 0; f < 3; ++f) {
                     if (vkCreateQueryPool(getDevice(), &qpci, nullptr, &queryPools[f]) != VK_SUCCESS)
                         throw std::runtime_error("Failed to create timestamp query pool");
                 }
@@ -1552,7 +1552,7 @@ public:
         }
 
         // Destroy timestamp query pools
-        for (uint32_t f = 0; f < 2; ++f) {
+        for (uint32_t f = 0; f < 3; ++f) {
             if (queryPools[f] != VK_NULL_HANDLE) {
                 vkDestroyQueryPool(getDevice(), queryPools[f], nullptr);
                 queryPools[f] = VK_NULL_HANDLE;
