@@ -37,7 +37,7 @@ public:
         ci.device = dev;
         ci.instance = instance;
         ci.pVulkanFunctions = &vf;
-        ci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+        ci.flags = 0;
 
         vmaCreateAllocator(&ci, &allocator);
     }
