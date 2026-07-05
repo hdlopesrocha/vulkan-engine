@@ -208,9 +208,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     ubo.screenSize = glm::vec4(renderWidth, renderHeight, 1.0f / renderWidth, 1.0f / renderHeight);
 
     void* data;
-    vkMapMemory(device, uniformBuffer.memory, 0, sizeof(WaterUBO), 0, &data);
+    data = uniformBuffer.map(0);
     memcpy(data, &ubo, sizeof(WaterUBO));
-    vkUnmapMemory(device, uniformBuffer.memory);
+    uniformBuffer.unmap(); // VMA persistent mapping
 
     // Prepare image infos and only write descriptors for valid image views
     std::array<VkDescriptorImageInfo, 5> imageInfos{};

@@ -99,9 +99,9 @@ void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     
     void* data;
-    vkMapMemory(app->getDevice(), stagingBuffer.memory, 0, imageSize, 0, &data);
+    data = stagingBuffer.map(0);
     memcpy(data, pixels, static_cast<size_t>(imageSize));
-    vkUnmapMemory(app->getDevice(), stagingBuffer.memory);
+    stagingBuffer.unmap(); // VMA persistent mapping
     
     stbi_image_free(pixels);
     
@@ -380,10 +380,7 @@ void DebugCubeRenderer::updateInstanceBuffer(VulkanApp* app) {
         instanceData.push_back(inst);
     }
     
-    void* data;
-    vkMapMemory(app->getDevice(), instanceBuffer.memory, 0, instanceData.size() * sizeof(InstanceData), 0, &data);
-    memcpy(data, instanceData.data(), instanceData.size() * sizeof(InstanceData));
-    vkUnmapMemory(app->getDevice(), instanceBuffer.memory);
+    memcpy(instanceBuffer.mappedData, instanceData.data(), instanceData.size() * sizeof(InstanceData));
 }
 
 void DebugCubeRenderer::setCubes(const std::vector<CubeWithColor>& cubes) {

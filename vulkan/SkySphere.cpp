@@ -32,11 +32,7 @@ void SkySphere::init(VulkanApp* app, SkySettings& settings,
         data.nightZenith = glm::vec4(skySettings->nightZenith, 1.0f);
         data.nightParams = glm::vec4(skySettings->nightIntensity, skySettings->starIntensity, 0.0f, 0.0f);
     }
-    void* mapped = nullptr;
-    if (vkMapMemory(app->getDevice(), skyBuffer.memory, 0, sbSize, 0, &mapped) == VK_SUCCESS) {
-        memcpy(mapped, &data, static_cast<size_t>(sbSize));
-        vkUnmapMemory(app->getDevice(), skyBuffer.memory);
-    }
+    memcpy(skyBuffer.mappedData, &data, static_cast<size_t>(sbSize));
 
     // bind into descriptor sets (binding 6)
     VkDescriptorBufferInfo skyBufInfo{ skyBuffer.buffer, 0, sbSize };
@@ -67,11 +63,7 @@ void SkySphere::update(VulkanApp* app) {
     } else {
         memset(&skyData, 0, sizeof(skyData));
     }
-    void* mapped = nullptr;
-    if (vkMapMemory(app->getDevice(), skyBuffer.memory, 0, skyBufferSize, 0, &mapped) == VK_SUCCESS) {
-        memcpy(mapped, &skyData, static_cast<size_t>(skyBufferSize));
-        vkUnmapMemory(app->getDevice(), skyBuffer.memory);
-    }
+    memcpy(skyBuffer.mappedData, &skyData, static_cast<size_t>(skyBufferSize));
 }
 
 void SkySphere::writeDescriptorSet(VulkanApp* app, VkDescriptorSet descriptorSet) {

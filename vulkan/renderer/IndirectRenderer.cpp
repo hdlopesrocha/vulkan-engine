@@ -138,7 +138,7 @@ void IndirectRenderer::cleanup() {
     boundsBuffer = {};
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         if (visibleCountMapped[f] && storedDevice != VK_NULL_HANDLE) {
-            vkUnmapMemory(storedDevice, visibleCountBuffers[f].memory);
+            visibleCountBuffers[f].unmap(); // VMA persistent mapping
             visibleCountMapped[f] = nullptr;
         }
         visibleCountBuffers[f] = {};
@@ -334,7 +334,7 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             void* mapped = nullptr;
-            vkMapMemory(app->getDevice(), staging.memory, 0, stagingSize, 0, &mapped);
+            mapped = staging.map(0);
             VkDeviceSize off = 0;
             if (doVertexUpload) {
                 std::memcpy(static_cast<char*>(mapped) + off, &mergedVertices[info.baseVertex], vertexSize);
@@ -343,7 +343,7 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
             if (doIndexUpload) {
                 std::memcpy(static_cast<char*>(mapped) + off, &mergedIndices[info.firstIndex], indexSize);
             }
-            vkUnmapMemory(app->getDevice(), staging.memory);
+            staging.unmap(); // VMA persistent mapping
 
             // Submit the staging→device-local copy asynchronously and
             // defer the meta-buffer write until the fence signals.
@@ -457,16 +457,16 @@ void IndirectRenderer::doUploadMeshMetaBuffers(VulkanApp* app) {
         VkDeviceSize cmdOffset = activeIdx * sizeof(VkDrawIndexedIndirectCommand);
         VkDeviceSize cmdSize = sizeof(VkDrawIndexedIndirectCommand);
         void* data;
-        vkMapMemory(app->getDevice(), indirectBuffer.memory, cmdOffset, cmdSize, 0, &data);
+        data = indirectBuffer.map(cmdOffset);
         memcpy(data, &cmd, cmdSize);
-        vkUnmapMemory(app->getDevice(), indirectBuffer.memory);
+        indirectBuffer.unmap(); // VMA persistent mapping
         info.indirectOffset = cmdOffset;
         if (boundsBuffer.buffer != VK_NULL_HANDLE) {
             VkDeviceSize boundsOffset = activeIdx * 2 * sizeof(glm::vec4);
             glm::vec4 bounds[2] = { info.boundsMin, info.boundsMax };
-            vkMapMemory(app->getDevice(), boundsBuffer.memory, boundsOffset, sizeof(bounds), 0, &data);
+            data = boundsBuffer.map(boundsOffset);
             memcpy(data, bounds, sizeof(bounds));
-            vkUnmapMemory(app->getDevice(), boundsBuffer.memory);
+            boundsBuffer.unmap(); // VMA persistent mapping
         }
         ++activeIdx;
     }
@@ -607,7 +607,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             void* mapped = nullptr;
-            vkMapMemory(app->getDevice(), staging.memory, 0, stagingSize, 0, &mapped);
+            mapped = staging.map(0);
             VkDeviceSize offset = 0;
             if (doVertexUpload) {
                 std::memcpy(static_cast<char*>(mapped) + offset, mergedVertices.data(), vertexDataSize);
@@ -616,7 +616,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             if (doIndexUpload) {
                 std::memcpy(static_cast<char*>(mapped) + offset, mergedIndices.data(), indexDataSize);
             }
-            vkUnmapMemory(app->getDevice(), staging.memory);
+            staging.unmap(); // VMA persistent mapping
 
             app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
                 VkDeviceSize off = 0;
@@ -677,9 +677,9 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // Write data to the (existing or newly-created) indirect buffer
     if (indirectBuffer.buffer != VK_NULL_HANDLE && indirectDataSize > 0) {
         void* data;
-        vkMapMemory(app->getDevice(), indirectBuffer.memory, 0, indirectDataSize, 0, &data);
+        data = indirectBuffer.map(0);
         memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
-        vkUnmapMemory(app->getDevice(), indirectBuffer.memory);
+        indirectBuffer.unmap(); // VMA persistent mapping
     }
 
     // Mark per-mesh indirect offsets (byte offsets inside indirect buffer).
@@ -719,9 +719,9 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // Write data to the (existing or newly-created) bounds buffer
     if (boundsBuffer.buffer != VK_NULL_HANDLE && boundsDataSize > 0) {
         void* bdata;
-        vkMapMemory(app->getDevice(), boundsBuffer.memory, 0, boundsDataSize, 0, &bdata);
+        bdata = boundsBuffer.map(0);
         memcpy(bdata, boundsData.data(), (size_t)boundsDataSize);
-        vkUnmapMemory(app->getDevice(), boundsBuffer.memory);
+        boundsBuffer.unmap(); // VMA persistent mapping
     }
 
     // Create/resize compact indirect buffer (storage + indirect usage)
@@ -740,9 +740,9 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             if (indirectDataSize > 0) {
                 void* data;
-                vkMapMemory(app->getDevice(), compactIndirectBuffers[f].memory, 0, indirectDataSize, 0, &data);
+                data = compactIndirectBuffers[f].map(0);
                 memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
-                vkUnmapMemory(app->getDevice(), compactIndirectBuffers[f].memory);
+                compactIndirectBuffers[f].unmap(); // VMA persistent mapping
             }
         }
     }
@@ -755,7 +755,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         // Unmap old persistent mapping before destroying
         if (visibleCountMapped[f]) {
-            vkUnmapMemory(dev, visibleCountBuffers[f].memory);
+            visibleCountBuffers[f].unmap(); // VMA persistent mapping
             visibleCountMapped[f] = nullptr;
         }
         if (visibleCountBuffers[f].buffer != VK_NULL_HANDLE || visibleCountBuffers[f].memory != VK_NULL_HANDLE) {
@@ -767,7 +767,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
         // Persistently map for host-side zeroing (avoids vkCmdFillBuffer + barrier issues on RADV)
-        vkMapMemory(dev, visibleCountBuffers[f].memory, 0, countSize, 0, (void**)&visibleCountMapped[f]);
+        visibleCountMapped[f] = static_cast<uint32_t*>(visibleCountBuffers[f].map(0));
         // Initialize with full count (fallback when culling is off)
         *visibleCountMapped[f] = initialCount;
     }
@@ -1348,12 +1348,11 @@ void IndirectRenderer::eraseMeshFromGPU(VulkanApp* app, uint32_t meshId) {
     zeroCmd.vertexOffset = 0;
     zeroCmd.firstInstance = 0;
 
-    void* data = nullptr;
     VkDevice dev = app ? app->getDevice() : VK_NULL_HANDLE;
     if (dev == VK_NULL_HANDLE) return;
-    if (vkMapMemory(dev, indirectBuffer.memory, offset, cmdSize, 0, &data) == VK_SUCCESS && data) {
+    void* data = indirectBuffer.map(offset);
+    if (data) {
         memcpy(data, &zeroCmd, cmdSize);
-        vkUnmapMemory(dev, indirectBuffer.memory);
         std::cerr << "[IndirectRenderer] eraseMeshFromGPU: zeroed indirect cmd for mesh " << meshId << " at offset " << offset << std::endl;
         // Mark indirectOffset as invalid so future logic won't assume it
         info.indirectOffset = static_cast<VkDeviceSize>(-1);

@@ -378,9 +378,9 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
         WaterRenderUBO renderUbo{};
         renderUbo.timeParams = glm::vec4(waterTime, 0.0f, 0.0f, 0.0f);
         void* data = nullptr;
-        vkMapMemory(app->getDevice(), waterRenderUBOBuffer_.memory, 0, sizeof(WaterRenderUBO), 0, &data);
+        data = waterRenderUBOBuffer_.map(0);
         memcpy(data, &renderUbo, sizeof(WaterRenderUBO));
-        vkUnmapMemory(app->getDevice(), waterRenderUBOBuffer_.memory);
+        waterRenderUBOBuffer_.unmap(); // VMA persistent mapping
     }
 
     // Delegate water offscreen work to WaterRenderer — record on the same

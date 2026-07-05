@@ -61,9 +61,9 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
 
     size_t offset = static_cast<size_t>(layer) * sizeof(WaterParamsGPU);
     void* data = nullptr;
-    vkMapMemory(appPtr->getDevice(), waterParamsBuffer.memory, offset, sizeof(WaterParamsGPU), 0, &data);
+    data = waterParamsBuffer.map(offset);
     memcpy(data, &gpu, sizeof(WaterParamsGPU));
-    vkUnmapMemory(appPtr->getDevice(), waterParamsBuffer.memory);
+    waterParamsBuffer.unmap(); // VMA persistent mapping
 }
 
 void WaterRenderer::cleanup(VulkanApp* app) {
@@ -929,13 +929,10 @@ void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& 
         return gpu;
     };
 
-    void* data = nullptr;
-    vkMapMemory(device, waterParamsBuffer.memory, 0, sizeof(WaterParamsGPU) * waterParams.size(), 0, &data);
     for (uint32_t i = 0; i < waterParams.size(); ++i) {
         const WaterParamsGPU gpu = (i < waterParams.size()) ? makeGpu(waterParams[i]) : WaterParamsGPU();
-        memcpy(static_cast<char*>(data) + i * sizeof(WaterParamsGPU), &gpu, sizeof(WaterParamsGPU));
+        memcpy(static_cast<char*>(waterParamsBuffer.mappedData) + i * sizeof(WaterParamsGPU), &gpu, sizeof(WaterParamsGPU));
     }
-    vkUnmapMemory(device, waterParamsBuffer.memory);
 }
 
 

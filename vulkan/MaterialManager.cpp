@@ -40,11 +40,7 @@ void MaterialManager::allocate(size_t count, VulkanApp* app) {
     cpuCache.assign(materialCount, MaterialGPU{});
 
     // Initialize to zeros on GPU
-    void* mapped = nullptr;
-    if (vkMapMemory(app->getDevice(), materialBuffer.memory, 0, materialBufferSize, 0, &mapped) == VK_SUCCESS) {
-        memset(mapped, 0, materialBufferSize);
-        vkUnmapMemory(app->getDevice(), materialBuffer.memory);
-    }
+    memset(materialBuffer.mappedData, 0, materialBufferSize);
 }
 
 void MaterialManager::update(size_t index, const MaterialProperties& mat, VulkanApp* app) {
@@ -53,14 +49,8 @@ void MaterialManager::update(size_t index, const MaterialProperties& mat, Vulkan
     MaterialGPU gpu = toGPU(mat);
     cpuCache[index] = gpu;
 
-    VkDevice device = app->getDevice();
     VkDeviceSize offset = static_cast<VkDeviceSize>(index) * sizeof(MaterialGPU);
-    void* mapped = nullptr;
-    if (vkMapMemory(device, materialBuffer.memory, offset, sizeof(MaterialGPU), 0, &mapped) != VK_SUCCESS) {
-        throw std::runtime_error("MaterialManager::update: vkMapMemory failed");
-    }
-    memcpy(mapped, &gpu, sizeof(MaterialGPU));
-    vkUnmapMemory(device, materialBuffer.memory);
+    memcpy(materialBuffer.map(offset), &gpu, sizeof(MaterialGPU));
 }
 
 void MaterialManager::destroy(VulkanApp* app) {

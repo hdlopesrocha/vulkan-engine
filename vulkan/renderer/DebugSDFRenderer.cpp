@@ -202,11 +202,7 @@ void DebugSDFRenderer::updateInstanceBuffer(VulkanApp* app) {
         instanceData.push_back(inst);
     }
 
-    void* data = nullptr;
-    vkMapMemory(app->getDevice(), instanceBuffer.memory, 0,
-        instanceData.size() * sizeof(InstanceData), 0, &data);
-    std::memcpy(data, instanceData.data(), instanceData.size() * sizeof(InstanceData));
-    vkUnmapMemory(app->getDevice(), instanceBuffer.memory);
+    std::memcpy(instanceBuffer.mappedData, instanceData.data(), instanceData.size() * sizeof(InstanceData));
 }
 
 void DebugSDFRenderer::setCubes(const std::vector<CubeSDF>& cubes) {

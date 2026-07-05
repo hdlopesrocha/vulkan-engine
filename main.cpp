@@ -747,9 +747,9 @@ public:
         // Upload UBO to GPU
         if (sceneRenderer) {
             void* data;
-            vkMapMemory(getDevice(), sceneRenderer->mainUniformBuffers[frameIdx].memory, 0, sizeof(UniformObject), 0, &data);
+            data = sceneRenderer->mainUniformBuffers[frameIdx].map(0);
             memcpy(data, &uboStatic, sizeof(UniformObject));
-            vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffers[frameIdx].memory);
+            sceneRenderer->mainUniformBuffers[frameIdx].unmap(); // VMA persistent mapping
         } else {
             std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping UBO upload\n";
         }
@@ -951,9 +951,9 @@ public:
                     sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
                 // Restore the main UBO that sky rendering overwrote
                 void* data;
-                vkMapMemory(getDevice(), sceneRenderer->mainUniformBuffers[frameIdx].memory, 0, sizeof(UniformObject), 0, &data);
+                data = sceneRenderer->mainUniformBuffers[frameIdx].map(0);
                 memcpy(data, &uboStatic, sizeof(UniformObject));
-                vkUnmapMemory(getDevice(), sceneRenderer->mainUniformBuffers[frameIdx].memory);
+                sceneRenderer->mainUniformBuffers[frameIdx].unmap(); // VMA persistent mapping
             }
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 5);
@@ -1215,23 +1215,9 @@ public:
                 // Submit and schedule cleanup of temporary resources after fence signals
                 VkFence f = app->submitCommandBufferAsync(cmd, &semBackFace);
                 { std::lock_guard<std::mutex> lk(asyncFenceMutex); pendingAsyncFences.push_back(f); }
-                app->deferDestroyUntilFence(f, [device, taskCompact, taskVisible, app]() {
-                    if (taskCompact.buffer != VK_NULL_HANDLE) {
-                        app->resources.removeBuffer(taskCompact.buffer);
-                        vkDestroyBuffer(device, taskCompact.buffer, nullptr);
-                    }
-                    if (taskCompact.memory != VK_NULL_HANDLE) {
-                        app->resources.removeDeviceMemory(taskCompact.memory);
-                        vkFreeMemory(device, taskCompact.memory, nullptr);
-                    }
-                    if (taskVisible.buffer != VK_NULL_HANDLE) {
-                        app->resources.removeBuffer(taskVisible.buffer);
-                        vkDestroyBuffer(device, taskVisible.buffer, nullptr);
-                    }
-                    if (taskVisible.memory != VK_NULL_HANDLE) {
-                        app->resources.removeDeviceMemory(taskVisible.memory);
-                        vkFreeMemory(device, taskVisible.memory, nullptr);
-                    }
+                app->deferDestroyUntilFence(f, [app, taskCompact, taskVisible]() mutable {
+                    app->destroyBuffer(taskCompact);
+                    app->destroyBuffer(taskVisible);
                 });
             });
         }
@@ -2143,10 +2129,7 @@ void MyApp::ensureCubemapResources() {
             VkMemoryRequirements reqs;
             vkGetBufferMemoryRequirements(device, buf.buffer, &reqs);
             if (reqs.size >= needed) return; // already large enough
-            resources.removeBuffer(buf.buffer);
-            vkDestroyBuffer(device, buf.buffer, nullptr);
-            resources.removeDeviceMemory(buf.memory);
-            vkFreeMemory(device, buf.memory, nullptr);
+            destroyBuffer(buf);
             buf = Buffer{};
         }
         buf = createBuffer(needed, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
