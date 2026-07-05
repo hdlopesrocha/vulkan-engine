@@ -2600,6 +2600,14 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
                     // is already in a concrete layout. This helps avoid
                     // validation errors when callers pass VK_IMAGE_LAYOUT_UNDEFINED
                     // to indicate they don't know the current layout.
+                    // KHR/EXT extension layouts have values in 1000000000+ range.
+                    // Catch truly corrupted values (small positive numbers that aren't
+                    // valid core layouts 0-5 or the KHR attachment layout 7).
+                    if (tracked > 7 && tracked < 1000000000u) {
+                        std::cerr << "[VulkanApp] WARNING: invalid tracked layout " << tracked
+                                  << " for image " << (void*)image << ", clamping to UNDEFINED" << std::endl;
+                        tracked = VK_IMAGE_LAYOUT_UNDEFINED;
+                    }
                     effectiveOld = tracked;
                 }
             } else {
