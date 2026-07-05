@@ -41,7 +41,7 @@ public:
                          SkySettings::Mode skyMode);
 
     // Access offscreen sky color view for sampling
-    VkImageView getSkyView(uint32_t frameIndex) const { return (frameIndex < skyColorImageViews.size()) ? skyColorImageViews[frameIndex] : VK_NULL_HANDLE; }
+    VkImageView getSkyView(uint32_t frameIndex) const { return skyColorImageViews[std::min<size_t>(frameIndex, skyColorImageViews.size() - 1)]; }
 
     // Accessors for external renderers (cubemap 360 uses sky VBO + pipeline)
     VkPipeline getSkyPipeline() const { return skyPipeline; }

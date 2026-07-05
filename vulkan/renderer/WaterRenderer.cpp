@@ -472,13 +472,13 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     // Create descriptor pool for scene textures (color + depth), 2 sets for 2 frames
     VkDescriptorPoolSize depthPoolSize{};
     depthPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    depthPoolSize.descriptorCount = 15;  // (color + depth + sky + backfaceDepth + cube) * 3 sets (2 per-frame + 1 cubemap)
+    depthPoolSize.descriptorCount = 20;  // (color + depth + sky + backfaceDepth + cube) * 4 sets (3 per-frame + 1 cubemap)
     
     VkDescriptorPoolCreateInfo depthPoolInfo{};
     depthPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     depthPoolInfo.poolSizeCount = 1;
     depthPoolInfo.pPoolSizes = &depthPoolSize;
-    depthPoolInfo.maxSets = 3;  // 2 per-frame sets + 1 cubemap water set
+    depthPoolInfo.maxSets = 4;  // 3 per-frame sets + 1 cubemap water set
     // Allow freeing individual descriptor sets if code frees them explicitly
     depthPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     
