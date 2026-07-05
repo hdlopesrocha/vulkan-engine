@@ -1492,13 +1492,14 @@ void VulkanApp::runSingleTimeCommandsOnTransfer(const std::function<void(VkComma
 }
 
 void VulkanApp::submitAndWait(const VkSubmitInfo* submits, uint32_t submitCount, VkFence fence) {
-    std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
-    vkQueueSubmit(graphicsQueue, submitCount, submits, fence);
-    // If a fence wasn't provided, block until queue is idle to ensure submission completion.
+    {
+        std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
+        vkQueueSubmit(graphicsQueue, submitCount, submits, fence);
+    }
     if (fence == VK_NULL_HANDLE) {
         vkQueueWaitIdle(graphicsQueue);
     } else {
-        // Wait on the provided fence — but do not call vkWaitForFences here to avoid reentrancy; callers can wait on the fence if needed.
+        vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
     }
 }
 
@@ -1506,14 +1507,10 @@ void VulkanApp::submitAndWait(const VkSubmitInfo* submits, uint32_t submitCount,
 // `runSingleTimeCommands` behavior and is usually sufficient for
 // synchronization, avoiding the cost of `vkDeviceWaitIdle`.
 VkResult VulkanApp::queueWaitIdle() {
-    std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
     return vkQueueWaitIdle(graphicsQueue);
 }
 
-// Legacy method that waits for the entire device to go idle.  Prefer
-// `queueWaitIdle()` or `runSingleTimeCommands()` in new code.
 VkResult VulkanApp::deviceWaitIdle() {
-    std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
     return vkDeviceWaitIdle(device);
 }
 
