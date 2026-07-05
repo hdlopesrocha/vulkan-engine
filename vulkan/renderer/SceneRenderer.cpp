@@ -518,13 +518,14 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     }
     
     solidRenderer->init();
-    // Create render targets first so the solid renderer's renderPass is available
+    solidRenderer->destroyRenderTargets(app);
     solidRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     solidRenderer->createPipelines(app);
 
     // Create pipelines for all renderers (solid renderer now has its render pass ready)
     skyRenderer->init(app);
-    // Create offscreen sky targets so the sky can be sampled as a texture by water
+    // Create offscreen sky targets (destroy old first to prevent handle leak)
+    skyRenderer->destroyOffscreenTargets(app);
     skyRenderer->createOffscreenTargets(app, app->getWidth(), app->getHeight());
     shadowMapper->init(app);
     vegetationRenderer->init(app);

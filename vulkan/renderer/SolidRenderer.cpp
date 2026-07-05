@@ -67,14 +67,37 @@ void SolidRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
 void SolidRenderer::destroyRenderTargets(VulkanApp* app) {
     if (!app) return;
     VkDevice device = app->getDevice();
-    // Clear local handles; destruction is centralized in VulkanResourceManager
     for (int i = 0; i < 2; ++i) {
-        solidColorImageViews[i] = VK_NULL_HANDLE;
-        solidColorImages[i] = VK_NULL_HANDLE;
-        solidColorMemories[i] = VK_NULL_HANDLE;
-        solidDepthImageViews[i] = VK_NULL_HANDLE;
-        solidDepthImages[i] = VK_NULL_HANDLE;
-        solidDepthMemories[i] = VK_NULL_HANDLE;
+        if (solidColorImageViews[i] != VK_NULL_HANDLE) {
+            if (app->resources.removeImageView(solidColorImageViews[i]))
+                vkDestroyImageView(device, solidColorImageViews[i], nullptr);
+            solidColorImageViews[i] = VK_NULL_HANDLE;
+        }
+        if (solidColorImages[i] != VK_NULL_HANDLE) {
+            if (app->resources.removeImage(solidColorImages[i]))
+                vkDestroyImage(device, solidColorImages[i], nullptr);
+            solidColorImages[i] = VK_NULL_HANDLE;
+        }
+        if (solidColorMemories[i] != VK_NULL_HANDLE) {
+            if (app->resources.removeDeviceMemory(solidColorMemories[i]))
+                vkFreeMemory(device, solidColorMemories[i], nullptr);
+            solidColorMemories[i] = VK_NULL_HANDLE;
+        }
+        if (solidDepthImageViews[i] != VK_NULL_HANDLE) {
+            if (app->resources.removeImageView(solidDepthImageViews[i]))
+                vkDestroyImageView(device, solidDepthImageViews[i], nullptr);
+            solidDepthImageViews[i] = VK_NULL_HANDLE;
+        }
+        if (solidDepthImages[i] != VK_NULL_HANDLE) {
+            if (app->resources.removeImage(solidDepthImages[i]))
+                vkDestroyImage(device, solidDepthImages[i], nullptr);
+            solidDepthImages[i] = VK_NULL_HANDLE;
+        }
+        if (solidDepthMemories[i] != VK_NULL_HANDLE) {
+            if (app->resources.removeDeviceMemory(solidDepthMemories[i]))
+                vkFreeMemory(device, solidDepthMemories[i], nullptr);
+            solidDepthMemories[i] = VK_NULL_HANDLE;
+        }
     }
 }
 
