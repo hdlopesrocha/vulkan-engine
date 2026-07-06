@@ -106,6 +106,7 @@ $(OUT): $(OBJS)
 	@if [ -d fonts ]; then cp -a fonts $(OUT_DIR)/ || true; fi
 	@if [ -d scenes ]; then cp -a scenes $(OUT_DIR)/ || true; fi
 	@if [ -f imgui.ini ]; then cp imgui.ini $(OUT_DIR)/ || true; fi
+	@date "+%Y-%m-%d %H:%M:%S" > $(OUT_DIR)/build_timestamp.txt
 
 # Pattern rule: compile each .cpp into an object under $(OBJ_DIR), preserving subdirs
 

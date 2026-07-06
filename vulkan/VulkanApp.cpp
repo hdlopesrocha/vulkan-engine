@@ -3,6 +3,7 @@
 #include <cstring>
 #include <thread>
 #include <execinfo.h>
+#include <fstream>
 
 static const char* layoutName(VkImageLayout l) {
     switch (l) {
@@ -17,6 +18,17 @@ static const char* layoutName(VkImageLayout l) {
         case VK_IMAGE_LAYOUT_PREINITIALIZED: return "PREINITIALIZED";
         case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: return "PRESENT_SRC_KHR";
         default: return "UNKNOWN";
+    }
+}
+
+static std::string buildTimestamp;
+
+static void loadBuildTimestamp() {
+    std::ifstream file("build_timestamp.txt");
+    if (file.is_open()) {
+        std::getline(file, buildTimestamp);
+    } else {
+        buildTimestamp = "unknown";
     }
 }
 
@@ -165,6 +177,7 @@ extern "C" void ImGui_RecordTransitionImageLayoutLayer_C(void* appPtr,
 }
 
 void VulkanApp::initVulkan() {
+    loadBuildTimestamp();
     createInstance();
     setupDebugMessenger();
     createSurface();
@@ -801,7 +814,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     bool isWarningOrError = (messageSeverity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
                                                  VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)) != 0;
     if (isWarningOrError) {
-        std::cerr << "validation(" << sev << ":" << tstr << ") " << (pCallbackData && pCallbackData->pMessage ? pCallbackData->pMessage : "") << std::endl;
+        std::cerr << "validation(" << sev << ":" << tstr << ") [build: " << buildTimestamp << "] " << (pCallbackData && pCallbackData->pMessage ? pCallbackData->pMessage : "") << std::endl;
     }
 
     // Exit immediately on any real ERROR or WARNING so we can fix it.
