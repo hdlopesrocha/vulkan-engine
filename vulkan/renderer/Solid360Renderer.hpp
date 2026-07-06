@@ -36,6 +36,7 @@ public:
     // Return the cubemap view for reflection sampling
     VkImageView getSolid360View() const { return cube360CubeView; }
     VkSampler getSolid360Sampler() const { return solid360Sampler; }
+    VkImageView getDummyCubeView() const { return cube360DummyCubeView; }
     VkImageView getCube360FaceView(uint32_t face) const { return (face < 6) ? cube360FaceViews[face] : VK_NULL_HANDLE; }
     VkImageView getCube360CubeView() const { return cube360CubeView; }
     VkImageView getCube360DepthView(uint32_t face) const { return (face < 6) ? cube360DepthViews[face] : VK_NULL_HANDLE; }
@@ -66,6 +67,10 @@ private:
     std::array<VkImageView, 6> cube360FaceViews = {};
     VkImageView cube360CubeView = VK_NULL_HANDLE;
     VkSampler solid360Sampler = VK_NULL_HANDLE;
+
+    VkImage cube360DummyColorImage = VK_NULL_HANDLE;
+    VkDeviceMemory cube360DummyColorMemory = VK_NULL_HANDLE;
+    VkImageView cube360DummyCubeView = VK_NULL_HANDLE;
 
     VkImage cube360DepthImage = VK_NULL_HANDLE;
     VkDeviceMemory cube360DepthMemory = VK_NULL_HANDLE;

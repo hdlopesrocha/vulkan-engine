@@ -46,6 +46,8 @@ void Solid360Renderer::cleanup(VulkanApp* app) {
     for (auto &dv : cube360DepthViews) dv = VK_NULL_HANDLE;
 }
 
+#pragma message("[CUBE360_FIX] createSolid360Targets compiled with DUMMY_CUBE")
+
 void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSampler) {
     if (!app) return;
     VkDevice device = app->getDevice();
@@ -174,6 +176,37 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSam
         cube360DepthLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
+    // --- 3. Dummy 1x1x6 cubemap for binding #11 during cubemap rendering ---
+    // This is a SEPARATE image from cube360ColorImage, so that the sampler
+    // at binding #11 of cube360GfxDs does not reference the same image as the
+    // color attachment, eliminating the SYNC-HAZARD-READ-AFTER-WRITE.
+    {
+        VkImageCreateInfo imgInfo{};
+        imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imgInfo.imageType = VK_IMAGE_TYPE_2D;
+        imgInfo.format = colorFormat;
+        imgInfo.extent = {1, 1, 1};
+        imgInfo.mipLevels = 1;
+        imgInfo.arrayLayers = 6;
+        imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imgInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+        imgInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        allocImage(imgInfo, cube360DummyColorImage, cube360DummyColorMemory);
+    }
+    if (app) {
+        try {
+            app->transitionImageLayoutLayerForce(cube360DummyColorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 6);
+            app->setImageLayoutTracked(cube360DummyColorImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 6);
+        } catch (...) {
+            app->setImageLayoutTracked(cube360DummyColorImage, VK_IMAGE_LAYOUT_UNDEFINED, 0, 6);
+        }
+    }
+    createView(cube360DummyColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT,
+               VK_IMAGE_VIEW_TYPE_CUBE, 0, 6,
+               cube360DummyCubeView, "Solid360Renderer: dummy cube view");
+
     // NOTE: equirectangular conversion removed. Use the cubemap directly as the
     // reflection target (sample with samplerCube in shaders).
 }
@@ -190,6 +223,9 @@ void Solid360Renderer::destroySolid360Targets(VulkanApp* app) {
     cube360DepthImage = VK_NULL_HANDLE;
     cube360DepthMemory = VK_NULL_HANDLE;
     for (auto &dv : cube360DepthViews) dv = VK_NULL_HANDLE;
+    cube360DummyColorImage = VK_NULL_HANDLE;
+    cube360DummyColorMemory = VK_NULL_HANDLE;
+    cube360DummyCubeView = VK_NULL_HANDLE;
 
     // Reset tracked layouts
     for (uint32_t face = 0; face < 6; ++face) {
@@ -288,6 +324,9 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                                      VkBuffer waterCompactIndirectBuffer, VkBuffer waterVisibleCountBuffer) {
     if (!app || cmd == VK_NULL_HANDLE) return;
     if (cube360FaceViews[0] == VK_NULL_HANDLE) return;
+    std::cerr << "[CUBE360_RENDER] mainDescSet=" << (void*)mainDescriptorSet
+              << " dummyView=" << (void*)cube360DummyCubeView
+              << " realView=" << (void*)cube360CubeView << std::endl;
 
     glm::vec3 camPos = glm::vec3(ubo.viewPos);
     struct FaceInfo { glm::vec3 target; glm::vec3 up; };

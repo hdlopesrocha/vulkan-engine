@@ -761,6 +761,28 @@ public:
         if (waterEnabled && sceneRenderer && sceneRenderer->solid360Renderer) {
             ensureCubemapResources();
 
+            // FORCE dummy cubemap into cube360GfxDs binding #11 every frame
+            if (cube360GfxDs != VK_NULL_HANDLE && sceneRenderer->solid360Renderer) {
+                VkImageView dummyView = sceneRenderer->solid360Renderer->getDummyCubeView();
+                VkSampler cubeSamp = sceneRenderer->solid360Renderer->getSolid360Sampler();
+                if (dummyView != VK_NULL_HANDLE && cubeSamp != VK_NULL_HANDLE) {
+                    VkDescriptorImageInfo info{};
+                    info.sampler = cubeSamp;
+                    info.imageView = dummyView;
+                    info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    VkWriteDescriptorSet w{};
+                    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    w.dstSet = cube360GfxDs;
+                    w.dstBinding = 11;
+                    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    w.descriptorCount = 1;
+                    w.pImageInfo = &info;
+                    vkUpdateDescriptorSets(getDevice(), 1, &w, 0, nullptr);
+                    std::cerr << "[CUBE360_INLINE] wrote dummy=" << (void*)dummyView
+                              << " to gfxDs=" << (void*)cube360GfxDs << std::endl;
+                }
+            }
+
             UniformObject ubo360 = uboStatic;
             ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
 
@@ -2112,8 +2134,34 @@ void MyApp::loadSceneFromFile(const std::string& path) {
     });
 }
 
+#pragma message("[CUBE360_FIX] ensureCubemapResources compiled with DUMMY_CUBE_VIEW")
+
 void MyApp::ensureCubemapResources() {
     VkDevice device = getDevice();
+
+    // Always write dummy cubemap to cube360GfxDs binding #11,
+    // even if the DS was already allocated (e.g. before this fix was compiled).
+    if (cube360GfxDs != VK_NULL_HANDLE && sceneRenderer && sceneRenderer->solid360Renderer) {
+        VkImageView dummyView = sceneRenderer->solid360Renderer->getDummyCubeView();
+        VkSampler cubeSamp = sceneRenderer->solid360Renderer->getSolid360Sampler();
+        if (dummyView != VK_NULL_HANDLE && cubeSamp != VK_NULL_HANDLE) {
+            VkDescriptorImageInfo info{};
+            info.sampler = cubeSamp;
+            info.imageView = dummyView;
+            info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = cube360GfxDs;
+            w.dstBinding = 11;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            w.descriptorCount = 1;
+            w.pImageInfo = &info;
+            vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
+            std::cerr << "[CUBE360_ENSURE_DIRECT] wrote dummy=" << (void*)dummyView
+                      << " to gfxDs=" << (void*)cube360GfxDs
+                      << " sampler=" << (void*)cubeSamp << std::endl;
+        }
+    }
 
     // 1. UBO buffer
     if (cube360UBO.buffer == VK_NULL_HANDLE) {
@@ -2220,10 +2268,15 @@ void MyApp::ensureCubemapResources() {
         addImageWrite(9, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         if (sceneRenderer->solid360Renderer) {
-            VkImageView cubeView = sceneRenderer->solid360Renderer->getSolid360View();
+            VkImageView dummyCubeView = sceneRenderer->solid360Renderer->getDummyCubeView();
             VkSampler cubeSampler = sceneRenderer->solid360Renderer->getSolid360Sampler();
-            if (cubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE)
-                addImageWrite(11, cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            VkImageView realCubeView = sceneRenderer->solid360Renderer->getSolid360View();
+            if (dummyCubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE)
+                addImageWrite(11, cubeSampler, dummyCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            std::cerr << "[CUBE360_FIX] dummy=" << (void*)dummyCubeView
+                      << " real=" << (void*)realCubeView
+                      << " gfxDs=" << (void*)cube360GfxDs
+                      << " sampler=" << (void*)cubeSampler << std::endl;
         }
 
         if (sceneRenderer->materialsBuffer.buffer != VK_NULL_HANDLE) {
@@ -2259,6 +2312,11 @@ void MyApp::ensureCubemapResources() {
         }
 
         vkUpdateDescriptorSets(device, static_cast<uint32_t>(gfxWrites.size()), gfxWrites.data(), 0, nullptr);
+        // Dump all writes to stderr for debugging
+        for (auto &w : gfxWrites) {
+            if (w.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && w.pImageInfo)
+                std::cerr << "[CUBE360_WRITE] bind=" << w.dstBinding << " view=" << (void*)w.pImageInfo->imageView << std::endl;
+        }
         for (auto &w : gfxWrites) { if (w.pImageInfo) delete w.pImageInfo; if (w.pBufferInfo) delete w.pBufferInfo; }
     }
 
