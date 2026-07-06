@@ -45,9 +45,6 @@ void Solid360Renderer::cleanup(VulkanApp* app) {
     cube360DepthMemory = VK_NULL_HANDLE;
     for (auto &dv : cube360DepthViews) dv = VK_NULL_HANDLE;
 }
-
-#pragma message("[CUBE360_FIX] createSolid360Targets compiled with DUMMY_CUBE")
-
 void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSampler) {
     if (!app) return;
     VkDevice device = app->getDevice();

@@ -2133,9 +2133,6 @@ void MyApp::loadSceneFromFile(const std::string& path) {
         std::cout << "[MyApp::loadSceneFromFile] Scene tessellation complete\n";
     });
 }
-
-#pragma message("[CUBE360_FIX] ensureCubemapResources compiled with DUMMY_CUBE_VIEW")
-
 void MyApp::ensureCubemapResources() {
     VkDevice device = getDevice();
 
