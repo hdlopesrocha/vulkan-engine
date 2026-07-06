@@ -113,6 +113,12 @@ vec3 applyWindSkew(vec3 basePos, vec3 right, float heightFactor) {
 }
 
 void main() {
+    // Sentinel: instance was skipped by generator (empty biome or steep slope).
+    if (instanceData.w < 0.0) {
+        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
     int planeIdx  = (inCornerNormalData >> 8) & 0xFF;
     int cornerType = inCornerNormalData & 0xFF; // 0=BL, 1=BR, 2=TL, 3=TR
 

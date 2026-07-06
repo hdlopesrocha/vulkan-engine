@@ -54,7 +54,7 @@ public:
     };
 
     float billboardScale = 10.0f;
-    uint32_t billboardCount = 3; // number of billboard texture variants (3 = foliage/grass/wild)
+    uint32_t billboardCount = 3; // biomes: 0=foliage, 1=grass, 2=wild (40% of instances are empty sentinel)
     explicit VegetationRenderer();
     ~VegetationRenderer();
 

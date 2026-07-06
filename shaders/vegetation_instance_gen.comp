@@ -137,10 +137,18 @@ void main() {
 
         // Assign billboard index using spatially-coherent biome noise so that
         // nearby plants cluster into the same vegetation type (flocking).
-        // biomeNoise returns a smooth [0,1) value over kBiomeScale world units,
-        // which is mapped uniformly across all available billboard slots.
-        uint billboardIndex = min(
-            uint(biomeNoise(pos.xz) * float(push.billboardCount)),
+        // 40 % → empty biome (sentinel), 60 % → remapped across existing biomes.
+        float noise = biomeNoise(pos.xz);
+        uint billboardIndex;
+        if (noise < 0.40) {
+            // Empty biome — write sentinel, skip the rest of the loop body.
+            uint outIdx = tri * push.instancesPerTriangle + i;
+            outInstances[outIdx] = vec4(pos, -1.0);
+            continue;
+        }
+        float remapped = (noise - 0.40) / 0.60;
+        billboardIndex = min(
+            uint(remapped * float(push.billboardCount)),
             push.billboardCount - 1u);
 
         // Derive Y-axis rotation from the final world position so that the same

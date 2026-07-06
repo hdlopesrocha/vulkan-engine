@@ -1846,9 +1846,16 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 float w = 1.0f - u - v;
                 glm::vec3 pos = u * v0 + v * v1 + w * v2;
 
-                uint32_t bi = std::min(
-                    uint32_t(biomeNoise(glm::vec2(pos.x, pos.z)) * float(billboardCnt)),
-                    billboardCnt - 1u);
+                // Biome from spatially-coherent noise.
+                // 40% → sentinel (empty biome), 60% → remapped across billboardCnt biomes.
+                float noise = biomeNoise(glm::vec2(pos.x, pos.z));
+                uint32_t bi;
+                if (noise < 0.40f) {
+                    bi = uint32_t(-1); // sentinel — no vegetation
+                } else {
+                    float remapped = (noise - 0.40f) / 0.60f;
+                    bi = std::min(uint32_t(remapped * float(billboardCnt)), billboardCnt - 1u);
+                }
 
                 uint32_t rs = pc.seed ^ posHash(pos);
                 float rf = randFloat(rs);
@@ -1857,8 +1864,12 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 instanceData[oi + 0] = pos.x;
                 instanceData[oi + 1] = pos.y;
                 instanceData[oi + 2] = pos.z;
-                instanceData[oi + 3] = float(bi) + rf;
-    }
+                if (bi == uint32_t(-1)) {
+                    instanceData[oi + 3] = -1.0f; // sentinel
+                } else {
+                    instanceData[oi + 3] = float(bi) + rf;
+                }
+            }
 
 }
 

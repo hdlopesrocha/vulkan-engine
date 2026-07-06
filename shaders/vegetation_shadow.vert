@@ -36,6 +36,13 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
 #include "includes/vegetation_common.glsl"
 
 void main() {
+    // Sentinel: instance was skipped by generator (empty biome or steep slope).
+    if (instanceData.w < 0.0) {
+        outWorldPos = vec3(0.0);
+        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
     int cornerType = inCornerNormalData & 0xFF;
 
     vec3 worldPos = instanceData.xyz;
