@@ -117,14 +117,24 @@ void main() {
     int cornerType = inCornerNormalData & 0xFF; // 0=BL, 1=BR, 2=TL, 3=TR
 
     vec3 worldPos = instanceData.xyz;
-    int billboardIdx = int(floor(instanceData.w));
-    float rotFrac = fract(instanceData.w);
+    vec3 camPos = ubo.viewPos.xyz;
+
+    // Sentinel: empty-biome instances have w < 0
+    if (instanceData.w < 0.0) {
+        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
+    // Decode biome-driven height scale, billboard type, and rotation
+    // from the packed instance word.
+    int billboardIdx = decodeBillboardIndex(instanceData.w);
+    float heightScale = decodeHeightScale(instanceData.w);
+    float rotFrac = decodeRotFrac(instanceData.w);
     float theta = rotFrac * 6.28318530718;
     float cosT = cos(theta);
     float sinT = sin(theta);
 
     bool shadowPass = windEnabled < 0.0;
-    vec3 camPos = ubo.viewPos.xyz;
 
     // Distance-based culling (same as old geometry shader)
     if (impostorDistance > 0.0 && distance(worldPos, camPos) >= impostorDistance) {
@@ -137,7 +147,6 @@ void main() {
 
     // Scale the pre-computed corner offsets by the per-instance billboard size.
     // Base corners use hs=0.5, h=1.0, tilt=1.0 — scale by billboardScale * heightVariation.
-    float heightScale = vegetationHeightScale(worldPos.xz);
     float scale = billboardScale * heightScale;
     vec3 localPos = rotateY(inLocalPos, cosT, sinT) * scale;
 

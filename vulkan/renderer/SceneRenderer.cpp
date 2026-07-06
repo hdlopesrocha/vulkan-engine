@@ -1244,7 +1244,7 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
             try {
                 constexpr int kGrassBrushIndex = 3; // See LandBrush::grass
                 // Instances per world-space unit² of triangle area.
-                constexpr float kVegetationDensity = 0.01f;
+                constexpr float kVegetationDensity = 0.003f;
 
                 // Create tightly-packed position buffer (vec3[]) for the compute shader
                 std::vector<glm::vec3> positions;

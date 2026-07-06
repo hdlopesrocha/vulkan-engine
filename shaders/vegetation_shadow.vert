@@ -40,18 +40,25 @@ void main() {
 
     vec3 worldPos = instanceData.xyz;
 
+    // Sentinel: empty-biome instances have w < 0
+    if (instanceData.w < 0.0) {
+        outWorldPos = worldPos;
+        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
     if (impostorDistance > 0.0 && distance(cameraPosAndFalloff.xyz, worldPos) >= impostorDistance) {
         outWorldPos = worldPos;
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
 
-    float rotFrac = fract(instanceData.w);
+    float rotFrac = decodeRotFrac(instanceData.w);
     float theta = rotFrac * 6.28318530718;
     float cosT = cos(theta);
     float sinT = sin(theta);
 
-    float heightScale = vegetationHeightScale(worldPos.xz);
+    float heightScale = decodeHeightScale(instanceData.w);
     float scale = billboardScale * heightScale;
     vec3 localPos = rotateY(inLocalPos, cosT, sinT) * scale;
     vec3 tangent = rotateY(inLocalTangent, cosT, sinT);

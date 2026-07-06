@@ -1752,6 +1752,7 @@ float biomeNoise(const glm::vec2& xz) {
     return glm::mix(glm::mix(a, b, u.x), glm::mix(c, d, u.x), u.y);
 }
 
+
 } // anonymous namespace
 
 void VegetationRenderer::generateChunkInstancesCPU(NodeID chunkId,
@@ -1846,9 +1847,27 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 float w = 1.0f - u - v;
                 glm::vec3 pos = u * v0 + v * v1 + w * v2;
 
+                // ── Empty biome (40% of terrain, hard cutoff) ──────────
+                float biomeVal = biomeNoise(glm::vec2(pos.x, pos.z));
+
+                const float kEmptyCutoff = 0.40f;
+                if (biomeVal < kEmptyCutoff) {
+                    const uint32_t oi = (tri * pc.instancesPerTriangle + s) * 4;
+                    instanceData[oi + 3] = -1.0f;
+                    continue;
+                }
+
+                // ── Original biome logic (unchanged) ─────────────────
+                float biomeSpread = biomeVal * biomeVal;
+
                 uint32_t bi = std::min(
-                    uint32_t(biomeNoise(glm::vec2(pos.x, pos.z)) * float(billboardCnt)),
+                    uint32_t(biomeSpread * float(billboardCnt)),
                     billboardCnt - 1u);
+
+                float heightNorm = biomeSpread;
+                uint32_t packedHeight = uint32_t(std::round(
+                    std::clamp(heightNorm, 0.0f, 1.0f) * 63.0f));
+                uint32_t combined = (bi << 6u) | packedHeight;
 
                 uint32_t rs = pc.seed ^ posHash(pos);
                 float rf = randFloat(rs);
@@ -1857,8 +1876,8 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 instanceData[oi + 0] = pos.x;
                 instanceData[oi + 1] = pos.y;
                 instanceData[oi + 2] = pos.z;
-                instanceData[oi + 3] = float(bi) + rf;
-    }
+                instanceData[oi + 3] = float(combined) + rf;
+            }
 
 }
 

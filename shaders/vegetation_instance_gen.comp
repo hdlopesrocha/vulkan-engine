@@ -135,13 +135,32 @@ void main() {
         float w = 1.0 - u - v;
         vec3 pos = u * v0 + v * v1 + w * v2;
 
-        // Assign billboard index using spatially-coherent biome noise so that
-        // nearby plants cluster into the same vegetation type (flocking).
-        // biomeNoise returns a smooth [0,1) value over kBiomeScale world units,
-        // which is mapped uniformly across all available billboard slots.
+        // ── Empty biome (40% of terrain, hard cutoff) ──────────────────
+        // Positions where biomeVal < 0.40 belong to the empty biome.
+        // Instances inside this range are discarded (sentinel w = -1.0).
+        // The noise is spatially coherent → coherent bare patches.
+        float biomeVal = biomeNoise(pos.xz);
+
+        const float kEmptyCutoff = 0.40;
+        if (biomeVal < kEmptyCutoff) {
+            uint outIdx = tri * push.instancesPerTriangle + i;
+            outInstances[outIdx] = vec4(0.0, 0.0, 0.0, -1.0);
+            continue;
+        }
+
+        // ── Original biome logic (unchanged) ─────────────────────────
+        // Squared spread preserves the original billboard-type and height
+        // distribution so that all types 0..billboardCount-1 still appear
+        // even with the lower 40% of biomeVal removed.
+        float biomeSpread = biomeVal * biomeVal;
+
         uint billboardIndex = min(
-            uint(biomeNoise(pos.xz) * float(push.billboardCount)),
+            uint(biomeSpread * float(push.billboardCount)),
             push.billboardCount - 1u);
+
+        float heightNorm  = biomeSpread;
+        uint  packedHeight = uint(round(clamp(heightNorm, 0.0, 1.0) * 63.0));
+        uint  combined = (billboardIndex << 6u) | packedHeight;
 
         // Derive Y-axis rotation from the final world position so that the same
         // plant at the same spot always faces the same direction, even when the
@@ -149,10 +168,11 @@ void main() {
         uint rotState = push.seed ^ posHash(pos);
         float rotFrac = rand(rotState); // [0, 1) → full 360° range
 
-        // Pack rotation into the fractional part of .w:
-        //   floor(w) = billboardIndex   (extracted in vertex shader with floor())
-        //   fract(w) = rotFrac          (extracted in geometry shader with fract())
+        // Packing layout:
+        //   floor(w) = (billboardIndex << 6) | packedHeight
+        //   fract(w) = rotFrac
+        // Sentinel (no vegetation): w = -1.0
         uint outIdx = tri * push.instancesPerTriangle + i;
-        outInstances[outIdx] = vec4(pos, float(billboardIndex) + rotFrac);
+        outInstances[outIdx] = vec4(pos, float(combined) + rotFrac);
     }
 }

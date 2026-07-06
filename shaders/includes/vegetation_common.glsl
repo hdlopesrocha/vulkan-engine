@@ -7,8 +7,37 @@ vec3 rotateY(vec3 v, float c, float s) {
     return vec3(c * v.x - s * v.z, v.y, s * v.x + c * v.z);
 }
 
+// ── Instance data decoding ──────────────────────────────────────────────────
+// The instance .w field packs three values:
+//   floor(w) = (billboardIndex << 6) | packedHeight
+//   fract(w) = rotFrac
+// where packedHeight = 0..63 maps to a height scale of 0.3..2.0.
+// Sentinel (no vegetation): w = -1.0
+
+// Extract billboard index (0-2) from packed instance data.
+int decodeBillboardIndex(float w) {
+    return int(floor(w)) >> 6;
+}
+
+// Extract normalised height [0, 1] from packed instance data.
+float decodeHeightNorm(float w) {
+    return float(int(floor(w)) & 0x3F) / 63.0;
+}
+
+// Extract height scale [0.2, 1.0] from packed instance data.
+float decodeHeightScale(float w) {
+    return mix(0.2, 1.0, decodeHeightNorm(w));
+}
+
+// Extract rotation fraction [0, 1) from packed instance data.
+float decodeRotFrac(float w) {
+    return fract(w);
+}
+
 // Per-instance height variation driven by 2D Perlin noise on world XZ.
 // Returns a scale in [0.6, 1.4] that should be applied to billboardScale.
+// NOTE: This is a legacy fallback — new code should use decodeHeightScale()
+// which reads the biome-driven height baked into the instance data.
 float vegetationHeightScale(vec2 worldXZ) {
     float n = perlin2(worldXZ * 0.008);
     return 0.6 + 0.8 * (n * 0.5 + 0.5);

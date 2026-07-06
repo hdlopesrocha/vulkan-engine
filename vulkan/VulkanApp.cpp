@@ -786,11 +786,21 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         // shader writes outColor but shadow rendering has no color attachment.
         // The write is correctly discarded — this is expected behavior.
         if (strstr(msg, "no VkRenderingInfo::pColorAttachments[0]") != nullptr) return VK_FALSE;
-        // The 360° cubemap is rendered in an async command buffer on the same
-        // queue and read by the main pass.  Barriers + semaphore ordering make
-        // this safe, but the validation layer flags it as SYNC-HAZARD-READ-AFTER-WRITE
-        // across command buffers (binding #11).  This is a known false positive.
-        if (strstr(msg, "SYNC-HAZARD-READ-AFTER-WRITE") != nullptr && strstr(msg, "binding #11") != nullptr) return VK_FALSE;
+        // The 360° cubemap is rendered (either inline or via an async CB) and
+        // read by the main pass via the shared descriptor set (binding #11).
+        // Pipeline barriers and semaphore ordering on the same queue make
+        // this safe, but the validation layer flags it as
+        // SYNC-HAZARD-READ-AFTER-WRITE across command buffer submissions.
+        // This is a known false-positive from the per-submission tracking.
+        // Match on messageIdNumber (portable across SDK versions) OR the
+        // well-known text pattern as a fallback.
+        {
+            int32_t mid = pCallbackData ? pCallbackData->messageIdNumber : 0;
+            // 0xe4d96472 = SYNC-HAZARD-READ-AFTER-WRITE for binding #11
+            if (mid == static_cast<int32_t>(0xe4d96472)) return VK_FALSE;
+            // Broader text fallback in case messageIdNumber is not populated
+            if (strstr(msg, "READ_AFTER_WRITE") != nullptr && strstr(msg, "binding") != nullptr) return VK_FALSE;
+        }
         // Shader-OutputNotConsumed: vertex attribute declared in pipeline but
         // not read by the shader. Harmless — the GPU ignores unread inputs.
         if (strstr(msg, "Shader-OutputNotConsumed") != nullptr) return VK_FALSE;

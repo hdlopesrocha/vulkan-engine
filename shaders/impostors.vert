@@ -34,9 +34,17 @@ layout(push_constant) uniform PushConstants {
 
 void main() {
     vec3 worldPos = instanceData.xyz;
-    int billboardIdx = int(floor(instanceData.w));
-    float rotFrac = fract(instanceData.w);
+    int billboardIdx = decodeBillboardIndex(instanceData.w);
+    float rotFrac = decodeRotFrac(instanceData.w);
     outRotFrac = rotFrac;
+
+    // Sentinel: empty-biome instances have w < 0
+    if (instanceData.w < 0.0) {
+        outTexCoord = vec3(0.0); outWorldPos = worldPos; outFaceNormal = vec3(0.0, 1.0, 0.0);
+        outInstanceOffset = worldPos;
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        return;
+    }
 
     vec3 camPos = ubo.viewPos.xyz;
     float dist = distance(worldPos, camPos);
@@ -88,7 +96,7 @@ void main() {
 
     int layerIdx = clamp(billboardIdx, 0, 2) * NUM_VIEWS + bestIdx;
 
-    float hs = vegetationHeightScale(worldPos.xz);
+    float hs = decodeHeightScale(instanceData.w);
 
     // Match the capture setup: the plant was captured at heightScale=1.0 with a
     // fixed-size square framebuffer. The plant occupies only 34.6% of the image
