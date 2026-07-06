@@ -1,0 +1,467 @@
+\documentclass[a4paper,10pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+% Note: babel and microtype are not available on this build system
+
+\geometry{margin=2.5cm}
+
+\definecolor{high}{HTML}{E74C3C}
+\definecolor{medium}{HTML}{F39C12}
+\definecolor{low}{HTML}{27AE60}
+\definecolor{info}{HTML}{2980B9}
+
+\newcommand{\severity}[1]{%
+  \ifstrequal{#1}{Critical}{\textcolor{high}{\textbf{#1}}}{%
+  \ifstrequal{#1}{High}{\textcolor{high}{\textbf{#1}}}{%
+  \ifstrequal{#1}{Medium}{\textcolor{medium}{\textbf{#1}}}{%
+  \ifstrequal{#1}{Low}{\textcolor{low}{\textbf{#1}}}{#1}}}}}
+
+\title{\textbf{Vulkan Engine Performance Evaluation Report}}
+\author{Static Code Analysis}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report presents a comprehensive performance evaluation of the in-development Vulkan
+graphics engine, based on static analysis of the source code. It identifies performance
+bottlenecks, unsafe synchronization patterns, and API modernization opportunities. Each
+critical issue is classified by severity and accompanied by mitigation recommendations.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Executive Summary}
+
+The engine predominantly uses modern Vulkan with \textbf{dynamic rendering} across all
+pipelines, which is a very positive aspect. However, \textbf{4 Critical/High severity
+issues}, \textbf{5 Medium severity issues}, and \textbf{4 Low severity issues} were
+identified. The most impactful problems involve per-frame \texttt{std::thread} creation,
+heavy use of \texttt{vkCmdUpdateBuffer} (which causes implicit queue stalls), complete
+absence of a pipeline cache, and not using VMA (Vulkan Memory Allocator) for images.
+
+\vspace{0.5em}
+\noindent
+\textbf{Overall rating: \textcolor{medium}{Fair}} --- the engine works, but leaves
+significant performance on the table due to poor CPU--GPU synchronization practices and
+inefficient allocation patterns.
+
+\section{Methodology}
+
+The analysis was performed through:
+\begin{itemize}[nosep]
+    \item Complete source code review (C++, GLSL).
+    \item Identification of Vulkan API calls (legacy vs.\ modern).
+    \item Manual mapping of synchronization barriers, memory allocations, and resource
+          creation.
+    \item Search for known performance loss patterns (\textit{stalls}, \textit{bubbles},
+          temporary allocations, mutex contention).
+\end{itemize}
+
+\section{Severity Classification}
+
+\begin{itemize}[nosep]
+    \item[\textbf{Critical}] --- Causes per-frame CPU--GPU stalls, severe FPS degradation,
+          or corruption risk.
+    \item[\textbf{High}] --- Significant impact on performance, scalability, or latency.
+    \item[\textbf{Medium}] --- Moderate impact; incremental improvement.
+    \item[\textbf{Low}] --- Marginal impact or only in rare situations.
+\end{itemize}
+
+\section{Identified Critical Issues}
+
+\subsection{Per-Frame Thread Creation (Critical)}
+
+\begin{tabular}{ll}
+    \textbf{Severity} & \severity{Critical} \\
+    \textbf{Files}     & \texttt{main.cpp:1124--1244} \\
+    \textbf{Pattern}   & \texttt{std::thread} creation per frame in
+                          \texttt{drawSidebar()} \\
+\end{tabular}
+
+\vspace{0.5em}
+\noindent
+\textbf{Description:} Whenever water is enabled, the code spawns a new thread
+(\texttt{asyncTasks.emplace\_back(...)} at \texttt{main.cpp:1144}) for the back-face
+pass. This thread is \textbf{created, executed, and destroyed every frame}. The
+cost of creating a \texttt{std::thread} is hundreds of microseconds,
+directly impacting the per-frame CPU budget. Additionally, duplicate joins
+(\texttt{main.cpp:1249} and \texttt{1272}) indicate possible redundant waiting.
+
+\noindent\textbf{Recommendation:} Replace with a fixed \textbf{thread pool} using
+\texttt{std::jthread} or \texttt{std::async} with \texttt{launch::async} policy.
+Keeping threads alive and reusing them reduces creation \textit{overhead} to
+virtually zero.
+
+\subsection{\texttt{vkCmdUpdateBuffer} --- Queue Stalls (Critical)}
+
+\begin{tabular}{ll}
+    \textbf{Severity} & \severity{Critical} \\
+    \textbf{Files}     & \texttt{VegetationRenderer.cpp:422,427},
+                          \texttt{SceneRenderer.cpp:236,323},
+                          \texttt{IndirectRenderer.cpp:1030},
+                          \texttt{Solid360Renderer.cpp:373,628} \\
+    \textbf{Occurrences}& \textbf{11 calls} total \\
+\end{tabular}
+
+\vspace{0.5em}
+\noindent
+\textbf{Description:} \texttt{vkCmdUpdateBuffer} is a \textbf{legacy} function that
+copies data from CPU to GPU inside a command buffer, but implicitly inserts a
+\texttt{FULL\_QUEUE} barrier (\textit{top-of-pipe} to \textit{bottom-of-pipe}),
+draining the entire graphics queue. This eliminates any parallelism between uploads
+and shader execution. The most critical occurrences are:
+
+\begin{itemize}[nosep]
+    \item \texttt{VegetationRenderer.cpp:422,427} --- Upload of up to 256 draw
+          commands per frame (workaround for a RADV bug).
+    \item \texttt{SceneRenderer.cpp:236,323} --- Shadow and main UBO uploads,
+          4 cascades each, per frame.
+    \item \texttt{IndirectRenderer.cpp:1030} --- Visible counter reset before culling.
+\end{itemize}
+
+\noindent\textbf{Recommendation:} Replace with \textbf{persistently mapped host-visible
+buffers} (using \texttt{VK\_MEMORY\_PROPERTY\_HOST\_COHERENT\_BIT}
+or \texttt{VK\_MEMORY\_PROPERTY\_HOST\_CACHED\_BIT} with
+\texttt{vkFlushMappedMemoryRanges}). Map once at initialization and update
+data with \texttt{memcpy}. This eliminates stalls and reduces the number of
+synchronization barriers.
+
+\subsection{Missing Pipeline Cache (High)}
+
+\begin{tabular}{ll}
+    \textbf{Severity} & \severity{High} \\
+    \textbf{Files}     & Entire codebase \\
+    \textbf{Evidence} & No occurrence of \texttt{VkPipelineCache} or
+                          \texttt{vkCreatePipelineCache} \\
+\end{tabular}
+
+\vspace{0.5em}
+\noindent
+\textbf{Description:} All calls to \texttt{vkCreateGraphicsPipelines} and
+\texttt{vkCreateComputePipelines} use \texttt{VK\_NULL\_HANDLE} as the
+pipeline cache. This means every application run recompiles shaders from scratch
+(SPIR-V to GPU machine code). In engines with dozens of pipelines, this process
+can take seconds. The code does not even attempt to load/save a disk cache.
+
+\noindent\textbf{Recommendation:} Create a \texttt{VkPipelineCache} at
+initialization, serialize it to disk on shutdown with
+\texttt{vkGetPipelineCacheData}, and reload it on the next run.
+Additionally, use \texttt{VK\_KHR\_pipeline\_binary} (Vulkan 1.4) if
+available for more granular caching.
+
+\subsection{VMA Not Used for Images (High)}
+
+\begin{tabular}{ll}
+    \textbf{Severity} & \severity{High} \\
+    \textbf{Files}     & \texttt{VulkanApp.cpp:1602},
+                          \texttt{RendererUtils.hpp:67},
+                          \texttt{WaterRenderer.cpp:1079,1138},
+                          \texttt{ImpostorCapture.cpp:450,510,571,634},
+                          \texttt{Solid360Renderer.cpp:68},
+                          \texttt{BillboardService.cpp:142},
+                          \texttt{TextureArrayManager.cpp:271},
+                          and 10+ more locations \\
+    \textbf{Occurrences}& \textbf{25+ direct} \texttt{vkAllocateMemory} calls \\
+\end{tabular}
+
+\vspace{0.5em}
+\noindent
+\textbf{Description:} VMA (\textit{Vulkan Memory Allocator}) is used for
+buffers (\texttt{VulkanApp.cpp:4305}, \texttt{createBuffer()}), but
+\textbf{all images} are allocated via direct \texttt{vkAllocateMemory}.
+This means each image has its own memory allocation, losing the benefits of
+suballocation (fewer \texttt{vkAllocateMemory} calls, better memory utilization,
+automatic defragmentation).
+
+\noindent\textbf{Recommendation:} Extend VMA usage to images by creating
+a \texttt{createImageWithVma()} function using
+\texttt{vmaCreateImage()}. This reduces the number of memory allocations and
+improves fragmentation. VMA is already a project dependency, so there is no
+additional cost.
+
+\subsection{Blocking Wait per Frame (High)}
+
+\begin{tabular}{ll}
+    \textbf{Severity} & \severity{High} \\
+    \textbf{Files}     & \texttt{VulkanApp.cpp:4540} \\
+    \textbf{Pattern}   & Blocking \texttt{vkWaitForFences} in \texttt{drawFrame()} \\
+\end{tabular}
+
+\vspace{0.5em}
+\noindent
+\textbf{Description:} At the start of each frame, the CPU blocks with
+\texttt{vkWaitForFences(device, 1, \&inFlightFences[currentFrame], VK\_TRUE,
+UINT64\_MAX)}. If the GPU is still processing the previous frame (or the oldest
+in-flight frame), the CPU stays \textbf{idle} until the GPU finishes. With 3
+frames in flight, this blocking is short for most frames, but when there is a
+queue \textit{bubble} (e.g., heavy shadows), the CPU waits.
+
+\noindent\textbf{Recommendation:} Maintaining \textbf{3 frames in flight} already
+helps. To avoid stalls, consider introducing \textbf{timeline semaphores}
+(\texttt{VK\_SEMAPHORE\_TYPE\_TIMELINE}) with \texttt{vkWaitSemaphores} to
+wait only for the necessary execution point instead of the entire queue. This
+enables finer CPU--GPU overlap.
+
+\subsection{Temporary Command Pool per Async Submission (Medium)}
+
+\begin{tabular}{ll}
+    \textbf{Severity} & \severity{Medium} \\
+    \textbf{Files}     & \texttt{VulkanApp.cpp:2512} \\
+    \textbf{Pattern}   & \texttt{vkCreateCommandPool} inside
+                          \texttt{submitCommandBufferAsyncToQueue()} \\
+\end{tabular}
+
+\vspace{0.5em}
+\noindent
+\textbf{Description:} Every async submission (including the back-face pass
+in \texttt{main.cpp}) creates and destroys a temporary command pool.
+Creating a command pool is not extremely expensive, but with dozens of async
+submissions per second (water, vegetation, etc.), the \textit{overhead}
+accumulates.
+
+\noindent\textbf{Recommendation:} Pre-allocate a set of command pools
+(\textit{pool ring}) at startup, one per submission thread, and reset them
+with \texttt{vkResetCommandPool} instead of creating/destroying. This reduces
+pressure on the Vulkan \textit{driver}.
+
+\subsection{Redundant Chain Barriers (Medium)}
+
+\begin{tabular}{ll}
+    \textbf{Severity} & \severity{Medium} \\
+    \textbf{Files}     & \texttt{ShadowRenderer.cpp},
+                          \texttt{SceneRenderer.cpp} \\
+    \textbf{Pattern}   & Multiple layout transitions per frame
+\end{tabular}
+
+\vspace{0.5em}
+\noindent
+\textbf{Description:} \texttt{ShadowRenderer.cpp} executes \textbf{9 layout
+transitions} per frame (for 4 shadow cascades + blur + restore). \texttt{SceneRenderer.cpp}
+adds \textbf{10 barriers} for UBOs (2 per cascade + 2 for the main UBO). Many
+of these barriers could be combined or eliminated. Each barrier has a
+non-negligible driver processing cost.
+
+\noindent\textbf{Recommendation:} Group layout transitions using
+\texttt{VkDependencyInfo} with multiple barriers in a single
+\texttt{vkCmdPipelineBarrier2} call. For UBOs, the transition to
+\texttt{TRANSFER\_WRITE} and back to \texttt{UNIFORM\_READ} can be
+eliminated if UBOs are host-visible mapped (see Section~4.2).
+
+\subsection{Shaders Compiled for Vulkan 1.1 (Medium)}
+
+\begin{tabular}{ll}
+    \textbf{Severity} & \severity{Medium} \\
+    \textbf{Files}     & \texttt{Makefile:144} \\
+    \textbf{Pattern}   & \texttt{glslc --target-env=vulkan1.1} \\
+\end{tabular}
+
+\vspace{0.5em}
+\noindent
+\textbf{Description:} The \texttt{Makefile} compiles all shaders with
+\texttt{--target-env=vulkan1.1}. This means shaders are generated as
+SPIR-V 1.3 (maximum supported by Vulkan 1.1), missing SPIR-V 1.6 capabilities
+like \texttt{ScalarBlockLayout} (better uniform packing),
+\texttt{MaximallyReconverges} (warp divergence optimization), and the
+Vulkan 1.3+ memory model.
+
+\noindent\textbf{Recommendation:} Update the target to
+\texttt{--target-env=vulkan1.4} (or \texttt{vulkan1.3} as fallback). This
+allows the GLSL compiler to generate more optimized SPIR-V. It is a one-line
+change in the \texttt{Makefile}.
+
+\subsection{Legacy \texttt{vkQueueSubmit} Usage (Medium)}
+
+\begin{tabular}{ll}
+    \textbf{Severity} & \severity{Medium} \\
+    \textbf{Files}     & \texttt{VulkanApp.cpp:1420,1517,2131,2265,2348,4843} \\
+    \textbf{Pattern}   & \texttt{vkQueueSubmit} (legacy) instead of
+                          \texttt{vkQueueSubmit2} (modern) \\
+\end{tabular}
+
+\vspace{0.5em}
+\noindent
+\textbf{Description:} All queue submissions use \texttt{vkQueueSubmit} from the
+original Vulkan API. The \texttt{vkQueueSubmit2} API (Vulkan 1.3+
+\texttt{synchronization2}) offers a more expressive and efficient
+synchronization model, allowing specification of \texttt{VkSemaphoreSubmitInfo}
+and \texttt{VkCommandBufferSubmitInfo} with clearer semantics. Although the
+practical difference is small, migration aligns the code with modern practices
+and may benefit newer \textit{drivers}.
+
+\noindent\textbf{Recommendation:} Gradually migrate to
+\texttt{vkQueueSubmit2}. This requires restructuring the submission
+structures to use \texttt{VkSubmitInfo2}, \texttt{VkSemaphoreSubmitInfo}, and
+\texttt{VkCommandBufferSubmitInfo}. The change is mechanical, does not alter
+semantics, and paves the way for timeline semaphores.
+
+\subsection{Per-Node Octree Threads (Low)}
+
+\begin{tabular}{ll}
+    \textbf{Severity} & \severity{Low} \\
+    \textbf{Files}     & \texttt{IteratorHandler.cpp:161--186} \\
+    \textbf{Pattern}   & \texttt{std::thread} creation per child node
+\end{tabular}
+
+\vspace{0.5em}
+\noindent
+\textbf{Description:} In octree processing, up to 8 threads are created per node
+to process children in parallel. For an octree with depth 8, this can result in
+thousands of threads created/destroyed. Since this is not a per-frame operation
+(it is used during construction/tessellation), the impact is reduced, but the
+pattern is wasteful.
+
+\noindent\textbf{Recommendation:} Replace with a global \textbf{thread pool}
+(which also serves point 4.1) and distribute work with
+\texttt{std::atomic} or concurrent task queues.
+
+\subsection{\texttt{vkDeviceWaitIdle} in Initialization Paths (Low)}
+
+\begin{tabular}{ll}
+    \textbf{Severity} & \severity{Low} \\
+    \textbf{Files}     & \texttt{VegetationRenderer.cpp:1093},
+                          \texttt{VulkanResourceManager.cpp:331,353} \\
+    \textbf{Pattern}   & \texttt{vkDeviceWaitIdle} in one-shot operations
+\end{tabular}
+
+\vspace{0.5em}
+\noindent
+\textbf{Description:} \texttt{vkDeviceWaitIdle} is called during \texttt{setImpostorData()}
+(\texttt{VegetationRenderer.cpp:1093}) and during \texttt{resource manager}
+destruction (\texttt{VulkanResourceManager.cpp:331,353}). Although these are
+not in the per-frame hot path, they drain all queues and prevent any
+parallelism.
+
+\noindent\textbf{Recommendation:} Whenever possible, replace with targeted
+waiting using \texttt{vkWaitForFences} on the relevant submission set. For
+destruction, a full drain may be acceptable, but for impostor initialization,
+a specific fence is more appropriate.
+
+\subsection{Serial Shader Compilation (Low)}
+
+\begin{tabular}{ll}
+    \textbf{Severity} & \severity{Low} \\
+    \textbf{Files}     & \texttt{Makefile:131--150} \\
+    \textbf{Pattern}   & Serial shader compilation
+\end{tabular}
+
+\vspace{0.5em}
+\noindent
+\textbf{Description:} Shaders are compiled one at a time via Make's default
+pattern rules. With 40+ shaders and dependencies between them (includes),
+compilation time could be reduced.
+
+\noindent\textbf{Recommendation:} Using \texttt{make -j} already applies
+parallelism, but the Makefile itself could specify explicit dependencies to
+maximize it. This is a minor improvement but a welcome one.
+
+\section{Summary and Priorities}
+
+\begin{longtable}{p{0.35\textwidth}ccp{0.25\textwidth}}
+    \toprule
+    \textbf{Critical Point} & \textbf{Severity} & \textbf{Effort} & \textbf{Impact} \\
+    \midrule
+    \endhead
+    \bottomrule
+    \endfoot
+    Threads per frame
+        & \severity{Critical}
+        & Medium
+        & Eliminates per-frame thread create/destroy \\
+    \texttt{vkCmdUpdateBuffer}
+        & \severity{Critical}
+        & Low
+        & Replace with mapped buffers; stalls eliminated \\
+    Pipeline cache
+        & \severity{High}
+        & Low
+        & Shaders compiled once; faster startup \\
+    VMA for images
+        & \severity{High}
+        & Medium
+        & Fewer allocations; better fragmentation \\
+    Blocking wait
+        & \severity{High}
+        & Medium
+        & Finer CPU--GPU overlap \\
+    Temporary command pool
+        & \severity{Medium}
+        & Low
+        & Reduced driver overhead \\
+    Redundant barriers
+        & \severity{Medium}
+        & Medium
+        & Less barrier processing \\
+    Shaders Vulkan 1.1
+        & \severity{Medium}
+        & Minimal
+        & Better shader optimization \\
+    Legacy \texttt{vkQueueSubmit}
+        & \severity{Medium}
+        & High
+        & Modernization; enables timeline semaphores \\
+    Octree threads
+        & \severity{Low}
+        & Medium
+        & Improvement in offline operations \\
+    \texttt{vkDeviceWaitIdle}
+        & \severity{Low}
+        & Low
+        & Avoids unnecessary full drains \\
+    Serial compilation
+        & \severity{Low}
+        & Minimal
+        & Marginally faster builds \\
+\end{longtable}
+
+\section{Immediate Recommendations}
+
+Based on the \textbf{effort/impact} ratio, the following implementation order is
+recommended:
+
+\begin{enumerate}
+    \item \textbf{Replace \texttt{vkCmdUpdateBuffer} with mapped buffers}
+          (Section~4.2) --- low effort, eliminates coarse stalls.
+    \item \textbf{Add a pipeline cache} (Section~4.3) --- low effort,
+          immediate benefit in startup time.
+    \item \textbf{Introduce a thread pool} (Section~4.1) --- medium effort,
+          eliminates per-frame thread create/destroy.
+    \item \textbf{Extend VMA to images} (Section~4.4) --- medium effort,
+          positive impact on memory management.
+    \item \textbf{Update shader target to Vulkan 1.4}
+          (Section~4.8) --- minimal effort, trivial modernization.
+\end{enumerate}
+
+\section{Conclusion}
+
+The engine demonstrates a solid foundation with correct use of
+\textit{dynamic rendering} and modern synchronization patterns (\texttt{VkDependencyInfo},
+\texttt{vkCmdPipelineBarrier2}). However, four categories of problems
+significantly impact performance:
+
+\begin{enumerate}[nosep]
+    \item \textbf{CPU--GPU bottlenecks}: \texttt{vkCmdUpdateBuffer} and per-frame
+          thread creation.
+    \item \textbf{Inefficient allocation}: VMA not used for images, missing
+          pipeline cache.
+    \item \textbf{Excessive synchronization}: Blocking waits and redundant
+          barriers.
+    \item \textbf{Incomplete modernization}: Legacy \texttt{vkQueueSubmit} and
+          shaders compiled for Vulkan 1.1.
+\end{enumerate}
+
+Fixing the Critical and High severity issues should result in a measurable FPS
+improvement, especially in scenes with active water and vegetation. The engine's
+overall rating is \textbf{Fair}, with the potential to evolve into \textbf{Good}
+by implementing the above recommendations.
+
+\end{document}
