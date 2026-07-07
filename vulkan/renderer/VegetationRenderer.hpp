@@ -14,6 +14,7 @@
 #include <mutex>
 #include <glm/glm.hpp>
 #include <glm/gtc/round.hpp>
+#include "CommandBufferState.hpp"
 
 // Per-chunk vegetation instance buffer and renderer
 class VegetationRenderer {
@@ -293,4 +294,7 @@ private:
     void issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
     void issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc);
     WindPushConstants buildWindPushConstants(const glm::vec3& cameraPos) const;
+    CommandBufferState* cmdState = nullptr;
+public:
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

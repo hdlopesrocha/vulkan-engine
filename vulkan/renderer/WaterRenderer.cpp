@@ -1040,29 +1040,37 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
     // Bind descriptor sets (shared between depth pre-pass and main pass)
     VkDescriptorSet mainDs = app->getMainDescriptorSet();
     if (mainDs != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
+            waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
             waterGeometryPipelineLayout, 0, 1, &mainDs, 0, nullptr);
     }
     VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
     if (materialDs != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
+            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
             waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
     }
     VkDescriptorSet sceneDs = waterDepthDescriptorSets[frameIndex];
     if (sceneDs != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
+            waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
             waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
     }
 
     // Depth pre-pass: only write depth, no color output
     if (waterDepthPrePassPipeline != VK_NULL_HANDLE) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterDepthPrePassPipeline);
+        if (cmdState) cmdState->bindGraphicsPipeline(cmd, waterDepthPrePassPipeline);
+        else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterDepthPrePassPipeline);
         waterIndirectRenderer.drawPrepared(cmd);
     }
 
     // Main geometry pass
     if (waterGeometryPipeline != VK_NULL_HANDLE) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeometryPipeline);
+        if (cmdState) cmdState->bindGraphicsPipeline(cmd, waterGeometryPipeline);
+        else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterGeometryPipeline);
         waterIndirectRenderer.drawPrepared(cmd);
     }
 
@@ -1355,14 +1363,21 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
     vkUpdateDescriptorSets(device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
 
     // Bind pipeline and descriptor sets
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cubemapWaterPipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, cubemapWaterPipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cubemapWaterPipeline);
+    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
+        waterGeometryPipelineLayout, 0, 1, &descriptorSet0, 0, nullptr);
+    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
         waterGeometryPipelineLayout, 0, 1, &descriptorSet0, 0, nullptr);
     if (materialDs != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
+            waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
             waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
     }
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
+        waterGeometryPipelineLayout, 2, 1, &cubemapWaterDepthDS, 0, nullptr);
+    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
         waterGeometryPipelineLayout, 2, 1, &cubemapWaterDepthDS, 0, nullptr);
 
     // Draw water patches using per-face cull results (dedicated buffers, no race with main pass).

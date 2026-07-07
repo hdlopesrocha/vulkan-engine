@@ -280,19 +280,21 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
     scissor.extent = {renderWidth, renderHeight};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, backFacePipeline);
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, backFacePipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, backFacePipeline);
 
     if (mainDs != VK_NULL_HANDLE) {
         //printf("[BIND] WaterBackFaceRenderer::renderBackFacePass: layout=%p firstSet=0 count=1 sets=%p\n", (void*)pipelineLayout, (void*)mainDs);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &mainDs, 0, nullptr);
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 0, 1, &mainDs, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &mainDs, 0, nullptr);
     }
     if (materialDs != VK_NULL_HANDLE) {
-        //printf("[BIND] WaterBackFaceRenderer::renderBackFacePass: layout=%p firstSet=1 count=1 sets=%p\n", (void*)pipelineLayout, (void*)materialDs);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1, &materialDs, 0, nullptr);
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 1, 1, &materialDs, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1, &materialDs, 0, nullptr);
     }
     if (sceneDs != VK_NULL_HANDLE) {
-        //printf("[BIND] WaterBackFaceRenderer::renderBackFacePass: layout=%p firstSet=2 count=1 sets=%p\n", (void*)pipelineLayout, (void*)sceneDs);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1, &sceneDs, 0, nullptr);
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 2, 1, &sceneDs, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1, &sceneDs, 0, nullptr);
     }
 
     if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {

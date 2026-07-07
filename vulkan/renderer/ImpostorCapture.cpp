@@ -339,11 +339,14 @@ void ImpostorCapture::capture(VulkanApp* app,
             vkCmdSetViewport(cb, 0, 1, &vp);
             vkCmdSetScissor(cb, 0, 1, &sci);
 
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, capturePipeline);
+            if (cmdState) cmdState->bindGraphicsPipeline(cb, capturePipeline);
+            else vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, capturePipeline);
 
             const uint32_t dynOffset = static_cast<uint32_t>(viewIdx * uboStride);
             VkDescriptorSet sets[2] = { uboDescSet, texDescSet };
-            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            if (cmdState) cmdState->bindGraphicsDescriptorSets(cb,
+                                    capturePipelineLayout, 0, 2, sets, 1, &dynOffset);
+            else vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     capturePipelineLayout, 0, 2, sets, 1, &dynOffset);
 
             vkCmdPushConstants(cb, capturePipelineLayout,

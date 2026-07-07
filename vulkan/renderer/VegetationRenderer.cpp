@@ -70,8 +70,8 @@ void VegetationRenderer::cleanup() {
     impostorVBO.indexBuffer.buffer = VK_NULL_HANDLE;
     impostorVBO.indexBuffer.memory = VK_NULL_HANDLE;
     impostorVBO.indexCount = 0;
-    appPtr = nullptr;
     destroyCulling();
+    appPtr = nullptr;
 }
 
 void VegetationRenderer::destroyCulling() {
@@ -968,12 +968,14 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         return;
     }
 
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
+    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationShadowPipeline);
+    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
 
     // Bind the shadow descriptor set at set 0 and vegetation descriptor set at set 1
     // shadowDescriptorSet contains the light-space UBO for shadow rendering
     VkDescriptorSet sets[2] = { shadowDescriptorSet, vegDescriptorSet };
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 2, sets, 0, nullptr);
+    if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, shadowPipelineLayout, 0, 2, sets, 0, nullptr);
+    else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 2, sets, 0, nullptr);
 
     // Push constants for shadow pass: same as regular draw but with wind disabled
     WindPushConstants pc{};
@@ -1049,10 +1051,13 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         impostorDistance > 0.0f && impostorVBO.vertexBuffer.buffer != VK_NULL_HANDLE &&
         !chunkBuffers.empty()) {
 
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowPipe);
+        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, impostorShadowPipe);
+        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowPipe);
 
         VkDescriptorSet depthSets[2] = { shadowDescriptorSet, impostorDepthDescSet };
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
+                    impostorShadowLayout, 0, 2, depthSets, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     impostorShadowLayout, 0, 2, depthSets, 0, nullptr);
 
         vkCmdPushConstants(commandBuffer, impostorShadowLayout,
@@ -1536,8 +1541,11 @@ void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffe
 
     // Depth prepass
     if (vegetationDepthPipeline != VK_NULL_HANDLE) {
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationDepthPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationDepthPipeline);
+        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationDepthPipeline);
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
+            vegetationDepthPipelineLayout, 0, 2, sets, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             vegetationDepthPipelineLayout, 0, 2, sets, 0, nullptr);
         issueVegetationDraws(commandBuffer, vegetationDepthPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }
@@ -1558,17 +1566,23 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
 
     // Shading pass
     if (vegetationPipeline != VK_NULL_HANDLE) {
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationPipeline);
+        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationPipeline);
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
+            pipelineLayout, 0, 2, sets, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             pipelineLayout, 0, 2, sets, 0, nullptr);
         issueVegetationDraws(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }
     // Impostor color pass
     if (impostorPipeline != VK_NULL_HANDLE &&
         impostorDescSet != VK_NULL_HANDLE && impostorDistance > 0.0f) {
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorPipeline);
+        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, impostorPipeline);
+        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorPipeline);
         VkDescriptorSet impSets[2] = { globalSet, impostorDescSet };
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
+                    impostorPipelineLayout, 0, 2, impSets, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     impostorPipelineLayout, 0, 2, impSets, 0, nullptr);
         issueImpostorDraws(commandBuffer, impostorPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }

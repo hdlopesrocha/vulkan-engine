@@ -202,7 +202,8 @@ void WireframeRenderer::draw(VkCommandBuffer cmd,
                              IndirectRenderer& indirectRenderer) {
     if (wireframePipeline == VK_NULL_HANDLE || cmd == VK_NULL_HANDLE || !app) return;
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, wireframePipeline);
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, wireframePipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, wireframePipeline);
 
     // Set dynamic viewport/scissor
     VkViewport viewport{};
@@ -224,7 +225,11 @@ void WireframeRenderer::draw(VkCommandBuffer cmd,
         //printf("[BIND] WireframeRenderer::draw: layout=%p firstSet=0 count=%u sets=", (void*)wireframePipelineLayout, (unsigned)descriptorSets.size());
         for (size_t i = 0; i < descriptorSets.size(); ++i) printf("%p ", (void*)descriptorSets[i]);
         printf("\n");
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
+            wireframePipelineLayout, 0,
+            static_cast<uint32_t>(descriptorSets.size()), descriptorSets.data(),
+            0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
             wireframePipelineLayout, 0,
             static_cast<uint32_t>(descriptorSets.size()), descriptorSets.data(),
             0, nullptr);

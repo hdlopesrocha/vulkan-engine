@@ -281,7 +281,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
             ds = shadowDescriptorSets[idx];
         }
         if (layout != VK_NULL_HANDLE && ds != VK_NULL_HANDLE) {
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
+            frameCmdState.bindGraphicsDescriptorSets(commandBuffer, layout, 0, 1, &ds, 0, nullptr);
         }
 
         // Bind solid shadow pipeline first and draw solid geometry.
@@ -291,7 +291,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         // subsequent solid draws that only use binding 0.
         VkPipeline solidShadowPipeline = shadowMapper->getShadowPipeline();
         if (solidShadowPipeline != VK_NULL_HANDLE) {
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidShadowPipeline);
+            frameCmdState.bindGraphicsPipeline(commandBuffer, solidShadowPipeline);
         }
         // Draw only meshes visible in this cascade (compacted by prepareCull above)
         auto& shadowIR = solidRenderer->getIndirectRenderer();
@@ -442,21 +442,21 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
             VkPipeline waterPipe = waterRenderer->getWaterGeometryPipeline();
             VkPipelineLayout waterLayout = waterRenderer->getWaterGeometryPipelineLayout();
             if (waterPipe != VK_NULL_HANDLE && waterLayout != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipe);
+                frameCmdState.bindGraphicsPipeline(commandBuffer, waterPipe);
 
                 VkDescriptorSet mainDs = app->getMainDescriptorSet();
                 if (mainDs != VK_NULL_HANDLE) {
-                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 0, 1, &mainDs, 0, nullptr);
+                    frameCmdState.bindGraphicsDescriptorSets(commandBuffer, waterLayout, 0, 1, &mainDs, 0, nullptr);
                 }
 
                 VkDescriptorSet materialDs = app->getMaterialDescriptorSet();
                 if (materialDs != VK_NULL_HANDLE) {
-                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 1, 1, &materialDs, 0, nullptr);
+                    frameCmdState.bindGraphicsDescriptorSets(commandBuffer, waterLayout, 1, 1, &materialDs, 0, nullptr);
                 }
 
                 VkDescriptorSet sceneDs = waterRenderer->getWaterDepthDescriptorSet(frameIdx);
                 if (sceneDs != VK_NULL_HANDLE) {
-                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterLayout, 2, 1, &sceneDs, 0, nullptr);
+                    frameCmdState.bindGraphicsDescriptorSets(commandBuffer, waterLayout, 2, 1, &sceneDs, 0, nullptr);
                 }
 
                 // Draw filled water geometry (will update depth buffer)
@@ -470,19 +470,19 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
             VkPipeline waterWfPipe = waterWireframe->getPipeline();
             VkPipelineLayout wfLayout = waterWireframe->getPipelineLayout();
             if (waterWfPipe != VK_NULL_HANDLE && wfLayout != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, waterWfPipe);
+                frameCmdState.bindGraphicsPipeline(commandBuffer, waterWfPipe);
 
                 VkDescriptorSet wfMainDs = app->getMainDescriptorSet();
                 if (wfMainDs != VK_NULL_HANDLE)
-                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wfLayout, 0, 1, &wfMainDs, 0, nullptr);
+                    frameCmdState.bindGraphicsDescriptorSets(commandBuffer, wfLayout, 0, 1, &wfMainDs, 0, nullptr);
 
                 VkDescriptorSet wfMatDs = app->getMaterialDescriptorSet();
                 if (wfMatDs != VK_NULL_HANDLE)
-                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wfLayout, 1, 1, &wfMatDs, 0, nullptr);
+                    frameCmdState.bindGraphicsDescriptorSets(commandBuffer, wfLayout, 1, 1, &wfMatDs, 0, nullptr);
 
                 VkDescriptorSet wfDepthDs = waterRenderer->getWaterDepthDescriptorSet(frameIdx);
                 if (wfDepthDs != VK_NULL_HANDLE)
-                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wfLayout, 2, 1, &wfDepthDs, 0, nullptr);
+                    frameCmdState.bindGraphicsDescriptorSets(commandBuffer, wfLayout, 2, 1, &wfDepthDs, 0, nullptr);
 
                 waterRenderer->getIndirectRenderer().drawPrepared(commandBuffer);
             }

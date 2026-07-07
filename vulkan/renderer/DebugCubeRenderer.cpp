@@ -365,11 +365,13 @@ void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescripto
     // Update instance buffer before rendering
     updateInstanceBuffer(app);
     
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, pipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     
     // Bind descriptor sets: set 0 = UBO, set 1 = grid texture + instance buffer
     VkDescriptorSet descriptorSets[] = { descriptorSet, gridDescriptorSet };
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 
+    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 0, 2, descriptorSets, 0, nullptr);
+    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 
         0, 2, descriptorSets, 0, nullptr);
     
     // Bind cube VBO

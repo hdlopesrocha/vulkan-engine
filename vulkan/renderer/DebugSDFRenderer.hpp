@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <vector>
+#include "CommandBufferState.hpp"
 
 // Renders leaf-node cube faces colored by their SDF sign and magnitude.
 class DebugSDFRenderer {
@@ -47,7 +48,10 @@ private:
     uint32_t instanceBufferCapacity = 0;
 
     std::vector<CubeSDF> activeCubes;
-
+    CommandBufferState* cmdState = nullptr;
+public:
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
+private:
     void createCubeBuffers(VulkanApp* app);
     void createDescriptorSet(VulkanApp* app);
     void updateInstanceBuffer(VulkanApp* app);

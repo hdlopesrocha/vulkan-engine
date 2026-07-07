@@ -419,7 +419,8 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     vkCmdSetDepthBias(commandBuffer, 1.5f, 0.0f, 2.5f);
 
     if (shadowPipeline != VK_NULL_HANDLE) {
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
+        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, shadowPipeline);
+        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
     }
 }
 
@@ -502,8 +503,11 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
         sc.extent = {size, size};
         vkCmdSetScissor(commandBuffer, 0, 1, &sc);
 
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, blurPipeline);
+        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline);
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
+            blurPipelineLayout, 0, 1, &blurHorizontalDS[cascadeIndex], 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             blurPipelineLayout, 0, 1, &blurHorizontalDS[cascadeIndex], 0, nullptr);
 
         float dir = 0.0f; // horizontal
@@ -546,8 +550,11 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
         VkRect2D blurSc{{0,0},{size,size}};
         vkCmdSetScissor(commandBuffer, 0, 1, &blurSc);
 
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, blurPipeline);
+        else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline);
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
+            blurPipelineLayout, 0, 1, &blurVerticalDS, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             blurPipelineLayout, 0, 1, &blurVerticalDS, 0, nullptr);
 
         float dir = 1.0f; // vertical
@@ -570,7 +577,8 @@ void ShadowRenderer::render(VulkanApp* app, VkCommandBuffer commandBuffer,
     VkPipelineLayout layout = app->getPipelineLayout();
     if (shadowPipelineLayout != VK_NULL_HANDLE) layout = shadowPipelineLayout;
     if (descriptorSet != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptorSet, 0, nullptr);
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, layout, 0, 1, &descriptorSet, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptorSet, 0, nullptr);
     }
 
     VkBuffer vertexBuffers[] = { vbo.vertexBuffer.buffer };

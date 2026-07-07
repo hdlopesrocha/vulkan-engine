@@ -9,6 +9,7 @@
 #include "../ubo/UniformObject.hpp"
 #include "../../widgets/SkySettings.hpp"
 #include <array>
+#include "CommandBufferState.hpp"
 
 class SkyRenderer {
 public:
@@ -84,4 +85,7 @@ private:
 
     uint32_t offscreenWidth = 0;
     uint32_t offscreenHeight = 0;
+    CommandBufferState* cmdState = nullptr;
+public:
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

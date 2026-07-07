@@ -40,6 +40,7 @@ class Octree;
 #include "../../utils/UniqueOctreeChangeHandler.hpp"
 
 #include "../ubo/PassUBO.hpp"
+#include "CommandBufferState.hpp"
 
 class SceneRenderer {
     void addDebugCubeForGeometry(Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom);
@@ -231,6 +232,8 @@ private:
     // Thread-safe queue fed by the background loading thread
     mutable std::mutex pendingMeshMutex;
     std::deque<PendingMeshData> pendingMeshQueue;
+public:
+    CommandBufferState frameCmdState;
 };
 
 // ...existing code...

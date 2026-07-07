@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <vector>
 #include <array>
+#include "CommandBufferState.hpp"
 
 class SolidRenderer {
 public:
@@ -88,4 +89,7 @@ private:
     std::array<VkImageLayout, 2> solidDepthImageLayouts = {};
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
+    CommandBufferState* cmdState = nullptr;
+public:
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

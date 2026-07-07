@@ -99,10 +99,10 @@ void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet d
     app->updateUniformBuffer(uniformBuffer, &skyUbo, sizeof(UniformObject));
 
     //printf("[SkyRenderer] vkCmdBindPipeline: activePipeline=%p\n", (void*)activePipeline);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
-    // Only bind the sky descriptor set (set 0)
-    //std::cerr << "[SKY RENDER] Binding descriptor set: skyDs=" << (void*)descriptorSet << std::endl;
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeLayout, 0, 1, &descriptorSet, 0, nullptr);
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, activePipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
+    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, activeLayout, 0, 1, &descriptorSet, 0, nullptr);
+    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeLayout, 0, 1, &descriptorSet, 0, nullptr);
     // No push-constants used for sky; model is encoded into UBO/viewPos.
 
     // Explicitly set viewport/scissor because this pipeline relies on dynamic state
@@ -346,8 +346,10 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
 
     vkCmdBeginRendering(cmd, &renderingInfo);
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyEquirectPipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyEquirectPipelineLayout,
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, skyEquirectPipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyEquirectPipeline);
+    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, skyEquirectPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyEquirectPipelineLayout,
                             0, 1, &descriptorSet, 0, nullptr);
 
     // Push resolution constant

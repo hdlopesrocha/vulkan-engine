@@ -3,6 +3,7 @@
 #include "../VmaContext.hpp"
 #include <glm/glm.hpp>
 #include <array>
+#include "CommandBufferState.hpp"
 
 class VulkanApp;
 
@@ -180,4 +181,7 @@ private:
                           VkImageView opacity, VkSampler sampler);
     void createImGuiDescSetsForType(VulkanApp* app, uint32_t billboardType);
     void destroyImGuiDescSets();
+public:
+    CommandBufferState* cmdState = nullptr;
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

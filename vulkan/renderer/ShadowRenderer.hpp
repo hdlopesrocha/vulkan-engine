@@ -3,6 +3,7 @@
 #include "../vulkan.hpp"
 #include <array>
 #include "../ubo/UniformObject.hpp"
+#include "CommandBufferState.hpp"
 
 class ShadowRenderer {
 public:
@@ -32,6 +33,7 @@ public:
     void setDepthLayout(uint32_t cascade, VkImageLayout layout);
     void freeImGuiDescriptors();
     void recreateImGuiDescriptors();
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
 private:
     uint32_t shadowMapSizes[SHADOW_CASCADE_COUNT];
 
@@ -90,4 +92,5 @@ private:
     void render(VulkanApp* app, VkCommandBuffer commandBuffer,
                       const VertexBufferObject& vbo, VkDescriptorSet descriptorSet);
     std::array<VkImageLayout, SHADOW_CASCADE_COUNT> cascadeDepthLayouts = {};
+    CommandBufferState* cmdState = nullptr;
 };

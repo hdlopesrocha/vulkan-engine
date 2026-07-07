@@ -10,6 +10,7 @@
 #include <cstdint>
 
 #include <array>
+#include "CommandBufferState.hpp"
 
 // Manages a single large vertex/index/indirect buffer and provides a simple
 // CPU-side allocator for adding/removing meshes. Draws are performed via
@@ -211,4 +212,7 @@ private:
     uint32_t currentCullFrame = 0;
     bool descriptorDirty = false;  // flag for deferred descriptor update
     VkDescriptorSet pendingDescriptorSet = VK_NULL_HANDLE; // ds to update (VK_NULL_HANDLE means use/create material set)
+public:
+    CommandBufferState* cmdState = nullptr;
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

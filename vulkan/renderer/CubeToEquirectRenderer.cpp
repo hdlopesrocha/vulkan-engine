@@ -213,8 +213,11 @@ void CubeToEquirectRenderer::render(VulkanApp* app, VkSampler sampler, VkImageVi
 
         vkCmdBeginRendering(cmd, &renderingInfo);
 
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cube360EquirectPipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cube360EquirectPipelineLayout,
+        if (cmdState) cmdState->bindGraphicsPipeline(cmd, cube360EquirectPipeline);
+        else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cube360EquirectPipeline);
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, cube360EquirectPipelineLayout,
+                    0, 1, &cube360EquirectSampleDescriptorSet, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cube360EquirectPipelineLayout,
                     0, 1, &cube360EquirectSampleDescriptorSet, 0, nullptr);
         float resolution[2] = { static_cast<float>(EQ_WIDTH), static_cast<float>(EQ_HEIGHT) };
         vkCmdPushConstants(cmd, cube360EquirectPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(resolution), resolution);

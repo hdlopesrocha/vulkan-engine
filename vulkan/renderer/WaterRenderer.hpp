@@ -16,6 +16,7 @@
 #include "../ubo/WaterParamsGPU.hpp"
 #include "../ubo/WaterRenderUBO.hpp"
 #include "../ubo/WaterUBO.hpp"
+#include "CommandBufferState.hpp"
 
 class WaterRenderer {
 public:
@@ -230,5 +231,7 @@ private:
 
     // Map of node -> model version for water geometry managed here
     std::unordered_map<NodeID, Model3DVersion> waterNodeModelVersions;
-
+    CommandBufferState* cmdState = nullptr;
+public:
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

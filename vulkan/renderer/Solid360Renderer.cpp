@@ -469,8 +469,10 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             vkCmdSetScissor(cmd, 0, 1, &scissor);
 
             if (solidRenderer && depthOnlyPipeline != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipeline);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipelineLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
+                if (cmdState) cmdState->bindGraphicsPipeline(cmd, depthOnlyPipeline);
+                else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipeline);
+                if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, depthOnlyPipelineLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
+                else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipelineLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
                 if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
                     solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
                 } else {
@@ -523,8 +525,10 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                 VkPipeline skyPipe = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyGridPipeline() : skyRenderer->getSkyPipeline();
                 VkPipelineLayout skyLayout = (skyMode == SkySettings::Mode::Grid) ? skyRenderer->getSkyGridPipelineLayout() : skyRenderer->getSkyPipelineLayout();
                 if (skyPipe != VK_NULL_HANDLE && skyLayout != VK_NULL_HANDLE) {
-                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipe);
-                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
+                    if (cmdState) cmdState->bindGraphicsPipeline(cmd, skyPipe);
+                    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipe);
+                    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, skyLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
+                    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
                     const auto& skyVBO = skyRenderer->getSkyVBO();
                     if (skyVBO.vertexBuffer.buffer != VK_NULL_HANDLE && skyVBO.indexCount > 0) {
                         VkBuffer vbs[] = {skyVBO.vertexBuffer.buffer};
@@ -541,8 +545,10 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                 VkPipeline gfxPipe = solidRenderer->getGraphicsPipeline();
                 VkPipelineLayout gfxLayout = solidRenderer->getGraphicsPipelineLayout();
                 if (gfxPipe != VK_NULL_HANDLE && gfxLayout != VK_NULL_HANDLE) {
-                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxPipe);
-                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
+                    if (cmdState) cmdState->bindGraphicsPipeline(cmd, gfxPipe);
+                    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxPipe);
+                    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, gfxLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
+                    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
                     if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
                         solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
                     } else {

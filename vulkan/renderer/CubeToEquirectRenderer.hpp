@@ -1,6 +1,7 @@
 #pragma once
 #include <vulkan/vulkan.h>
 #include "../VmaContext.hpp"
+#include "CommandBufferState.hpp"
 
 class VulkanApp;
 
@@ -32,4 +33,7 @@ private:
 
     static constexpr uint32_t EQ_WIDTH = 1024;
     static constexpr uint32_t EQ_HEIGHT = 512;
+public:
+    CommandBufferState* cmdState = nullptr;
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

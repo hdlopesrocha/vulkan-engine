@@ -2,6 +2,7 @@
 #include "../VulkanApp.hpp"
 #include "IndirectRenderer.hpp"
 #include <array>
+#include "CommandBufferState.hpp"
 
 class WaterBackFaceRenderer {
 public:
@@ -47,4 +48,7 @@ private:
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
     VulkanApp* appPtr = nullptr;
+public:
+    CommandBufferState* cmdState = nullptr;
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

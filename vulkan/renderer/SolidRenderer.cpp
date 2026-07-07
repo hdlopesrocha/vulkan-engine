@@ -333,7 +333,8 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
     if (!printedOnce) {
         printf("[SolidRenderer::draw] binding pipeline=%p, layout=%p\n", (void*)graphicsPipeline, (void*)usedLayout);
     }
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, graphicsPipeline);
+    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
     // Set dynamic viewport and scissor (required since pipeline uses dynamic state)
     VkViewport viewport{};
@@ -371,7 +372,8 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
     
     if (perTextureDescriptorSet != VK_NULL_HANDLE) {
         //printf("[BIND] SolidRenderer::draw: layout=%p firstSet=0 count=1 sets=%p\n", (void*)usedLayout, (void*)perTextureDescriptorSet);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, usedLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, usedLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, usedLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
     } else {
         std::cerr << "[SolidRenderer::draw] ERROR: perTextureDescriptorSet is NULL!" << std::endl;
     }
@@ -392,7 +394,8 @@ void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp
         return;
     }
 
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
+    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, depthPrePassPipeline);
+    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
 
     // Set dynamic viewport and scissor
     VkViewport viewport{};
@@ -411,7 +414,8 @@ void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp
 
     // Bind descriptor set using the depth pre-pass pipeline layout
     if (perTextureDescriptorSet != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipelineLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, depthPrePassPipelineLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipelineLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
     }
 
     // Draw all meshes using GPU-culled indirect commands (depth-only)
@@ -420,25 +424,31 @@ void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp
 
 void SolidRenderer::drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet descSet) {
     if (!appArg || deferredDepthPipeline == VK_NULL_HANDLE) return;
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipeline);
+    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, deferredDepthPipeline);
+    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipeline);
     VkViewport viewport{0.0f, 0.0f, (float)appArg->getWidth(), (float)appArg->getHeight(), 0.0f, 1.0f};
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     VkRect2D scissor{{0, 0}, {(uint32_t)appArg->getWidth(), (uint32_t)appArg->getHeight()}};
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-    if (descSet != VK_NULL_HANDLE)
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);
+    if (descSet != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);
+    }
     indirectRenderer.drawPrepared(commandBuffer);
 }
 
 void SolidRenderer::drawColor(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet descSet) {
     if (!appArg || deferredColorPipeline == VK_NULL_HANDLE) return;
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipeline);
+    if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, deferredColorPipeline);
+    else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipeline);
     VkViewport viewport{0.0f, 0.0f, (float)appArg->getWidth(), (float)appArg->getHeight(), 0.0f, 1.0f};
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     VkRect2D scissor{{0, 0}, {(uint32_t)appArg->getWidth(), (uint32_t)appArg->getHeight()}};
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-    if (descSet != VK_NULL_HANDLE)
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
+    if (descSet != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
+    }
     indirectRenderer.drawPrepared(commandBuffer);
 }
 

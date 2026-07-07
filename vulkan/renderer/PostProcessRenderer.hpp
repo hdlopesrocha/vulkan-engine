@@ -3,6 +3,7 @@
 #include "../VulkanApp.hpp"
 #include <glm/glm.hpp>
 #include <array>
+#include "CommandBufferState.hpp"
 
 // Forward-declare shared water types (defined in WaterRenderer.hpp)
 struct WaterParams;
@@ -49,4 +50,7 @@ private:
 
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
+    CommandBufferState* cmdState = nullptr;
+public:
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

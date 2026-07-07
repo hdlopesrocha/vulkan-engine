@@ -737,6 +737,25 @@ public:
         // shadowEffects.w = global shadow toggle (shader checks ubo.shadowEffects.w > 0.5)
         uboStatic.shadowEffects.w = settings.enableShadows ? 1.0f : 0.0f;
 
+        // Reset command buffer state tracker and wire it to all sub-renderers.
+        // NOTE: backFaceRenderer and waterRenderer's IndirectRenderer are deliberately
+        // excluded — they are accessed by the async back-face task on a separate thread
+        // and keeping cmdState=nullptr for them avoids a data race on frameCmdState.
+        // Null checks mirror existing guards in the render code below.
+        sceneRenderer->frameCmdState.reset();
+        if (sceneRenderer->shadowMapper) sceneRenderer->shadowMapper->setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->solidRenderer) sceneRenderer->solidRenderer->setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->skyRenderer) sceneRenderer->skyRenderer->setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->vegetationRenderer) sceneRenderer->vegetationRenderer->setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->postProcessRenderer) sceneRenderer->postProcessRenderer->setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->debugCubeRenderer) sceneRenderer->debugCubeRenderer->setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->debugSDFRenderer) sceneRenderer->debugSDFRenderer->setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->solidWireframe) sceneRenderer->solidWireframe->setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->waterWireframe) sceneRenderer->waterWireframe->setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->solid360Renderer) sceneRenderer->solid360Renderer->setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->waterRenderer) sceneRenderer->waterRenderer->setCmdState(&sceneRenderer->frameCmdState);
+        if (sceneRenderer->solidRenderer) sceneRenderer->solidRenderer->getIndirectRenderer().setCmdState(&sceneRenderer->frameCmdState);
+
         // ── GPU culling: must run BEFORE shadow pass so drawPrepared has
         // current-frame compact/visibleCount buffers populated. ──
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)

@@ -5,6 +5,7 @@
 #include "../../math/BoundingBox.hpp"
 #include <vector>
 #include <glm/glm.hpp>
+#include "CommandBufferState.hpp"
 
 // Renders debug wireframe cubes for octree visualization
 class DebugCubeRenderer {
@@ -54,7 +55,10 @@ private:
     
     // Cubes to render this frame
     std::vector<CubeWithColor> activeCubes;
-    
+    CommandBufferState* cmdState = nullptr;
+public:
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
+private:
     void createCubeVBO(VulkanApp* app);
     void loadGridTexture(VulkanApp* app);
     void createGridDescriptorSet(VulkanApp* app);

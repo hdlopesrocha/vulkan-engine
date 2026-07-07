@@ -232,10 +232,12 @@ void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptor
     scissor.extent = {static_cast<uint32_t>(app->getWidth()), static_cast<uint32_t>(app->getHeight())};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, pipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
     VkDescriptorSet descriptorSets[] = {mainDescriptorSet, descriptorSet};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, pipelineLayout, 0, 2, descriptorSets, 0, nullptr);
+    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
         0, 2, descriptorSets, 0, nullptr);
 
     const VkBuffer vertexBuffers[] = {vertexBuffer.buffer};

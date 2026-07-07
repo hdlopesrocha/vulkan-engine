@@ -5,6 +5,7 @@
 #include "WaterRenderer.hpp"
 #include "../ubo/UniformObject.hpp"
 #include <array>
+#include "CommandBufferState.hpp"
 
 class Solid360Renderer {
 public:
@@ -91,4 +92,7 @@ private:
     static constexpr uint32_t STAGING_FRAMES = 3;
     Buffer stagingUBOs[STAGING_FRAMES];
     mutable uint32_t stagingFrameIndex = 0;
+public:
+    CommandBufferState* cmdState = nullptr;
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

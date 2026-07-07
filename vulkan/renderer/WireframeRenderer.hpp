@@ -4,6 +4,7 @@
 #include "IndirectRenderer.hpp"
 #include "../../math/Vertex.hpp"
 #include <vulkan/vulkan.h>
+#include "CommandBufferState.hpp"
 
 // Lightweight renderer that creates wireframe pipelines against arbitrary render
 // passes and draws geometry from an external IndirectRenderer.  Owned by
@@ -42,4 +43,7 @@ public:
 private:
     VkPipeline wireframePipeline = VK_NULL_HANDLE;
     VkPipelineLayout wireframePipelineLayout = VK_NULL_HANDLE;
+    CommandBufferState* cmdState = nullptr;
+public:
+    void setCmdState(CommandBufferState* state) { cmdState = state; }
 };
