@@ -266,8 +266,8 @@ protected:
         VkFence submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore = nullptr);
         // Submit a pre-recorded command buffer and block until it completes.
         void submitCommandBufferAndWait(VkCommandBuffer commandBuffer);
-        // Submit `VkSubmitInfo` array while serializing access to the `graphicsQueue` to avoid concurrent queue use from multiple threads.
-        void submitAndWait(const VkSubmitInfo* submits, uint32_t submitCount, VkFence fence = VK_NULL_HANDLE);
+        // Submit `VkSubmitInfo2` array while serializing access to the `graphicsQueue` to avoid concurrent queue use from multiple threads.
+        void submitAndWait(const VkSubmitInfo2* submits, uint32_t submitCount, VkFence fence = VK_NULL_HANDLE);
         // Wait for the graphics queue to become idle (vkQueueWaitIdle) while holding
         // `graphicsSubmitMutex` to avoid races with concurrent submissions.  This is
         // usually sufficient for synchronizing most operations and avoids the
@@ -313,7 +313,7 @@ protected:
         void deferDestroyUntilFence(VkFence fence, std::function<void()> destroyFn);
         bool hasPendingCommandBuffers();
         // Add a semaphore that the next frame submission must wait on (for async uploads)
-        void addExtraWaitSemaphore(VkSemaphore sem, VkPipelineStageFlags stage);
+        void addExtraWaitSemaphore(VkSemaphore sem, VkPipelineStageFlags2 stage);
         void createDescriptorSetLayout();
 
     // ImGui integration glue: backend can call these to route submits through the

@@ -120,7 +120,7 @@ std::unordered_map<VkCommandBuffer, std::string> g_cmdBacktraces;
 std::mutex extraSemaphoreMutex;
 // Extra semaphores signaled by async submissions paired with the pipeline
 // stage mask the frame submit should wait on for that semaphore.
-std::vector<std::pair<VkSemaphore, VkPipelineStageFlags>> extraWaitSemaphores;
+std::vector<std::pair<VkSemaphore, VkPipelineStageFlags2>> extraWaitSemaphores;
 // semaphores scheduled for destruction paired with the frame fence they were associated with
 std::vector<std::pair<VkSemaphore,uint64_t>> semaphoresPendingDestroy; // paired with frameTimeline value
 
@@ -2266,7 +2266,7 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
         // Use a conservative union of likely consumer stages when the
         // producing queue is the graphics/compute family.
         std::lock_guard<std::mutex> lk(extraSemaphoreMutex);
-        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        VkPipelineStageFlags2 waitStage = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         extraWaitSemaphores.emplace_back(semaphore, waitStage);
     }
 
@@ -2396,11 +2396,11 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         *outSemaphore = semaphore;
 
         std::lock_guard<std::mutex> lk(extraSemaphoreMutex);
-        VkPipelineStageFlags waitStage =
-            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
-            VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
-            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-            VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT;
+        VkPipelineStageFlags2 waitStage =
+            VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
+            VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
+            VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT;
         extraWaitSemaphores.emplace_back(semaphore, waitStage);
     }
 
@@ -3371,7 +3371,7 @@ bool VulkanApp::hasPendingCommandBuffers() {
     return !pendingCommandBuffers.empty();
 }
 
-void VulkanApp::addExtraWaitSemaphore(VkSemaphore sem, VkPipelineStageFlags stage) {
+void VulkanApp::addExtraWaitSemaphore(VkSemaphore sem, VkPipelineStageFlags2 stage) {
     std::lock_guard<std::mutex> lk(pendingCmdMutex);
     extraWaitSemaphores.emplace_back(sem, stage);
 }
