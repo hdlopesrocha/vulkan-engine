@@ -223,6 +223,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         shadowUBO.passParams.x = 0.0f;
 
         // Wait for previous cascade draws to finish reading the UBO
+        // before overwriting it via vkCmdCopyBuffer.
         {
             VkMemoryBarrier2 preBarrier{};
             preBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
