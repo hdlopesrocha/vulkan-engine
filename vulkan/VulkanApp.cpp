@@ -105,7 +105,7 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
 // Async submission bookkeeping
 std::mutex pendingCmdMutex;
 std::vector<std::pair<VkCommandBuffer,VkFence>> pendingCommandBuffers;
-// Global submit counter and mapping to correlate vkQueueSubmit failures with commandbuffers
+// Global submit counter and mapping to correlate vkQueueSubmit2 failures with commandbuffers
 std::atomic<uint64_t> g_submitCounter{1};
 std::unordered_map<VkCommandBuffer, uint64_t> g_cmdSubmitMap;
 // Map command buffers to the command pool they were allocated from.
@@ -113,7 +113,7 @@ std::unordered_map<VkCommandBuffer, uint64_t> g_cmdSubmitMap;
 // and freeing/destroying the correct pool when work completes.
 std::unordered_map<VkCommandBuffer, VkCommandPool> commandBufferPoolMap;
 // Optional per-command-buffer allocation backtrace to help correlate
-// failing vkQueueSubmit() calls with the code that recorded/allocated
+// failing vkQueueSubmit2() calls with the code that recorded/allocated
 // the command buffer.
 std::unordered_map<VkCommandBuffer, std::string> g_cmdBacktraces;
 
@@ -1488,10 +1488,14 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
         throw std::runtime_error("failed to create fence for single-time submit");
     }
 
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &cmd;
+    VkCommandBufferSubmitInfo cmdBufInfo{};
+    cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmdBufInfo.commandBuffer = cmd;
+
+    VkSubmitInfo2 submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submitInfo.commandBufferInfoCount = 1;
+    submitInfo.pCommandBufferInfos = &cmdBufInfo;
 
     {
         std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
@@ -1506,11 +1510,11 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
         // a populated authoritative layout for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(cmd);
 
-        VkResult submitRes = vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence);
+        VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
         if (submitRes != VK_SUCCESS) {
             if (submitRes == VK_ERROR_DEVICE_LOST) {
                 deviceLost.store(true);
-                std::cerr << "[VulkanApp] runSingleTimeCommands: vkQueueSubmit returned VK_ERROR_DEVICE_LOST; registering fence and deferring command-buffer cleanup\n";
+                std::cerr << "[VulkanApp] runSingleTimeCommands: vkQueueSubmit2 returned VK_ERROR_DEVICE_LOST; registering fence and deferring command-buffer cleanup\n";
                 resources.addFence(fence, "VulkanApp::runSingleTimeCommands: fence");
                 {
                     std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
@@ -1600,10 +1604,10 @@ void VulkanApp::runSingleTimeCommandsOnTransfer(const std::function<void(VkComma
     runSingleTimeCommands(fn);
 }
 
-void VulkanApp::submitAndWait(const VkSubmitInfo* submits, uint32_t submitCount, VkFence fence) {
+void VulkanApp::submitAndWait(const VkSubmitInfo2* submits, uint32_t submitCount, VkFence fence) {
     {
         std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
-        vkQueueSubmit(graphicsQueue, submitCount, submits, fence);
+        vkQueueSubmit2(graphicsQueue, submitCount, submits, fence);
     }
     if (fence == VK_NULL_HANDLE) {
         vkQueueWaitIdle(graphicsQueue);
@@ -2170,15 +2174,26 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
         resources.addSemaphore(semaphore, "VulkanApp::submitCommandBufferAsync: semaphore");
     }
 
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-    submitInfo.signalSemaphoreCount = (semaphore != VK_NULL_HANDLE) ? 1u : 0u;
-    submitInfo.pSignalSemaphores = (semaphore != VK_NULL_HANDLE) ? &semaphore : nullptr;
+    VkCommandBufferSubmitInfo cmdBufInfo{};
+    cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmdBufInfo.commandBuffer = commandBuffer;
+
+    VkSemaphoreSubmitInfo signalSemaphoreInfo{};
+    signalSemaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    signalSemaphoreInfo.semaphore = semaphore;
+    signalSemaphoreInfo.value = 0;
+    signalSemaphoreInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    signalSemaphoreInfo.deviceIndex = 0;
+
+    VkSubmitInfo2 submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submitInfo.commandBufferInfoCount = 1;
+    submitInfo.pCommandBufferInfos = &cmdBufInfo;
+    submitInfo.signalSemaphoreInfoCount = (semaphore != VK_NULL_HANDLE) ? 1u : 0u;
+    submitInfo.pSignalSemaphoreInfos = (semaphore != VK_NULL_HANDLE) ? &signalSemaphoreInfo : nullptr;
 
     {
-        // Serialize pre-apply and the subsequent vkQueueSubmit so the
+        // Serialize pre-apply and the subsequent vkQueueSubmit2 so the
         // authoritative tracked layouts reflect submission order. Acquire
         // `graphicsSubmitMutex` first to maintain consistent lock ordering.
         std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
@@ -2212,12 +2227,12 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
         // a populated authoritative layout for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
-        VkResult submitRes = vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence);
+        VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
         if (submitRes != VK_SUCCESS) {
             if (submitRes == VK_ERROR_DEVICE_LOST) {
                 // Mark global device lost state so other subsystems can adapt.
                 deviceLost.store(true);
-                std::cerr << "[VulkanApp] submitCommandBufferAsync: vkQueueSubmit returned VK_ERROR_DEVICE_LOST\n";
+                std::cerr << "[VulkanApp] submitCommandBufferAsync: vkQueueSubmit2 returned VK_ERROR_DEVICE_LOST\n";
                 // Print allocation backtrace (if available) to aid root-cause analysis
                 {
                     std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
@@ -2300,14 +2315,23 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         resources.addSemaphore(semaphore, "VulkanApp::submitCommandBufferAsyncToQueue: semaphore");
     }
 
-    // Signal only binary semaphore if requested. Same-queue transfers don't
-    // need timeline — queue submission order guarantees transfer-before-render.
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-    submitInfo.signalSemaphoreCount = (semaphore != VK_NULL_HANDLE) ? 1u : 0u;
-    submitInfo.pSignalSemaphores = (semaphore != VK_NULL_HANDLE) ? &semaphore : nullptr;
+    VkCommandBufferSubmitInfo cmdBufInfo{};
+    cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmdBufInfo.commandBuffer = commandBuffer;
+
+    VkSemaphoreSubmitInfo signalSemaphoreInfo{};
+    signalSemaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    signalSemaphoreInfo.semaphore = semaphore;
+    signalSemaphoreInfo.value = 0;
+    signalSemaphoreInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    signalSemaphoreInfo.deviceIndex = 0;
+
+    VkSubmitInfo2 submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submitInfo.commandBufferInfoCount = 1;
+    submitInfo.pCommandBufferInfos = &cmdBufInfo;
+    submitInfo.signalSemaphoreInfoCount = (semaphore != VK_NULL_HANDLE) ? 1u : 0u;
+    submitInfo.pSignalSemaphoreInfos = (semaphore != VK_NULL_HANDLE) ? &signalSemaphoreInfo : nullptr;
 
     {
         // Serialize pre-apply and submission to maintain consistent ordering
@@ -2346,11 +2370,11 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         // Promote pending layout updates for this submission
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
-        VkResult submitRes = vkQueueSubmit(targetQueue, 1, &submitInfo, fence);
+        VkResult submitRes = vkQueueSubmit2(targetQueue, 1, &submitInfo, fence);
         if (submitRes != VK_SUCCESS) {
             if (semaphore != VK_NULL_HANDLE) {
                 if (submitRes == VK_ERROR_DEVICE_LOST) {
-                    std::cerr << "[VulkanApp] submitCommandBufferAsyncToQueue: vkQueueSubmit returned VK_ERROR_DEVICE_LOST\n";
+                    std::cerr << "[VulkanApp] submitCommandBufferAsyncToQueue: vkQueueSubmit2 returned VK_ERROR_DEVICE_LOST\n";
                 } else {
                     resources.removeSemaphore(semaphore);
                     vkDestroySemaphore(device, semaphore, nullptr);
@@ -2416,10 +2440,14 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
         throw std::runtime_error("failed to create fence for submitCommandBufferAndWait");
     }
 
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
+    VkCommandBufferSubmitInfo cmdBufInfo{};
+    cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmdBufInfo.commandBuffer = commandBuffer;
+
+    VkSubmitInfo2 submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submitInfo.commandBufferInfoCount = 1;
+    submitInfo.pCommandBufferInfos = &cmdBufInfo;
 
     {
         // Serialize pre-apply and submission to maintain consistent ordering
@@ -2429,11 +2457,11 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
         // sees populated layouts for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
-        VkResult submitRes = vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence);
+        VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
         if (submitRes != VK_SUCCESS) {
             if (submitRes == VK_ERROR_DEVICE_LOST) {
                 deviceLost.store(true);
-                std::cerr << "[VulkanApp] submitCommandBufferAndWait: vkQueueSubmit returned VK_ERROR_DEVICE_LOST\n";
+                std::cerr << "[VulkanApp] submitCommandBufferAndWait: vkQueueSubmit2 returned VK_ERROR_DEVICE_LOST\n";
                 // Print allocation backtrace (if available) to help correlate
                 // the failing submit with the recording site.
                 {
@@ -2610,7 +2638,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             commandBufferPoolMap[cmd] = pool;
 
             // Capture an allocation backtrace for this command buffer so
-            // we can later correlate failing vkQueueSubmit() calls with
+            // we can later correlate failing vkQueueSubmit2() calls with
             // the code path that allocated/recorded the command buffer.
             void* bt_buf[32];
             int bt_n = backtrace(bt_buf, 32);
@@ -3431,7 +3459,7 @@ void VulkanApp::createSyncObjects() {
     // imageAvailableSemaphores: one per CPU frame-in-flight slot, used to wait on acquire
     imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
     // renderFinishedSemaphores: one per swapchain image to avoid re-signaling a semaphore
-    // that is still in use by the presentation engine (VUID-vkQueueSubmit-pSignalSemaphores-00067).
+    // that is still in use by the presentation engine (VUID-vkQueueSubmit2-pSignalSemaphores-00067).
     renderFinishedSemaphores.resize(numImages);
 
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -4677,7 +4705,7 @@ void VulkanApp::drawFrame() {
         imageLayerLayouts[key] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     }
 
-    // reset current frame fence so vkQueueSubmit can signal it
+    // reset current frame fence so vkQueueSubmit2 can signal it
     VkResult resetFenceResult = vkResetFences(device, 1, &inFlightFences[currentFrame]);
     if (resetFenceResult == VK_ERROR_DEVICE_LOST) return;
     if (resetFenceResult != VK_SUCCESS) {
@@ -4721,19 +4749,28 @@ void VulkanApp::drawFrame() {
     }
     imguiLastTime = now;
 
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
     // Wait on the semaphore used for this acquire (indexed by semaphoreIndex)
-    std::vector<VkSemaphore> waitSemaphoresVec = { imageAvailableSemaphores[semaphoreIndex] };
-    std::vector<VkPipelineStageFlags> waitStagesVec = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+    std::vector<VkSemaphoreSubmitInfo> waitSemaphoreInfos;
+
+    VkSemaphoreSubmitInfo initialWait{};
+    initialWait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    initialWait.semaphore = imageAvailableSemaphores[semaphoreIndex];
+    initialWait.value = 0;
+    initialWait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    initialWait.deviceIndex = 0;
+    waitSemaphoreInfos.push_back(initialWait);
 
     // Pull extra semaphores signaled by async generation submissions (if any)
     {
         std::lock_guard<std::mutex> lk(extraSemaphoreMutex);
         for (auto &e : extraWaitSemaphores) {
-            waitSemaphoresVec.push_back(e.first);
-            waitStagesVec.push_back(e.second);
+            VkSemaphoreSubmitInfo extraWait{};
+            extraWait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+            extraWait.semaphore = e.first;
+            extraWait.value = 0;
+            extraWait.stageMask = e.second;
+            extraWait.deviceIndex = 0;
+            waitSemaphoreInfos.push_back(extraWait);
         }
         // Move them to semaphoresPendingDestroy so they can be destroyed after this frame's fence signals
         if (!extraWaitSemaphores.empty()) {
@@ -4742,35 +4779,29 @@ void VulkanApp::drawFrame() {
         }
     }
 
-    submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphoresVec.size());
-    submitInfo.pWaitSemaphores = waitSemaphoresVec.data();
-    submitInfo.pWaitDstStageMask = waitStagesVec.data();
-
-    // Copy the wait arrays into local storage so address stays valid while submitInfo references them
-    std::vector<VkSemaphore> localWaitSemaphores = std::move(waitSemaphoresVec);
-    std::vector<VkPipelineStageFlags> localWaitStages = std::move(waitStagesVec);
-    submitInfo.waitSemaphoreCount = static_cast<uint32_t>(localWaitSemaphores.size());
-    submitInfo.pWaitSemaphores = localWaitSemaphores.data();
-    submitInfo.pWaitDstStageMask = localWaitStages.data();
-
     // Signal semaphore indexed by swapchain image (binary, for presentation engine)
     // and the frame timeline semaphore (for CPU frame pacing).
     uint64_t nextTimelineValue = frameTimelineValue.load() + 1;
     VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[imageIndex], frameTimeline };
-    submitInfo.signalSemaphoreCount = 2;
-    submitInfo.pSignalSemaphores = signalSemaphores;
 
-    // VkTimelineSemaphoreSubmitInfo provides the signal value for the timeline
-    // semaphore. Binary semaphore values are ignored but the count must match.
-    std::vector<uint64_t> waitSemaphoreValues(localWaitSemaphores.size(), 0);
-    uint64_t signalSemaphoreValues[2] = { 0, nextTimelineValue };
-    VkTimelineSemaphoreSubmitInfo timelineInfo{};
-    timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
-    timelineInfo.waitSemaphoreValueCount = static_cast<uint32_t>(localWaitSemaphores.size());
-    timelineInfo.pWaitSemaphoreValues = waitSemaphoreValues.data();
-    timelineInfo.signalSemaphoreValueCount = 2;
-    timelineInfo.pSignalSemaphoreValues = signalSemaphoreValues;
-    submitInfo.pNext = &timelineInfo;
+    VkSemaphoreSubmitInfo signalSemaphoreInfos[2] = {};
+    signalSemaphoreInfos[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    signalSemaphoreInfos[0].semaphore = renderFinishedSemaphores[imageIndex];
+    signalSemaphoreInfos[0].value = 0;
+    signalSemaphoreInfos[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    signalSemaphoreInfos[0].deviceIndex = 0;
+    signalSemaphoreInfos[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    signalSemaphoreInfos[1].semaphore = frameTimeline;
+    signalSemaphoreInfos[1].value = nextTimelineValue;
+    signalSemaphoreInfos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    signalSemaphoreInfos[1].deviceIndex = 0;
+
+    VkSubmitInfo2 submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submitInfo.waitSemaphoreInfoCount = static_cast<uint32_t>(waitSemaphoreInfos.size());
+    submitInfo.pWaitSemaphoreInfos = waitSemaphoreInfos.data();
+    submitInfo.signalSemaphoreInfoCount = 2;
+    submitInfo.pSignalSemaphoreInfos = signalSemaphoreInfos;
 
     // Debug: check commandBuffers size and imageIndex
     if (imageIndex >= commandBuffers.size()) {
@@ -4913,8 +4944,11 @@ void VulkanApp::drawFrame() {
         return;
     }
 
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
+    VkCommandBufferSubmitInfo cmdBufInfo{};
+    cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmdBufInfo.commandBuffer = commandBuffer;
+    submitInfo.commandBufferInfoCount = 1;
+    submitInfo.pCommandBufferInfos = &cmdBufInfo;
 
     {
         // Serialize pre-apply and submission to ensure tracked layouts match
@@ -4935,10 +4969,10 @@ void VulkanApp::drawFrame() {
                   << " cmd=" << (void*)commandBuffer
                   << " imageIndex=" << imageIndex
                   << " image=" << (void*)swapchainImages[imageIndex]
-                  << " waitCount=" << localWaitSemaphores.size();
-        for (size_t _i = 0; _i < localWaitSemaphores.size(); ++_i) {
-            std::cerr << " wait[" << _i << "]=" << (void*)localWaitSemaphores[_i]
-                      << "/" << localWaitStages[_i];
+                  << " waitCount=" << waitSemaphoreInfos.size();
+        for (size_t _i = 0; _i < waitSemaphoreInfos.size(); ++_i) {
+            std::cerr << " wait[" << _i << "]=" << (void*)waitSemaphoreInfos[_i].semaphore
+                      << "/" << waitSemaphoreInfos[_i].stageMask;
         }
         std::cerr << std::endl;
 #endif
@@ -4947,7 +4981,7 @@ void VulkanApp::drawFrame() {
         // sees populated layouts for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
-        r = vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]);
+        r = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]);
         if (r == VK_SUCCESS) {
             frameTimelineValue.store(nextTimelineValue);
         }
@@ -4960,7 +4994,7 @@ void VulkanApp::drawFrame() {
     if (r == VK_ERROR_DEVICE_LOST) {
         return;
     } else if (r != VK_SUCCESS) {
-        std::cerr << "vkQueueSubmit failed: " << r << std::endl;
+        std::cerr << "vkQueueSubmit2 failed: " << r << std::endl;
         return;
     }
 
