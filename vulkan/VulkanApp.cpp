@@ -122,7 +122,7 @@ std::mutex extraSemaphoreMutex;
 // stage mask the frame submit should wait on for that semaphore.
 std::vector<std::pair<VkSemaphore, VkPipelineStageFlags>> extraWaitSemaphores;
 // semaphores scheduled for destruction paired with the frame fence they were associated with
-std::vector<std::pair<VkSemaphore,VkFence>> semaphoresPendingDestroy;
+std::vector<std::pair<VkSemaphore,uint64_t>> semaphoresPendingDestroy; // paired with frameTimeline value
 
 // Deferred destruction bookkeeping (resource destroy callbacks paired with a fence to wait on)
 std::mutex deferredDestroyMutex;
@@ -971,6 +971,12 @@ void VulkanApp::cleanup() {
         resources.removeSemaphore(uploadTimeline);
         vkDestroySemaphore(device, uploadTimeline, nullptr);
         uploadTimeline = VK_NULL_HANDLE;
+    }
+    // Destroy the frame timeline semaphore
+    if (frameTimeline != VK_NULL_HANDLE) {
+        resources.removeSemaphore(frameTimeline);
+        vkDestroySemaphore(device, frameTimeline, nullptr);
+        frameTimeline = VK_NULL_HANDLE;
     }
     // Process any deferred-destruction callbacks immediately so resources
     // scheduled with deferDestroyUntilAllPending() are released while the
@@ -1860,14 +1866,11 @@ void VulkanApp::processPendingCommandBuffers() {
                     pendingEmpty = pendingCommandBuffers.empty();
                 }
                 if (pendingEmpty) {
-                    bool allFramesIdle = true;
-                    for (const VkFence &frameFence : inFlightFences) {
-                        if (frameFence == VK_NULL_HANDLE) continue;
-                        // If resource manager no longer tracks this fence the
-                        // fence was destroyed elsewhere; treat it as signaled.
-                        if (!resources.find((uintptr_t)frameFence).has_value()) continue;
-                        VkResult st = vkGetFenceStatus(device, frameFence);
-                        if (st != VK_SUCCESS) { allFramesIdle = false; break; }
+                    bool allFramesIdle = false;
+                    uint64_t curVal = 0;
+                    VkResult st = vkGetSemaphoreCounterValue(device, frameTimeline, &curVal);
+                    if (st == VK_SUCCESS && curVal >= frameTimelineValue.load()) {
+                        allFramesIdle = true;
                     }
                     if (allFramesIdle) canRun = true;
                 }
@@ -3435,9 +3438,27 @@ void VulkanApp::createSyncObjects() {
         resources.addFence(inFlightFences[i], "VulkanApp: inFlightFence");
     }
 
-    // imagesInFlight tracks which fence is using each swapchain image (initialized null)
+    // Create the frame timeline semaphore (replaces per-frame binary fences for frame pacing).
+    // Enables finer CPU↔GPU overlap by allowing intermediate signal points per frame.
+    {
+        VkSemaphoreTypeCreateInfo typeInfo{};
+        typeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+        typeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        typeInfo.initialValue = 0;
+
+        VkSemaphoreCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        createInfo.pNext = &typeInfo;
+        if (vkCreateSemaphore(device, &createInfo, nullptr, &frameTimeline) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create frame timeline semaphore");
+        }
+        resources.addSemaphore(frameTimeline, "VulkanApp: frameTimeline");
+        frameTimelineValue.store(0);
+    }
+
+    // imagesInFlight tracks the frameTimeline value when each swapchain image was last acquired
     imagesInFlight.clear();
-    imagesInFlight.resize(numImages, VK_NULL_HANDLE);
+    imagesInFlight.resize(numImages, 0);
 
     // Create the upload timeline semaphore (replaces per-upload binary semaphores)
     {
@@ -4566,15 +4587,28 @@ void VulkanApp::drawFrame() {
     // acquire semaphore and submit wait semaphore are aligned per-frame.
     uint32_t semaphoreIndex = currentFrame;
 
-    // Wait for the CPU frame fence for the current frame first. This limits
-    // the number of outstanding acquired swapchain images to the number of
-    // CPU frames-in-flight and ensures forward progress for vkAcquireNextImageKHR
-    // when using an infinite timeout (UINT64_MAX).
-    VkResult waitForFrameFence = vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-    if (waitForFrameFence == VK_ERROR_DEVICE_LOST) return;
-    if (waitForFrameFence != VK_SUCCESS) {
-        std::cerr << "vkWaitForFences failed: " << waitForFrameFence << std::endl;
-        return;
+    // Wait for the oldest in-flight frame using the frame timeline semaphore.
+    // This limits outstanding frames to MAX_FRAMES_IN_FLIGHT and enables finer
+    // CPU↔GPU overlap vs. binary fences — intermediate signal points can be
+    // added later (e.g., after shadow pass) to reduce stalls on queue bubbles.
+    {
+        uint64_t counter = frameTimelineValue.load();
+        uint64_t targetValue = (counter >= MAX_FRAMES_IN_FLIGHT)
+            ? (counter - MAX_FRAMES_IN_FLIGHT + 1)
+            : 0;
+        if (targetValue > 0) {
+            VkSemaphoreWaitInfo waitInfo{};
+            waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+            waitInfo.semaphoreCount = 1;
+            waitInfo.pSemaphores = &frameTimeline;
+            waitInfo.pValues = &targetValue;
+            VkResult r = vkWaitSemaphores(device, &waitInfo, UINT64_MAX);
+            if (r == VK_ERROR_DEVICE_LOST) return;
+            if (r != VK_SUCCESS) {
+                std::cerr << "vkWaitSemaphores (frameTimeline) failed: " << r << std::endl;
+                return;
+            }
+        }
     }
 
     // Acquire next image using per-image semaphore
@@ -4589,22 +4623,30 @@ void VulkanApp::drawFrame() {
         return;
     }
 
-    // If a previous frame is using this image and it's a DIFFERENT frame than current,
-    // we need to wait for it. With MAX_FRAMES_IN_FLIGHT >= swapchain images, this is rare.
-    // Optimization: only wait if the image's fence differs from the one we just waited on.
-    if (imagesInFlight.size() > imageIndex && 
-        imagesInFlight[imageIndex] != VK_NULL_HANDLE &&
-        imagesInFlight[imageIndex] != inFlightFences[currentFrame]) {
-        VkResult res = vkWaitForFences(device, 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
-        if (res == VK_ERROR_DEVICE_LOST) return;
-        if (res != VK_SUCCESS) {
-            std::cerr << "vkWaitForFences (image) failed: " << res << std::endl;
-            return;
+    // If a previous frame is using this image, wait for its frameTimeline value.
+    // With MAX_FRAMES_IN_FLIGHT >= swapchain images, this is rare — only matters
+    // when the swapchain has more images than frames in flight.
+    {
+        uint64_t nextVal = frameTimelineValue.load() + 1; // value we'll signal after submit
+        if (imagesInFlight.size() > imageIndex &&
+            imagesInFlight[imageIndex] != 0 &&
+            imagesInFlight[imageIndex] != nextVal) {
+            uint64_t waitVal = imagesInFlight[imageIndex];
+            VkSemaphoreWaitInfo waitInfo{};
+            waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+            waitInfo.semaphoreCount = 1;
+            waitInfo.pSemaphores = &frameTimeline;
+            waitInfo.pValues = &waitVal;
+            VkResult res = vkWaitSemaphores(device, &waitInfo, UINT64_MAX);
+            if (res == VK_ERROR_DEVICE_LOST) return;
+            if (res != VK_SUCCESS) {
+                std::cerr << "vkWaitSemaphores (image) failed: " << res << std::endl;
+                return;
+            }
         }
+        // Mark this image as now being used by the current frame's timeline value
+        if (imagesInFlight.size() > imageIndex) imagesInFlight[imageIndex] = nextVal;
     }
-
-    // Mark this image as now being used by the current frame's fence
-    if (imagesInFlight.size() > imageIndex) imagesInFlight[imageIndex] = inFlightFences[currentFrame];
 
     // Record authoritative tracked layout for the acquired swapchain image.
     // The acquire operation yields the image in PRESENT_SRC_KHR for use
@@ -4676,7 +4718,7 @@ void VulkanApp::drawFrame() {
         }
         // Move them to semaphoresPendingDestroy so they can be destroyed after this frame's fence signals
         if (!extraWaitSemaphores.empty()) {
-            for (auto &e : extraWaitSemaphores) semaphoresPendingDestroy.emplace_back(e.first, inFlightFences[currentFrame]);
+            for (auto &e : extraWaitSemaphores) semaphoresPendingDestroy.emplace_back(e.first, frameTimelineValue.load() + 1);
             extraWaitSemaphores.clear();
         }
     }
@@ -4692,11 +4734,24 @@ void VulkanApp::drawFrame() {
     submitInfo.pWaitSemaphores = localWaitSemaphores.data();
     submitInfo.pWaitDstStageMask = localWaitStages.data();
 
-    // Signal semaphore indexed by swapchain image to avoid re-signaling before
-    // the presentation engine re-acquires the image (per-image semaphore).
-    VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[imageIndex] };
-    submitInfo.signalSemaphoreCount = 1;
+    // Signal semaphore indexed by swapchain image (binary, for presentation engine)
+    // and the frame timeline semaphore (for CPU frame pacing).
+    uint64_t nextTimelineValue = frameTimelineValue.load() + 1;
+    VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[imageIndex], frameTimeline };
+    submitInfo.signalSemaphoreCount = 2;
     submitInfo.pSignalSemaphores = signalSemaphores;
+
+    // VkTimelineSemaphoreSubmitInfo provides the signal value for the timeline
+    // semaphore. Binary semaphore values are ignored but the count must match.
+    std::vector<uint64_t> waitSemaphoreValues(localWaitSemaphores.size(), 0);
+    uint64_t signalSemaphoreValues[2] = { 0, nextTimelineValue };
+    VkTimelineSemaphoreSubmitInfo timelineInfo{};
+    timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+    timelineInfo.waitSemaphoreValueCount = static_cast<uint32_t>(localWaitSemaphores.size());
+    timelineInfo.pWaitSemaphoreValues = waitSemaphoreValues.data();
+    timelineInfo.signalSemaphoreValueCount = 2;
+    timelineInfo.pSignalSemaphoreValues = signalSemaphoreValues;
+    submitInfo.pNext = &timelineInfo;
 
     // Debug: check commandBuffers size and imageIndex
     if (imageIndex >= commandBuffers.size()) {
@@ -4874,6 +4929,9 @@ void VulkanApp::drawFrame() {
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
         r = vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]);
+        if (r == VK_SUCCESS) {
+            frameTimelineValue.store(nextTimelineValue);
+        }
         // Register pending layout updates recorded into this frame's command
         // buffer so they are applied when the frame fence signals.
         deferDestroyUntilFence(inFlightFences[currentFrame], [this, commandBuffer]() {
@@ -4887,18 +4945,20 @@ void VulkanApp::drawFrame() {
         return;
     }
 
-    // Cleanup any semaphores that were associated with earlier frames and are now safe to destroy
-    for (auto it = semaphoresPendingDestroy.begin(); it != semaphoresPendingDestroy.end(); ) {
-        VkSemaphore s = it->first;
-        VkFence f = it->second;
-        VkResult st = vkGetFenceStatus(device, f);
-        if (st == VK_SUCCESS) {
-            // frame fence signaled -> safe to destroy semaphore (unregister first)
-            resources.removeSemaphore(s);
-            vkDestroySemaphore(device, s, nullptr);
-            it = semaphoresPendingDestroy.erase(it);
-        } else {
-            ++it;
+    // Cleanup any semaphores whose frameTimeline value has been reached
+    {
+        uint64_t curVal = 0;
+        vkGetSemaphoreCounterValue(device, frameTimeline, &curVal);
+        for (auto it = semaphoresPendingDestroy.begin(); it != semaphoresPendingDestroy.end(); ) {
+            VkSemaphore s = it->first;
+            uint64_t waitVal = it->second;
+            if (curVal >= waitVal) {
+                resources.removeSemaphore(s);
+                vkDestroySemaphore(device, s, nullptr);
+                it = semaphoresPendingDestroy.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
 
@@ -4930,14 +4990,17 @@ void VulkanApp::drawFrame() {
 
     // Process pending command buffers and semaphores cleanup now that present is done
     processPendingCommandBuffers();
-    for (auto it = semaphoresPendingDestroy.begin(); it != semaphoresPendingDestroy.end();) {
-        VkSemaphore s = it->first; VkFence f = it->second;
-        VkResult st = vkGetFenceStatus(device, f);
-        if (st == VK_SUCCESS) {
-            resources.removeSemaphore(s);
-            vkDestroySemaphore(device, s, nullptr);
-            it = semaphoresPendingDestroy.erase(it);
-        } else ++it;
+    {
+        uint64_t curVal = 0;
+        vkGetSemaphoreCounterValue(device, frameTimeline, &curVal);
+        for (auto it = semaphoresPendingDestroy.begin(); it != semaphoresPendingDestroy.end();) {
+            VkSemaphore s = it->first; uint64_t waitVal = it->second;
+            if (curVal >= waitVal) {
+                resources.removeSemaphore(s);
+                vkDestroySemaphore(device, s, nullptr);
+                it = semaphoresPendingDestroy.erase(it);
+            } else ++it;
+        }
     }
     //std::cerr << "presented image " << imageIndex << "\n";
 
@@ -5008,9 +5071,19 @@ void VulkanApp::recreateSwapchain() {
         return;
     }
     
-    // Wait for all in-flight fences before clearing tracking
-    for (size_t i = 0; i < inFlightFences.size(); i++) {
-        vkWaitForFences(device, 1, &inFlightFences[i], VK_TRUE, UINT64_MAX);
+    // Wait for all in-flight frames via the timeline semaphore.
+    // deviceWaitIdle above already ensures this, but the explicit wait
+    // guarantees the timeline value is visible to the CPU.
+    {
+        uint64_t target = frameTimelineValue.load();
+        if (target > 0) {
+            VkSemaphoreWaitInfo waitInfo{};
+            waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+            waitInfo.semaphoreCount = 1;
+            waitInfo.pSemaphores = &frameTimeline;
+            waitInfo.pValues = &target;
+            vkWaitSemaphores(device, &waitInfo, UINT64_MAX);
+        }
     }
     
     cleanupSwapchain();
@@ -5024,7 +5097,7 @@ void VulkanApp::recreateSwapchain() {
 
     // Ensure imagesInFlight matches the new swapchain image count
     imagesInFlight.clear();
-    imagesInFlight.resize(swapchainImages.size(), VK_NULL_HANDLE);
+    imagesInFlight.resize(swapchainImages.size(), 0);
 
     // Recreate sync objects (semaphores) with the correct count for the new swapchain.
     // Destroy old semaphores first since cleanupSwapchain preserved them.

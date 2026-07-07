@@ -113,7 +113,7 @@ class VulkanApp {
     VmaContext vma;
     bool vmaReady = false;
 
-    std::vector<VkFence> imagesInFlight;
+    std::vector<uint64_t> imagesInFlight; // stores frameTimeline value when image was last acquired
     // frame index for round-robin CPU frames-in-flight
     uint32_t currentFrame = 0;
 
@@ -123,7 +123,14 @@ class VulkanApp {
     // submission waits on the latest value to ensure all uploads complete
     // before rendering.
     VkSemaphore uploadTimeline = VK_NULL_HANDLE;
-    std::atomic<uint64_t> uploadTimelineValue{0};    // Per-frame binary semaphores for cross-queue buffer dependency tracking.
+    std::atomic<uint64_t> uploadTimelineValue{0};
+    // Timeline semaphore for frame pacing. Replaces per-frame binary fences.
+    // Each frame's queue submit signals a strictly increasing value. The CPU
+    // waits on this at the start of drawFrame for the oldest in-flight frame.
+    // Enables finer CPU↔GPU overlap — intermediate signal points can be added
+    // (e.g., after shadow pass) to reduce stalls on queue bubbles.
+    VkSemaphore frameTimeline = VK_NULL_HANDLE;
+    std::atomic<uint64_t> frameTimelineValue{0};    // Per-frame binary semaphores for cross-queue buffer dependency tracking.
     // Every async transfer signals this frame's semaphore; the graphics frame
     // waits on it. The validator requires binary semaphores for cross-queue
     // buffer hazard tracking.
