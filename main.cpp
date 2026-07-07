@@ -68,6 +68,7 @@
 #include "services/TextureMixer.hpp"
 #include "services/BillboardService.hpp"
 #include "utils/ShadowParams.hpp"
+#include "space/ThreadPool.hpp"
 
 class MyApp : public VulkanApp, public IEventHandler {
 public:
@@ -177,6 +178,7 @@ public:
     struct PoolSetPair { VkDescriptorPool pool; VkDescriptorSet set; };
     PoolSetPair cachedBackfaceCompute[ASYNC_RING_SIZE]{};
     uint32_t ringBackfaceCompute = 0;
+    ThreadPool asyncThreadPool{1}; // single worker for per-frame back-face pass
 
     // Persistent cubemap resources (used inline on main CB, no async race)
     Buffer cube360UBO{};
@@ -1119,27 +1121,15 @@ public:
         }
 
         // Launch asynchronous recording+submit for independent offscreen passes
-        std::vector<std::thread> asyncTasks;
-        // RAII guard: ensure any launched threads are joined if an exception
-        // escapes this function so std::terminate is not called from thread
-        // destructors. Joining here replicates the previous explicit join
-        // behavior in all exit paths.
-        struct ThreadJoiner {
-            std::vector<std::thread>& threads_;
-            ThreadJoiner(std::vector<std::thread>& t) : threads_(t) {}
-            ~ThreadJoiner() {
-                for (auto &thr : threads_) {
-                    if (thr.joinable()) thr.join();
-                }
-            }
-        } threadJoiner(asyncTasks);
+        // using a persistent thread pool to avoid per-frame std::thread creation overhead.
         bool launchedBackFace = false;
         VkSemaphore semBackFace = VK_NULL_HANDLE;
+        std::future<void> asyncBackFaceFuture;
 
         // Back-face depth for water
         if (waterEnabled && sceneRenderer && sceneRenderer->backFaceRenderer) {
             launchedBackFace = true;
-            asyncTasks.emplace_back([this, viewProj, frameIdx, &semBackFace]() {
+            asyncBackFaceFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, &semBackFace]() {
                 VulkanApp* app = this;
                 VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
                 VkCommandBufferBeginInfo beginInfo{};
@@ -1242,11 +1232,10 @@ public:
             });
         }
 
-        // Wait for any async recording/submits to complete before water pass so no two
-        // threads call vkCmdBindDescriptorSets with the same descriptor set concurrently.
-        for (auto &t : asyncTasks) {
-            if (t.joinable()) t.join();
-        }
+        // Wait for the async back-face task to complete before water pass so no two
+        // threads call vkCmdBindDescriptorSets with the same descriptor set concurrently
+        // and to ensure semBackFace is signaled before waterPass uses it.
+        if (asyncBackFaceFuture.valid()) asyncBackFaceFuture.wait();
 
         // Run water geometry pass offscreen and bind scene textures for post-process
         if (waterEnabled) {
@@ -1264,11 +1253,6 @@ public:
                 mainTime, launchedBackFace, skyView, cubeReflectionView);
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 15);
-        }
-
-        // Wait for any async recording/submits to complete their submit calls so semaphores are registered
-        for (auto &t : asyncTasks) {
-            if (t.joinable()) t.join();
         }
 
         profileCpuRecord = std::chrono::duration<float, std::milli>(
