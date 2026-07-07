@@ -525,20 +525,14 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
         return 0;
     }
 
-    // Allocate a per-chunk descriptor set from the shared cached descriptor pool.
-    VkDescriptorSet descSet = VK_NULL_HANDLE;
-    VkDescriptorSetAllocateInfo ainfo{};
-    ainfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ainfo.descriptorPool = vegComputeDescPool;
-    ainfo.descriptorSetCount = 1;
-    ainfo.pSetLayouts = &vegComputeDescSetLayout;
-    {
-        std::lock_guard<std::mutex> lk(vegComputeMutex);
-    if (vkAllocateDescriptorSets(device, &ainfo, &descSet) != VK_SUCCESS) {
-        std::cerr << "[VulkanApp::generateVegetationInstancesCompute] Failed to allocate descriptor set!" << std::endl;
+    // Use the pre-allocated cached descriptor set. The caller
+    // (generateChunkInstances) waits for the fence before returning,
+    // so only one dispatch is ever in flight — reusing the same set
+    // is safe and avoids per-chunk alloc/free churn.
+    VkDescriptorSet descSet = vegComputeDescSet;
+    if (descSet == VK_NULL_HANDLE) {
+        std::cerr << "[VulkanApp] vegComputeDescSet not pre-allocated — cannot dispatch\n";
         return 0;
-    }
-    std::cerr << "[RAW ALLOC] generateVegetationInstancesCompute: descSet=" << (void*)descSet << " pool=" << (void*)ainfo.descriptorPool << std::endl;
     }
 
     VkDescriptorBufferInfo vbInfo{ vertexBuffer, 0, VK_WHOLE_SIZE };
@@ -656,15 +650,6 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
     // reads the generated instance buffer.
     VkSemaphore completionSemaphore = VK_NULL_HANDLE;
     VkFence f = submitCommandBufferAsyncToQueue(cmd, vegetationQueue, &completionSemaphore);
-
-    // Defer freeing only the per-chunk descriptor set; cached pipeline/pool persist.
-    deferDestroyUntilFence(f, [device, descSet, this]() {
-        if (descSet != VK_NULL_HANDLE) {
-            std::lock_guard<std::mutex> lk(vegComputeMutex);
-            std::cerr << "[DEFER FREE] Freeing vegCompute descSet=" << (void*)descSet << std::endl;
-            vkFreeDescriptorSets(device, vegComputeDescPool, 1, &descSet);
-        }
-    });
 
     if (outFence) *outFence = f;
     return expectedInstances;
@@ -797,6 +782,20 @@ bool VulkanApp::ensureVegetationComputePipeline() {
             resources.addDescriptorSetLayout(descLayout, "VulkanApp: cachedVegetation ComputeDescSetLayout");
             resources.addDescriptorPool(pool, "VulkanApp: cachedVegetation ComputeDescPool");
             resources.addShaderModule(compModule, "VulkanApp: cachedVegetation ComputeShaderModule");
+
+            // Pre-allocate one descriptor set for serialized async dispatches.
+            // Since generateChunkInstances waits for the fence before returning,
+            // only one dispatch is in flight at a time, so a single cached set
+            // can be safely reused across all dispatches.
+            {
+                VkDescriptorSetAllocateInfo ai{};
+                ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                ai.descriptorPool = pool;
+                ai.descriptorSetCount = 1;
+                ai.pSetLayouts = &descLayout;
+                if (vkAllocateDescriptorSets(dev, &ai, &vegComputeDescSet) == VK_SUCCESS)
+                    resources.addDescriptorSet(vegComputeDescSet, "VulkanApp: cachedVegetation ComputeDescSet");
+            }
             std::cerr << "[VulkanApp] Cached vegetation compute pipeline ready: pipe=" << (void*)pipe << "\n";
         } else {
             // Another thread already initialized; clean up duplicates

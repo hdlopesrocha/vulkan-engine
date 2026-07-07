@@ -175,7 +175,6 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
     if (linearizeDescriptorSet == VK_NULL_HANDLE && linearizeDescriptorSetLayout != VK_NULL_HANDLE) {
         linearizeDescriptorSet = app->createDescriptorSet(linearizeDescriptorSetLayout);
     }
-
     // If a size is provided, create the linearized target images, views
     // and framebuffers once here (they are size-dependent). This method is
     // idempotent and can be called again after a resize.

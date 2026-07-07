@@ -86,6 +86,7 @@ class VulkanApp {
     VkPipelineLayout     vegComputePipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout vegComputeDescSetLayout  = VK_NULL_HANDLE;
     VkDescriptorPool     vegComputeDescPool       = VK_NULL_HANDLE;
+    VkDescriptorSet      vegComputeDescSet        = VK_NULL_HANDLE;
     VkShaderModule       vegComputeShaderModule   = VK_NULL_HANDLE;
     std::mutex           vegComputeMutex; // protects lazy-init of cached compute pipeline
 
