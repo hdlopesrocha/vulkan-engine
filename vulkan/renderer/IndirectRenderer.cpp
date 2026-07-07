@@ -956,7 +956,13 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     pendingDescriptorSet = VK_NULL_HANDLE;
 
     dirty = false;
-    metaBuffersWrittenCount = 0; // rebuild rewrites all entries
+    // rebuild() already wrote all indirect/bounds entries via memcpy above,
+    // so mark every active mesh as written.  Without this the append-only
+    // doUploadMeshMetaBuffers would treat the buffer as empty and rewrite
+    // every entry — harmless but wasteful — and needsFullRebuild() (which
+    // checks metaBuffersWrittenCount == 0) would force unnecessary rebuilds
+    // on every subsequent incremental batch.
+    metaBuffersWrittenCount = indirectCommands.size();
 }
 
 void IndirectRenderer::setCullFrame(uint32_t frame) {
