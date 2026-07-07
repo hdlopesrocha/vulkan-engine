@@ -307,16 +307,14 @@ void main() {
 
 
     // === SHADOW ON WATER ===
+    // Direct shadow map sampling is disabled for water because the water
+    // surface sits at a different height than the terrain, causing the
+    // EVSM shadow to misalign with the terrain shadow visible through
+    // refraction.  This misalignment creates a visible bright halo around
+    // vegetation shadows.  The refracted scene (sceneColorTex) already
+    // carries the correct terrain/vegetation shadows, so the water
+    // surface is darkened naturally through refraction.
     float shadow = 0.0;
-    if (ubo.shadowEffects.w > 0.5) {
-        float NdotL = max(dot(normal, lightDir), 0.0);
-        if (NdotL > 0.01) {
-            float bias = max(0.002 * (1.0 - NdotL), 0.0005);
-            shadow = ShadowCalculation(fragPosLightSpace, fragPosWorld, bias);
-        } else {
-            shadow = 1.0;
-        }
-    }
     
     // === WATER COLOR COMPOSITION ===
     // Water tint colors from UBO
