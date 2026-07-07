@@ -891,6 +891,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 std::vector<const char*> deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
     VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
+    VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME,
     // VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME promoted to Vulkan 1.2 core — using vulkan12Features instead
     // VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME promoted to Vulkan 1.1 core
     // VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME promoted to Vulkan 1.2 core
@@ -5546,15 +5547,22 @@ void VulkanApp::createLogicalDevice() {
     vulkan11Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
     vulkan11Features.shaderDrawParameters = VK_TRUE;
 
-    // Mesa RADV ignores VkPhysicalDeviceVulkan13Features — use KHR extension structs instead.
+    // Mesa RADV ignores VkPhysicalDeviceVulkan13Features — use KHR/EXT extension structs instead.
     VkPhysicalDeviceSynchronization2FeaturesKHR sync2Features{};
     sync2Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR;
     sync2Features.pNext = nullptr;
     sync2Features.synchronization2 = VK_TRUE;
 
+    // Enable demote-to-helper-invocation so shaders using discard compile under glslc
+    // (glslc may emit SpvCapabilityDemoteToHelperInvocation even without the GLSL extension).
+    VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures demoteFeatures{};
+    demoteFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES;
+    demoteFeatures.pNext = &sync2Features;
+    demoteFeatures.shaderDemoteToHelperInvocation = VK_TRUE;
+
     VkPhysicalDeviceDynamicRenderingFeaturesKHR dynRenderFeatures{};
     dynRenderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
-    dynRenderFeatures.pNext = &sync2Features;
+    dynRenderFeatures.pNext = &demoteFeatures;
     dynRenderFeatures.dynamicRendering = VK_TRUE;
 
     vulkan11Features.pNext = &dynRenderFeatures;
@@ -5577,7 +5585,7 @@ void VulkanApp::createLogicalDevice() {
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pNext = &vulkan12Features;  // Chain Vulkan 1.2 + 1.1 + dynamic rendering + sync2
+    createInfo.pNext = &vulkan12Features;  // Chain Vulkan 1.2 + 1.1 + dynamic rendering + demote + sync2
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
     createInfo.pEnabledFeatures = &deviceFeatures;

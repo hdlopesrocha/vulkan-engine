@@ -705,10 +705,18 @@ void VegetationRenderer::init(VulkanApp* app) {
 
         VkPipelineShaderStageCreateInfo shadowStages[] = { shadowVertStage, shadowFragStage };
 
+        // Shadow vertex shader (vegetation_shadow.vert) omits ATTR_UV (location 2)
+        // — do not include it in the attribute descriptions to avoid a PERFORMANCE warning.
+        std::vector<VkVertexInputAttributeDescription> shadowAttribDescs = {
+            attribDescs[0], // ATTR_POS
+            attribDescs[1], // ATTR_COLOR
+            attribDescs[3], // ATTR_BRUSH_INDEX (location 4)
+            attribDescs[4], // ATTR_INSTANCE   (location 5)
+        };
         auto [shadowPipeline, shadowLayout] = app->createGraphicsPipeline(
             { shadowStages[0], shadowStages[1] },
             std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
-            attribDescs,
+            shadowAttribDescs,
             setLayouts,
             &pushConstantRange,
             VK_POLYGON_MODE_FILL,
