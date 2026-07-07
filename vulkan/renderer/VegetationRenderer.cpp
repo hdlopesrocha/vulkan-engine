@@ -1606,45 +1606,14 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     uint32_t instanceCount = triCount * instancesPerTriangle;
 
     VkDevice device = app->getDevice();
-    VkPhysicalDevice physicalDevice = app->getPhysicalDevice();
 
-    // Create device-local storage/vertex buffer for instances (vec4 per-instance)
-    VkBuffer instanceBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory instanceMemory = VK_NULL_HANDLE;
-    VkBufferCreateInfo bufInfo{};
-    bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    // Create device-local storage/vertex buffer for instances (vec4 per-instance) via VMA
     VkDeviceSize instanceBufferSize = static_cast<VkDeviceSize>(instanceCount) * sizeof(float) * 4; // vec4
-    bufInfo.size = instanceBufferSize;
-    bufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(device, &bufInfo, nullptr, &instanceBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create instance storage buffer");
-    }
-    app->resources.addBuffer(instanceBuffer, "VegetationRenderer: instanceBuffer");
-
-    VkMemoryRequirements memReq;
-    vkGetBufferMemoryRequirements(device, instanceBuffer, &memReq);
-    VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
-    uint32_t deviceLocalTypeIndex = UINT32_MAX;
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
-        if ((memReq.memoryTypeBits & (1 << i)) && (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-            deviceLocalTypeIndex = i;
-            break;
-        }
-    }
-    if (deviceLocalTypeIndex == UINT32_MAX) throw std::runtime_error("No suitable device local memory type for instance buffer");
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    {
-        static constexpr VkDeviceSize kMin = 262144;
-        const VkDeviceSize sz = memReq.size;
-        allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-    }
-    allocInfo.memoryTypeIndex = deviceLocalTypeIndex;
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &instanceMemory) != VK_SUCCESS) throw std::runtime_error("Failed to allocate instance buffer memory");
-    vkBindBufferMemory(device, instanceBuffer, instanceMemory, 0);
-    app->resources.addDeviceMemory(instanceMemory, "VegetationRenderer: instanceMemory");
+    Buffer instanceBuf = app->createBuffer(instanceBufferSize,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkBuffer instanceBuffer = instanceBuf.buffer;
+    VkDeviceMemory instanceMemory = instanceBuf.memory;
 
     Buffer indirect = app->createBuffer(sizeof(VkDrawIndexedIndirectCommand),
         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
@@ -1670,10 +1639,8 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     uint32_t expected = app->generateVegetationInstancesComputeAsync(vertexBuffer.buffer, vertexCount, indexBuffer.buffer, indexCount, instancesPerTriangle, instanceBuffer, static_cast<uint32_t>(instanceBufferSize), &fence, seed, billboardCount);
     if (expected == 0 || fence == VK_NULL_HANDLE) {
         // Clean up partially created buffers if compute not dispatched
-        if (app->resources.removeBuffer(instanceBuffer)) vkDestroyBuffer(device, instanceBuffer, nullptr);
-        if (app->resources.removeDeviceMemory(instanceMemory)) vkFreeMemory(device, instanceMemory, nullptr);
-        if (app->resources.removeBuffer(indirectBuffer)) vkDestroyBuffer(device, indirectBuffer, nullptr);
-        if (app->resources.removeDeviceMemory(indirectMemory)) vkFreeMemory(device, indirectMemory, nullptr);
+        app->destroyBuffer(instanceBuf);
+        app->destroyBuffer(indirect);
         return;
     }
 
@@ -1695,6 +1662,7 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     InstanceBuffer ibuf;
     ibuf.buffer = instanceBuffer;
     ibuf.memory = instanceMemory;
+    ibuf.allocation = instanceBuf.allocation;
     ibuf.indirectBuffer = indirectBuffer;
     ibuf.indirectMemory = indirectMemory;
     ibuf.indirectAllocation = indirect.allocation;

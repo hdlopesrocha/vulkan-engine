@@ -187,6 +187,7 @@ void VulkanApp::initVulkan() {
     vma.init(instance, physicalDevice, device);
     vmaReady = true;
     resources.setAllocator(vma.allocator);
+    stagingRing.init(vma.allocator);
     createSwapchain();
     createImageViews();
     createDescriptorSetLayout();
@@ -969,7 +970,7 @@ void VulkanApp::cleanup() {
     clean();
 
     // Tear down the staging ring buffer while the device is still valid
-    stagingRing.cleanup(device);
+    stagingRing.cleanup();
 
     // Destroy the upload timeline semaphore
     if (uploadTimeline != VK_NULL_HANDLE) {
@@ -5645,8 +5646,6 @@ void VulkanApp::createLogicalDevice() {
               << " dedicatedTransfer=" << (transferQueue != graphicsQueue ? "yes" : "no")
               << "\n";
 
-    // Initialize the persistent staging ring buffer for async uploads
-    stagingRing.init(device, physicalDevice);
 }
 
 int VulkanApp::getWidth() {
