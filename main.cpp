@@ -587,7 +587,16 @@ public:
             }
         }
         preAllocateAsyncDescriptorPools();
-        generateMapPending = true; // Trigger initial map generation on first frame so user sees something without needing to click 
+        // Try loading the default scene; fall back to procedural generation if it fails
+        const std::string defaultScenePath = "scenes/default.scene";
+        if (std::filesystem::exists(defaultScenePath)) {
+            pendingLoadPath = defaultScenePath;
+            loadScenePending = true;
+            std::cout << "[MyApp::setup] Loading default scene from '" << defaultScenePath << "'\n";
+        } else {
+            generateMapPending = true; // Trigger initial map generation on first frame
+            std::cout << "[MyApp::setup] No default scene found, generating procedural map\n";
+        }
     }
 
     // Move vegetation texture setup into its own method for clarity
@@ -1260,7 +1269,7 @@ public:
     }
 
     void renderImGui() override {
-        static char sceneFolderBuf[512] = "scenes/my_scene.scene";
+        static char sceneFolderBuf[512] = "scenes/default.scene";
 
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
