@@ -68,7 +68,9 @@ class MainSceneLoader : public SceneLoaderCallback {
 public:
 
 
-    Simplifier simplifier = Simplifier(0.99f, 0.1f, true);
+    // angle=0.95 (cos≈18°): normals within 18° → flat surface → full distance tolerance.
+    // distance=0.2: flat patches may have up to 20% cube-size SDF error (curved gets 10%).
+    Simplifier simplifier = Simplifier(0.95f, 0.2f, true);
     MainSceneLoader() {};
     ~MainSceneLoader() = default;
     void action(Octree &opaqueLayer, const OctreeChangeHandler& opaqueHandler,Octree &transparentLayer,const OctreeChangeHandler& transparentHandler) {

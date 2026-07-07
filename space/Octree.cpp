@@ -740,7 +740,8 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                     }  
                 } else {    
                     if (!r.isChunk) {
-                        SimplificationResult simplificationResult = args.simplifier.simplify(frame.cube, r.resultSDF, children);
+                        // Pass frame.chunkCube so the simplifier can guard chunk borders.
+                        SimplificationResult simplificationResult = args.simplifier.simplify(frame.cube, r.resultSDF, children, frame.chunkCube);
                         r.isSimplified = simplificationResult.isSimplified;
                         if(r.isSimplified) {
                             r.brushIndex = simplificationResult.brushIndex;

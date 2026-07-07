@@ -1857,7 +1857,9 @@ void MyApp::rebuildBrushScene() {
     UniqueOctreeChangeHandler uniqueBrushSolidHandler = UniqueOctreeChangeHandler(brushSolidHandler);
     UniqueOctreeChangeHandler uniqueBrushLiquidHandler = UniqueOctreeChangeHandler(brushLiquidHandler);
 
-    Simplifier simplifier(0.99f, 0.1f, true);
+    // angle=0.95 (cos≈18°): normals within 18° → flat surface → full distance tolerance.
+    // distance=0.2: flat patches may have up to 20% cube-size SDF error (curved gets 10%).
+    Simplifier simplifier(0.95f, 0.2f, true);
     glm::vec4 translate(0.0f);
     glm::vec4 scale(1.0f);
 

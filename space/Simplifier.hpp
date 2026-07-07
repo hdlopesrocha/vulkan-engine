@@ -21,7 +21,10 @@ class Simplifier {
     bool texturing;
 public:
     Simplifier(float angle, float distance, bool texturing);
-    SimplificationResult simplify(const BoundingCube cube, const float * sdf, NodeOperationResult * children);
+    // `chunkCube` is the bounding cube of the GPU-upload chunk that this node
+    // belongs to.  Direct children of the chunk root are never simplified to
+    // guarantee consistent detail at chunk boundaries.
+    SimplificationResult simplify(const BoundingCube cube, const float * sdf, NodeOperationResult * children, const BoundingCube& chunkCube);
 };
 
  
