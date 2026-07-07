@@ -187,7 +187,7 @@ void WireframeRenderer::createPipeline(VulkanApp* app,
     pipelineInfo.subpass = 0;
     if (hasTessellation) pipelineInfo.pTessellationState = &tessState;
 
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &wireframePipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &wireframePipeline) != VK_SUCCESS) {
         std::cerr << "[WireframeRenderer] Failed to create wireframe pipeline for " << label << std::endl;
         wireframePipeline = VK_NULL_HANDLE;
     } else {

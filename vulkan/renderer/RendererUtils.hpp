@@ -197,7 +197,7 @@ inline VkPipeline buildFullscreenPipeline(
     }
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &pipeline) != VK_SUCCESS)
+    if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &pi, nullptr, &pipeline) != VK_SUCCESS)
         throw std::runtime_error(std::string("Failed to create pipeline: ") + name);
     app->resources.addPipeline(pipeline, name);
     return pipeline;

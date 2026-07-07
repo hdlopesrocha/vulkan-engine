@@ -675,7 +675,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     pipelineInfo.subpass = 0;
     if (hasTessellation) pipelineInfo.pTessellationState = &tessState;
 
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &waterGeometryPipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &waterGeometryPipeline) != VK_SUCCESS) {
         std::cerr << "[WaterRenderer] Warning: Failed to create water geometry pipeline" << std::endl;
         waterGeometryPipeline = VK_NULL_HANDLE;
     } else {
@@ -690,7 +690,7 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
         VkPipelineColorBlendStateCreateInfo dpBlending = colorBlending;
         dpBlending.pAttachments = dpColorBlend.data();
         pipelineInfo.pColorBlendState = &dpBlending;
-        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &waterDepthPrePassPipeline) != VK_SUCCESS) {
+        if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &waterDepthPrePassPipeline) != VK_SUCCESS) {
             std::cerr << "[WaterRenderer] Warning: Failed to create water depth pre-pass pipeline" << std::endl;
             waterDepthPrePassPipeline = VK_NULL_HANDLE;
         } else {
@@ -1243,7 +1243,7 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
         pi.layout = waterGeometryPipelineLayout; pi.subpass = 0;
         if (hasTess) pi.pTessellationState = &tess;
 
-        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &cubemapWaterPipeline) != VK_SUCCESS) {
+        if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &pi, nullptr, &cubemapWaterPipeline) != VK_SUCCESS) {
             std::cerr << "[WaterRenderer] Warning: Failed to create cubemap water pipeline" << std::endl;
         } else {
             app->resources.addPipeline(cubemapWaterPipeline, "WaterRenderer: cubemapWaterPipeline");

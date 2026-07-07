@@ -164,7 +164,7 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
             pri.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
             pi.pNext = &pri;
 
-            if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &linearizePipeline) == VK_SUCCESS) {
+            if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &pi, nullptr, &linearizePipeline) == VK_SUCCESS) {
                 app->resources.addPipeline(linearizePipeline, "RenderTargetsWidget: linearizePipeline");
                 std::cout << "[RenderTargetsWidget] Created linearizePipeline=" << (void*)linearizePipeline << " layout=" << (void*)linearizePipelineLayout << std::endl;
             } else linearizePipeline = VK_NULL_HANDLE;

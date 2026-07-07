@@ -816,7 +816,7 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     pipelineInfo.renderPass = VK_NULL_HANDLE;
 
     pipelineInfo.subpass             = 0;
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &capturePipeline) != VK_SUCCESS)
+    if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &capturePipeline) != VK_SUCCESS)
         throw std::runtime_error("ImpostorCapture: pipeline creation failed");
     app->resources.addPipeline(capturePipeline, "ImpostorCapture: capturePipeline");
 

@@ -166,7 +166,7 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
     bfPipeInfo.subpass = 0;
     if (bfHasTess) bfPipeInfo.pTessellationState = &tessState;
 
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &bfPipeInfo, nullptr, &backFacePipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &bfPipeInfo, nullptr, &backFacePipeline) != VK_SUCCESS) {
         std::cerr << "[WaterBackFaceRenderer] Warning: Failed to create back-face depth pipeline" << std::endl;
         backFacePipeline = VK_NULL_HANDLE;
     } else {

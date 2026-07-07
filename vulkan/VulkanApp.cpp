@@ -183,6 +183,7 @@ void VulkanApp::initVulkan() {
     createSurface();
     pickPhysicalDevice();
     createLogicalDevice();
+    createPipelineCache();
     vma.init(instance, physicalDevice, device);
     vmaReady = true;
     resources.setAllocator(vma.allocator);
@@ -196,6 +197,63 @@ void VulkanApp::initVulkan() {
     initImGui();
 }
 
+
+void VulkanApp::createPipelineCache() {
+    // Try to load existing cache data from disk
+    std::vector<char> cacheData;
+    std::ifstream file("pipeline_cache.bin", std::ios::binary | std::ios::ate);
+    if (file.is_open()) {
+        size_t size = static_cast<size_t>(file.tellg());
+        file.seekg(0);
+        cacheData.resize(size);
+        file.read(cacheData.data(), static_cast<std::streamsize>(size));
+        file.close();
+    }
+
+    VkPipelineCacheCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    if (!cacheData.empty()) {
+        ci.initialDataSize = cacheData.size();
+        ci.pInitialData = cacheData.data();
+    }
+
+    if (vkCreatePipelineCache(device, &ci, nullptr, &pipelineCache) != VK_SUCCESS) {
+        std::cerr << "[VulkanApp] Warning: Failed to create pipeline cache, proceeding without" << std::endl;
+        pipelineCache = VK_NULL_HANDLE;
+    } else {
+        printf("[VulkanApp] Created pipeline cache (%zu bytes loaded from disk)\n", cacheData.size());
+    }
+}
+
+void VulkanApp::savePipelineCache() {
+    if (pipelineCache == VK_NULL_HANDLE) {
+        printf("[VulkanApp] Pipeline cache not available, skipping save\n");
+        return;
+    }
+
+    size_t dataSize = 0;
+    VkResult res = vkGetPipelineCacheData(device, pipelineCache, &dataSize, nullptr);
+    if (res != VK_SUCCESS || dataSize == 0) {
+        std::cerr << "[VulkanApp] Warning: Failed to get pipeline cache size" << std::endl;
+        return;
+    }
+
+    std::vector<char> cacheData(dataSize);
+    res = vkGetPipelineCacheData(device, pipelineCache, &dataSize, cacheData.data());
+    if (res != VK_SUCCESS) {
+        std::cerr << "[VulkanApp] Warning: Failed to read pipeline cache data" << std::endl;
+        return;
+    }
+
+    std::ofstream file("pipeline_cache.bin", std::ios::binary);
+    if (file.is_open()) {
+        file.write(cacheData.data(), static_cast<std::streamsize>(cacheData.size()));
+        file.close();
+        printf("[VulkanApp] Saved pipeline cache (%zu bytes)\n", cacheData.size());
+    } else {
+        std::cerr << "[VulkanApp] Warning: Failed to save pipeline cache to disk" << std::endl;
+    }
+}
 
 void VulkanApp::requestClose() {
     if (window) {
@@ -298,7 +356,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     pipelineInfo.layout = pipelineLayout;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
+    if (vkCreateComputePipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
         std::cerr << "[VulkanApp] Failed to create vegetation compute pipeline" << std::endl;
         resources.removeShaderModule(compModule);
         vkDestroyShaderModule(device, compModule, nullptr);
@@ -689,7 +747,7 @@ bool VulkanApp::ensureVegetationComputePipeline() {
     cpInfo.layout = pipeLayout;
 
     VkPipeline pipe = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpInfo, nullptr, &pipe) != VK_SUCCESS) {
+    if (vkCreateComputePipelines(dev, pipelineCache, 1, &cpInfo, nullptr, &pipe) != VK_SUCCESS) {
         vkDestroyShaderModule(dev, compModule, nullptr);
         vkDestroyPipelineLayout(dev, pipeLayout, nullptr);
         vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
@@ -990,6 +1048,11 @@ void VulkanApp::cleanup() {
     printf("[VulkanApp] about to vkDestroyDevice(device=%p)\n", (void*)device);
         resources.cleanup(device);
         vma.destroy();
+        savePipelineCache();
+        if (pipelineCache != VK_NULL_HANDLE) {
+            vkDestroyPipelineCache(device, pipelineCache, nullptr);
+            pipelineCache = VK_NULL_HANDLE;
+        }
         if (device != VK_NULL_HANDLE) {
         // Ensure the device is idle and no further commands are executing
         deviceWaitIdle();
@@ -4260,7 +4323,7 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
         pipelineInfo.renderPass = VK_NULL_HANDLE;
     }
     VkPipeline graphicsPipeline;
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create graphics pipeline!");
     }
     // Track pipeline for cleanup

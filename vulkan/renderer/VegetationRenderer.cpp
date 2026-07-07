@@ -172,7 +172,7 @@ void VegetationRenderer::initCulling(VulkanApp* app) {
     pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipelineInfo.stage = stage;
     pipelineInfo.layout = vegCullPipelineLayout;
-    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vegCullPipeline) != VK_SUCCESS)
+    if (vkCreateComputePipelines(device, app->getPipelineCache(), 1, &pipelineInfo, nullptr, &vegCullPipeline) != VK_SUCCESS)
         throw std::runtime_error("failed to create vegetation cull compute pipeline!");
     app->resources.addPipeline(vegCullPipeline, "VegetationCull: computePipeline");
 

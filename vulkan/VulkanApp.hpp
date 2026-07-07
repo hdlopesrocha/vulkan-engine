@@ -70,6 +70,9 @@ class VulkanApp {
     VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
+    // Pipeline cache for reducing shader compilation time across runs.
+    // Created after device creation, serialized to disk on shutdown.
+    VkPipelineCache pipelineCache = VK_NULL_HANDLE;
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     VkQueue presentQueue = VK_NULL_HANDLE;
     // Dedicated queues for async subsystems
@@ -328,6 +331,10 @@ protected:
 
     public:
         void initVulkan();
+    // Create (or load from disk) the pipeline cache. Called after device creation.
+    void createPipelineCache();
+    // Serialize the pipeline cache to disk. Called during cleanup.
+    void savePipelineCache();
     void initImGui();
     void cleanupImGui();
         void mainLoop();
@@ -432,6 +439,7 @@ protected:
         std::vector<VkCommandBuffer> createCommandBuffers();
 
         VkDevice getDevice() const;
+        VkPipelineCache getPipelineCache() const { return pipelineCache; }
         VkPipelineLayout getPipelineLayout() const;
 
         // Public getters for runtime inspection (used by widgets)

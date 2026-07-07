@@ -396,7 +396,7 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 	pipelineInfo.stage = computeShaderStageInfo;
 	pipelineInfo.layout = computePipelineLayout;
 
-	if (vkCreateComputePipelines(app->getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline) != VK_SUCCESS) {
+	if (vkCreateComputePipelines(app->getDevice(), app->getPipelineCache(), 1, &pipelineInfo, nullptr, &computePipeline) != VK_SUCCESS) {
 		throw std::runtime_error("failed to create compute pipeline!");
 	}
 	// Track compute pipeline

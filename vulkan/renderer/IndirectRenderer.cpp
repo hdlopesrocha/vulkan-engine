@@ -856,7 +856,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         pipelineInfo.stage = stage;
         pipelineInfo.layout = computePipelineLayout;
 
-        if (vkCreateComputePipelines(app->getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline) != VK_SUCCESS) {
+        if (vkCreateComputePipelines(app->getDevice(), app->getPipelineCache(), 1, &pipelineInfo, nullptr, &computePipeline) != VK_SUCCESS) {
             // Pipeline creation failed: unregister and destroy the shader module immediately
             app->resources.removeShaderModule(compModule);
             vkDestroyShaderModule(app->getDevice(), compModule, nullptr);
