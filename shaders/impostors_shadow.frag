@@ -1,9 +1,10 @@
 #version 450
 
 // Impostor EVSM shadow pass: uses vertex position from vertex shader
-// to write EVSM moments. Matches shadow_evsm.frag logic.
+// to write EVSM moments.
 
 #include "includes/locations.glsl"
+#include "includes/evsm_write.glsl"
 
 layout(location = VARY_POSWORLD) in vec3 inWorldPos;
 layout(location = VARY_TANGENTWS) flat in vec3 inInstanceOffset;
@@ -38,17 +39,10 @@ void main() {
         if (threshold < fadeAlpha) discard;
     }
 
-    // Project vertex position to light space (identical to shadow_evsm.frag).
     vec4 lsPos = ubo.viewProjection * vec4(inWorldPos, 1.0);
     float depth = clamp(lsPos.z / lsPos.w, 0.0, 1.0);
 
     gl_FragDepth = depth;
 
-    // EVSM moments: exp(c*d), exp(2c*d), exp(-c*d), exp(-2c*d)
-    float c = 2.0;
-    float posM1 = exp( c * depth);
-    float posM2 = exp( 2.0 * c * depth);
-    float negM1 = exp(-c * depth);
-    float negM2 = exp(-2.0 * c * depth);
-    outEVSM = vec4(posM1, posM2, negM1, negM2);
+    outEVSM = evsmMoments(depth);
 }
