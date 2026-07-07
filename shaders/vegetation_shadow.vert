@@ -1,19 +1,17 @@
 #version 450
 
 // Vegetation EVSM shadow vertex shader.
-// Expands 24-corner billboard mesh into world space, outputs
-// fragPosWorld + UV/array layer for alpha-tested shadow mapping.
+// Expands 24-corner billboard mesh into world space.
+// Only outputs world position for the fragment shader.
 
 #include "includes/locations.glsl"
 
 layout(location = ATTR_POS) in vec3 inLocalPos;
 layout(location = ATTR_COLOR) in vec3 inLocalTangent;
-layout(location = ATTR_UV) in vec2 inCornerUV;
 layout(location = ATTR_BRUSH_INDEX) in int inCornerNormalData;
 layout(location = ATTR_INSTANCE) in vec4 instanceData;
 
 layout(location = VARY_POSWORLD) out vec3 outWorldPos;
-layout(location = VARY_UV) out vec3 fragTexCoord;
 
 layout(push_constant) uniform PushConstants {
     float billboardScale;
@@ -40,19 +38,16 @@ void main() {
     // Sentinel: instance was skipped by generator (empty biome or steep slope).
     if (instanceData.w < 0.0) {
         outWorldPos = vec3(0.0);
-        fragTexCoord = vec3(0.0);
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
 
     int cornerType = inCornerNormalData & 0xFF;
-    int billboardIdx = int(floor(instanceData.w));
 
     vec3 worldPos = instanceData.xyz;
 
     if (impostorDistance > 0.0 && distance(cameraPosAndFalloff.xyz, worldPos) >= impostorDistance) {
         outWorldPos = worldPos;
-        fragTexCoord = vec3(inCornerUV, float(billboardIdx));
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
@@ -98,6 +93,5 @@ void main() {
 
     vec3 finalPos = worldPos + localPos + windOffset;
     outWorldPos = finalPos;
-    fragTexCoord = vec3(inCornerUV, float(billboardIdx));
     gl_Position = ubo.viewProjection * vec4(finalPos, 1.0);
 }
