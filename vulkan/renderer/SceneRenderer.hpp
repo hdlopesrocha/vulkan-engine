@@ -51,6 +51,10 @@ public:
 
     // Main uniform buffers (one per frame-in-flight)
     std::vector<Buffer> mainUniformBuffers;
+
+    // Per-frame staging buffers for UBO uploads via vkCmdCopyBuffer
+    // (replaces vkCmdUpdateBuffer to avoid implicit FULL_QUEUE barrier).
+    std::vector<Buffer> uboStagingBuffers;
     
     // Materials SSBO
     Buffer materialsBuffer;

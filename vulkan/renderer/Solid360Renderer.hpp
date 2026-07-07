@@ -81,4 +81,11 @@ private:
     std::array<VkImageLayout, 6> cube360DepthLayouts = {};
 
     // Equirectangular conversion removed: use cubemap directly for sampling
+
+    // Persistently mapped staging buffers for UBO uploads via vkCmdCopyBuffer
+    // (replaces vkCmdUpdateBuffer to avoid implicit FULL_QUEUE barrier).
+    // Triple-buffered to avoid races with frames in flight.
+    static constexpr uint32_t STAGING_FRAMES = 3;
+    Buffer stagingUBOs[STAGING_FRAMES];
+    mutable uint32_t stagingFrameIndex = 0;
 };

@@ -998,8 +998,8 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     }
     
     // Barrier A: ensure prior indirect-draw reads of visibleCount complete
-    // before the GPU transfer (vkCmdUpdateBuffer) writes 0.  Without this the
-    // transfer write races with the previous cascade's draw reading the count.
+    // before vkCmdFillBuffer writes 0.  Without this the write races with the
+    // previous cascade's draw reading the count.
     {
         VkBufferMemoryBarrier2 readBarrier{};
         readBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
@@ -1020,14 +1020,14 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         vkCmdPipelineBarrier2(cmd, &depInfo);
     }
 
-    // Reset visible count to zero via GPU-side transfer so each prepareCull
-    // starts from a clean slate on the GPU timeline.  A CPU host write
-    // (HOST_COHERENT) is overwritten by the previous cascade's atomicAdd
-    // before the GPU executes, causing each subsequent compute to start from
-    // the accumulated count rather than 0.  vkCmdUpdateBuffer is proven
-    // reliable (used for per-cascade UBO updates in the same codebase).
-    uint32_t zeroCount = 0;
-    vkCmdUpdateBuffer(cmd, visibleCount.buffer, 0, sizeof(zeroCount), &zeroCount);
+    // Reset visible count to zero via vkCmdFillBuffer (GPU-side write) so each
+    // prepareCull starts from a clean slate on the GPU timeline.  A CPU host
+    // write (HOST_COHERENT) would be overwritten by the previous cascade's
+    // atomicAdd before the GPU executes, causing each subsequent compute to
+    // start from the accumulated count rather than 0.  vkCmdFillBuffer is used
+    // instead of vkCmdUpdateBuffer to avoid the latter's implicit FULL_QUEUE
+    // barrier (top-of-pipe → bottom-of-pipe) that drains the entire graphics queue.
+    vkCmdFillBuffer(cmd, visibleCount.buffer, 0, sizeof(uint32_t), 0);
 
     // Barrier B: ensure the transfer write (zeroCount) and any prior
     // indirect-draw reads of compactBuf are complete before the compute

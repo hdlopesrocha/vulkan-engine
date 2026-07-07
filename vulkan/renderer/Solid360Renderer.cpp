@@ -9,7 +9,14 @@ Solid360Renderer::Solid360Renderer() {}
 Solid360Renderer::~Solid360Renderer() {}
 
 void Solid360Renderer::init(VulkanApp* app) {
-    (void)app;
+    for (uint32_t i = 0; i < STAGING_FRAMES; ++i) {
+        if (stagingUBOs[i].buffer == VK_NULL_HANDLE) {
+            stagingUBOs[i] = app->createBuffer(sizeof(UniformObject) * 7,
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }
+    }
+    stagingFrameIndex = 0;
 }
 
 void Solid360Renderer::cleanup(VulkanApp* app) {
@@ -36,6 +43,13 @@ void Solid360Renderer::cleanup(VulkanApp* app) {
             equalComparePipelineLayout = VK_NULL_HANDLE;
         }
     }
+    for (uint32_t i = 0; i < STAGING_FRAMES; ++i) {
+        if (stagingUBOs[i].buffer != VK_NULL_HANDLE) {
+            if (app) app->destroyBuffer(stagingUBOs[i]);
+            stagingUBOs[i] = {};
+        }
+    }
+    stagingFrameIndex = 0;
     cube360ColorImage = VK_NULL_HANDLE;
     cube360ColorMemory = VK_NULL_HANDLE;
     for (auto& v : cube360FaceViews) v = VK_NULL_HANDLE;
@@ -322,6 +336,10 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
     if (!app || cmd == VK_NULL_HANDLE) return;
     if (cube360FaceViews[0] == VK_NULL_HANDLE) return;
 
+    // Advance to next staging buffer slot for frame-in-flight isolation
+    stagingFrameIndex++;
+    Buffer& staging = stagingUBOs[stagingFrameIndex % STAGING_FRAMES];
+
     glm::vec3 camPos = glm::vec3(ubo.viewPos);
     struct FaceInfo { glm::vec3 target; glm::vec3 up; };
     // Cubemap face order and orientation: +X, -X, +Y, -Y, +Z, -Z.
@@ -367,7 +385,12 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             vkCmdPipelineBarrier2(cmd, &dep);
         }
 
-        vkCmdUpdateBuffer(cmd, uniformBuffer.buffer, 0, sizeof(UniformObject), &faceUBO);
+        // Upload face UBO via vkCmdCopyBuffer from persistently mapped staging
+        // buffer (avoids vkCmdUpdateBuffer's implicit FULL_QUEUE barrier).
+        VkDeviceSize faceStagingOff = static_cast<VkDeviceSize>(face) * sizeof(UniformObject);
+        memcpy(staging.map(faceStagingOff), &faceUBO, sizeof(UniformObject));
+        VkBufferCopy copy{ faceStagingOff, 0, sizeof(UniformObject) };
+        vkCmdCopyBuffer(cmd, staging.buffer, uniformBuffer.buffer, 1, &copy);
 
         VkMemoryBarrier2 memBarrier{};
         memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -622,7 +645,11 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         vkCmdPipelineBarrier2(cmd, &dep);
     }
 
-    vkCmdUpdateBuffer(cmd, uniformBuffer.buffer, 0, sizeof(UniformObject), &ubo);
+    // Restore UBO via vkCmdCopyBuffer from persistently mapped staging buffer.
+    VkDeviceSize restoreStagingOff = 6 * sizeof(UniformObject);
+    memcpy(staging.map(restoreStagingOff), &ubo, sizeof(UniformObject));
+    VkBufferCopy copy{ restoreStagingOff, 0, sizeof(UniformObject) };
+    vkCmdCopyBuffer(cmd, staging.buffer, uniformBuffer.buffer, 1, &copy);
     {
         VkMemoryBarrier2 memBarrier{};
         memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;

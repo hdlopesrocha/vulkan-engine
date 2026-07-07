@@ -258,6 +258,7 @@ private:
     std::array<Buffer, VEG_CULL_FRAMES> compactedCmdBuffers;
     std::array<Buffer, VEG_CULL_FRAMES> visibleCountBuffers;
     mutable std::array<uint32_t*, VEG_CULL_FRAMES> visibleCountMapped = {nullptr, nullptr, nullptr};
+    mutable std::array<VkDrawIndexedIndirectCommand*, VEG_CULL_FRAMES> compactedCmdMapped = {nullptr, nullptr, nullptr};
 
     // Culling compute pipeline
     VkPipeline            vegCullPipeline       = VK_NULL_HANDLE;

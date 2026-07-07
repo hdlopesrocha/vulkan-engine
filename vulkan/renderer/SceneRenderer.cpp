@@ -129,6 +129,10 @@ void SceneRenderer::cleanup(VulkanApp* app) {
         if (b.buffer != VK_NULL_HANDLE) b = {};
     }
     mainUniformBuffers.clear();
+    for (auto &b : uboStagingBuffers) {
+        if (b.buffer != VK_NULL_HANDLE) b = {};
+    }
+    uboStagingBuffers.clear();
 
     if (mainPassUBO.buffer.buffer != VK_NULL_HANDLE) {
         mainPassUBO.buffer = {};
@@ -233,7 +237,14 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
             vkCmdPipelineBarrier2(commandBuffer, &depInfo);
         }
 
-        vkCmdUpdateBuffer(commandBuffer, mainUniformBuffer.buffer, 0, sizeof(UniformObject), &shadowUBO);
+        // Upload shadow UBO via vkCmdCopyBuffer from persistently mapped staging
+        // buffer (avoids vkCmdUpdateBuffer's implicit FULL_QUEUE barrier).
+        VkDeviceSize stagingOff = static_cast<VkDeviceSize>(c) * sizeof(UniformObject);
+        if (frameIdx < uboStagingBuffers.size()) {
+            memcpy(uboStagingBuffers[frameIdx].map(stagingOff), &shadowUBO, sizeof(UniformObject));
+            VkBufferCopy copy{ stagingOff, 0, sizeof(UniformObject) };
+            vkCmdCopyBuffer(commandBuffer, uboStagingBuffers[frameIdx].buffer, mainUniformBuffer.buffer, 1, &copy);
+        }
         {
             VkMemoryBarrier2 memBarrier{};
             memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -320,7 +331,13 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         vkCmdPipelineBarrier2(commandBuffer, &depInfo);
     }
 
-    vkCmdUpdateBuffer(commandBuffer, mainUniformBuffer.buffer, 0, sizeof(UniformObject), &uboStatic);
+    // Restore main UBO via vkCmdCopyBuffer from persistently mapped staging buffer.
+    VkDeviceSize restoreOff = static_cast<VkDeviceSize>(SHADOW_CASCADE_COUNT) * sizeof(UniformObject);
+    if (frameIdx < uboStagingBuffers.size()) {
+        memcpy(uboStagingBuffers[frameIdx].map(restoreOff), &uboStatic, sizeof(UniformObject));
+        VkBufferCopy copy{ restoreOff, 0, sizeof(UniformObject) };
+        vkCmdCopyBuffer(commandBuffer, uboStagingBuffers[frameIdx].buffer, mainUniformBuffer.buffer, 1, &copy);
+    }
     {
         VkMemoryBarrier2 memBarrier{};
         memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -542,13 +559,21 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         debugSDFRenderer->init(app);
     }
     
-    // Create per-frame main uniform buffers (TRANSFER_DST for vkCmdUpdateBuffer in cubemap 360 render)
+    // Create per-frame main uniform buffers (TRANSFER_DST for vkCmdCopyBuffer from staging)
     size_t dsCount = app->getMainDescriptorSetCount();
     if (dsCount == 0) dsCount = 1;
     mainUniformBuffers.clear();
     mainUniformBuffers.resize(dsCount);
     for (size_t i = 0; i < dsCount; ++i) {
         mainUniformBuffers[i] = app->createBuffer(sizeof(UniformObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
+    // Per-frame staging buffers for GPU-timeline UBO uploads
+    VkDeviceSize stagingSize = sizeof(UniformObject) * (SHADOW_CASCADE_COUNT + 1);
+    uboStagingBuffers.clear();
+    uboStagingBuffers.resize(dsCount);
+    for (size_t i = 0; i < dsCount; ++i) {
+        uboStagingBuffers[i] = app->createBuffer(stagingSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     }
 
