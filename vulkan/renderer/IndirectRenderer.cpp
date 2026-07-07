@@ -491,30 +491,26 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     printf("[IndirectRenderer::rebuild] dirty=true, rebuilding buffers...\n");
 #endif
 
-    // Defer destruction until ALL pending GPU work completes.
-    // Using VK_NULL_HANDLE (wait-for-all-pending) avoids a fence-index
-    // wrap-around bug where (currentFrame+1)%n picks an already-signaled
-    // fence, destroying SSBOs that are still being read by in-flight
-    // indirect.comp compute dispatches — causing GPUVM faults on RADV.
+    // Defer destruction until ALL pending GPU work completes, not just
+    // the current frame's fence.  Using VK_NULL_HANDLE (wait-for-all-pending)
+    // avoids a fence-index wrap-around bug where (currentFrame+1)%n picks
+    // an already-signaled fence, destroying buffers that are still being
+    // read by in-flight indirect.comp compute dispatches — causing GPUVM
+    // faults on RADV.
+    //
+    // The raw vkDestroyBuffer path was safe because it only destroyed the
+    // VkBuffer *handle* — the underlying VkDeviceMemory remained alive and
+    // GPU reads continued to work.  But vmaDestroyBuffer calls vkFreeMemory
+    // too, so the memory must be guaranteed free of GPU access before we
+    // call it.
     auto scheduleDestroyBuffer = [&](const Buffer &b) {
-        if (b.buffer == VK_NULL_HANDLE && b.memory == VK_NULL_HANDLE) return;
+        if (b.buffer == VK_NULL_HANDLE) return;
         Buffer copy = b;
-        VkDevice dev = app->getDevice();
-        // Defer to the current frame's fence.  Previous frames may still
-        // reference these buffers via in-flight command buffers.  By the time
-        // the current frame's fence signals, all earlier frames have also
-        // completed (same-queue submission order).
-        VkFence curFence = app->getCurrentFrameFence();
-        if (curFence != VK_NULL_HANDLE) {
-            app->deferDestroyUntilFence(curFence, [dev, copy, app]() {
-                if (copy.buffer != VK_NULL_HANDLE) {
-                    if (app->resources.removeBuffer(copy.buffer)) vkDestroyBuffer(dev, copy.buffer, nullptr);
-                }
-                if (copy.memory != VK_NULL_HANDLE) {
-                    if (app->resources.removeDeviceMemory(copy.memory)) vkFreeMemory(dev, copy.memory, nullptr);
-                }
-            });
-        }
+        app->deferDestroyUntilAllPending([app, copy]() {
+            if (copy.buffer != VK_NULL_HANDLE) {
+                app->resources.removeBufferVma(copy.buffer, copy.allocation);
+            }
+        });
     };
 
     // Calculate required capacity with 25% headroom for incremental adds
