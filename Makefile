@@ -141,9 +141,9 @@ $(OUT_DIR)/shaders/%.$(1).spv: shaders/%.$(1)
 	@echo "Compiling shader: $$< -> $$@"
 	@mkdir -p $$(dir $$@)
 	@if command -v glslc >/dev/null 2>&1; then \
-		glslc --target-env=vulkan1.1 -Ishaders/includes $$< -o $$@; \
+		glslc --target-env=vulkan1.3 -Ishaders/includes $$< -o $$@; \
 	else \
-		glslangValidator -Ishaders/includes -V --target-env vulkan1.1 $$< -o $$@; \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 $$< -o $$@; \
 	fi
 endef
 
