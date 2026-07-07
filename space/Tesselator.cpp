@@ -40,20 +40,17 @@ void Tesselator::handle(Vertex &v0, Vertex &v1, Vertex &v2) {
 
         bool triplanar = true;
         float triplanarScale = 0.1f;
-        glm::vec3 d1 = v1.position - v0.position;
-        glm::vec3 d2 = v2.position - v0.position;
-        // Ensure normal follows the (v1 - v0) x (v2 - v0) convention to match Geometry::getNormal and the TES face normal
-        glm::vec3 n = glm::cross(d1, d2);
-
-        bool reverse = (glm::dot(n, v0.normal) < 0.0f);
         if (triplanar) {
-            int plane = triplanarPlane(n);
+            // Use vertex normal for UV plane selection: it is the SDF gradient direction
+            // (authoritative outward direction) and is more reliable than the geometric
+            // cross product, especially for coarse LOD cells at curved surface boundaries.
+            int plane = triplanarPlane(v0.normal);
             v0.texCoord = triplanarMapping(v0.position, plane)*triplanarScale;
             v1.texCoord = triplanarMapping(v1.position, plane)*triplanarScale;
             v2.texCoord = triplanarMapping(v2.position, plane)*triplanarScale;
         }
-        // Tangent is computed in the tessellation evaluation shader; no per-vertex storage required here
-        geometry.addTriangle(reverse ? v0 : v2, v1, reverse ? v2 : v0);
+        // Winding is pre-determined by emitSegment via the SDF sign change direction.
+        geometry.addTriangle(v0, v1, v2);
         ++(*count);
     }
 }

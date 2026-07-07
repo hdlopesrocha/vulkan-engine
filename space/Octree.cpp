@@ -428,11 +428,34 @@ void Octree::iterateTriangles(
             }
         }
 
+        // Rotate polygon so `from` (owner/finest cell) is at index 0 for reliable UV.
+        {
+            auto it = std::find_if(polygon.begin(), polygon.end(),
+                                   [from](const EdgeCell &ec) { return ec.node == from; });
+            if(it != polygon.begin() && it != polygon.end()) {
+                std::rotate(polygon.begin(), it, polygon.end());
+            }
+        }
+
+        // Determine winding from the SDF sign change direction — authoritative and
+        // independent of vertex normals, which are unreliable for coarse LOD cells.
+        // d0 < 0: solid at the lower-axis end → surface faces the positive axis → emit as-is.
+        // d0 > 0: empty at the lower-axis end → surface faces the negative axis → reverse.
+        // Reversal keeps polygon[0] (= `from`) as the pivot so Tesselator UV is consistent.
+        const bool solidAtStart = (d0 < 0.0f);
         if(polygon.size() == 3) {
-            emitTriangle(&polygon[0].node->vertex, &polygon[1].node->vertex, &polygon[2].node->vertex, edge.eps);
+            if(solidAtStart)
+                emitTriangle(&polygon[0].node->vertex, &polygon[1].node->vertex, &polygon[2].node->vertex, edge.eps);
+            else
+                emitTriangle(&polygon[0].node->vertex, &polygon[2].node->vertex, &polygon[1].node->vertex, edge.eps);
         } else if(polygon.size() == 4) {
-            emitTriangle(&polygon[0].node->vertex, &polygon[1].node->vertex, &polygon[2].node->vertex, edge.eps);
-            emitTriangle(&polygon[0].node->vertex, &polygon[2].node->vertex, &polygon[3].node->vertex, edge.eps);
+            if(solidAtStart) {
+                emitTriangle(&polygon[0].node->vertex, &polygon[1].node->vertex, &polygon[2].node->vertex, edge.eps);
+                emitTriangle(&polygon[0].node->vertex, &polygon[2].node->vertex, &polygon[3].node->vertex, edge.eps);
+            } else {
+                emitTriangle(&polygon[0].node->vertex, &polygon[3].node->vertex, &polygon[2].node->vertex, edge.eps);
+                emitTriangle(&polygon[0].node->vertex, &polygon[2].node->vertex, &polygon[1].node->vertex, edge.eps);
+            }
         }
     };
 
