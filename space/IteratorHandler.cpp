@@ -7,7 +7,6 @@
 
 #include <atomic>
 #include <functional>
-#include "ConcurrentQueue.hpp"
 
 void IteratorHandler::iterateParallelBFS(const Octree &tree, OctreeNodeData &rootParams, ThreadPool& pool)
 {
@@ -149,44 +148,8 @@ void IteratorHandler::iterateBFS(const Octree &tree, OctreeNodeData &rootParams)
 
 
 
-void IteratorHandler::iterateMultiThreaded(const Octree &tree, OctreeNodeData &params) {
-    if(params.node != NULL) {
-        if(params.node != NULL && iterate(tree, params)) {
-            uint8_t internalOrder[8];
-            getOrder(tree, params, internalOrder);
-
-            OctreeNode* children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-            params.node->getChildren(*tree.allocator, children);
-            
-            std::vector<std::thread> threads;
-            threads.reserve(8);
-
-            for(uint i=0; i <8 ; ++i) {
-                uint8_t j = internalOrder[i];
-                OctreeNode * child = children[j];
-                if (child == params.node) {
-                    throw std::runtime_error("Wrong pointer @ iter!");
-                }                
-                if(child != NULL && params.node != child) {
-                    OctreeNodeData data = OctreeNodeData( params.level+1, child, params.cube.getChild(j), params.context);
-                    if(!child->isChunk()) {
-                        threads.emplace_back([this, &tree, &data]() {
-                            this->iterateMultiThreaded(tree, data);
-                        });
-                    } else {
-                        this->iterate(tree, data);
-                    }
-                }
-            }
-
-            for(std::thread &t : threads) {
-                if(t.joinable()) {
-                    t.join();
-                }
-            }
-
-        }
-    }
+void IteratorHandler::iterateMultiThreaded(const Octree &tree, OctreeNodeData &params, ThreadPool& pool) {
+    iterateParallelBFS(tree, params, pool);
 }
 
 void IteratorHandler::iterateOctree(const Octree &tree, OctreeNodeData &params) {

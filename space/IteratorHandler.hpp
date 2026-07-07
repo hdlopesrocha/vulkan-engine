@@ -17,7 +17,7 @@ public:
     virtual bool iterate(const Octree &tree, OctreeNodeData &params) = 0;
     virtual void getOrder(const Octree &tree, OctreeNodeData &params, uint8_t order[8]) = 0;
     void iterateOctree(const Octree &tree, OctreeNodeData &params);
-    void iterateMultiThreaded(const Octree &tree, OctreeNodeData &params);
+    void iterateMultiThreaded(const Octree &tree, OctreeNodeData &params, ThreadPool& pool);
 
     void iterateFlatIn(const Octree &tree, OctreeNodeData &params);
     void iterateFlatOut(const Octree &tree, OctreeNodeData &params);
