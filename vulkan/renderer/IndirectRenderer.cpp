@@ -51,10 +51,8 @@ void IndirectRenderer::publishPendingTransfer(VulkanApp* app) {
     doUploadMeshMetaBuffers(app);
 
     if (pendingTransfer.stagingBuffer.buffer != VK_NULL_HANDLE) {
-        if (app->resources.removeBuffer(pendingTransfer.stagingBuffer.buffer))
-            vkDestroyBuffer(dev, pendingTransfer.stagingBuffer.buffer, nullptr);
-        if (app->resources.removeDeviceMemory(pendingTransfer.stagingBuffer.memory))
-            vkFreeMemory(dev, pendingTransfer.stagingBuffer.memory, nullptr);
+        app->resources.removeBufferVma(pendingTransfer.stagingBuffer.buffer, pendingTransfer.stagingBuffer.allocation);
+        pendingTransfer.stagingBuffer = {};
     }
 
     // Do NOT destroy the fence — processPendingCommandBuffers handles it.
@@ -634,11 +632,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
                 }
             });
 
-            VkDevice dev = app->getDevice();
-            if (app->resources.removeBuffer(staging.buffer))
-                vkDestroyBuffer(dev, staging.buffer, nullptr);
-            if (app->resources.removeDeviceMemory(staging.memory))
-                vkFreeMemory(dev, staging.memory, nullptr);
+            app->resources.removeBufferVma(staging.buffer, staging.allocation);
         }
     }
 
