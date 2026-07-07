@@ -49,42 +49,49 @@ void main() {
     tc_fragTexWeights[gl_InvocationID] = texWeights;
 
     if (gl_InvocationID == 0) {
-        vec3 center = (inPos[0] + inPos[1] + inPos[2]) / 3.0;
-        float dist = length(ubo.viewPos.xyz - center);
-
         // Select the water params from the first brush index on the patch
         int idx = max(pc_inBrushIndex[0], 0);
         WaterParamsGPU wp = waterParams[idx];
 
-        // Tessellation range from per-water-layer params
-        float nearDist  = wp.tessParams.x;
-        float farDist   = wp.tessParams.y;
-        float minLevel  = wp.tessParams.z;
-        float maxLevel  = wp.tessParams.w;
-        float noiseInf  = wp.waveParams.x;
-
-        // Base distance-based tessellation
-        float distTess = clamp(farDist / max(dist, 1.0), minLevel, maxLevel);
-
-        // Noise-adaptive modulation: evaluate the same wave displacement
-        // function used by the TES and fragment shader at the patch center.
-        // Higher wave activity → more tessellation.
-        float timeVal = waterRenderUBO.timeParams.x * wp.params3.x;
+        float nearDist   = wp.tessParams.x;
+        float farDist    = wp.tessParams.y;
+        float minLevel   = wp.tessParams.z;
+        float maxLevel   = wp.tessParams.w;
+        float noiseInf   = wp.waveParams.x;
+        float timeVal    = waterRenderUBO.timeParams.x * wp.params3.x;
         float lacunarity = wp.params3.y;
-        float noiseVal = waterWaveDisplacement(
-            center, timeVal,
-            wp.params2.y, int(max(wp.params2.z, 1.0)), wp.params2.w, lacunarity,
-            1.0, 1.0
-        );
 
-        // Map noise from [0,1] to a modulation factor around 1.0
-        // At full noiseInfluence (1.0): range = [0.75, 1.25] → ±25%
-        float noiseMod = 1.0 + noiseInf * (noiseVal - 0.5);
-        float tessLevel = clamp(distTess * noiseMod, minLevel, maxLevel);
+        // Per-edge tessellation: evaluate noise at each edge's midpoint so
+        // adjacent patches sharing an edge compute the same midpoint, the same
+        // noise value, and therefore the same outer tess level — no cracks.
+        //   e=0: edge(v0,v1) -> opposite v2 -> Outer[2]
+        //   e=1: edge(v1,v2) -> opposite v0 -> Outer[0]
+        //   e=2: edge(v2,v0) -> opposite v1 -> Outer[1]
+        float outer[3];
+        for (int e = 0; e < 3; ++e) {
+            vec3 va = inPos[e];
+            vec3 vb = inPos[(e + 1) % 3];
 
-        gl_TessLevelOuter[0] = tessLevel;
-        gl_TessLevelOuter[1] = tessLevel;
-        gl_TessLevelOuter[2] = tessLevel;
-        gl_TessLevelInner[0] = tessLevel;
+            // min(da,db) is symmetric: both adjacent patches get the same value
+            float da = length(ubo.viewPos.xyz - va);
+            float db = length(ubo.viewPos.xyz - vb);
+            float distTess = clamp(farDist / max(min(da, db), 1.0), minLevel, maxLevel);
+
+            // Noise at edge midpoint — deterministic, identical for both
+            // adjacent patches sharing this edge
+            vec3 edgeMid = (va + vb) * 0.5;
+            float noiseVal = waterWaveDisplacement(
+                edgeMid, timeVal,
+                wp.params2.y, int(max(wp.params2.z, 1.0)), wp.params2.w, lacunarity,
+                1.0, 1.0
+            );
+            float noiseMod = 1.0 + noiseInf * (noiseVal - 0.5);
+            outer[e] = clamp(distTess * noiseMod, minLevel, maxLevel);
+        }
+
+        gl_TessLevelOuter[0] = outer[1];  // edge(v1,v2), opposite v0
+        gl_TessLevelOuter[1] = outer[2];  // edge(v2,v0), opposite v1
+        gl_TessLevelOuter[2] = outer[0];  // edge(v0,v1), opposite v2
+        gl_TessLevelInner[0] = max(max(outer[0], outer[1]), outer[2]);
     }
 }

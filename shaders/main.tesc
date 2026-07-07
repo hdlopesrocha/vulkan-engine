@@ -25,13 +25,39 @@ layout(location = VARY_LOCALNORMAL) out vec3 tc_fragLocalNormal[];
 layout(location = VARY_TEXWEIGHTS) out vec3 tc_fragTexWeights[];
 
 
-// Compute per-edge tess factor using nearest endpoint distance to camera
-float computeEdgeTess(vec3 a, vec3 b, float nearDist, float farDist, float minLevel, float maxLevel, float materialLevel) {
+// Compute tessellation factor for a single edge.  All inputs come from the
+// edge's own two vertex positions and brush indices, guaranteeing that two
+// adjacent patches visiting their shared edge always compute the same outer
+// tessellation level — the necessary condition for crack-free LOD transitions.
+float computeEdgeTess(vec3 a, vec3 b, int brushA, int brushB) {
+    // Deterministic edge material: pick the lower non-negative brush index.
+    // min() is symmetric, so both adjacent patches — which may list the
+    // shared edge's vertices in opposite order — select the same material.
+    int edgeBrush;
+    if (brushA >= 0 && brushB >= 0)  edgeBrush = min(brushA, brushB);
+    else if (brushA >= 0)            edgeBrush = brushA;
+    else if (brushB >= 0)            edgeBrush = brushB;
+    else                             edgeBrush = 0;
+
+    float nearDist = ubo.tessParams.x;
+    float farDist  = ubo.tessParams.y;
+    float factor_g = ubo.tessParams.z;
+
+    // Per-edge tessellation enable: if globally off or this edge's material
+    // does not request tessellation, return 1.0.  Both adjacent patches
+    // compute the same edgeBrush so they reach the same decision.
+    if (ubo.passParams.y < 0.5 || materials[edgeBrush].mappingParams.x < 0.5)
+        return 1.0;
+
+    float minLevel = materials[edgeBrush].tessLevelParams.x * factor_g;
+    float maxLevel = materials[edgeBrush].tessLevelParams.y * factor_g;
+    float matBoost = materials[edgeBrush].mappingParams.y;
+
     float da = length(a - ubo.viewPos.xyz);
     float db = length(b - ubo.viewPos.xyz);
-    float d = min(da, db);
-    float factor = clamp(1.0 - smoothstep(nearDist, farDist, d), 0.0, 1.0); // 1.0 at near, 0.0 at far
-    return mix(minLevel, maxLevel, factor) + materialLevel * factor;
+    float d  = min(da, db);
+    float t  = clamp(1.0 - smoothstep(nearDist, farDist, d), 0.0, 1.0);
+    return mix(minLevel, maxLevel, t) + matBoost * t;
 }
 
 void main() {
@@ -73,39 +99,20 @@ void main() {
     tc_fragLocalNormal[gl_InvocationID] = pc_inLocalNormal[gl_InvocationID];
     // tangents are computed in the fragment shader for triplanar mapping
 
-    // Compute tessellation level on GPU based on camera distance (adaptive)
-    int patchBrushIndex = pc_inBrushIndex[0];
-    float materialLevel = materials[patchBrushIndex].mappingParams.y;
-    bool tessEnabled = ubo.passParams.y > 0.5 && (materials[patchBrushIndex].mappingParams.x > 0.5);
-
-
-    // Compute patch center in world space and distance to camera
+    // Per-edge tessellation: all material lookups and distance computations
+    // use only the edge's own two vertex positions and brush indices.  Both
+    // adjacent patches sharing an edge see the same vertex pair, so they
+    // always produce identical outer levels — no LOD crack seams.
+    //   Outer0 = edge opposite v0 = edge (v1, v2)
+    //   Outer1 = edge opposite v1 = edge (v2, v0)
+    //   Outer2 = edge opposite v2 = edge (v0, v1)
     vec3 p0 = pc_inPosWorld[0];
     vec3 p1 = pc_inPosWorld[1];
     vec3 p2 = pc_inPosWorld[2];
-    vec3 center = (p0 + p1 + p2) / 3.0;
-    float dist = length(center - ubo.viewPos.xyz);
-
-    // Read per-material tessellation range; near/far distances still come from the global UBO
-    // tessParams.z is a global factor that multiplies the per-material min/max levels
-    float nearDist = ubo.tessParams.x;
-    float farDist  = ubo.tessParams.y;
-    float factor   = ubo.tessParams.z;
-    float minLevel = materials[patchBrushIndex].tessLevelParams.x * factor;
-    float maxLevel = materials[patchBrushIndex].tessLevelParams.y * factor;
-
-    float outer0, outer1, outer2, inner;
-    if (!tessEnabled) {
-        outer0 = outer1 = outer2 = 1.0;
-        inner = 1.0;
-    } else {
-        // Map tess levels to edges: Outer0 = edge (v1,v2); Outer1 = edge (v2,v0); Outer2 = edge (v0,v1)
-        outer0 = computeEdgeTess(p1, p2, nearDist, farDist, minLevel, maxLevel, materialLevel);
-        outer1 = computeEdgeTess(p2, p0, nearDist, farDist, minLevel, maxLevel, materialLevel);
-        outer2 = computeEdgeTess(p0, p1, nearDist, farDist, minLevel, maxLevel, materialLevel);
-        // Inner level uses the max to avoid cracks across patches
-        inner = max(max(outer0, outer1), outer2);
-    }
+    float outer0 = computeEdgeTess(p1, p2, pc_inBrushIndex[1], pc_inBrushIndex[2]);
+    float outer1 = computeEdgeTess(p2, p0, pc_inBrushIndex[2], pc_inBrushIndex[0]);
+    float outer2 = computeEdgeTess(p0, p1, pc_inBrushIndex[0], pc_inBrushIndex[1]);
+    float inner  = max(max(outer0, outer1), outer2);
 
     gl_TessLevelOuter[0] = outer0;
     gl_TessLevelOuter[1] = outer1;
