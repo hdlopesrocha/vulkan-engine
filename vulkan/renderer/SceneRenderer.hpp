@@ -139,18 +139,14 @@ public:
     // Remove all registered opaque meshes via IndirectRenderer and clear the map
     void removeAllRegisteredMeshes() {
         if (!solidRenderer) return;
-        for (auto &entry : solidChunks) {
-            if (entry.second.meshId != UINT32_MAX) solidRenderer->getIndirectRenderer().removeMesh(entry.second.meshId);
-        }
+        solidRenderer->getIndirectRenderer().removeAllMeshes();
         solidChunks.clear();
     }
 
     // Remove all registered transparent/water meshes and clear the map
     void removeAllTransparentMeshes() {
         if (!waterRenderer) return;
-        for (auto &entry : transparentChunks) {
-            if (entry.second.meshId != UINT32_MAX) waterRenderer->getIndirectRenderer().removeMesh(entry.second.meshId);
-        }
+        waterRenderer->getIndirectRenderer().removeAllMeshes();
         transparentChunks.clear();
     }
 

@@ -203,6 +203,16 @@ void IndirectRenderer::removeMesh(uint32_t meshId) {
     dirty = true;
 }
 
+void IndirectRenderer::removeAllMeshes() {
+    std::lock_guard<std::mutex> guard(mutex);
+    meshes.clear();
+    mergedVertices.clear();
+    mergedIndices.clear();
+    indirectCommands.clear();
+    metaBuffersWrittenCount = 0;
+    dirty = true;
+}
+
 bool IndirectRenderer::ensureCapacity(size_t vertexCount, size_t indexCount, size_t meshCount) {
     std::lock_guard<std::mutex> guard(mutex);
     

@@ -47,6 +47,11 @@ public:
     // Add mesh with a custom ID (e.g., node ID from octree). If mesh with this ID exists, it is replaced.
     uint32_t updateMesh(const Geometry& mesh, uint32_t customId);
     void removeMesh(uint32_t meshId);
+    // Remove all meshes and reset GPU write tracking.  Call before reloading a
+    // scene so new meshes are written from position 0 in the indirect/bounds
+    // buffers — without this, stale entries from the previous scene cause the
+    // culling compute shader to read garbage, resulting in GPU hangs.
+    void removeAllMeshes();
 
     // Rebuild GPU backing buffers from current CPU mesh list. Call before drawing
     // if add/remove operations occurred.
@@ -77,6 +82,15 @@ public:
     
     // Check if dirty flag is set (needs rebuild or incremental uploads)
     bool isDirty() const { return dirty; }
+
+    // Returns true when the GPU indirect/bounds buffers have never been written
+    // (metaBuffersWrittenCount == 0) but active meshes exist — the GPU buffers
+    // still contain stale data from a previous scene.  Callers should force a
+    // full rebuild instead of the incremental path.
+    bool needsFullRebuild() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return metaBuffersWrittenCount == 0 && !meshes.empty();
+    }
 
 public:
   

@@ -1060,6 +1060,16 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                      std::make_move_iterator(pendingMeshQueue.begin() + n));
         pendingMeshQueue.erase(pendingMeshQueue.begin(), pendingMeshQueue.begin() + n);
     }
+    // Poll pending transfers so deferred meta-buffer writes (indirect commands
+    // and bounds) are published once the async transfer fence signals.
+    // Without this, the last batch of meshes never gets its indirect draw
+    // commands written to GPU memory — solid geometry silently missing while
+    // vegetation (independent pipeline) renders correctly.
+    IndirectRenderer& solidIR = solidRenderer->getIndirectRenderer();
+    IndirectRenderer& waterIR = waterRenderer->getIndirectRenderer();
+    solidIR.pollPendingTransfers(app);
+    waterIR.pollPendingTransfers(app);
+
     if (batch.empty()) return;
 
     // Compute per-layer totals for the incoming batch so we can pre-size
@@ -1077,9 +1087,6 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
             waterNewM += 1;
         }
     }
-
-    IndirectRenderer& solidIR = solidRenderer->getIndirectRenderer();
-    IndirectRenderer& waterIR = waterRenderer->getIndirectRenderer();
 
     bool solidCanIncremental = true;
     bool waterCanIncremental = true;
@@ -1122,15 +1129,19 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
     // Batch rebuild: only needed when buffers were created/grown (canIncremental == false)
     // OR when meshes were removed — removals leave stale indirect commands on GPU
     // that must be compacted away by a full rebuild.
+    // Also force rebuild if the GPU meta-buffers still contain stale data from a
+    // previous scene (needsFullRebuild), which happens after removeAllMeshes().
+    // Without this, the incremental path skips the rebuild, leaving the culling
+    // shader to read garbage from the old indirect/bounds buffers — causing GPU hangs.
     if (solidIR.isDirty()) {
-        if (solidCanIncremental && solidNewM > 0 && !solidOrWaterHadRemovals) {
+        if (solidCanIncremental && solidNewM > 0 && !solidOrWaterHadRemovals && !solidIR.needsFullRebuild()) {
             solidIR.setDirty(false);
         } else {
             solidIR.rebuild(app);
         }
     }
     if (waterIR.isDirty()) {
-        if (waterCanIncremental && waterNewM > 0 && !solidOrWaterHadRemovals) {
+        if (waterCanIncremental && waterNewM > 0 && !solidOrWaterHadRemovals && !waterIR.needsFullRebuild()) {
             waterIR.setDirty(false);
         } else {
             waterIR.rebuild(app);
