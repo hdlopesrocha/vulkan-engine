@@ -987,14 +987,20 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         printedOnce = true;
     }
     
-    // Barrier A: ensure prior indirect-draw reads of visibleCount complete
-    // before vkCmdFillBuffer writes 0.  Without this the write races with the
-    // previous cascade's draw reading the count.
+    // Barrier A: ensure prior indirect-draw reads, compute-shader atomics,
+    // and prior fills of visibleCount are complete before we fill 0 again.
+    // Without this, a second cascade's vkCmdFillBuffer races with the first
+    // cascade's fill (TRANSFER_WRITE→TRANSFER_WRITE hazard) and with the
+    // first cascade's compute-shader atomicAdd (SHADER_WRITE→TRANSFER_WRITE).
     {
         VkBufferMemoryBarrier2 readBarrier{};
         readBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        readBarrier.srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-        readBarrier.srcAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        readBarrier.srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT
+                                  | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                                  | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        readBarrier.srcAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT
+                                  | VK_ACCESS_2_SHADER_WRITE_BIT
+                                  | VK_ACCESS_2_TRANSFER_WRITE_BIT;
         readBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
         readBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         readBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
