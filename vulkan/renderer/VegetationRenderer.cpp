@@ -1075,10 +1075,11 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
                                           VkImageView depthArray60,
                                           VkBuffer captureInvVPBuf) {
     if (!app || albedoArray60 == VK_NULL_HANDLE || normalArray60 == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
-    // Wait for all in-flight work to complete before recreating descriptor sets.
+    // Wait for all in-flight graphics work to complete before recreating descriptor sets.
     // This prevents handle-reuse collisions between pending command buffers and
-    // freshly-allocated descriptor set handles. setImpostorData is an init-time call.
-    vkDeviceWaitIdle(app->getDevice());
+    // freshly-allocated descriptor set handles. Only waits on per-frame fences
+    // rather than draining the entire device.
+    app->waitForFrameFences();
 
     VkDevice device = app->getDevice();
 
