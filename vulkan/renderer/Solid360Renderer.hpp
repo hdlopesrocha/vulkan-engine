@@ -63,16 +63,19 @@ private:
     VkPipelineLayout equalComparePipelineLayout = VK_NULL_HANDLE;
 
     VkImage cube360ColorImage = VK_NULL_HANDLE;
+    VmaAllocation cube360ColorAllocation = VK_NULL_HANDLE;
     VkDeviceMemory cube360ColorMemory = VK_NULL_HANDLE;
     std::array<VkImageView, 6> cube360FaceViews = {};
     VkImageView cube360CubeView = VK_NULL_HANDLE;
     VkSampler solid360Sampler = VK_NULL_HANDLE;
 
     VkImage cube360DummyColorImage = VK_NULL_HANDLE;
+    VmaAllocation cube360DummyColorAllocation = VK_NULL_HANDLE;
     VkDeviceMemory cube360DummyColorMemory = VK_NULL_HANDLE;
     VkImageView cube360DummyCubeView = VK_NULL_HANDLE;
 
     VkImage cube360DepthImage = VK_NULL_HANDLE;
+    VmaAllocation cube360DepthAllocation = VK_NULL_HANDLE;
     VkDeviceMemory cube360DepthMemory = VK_NULL_HANDLE;
     std::array<VkImageView, 6> cube360DepthViews = {};
 

@@ -55,12 +55,14 @@ private:
 
     // Converted linear depth debug images (device local) and views
     VkImage linearSceneDepthImage = VK_NULL_HANDLE;
+    VmaAllocation linearSceneDepthAllocation = VK_NULL_HANDLE;
     VkDeviceMemory linearSceneDepthMemory = VK_NULL_HANDLE;
     VkImageView linearSceneDepthView = VK_NULL_HANDLE;
     VkDescriptorSet linearSceneDepthDescriptor = VK_NULL_HANDLE;
     bool linearSceneDepthDescriptorOwned = false;
 
     VkImage linearBackFaceDepthImage = VK_NULL_HANDLE;
+    VmaAllocation linearBackFaceDepthAllocation = VK_NULL_HANDLE;
     VkDeviceMemory linearBackFaceDepthMemory = VK_NULL_HANDLE;
     VkImageView linearBackFaceDepthView = VK_NULL_HANDLE;
     VkDescriptorSet linearBackFaceDepthDescriptor = VK_NULL_HANDLE;
@@ -68,6 +70,7 @@ private:
 
     // Per-face linearized targets for cubemap depth previews
     VkImage linearCubeFaceDepthImage[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VmaAllocation linearCubeFaceDepthAllocation[6] = {};
     VkDeviceMemory linearCubeFaceDepthMemory[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
     VkImageView linearCubeFaceDepthView[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
     VkFramebuffer linearCubeFaceFramebuffer[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE }; // unused - dynamic rendering
@@ -85,6 +88,7 @@ private:
 
     // Per-cascade linearized shadow debug images
     VkImage linearShadowDepthImage[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
+    VmaAllocation linearShadowDepthAllocation[SHADOW_CASCADE_COUNT] = {};
     VkDeviceMemory linearShadowDepthMemory[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
     VkImageView linearShadowDepthView[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
     VkDescriptorSet linearShadowDepthDescriptor[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };

@@ -160,6 +160,7 @@ private:
     // depth resources
     VkImage depthImage = VK_NULL_HANDLE;
     VkDeviceMemory depthImageMemory = VK_NULL_HANDLE;
+    VmaAllocation depthImageAllocation = VK_NULL_HANDLE;
     VkImageView depthImageView = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> commandBuffers;
@@ -483,7 +484,12 @@ protected:
         void runSingleTimeCommands(const std::function<void(VkCommandBuffer)>& fn);
 
         // Image helpers (moved from protected so external helpers can use them)
-        void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory, const char* debugName = nullptr);
+        void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VmaAllocation& allocation, VkDeviceMemory& imageMemory, const char* debugName = nullptr);
+        // Generic VMA-based image creation from a fully-specified VkImageCreateInfo.
+        // Registers the image+allocation with VulkanResourceManager and sets up layout tracking.
+        void createImageWithVma(const VkImageCreateInfo& imageInfo, VkMemoryPropertyFlags properties, VkImage& image, VmaAllocation& allocation, VkDeviceMemory& imageMemory, const char* debugName = nullptr);
+        // Destroy an image allocated via VMA (or legacy). Cleans up both image + memory.
+        void destroyImageWithVma(VkImage image, VmaAllocation allocation, VkDeviceMemory imageMemory);
         void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels = 1, uint32_t arrayLayers = 1);
         // Transition a specific array layer range (baseArrayLayer, layerCount) synchronously.
         void transitionImageLayoutLayer(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);

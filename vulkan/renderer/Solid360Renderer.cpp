@@ -51,11 +51,13 @@ void Solid360Renderer::cleanup(VulkanApp* app) {
     }
     stagingFrameIndex = 0;
     cube360ColorImage = VK_NULL_HANDLE;
+    cube360ColorAllocation = VK_NULL_HANDLE;
     cube360ColorMemory = VK_NULL_HANDLE;
     for (auto& v : cube360FaceViews) v = VK_NULL_HANDLE;
     cube360CubeView = VK_NULL_HANDLE;
     solid360Sampler = VK_NULL_HANDLE;
     cube360DepthImage = VK_NULL_HANDLE;
+    cube360DepthAllocation = VK_NULL_HANDLE;
     cube360DepthMemory = VK_NULL_HANDLE;
     for (auto &dv : cube360DepthViews) dv = VK_NULL_HANDLE;
 }
@@ -64,25 +66,16 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSam
     VkDevice device = app->getDevice();
     VkFormat colorFormat = app->getSwapchainImageFormat();
 
-    auto allocImage = [&](VkImageCreateInfo& imgInfo, VkImage& image, VkDeviceMemory& memory) {
-        if (vkCreateImage(device, &imgInfo, nullptr, &image) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create 360 image!");
-        app->resources.addImage(image, "Solid360Renderer: solid360 image");
+    auto allocImage = [&](VkImageCreateInfo& imgInfo, VkImage& image, VmaAllocation& allocation, VkDeviceMemory& memory) {
+        VmaAllocationCreateInfo allocCI{};
+        allocCI.usage = VMA_MEMORY_USAGE_AUTO;
+        allocCI.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        VmaAllocationInfo allocInfo;
+        if (vmaCreateImage(app->getVmaAllocator(), &imgInfo, &allocCI, &image, &allocation, &allocInfo) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create 360 image with VMA!");
+        memory = allocInfo.deviceMemory;
+        app->resources.addImageVma(image, allocation, "Solid360Renderer: solid360 image");
         app->resources.setImageArrayLayers(image, imgInfo.arrayLayers);
-        VkMemoryRequirements memReqs;
-        vkGetImageMemoryRequirements(device, image, &memReqs);
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        {
-            static constexpr VkDeviceSize kMin = 262144;
-            const VkDeviceSize sz = memReqs.size;
-            allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-        }
-        allocInfo.memoryTypeIndex = app->findMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS)
-            throw std::runtime_error("Failed to allocate 360 image memory!");
-        app->resources.addDeviceMemory(memory, "Solid360Renderer: solid360 memory");
-        vkBindImageMemory(device, image, memory, 0);
     };
 
     auto createView = [&](VkImage image, VkFormat format, VkImageAspectFlags aspect,
@@ -117,7 +110,7 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSam
         imgInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         imgInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
         imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        allocImage(imgInfo, cube360ColorImage, cube360ColorMemory);
+        allocImage(imgInfo, cube360ColorImage, cube360ColorAllocation, cube360ColorMemory);
     }
 
     if (app) {
@@ -159,7 +152,7 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSam
         imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imgInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        allocImage(imgInfo, cube360DepthImage, cube360DepthMemory);
+        allocImage(imgInfo, cube360DepthImage, cube360DepthAllocation, cube360DepthMemory);
     }
 
     if (app) {
@@ -204,7 +197,7 @@ void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSam
         imgInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
         imgInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
         imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        allocImage(imgInfo, cube360DummyColorImage, cube360DummyColorMemory);
+        allocImage(imgInfo, cube360DummyColorImage, cube360DummyColorAllocation, cube360DummyColorMemory);
     }
     if (app) {
         try {
@@ -227,14 +220,17 @@ void Solid360Renderer::destroySolid360Targets(VulkanApp* app) {
         app->setImageLayoutTracked(cube360DepthImage, VK_IMAGE_LAYOUT_UNDEFINED, 0, 6);
     }
     cube360ColorImage = VK_NULL_HANDLE;
+    cube360ColorAllocation = VK_NULL_HANDLE;
     cube360ColorMemory = VK_NULL_HANDLE;
     for (auto& v : cube360FaceViews) v = VK_NULL_HANDLE;
     cube360CubeView = VK_NULL_HANDLE;
     solid360Sampler = VK_NULL_HANDLE;
     cube360DepthImage = VK_NULL_HANDLE;
+    cube360DepthAllocation = VK_NULL_HANDLE;
     cube360DepthMemory = VK_NULL_HANDLE;
     for (auto &dv : cube360DepthViews) dv = VK_NULL_HANDLE;
     cube360DummyColorImage = VK_NULL_HANDLE;
+    cube360DummyColorAllocation = VK_NULL_HANDLE;
     cube360DummyColorMemory = VK_NULL_HANDLE;
     cube360DummyCubeView = VK_NULL_HANDLE;
 

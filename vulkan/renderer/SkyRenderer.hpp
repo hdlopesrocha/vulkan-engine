@@ -71,6 +71,7 @@ private:
 
     // --- Offscreen equirectangular sky resources (2 frames, clamp index) ---
     std::array<VkImage, 2> skyColorImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VmaAllocation, 2> skyColorAllocations = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkDeviceMemory, 2> skyColorMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkImageView, 2> skyColorImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkImageLayout, 2> skyColorLayouts = {VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};

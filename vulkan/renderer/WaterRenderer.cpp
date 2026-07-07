@@ -73,6 +73,14 @@ void WaterRenderer::cleanup(VulkanApp* app) {
     waterIndirectRenderer.cleanup();
     // Clear local handles; VulkanResourceManager is responsible for actual destruction
     destroyRenderTargets(app);
+    cubemapDummyDepthImage = VK_NULL_HANDLE;
+    cubemapDummyDepthAllocation = VK_NULL_HANDLE;
+    cubemapDummyDepthMemory = VK_NULL_HANDLE;
+    cubemapDummyDepthView = VK_NULL_HANDLE;
+    cubemapDummyCubeImage = VK_NULL_HANDLE;
+    cubemapDummyCubeAllocation = VK_NULL_HANDLE;
+    cubemapDummyCubeMemory = VK_NULL_HANDLE;
+    cubemapDummyCubeView = VK_NULL_HANDLE;
     waterGeometryPipeline = VK_NULL_HANDLE;
     waterDepthPrePassPipeline = VK_NULL_HANDLE;
     waterDepthDescriptorPool = VK_NULL_HANDLE;
@@ -127,9 +135,9 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     
     // Helper to create image + memory + view
     auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
-                           VkImage& image, VkDeviceMemory& memory, VkImageView& view) {
-        RendererUtils::createImage2D(device, app, width, height, format, usage, aspect,
-                                     "WaterRenderer: image", image, memory, view);
+                           VkImage& image, VmaAllocation& allocation, VkDeviceMemory& memory, VkImageView& view) {
+        RendererUtils::createImage2DWithVma(device, app, width, height, format, usage, aspect,
+                                            "WaterRenderer: image", image, allocation, memory, view);
     };
     
     // Reset layout tracking (use file-scope static variables)
@@ -147,7 +155,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         createImage(app->getSwapchainImageFormat(),
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
-                    sceneColorImages[frameIdx], sceneColorMemories[frameIdx], sceneColorImageViews[frameIdx]);
+                    sceneColorImages[frameIdx], sceneColorAllocations[frameIdx], sceneColorMemories[frameIdx], sceneColorImageViews[frameIdx]);
         sceneColorImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
 
         // Ensure GPU/tracked layout initialized for scene color image
@@ -161,7 +169,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         createImage(VK_FORMAT_D32_SFLOAT,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT,
-                    sceneDepthImages[frameIdx], sceneDepthMemories[frameIdx], sceneDepthImageViews[frameIdx]);
+                    sceneDepthImages[frameIdx], sceneDepthAllocations[frameIdx], sceneDepthMemories[frameIdx], sceneDepthImageViews[frameIdx]);
         sceneDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
         std::cerr << "[WaterRenderer] sceneDepthImages[" << frameIdx << "] = " << (void*)sceneDepthImages[frameIdx] << std::endl;
         // Ensure GPU layout is transitioned immediately and then update tracked map.
@@ -176,7 +184,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         createImage(VK_FORMAT_R32G32B32A32_SFLOAT,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
-                    waterDepthImages[frameIdx], waterDepthMemories[frameIdx], waterDepthImageViews[frameIdx]);
+                    waterDepthImages[frameIdx], waterDepthAllocations[frameIdx], waterDepthMemories[frameIdx], waterDepthImageViews[frameIdx]);
         waterDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
 
         if (waterDepthImages[frameIdx] != VK_NULL_HANDLE && app) {
@@ -210,7 +218,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         createImage(VK_FORMAT_D32_SFLOAT,
                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                 VK_IMAGE_ASPECT_DEPTH_BIT,
-                waterGeomDepthImages[frameIdx], waterGeomDepthMemories[frameIdx], waterGeomDepthImageViews[frameIdx]);
+                waterGeomDepthImages[frameIdx], waterGeomDepthAllocations[frameIdx], waterGeomDepthMemories[frameIdx], waterGeomDepthImageViews[frameIdx]);
         waterGeomDepthImageLayouts[frameIdx] = VK_IMAGE_LAYOUT_UNDEFINED;
         std::cerr << "[WaterRenderer] waterGeomDepthImage[" << frameIdx << "] = " << (void*)waterGeomDepthImages[frameIdx] << std::endl;
 
@@ -280,18 +288,22 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
     // will be performed by the VulkanResourceManager.
     for (int i = 0; i < 3; ++i) {
         sceneColorImages[i] = VK_NULL_HANDLE;
+        sceneColorAllocations[i] = VK_NULL_HANDLE;
         sceneColorMemories[i] = VK_NULL_HANDLE;
         sceneColorImageViews[i] = VK_NULL_HANDLE;
         sceneDepthImages[i] = VK_NULL_HANDLE;
+        sceneDepthAllocations[i] = VK_NULL_HANDLE;
         sceneDepthMemories[i] = VK_NULL_HANDLE;
         sceneDepthImageViews[i] = VK_NULL_HANDLE;
     }
     for (int i = 0; i < 3; ++i) {
         waterDepthImages[i] = VK_NULL_HANDLE;
+        waterDepthAllocations[i] = VK_NULL_HANDLE;
         waterDepthMemories[i] = VK_NULL_HANDLE;
         waterDepthImageViews[i] = VK_NULL_HANDLE;
         waterDepthAlphaImageViews[i] = VK_NULL_HANDLE;
         waterGeomDepthImages[i] = VK_NULL_HANDLE;
+        waterGeomDepthAllocations[i] = VK_NULL_HANDLE;
         waterGeomDepthMemories[i] = VK_NULL_HANDLE;
         waterGeomDepthImageViews[i] = VK_NULL_HANDLE;
     }
@@ -1060,8 +1072,9 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
 }
 
 // Helper: create a 1x1 image with given format, initialize to black (color) or 1.0 (depth).
-// Returns the image view on success, VK_NULL_HANDLE on failure.
-static VkImageView _createDummy1x1ImageView(VulkanApp* app, VkFormat fmt, VkImageAspectFlags aspect) {
+// Returns the image view on success, VK_NULL_HANDLE on failure. Outputs image/allocation/memory via pointers.
+static VkImageView _createDummy1x1ImageView(VulkanApp* app, VkFormat fmt, VkImageAspectFlags aspect,
+                                            VkImage* outImage = nullptr, VmaAllocation* outAllocation = nullptr, VkDeviceMemory* outMemory = nullptr) {
     VkDevice device = app->getDevice();
     VkImageCreateInfo img{};
     img.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -1070,23 +1083,21 @@ static VkImageView _createDummy1x1ImageView(VulkanApp* app, VkFormat fmt, VkImag
     img.samples = VK_SAMPLE_COUNT_1_BIT; img.tiling = VK_IMAGE_TILING_OPTIMAL;
     img.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     img.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImage image; VkDeviceMemory mem;
-    if (vkCreateImage(device, &img, nullptr, &image) != VK_SUCCESS) return VK_NULL_HANDLE;
-    VkMemoryRequirements mr; vkGetImageMemoryRequirements(device, image, &mr);
-    VkMemoryAllocateInfo ai{}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.allocationSize = mr.size;
-    ai.memoryTypeIndex = app->findMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(device, &ai, nullptr, &mem) != VK_SUCCESS) { vkDestroyImage(device, image, nullptr); return VK_NULL_HANDLE; }
-    vkBindImageMemory(device, image, mem, 0);
+    VkImage image; VmaAllocation allocation; VkDeviceMemory mem;
+    app->createImageWithVma(img, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, allocation, mem, "WaterRenderer: cubemapDummy");
     VkImageViewCreateInfo vi{}; vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vi.image = image; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = fmt;
     vi.subresourceRange.aspectMask = aspect;
     vi.subresourceRange.levelCount = 1; vi.subresourceRange.layerCount = 1;
     VkImageView view;
-    if (vkCreateImageView(device, &vi, nullptr, &view) != VK_SUCCESS) { vkDestroyImage(device, image, nullptr); vkFreeMemory(device, mem, nullptr); return VK_NULL_HANDLE; }
-    app->resources.addImage(image, "WaterRenderer: cubemapDummy");
-    app->resources.addDeviceMemory(mem, "WaterRenderer: cubemapDummyMem");
+    if (vkCreateImageView(device, &vi, nullptr, &view) != VK_SUCCESS) {
+        app->destroyImageWithVma(image, allocation, mem);
+        return VK_NULL_HANDLE;
+    }
     app->resources.addImageView(view, "WaterRenderer: cubemapDummyView");
+    if (outImage) *outImage = image;
+    if (outAllocation) *outAllocation = allocation;
+    if (outMemory) *outMemory = mem;
     // Initialize (clear) via 1-shot command buffer — record ALL barriers
     // and the clear into the same cb so layout transitions and clear are
     // submitted atomically. Must use recordTransitionImageLayoutLayer
@@ -1111,7 +1122,8 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
 
     // --- Dummy 1x1 depth (far plane) for back-face depth ---
     if (cubemapDummyDepthView == VK_NULL_HANDLE) {
-        cubemapDummyDepthView = _createDummy1x1ImageView(app, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT);
+        cubemapDummyDepthView = _createDummy1x1ImageView(app, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                                         &cubemapDummyDepthImage, &cubemapDummyDepthAllocation, &cubemapDummyDepthMemory);
     }
 
     // --- Dummy 1x1 cubemap (black) ---
@@ -1129,24 +1141,16 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
         ic.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         ic.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
         ic.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        VkImage image; VkDeviceMemory mem;
-        vkCreateImage(device2, &ic, nullptr, &image);
-        VkMemoryRequirements mr; vkGetImageMemoryRequirements(device2, image, &mr);
-        VkMemoryAllocateInfo ai{}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        ai.allocationSize = mr.size;
-        ai.memoryTypeIndex = app->findMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        vkAllocateMemory(device2, &ai, nullptr, &mem);
-        vkBindImageMemory(device2, image, mem, 0);
+        VkImage image; VmaAllocation allocation; VkDeviceMemory mem;
+        app->createImageWithVma(ic, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, allocation, mem, "WaterRenderer: cubemapDummyCube");
         VkImageViewCreateInfo vi{}; vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         vi.image = image; vi.viewType = VK_IMAGE_VIEW_TYPE_CUBE; vi.format = VK_FORMAT_R8G8B8A8_UNORM;
         vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         vi.subresourceRange.levelCount = 1; vi.subresourceRange.layerCount = 6;
         VkImageView view;
         vkCreateImageView(device2, &vi, nullptr, &view);
-        app->resources.addImage(image, "WaterRenderer: cubemapDummyCube");
-        app->resources.addDeviceMemory(mem, "WaterRenderer: cubemapDummyCubeMem");
         app->resources.addImageView(view, "WaterRenderer: cubemapDummyCubeView");
-        cubemapDummyCubeImage = image; cubemapDummyCubeMemory = mem; cubemapDummyCubeView = view;
+        cubemapDummyCubeImage = image; cubemapDummyCubeAllocation = allocation; cubemapDummyCubeMemory = mem; cubemapDummyCubeView = view;
         // Initialize all 6 faces to black — record barriers and clear atomically
         app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
             VkImageSubresourceRange range2{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};

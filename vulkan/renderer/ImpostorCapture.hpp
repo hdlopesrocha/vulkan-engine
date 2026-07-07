@@ -1,5 +1,6 @@
 #pragma once
 #include <vulkan/vulkan.h>
+#include "../VmaContext.hpp"
 #include <glm/glm.hpp>
 #include <array>
 
@@ -71,24 +72,28 @@ private:
 
     // Albedo capture texture array (TOTAL_LAYERS=60 layers, VK_FORMAT_R8G8B8A8_UNORM).
     VkImage        captureImage      = VK_NULL_HANDLE;
+    VmaAllocation  captureAllocation = VK_NULL_HANDLE;
     VkDeviceMemory captureMemory     = VK_NULL_HANDLE;
     VkImageView    captureArrayView  = VK_NULL_HANDLE;          // 60-layer 2D_ARRAY view
     std::array<VkImageView, TOTAL_LAYERS> captureLayerViews{};  // per-layer 2D views
 
     // Normal capture texture array (world-space normals encoded in [0,1]).
     VkImage        captureNormalImage      = VK_NULL_HANDLE;
+    VmaAllocation  captureNormalAllocation = VK_NULL_HANDLE;
     VkDeviceMemory captureNormalMemory     = VK_NULL_HANDLE;
     VkImageView    captureNormalArrayView  = VK_NULL_HANDLE;
     std::array<VkImageView, TOTAL_LAYERS> captureNormalLayerViews{};
 
     // Depth capture texture array (device Z for shadow-map reprojection).
     VkImage        captureDepthImage      = VK_NULL_HANDLE;
+    VmaAllocation  captureDepthAllocation = VK_NULL_HANDLE;
     VkDeviceMemory captureDepthMemory     = VK_NULL_HANDLE;
     VkImageView    captureDepthArrayView  = VK_NULL_HANDLE;
     std::array<VkImageView, TOTAL_LAYERS> captureDepthLayerViews{};
 
     // Depth image (single non-array, reused across all views in one submit).
     VkImage        depthImage  = VK_NULL_HANDLE;
+    VmaAllocation  depthAllocation = VK_NULL_HANDLE;
     VkDeviceMemory depthMemory = VK_NULL_HANDLE;
     VkImageView    depthView   = VK_NULL_HANDLE;
 

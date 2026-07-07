@@ -40,6 +40,7 @@ private:
     VkPipeline backFacePipeline = VK_NULL_HANDLE;
     static constexpr uint32_t FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
     std::array<VkImage, FRAMES> backFaceDepthImages = {};
+    std::array<VmaAllocation, FRAMES> backFaceDepthAllocations = {};
     std::array<VkDeviceMemory, FRAMES> backFaceDepthMemories = {};
     std::array<VkImageView, FRAMES> backFaceDepthImageViews = {};
     std::array<VkImageLayout, FRAMES> backFaceDepthImageLayouts = {};

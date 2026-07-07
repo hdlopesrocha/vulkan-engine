@@ -58,31 +58,22 @@ static void cleanupTextureImage(VulkanApp* app, TextureImage &ti) {
 			ti.view = VK_NULL_HANDLE;
 		}
 	}
-	// Destroy image
+	// Destroy image + memory via VMA if allocated through VMA
 	if (ti.image != VK_NULL_HANDLE) {
 		VkImage img = ti.image;
-		if (app->hasPendingCommandBuffers()) {
-			std::cerr << "[TextureArrayManager] deferring vkDestroyImage(" << (void*)img << ") until pending cmds complete" << std::endl;
-			app->deferDestroyUntilAllPending([device, img, app](){ if (app->resources.removeImage(img)) vkDestroyImage(device, img, nullptr); });
-			ti.image = VK_NULL_HANDLE;
-		} else {
-			std::cerr << "[TextureArrayManager] destroying vkDestroyImage(" << (void*)img << ") now" << std::endl;
-			if (app->resources.removeImage(img)) vkDestroyImage(device, img, nullptr);
-			ti.image = VK_NULL_HANDLE;
-		}
-	}
-	// Free memory
-	if (ti.memory != VK_NULL_HANDLE) {
+		VmaAllocation alloc = ti.allocation;
 		VkDeviceMemory mem = ti.memory;
 		if (app->hasPendingCommandBuffers()) {
-			std::cerr << "[TextureArrayManager] deferring vkFreeMemory(" << (void*)mem << ") until pending cmds complete" << std::endl;
-			app->deferDestroyUntilAllPending([device, mem, app](){ if (app->resources.removeDeviceMemory(mem)) vkFreeMemory(device, mem, nullptr); });
-			ti.memory = VK_NULL_HANDLE;
+			std::cerr << "[TextureArrayManager] deferring vmaDestroyImage(" << (void*)img << ") until pending cmds complete" << std::endl;
+			app->deferDestroyUntilAllPending([device, img, alloc, mem, app](){ app->destroyImageWithVma(img, alloc, mem); });
+			ti.image = VK_NULL_HANDLE;
 		} else {
-			std::cerr << "[TextureArrayManager] freeing vkFreeMemory(" << (void*)mem << ") now" << std::endl;
-			if (app->resources.removeDeviceMemory(mem)) vkFreeMemory(device, mem, nullptr);
-			ti.memory = VK_NULL_HANDLE;
+			std::cerr << "[TextureArrayManager] destroying vmaDestroyImage(" << (void*)img << ") now" << std::endl;
+			app->destroyImageWithVma(img, alloc, mem);
+			ti.image = VK_NULL_HANDLE;
 		}
+		ti.allocation = VK_NULL_HANDLE;
+		ti.memory = VK_NULL_HANDLE;
 	}
 	ti.mipLevels = 1;
 }
@@ -237,53 +228,16 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 		imageInfo.format = format;
 		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
 		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		// SAMPLED + TRANSFER_DST + STORAGE + TRANSFER_SRC.  EXCLUSIVE sharing;
-		// CONCURRENT on RADV strips TCP-read permission → GPUVM fault.
 		imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
 		VkDevice device = app->getDevice();
 
-		if (vkCreateImage(device, &imageInfo, nullptr, &out.image) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create texture array image");
-		}
-		// Debug: print created image handle for leak tracing
-		std::cerr << "[TextureArrayManager] createArray: image=" << (void*)out.image << " format=" << (int)format << " layers=" << imageInfo.arrayLayers << " mipLevels=" << imageInfo.mipLevels << std::endl;
-		// Register image so final-sweep can clean it if an owner misses unregister
-		app->resources.addImage(out.image, "TextureArrayManager: out.image");
-		// Also add to central resource manager and record array-layer count
-		app->resources.addImage(out.image, "TextureArrayManager::createArray image");
+		app->createImageWithVma(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, out.image, out.allocation, out.memory, "TextureArrayManager: createArray");
 		app->resources.setImageArrayLayers(out.image, imageInfo.arrayLayers);
 
-		VkMemoryRequirements memRequirements;
-		vkGetImageMemoryRequirements(device, out.image, &memRequirements);
-
-		VkMemoryAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		{
-			static constexpr VkDeviceSize kMin = 262144;
-			const VkDeviceSize sz = memRequirements.size;
-			allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-		}
-		allocInfo.memoryTypeIndex = app->findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-		if (vkAllocateMemory(device, &allocInfo, nullptr, &out.memory) != VK_SUCCESS) {
-			// Ensure manager won't try to destroy this image later
-			app->resources.removeImage(out.image);
-			vkDestroyImage(device, out.image, nullptr);
-			out.image = VK_NULL_HANDLE;
-			throw std::runtime_error("failed to allocate texture array memory");
-		}
-
-		// Register device memory
-		app->resources.addDeviceMemory(out.memory, "TextureArrayManager: out.memory");
-		app->resources.addDeviceMemory(out.memory, "TextureArrayManager::createArray memory");
-
-		// Debug: log allocated memory size for texture array
-		std::cerr << "[TextureArrayManager] createArray: image=" << (void*)out.image << " mem=" << (void*)out.memory << " allocSize=" << (size_t)memRequirements.size << " layers=" << imageInfo.arrayLayers << " mipLevels=" << imageInfo.mipLevels << std::endl;
-
-		vkBindImageMemory(device, out.image, out.memory, 0);
+		std::cerr << "[TextureArrayManager] createArray: image=" << (void*)out.image << " mem=" << (void*)out.memory << " layers=" << imageInfo.arrayLayers << " mipLevels=" << imageInfo.mipLevels << std::endl;
 
 		// Create image view for 2D array
 		VkImageViewCreateInfo viewInfo{};
@@ -298,18 +252,13 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 		viewInfo.subresourceRange.layerCount = layerAmount;
 
 		if (vkCreateImageView(device, &viewInfo, nullptr, &out.view) != VK_SUCCESS) {
-			// Remove any registrations and free resources
-			app->resources.removeImage(out.image);
-			app->resources.removeDeviceMemory(out.memory);
-			vkDestroyImage(device, out.image, nullptr);
-			vkFreeMemory(device, out.memory, nullptr);
+			app->destroyImageWithVma(out.image, out.allocation, out.memory);
 			out.image = VK_NULL_HANDLE;
+			out.allocation = VK_NULL_HANDLE;
 			out.memory = VK_NULL_HANDLE;
 			throw std::runtime_error("failed to create texture array image view");
 		}
 		std::cerr << "[TextureArrayManager] createArray: view=" << (void*)out.view << " image=" << (void*)out.image << std::endl;
-		// Register image view
-		app->resources.addImageView(out.view, "TextureArrayManager: out.view");
 		app->resources.addImageView(out.view, "TextureArrayManager::createArray view");
 
 		out.mipLevels = mipLevels;

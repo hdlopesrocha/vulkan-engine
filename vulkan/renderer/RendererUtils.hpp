@@ -91,6 +91,63 @@ inline void createImage2D(
     app->resources.addImageView(outView, name);
 }
 
+// Create a 2D image + VMA-backed device-local memory + image view.
+// Registers all three with VulkanResourceManager. Uses VMA for suballocation.
+inline void createImage2DWithVma(
+    VkDevice       device,
+    VulkanApp*     app,
+    uint32_t       width,
+    uint32_t       height,
+    VkFormat       format,
+    VkImageUsageFlags usage,
+    VkImageAspectFlags aspect,
+    const char*    name,
+    VkImage&       outImage,
+    VmaAllocation& outAllocation,
+    VkDeviceMemory& outMemory,
+    VkImageView&   outView)
+{
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType     = VK_IMAGE_TYPE_2D;
+    imageInfo.extent        = {width, height, 1};
+    imageInfo.mipLevels     = 1;
+    imageInfo.arrayLayers   = 1;
+    imageInfo.format        = format;
+    imageInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage         = usage;
+    imageInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.queueFamilyIndexCount = 0;
+    imageInfo.pQueueFamilyIndices = nullptr;
+
+    VmaAllocationCreateInfo allocCI{};
+    allocCI.usage = VMA_MEMORY_USAGE_AUTO;
+    allocCI.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+    VmaAllocationInfo allocInfo;
+    if (vmaCreateImage(app->getVmaAllocator(), &imageInfo, &allocCI, &outImage, &outAllocation, &allocInfo) != VK_SUCCESS)
+        throw std::runtime_error(std::string("Failed to create image with VMA: ") + name);
+    outMemory = allocInfo.deviceMemory;
+    app->resources.addImageVma(outImage, outAllocation, name);
+
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image                           = outImage;
+    viewInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format                          = format;
+    viewInfo.subresourceRange.aspectMask     = aspect;
+    viewInfo.subresourceRange.baseMipLevel   = 0;
+    viewInfo.subresourceRange.levelCount     = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount     = 1;
+
+    if (vkCreateImageView(device, &viewInfo, nullptr, &outView) != VK_SUCCESS)
+        throw std::runtime_error(std::string("Failed to create image view: ") + name);
+    app->resources.addImageView(outView, name);
+}
+
 // Options for buildFullscreenPipeline.  All defaults match a standard
 // fullscreen-triangle pass: fill, no cull, CCW, depth disabled, no blend.
 struct FullscreenPipelineOpts {

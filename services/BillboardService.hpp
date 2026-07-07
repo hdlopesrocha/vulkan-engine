@@ -35,12 +35,15 @@ private:
 
     // Billboard array images (sampler2DArray, one layer per billboard)
     VkImage        billboardAlbedoArrayImage   = VK_NULL_HANDLE;
+    VmaAllocation  billboardAlbedoArrayAllocation  = VK_NULL_HANDLE;
     VkDeviceMemory billboardAlbedoArrayMemory  = VK_NULL_HANDLE;
     VkImageView    billboardAlbedoArrayView    = VK_NULL_HANDLE;
     VkImage        billboardNormalArrayImage   = VK_NULL_HANDLE;
+    VmaAllocation  billboardNormalArrayAllocation  = VK_NULL_HANDLE;
     VkDeviceMemory billboardNormalArrayMemory  = VK_NULL_HANDLE;
     VkImageView    billboardNormalArrayView    = VK_NULL_HANDLE;
     VkImage        billboardOpacityArrayImage  = VK_NULL_HANDLE;
+    VmaAllocation  billboardOpacityArrayAllocation = VK_NULL_HANDLE;
     VkDeviceMemory billboardOpacityArrayMemory = VK_NULL_HANDLE;
     VkImageView    billboardOpacityArrayView   = VK_NULL_HANDLE;
     VkSampler      billboardArraySampler       = VK_NULL_HANDLE;

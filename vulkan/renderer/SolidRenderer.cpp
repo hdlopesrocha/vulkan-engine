@@ -20,16 +20,16 @@ void SolidRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     renderHeight = height;
     VkDevice device = app->getDevice();
 
-    auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect, VkImage& image, VkDeviceMemory& memory, VkImageView& view) {
-        RendererUtils::createImage2D(device, app, width, height, format, usage, aspect,
-                                     "SolidRenderer: image", image, memory, view);
+    auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect, VkImage& image, VmaAllocation& allocation, VkDeviceMemory& memory, VkImageView& view) {
+        RendererUtils::createImage2DWithVma(device, app, width, height, format, usage, aspect,
+                                            "SolidRenderer: image", image, allocation, memory, view);
     };
 
     for (int i = 0; i < 2; ++i) {
         createImage(app->getSwapchainImageFormat(), VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
-                    solidColorImages[i], solidColorMemories[i], solidColorImageViews[i]);
+                    solidColorImages[i], solidColorAllocations[i], solidColorMemories[i], solidColorImageViews[i]);
         createImage(VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
-                    solidDepthImages[i], solidDepthMemories[i], solidDepthImageViews[i]);
+                    solidDepthImages[i], solidDepthAllocations[i], solidDepthMemories[i], solidDepthImageViews[i]);
         solidDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
@@ -73,31 +73,19 @@ void SolidRenderer::destroyRenderTargets(VulkanApp* app) {
                 vkDestroyImageView(device, solidColorImageViews[i], nullptr);
             solidColorImageViews[i] = VK_NULL_HANDLE;
         }
-        if (solidColorImages[i] != VK_NULL_HANDLE) {
-            if (app->resources.removeImage(solidColorImages[i]))
-                vkDestroyImage(device, solidColorImages[i], nullptr);
-            solidColorImages[i] = VK_NULL_HANDLE;
-        }
-        if (solidColorMemories[i] != VK_NULL_HANDLE) {
-            if (app->resources.removeDeviceMemory(solidColorMemories[i]))
-                vkFreeMemory(device, solidColorMemories[i], nullptr);
-            solidColorMemories[i] = VK_NULL_HANDLE;
-        }
+        app->destroyImageWithVma(solidColorImages[i], solidColorAllocations[i], solidColorMemories[i]);
+        solidColorImages[i] = VK_NULL_HANDLE;
+        solidColorAllocations[i] = VK_NULL_HANDLE;
+        solidColorMemories[i] = VK_NULL_HANDLE;
         if (solidDepthImageViews[i] != VK_NULL_HANDLE) {
             if (app->resources.removeImageView(solidDepthImageViews[i]))
                 vkDestroyImageView(device, solidDepthImageViews[i], nullptr);
             solidDepthImageViews[i] = VK_NULL_HANDLE;
         }
-        if (solidDepthImages[i] != VK_NULL_HANDLE) {
-            if (app->resources.removeImage(solidDepthImages[i]))
-                vkDestroyImage(device, solidDepthImages[i], nullptr);
-            solidDepthImages[i] = VK_NULL_HANDLE;
-        }
-        if (solidDepthMemories[i] != VK_NULL_HANDLE) {
-            if (app->resources.removeDeviceMemory(solidDepthMemories[i]))
-                vkFreeMemory(device, solidDepthMemories[i], nullptr);
-            solidDepthMemories[i] = VK_NULL_HANDLE;
-        }
+        app->destroyImageWithVma(solidDepthImages[i], solidDepthAllocations[i], solidDepthMemories[i]);
+        solidDepthImages[i] = VK_NULL_HANDLE;
+        solidDepthAllocations[i] = VK_NULL_HANDLE;
+        solidDepthMemories[i] = VK_NULL_HANDLE;
     }
 }
 

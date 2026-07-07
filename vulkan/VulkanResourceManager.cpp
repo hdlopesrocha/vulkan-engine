@@ -243,6 +243,25 @@ bool VulkanResourceManager::removeBufferVma(VkBuffer buf) {
     }
     return buffers.erase((uintptr_t)buf) > 0;
 }
+
+void VulkanResourceManager::addImageVma(VkImage img, VmaAllocation alloc, const char* desc) {
+    if (img == VK_NULL_HANDLE) return;
+    std::lock_guard<std::mutex> lk(mtx);
+    images[(uintptr_t)img] = {img, desc ? std::string(desc) : std::string()};
+    if (alloc) vmaImageAllocations[(uintptr_t)img] = alloc;
+}
+
+bool VulkanResourceManager::removeImageVma(VkImage img) {
+    std::lock_guard<std::mutex> lk(mtx);
+    images.erase((uintptr_t)img);
+    auto it = vmaImageAllocations.find((uintptr_t)img);
+    if (it != vmaImageAllocations.end()) {
+        if (vmaAlloc) vmaDestroyImage(vmaAlloc, img, it->second);
+        vmaImageAllocations.erase(it);
+        return true;
+    }
+    return images.erase((uintptr_t)img) > 0;
+}
 bool VulkanResourceManager::removePipeline(VkPipeline p) { std::lock_guard<std::mutex> lk(mtx); return pipelines.erase((uintptr_t)p) > 0; }
 bool VulkanResourceManager::removePipelineLayout(VkPipelineLayout pl) { std::lock_guard<std::mutex> lk(mtx); return pipelineLayouts.erase((uintptr_t)pl) > 0; }
 bool VulkanResourceManager::removeShaderModule(VkShaderModule m) { std::lock_guard<std::mutex> lk(mtx); return shaderModules.erase((uintptr_t)m) > 0; }
@@ -409,7 +428,28 @@ void VulkanResourceManager::cleanup(VkDevice device) {
     std::cerr << "[VulkanResourceManager] cleanup: destroying imageViews\n"; fflush(stderr);
     destroyAndClear(imageViews, [](VkDevice d, uintptr_t h){ vkDestroyImageView(d, reinterpret_cast<VkImageView>(h), nullptr); });
     std::cerr << "[VulkanResourceManager] cleanup: destroying images\n"; fflush(stderr);
-    destroyAndClear(images, [](VkDevice d, uintptr_t h){ vkDestroyImage(d, reinterpret_cast<VkImage>(h), nullptr); });
+    {
+        std::vector<uintptr_t> keys;
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            keys.reserve(images.size());
+            for (const auto &p : images) keys.push_back(p.first);
+        }
+        for (uintptr_t h : keys) {
+            VmaAllocation alloc = VK_NULL_HANDLE;
+            {
+                std::lock_guard<std::mutex> lk(mtx);
+                auto it = vmaImageAllocations.find(h);
+                if (it != vmaImageAllocations.end()) alloc = it->second;
+            }
+            if (alloc && vmaAlloc) {
+                vmaDestroyImage(vmaAlloc, reinterpret_cast<VkImage>(h), alloc);
+            } else {
+                vkDestroyImage(device, reinterpret_cast<VkImage>(h), nullptr);
+            }
+            { std::lock_guard<std::mutex> lk(mtx); images.erase(h); vmaImageAllocations.erase(h); }
+        }
+    }
     std::cerr << "[VulkanResourceManager] cleanup: destroying buffers\n"; fflush(stderr);
     {
         std::vector<uintptr_t> keys;

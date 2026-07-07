@@ -1,5 +1,5 @@
 #include "WaterBackFaceRenderer.hpp"
-
+#include "RendererUtils.hpp"
 #include "../../utils/FileReader.hpp"
 #include <stdexcept>
 #include <iostream>
@@ -184,71 +184,16 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
     VkDevice device = app->getDevice();
 
     auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
-                           VkImage& image, VkDeviceMemory& memory, VkImageView& view) {
-        VkImageCreateInfo imageInfo{};
-        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.extent = {width, height, 1};
-        imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = 1;
-        imageInfo.format = format;
-        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.usage = usage;
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-
-        // EXCLUSIVE sharing: CONCURRENT on RADV strips TCP-read permission.
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        imageInfo.queueFamilyIndexCount = 0;
-        imageInfo.pQueueFamilyIndices = nullptr;
-
-        if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create back-face image!");
-        }
-        app->resources.addImage(image, "WaterBackFaceRenderer: image");
-        VkMemoryRequirements memReq;
-        vkGetImageMemoryRequirements(device, image, &memReq);
-
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        {
-            static constexpr VkDeviceSize kMin = 262144;
-            const VkDeviceSize sz = memReq.size;
-            allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-        }
-        allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to allocate back-face image memory!");
-        }
-        vkBindImageMemory(device, image, memory, 0);
-        app->resources.addDeviceMemory(memory, "WaterBackFaceRenderer: memory");
-
-        // Log allocation details to aid post-mortem correlation with dmesg GPUVM faults
-        std::cerr << "[WaterBackFaceRenderer] created image=" << (void*)image
-                  << " mem=" << (void*)memory
-                  << " allocSize=" << (size_t)memReq.size << std::endl;
-
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = image;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = format;
-        viewInfo.subresourceRange.aspectMask = aspect;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-        if (vkCreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create back-face image view!");
-        }
-        app->resources.addImageView(view, "WaterBackFaceRenderer: view");
+                           VkImage& image, VmaAllocation& allocation, VkDeviceMemory& memory, VkImageView& view) {
+        RendererUtils::createImage2DWithVma(device, app, width, height, format, usage, aspect,
+                                            "WaterBackFaceRenderer: image", image, allocation, memory, view);
     };
 
     for (int i = 0; i < 3; ++i) {
         createImage(VK_FORMAT_D32_SFLOAT,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT,
-                    backFaceDepthImages[i], backFaceDepthMemories[i], backFaceDepthImageViews[i]);
+                    backFaceDepthImages[i], backFaceDepthAllocations[i], backFaceDepthMemories[i], backFaceDepthImageViews[i]);
         backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
         // Ensure authoritative/tracked layout matches the render-pass initial layout
         if (backFaceDepthImages[i] != VK_NULL_HANDLE && app) {
@@ -271,6 +216,7 @@ void WaterBackFaceRenderer::destroyRenderTargets(VulkanApp* app) {
     (void)app;
     for (int i = 0; i < 3; ++i) {
         backFaceDepthImages[i] = VK_NULL_HANDLE;
+        backFaceDepthAllocations[i] = VK_NULL_HANDLE;
         backFaceDepthMemories[i] = VK_NULL_HANDLE;
         backFaceDepthImageViews[i] = VK_NULL_HANDLE;
         backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;

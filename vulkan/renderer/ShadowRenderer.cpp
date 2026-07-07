@@ -45,15 +45,18 @@ void ShadowRenderer::cleanup(VulkanApp* app) {
         }
         cascades[i].colorView = VK_NULL_HANDLE;
         cascades[i].colorImage = VK_NULL_HANDLE;
+        cascades[i].colorAllocation = VK_NULL_HANDLE;
         cascades[i].colorMemory = VK_NULL_HANDLE;
         cascades[i].depthView = VK_NULL_HANDLE;
         cascades[i].depthImage = VK_NULL_HANDLE;
+        cascades[i].depthAllocation = VK_NULL_HANDLE;
         cascades[i].depthMemory = VK_NULL_HANDLE;
     }
 
     shadowMapSampler = VK_NULL_HANDLE;
     dummyColorView = VK_NULL_HANDLE;
     dummyColorImage = VK_NULL_HANDLE;
+    dummyColorAllocation = VK_NULL_HANDLE;
     dummyColorMemory = VK_NULL_HANDLE;
     shadowPipeline = VK_NULL_HANDLE;
     shadowPipelineLayout = VK_NULL_HANDLE;
@@ -67,6 +70,7 @@ void ShadowRenderer::cleanup(VulkanApp* app) {
     blurVerticalDS = VK_NULL_HANDLE;
     blurTempView = VK_NULL_HANDLE;
     blurTempImage = VK_NULL_HANDLE;
+    blurTempAllocation = VK_NULL_HANDLE;
     blurTempMemory = VK_NULL_HANDLE;
 }
 
@@ -98,21 +102,21 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
         std::string tag = "ShadowRenderer cascade " + std::to_string(c);
 
         // --- EVSM color image (RGBA32F for moments) ---
-        RendererUtils::createImage2D(device, app, size, size,
+        RendererUtils::createImage2DWithVma(device, app, size, size,
             EVSM_FORMAT,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT,
-            (tag + " EVSM color").c_str(), cas.colorImage, cas.colorMemory, cas.colorView);
+            (tag + " EVSM color").c_str(), cas.colorImage, cas.colorAllocation, cas.colorMemory, cas.colorView);
 
         app->transitionImageLayoutLayer(cas.colorImage, EVSM_FORMAT,
             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
 
         // --- Depth image (for depth testing during shadow rendering) ---
-        RendererUtils::createImage2D(device, app, size, size,
+        RendererUtils::createImage2DWithVma(device, app, size, size,
             VK_FORMAT_D32_SFLOAT,
             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             VK_IMAGE_ASPECT_DEPTH_BIT,
-            (tag + " depth").c_str(), cas.depthImage, cas.depthMemory, cas.depthView);
+            (tag + " depth").c_str(), cas.depthImage, cas.depthAllocation, cas.depthMemory, cas.depthView);
 
         app->transitionImageLayoutLayer(cas.depthImage, VK_FORMAT_D32_SFLOAT,
             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 1, 0, 1);
@@ -189,11 +193,11 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
     //    mismatch during the shadow pass (the real EVSM maps are being written).
     {
         VkDevice device = app->getDevice();
-        RendererUtils::createImage2D(device, app, 1, 1,
+        RendererUtils::createImage2DWithVma(device, app, 1, 1,
             EVSM_FORMAT,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT,
-            "ShadowRenderer: dummyColor", dummyColorImage, dummyColorMemory, dummyColorView);
+            "ShadowRenderer: dummyColor", dummyColorImage, dummyColorAllocation, dummyColorMemory, dummyColorView);
 
         app->transitionImageLayoutLayer(dummyColorImage, EVSM_FORMAT,
             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
@@ -268,11 +272,11 @@ void ShadowRenderer::createBlurResources(VulkanApp* app) {
     app->resources.addDescriptorPool(blurDescPool, "ShadowRenderer: blurDescPool");
 
     // Temporary image for blur ping-pong (sized for the largest cascade)
-    RendererUtils::createImage2D(device, app, shadowMapSizes[0], shadowMapSizes[0],
+    RendererUtils::createImage2DWithVma(device, app, shadowMapSizes[0], shadowMapSizes[0],
         EVSM_FORMAT,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
-        "ShadowRenderer: blurTemp", blurTempImage, blurTempMemory, blurTempView);
+        "ShadowRenderer: blurTemp", blurTempImage, blurTempAllocation, blurTempMemory, blurTempView);
 
     app->transitionImageLayoutLayer(blurTempImage, EVSM_FORMAT,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);

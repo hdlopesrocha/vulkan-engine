@@ -1,5 +1,6 @@
 #pragma once
 #include <vulkan/vulkan.h>
+#include "../VmaContext.hpp"
 
 class VulkanApp;
 
@@ -19,6 +20,7 @@ private:
     void createDescriptorResources(VulkanApp* app, VkSampler sampler, VkImageView cubeMapView);
 
     VkImage cube360EquirectImage = VK_NULL_HANDLE;
+    VmaAllocation cube360EquirectAllocation = VK_NULL_HANDLE;
     VkDeviceMemory cube360EquirectMemory = VK_NULL_HANDLE;
     VkImageView cube360EquirectView = VK_NULL_HANDLE;
     VkPipeline cube360EquirectPipeline = VK_NULL_HANDLE;

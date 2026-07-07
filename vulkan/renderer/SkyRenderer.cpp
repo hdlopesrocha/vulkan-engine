@@ -203,9 +203,9 @@ void SkyRenderer::createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_
     // Helper: create image + memory + view
     auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
                            uint32_t w, uint32_t h,
-                           VkImage &image, VkDeviceMemory &memory, VkImageView &view) {
-        RendererUtils::createImage2D(device, app, w, h, format, usage, aspect,
-                                     "SkyRenderer: equirect image", image, memory, view);
+                           VkImage &image, VmaAllocation &allocation, VkDeviceMemory &memory, VkImageView &view) {
+        RendererUtils::createImage2DWithVma(device, app, w, h, format, usage, aspect,
+                                            "SkyRenderer: equirect image", image, allocation, memory, view);
     };
 
     // Remove render pass creation - using dynamic rendering
@@ -251,7 +251,7 @@ void SkyRenderer::createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
                     offscreenWidth, offscreenHeight,
-                    skyColorImages[i], skyColorMemories[i], skyColorImageViews[i]);
+                    skyColorImages[i], skyColorAllocations[i], skyColorMemories[i], skyColorImageViews[i]);
         skyColorLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
@@ -262,21 +262,15 @@ void SkyRenderer::destroyOffscreenTargets(VulkanApp* app) {
     if (!app) return;
     VkDevice device = app->getDevice();
     for (int i = 0; i < 2; ++i) {
-        if (skyColorImages[i] != VK_NULL_HANDLE) {
-            if (app->resources.removeImage(skyColorImages[i]))
-                vkDestroyImage(device, skyColorImages[i], nullptr);
-            skyColorImages[i] = VK_NULL_HANDLE;
-        }
-        if (skyColorMemories[i] != VK_NULL_HANDLE) {
-            if (app->resources.removeDeviceMemory(skyColorMemories[i]))
-                vkFreeMemory(device, skyColorMemories[i], nullptr);
-            skyColorMemories[i] = VK_NULL_HANDLE;
-        }
         if (skyColorImageViews[i] != VK_NULL_HANDLE) {
             if (app->resources.removeImageView(skyColorImageViews[i]))
                 vkDestroyImageView(device, skyColorImageViews[i], nullptr);
             skyColorImageViews[i] = VK_NULL_HANDLE;
         }
+        app->destroyImageWithVma(skyColorImages[i], skyColorAllocations[i], skyColorMemories[i]);
+        skyColorImages[i] = VK_NULL_HANDLE;
+        skyColorAllocations[i] = VK_NULL_HANDLE;
+        skyColorMemories[i] = VK_NULL_HANDLE;
         skyColorLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
     skyEquirectPipeline = VK_NULL_HANDLE;

@@ -164,16 +164,20 @@ private:
     // Per-frame offscreen render targets for main scene (color + depth) - 2 frames in flight
     static constexpr uint32_t FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
     std::array<VkImage, FRAMES> sceneColorImages;
+    std::array<VmaAllocation, FRAMES> sceneColorAllocations;
     std::array<VkDeviceMemory, FRAMES> sceneColorMemories;
     std::array<VkImageView, FRAMES> sceneColorImageViews;
     std::array<VkImage, FRAMES> sceneDepthImages;
+    std::array<VmaAllocation, FRAMES> sceneDepthAllocations;
     std::array<VkDeviceMemory, FRAMES> sceneDepthMemories;
     std::array<VkImageView, FRAMES> sceneDepthImageViews;
     std::array<VkImage, FRAMES> waterDepthImages;
+    std::array<VmaAllocation, FRAMES> waterDepthAllocations;
     std::array<VkDeviceMemory, FRAMES> waterDepthMemories;
     std::array<VkImageView, FRAMES> waterDepthImageViews;
     std::array<VkImageView, FRAMES> waterDepthAlphaImageViews;
     std::array<VkImage, FRAMES> waterGeomDepthImages;
+    std::array<VmaAllocation, FRAMES> waterGeomDepthAllocations;
     std::array<VkDeviceMemory, FRAMES> waterGeomDepthMemories;
     std::array<VkImageView, FRAMES> waterGeomDepthImageViews;
 
@@ -194,9 +198,11 @@ private:
     // Cubemap water pass resources
     VkDescriptorSet cubemapWaterDepthDS = VK_NULL_HANDLE; // set 2 descriptor for cubemap water pass
     VkImage cubemapDummyDepthImage = VK_NULL_HANDLE;      // depth image cleared to far plane
+    VmaAllocation cubemapDummyDepthAllocation = VK_NULL_HANDLE;
     VkDeviceMemory cubemapDummyDepthMemory = VK_NULL_HANDLE;
     VkImageView cubemapDummyDepthView = VK_NULL_HANDLE;
     VkImage cubemapDummyCubeImage = VK_NULL_HANDLE;       // dummy cubemap to avoid feedback
+    VmaAllocation cubemapDummyCubeAllocation = VK_NULL_HANDLE;
     VkDeviceMemory cubemapDummyCubeMemory = VK_NULL_HANDLE;
     VkImageView cubemapDummyCubeView = VK_NULL_HANDLE;
 

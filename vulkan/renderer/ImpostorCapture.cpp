@@ -137,8 +137,7 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
 
     // Depth image.
     if (depthView   != VK_NULL_HANDLE) { app->resources.removeImageView(depthView);   vkDestroyImageView(device, depthView, nullptr);  depthView   = VK_NULL_HANDLE; }
-    if (depthImage  != VK_NULL_HANDLE) { app->resources.removeImage(depthImage);      vkDestroyImage(device, depthImage, nullptr);     depthImage  = VK_NULL_HANDLE; }
-    if (depthMemory != VK_NULL_HANDLE) { app->resources.removeDeviceMemory(depthMemory); vkFreeMemory(device, depthMemory, nullptr);    depthMemory = VK_NULL_HANDLE; }
+    if (depthImage  != VK_NULL_HANDLE) { app->destroyImageWithVma(depthImage, depthAllocation, depthMemory); depthImage = VK_NULL_HANDLE; depthAllocation = VK_NULL_HANDLE; depthMemory = VK_NULL_HANDLE; }
 
     // Scene sampler.
     if (sceneSampler != VK_NULL_HANDLE) {
@@ -156,8 +155,7 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
         vkDestroyImageView(device, captureArrayView, nullptr);
         captureArrayView = VK_NULL_HANDLE;
     }
-    if (captureImage  != VK_NULL_HANDLE) { app->resources.removeImage(captureImage);       vkDestroyImage(device, captureImage, nullptr);  captureImage  = VK_NULL_HANDLE; }
-    if (captureMemory != VK_NULL_HANDLE) { app->resources.removeDeviceMemory(captureMemory); vkFreeMemory(device, captureMemory, nullptr); captureMemory = VK_NULL_HANDLE; }
+    if (captureImage  != VK_NULL_HANDLE) { app->destroyImageWithVma(captureImage, captureAllocation, captureMemory); captureImage = VK_NULL_HANDLE; captureAllocation = VK_NULL_HANDLE; captureMemory = VK_NULL_HANDLE; }
 
     // Normal capture image views.
     for (auto& v : captureNormalLayerViews) {
@@ -168,8 +166,7 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
         vkDestroyImageView(device, captureNormalArrayView, nullptr);
         captureNormalArrayView = VK_NULL_HANDLE;
     }
-    if (captureNormalImage  != VK_NULL_HANDLE) { app->resources.removeImage(captureNormalImage);       vkDestroyImage(device, captureNormalImage, nullptr);  captureNormalImage  = VK_NULL_HANDLE; }
-    if (captureNormalMemory != VK_NULL_HANDLE) { app->resources.removeDeviceMemory(captureNormalMemory); vkFreeMemory(device, captureNormalMemory, nullptr); captureNormalMemory = VK_NULL_HANDLE; }
+    if (captureNormalImage  != VK_NULL_HANDLE) { app->destroyImageWithVma(captureNormalImage, captureNormalAllocation, captureNormalMemory); captureNormalImage = VK_NULL_HANDLE; captureNormalAllocation = VK_NULL_HANDLE; captureNormalMemory = VK_NULL_HANDLE; }
 
     // Depth capture image views.
     for (auto& v : captureDepthLayerViews) {
@@ -180,8 +177,7 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
         vkDestroyImageView(device, captureDepthArrayView, nullptr);
         captureDepthArrayView = VK_NULL_HANDLE;
     }
-    if (captureDepthImage  != VK_NULL_HANDLE) { app->resources.removeImage(captureDepthImage);       vkDestroyImage(device, captureDepthImage, nullptr);  captureDepthImage  = VK_NULL_HANDLE; }
-    if (captureDepthMemory != VK_NULL_HANDLE) { app->resources.removeDeviceMemory(captureDepthMemory); vkFreeMemory(device, captureDepthMemory, nullptr); captureDepthMemory = VK_NULL_HANDLE; }
+    if (captureDepthImage  != VK_NULL_HANDLE) { app->destroyImageWithVma(captureDepthImage, captureDepthAllocation, captureDepthMemory); captureDepthImage = VK_NULL_HANDLE; captureDepthAllocation = VK_NULL_HANDLE; captureDepthMemory = VK_NULL_HANDLE; }
 
     // Capture inv VP storage buffer (VMA-managed, cleared to avoid double-free).
     captureInvVPMapped = nullptr;
@@ -432,25 +428,7 @@ void ImpostorCapture::createCaptureImages(VulkanApp* app) {
         imgInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
         imgInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (vkCreateImage(device, &imgInfo, nullptr, &captureImage) != VK_SUCCESS)
-            throw std::runtime_error("ImpostorCapture: captureImage creation failed");
-        app->resources.addImage(captureImage, "ImpostorCapture: captureImage");
-
-        VkMemoryRequirements memReq;
-        vkGetImageMemoryRequirements(device, captureImage, &memReq);
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        {
-            static constexpr VkDeviceSize kMin = 262144;
-            const VkDeviceSize sz = memReq.size;
-            allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-        }
-        allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits,
-                                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &captureMemory) != VK_SUCCESS)
-            throw std::runtime_error("ImpostorCapture: captureMemory allocation failed");
-        app->resources.addDeviceMemory(captureMemory, "ImpostorCapture: captureMemory");
-        vkBindImageMemory(device, captureImage, captureMemory, 0);
+        app->createImageWithVma(imgInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, captureImage, captureAllocation, captureMemory, "ImpostorCapture: captureImage");
     }
 
     // All-layers view (VK_IMAGE_VIEW_TYPE_2D_ARRAY).
@@ -492,25 +470,7 @@ void ImpostorCapture::createCaptureImages(VulkanApp* app) {
         imgInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
         imgInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (vkCreateImage(device, &imgInfo, nullptr, &captureNormalImage) != VK_SUCCESS)
-            throw std::runtime_error("ImpostorCapture: captureNormalImage creation failed");
-        app->resources.addImage(captureNormalImage, "ImpostorCapture: captureNormalImage");
-
-        VkMemoryRequirements memReq;
-        vkGetImageMemoryRequirements(device, captureNormalImage, &memReq);
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        {
-            static constexpr VkDeviceSize kMin = 262144;
-            const VkDeviceSize sz = memReq.size;
-            allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-        }
-        allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits,
-                                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &captureNormalMemory) != VK_SUCCESS)
-            throw std::runtime_error("ImpostorCapture: captureNormalMemory allocation failed");
-        app->resources.addDeviceMemory(captureNormalMemory, "ImpostorCapture: captureNormalMemory");
-        vkBindImageMemory(device, captureNormalImage, captureNormalMemory, 0);
+        app->createImageWithVma(imgInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, captureNormalImage, captureNormalAllocation, captureNormalMemory, "ImpostorCapture: captureNormalImage");
     }
 
     // All-layers normal view.
@@ -553,25 +513,7 @@ void ImpostorCapture::createCaptureImages(VulkanApp* app) {
         imgInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
         imgInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (vkCreateImage(device, &imgInfo, nullptr, &captureDepthImage) != VK_SUCCESS)
-            throw std::runtime_error("ImpostorCapture: captureDepthImage creation failed");
-        app->resources.addImage(captureDepthImage, "ImpostorCapture: captureDepthImage");
-
-        VkMemoryRequirements memReq;
-        vkGetImageMemoryRequirements(device, captureDepthImage, &memReq);
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        {
-            static constexpr VkDeviceSize kMin = 262144;
-            const VkDeviceSize sz = memReq.size;
-            allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-        }
-        allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits,
-                                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &captureDepthMemory) != VK_SUCCESS)
-            throw std::runtime_error("ImpostorCapture: captureDepthMemory allocation failed");
-        app->resources.addDeviceMemory(captureDepthMemory, "ImpostorCapture: captureDepthMemory");
-        vkBindImageMemory(device, captureDepthImage, captureDepthMemory, 0);
+        app->createImageWithVma(imgInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, captureDepthImage, captureDepthAllocation, captureDepthMemory, "ImpostorCapture: captureDepthImage");
     }
 
     // All-layers depth view (VK_IMAGE_VIEW_TYPE_2D_ARRAY).
@@ -616,25 +558,7 @@ void ImpostorCapture::createDepth(VulkanApp* app) {
     imgInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
     imgInfo.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (vkCreateImage(device, &imgInfo, nullptr, &depthImage) != VK_SUCCESS)
-        throw std::runtime_error("ImpostorCapture: depthImage creation failed");
-    app->resources.addImage(depthImage, "ImpostorCapture: depthImage");
-
-    VkMemoryRequirements memReq;
-    vkGetImageMemoryRequirements(device, depthImage, &memReq);
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    {
-        static constexpr VkDeviceSize kMin = 262144;
-        const VkDeviceSize sz = memReq.size;
-        allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-    }
-    allocInfo.memoryTypeIndex = app->findMemoryType(memReq.memoryTypeBits,
-                                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &depthMemory) != VK_SUCCESS)
-        throw std::runtime_error("ImpostorCapture: depthMemory allocation failed");
-    app->resources.addDeviceMemory(depthMemory, "ImpostorCapture: depthMemory");
-    vkBindImageMemory(device, depthImage, depthMemory, 0);
+    app->createImageWithVma(imgInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depthImage, depthAllocation, depthMemory, "ImpostorCapture: depthImage");
 
     VkImageViewCreateInfo v{};
     v.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;

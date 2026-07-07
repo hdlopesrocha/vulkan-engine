@@ -103,6 +103,9 @@ public:
     bool removeDescriptorPool(VkDescriptorPool dp);
     bool removeDescriptorSet(VkDescriptorSet ds);
     bool removeDescriptorSetLayout(VkDescriptorSetLayout dsl);
+    // VMA-aware image tracking
+    void addImageVma(VkImage img, VmaAllocation alloc, const char* desc = nullptr);
+    bool removeImageVma(VkImage img);
     bool removeRenderPass(VkRenderPass rp);
     bool removeSemaphore(VkSemaphore s);
     bool removeFence(VkFence f);
@@ -131,6 +134,8 @@ private:
         std::unordered_map<uintptr_t, uint32_t> imageArrayLayers;
     // VMA allocation tracking: buffer handle -> VmaAllocation
     std::unordered_map<uintptr_t, VmaAllocation> vmaAllocations;
+    // VMA allocation tracking: image handle -> VmaAllocation
+    std::unordered_map<uintptr_t, VmaAllocation> vmaImageAllocations;
     VmaAllocator vmaAlloc = VK_NULL_HANDLE;
 
 public:

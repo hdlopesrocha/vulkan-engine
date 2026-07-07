@@ -40,6 +40,7 @@ private:
     
     // Grid texture for wireframe look
     VkImage gridTextureImage = VK_NULL_HANDLE;
+    VmaAllocation gridTextureAllocation = VK_NULL_HANDLE;
     VkDeviceMemory gridTextureMemory = VK_NULL_HANDLE;
     VkImageView gridTextureView = VK_NULL_HANDLE;
     VkSampler gridTextureSampler = VK_NULL_HANDLE;

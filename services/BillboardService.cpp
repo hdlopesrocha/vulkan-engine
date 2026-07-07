@@ -19,14 +19,13 @@ void BillboardService::cleanup() {
     printf("[BillboardService] cleanup start: texturesInitialized=%d\n", texturesInitialized ? 1 : 0);
     if (texturesInitialized && vulkanApp) {
         VkDevice device = vulkanApp->getDevice();
-        auto destroyAR = [&](VkImage& img, VkDeviceMemory& mem, VkImageView& view) {
+        auto destroyAR = [&](VkImage& img, VmaAllocation& alloc, VkDeviceMemory& mem, VkImageView& view) {
             if (view != VK_NULL_HANDLE) { vulkanApp->resources.removeImageView(view); vkDestroyImageView(device, view, nullptr); view = VK_NULL_HANDLE; }
-            if (img  != VK_NULL_HANDLE) { vulkanApp->resources.removeImage(img);      vkDestroyImage(device, img, nullptr);          img  = VK_NULL_HANDLE; }
-            if (mem  != VK_NULL_HANDLE) { vulkanApp->resources.removeDeviceMemory(mem); vkFreeMemory(device, mem, nullptr);           mem  = VK_NULL_HANDLE; }
+            if (img  != VK_NULL_HANDLE) { vulkanApp->destroyImageWithVma(img, alloc, mem); img = VK_NULL_HANDLE; alloc = VK_NULL_HANDLE; mem = VK_NULL_HANDLE; }
         };
-        destroyAR(billboardAlbedoArrayImage,  billboardAlbedoArrayMemory,  billboardAlbedoArrayView);
-        destroyAR(billboardNormalArrayImage,   billboardNormalArrayMemory,  billboardNormalArrayView);
-        destroyAR(billboardOpacityArrayImage,  billboardOpacityArrayMemory, billboardOpacityArrayView);
+        destroyAR(billboardAlbedoArrayImage,  billboardAlbedoArrayAllocation,  billboardAlbedoArrayMemory,  billboardAlbedoArrayView);
+        destroyAR(billboardNormalArrayImage,   billboardNormalArrayAllocation,  billboardNormalArrayMemory,  billboardNormalArrayView);
+        destroyAR(billboardOpacityArrayImage,  billboardOpacityArrayAllocation, billboardOpacityArrayMemory, billboardOpacityArrayView);
         if (billboardArraySampler != VK_NULL_HANDLE) {
             vulkanApp->resources.removeSampler(billboardArraySampler);
             vkDestroySampler(device, billboardArraySampler, nullptr);
@@ -45,26 +44,20 @@ void BillboardService::createBillboardArrayTextures() {
 
     VkDevice device = vulkanApp->getDevice();
 
-    auto destroyArrayResources = [&](VkImage& img, VkDeviceMemory& mem, VkImageView& view) {
+    auto destroyArrayResources = [&](VkImage& img, VmaAllocation& alloc, VkDeviceMemory& mem, VkImageView& view) {
         if (view != VK_NULL_HANDLE) {
             vulkanApp->resources.removeImageView(view);
             vkDestroyImageView(device, view, nullptr);
             view = VK_NULL_HANDLE;
         }
         if (img != VK_NULL_HANDLE) {
-            vulkanApp->resources.removeImage(img);
-            vkDestroyImage(device, img, nullptr);
+            vulkanApp->destroyImageWithVma(img, alloc, mem);
             img = VK_NULL_HANDLE;
         }
-        if (mem != VK_NULL_HANDLE) {
-            vulkanApp->resources.removeDeviceMemory(mem);
-            vkFreeMemory(device, mem, nullptr);
-            mem = VK_NULL_HANDLE;
-        }
     };
-    destroyArrayResources(billboardAlbedoArrayImage, billboardAlbedoArrayMemory, billboardAlbedoArrayView);
-    destroyArrayResources(billboardNormalArrayImage, billboardNormalArrayMemory, billboardNormalArrayView);
-    destroyArrayResources(billboardOpacityArrayImage, billboardOpacityArrayMemory, billboardOpacityArrayView);
+    destroyArrayResources(billboardAlbedoArrayImage, billboardAlbedoArrayAllocation, billboardAlbedoArrayMemory, billboardAlbedoArrayView);
+    destroyArrayResources(billboardNormalArrayImage, billboardNormalArrayAllocation, billboardNormalArrayMemory, billboardNormalArrayView);
+    destroyArrayResources(billboardOpacityArrayImage, billboardOpacityArrayAllocation, billboardOpacityArrayMemory, billboardOpacityArrayView);
     if (billboardArraySampler != VK_NULL_HANDLE) {
         vulkanApp->resources.removeSampler(billboardArraySampler);
         vkDestroySampler(device, billboardArraySampler, nullptr);
@@ -84,26 +77,20 @@ void BillboardService::bakeFromTextures(const std::array<EditableTexture, 3>& co
     const VkFormat fmt = VK_FORMAT_R8G8B8A8_UNORM;
 
     // Destroy any previously created array resources
-    auto destroyArrayResources = [&](VkImage& img, VkDeviceMemory& mem, VkImageView& view) {
+    auto destroyArrayResources = [&](VkImage& img, VmaAllocation& alloc, VkDeviceMemory& mem, VkImageView& view) {
         if (view != VK_NULL_HANDLE) {
             vulkanApp->resources.removeImageView(view);
             vkDestroyImageView(device, view, nullptr);
             view = VK_NULL_HANDLE;
         }
         if (img != VK_NULL_HANDLE) {
-            vulkanApp->resources.removeImage(img);
-            vkDestroyImage(device, img, nullptr);
+            vulkanApp->destroyImageWithVma(img, alloc, mem);
             img = VK_NULL_HANDLE;
         }
-        if (mem != VK_NULL_HANDLE) {
-            vulkanApp->resources.removeDeviceMemory(mem);
-            vkFreeMemory(device, mem, nullptr);
-            mem = VK_NULL_HANDLE;
-        }
     };
-    destroyArrayResources(billboardAlbedoArrayImage, billboardAlbedoArrayMemory, billboardAlbedoArrayView);
-    destroyArrayResources(billboardNormalArrayImage, billboardNormalArrayMemory, billboardNormalArrayView);
-    destroyArrayResources(billboardOpacityArrayImage, billboardOpacityArrayMemory, billboardOpacityArrayView);
+    destroyArrayResources(billboardAlbedoArrayImage, billboardAlbedoArrayAllocation, billboardAlbedoArrayMemory, billboardAlbedoArrayView);
+    destroyArrayResources(billboardNormalArrayImage, billboardNormalArrayAllocation, billboardNormalArrayMemory, billboardNormalArrayView);
+    destroyArrayResources(billboardOpacityArrayImage, billboardOpacityArrayAllocation, billboardOpacityArrayMemory, billboardOpacityArrayView);
     if (billboardArraySampler != VK_NULL_HANDLE) {
         vulkanApp->resources.removeSampler(billboardArraySampler);
         vkDestroySampler(device, billboardArraySampler, nullptr);
@@ -112,7 +99,7 @@ void BillboardService::bakeFromTextures(const std::array<EditableTexture, 3>& co
 
     uint32_t mipCount = static_cast<uint32_t>(std::floor(std::log2(std::max(w, h)))) + 1;
 
-    auto makeArrayImage = [&](VkImage& outImg, VkDeviceMemory& outMem, VkImageView& outView, const char* name) {
+    auto makeArrayImage = [&](VkImage& outImg, VmaAllocation& outAlloc, VkDeviceMemory& outMem, VkImageView& outView, const char* name) {
         VkImageCreateInfo imgInfo{};
         imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imgInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -125,24 +112,8 @@ void BillboardService::bakeFromTextures(const std::array<EditableTexture, 3>& co
         imgInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        if (vkCreateImage(device, &imgInfo, nullptr, &outImg) != VK_SUCCESS)
-            throw std::runtime_error(std::string("BillboardService: failed to create array image: ") + name);
-        vulkanApp->resources.addImage(outImg, name);
 
-        VkMemoryRequirements memReq;
-        vkGetImageMemoryRequirements(device, outImg, &memReq);
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        {
-            static constexpr VkDeviceSize kMin = 262144;
-            const VkDeviceSize sz = memReq.size;
-            allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-        }
-        allocInfo.memoryTypeIndex = vulkanApp->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &outMem) != VK_SUCCESS)
-            throw std::runtime_error(std::string("BillboardService: failed to allocate array memory: ") + name);
-        vulkanApp->resources.addDeviceMemory(outMem, name);
-        vkBindImageMemory(device, outImg, outMem, 0);
+        vulkanApp->createImageWithVma(imgInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, outImg, outAlloc, outMem, name);
 
         vulkanApp->transitionImageLayout(outImg, fmt, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipCount, numLayers);
 
@@ -161,9 +132,9 @@ void BillboardService::bakeFromTextures(const std::array<EditableTexture, 3>& co
         vulkanApp->resources.addImageView(outView, name);
     };
 
-    makeArrayImage(billboardAlbedoArrayImage,  billboardAlbedoArrayMemory,  billboardAlbedoArrayView,  "BillboardService: albedoArray");
-    makeArrayImage(billboardNormalArrayImage,   billboardNormalArrayMemory,  billboardNormalArrayView,  "BillboardService: normalArray");
-    makeArrayImage(billboardOpacityArrayImage,  billboardOpacityArrayMemory, billboardOpacityArrayView, "BillboardService: opacityArray");
+    makeArrayImage(billboardAlbedoArrayImage,  billboardAlbedoArrayAllocation,  billboardAlbedoArrayMemory,  billboardAlbedoArrayView,  "BillboardService: albedoArray");
+    makeArrayImage(billboardNormalArrayImage,   billboardNormalArrayAllocation,  billboardNormalArrayMemory,  billboardNormalArrayView,  "BillboardService: normalArray");
+    makeArrayImage(billboardOpacityArrayImage,  billboardOpacityArrayAllocation, billboardOpacityArrayMemory, billboardOpacityArrayView, "BillboardService: opacityArray");
 
     struct ChannelEntry { const std::array<EditableTexture, 3>* src; VkImage dst; };
     ChannelEntry channels[3] = {

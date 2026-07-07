@@ -1611,10 +1611,42 @@ void VulkanApp::waitForFrameFences() {
     }
 }
 
-void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory, const char* debugName) {
+void VulkanApp::createImageWithVma(const VkImageCreateInfo& imageInfo, VkMemoryPropertyFlags properties, VkImage& image, VmaAllocation& allocation, VkDeviceMemory& imageMemory, const char* debugName) {
+    VmaAllocationCreateInfo allocCI{};
+    allocCI.usage = VMA_MEMORY_USAGE_AUTO;
+    if (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+        allocCI.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                      | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    }
+    if (properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+        allocCI.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+    VmaAllocationInfo allocInfo;
+    if (vmaCreateImage(vma.allocator, &imageInfo, &allocCI, &image, &allocation, &allocInfo) != VK_SUCCESS)
+        throw std::runtime_error(std::string("failed to create image with VMA: ") + (debugName ? debugName : "unnamed"));
+
+    imageMemory = allocInfo.deviceMemory;
+
+    printf("[VulkanApp::createImageWithVma] created image=%p usage=0x%08x size=%ux%ux%u format=%d mipLevels=%u arrayLayers=%u name=%s\n",
+        (void*)image, (unsigned int)imageInfo.usage, imageInfo.extent.width, imageInfo.extent.height, imageInfo.extent.depth,
+        (int)imageInfo.format, imageInfo.mipLevels, imageInfo.arrayLayers,
+        debugName ? debugName : "unnamed");
+
+    resources.addImageVma(image, allocation, debugName ? debugName : "VulkanApp: image");
+
+    // Initialize per-layer layout tracking (default UNDEFINED)
+    {
+        std::lock_guard<std::mutex> lk(imageLayoutMutex);
+        uint32_t layers = imageInfo.arrayLayers;
+        for (uint32_t l = 0; l < layers; ++l) {
+            uint64_t key = ( (uint64_t)(uintptr_t)image << 32 ) | (uint64_t)l;
+            imageLayerLayouts[key] = VK_IMAGE_LAYOUT_UNDEFINED;
+        }
+    }
+}
+
+void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, uint32_t mipLevelCount, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VmaAllocation& allocation, VkDeviceMemory& imageMemory, const char* debugName) {
     VkImageCreateInfo imageInfo{};
-    // Belt-and-suspenders: ensure all bytes are zero before setting fields.
-    // Some drivers (RADV) may read padding bytes that C++ value-init does not touch.
     std::memset(&imageInfo, 0, sizeof(imageInfo));
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.pNext = nullptr;
@@ -1630,60 +1662,26 @@ void VulkanApp::createImage(uint32_t width, uint32_t height, VkFormat format, Vk
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = usage;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    // Always use EXCLUSIVE sharing.  runSingleTimeCommandsOnTransfer routes
-    // to the graphics queue, so cross-queue sharing is never needed.
-    // VK_SHARING_MODE_CONCURRENT on RADV strips TCP-read permission from
-    // GPU page-table entries, causing GPUVM PERMISSION_FAULTS when fragment
-    // shaders sample the image via the Texture Cache/Pipe.
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.queueFamilyIndexCount = 0;
     imageInfo.pQueueFamilyIndices = nullptr;
 
-    if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create image!");
-    }
+    createImageWithVma(imageInfo, properties, image, allocation, imageMemory, debugName);
+}
 
-        // Debug: log the created image handle and requested usage flags
-        printf("[VulkanApp::createImage] created image=%p usage=0x%08x size=%ux%u format=%d mipLevels=%u arrayLayers=%u name=%s\n",
-            (void*)image, (unsigned int)usage, width, height, (int)format, mipLevelCount, imageInfo.arrayLayers,
-            debugName ? debugName : "unnamed");
-
-    VkMemoryRequirements memRequirements;
-    vkGetImageMemoryRequirements(device, image, &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo{};
-    std::memset(&allocInfo, 0, sizeof(allocInfo));
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.pNext = nullptr;
-    // Pad to avoid BestPractices small-allocation / small-dedicated-allocation warnings.
-    static constexpr VkDeviceSize kMinImgAlloc = 262144;
-    allocInfo.allocationSize = (memRequirements.size < kMinImgAlloc)
-        ? kMinImgAlloc
-        : (memRequirements.size < 1048576 ? memRequirements.size + 1 : memRequirements.size);
-    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
-
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate image memory!");
-    }
-    vkBindImageMemory(device, image, imageMemory, 0);
-    // Debug: log allocated image memory size and handle to help map GPUVM faults
-    std::cerr << "[VulkanApp::createImage] image=" << (void*)image << " mem=" << (void*)imageMemory
-              << " allocSize=" << (size_t)memRequirements.size << " debugName=" << (debugName ? debugName : "(null)") << std::endl;
-    // Register image and its memory for final-sweep safety (use debug name if provided)
-    resources.addImage(image, debugName ? debugName : "VulkanApp: image");
-    if (debugName) {
-        std::string memDesc = std::string(debugName) + " memory";
-        resources.addDeviceMemory(imageMemory, memDesc.c_str());
+void VulkanApp::destroyImageWithVma(VkImage image, VmaAllocation allocation, VkDeviceMemory imageMemory) {
+    if (image == VK_NULL_HANDLE) return;
+    if (allocation && vma.allocator) {
+        resources.removeImage(image);
+        vmaDestroyImage(vma.allocator, image, allocation);
     } else {
-        resources.addDeviceMemory(imageMemory, "VulkanApp: imageMemory");
-    }
-    // Initialize per-layer layout tracking (default UNDEFINED)
-    {
-        std::lock_guard<std::mutex> lk(imageLayoutMutex);
-        uint32_t layers = imageInfo.arrayLayers;
-        for (uint32_t l = 0; l < layers; ++l) {
-            uint64_t key = ( (uint64_t)(uintptr_t)image << 32 ) | (uint64_t)l;
-            imageLayerLayouts[key] = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (image != VK_NULL_HANDLE) {
+            resources.removeImage(image);
+            vkDestroyImage(device, image, nullptr);
+        }
+        if (imageMemory != VK_NULL_HANDLE) {
+            resources.removeDeviceMemory(imageMemory);
+            vkFreeMemory(device, imageMemory, nullptr);
         }
     }
 }
@@ -3524,35 +3522,21 @@ TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& 
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
-    if (vkCreateImage(device, &imageInfo, nullptr, &textureImage.image) != VK_SUCCESS) {
-        // Rely on VulkanResourceManager to destroy tracked staging buffer/memory later
+    VmaAllocationCreateInfo allocCI{};
+    allocCI.usage = VMA_MEMORY_USAGE_AUTO;
+    allocCI.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+    VmaAllocationInfo allocInfo;
+    VmaAllocation allocation;
+    if (vmaCreateImage(vma.allocator, &imageInfo, &allocCI, &textureImage.image, &allocation, &allocInfo) != VK_SUCCESS) {
         stagingBuffer.buffer = VK_NULL_HANDLE;
         stagingBuffer.memory = VK_NULL_HANDLE;
-        throw std::runtime_error("failed to create texture array image!");
+        throw std::runtime_error("failed to create texture array image with VMA!");
     }
+    textureImage.allocation = allocation;
+    textureImage.memory = allocInfo.deviceMemory;
+    resources.addImageVma(textureImage.image, allocation, "VulkanApp: textureArrayImage");
     printf("[VulkanApp] createImage(array): image=%p layers=%u mipLevels=%u format=%d\n", (void*)textureImage.image, (unsigned)imageInfo.arrayLayers, textureImage.mipLevels, (int)chosenFormat);
-
-    VkMemoryRequirements memRequirements;
-    vkGetImageMemoryRequirements(device, textureImage.image, &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    {
-        static constexpr VkDeviceSize kMin = 262144;
-        const VkDeviceSize sz = memRequirements.size;
-        allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-    }
-    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &textureImage.memory) != VK_SUCCESS) {
-        // Rely on VulkanResourceManager to destroy tracked resources later
-        textureImage.image = VK_NULL_HANDLE;
-        stagingBuffer.buffer = VK_NULL_HANDLE;
-        stagingBuffer.memory = VK_NULL_HANDLE;
-        throw std::runtime_error("failed to allocate texture image memory!");
-    }
-
-    vkBindImageMemory(device, textureImage.image, textureImage.memory, 0);
 
     // copy buffer to image per-layer using the app helpers so tracked
     // layouts and pending updates are recorded and applied correctly.
@@ -3877,30 +3861,16 @@ void VulkanApp::createDepthResources() {
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
-    if (vkCreateImage(device, &imageInfo, nullptr, &depthImage) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create depth image!");
+    VmaAllocationCreateInfo allocCI{};
+    allocCI.usage = VMA_MEMORY_USAGE_AUTO;
+    allocCI.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+    VmaAllocationInfo allocInfo;
+    if (vmaCreateImage(vma.allocator, &imageInfo, &allocCI, &depthImage, &depthImageAllocation, &allocInfo) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create depth image with VMA!");
     }
-
-    VkMemoryRequirements memRequirements;
-    vkGetImageMemoryRequirements(device, depthImage, &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    {
-        static constexpr VkDeviceSize kMin = 262144;
-        const VkDeviceSize sz = memRequirements.size;
-        allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-    }
-    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &depthImageMemory) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate depth image memory!");
-    }
-
-    vkBindImageMemory(device, depthImage, depthImageMemory, 0);
-    // Register depth image and its memory
-    resources.addImage(depthImage, "VulkanApp: depthImage");
-    resources.addDeviceMemory(depthImageMemory, "VulkanApp: depthImageMemory");
+    depthImageMemory = allocInfo.deviceMemory;
+    resources.addImageVma(depthImage, depthImageAllocation, "VulkanApp: depthImage");
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -4996,14 +4966,10 @@ void VulkanApp::cleanupSwapchain() {
         if (resources.removeImageView(depthImageView)) vkDestroyImageView(device, depthImageView, nullptr);
         depthImageView = VK_NULL_HANDLE;
     }
-    if (depthImage != VK_NULL_HANDLE) {
-        if (resources.removeImage(depthImage)) vkDestroyImage(device, depthImage, nullptr);
-        depthImage = VK_NULL_HANDLE;
-    }
-    if (depthImageMemory != VK_NULL_HANDLE) {
-        if (resources.removeDeviceMemory(depthImageMemory)) vkFreeMemory(device, depthImageMemory, nullptr);
-        depthImageMemory = VK_NULL_HANDLE;
-    }
+    destroyImageWithVma(depthImage, depthImageAllocation, depthImageMemory);
+    depthImage = VK_NULL_HANDLE;
+    depthImageAllocation = VK_NULL_HANDLE;
+    depthImageMemory = VK_NULL_HANDLE;
 
     // free command buffers from their per-frame pools (not the main commandPool)
     if (!commandBuffers.empty()) {

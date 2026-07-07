@@ -78,9 +78,11 @@ private:
 
     // Offscreen framebuffer resources (2 frames in flight, clamp index for 3-frame safety)
     std::array<VkImage, 2> solidColorImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VmaAllocation, 2> solidColorAllocations = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkDeviceMemory, 2> solidColorMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkImageView, 2> solidColorImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkImage, 2> solidDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VmaAllocation, 2> solidDepthAllocations = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkDeviceMemory, 2> solidDepthMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkImageView, 2> solidDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::array<VkImageLayout, 2> solidDepthImageLayouts = {};

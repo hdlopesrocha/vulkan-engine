@@ -121,37 +121,7 @@ void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     
-    if (vkCreateImage(app->getDevice(), &imageInfo, nullptr, &gridTextureImage) != VK_SUCCESS) {
-        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to create grid texture image!" << std::endl;
-        return;
-    }
-    std::cout << "[DebugCubeRenderer] createImage: gridTextureImage=" << (void*)gridTextureImage << std::endl;
-    // Register grid texture image
-    app->resources.addImage(gridTextureImage, "DebugCubeRenderer: gridTextureImage");
-    
-    // Allocate memory
-    VkMemoryRequirements memRequirements;
-    vkGetImageMemoryRequirements(app->getDevice(), gridTextureImage, &memRequirements);
-    
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    {
-        static constexpr VkDeviceSize kMin = 262144;
-        const VkDeviceSize sz = memRequirements.size;
-        allocInfo.allocationSize = (sz < kMin) ? kMin : (sz < 1048576 ? sz + 1 : sz);
-    }
-    allocInfo.memoryTypeIndex = app->findMemoryType(memRequirements.memoryTypeBits, 
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    
-    if (vkAllocateMemory(app->getDevice(), &allocInfo, nullptr, &gridTextureMemory) != VK_SUCCESS) {
-        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to allocate grid texture memory!" << std::endl;
-        return;
-    }
-    std::cout << "[DebugCubeRenderer] allocateMemory: gridTextureMemory=" << (void*)gridTextureMemory << std::endl;
-    
-    vkBindImageMemory(app->getDevice(), gridTextureImage, gridTextureMemory, 0);
-    // Register grid texture memory
-    app->resources.addDeviceMemory(gridTextureMemory, "DebugCubeRenderer: gridTextureMemory");
+    app->createImageWithVma(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gridTextureImage, gridTextureAllocation, gridTextureMemory, "DebugCubeRenderer: gridTextureImage");
     
     // Transition and copy
     app->transitionImageLayout(gridTextureImage, VK_FORMAT_R8G8B8A8_SRGB, 
@@ -428,6 +398,7 @@ void DebugCubeRenderer::cleanup() {
     gridTextureSampler = VK_NULL_HANDLE;
     gridTextureView = VK_NULL_HANDLE;
     gridTextureImage = VK_NULL_HANDLE;
+    gridTextureAllocation = VK_NULL_HANDLE;
     gridTextureMemory = VK_NULL_HANDLE;
     gridDescriptorSetLayout = VK_NULL_HANDLE;
     gridDescriptorPool = VK_NULL_HANDLE;

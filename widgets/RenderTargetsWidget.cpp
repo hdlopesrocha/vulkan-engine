@@ -184,7 +184,7 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
         if (linearSceneDepthImage == VK_NULL_HANDLE) {
             app->createImage(static_cast<uint32_t>(width), static_cast<uint32_t>(height), VK_FORMAT_R8G8B8A8_UNORM,
                              VK_IMAGE_TILING_OPTIMAL, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearSceneDepthImage, linearSceneDepthMemory, "RenderTargetsWidget: linearSceneDepthImage");
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearSceneDepthImage, linearSceneDepthAllocation, linearSceneDepthMemory, "RenderTargetsWidget: linearSceneDepthImage");
             VkImageViewCreateInfo iv{};
             iv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
             iv.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -203,7 +203,7 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
         if (linearBackFaceDepthImage == VK_NULL_HANDLE) {
             app->createImage(static_cast<uint32_t>(width), static_cast<uint32_t>(height), VK_FORMAT_R8G8B8A8_UNORM,
                              VK_IMAGE_TILING_OPTIMAL, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearBackFaceDepthImage, linearBackFaceDepthMemory, "RenderTargetsWidget: linearBackFaceDepthImage");
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearBackFaceDepthImage, linearBackFaceDepthAllocation, linearBackFaceDepthMemory, "RenderTargetsWidget: linearBackFaceDepthImage");
             VkImageViewCreateInfo iv{};
             iv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
             iv.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -226,7 +226,7 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
             if (linearCubeFaceDepthImage[face] == VK_NULL_HANDLE) {
                 app->createImage(static_cast<uint32_t>(width), static_cast<uint32_t>(height), VK_FORMAT_R8G8B8A8_UNORM,
                                  VK_IMAGE_TILING_OPTIMAL, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearCubeFaceDepthImage[face], linearCubeFaceDepthMemory[face], "RenderTargetsWidget: linearCubeFaceDepthImage");
+                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearCubeFaceDepthImage[face], linearCubeFaceDepthAllocation[face], linearCubeFaceDepthMemory[face], "RenderTargetsWidget: linearCubeFaceDepthImage");
                 VkImageViewCreateInfo iv{};
                 iv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
                 iv.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -253,7 +253,7 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
             if (linearShadowDepthImage[c] == VK_NULL_HANDLE) {
                 app->createImage(shadowSize, shadowSize, VK_FORMAT_R8G8B8A8_UNORM,
                                  VK_IMAGE_TILING_OPTIMAL, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearShadowDepthImage[c], linearShadowDepthMemory[c], "RenderTargetsWidget: linearShadowDepthImage");
+                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearShadowDepthImage[c], linearShadowDepthAllocation[c], linearShadowDepthMemory[c], "RenderTargetsWidget: linearShadowDepthImage");
                 VkImageViewCreateInfo iv{};
                 iv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
                 iv.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -648,46 +648,33 @@ void RenderTargetsWidget::destroyLinearTargets() {
     }
 
     // Destroy images, views, memories and framebuffers created for linearization
-    auto destroyImageAndMemory = [&](VkImageView &iv, VkImage &img, VkDeviceMemory &mem) {
+    auto destroyImageAndMemory = [&](VkImageView &iv, VkImage &img, VmaAllocation &alloc, VkDeviceMemory &mem) {
         if (iv == VK_NULL_HANDLE && img == VK_NULL_HANDLE && mem == VK_NULL_HANDLE) return;
         VkImageView tmp_iv = iv;
         VkImage tmp_img = img;
+        VmaAllocation tmp_alloc = alloc;
         VkDeviceMemory tmp_mem = mem;
-        VkDevice device = a->getDevice();
         if (a->hasPendingCommandBuffers()) {
             VkFence f = VK_NULL_HANDLE;
             uint32_t fi = a->getCurrentFrame();
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [device, tmp_iv, tmp_img, tmp_mem, a]() {
+            a->deferDestroyUntilFence(f, [tmp_iv, tmp_img, tmp_alloc, tmp_mem, a]() {
                 if (tmp_iv != VK_NULL_HANDLE) {
                     if (a->resources.removeImageView(tmp_iv))
-                        vkDestroyImageView(device, tmp_iv, nullptr);
+                        vkDestroyImageView(a->getDevice(), tmp_iv, nullptr);
                 }
-                if (tmp_img != VK_NULL_HANDLE) {
-                    if (a->resources.removeImage(tmp_img))
-                        vkDestroyImage(device, tmp_img, nullptr);
-                }
-                if (tmp_mem != VK_NULL_HANDLE) {
-                    if (a->resources.removeDeviceMemory(tmp_mem))
-                        vkFreeMemory(device, tmp_mem, nullptr);
-                }
+                a->destroyImageWithVma(tmp_img, tmp_alloc, tmp_mem);
             });
         } else {
             if (tmp_iv != VK_NULL_HANDLE) {
                 if (a->resources.removeImageView(tmp_iv))
-                    vkDestroyImageView(device, tmp_iv, nullptr);
+                    vkDestroyImageView(a->getDevice(), tmp_iv, nullptr);
             }
-            if (tmp_img != VK_NULL_HANDLE) {
-                if (a->resources.removeImage(tmp_img))
-                    vkDestroyImage(device, tmp_img, nullptr);
-            }
-            if (tmp_mem != VK_NULL_HANDLE) {
-                if (a->resources.removeDeviceMemory(tmp_mem))
-                    vkFreeMemory(device, tmp_mem, nullptr);
-            }
+            a->destroyImageWithVma(tmp_img, tmp_alloc, tmp_mem);
         }
         iv = VK_NULL_HANDLE;
         img = VK_NULL_HANDLE;
+        alloc = VK_NULL_HANDLE;
         mem = VK_NULL_HANDLE;
     };
 
@@ -709,13 +696,13 @@ void RenderTargetsWidget::destroyLinearTargets() {
     };
 
     for (int i = 0; i < 6; ++i) destroyFramebuffer(linearCubeFaceFramebuffer[i]);
-    destroyImageAndMemory(linearSceneDepthView, linearSceneDepthImage, linearSceneDepthMemory);
-    destroyImageAndMemory(linearBackFaceDepthView, linearBackFaceDepthImage, linearBackFaceDepthMemory);
+    destroyImageAndMemory(linearSceneDepthView, linearSceneDepthImage, linearSceneDepthAllocation, linearSceneDepthMemory);
+    destroyImageAndMemory(linearBackFaceDepthView, linearBackFaceDepthImage, linearBackFaceDepthAllocation, linearBackFaceDepthMemory);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
-        destroyImageAndMemory(linearShadowDepthView[i], linearShadowDepthImage[i], linearShadowDepthMemory[i]);
+        destroyImageAndMemory(linearShadowDepthView[i], linearShadowDepthImage[i], linearShadowDepthAllocation[i], linearShadowDepthMemory[i]);
     }
     for (int i = 0; i < 6; ++i) {
-        destroyImageAndMemory(linearCubeFaceDepthView[i], linearCubeFaceDepthImage[i], linearCubeFaceDepthMemory[i]);
+        destroyImageAndMemory(linearCubeFaceDepthView[i], linearCubeFaceDepthImage[i], linearCubeFaceDepthAllocation[i], linearCubeFaceDepthMemory[i]);
     }
 
     // Keep pipeline/renderpass/layout/descriptor set until full cleanup()
@@ -778,46 +765,33 @@ void RenderTargetsWidget::cleanup() {
     // this widget created. If GPU work is pending, defer destruction until
     // it is safe to free these Vulkan objects.
     VulkanApp* a = app;
-    auto destroyImageAndMemory = [&](VkImageView &iv, VkImage &img, VkDeviceMemory &mem) {
+    auto destroyImageAndMemory = [&](VkImageView &iv, VkImage &img, VmaAllocation &alloc, VkDeviceMemory &mem) {
         if (iv == VK_NULL_HANDLE && img == VK_NULL_HANDLE && mem == VK_NULL_HANDLE) return;
         VkImageView tmp_iv = iv;
         VkImage tmp_img = img;
+        VmaAllocation tmp_alloc = alloc;
         VkDeviceMemory tmp_mem = mem;
-        VkDevice device = a ? a->getDevice() : VK_NULL_HANDLE;
         if (a && a->hasPendingCommandBuffers()) {
             VkFence f = VK_NULL_HANDLE;
             uint32_t fi = a->getCurrentFrame();
             if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [device, tmp_iv, tmp_img, tmp_mem, a](){
+            a->deferDestroyUntilFence(f, [tmp_iv, tmp_img, tmp_alloc, tmp_mem, a](){
                 if (tmp_iv != VK_NULL_HANDLE) {
                     if (a->resources.removeImageView(tmp_iv))
-                        vkDestroyImageView(device, tmp_iv, nullptr);
+                        vkDestroyImageView(a->getDevice(), tmp_iv, nullptr);
                 }
-                if (tmp_img != VK_NULL_HANDLE) {
-                    if (a->resources.removeImage(tmp_img))
-                        vkDestroyImage(device, tmp_img, nullptr);
-                }
-                if (tmp_mem != VK_NULL_HANDLE) {
-                    if (a->resources.removeDeviceMemory(tmp_mem))
-                        vkFreeMemory(device, tmp_mem, nullptr);
-                }
+                a->destroyImageWithVma(tmp_img, tmp_alloc, tmp_mem);
             });
         } else {
             if (tmp_iv != VK_NULL_HANDLE) {
                 if (a->resources.removeImageView(tmp_iv))
-                    vkDestroyImageView(device, tmp_iv, nullptr);
+                    vkDestroyImageView(a->getDevice(), tmp_iv, nullptr);
             }
-            if (tmp_img != VK_NULL_HANDLE) {
-                if (a->resources.removeImage(tmp_img))
-                    vkDestroyImage(device, tmp_img, nullptr);
-            }
-            if (tmp_mem != VK_NULL_HANDLE) {
-                if (a->resources.removeDeviceMemory(tmp_mem))
-                    vkFreeMemory(device, tmp_mem, nullptr);
-            }
+            a->destroyImageWithVma(tmp_img, tmp_alloc, tmp_mem);
         }
         iv = VK_NULL_HANDLE;
         img = VK_NULL_HANDLE;
+        alloc = VK_NULL_HANDLE;
         mem = VK_NULL_HANDLE;
     };
 
@@ -858,10 +832,10 @@ void RenderTargetsWidget::cleanup() {
     };
 
     // Destroy linear debug images / views
-    destroyImageAndMemory(linearSceneDepthView, linearSceneDepthImage, linearSceneDepthMemory);
-    destroyImageAndMemory(linearBackFaceDepthView, linearBackFaceDepthImage, linearBackFaceDepthMemory);
+    destroyImageAndMemory(linearSceneDepthView, linearSceneDepthImage, linearSceneDepthAllocation, linearSceneDepthMemory);
+    destroyImageAndMemory(linearBackFaceDepthView, linearBackFaceDepthImage, linearBackFaceDepthAllocation, linearBackFaceDepthMemory);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
-        destroyImageAndMemory(linearShadowDepthView[i], linearShadowDepthImage[i], linearShadowDepthMemory[i]);
+        destroyImageAndMemory(linearShadowDepthView[i], linearShadowDepthImage[i], linearShadowDepthAllocation[i], linearShadowDepthMemory[i]);
     }
 
     // Destroy persistent staging buffers

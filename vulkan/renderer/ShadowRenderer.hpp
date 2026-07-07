@@ -39,10 +39,12 @@ private:
     struct CascadeResources {
         // EVSM moments (RGBA32F)
         VkImage colorImage = VK_NULL_HANDLE;
+        VmaAllocation colorAllocation = VK_NULL_HANDLE;
         VkDeviceMemory colorMemory = VK_NULL_HANDLE;
         VkImageView colorView = VK_NULL_HANDLE;
         // Depth buffer for depth testing during shadow rendering
         VkImage depthImage = VK_NULL_HANDLE;
+        VmaAllocation depthAllocation = VK_NULL_HANDLE;
         VkDeviceMemory depthMemory = VK_NULL_HANDLE;
         VkImageView depthView = VK_NULL_HANDLE;
         VkDescriptorSet imguiDescSet = VK_NULL_HANDLE;
@@ -54,6 +56,7 @@ private:
 
     // Dummy 1x1 RGBA32F image kept in SHADER_READ_ONLY layout for shadow pass descriptor set bindings
     VkImage dummyColorImage = VK_NULL_HANDLE;
+    VmaAllocation dummyColorAllocation = VK_NULL_HANDLE;
     VkDeviceMemory dummyColorMemory = VK_NULL_HANDLE;
     VkImageView dummyColorView = VK_NULL_HANDLE;
 
@@ -72,6 +75,7 @@ private:
     VkDescriptorSet blurVerticalDS = VK_NULL_HANDLE;
     // Temporary image for separable blur ping-pong
     VkImage blurTempImage = VK_NULL_HANDLE;
+    VmaAllocation blurTempAllocation = VK_NULL_HANDLE;
     VkDeviceMemory blurTempMemory = VK_NULL_HANDLE;
     VkImageView blurTempView = VK_NULL_HANDLE;
 
