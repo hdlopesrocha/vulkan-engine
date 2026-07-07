@@ -31,6 +31,14 @@ layout(push_constant) uniform PushConstants {
 #include "includes/vegetation_common.glsl"
 
 void main() {
+    // Sentinel: instance was skipped by generator (empty biome or steep slope).
+    if (instanceData.w < 0.0) {
+        outTexCoord = vec3(0.0); outInstanceOffset = vec3(0.0);
+        outWorldPos = vec3(0.0);
+        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
     vec3 worldPos = instanceData.xyz;
     int billboardIdx = int(floor(instanceData.w));
     float rotFrac = fract(instanceData.w);
