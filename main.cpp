@@ -778,8 +778,6 @@ public:
                     w.descriptorCount = 1;
                     w.pImageInfo = &info;
                     vkUpdateDescriptorSets(getDevice(), 1, &w, 0, nullptr);
-                    std::cerr << "[CUBE360_INLINE] wrote dummy=" << (void*)dummyView
-                              << " to gfxDs=" << (void*)cube360GfxDs << std::endl;
                 }
             }
 
@@ -2154,9 +2152,6 @@ void MyApp::ensureCubemapResources() {
             w.descriptorCount = 1;
             w.pImageInfo = &info;
             vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
-            std::cerr << "[CUBE360_ENSURE_DIRECT] wrote dummy=" << (void*)dummyView
-                      << " to gfxDs=" << (void*)cube360GfxDs
-                      << " sampler=" << (void*)cubeSamp << std::endl;
         }
     }
 

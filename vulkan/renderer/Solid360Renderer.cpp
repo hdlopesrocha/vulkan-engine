@@ -321,9 +321,6 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                                      VkBuffer waterCompactIndirectBuffer, VkBuffer waterVisibleCountBuffer) {
     if (!app || cmd == VK_NULL_HANDLE) return;
     if (cube360FaceViews[0] == VK_NULL_HANDLE) return;
-    std::cerr << "[CUBE360_RENDER] mainDescSet=" << (void*)mainDescriptorSet
-              << " dummyView=" << (void*)cube360DummyCubeView
-              << " realView=" << (void*)cube360CubeView << std::endl;
 
     glm::vec3 camPos = glm::vec3(ubo.viewPos);
     struct FaceInfo { glm::vec3 target; glm::vec3 up; };
