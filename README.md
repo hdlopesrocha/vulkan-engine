@@ -2,7 +2,7 @@
 
 ![Screenshot](screenshot.png)
 
-A real-time 3D terrain and scene rendering engine built with Vulkan 1.2+ and C++23. It combines procedural geometry generation through Signed Distance Functions and Surface Nets meshing with a full rendering pipeline covering terrain, water, vegetation, shadows, and atmospheric sky.
+A real-time 3D terrain and scene rendering engine built with modern Vulkan (targeting 1.4, compatible with 1.3) and C++23. It combines procedural geometry generation through Signed Distance Functions and Surface Nets meshing with a full rendering pipeline covering terrain, water, vegetation, shadows, and atmospheric sky.
 
 ---
 
@@ -20,11 +20,12 @@ A real-time 3D terrain and scene rendering engine built with Vulkan 1.2+ and C++
 ### Build
 
 ```sh
-# Debug build (no optimizations, debug symbols)
+# Debug build (no optimizations, debug symbols, validation layers)
 make debug
 
-# Release build (O3 optimizations)
-make release
+# Release build (O3 optimizations, ImGui enabled)
+make
+make all
 ```
 
 Compiled shaders are placed in `bin/shaders/`, the application binary in `bin/app`.
@@ -38,7 +39,14 @@ make clean
 ### Run
 
 ```sh
-make run
+make run      # Release build + run
+make run-debug  # Debug build + run
+```
+
+### Headless Server
+
+```sh
+make server   # Build headless bin/server (no Vulkan/UI linkage)
 ```
 
 ---
@@ -180,21 +188,28 @@ Every primitive and effect has a `Wrapped*` variant, allowing arbitrary SDF tree
 **Surface Nets meshing** — The `Tesselator` evaluates each octree node's SDF at its eight corners to detect iso-surface crossings, then computes vertex positions and normals by interpolation. Material assignment is performed during tesselation by a `TexturePainter` that maps surface positions to texture array indices.
 
 
-### Debug Build
-To build with debug symbols and validation layers enabled:
-
-```sh
-make debug
-```
-
 ## Directory Structure
-- `main.cpp` — Entry point and Vulkan setup
-- `math/` — Math, geometry, and spatial partitioning (octree, bounding volumes)
-- `events/` — Event system for input and window management
-- `bin/` — Compiled binaries and runtime files
-- `shaders/`, `textures/` — Graphics assets
+
+| Path | Description |
+|------|-------------|
+| `main.cpp` | Entry point (`MyApp` extends `VulkanApp`) |
+| `server.cpp` | Headless server entry point |
+| `vulkan/` | Vulkan setup, resource management, renderers |
+| `vulkan/renderer/` | SceneRenderer, SolidRenderer, SkyRenderer, WaterRenderer, ShadowRenderer, VegetationRenderer, IndirectRenderer, PostProcessRenderer, and more |
+| `vulkan/ubo/` | GPU uniform buffer structs |
+| `vulkan/includes/` | Shared C++ headers (locations, vertex layouts) |
+| `space/` | Octree, Tesselator (Surface Nets), ThreadPool, Processor, Simplifier |
+| `sdf/` | SDF primitives (Box, Sphere, Capsule, Cone, Torus, HeightMap) and CSG operations |
+| `events/` | Input system (keyboard, gamepad, nunchuk), EventManager |
+| `math/` | Camera, Light, BoundingBox, Frustum, Plane, Ray, HeightMap, PerlinSurface, Brush3d |
+| `services/` | TextureMixer, BillboardService, ImpostorService |
+| `widgets/` | ImGui debug/editor UI (release builds only) |
+| `tree/` | AttractorField, TreeGenerator, TreeHandler |
+| `utils/` | LocalScene, MainSceneLoader, FileReader, SettingsFile, brush system |
+| `shaders/` | GLSL shader sources compiled to SPIR-V |
+| `textures/` | Texture assets |
+| `docs/` | Documentation |
+| `third_party/` | Third-party libraries (ImGui, miniaudio) |
 
 ## License
 See LICENSE for details.
-# vulkan-engine
-Physics Engine in Vulkan
