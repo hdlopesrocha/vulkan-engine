@@ -49,6 +49,15 @@ void main() {
     tc_fragTexWeights[gl_InvocationID] = texWeights;
 
     if (gl_InvocationID == 0) {
+        // Respect the global tessellation toggle from settings.
+        if (ubo.passParams.y < 0.5) {
+            gl_TessLevelOuter[0] = 1.0;
+            gl_TessLevelOuter[1] = 1.0;
+            gl_TessLevelOuter[2] = 1.0;
+            gl_TessLevelInner[0] = 1.0;
+            return;
+        }
+
         // Select the water params from the first brush index on the patch
         int idx = max(pc_inBrushIndex[0], 0);
         WaterParamsGPU wp = waterParams[idx];
