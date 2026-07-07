@@ -232,16 +232,20 @@ void VulkanResourceManager::addBufferVma(VkBuffer buf, VmaAllocation alloc, cons
     buffers[(uintptr_t)buf] = {buf, desc ? std::string(desc) : std::string()};
     if (alloc) vmaAllocations[(uintptr_t)buf] = alloc;
 }
-bool VulkanResourceManager::removeBufferVma(VkBuffer buf) {
+bool VulkanResourceManager::removeBufferVma(VkBuffer buf, VmaAllocation alloc) {
     std::lock_guard<std::mutex> lk(mtx);
-    buffers.erase((uintptr_t)buf);
-    auto it = vmaAllocations.find((uintptr_t)buf);
-    if (it != vmaAllocations.end()) {
-        if (vmaAlloc) vmaDestroyBuffer(vmaAlloc, buf, it->second);
-        vmaAllocations.erase(it);
-        return true;
+    bool found = buffers.erase((uintptr_t)buf) > 0;
+    if (alloc == VK_NULL_HANDLE) {
+        auto it = vmaAllocations.find((uintptr_t)buf);
+        if (it != vmaAllocations.end()) {
+            alloc = it->second;
+        }
     }
-    return buffers.erase((uintptr_t)buf) > 0;
+    if (alloc && vmaAlloc) {
+        vmaDestroyBuffer(vmaAlloc, buf, alloc);
+    }
+    vmaAllocations.erase((uintptr_t)buf);
+    return found;
 }
 
 void VulkanResourceManager::addImageVma(VkImage img, VmaAllocation alloc, const char* desc) {

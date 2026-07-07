@@ -96,7 +96,7 @@ public:
     // VMA-aware tracking
     void setAllocator(VmaAllocator alloc) { vmaAlloc = alloc; }
     void addBufferVma(VkBuffer buf, VmaAllocation alloc, const char* desc = nullptr);
-    bool removeBufferVma(VkBuffer buf);
+    bool removeBufferVma(VkBuffer buf, VmaAllocation alloc = VK_NULL_HANDLE);
     bool removePipeline(VkPipeline p);
     bool removePipelineLayout(VkPipelineLayout pl);
     bool removeShaderModule(VkShaderModule m);
