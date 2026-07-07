@@ -176,6 +176,7 @@ void VegetationRenderer::initCulling(VulkanApp* app) {
         throw std::runtime_error("failed to create vegetation cull compute pipeline!");
     app->resources.addPipeline(vegCullPipeline, "VegetationCull: computePipeline");
 
+    app->resources.removeShaderModule(compModule);
     vkDestroyShaderModule(device, compModule, nullptr);
 
     VkDescriptorPoolSize poolSize{};

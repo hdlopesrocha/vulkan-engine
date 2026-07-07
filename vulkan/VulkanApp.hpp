@@ -519,8 +519,7 @@ protected:
         // the command buffer to `submitCommandBufferAsync` (which will call vkEndCommandBuffer).
         VkCommandBuffer allocatePrimaryCommandBuffer();
         // Free a command buffer previously allocated via `allocatePrimaryCommandBuffer`.
-        // This will free the command buffer from the correct command pool (may be a
-        // per-thread temporary pool) and destroy that pool if it was temporary.
+        // The underlying command pool is reused from the internal ring — not destroyed.
         void freeCommandBuffer(VkCommandBuffer cmd);
 
         // Record an image layout transition into an existing command buffer (non-blocking).
@@ -544,6 +543,12 @@ protected:
         virtual void preImGuiShutdown() {}
         // Called after a frame has been submitted/presented. Derived apps may override.
         virtual void postSubmit();
+
+    private:
+        static constexpr uint32_t ASYNC_CMD_POOL_RING_SIZE = 64;
+        VkCommandPool asyncCmdPoolRing[ASYNC_CMD_POOL_RING_SIZE]{};
+        std::atomic<uint32_t> asyncCmdPoolNext{0};
+        void createAsyncCmdPoolRing();
 
 };
 

@@ -191,6 +191,7 @@ void VulkanApp::initVulkan() {
     createImageViews();
     createDescriptorSetLayout();
     createCommandPool();
+    createAsyncCmdPoolRing();
     createDepthResources();
     commandBuffers = createCommandBuffers();
     createSyncObjects();
@@ -748,6 +749,7 @@ bool VulkanApp::ensureVegetationComputePipeline() {
 
     VkPipeline pipe = VK_NULL_HANDLE;
     if (vkCreateComputePipelines(dev, pipelineCache, 1, &cpInfo, nullptr, &pipe) != VK_SUCCESS) {
+        resources.removeShaderModule(compModule);
         vkDestroyShaderModule(dev, compModule, nullptr);
         vkDestroyPipelineLayout(dev, pipeLayout, nullptr);
         vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
@@ -771,6 +773,7 @@ bool VulkanApp::ensureVegetationComputePipeline() {
     VkDescriptorPool pool = VK_NULL_HANDLE;
     if (vkCreateDescriptorPool(dev, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
         vkDestroyPipeline(dev, pipe, nullptr);
+        resources.removeShaderModule(compModule);
         vkDestroyShaderModule(dev, compModule, nullptr);
         vkDestroyPipelineLayout(dev, pipeLayout, nullptr);
         vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
@@ -798,6 +801,7 @@ bool VulkanApp::ensureVegetationComputePipeline() {
             // Another thread already initialized; clean up duplicates
             vkDestroyDescriptorPool(dev, pool, nullptr);
             vkDestroyPipeline(dev, pipe, nullptr);
+            resources.removeShaderModule(compModule);
             vkDestroyShaderModule(dev, compModule, nullptr);
             vkDestroyPipelineLayout(dev, pipeLayout, nullptr);
             vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
@@ -1414,6 +1418,22 @@ void VulkanApp::createCommandPool() {
     pendingCommandBuffers.clear();
     extraWaitSemaphores.clear();
     semaphoresPendingDestroy.clear();
+}
+
+// Pre-allocate async command pool ring so allocatePrimaryCommandBuffer can
+// reuse pools instead of creating/destroying one per call.
+void VulkanApp::createAsyncCmdPoolRing() {
+    QueueFamilyIndices qfi = findQueueFamilies(physicalDevice);
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.queueFamilyIndex = qfi.graphicsFamily.value();
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    for (uint32_t i = 0; i < ASYNC_CMD_POOL_RING_SIZE; i++) {
+        if (vkCreateCommandPool(device, &poolInfo, nullptr, &asyncCmdPoolRing[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create async command pool ring");
+        }
+        resources.addCommandPool(asyncCmdPoolRing[i], "VulkanApp: asyncCmdPoolRing");
+    }
 }
 
 void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>& fn) {
@@ -2561,39 +2581,33 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
 }
 
     VkCommandBuffer VulkanApp::allocatePrimaryCommandBuffer() {
-        // Allocate a temporary per-call command pool and allocate a primary
-        // command buffer from it. This lets threads record in parallel without
-        // sharing a single command pool. We track the mapping from command
-        // buffer -> pool so we can free/destroy the correct pool later.
+        // Grab next pool from the pre-allocated ring, reset it, and allocate
+        // a primary command buffer.  This avoids per-call vkCreateCommandPool
+        // / vkDestroyCommandPool which adds driver overhead under many
+        // async submissions (back-face pass, vegetation, widgets, …).
         VkCommandBuffer cmd = VK_NULL_HANDLE;
-        VkCommandPool tempPool = VK_NULL_HANDLE;
+        uint32_t idx = asyncCmdPoolNext.fetch_add(1) % ASYNC_CMD_POOL_RING_SIZE;
+        VkCommandPool pool = asyncCmdPoolRing[idx];
 
-        QueueFamilyIndices qfi = findQueueFamilies(physicalDevice);
-        VkCommandPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        poolInfo.queueFamilyIndex = qfi.graphicsFamily.value();
-        poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-        if (vkCreateCommandPool(device, &poolInfo, nullptr, &tempPool) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create temporary command pool for async submit");
+        VkResult resetRes = vkResetCommandPool(device, pool, 0);
+        if (resetRes != VK_SUCCESS) {
+            throw std::runtime_error("failed to reset async command pool");
         }
-        resources.addCommandPool(tempPool, "VulkanApp: tempAsyncCommandPool");
 
         VkCommandBufferAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandPool = tempPool;
+        allocInfo.commandPool = pool;
         allocInfo.commandBufferCount = 1;
 
         if (vkAllocateCommandBuffers(device, &allocInfo, &cmd) != VK_SUCCESS) {
-            resources.removeCommandPool(tempPool);
-            vkDestroyCommandPool(device, tempPool, nullptr);
             throw std::runtime_error("failed to allocate command buffer for async submit");
         }
 
         // Track mapping so we can free using the correct pool later.
         {
             std::lock_guard<std::mutex> lk(pendingCmdMutex);
-            commandBufferPoolMap[cmd] = tempPool;
+            commandBufferPoolMap[cmd] = pool;
 
             // Capture an allocation backtrace for this command buffer so
             // we can later correlate failing vkQueueSubmit() calls with
@@ -2648,8 +2662,13 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             g_cmdBacktraces.erase(cmd);
         }
 
-        // If this was a temporary pool we created, destroy it now
-        if (pool != VK_NULL_HANDLE && pool != commandPool && pool != transientCommandPool && pool != transferCommandPool) {
+        // If this was a temporary pool (not ring, not persistent), destroy it now.
+        // Ring pools are recycled; persistent pools live for the app lifetime.
+        bool isRingPool = false;
+        for (uint32_t i = 0; i < ASYNC_CMD_POOL_RING_SIZE; i++) {
+            if (pool == asyncCmdPoolRing[i]) { isRingPool = true; break; }
+        }
+        if (!isRingPool && pool != VK_NULL_HANDLE && pool != commandPool && pool != transientCommandPool && pool != transferCommandPool) {
             resources.removeCommandPool(pool);
             vkDestroyCommandPool(dev, pool, nullptr);
         }
