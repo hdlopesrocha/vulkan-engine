@@ -62,6 +62,7 @@ SERVER_INCLUDES := -Ithird_party/imgui -Ithird_party/imgui/backends -I/usr/inclu
 # Automatically find all shader source files in shaders/ with known extensions
 SHADER_EXTS = vert frag geom comp tesc tese
 SHADERS = $(foreach ext,$(SHADER_EXTS),$(wildcard shaders/*.$(ext)))
+SHADER_INCLUDES = $(wildcard shaders/includes/*.glsl)
 # Map each shader to its corresponding .spv output in bin/shaders, preserving extension
 OUT_SPVS = \
 	$(patsubst shaders/%.vert, $(OUT_DIR)/shaders/%.vert.spv, $(wildcard shaders/*.vert)) \
@@ -137,7 +138,7 @@ shaders: $(OUT_SPVS)
 
 # Generic pattern rule for all shader extensions in $(SHADER_EXTS)
 define SHADER_COMPILE_RULE
-$(OUT_DIR)/shaders/%.$(1).spv: shaders/%.$(1)
+$(OUT_DIR)/shaders/%.$(1).spv: shaders/%.$(1) $(SHADER_INCLUDES)
 	@echo "Compiling shader: $$< -> $$@"
 	@mkdir -p $$(dir $$@)
 	@if command -v glslc >/dev/null 2>&1; then \
