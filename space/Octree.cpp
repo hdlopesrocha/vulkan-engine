@@ -696,7 +696,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         
     }
     bool interpolatedSurface = (frame.node == NULL)
-                                //&& SDF::eval(frame.sdf) == SpaceType::Surface 
+                                && SDF::eval(frame.sdf) == SpaceType::Surface 
                                 && frame.type == SpaceType::Surface
                                 ;
 
@@ -721,6 +721,10 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                         r.isSimplified = simplificationResult.isSimplified;
                         if(r.isSimplified) {
                             r.brushIndex = simplificationResult.brushIndex;
+                            // Fall back to inherited brush if simplifier had no surface children
+                            if(r.brushIndex == DISCARD_BRUSH_INDEX) {
+                                r.brushIndex = frame.brushIndex;
+                            }
                         } 
                     }
                     OctreeNode * childNodes[8] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
