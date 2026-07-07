@@ -11,13 +11,12 @@ layout(push_constant) uniform PC {
     float direction; // 0 = horizontal, 1 = vertical
 } pc;
 
-// 7-tap Gaussian kernel (sigma = 1.5, normalized)
-// Reduced blur to preserve alpha-rejected vegetation shadow detail.
-const float KERNEL[7] = float[](
-    0.0300, 0.1047, 0.2225, 0.2856,
-    0.2225, 0.1047, 0.0300
+// 3-tap Gaussian kernel (sigma = 0.5, normalized)
+// Minimal blur to avoid light-bleeding halo on water.
+const float KERNEL[3] = float[](
+    0.2747, 0.4506, 0.2747
 );
-const int RADIUS = 3;
+const int RADIUS = 1;
 
 void main() {
     ivec2 texSize = textureSize(evsmTexture, 0);

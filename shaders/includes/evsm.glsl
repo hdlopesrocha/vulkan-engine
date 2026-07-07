@@ -25,6 +25,12 @@ float ShadowEVSM(sampler2D smap, vec3 projCoords, float bias) {
     float posProb = chebyshevUpperBound(moments.xy, posDepth);
     float negProb = chebyshevUpperBound(moments.zw, negDepth);
 
-    float shadow = min(posProb, negProb);
-    return 1.0 - shadow;
+    float shadow = 1.0 - min(posProb, negProb);
+
+    // Light Bleeding Reduction: eliminate the soft transition zone (halo)
+    // around shadow boundaries. Values below lbr are pushed to 0 (fully lit).
+    const float lbr = 0.3;
+    shadow = clamp((shadow - lbr) / (1.0 - lbr), 0.0, 1.0);
+
+    return shadow;
 }
