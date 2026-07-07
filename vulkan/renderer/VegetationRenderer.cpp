@@ -699,7 +699,7 @@ void VegetationRenderer::init(VulkanApp* app) {
     // ── EVSM shadow pipeline (writes moments via shadow_evsm.frag ──
     {
         auto shadowVertCode = FileReader::readFile("shaders/vegetation_shadow.vert.spv");
-        auto shadowFragCode = FileReader::readFile("shaders/shadow_evsm.frag.spv");
+        auto shadowFragCode = FileReader::readFile("shaders/vegetation_shadow.frag.spv");
         VkShaderModule shadowVertShader = app->createShaderModule(shadowVertCode);
         VkShaderModule shadowFragShader = app->createShaderModule(shadowFragCode);
 
@@ -1801,8 +1801,6 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         const uint32_t triCount = static_cast<uint32_t>(pc.grassIndices.size()) / 3;
         const uint32_t instanceCount = triCount * pc.instancesPerTriangle;
 
-        std::vector<float> instanceData(instanceCount * 4, 0.0f);
-
         const float maxBillboardRadius = billboardScale * 2.1f; // max heightScale (1.4) × max corner offset (1.5)
 
         // Compute AABB from vertex positions (conservatively bounds all instance anchors)
@@ -1814,6 +1812,9 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         }
         aabbMin -= glm::vec3(maxBillboardRadius);
         aabbMax += glm::vec3(maxBillboardRadius);
+
+        std::vector<float> validData;
+        validData.reserve(instanceCount * 4);
 
         for (uint32_t tri = 0; tri < triCount; ++tri) {
             const uint32_t tb = tri * 3;
@@ -1827,13 +1828,7 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
             const glm::vec3 v2 = pc.positions[i2];
 
             const glm::vec3 fn = glm::cross(v1 - v0, v2 - v0);
-            if (glm::abs(fn.y) <= 0.5f * glm::length(fn)) {
-                for (uint32_t s = 0; s < pc.instancesPerTriangle; ++s) {
-                    const uint32_t oi = (tri * pc.instancesPerTriangle + s) * 4;
-                    instanceData[oi + 3] = -1.0f;
-                }
-                continue;
-            }
+            if (glm::abs(fn.y) <= 0.5f * glm::length(fn)) continue;
 
             const glm::vec3 tc = (v0 + v1 + v2) / 3.0f;
             const uint32_t tch = posHash(tc);
@@ -1847,33 +1842,29 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 glm::vec3 pos = u * v0 + v * v1 + w * v2;
 
                 // Biome from spatially-coherent noise.
-                // 40% → sentinel (empty biome), 60% → remapped across billboardCnt biomes.
                 float noise = biomeNoise(glm::vec2(pos.x, pos.z));
-                uint32_t bi;
-                if (noise < 0.40f) {
-                    bi = uint32_t(-1); // sentinel — no vegetation
-                } else {
-                    float remapped = (noise - 0.40f) / 0.60f;
-                    bi = std::min(uint32_t(remapped * float(billboardCnt)), billboardCnt - 1u);
-                }
+                if (noise < 0.40f) continue; // empty biome — skip entirely
+
+                float remapped = (noise - 0.40f) / 0.60f;
+                uint32_t bi = std::min(uint32_t(remapped * float(billboardCnt)), billboardCnt - 1u);
 
                 uint32_t rs = pc.seed ^ posHash(pos);
                 float rf = randFloat(rs);
 
-                const uint32_t oi = (tri * pc.instancesPerTriangle + s) * 4;
-                instanceData[oi + 0] = pos.x;
-                instanceData[oi + 1] = pos.y;
-                instanceData[oi + 2] = pos.z;
-                if (bi == uint32_t(-1)) {
-                    instanceData[oi + 3] = -1.0f; // sentinel
-                } else {
-                    instanceData[oi + 3] = float(bi) + rf;
-                }
+                validData.push_back(pos.x);
+                validData.push_back(pos.y);
+                validData.push_back(pos.z);
+                validData.push_back(float(bi) + rf);
             }
+        }
 
-}
+        const uint32_t validCount = static_cast<uint32_t>(validData.size() / 4);
+        if (validCount == 0) {
+            destroyInstanceBuffer(pc.chunkId, app);
+            continue;
+        }
 
-        const VkDeviceSize bufSize = instanceData.size() * sizeof(float);
+        const VkDeviceSize bufSize = validData.size() * sizeof(float);
 
         // Staging buffer: host-visible, filled by CPU.
         Buffer stagingInst = app->createBuffer(bufSize,
@@ -1881,7 +1872,7 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         void* mapped = nullptr;
         mapped = stagingInst.map(0);
-        std::memcpy(mapped, instanceData.data(), size_t(bufSize));
+        std::memcpy(mapped, validData.data(), size_t(bufSize));
         stagingInst.unmap(); // VMA persistent mapping
 
         // Device-local instance buffer: GPU reads via vertex input.
@@ -1902,7 +1893,7 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         VkDrawIndexedIndirectCommand drawCmd{};
         drawCmd.indexCount    = 36;
-        drawCmd.instanceCount = instanceCount;
+        drawCmd.instanceCount = validCount;
         drawCmd.firstIndex    = 0;
         drawCmd.vertexOffset  = 0;
         drawCmd.firstInstance = 0;
@@ -1912,7 +1903,7 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         stagingIndirect.unmap(); // VMA persistent mapping
 
         pendingBatch.push_back({ stagingInst, instBuf, stagingIndirect, indirect,
-                                 bufSize, pc.chunkId, instanceCount,
+                                 bufSize, pc.chunkId, validCount,
                                  aabbMin, aabbMax, pc.chunkCenter });
     }
 
