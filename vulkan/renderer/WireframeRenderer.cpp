@@ -17,27 +17,17 @@ void WireframeRenderer::createPipeline(VulkanApp* app,
     VkDevice device = app->getDevice();
     uint32_t colorAttachmentCount = static_cast<uint32_t>(colorFormats.size());
 
-    // Load shaders
-    auto vertCode = FileReader::readFile(vertPath);
-    auto fragCode = FileReader::readFile(fragPath);
-    if (vertCode.empty() || fragCode.empty()) {
-        std::cerr << "[WireframeRenderer] Warning: Could not load shaders for " << label << std::endl;
-        return;
-    }
-    VkShaderModule vertModule = app->createShaderModule(vertCode);
-    VkShaderModule fragModule = app->createShaderModule(fragCode);
+    // Load shaders (cached by VulkanApp)
+    VkShaderModule vertModule = app->getOrCreateShaderModule(vertPath);
+    VkShaderModule fragModule = app->getOrCreateShaderModule(fragPath);
 
     VkShaderModule tescModule = VK_NULL_HANDLE;
     VkShaderModule teseModule = VK_NULL_HANDLE;
     bool hasTessellation = false;
     if (tescPath && tesePath) {
-        auto tescCode = FileReader::readFile(tescPath);
-        auto teseCode = FileReader::readFile(tesePath);
-        if (!tescCode.empty() && !teseCode.empty()) {
-            tescModule = app->createShaderModule(tescCode);
-            teseModule = app->createShaderModule(teseCode);
-            hasTessellation = true;
-        }
+        tescModule = app->getOrCreateShaderModule(tescPath);
+        teseModule = app->getOrCreateShaderModule(tesePath);
+        hasTessellation = true;
     }
 
     // Shader stages

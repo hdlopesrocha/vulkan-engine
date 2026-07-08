@@ -14,8 +14,8 @@ void DebugSDFRenderer::init(VulkanApp* app) {
     createCubeBuffers(app);
     createDescriptorSet(app);
 
-    vertModule = app->createShaderModule(FileReader::readFile("shaders/debug_sdf.vert.spv"));
-    fragModule = app->createShaderModule(FileReader::readFile("shaders/debug_sdf.frag.spv"));
+    vertModule = app->getOrCreateShaderModule("shaders/debug_sdf.vert.spv");
+    fragModule = app->getOrCreateShaderModule("shaders/debug_sdf.frag.spv");
 
     ShaderStage vertStage(vertModule, VK_SHADER_STAGE_VERTEX_BIT);
     ShaderStage fragStage(fragModule, VK_SHADER_STAGE_FRAGMENT_BIT);

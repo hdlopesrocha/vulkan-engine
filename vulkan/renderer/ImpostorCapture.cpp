@@ -663,11 +663,8 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
     // Use vegetation.vert for billboard expansion (same 24-corner + indexed approach).
-    auto vertCode = FileReader::readFile("shaders/vegetation.vert.spv");
-    auto fragCode = FileReader::readFile("shaders/capture.frag.spv");
-
-    VkShaderModule vertShader = app->createShaderModule(vertCode);
-    VkShaderModule fragShader = app->createShaderModule(fragCode);
+    VkShaderModule vertShader = app->getOrCreateShaderModule("shaders/vegetation.vert.spv");
+    VkShaderModule fragShader = app->getOrCreateShaderModule("shaders/capture.frag.spv");
 
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -787,10 +784,7 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
         throw std::runtime_error("ImpostorCapture: pipeline creation failed");
     app->resources.addPipeline(capturePipeline, "ImpostorCapture: capturePipeline");
 
-    app->resources.removeShaderModule(vertShader);
-    vkDestroyShaderModule(device, vertShader, nullptr);
-    app->resources.removeShaderModule(fragShader);
-    vkDestroyShaderModule(device, fragShader, nullptr);
+    // Shader modules are cached by VulkanApp — kept alive for app lifetime.
 }
 
 void ImpostorCapture::createUBO(VulkanApp* app) {

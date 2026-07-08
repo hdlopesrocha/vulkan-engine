@@ -28,26 +28,10 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
     if (!app || pipelineLayout == VK_NULL_HANDLE) return;
     VkDevice device = app->getDevice();
 
-    auto bfVertCode = FileReader::readFile("shaders/water.vert.spv");
-    auto bfTescCode = FileReader::readFile("shaders/water.tesc.spv");
-    auto bfTeseCode = FileReader::readFile("shaders/water.tese.spv");
-    auto bfFragCode = FileReader::readFile("shaders/water_backface.frag.spv");
-
-    if (bfVertCode.empty() || bfFragCode.empty()) {
-        std::cerr << "[WaterBackFaceRenderer] Warning: missing backface shaders" << std::endl;
-        return;
-    }
-
-    VkShaderModule bfVert = app->createShaderModule(bfVertCode);
-    VkShaderModule bfFrag = app->createShaderModule(bfFragCode);
-    VkShaderModule bfTesc = VK_NULL_HANDLE;
-    VkShaderModule bfTese = VK_NULL_HANDLE;
-
-    bool bfHasTess = !bfTescCode.empty() && !bfTeseCode.empty();
-    if (bfHasTess) {
-        bfTesc = app->createShaderModule(bfTescCode);
-        bfTese = app->createShaderModule(bfTeseCode);
-    }
+    VkShaderModule bfVert = app->getOrCreateShaderModule("shaders/water.vert.spv");
+    VkShaderModule bfFrag = app->getOrCreateShaderModule("shaders/water_backface.frag.spv");
+    VkShaderModule bfTesc = app->getOrCreateShaderModule("shaders/water.tesc.spv");
+    VkShaderModule bfTese = app->getOrCreateShaderModule("shaders/water.tese.spv");
 
     std::vector<VkPipelineShaderStageCreateInfo> bfStages;
     VkPipelineShaderStageCreateInfo vs{};
@@ -57,7 +41,7 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
     vs.pName = "main";
     bfStages.push_back(vs);
 
-    if (bfHasTess) {
+    { // tessellation stages (always available — getOrCreateShaderModule would throw if missing)
         VkPipelineShaderStageCreateInfo tc{};
         tc.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         tc.stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
@@ -97,7 +81,7 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = bfHasTess ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
     inputAssembly.primitiveRestartEnable = VK_FALSE;
 
     VkPipelineViewportStateCreateInfo viewportState{};
@@ -137,10 +121,8 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
     bfBlend.pAttachments = nullptr;
 
     VkPipelineTessellationStateCreateInfo tessState{};
-    if (bfHasTess) {
-        tessState.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
-        tessState.patchControlPoints = 3;
-    }
+    tessState.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
+    tessState.patchControlPoints = 3;
 
     VkPipelineRenderingCreateInfo pipelineRenderingInfo{};
     pipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
@@ -164,7 +146,7 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
     bfPipeInfo.layout = pipelineLayout;
     bfPipeInfo.renderPass = VK_NULL_HANDLE;
     bfPipeInfo.subpass = 0;
-    if (bfHasTess) bfPipeInfo.pTessellationState = &tessState;
+    bfPipeInfo.pTessellationState = &tessState;
 
     if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &bfPipeInfo, nullptr, &backFacePipeline) != VK_SUCCESS) {
         std::cerr << "[WaterBackFaceRenderer] Warning: Failed to create back-face depth pipeline" << std::endl;

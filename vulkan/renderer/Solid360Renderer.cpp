@@ -245,25 +245,25 @@ void Solid360Renderer::createSolid360Pipelines(VulkanApp* app) {
     if (!app) return;
 
     ShaderStage vertexShader = ShaderStage(
-        app->createShaderModule(FileReader::readFile("shaders/main.vert.spv")),
+        app->getOrCreateShaderModule("shaders/main.vert.spv"),
         VK_SHADER_STAGE_VERTEX_BIT
     );
     ShaderStage tescShader = ShaderStage(
-        app->createShaderModule(FileReader::readFile("shaders/main.tesc.spv")),
+        app->getOrCreateShaderModule("shaders/main.tesc.spv"),
         VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
     );
     ShaderStage teseShader = ShaderStage(
-        app->createShaderModule(FileReader::readFile("shaders/main.tese.spv")),
+        app->getOrCreateShaderModule("shaders/main.tese.spv"),
         VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
     );
     // Depth-only pipeline uses a lightweight fragment shader
     ShaderStage depthFragmentShader = ShaderStage(
-        app->createShaderModule(FileReader::readFile("shaders/depth_only.frag.spv")),
+        app->getOrCreateShaderModule("shaders/depth_only.frag.spv"),
         VK_SHADER_STAGE_FRAGMENT_BIT
     );
     // Color pass uses the full terrain fragment shader
     ShaderStage mainFragmentShader = ShaderStage(
-        app->createShaderModule(FileReader::readFile("shaders/main.frag.spv")),
+        app->getOrCreateShaderModule("shaders/main.frag.spv"),
         VK_SHADER_STAGE_FRAGMENT_BIT
     );
 

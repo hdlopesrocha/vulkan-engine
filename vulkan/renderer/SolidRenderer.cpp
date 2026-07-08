@@ -204,21 +204,21 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     if (!app) return;
 
     ShaderStage vertexShader = ShaderStage(
-        app->createShaderModule(FileReader::readFile("shaders/main.vert.spv")),
+        app->getOrCreateShaderModule("shaders/main.vert.spv"),
         VK_SHADER_STAGE_VERTEX_BIT
     );
 
     ShaderStage fragmentShader = ShaderStage(
-        app->createShaderModule(FileReader::readFile("shaders/main.frag.spv")),
+        app->getOrCreateShaderModule("shaders/main.frag.spv"),
         VK_SHADER_STAGE_FRAGMENT_BIT
     );
 
     ShaderStage tescShader = ShaderStage(
-        app->createShaderModule(FileReader::readFile("shaders/main.tesc.spv")),
+        app->getOrCreateShaderModule("shaders/main.tesc.spv"),
         VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
     );
     ShaderStage teseShader = ShaderStage(
-        app->createShaderModule(FileReader::readFile("shaders/main.tese.spv")),
+        app->getOrCreateShaderModule("shaders/main.tese.spv"),
         VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
     );
 
@@ -279,7 +279,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     {
         // Depth-only: lightweight depth_only.frag, no color attachment
         ShaderStage depthFrag = ShaderStage(
-            app->createShaderModule(FileReader::readFile("shaders/depth_only.frag.spv")),
+            app->getOrCreateShaderModule("shaders/depth_only.frag.spv"),
             VK_SHADER_STAGE_FRAGMENT_BIT
         );
         auto [dp, dl] = app->createGraphicsPipeline(

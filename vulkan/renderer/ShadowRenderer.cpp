@@ -137,16 +137,16 @@ VkImage ShadowRenderer::getDepthImage(uint32_t cascade) const {
 void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
     // Create an EVSM pipeline: outputs RGBA32F color moments + depth test
     ShaderStage vertexShader(
-        app->createShaderModule(FileReader::readFile("shaders/main.vert.spv")),
+        app->getOrCreateShaderModule("shaders/main.vert.spv"),
         VK_SHADER_STAGE_VERTEX_BIT);
     ShaderStage tescShader(
-        app->createShaderModule(FileReader::readFile("shaders/main.tesc.spv")),
+        app->getOrCreateShaderModule("shaders/main.tesc.spv"),
         VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
     ShaderStage teseShader(
-        app->createShaderModule(FileReader::readFile("shaders/main.tese.spv")),
+        app->getOrCreateShaderModule("shaders/main.tese.spv"),
         VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
     ShaderStage evsmFragment(
-        app->createShaderModule(FileReader::readFile("shaders/shadow_evsm.frag.spv")),
+        app->getOrCreateShaderModule("shaders/shadow_evsm.frag.spv"),
         VK_SHADER_STAGE_FRAGMENT_BIT);
 
     std::vector<VkDescriptorSetLayout> setLayouts;
@@ -236,10 +236,10 @@ void ShadowRenderer::createBlurResources(VulkanApp* app) {
 
     // Fullscreen vertex + blur fragment shader
     ShaderStage vertShader(
-        app->createShaderModule(FileReader::readFile("shaders/fullscreen.vert.spv")),
+        app->getOrCreateShaderModule("shaders/fullscreen.vert.spv"),
         VK_SHADER_STAGE_VERTEX_BIT);
     ShaderStage fragShader(
-        app->createShaderModule(FileReader::readFile("shaders/evsm_blur.frag.spv")),
+        app->getOrCreateShaderModule("shaders/evsm_blur.frag.spv"),
         VK_SHADER_STAGE_FRAGMENT_BIT);
 
     RendererUtils::FullscreenPipelineOpts opts{};

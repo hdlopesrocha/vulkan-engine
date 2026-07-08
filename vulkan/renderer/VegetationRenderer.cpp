@@ -128,8 +128,7 @@ void VegetationRenderer::initCulling(VulkanApp* app) {
     if (vegCullPipeline != VK_NULL_HANDLE) return;
     auto device = app->getDevice();
 
-    auto compCode = FileReader::readFile("shaders/vegetation_cull.comp.spv");
-    VkShaderModule compModule = app->createShaderModule(compCode);
+    VkShaderModule compModule = app->getOrCreateShaderModule("shaders/vegetation_cull.comp.spv");
 
     VkDescriptorSetLayoutBinding bindings[3] = {};
     bindings[0].binding = 0;
@@ -183,9 +182,7 @@ void VegetationRenderer::initCulling(VulkanApp* app) {
         throw std::runtime_error("failed to create vegetation cull compute pipeline!");
     app->resources.addPipeline(vegCullPipeline, "VegetationCull: computePipeline");
 
-    app->resources.removeShaderModule(compModule);
-    vkDestroyShaderModule(device, compModule, nullptr);
-
+    // Shader module is cached by VulkanApp — kept alive for app lifetime.
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     poolSize.descriptorCount = VEG_CULL_FRAMES * 3;
@@ -652,11 +649,8 @@ void VegetationRenderer::init(VulkanApp* app) {
     pushConstantRange.size = sizeof(WindPushConstants);
 
     // Load shaders — no geometry shader
-    auto vertCode = FileReader::readFile("shaders/vegetation.vert.spv");
-    auto fragCode = FileReader::readFile("shaders/vegetation.frag.spv");
-    VkShaderModule vertShader = app->createShaderModule(vertCode);
-    VkShaderModule fragShader = app->createShaderModule(fragCode);
-
+    VkShaderModule vertShader = app->getOrCreateShaderModule("shaders/vegetation.vert.spv");
+    VkShaderModule fragShader = app->getOrCreateShaderModule("shaders/vegetation.frag.spv");
     VkPipelineShaderStageCreateInfo vertStage{};
     vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -708,11 +702,8 @@ void VegetationRenderer::init(VulkanApp* app) {
 
     // ── Depth prepass pipeline (TRIANGLE_LIST, no geometry shader) ──
     {
-        auto depthVertCode = FileReader::readFile("shaders/vegetation.vert.spv");
-        auto depthFragCode = FileReader::readFile("shaders/vegetation_depth.frag.spv");
-        VkShaderModule depthVertShader = app->createShaderModule(depthVertCode);
-        VkShaderModule depthFragShader = app->createShaderModule(depthFragCode);
-
+        VkShaderModule depthVertShader = app->getOrCreateShaderModule("shaders/vegetation.vert.spv");
+        VkShaderModule depthFragShader = app->getOrCreateShaderModule("shaders/vegetation_depth.frag.spv");
         VkPipelineShaderStageCreateInfo depthVertStage{};
         depthVertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         depthVertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -754,11 +745,8 @@ void VegetationRenderer::init(VulkanApp* app) {
 
     // ── EVSM shadow pipeline (writes moments via shadow_evsm.frag ──
     {
-        auto shadowVertCode = FileReader::readFile("shaders/vegetation_shadow.vert.spv");
-        auto shadowFragCode = FileReader::readFile("shaders/vegetation_shadow.frag.spv");
-        VkShaderModule shadowVertShader = app->createShaderModule(shadowVertCode);
-        VkShaderModule shadowFragShader = app->createShaderModule(shadowFragCode);
-
+        VkShaderModule shadowVertShader = app->getOrCreateShaderModule("shaders/vegetation_shadow.vert.spv");
+        VkShaderModule shadowFragShader = app->getOrCreateShaderModule("shaders/vegetation_shadow.frag.spv");
         VkPipelineShaderStageCreateInfo shadowVertStage{};
         shadowVertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         shadowVertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1318,11 +1306,8 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         vkUpdateDescriptorSets(device, 2, ws, 0, nullptr);
 
         // ── Build impostor depth pipeline ────────────────────────────────
-        auto depthVertCode = FileReader::readFile("shaders/impostors_depth.vert.spv");
-        auto depthFragCode = FileReader::readFile("shaders/impostors_depth.frag.spv");
-
-        VkShaderModule depthVertMod = app->createShaderModule(depthVertCode);
-        VkShaderModule depthFragMod = app->createShaderModule(depthFragCode);
+        VkShaderModule depthVertMod = app->getOrCreateShaderModule("shaders/impostors_depth.vert.spv");
+        VkShaderModule depthFragMod = app->getOrCreateShaderModule("shaders/impostors_depth.frag.spv");
 
         VkPipelineShaderStageCreateInfo depthStages[2]{};
         depthStages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1378,8 +1363,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             std::cerr << "[VegetationRenderer] Impostor depth pipeline created: " << (void*)impostorDepthPipeline << "\n";
 
         // ── Build impostor shadow EVSM pipeline (color+depth write) ──────
-        auto shadowFragCode = FileReader::readFile("shaders/impostors_shadow.frag.spv");
-        VkShaderModule shadowFragMod = app->createShaderModule(shadowFragCode);
+        VkShaderModule shadowFragMod = app->getOrCreateShaderModule("shaders/impostors_shadow.frag.spv");
         depthStages[1].module = shadowFragMod;  // reuse depthStages array, swap frag
 
         VkFormat evsmColorFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -1412,18 +1396,12 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         else
             std::cerr << "[VegetationRenderer] Impostor shadow pipeline created: " << (void*)impostorShadowPipeline << "\n";
 
-        // Destroy the temporary shadow frag module (stages were copied by pipeline creation).
-        // depthFragMod (impostors_depth.frag) is kept alive by resources and destroyed later.
-        app->resources.removeShaderModule(shadowFragMod);
-        vkDestroyShaderModule(device, shadowFragMod, nullptr);
+        // Shader module is cached by VulkanApp — kept alive for app lifetime.
     }
 
     // ── Build impostor color pipeline ───────────────────────────────────
-    auto vertCode = FileReader::readFile("shaders/impostors.vert.spv");
-    auto fragCode = FileReader::readFile("shaders/impostors.frag.spv");
-
-    VkShaderModule vertShader = app->createShaderModule(vertCode);
-    VkShaderModule fragShader = app->createShaderModule(fragCode);
+    VkShaderModule vertShader = app->getOrCreateShaderModule("shaders/impostors.vert.spv");
+    VkShaderModule fragShader = app->getOrCreateShaderModule("shaders/impostors.frag.spv");
 
     VkPipelineShaderStageCreateInfo vertStage{};
     vertStage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

@@ -78,11 +78,11 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
     // Create graphics pipeline from SPV files (if available)
     if (linearizePipeline == VK_NULL_HANDLE && linearizePipelineLayout != VK_NULL_HANDLE) {
         std::vector<char> vertCode, fragCode;
-        try { vertCode = FileReader::readFile("shaders/depth_linearize.vert.spv"); } catch (...) { }
-        try { fragCode = FileReader::readFile("shaders/depth_linearize.frag.spv"); } catch (...) { }
-        if (!vertCode.empty() && !fragCode.empty()) {
-            VkShaderModule vert = app->createShaderModule(vertCode);
-            VkShaderModule frag = app->createShaderModule(fragCode);
+        VkShaderModule vert = VK_NULL_HANDLE;
+        VkShaderModule frag = VK_NULL_HANDLE;
+        try { vert = app->getOrCreateShaderModule("shaders/depth_linearize.vert.spv"); } catch (...) { }
+        try { frag = app->getOrCreateShaderModule("shaders/depth_linearize.frag.spv"); } catch (...) { }
+        if (vert != VK_NULL_HANDLE && frag != VK_NULL_HANDLE) {
 
             VkPipelineShaderStageCreateInfo stages[2]{};
             stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

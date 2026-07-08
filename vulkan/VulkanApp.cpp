@@ -349,15 +349,8 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
         return 0;
     }
 
-    // Load compute shader
-    auto compCode = FileReader::readFile("shaders/vegetation_instance_gen.comp.spv");
-    if (compCode.empty()) {
-        std::cerr << "[VulkanApp] vegetation_instance_gen.comp.spv not found or empty" << std::endl;
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
-        return 0;
-    }
-    VkShaderModule compModule = createShaderModule(compCode);
+    // Load compute shader (cached — reused by ensureVegetationComputePipeline)
+    VkShaderModule compModule = getOrCreateShaderModule("shaders/vegetation_instance_gen.comp.spv");
 
     VkPipelineShaderStageCreateInfo stageInfo{};
     stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -373,8 +366,6 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (vkCreateComputePipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
         std::cerr << "[VulkanApp] Failed to create vegetation compute pipeline" << std::endl;
-        resources.removeShaderModule(compModule);
-        vkDestroyShaderModule(device, compModule, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
         return 0;
@@ -395,8 +386,6 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool) != VK_SUCCESS) {
         std::cerr << "[VulkanApp] Failed to create descriptor pool for vegetation compute" << std::endl;
         vkDestroyPipeline(device, pipeline, nullptr);
-        resources.removeShaderModule(compModule);
-        vkDestroyShaderModule(device, compModule, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
         return 0;
@@ -413,8 +402,6 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
         resources.removeDescriptorPool(descPool);
         vkDestroyDescriptorPool(device, descPool, nullptr);
         vkDestroyPipeline(device, pipeline, nullptr);
-        resources.removeShaderModule(compModule);
-        vkDestroyShaderModule(device, compModule, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
         return 0;
@@ -500,13 +487,11 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
         }
     });
 
-    // Cleanup temporary Vulkan objects
+    // Cleanup temporary Vulkan objects (shader module is cached — kept alive for app lifetime)
     vkFreeDescriptorSets(device, descPool, 1, &descSet);
     resources.removeDescriptorPool(descPool);
     vkDestroyDescriptorPool(device, descPool, nullptr);
     vkDestroyPipeline(device, pipeline, nullptr);
-    resources.removeShaderModule(compModule);
-    vkDestroyShaderModule(device, compModule, nullptr);
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
     vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
 
@@ -725,15 +710,8 @@ bool VulkanApp::ensureVegetationComputePipeline() {
         return false;
     }
 
-    // Load compute shader
-    auto compCode = FileReader::readFile("shaders/vegetation_instance_gen.comp.spv");
-    if (compCode.empty()) {
-        vkDestroyPipelineLayout(dev, pipeLayout, nullptr);
-        vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
-        std::cerr << "[VulkanApp] vegetation_instance_gen.comp.spv not found" << std::endl;
-        return false;
-    }
-    VkShaderModule compModule = createShaderModule(compCode);
+    // Load compute shader (cached — reused by generateVegetationInstancesCompute)
+    VkShaderModule compModule = getOrCreateShaderModule("shaders/vegetation_instance_gen.comp.spv");
 
     VkPipelineShaderStageCreateInfo stageInfo{};
     stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -748,8 +726,6 @@ bool VulkanApp::ensureVegetationComputePipeline() {
 
     VkPipeline pipe = VK_NULL_HANDLE;
     if (vkCreateComputePipelines(dev, pipelineCache, 1, &cpInfo, nullptr, &pipe) != VK_SUCCESS) {
-        resources.removeShaderModule(compModule);
-        vkDestroyShaderModule(dev, compModule, nullptr);
         vkDestroyPipelineLayout(dev, pipeLayout, nullptr);
         vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
         std::cerr << "[VulkanApp] Failed to create cached vegetation compute pipeline" << std::endl;
@@ -772,8 +748,6 @@ bool VulkanApp::ensureVegetationComputePipeline() {
     VkDescriptorPool pool = VK_NULL_HANDLE;
     if (vkCreateDescriptorPool(dev, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
         vkDestroyPipeline(dev, pipe, nullptr);
-        resources.removeShaderModule(compModule);
-        vkDestroyShaderModule(dev, compModule, nullptr);
         vkDestroyPipelineLayout(dev, pipeLayout, nullptr);
         vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
         std::cerr << "[VulkanApp] Failed to create cached vegetation compute descriptor pool" << std::endl;
@@ -812,10 +786,9 @@ bool VulkanApp::ensureVegetationComputePipeline() {
             std::cerr << "[VulkanApp] Cached vegetation compute pipeline ready: pipe=" << (void*)pipe << "\n";
         } else {
             // Another thread already initialized; clean up duplicates
+            // The shader module is shared via the cache — do not destroy it.
             vkDestroyDescriptorPool(dev, pool, nullptr);
             vkDestroyPipeline(dev, pipe, nullptr);
-            resources.removeShaderModule(compModule);
-            vkDestroyShaderModule(dev, compModule, nullptr);
             vkDestroyPipelineLayout(dev, pipeLayout, nullptr);
             vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
         }
@@ -4198,6 +4171,16 @@ VkShaderModule VulkanApp::createShaderModule(const std::vector<char>& code) {
     // Track shader module creation
     resources.addShaderModule(shaderModule, "VulkanApp: shaderModule");
     return shaderModule;
+}
+
+VkShaderModule VulkanApp::getOrCreateShaderModule(const std::string& path) {
+    auto it = m_shaderModuleCache.find(path);
+    if (it != m_shaderModuleCache.end())
+        return it->second;
+    auto code = FileReader::readFile(path);
+    VkShaderModule module = createShaderModule(code);
+    m_shaderModuleCache[path] = module;
+    return module;
 }
 
 VkDevice VulkanApp::getDevice() const {

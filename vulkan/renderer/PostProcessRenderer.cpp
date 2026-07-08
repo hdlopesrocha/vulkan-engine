@@ -110,17 +110,9 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
     }
     app->resources.addPipelineLayout(pipelineLayout, "PostProcessRenderer: pipelineLayout");
 
-    // Load shaders
-    auto vertCode = FileReader::readFile("shaders/fullscreen.vert.spv");
-    auto fragCode = FileReader::readFile("shaders/postprocess.frag.spv");
-
-    if (vertCode.empty() || fragCode.empty()) {
-        std::cerr << "[PostProcessRenderer] Warning: Could not load post-process shaders, skipping pipeline creation" << std::endl;
-        return;
-    }
-
-    VkShaderModule vertModule = app->createShaderModule(vertCode);
-    VkShaderModule fragModule = app->createShaderModule(fragCode);
+    // Load shaders (cached by VulkanApp)
+    VkShaderModule vertModule = app->getOrCreateShaderModule("shaders/fullscreen.vert.spv");
+    VkShaderModule fragModule = app->getOrCreateShaderModule("shaders/postprocess.frag.spv");
 
     std::vector<VkPipelineShaderStageCreateInfo> stages = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,   vertModule, "main", nullptr},

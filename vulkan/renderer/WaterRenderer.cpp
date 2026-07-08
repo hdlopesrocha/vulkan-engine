@@ -525,26 +525,13 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
 
     // Create water geometry pipeline with dedicated water shaders
     // Load water shaders (vertex, tessellation control, tessellation evaluation, fragment)
-    auto vertCode = FileReader::readFile("shaders/water.vert.spv");
-    auto tescCode = FileReader::readFile("shaders/water.tesc.spv"); 
-    auto teseCode = FileReader::readFile("shaders/water.tese.spv");
-    auto fragCode = FileReader::readFile("shaders/water.frag.spv");
-
-    if (vertCode.empty() || fragCode.empty()) {
-        std::cerr << "[WaterRenderer] Warning: Could not load water geometry shaders" << std::endl;
-        return;
-    }
-
-    VkShaderModule vertModule = app->createShaderModule(vertCode);
-    VkShaderModule fragModule = app->createShaderModule(fragCode);
+    VkShaderModule vertModule = app->getOrCreateShaderModule("shaders/water.vert.spv");
+    VkShaderModule fragModule = app->getOrCreateShaderModule("shaders/water.frag.spv");
     VkShaderModule tescModule = VK_NULL_HANDLE;
     VkShaderModule teseModule = VK_NULL_HANDLE;
-
-    bool hasTessellation = !tescCode.empty() && !teseCode.empty();
-    if (hasTessellation) {
-        tescModule = app->createShaderModule(tescCode);
-        teseModule = app->createShaderModule(teseCode);
-    }
+    bool hasTessellation = true;
+    tescModule = app->getOrCreateShaderModule("shaders/water.tesc.spv");
+    teseModule = app->getOrCreateShaderModule("shaders/water.tese.spv");
 
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
 
@@ -1155,18 +1142,11 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
 
     // --- Create cubemap water pipeline (same shaders, swapchain color format) ---
     if (cubemapWaterPipeline == VK_NULL_HANDLE) {
-        auto vertCode = FileReader::readFile("shaders/water.vert.spv");
-        auto tescCode = FileReader::readFile("shaders/water.tesc.spv");
-        auto teseCode = FileReader::readFile("shaders/water.tese.spv");
-        auto fragCode = FileReader::readFile("shaders/water.frag.spv");
-        if (vertCode.empty() || fragCode.empty()) return;
-
-        VkShaderModule vertModule = app->createShaderModule(vertCode);
-        VkShaderModule fragModule = app->createShaderModule(fragCode);
-        VkShaderModule tescModule = VK_NULL_HANDLE;
-        VkShaderModule teseModule = VK_NULL_HANDLE;
-        bool hasTess = !tescCode.empty() && !teseCode.empty();
-        if (hasTess) { tescModule = app->createShaderModule(tescCode); teseModule = app->createShaderModule(teseCode); }
+        VkShaderModule vertModule = app->getOrCreateShaderModule("shaders/water.vert.spv");
+        VkShaderModule fragModule = app->getOrCreateShaderModule("shaders/water.frag.spv");
+        VkShaderModule tescModule = app->getOrCreateShaderModule("shaders/water.tesc.spv");
+        VkShaderModule teseModule = app->getOrCreateShaderModule("shaders/water.tese.spv");
+        bool hasTess = true;
 
         std::vector<VkPipelineShaderStageCreateInfo> stages;
         VkPipelineShaderStageCreateInfo vs{}; vs.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

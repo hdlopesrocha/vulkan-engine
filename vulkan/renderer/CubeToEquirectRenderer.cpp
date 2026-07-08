@@ -42,8 +42,9 @@ void CubeToEquirectRenderer::cleanup(VulkanApp* app) {
     destroyImageAndMemory(cube360EquirectView, cube360EquirectImage, cube360EquirectAllocation, cube360EquirectMemory);
     destroyVkObject(cube360EquirectPipeline, &VulkanResourceManager::removePipeline, vkDestroyPipeline);
     destroyVkObject(cube360EquirectPipelineLayout, &VulkanResourceManager::removePipelineLayout, vkDestroyPipelineLayout);
-    destroyVkObject(cube360EquirectVertModule, &VulkanResourceManager::removeShaderModule, vkDestroyShaderModule);
-    destroyVkObject(cube360EquirectFragModule, &VulkanResourceManager::removeShaderModule, vkDestroyShaderModule);
+    // Shader modules are cached by VulkanApp — kept alive for app lifetime.
+    cube360EquirectVertModule = VK_NULL_HANDLE;
+    cube360EquirectFragModule = VK_NULL_HANDLE;
     destroyVkObject(cube360EquirectDescriptorSetLayout, &VulkanResourceManager::removeDescriptorSetLayout, vkDestroyDescriptorSetLayout);
 
     if (cube360EquirectSampleDescriptorSet != VK_NULL_HANDLE) {
@@ -60,10 +61,10 @@ void CubeToEquirectRenderer::createPipeline(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
     if (cube360EquirectVertModule == VK_NULL_HANDLE) {
-        cube360EquirectVertModule = app->createShaderModule(FileReader::readFile("shaders/fullscreen.vert.spv"));
+        cube360EquirectVertModule = app->getOrCreateShaderModule("shaders/fullscreen.vert.spv");
     }
     if (cube360EquirectFragModule == VK_NULL_HANDLE) {
-        cube360EquirectFragModule = app->createShaderModule(FileReader::readFile("shaders/cubemap_to_equirect.frag.spv"));
+        cube360EquirectFragModule = app->getOrCreateShaderModule("shaders/cubemap_to_equirect.frag.spv");
     }
     if (cube360EquirectDescriptorSetLayout == VK_NULL_HANDLE) {
         VkDescriptorSetLayoutBinding binding{};

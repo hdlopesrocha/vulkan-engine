@@ -402,6 +402,9 @@ protected:
         // when compute shaders read the buffer via the Texture Cache/Pipe.
         Buffer createDeviceLocalBufferExclusive(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
         VkShaderModule createShaderModule(const std::vector<char>& code);
+        // Load SPIR-V from path once and cache the VkShaderModule for reuse.
+        // Subsequent calls with the same path return the cached module.
+        VkShaderModule getOrCreateShaderModule(const std::string& path);
     // Refactored: Accepts set layouts and optional push constant range, returns pipeline and layout
     // Main implementation accepts a vector of attribute descriptions so callers
     // that already have std::vector (e.g. vk_layouts::defaultAttributes()) can pass it directly.
@@ -553,6 +556,10 @@ protected:
         VkCommandPool asyncCmdPoolRing[ASYNC_CMD_POOL_RING_SIZE]{};
         std::atomic<uint32_t> asyncCmdPoolNext{0};
         void createAsyncCmdPoolRing();
+        // Cache: shader file path → VkShaderModule, created on first use and kept for app lifetime.
+        // Destruction is handled by VulkanResourceManager at shutdown (createShaderModule registers
+        // each module with resources).
+        std::unordered_map<std::string, VkShaderModule> m_shaderModuleCache;
 
 };
 

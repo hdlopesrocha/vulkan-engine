@@ -23,8 +23,8 @@ void DebugCubeRenderer::init(VulkanApp* app) {
     createGridDescriptorSet(app);
     
     // Create shader modules
-    vertModule = app->createShaderModule(FileReader::readFile("shaders/debug_cube.vert.spv"));
-    fragModule = app->createShaderModule(FileReader::readFile("shaders/debug_cube.frag.spv"));
+    vertModule = app->getOrCreateShaderModule("shaders/debug_cube.vert.spv");
+    fragModule = app->getOrCreateShaderModule("shaders/debug_cube.frag.spv");
     
     ShaderStage vertStage(vertModule, VK_SHADER_STAGE_VERTEX_BIT);
     ShaderStage fragStage(fragModule, VK_SHADER_STAGE_FRAGMENT_BIT);

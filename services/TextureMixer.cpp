@@ -382,8 +382,7 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 	// Track compute pipeline layout
 	app->resources.addPipelineLayout(computePipelineLayout, "TextureMixer: computePipelineLayout");
 
-	auto computeShaderCode = FileReader::readFile("shaders/perlin_noise.comp.spv");
-	VkShaderModule computeShaderModule = app->createShaderModule(computeShaderCode);
+	VkShaderModule computeShaderModule = app->getOrCreateShaderModule("shaders/perlin_noise.comp.spv");
 
 	VkPipelineShaderStageCreateInfo computeShaderStageInfo{};
 	computeShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

@@ -842,8 +842,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         // central manager
         app->resources.addPipelineLayout(computePipelineLayout, "IndirectRenderer: computePipelineLayout");
 
-        auto compCode = FileReader::readFile("shaders/indirect.comp.spv");
-        VkShaderModule compModule = app->createShaderModule(compCode);
+        VkShaderModule compModule = app->getOrCreateShaderModule("shaders/indirect.comp.spv");
 
         VkPipelineShaderStageCreateInfo stage{};
         stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -857,15 +856,11 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         pipelineInfo.layout = computePipelineLayout;
 
         if (vkCreateComputePipelines(app->getDevice(), app->getPipelineCache(), 1, &pipelineInfo, nullptr, &computePipeline) != VK_SUCCESS) {
-            // Pipeline creation failed: unregister and destroy the shader module immediately
-            app->resources.removeShaderModule(compModule);
-            vkDestroyShaderModule(app->getDevice(), compModule, nullptr);
+            // Shader module is cached by VulkanApp — do not destroy it even on error.
             throw std::runtime_error("failed to create compute pipeline!");
         }
         // track compute pipeline
         app->resources.addPipeline(computePipeline, "IndirectRenderer: computePipeline");
-        // Clear local shader module reference; manager owns destruction
-        compModule = VK_NULL_HANDLE;
 
         // Descriptor pool
         VkDescriptorPoolSize poolSize{};

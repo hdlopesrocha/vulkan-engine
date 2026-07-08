@@ -17,8 +17,8 @@ SkyRenderer::~SkyRenderer() { cleanup(); }
 
 void SkyRenderer::init(VulkanApp* app) {
     // create sky gradient pipeline (vertex + fragment)
-    skyVertModule = app->createShaderModule(FileReader::readFile("shaders/sky.vert.spv"));
-    skyFragModule = app->createShaderModule(FileReader::readFile("shaders/sky.frag.spv"));
+    skyVertModule = app->getOrCreateShaderModule("shaders/sky.vert.spv");
+    skyFragModule = app->getOrCreateShaderModule("shaders/sky.frag.spv");
     
     ShaderStage skyVert = ShaderStage(skyVertModule, VK_SHADER_STAGE_VERTEX_BIT);
     ShaderStage skyFrag = ShaderStage(skyFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -52,7 +52,7 @@ void SkyRenderer::init(VulkanApp* app) {
     }
 
     // create sky grid pipeline (vertex + grid fragment)
-    skyGridFragModule = app->createShaderModule(FileReader::readFile("shaders/sky_grid.frag.spv"));
+    skyGridFragModule = app->getOrCreateShaderModule("shaders/sky_grid.frag.spv");
     ShaderStage skyGridFrag = ShaderStage(skyGridFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
 
     auto [gridPipeline, gridLayout] = app->createGraphicsPipeline(
@@ -212,8 +212,8 @@ void SkyRenderer::createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_
     VkFormat colorFormat = app->getSwapchainImageFormat();
 
     // --- Load equirect shaders ---
-    skyEquirectVertModule = app->createShaderModule(FileReader::readFile("shaders/fullscreen.vert.spv"));
-    skyEquirectFragModule = app->createShaderModule(FileReader::readFile("shaders/sky_equirect.frag.spv"));
+    skyEquirectVertModule = app->getOrCreateShaderModule("shaders/fullscreen.vert.spv");
+    skyEquirectFragModule = app->getOrCreateShaderModule("shaders/sky_equirect.frag.spv");
 
     // --- Create equirect pipeline (fullscreen triangle, no vertex input, no depth) ---
     {
