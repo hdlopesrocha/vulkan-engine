@@ -1433,12 +1433,21 @@ void VulkanApp::createAsyncCmdPoolRing() {
     VkCommandPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     poolInfo.queueFamilyIndex = qfi.graphicsFamily.value();
-    poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     for (uint32_t i = 0; i < ASYNC_CMD_POOL_RING_SIZE; i++) {
         if (vkCreateCommandPool(device, &poolInfo, nullptr, &asyncCmdPoolRing[i]) != VK_SUCCESS) {
             throw std::runtime_error("failed to create async command pool ring");
         }
         resources.addCommandPool(asyncCmdPoolRing[i], "VulkanApp: asyncCmdPoolRing");
+
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandPool = asyncCmdPoolRing[i];
+        allocInfo.commandBufferCount = 1;
+        if (vkAllocateCommandBuffers(device, &allocInfo, &asyncCmdBufferRing[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to pre-allocate async command buffer");
+        }
     }
 }
 
@@ -2632,27 +2641,16 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
 }
 
     VkCommandBuffer VulkanApp::allocatePrimaryCommandBuffer() {
-        // Grab next pool from the pre-allocated ring, reset it, and allocate
-        // a primary command buffer.  This avoids per-call vkCreateCommandPool
-        // / vkDestroyCommandPool which adds driver overhead under many
-        // async submissions (back-face pass, vegetation, widgets, …).
-        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        // Grab next pre-allocated command buffer from the ring and reset it.
+        // This avoids per-call vkAllocateCommandBuffers/vkFreeCommandBuffers
+        // under async submissions (back-face pass, vegetation, widgets, …).
         uint32_t idx = asyncCmdPoolNext.fetch_add(1) % ASYNC_CMD_POOL_RING_SIZE;
         VkCommandPool pool = asyncCmdPoolRing[idx];
+        VkCommandBuffer cmd = asyncCmdBufferRing[idx];
 
-        VkResult resetRes = vkResetCommandPool(device, pool, 0);
+        VkResult resetRes = vkResetCommandBuffer(cmd, 0);
         if (resetRes != VK_SUCCESS) {
-            throw std::runtime_error("failed to reset async command pool");
-        }
-
-        VkCommandBufferAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandPool = pool;
-        allocInfo.commandBufferCount = 1;
-
-        if (vkAllocateCommandBuffers(device, &allocInfo, &cmd) != VK_SUCCESS) {
-            throw std::runtime_error("failed to allocate command buffer for async submit");
+            throw std::runtime_error("failed to reset async command buffer");
         }
 
         // Track mapping so we can free using the correct pool later.
@@ -2698,12 +2696,20 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         // The transientCommandPool is protected by transientPoolMutex
         // (used by runSingleTimeCommands / runSingleTimeCommandsAsync for
         // allocation). All other pools are protected by commandPoolMutex.
-        if (pool == transientCommandPool) {
-            std::lock_guard<std::mutex> lock(transientPoolMutex);
-            vkFreeCommandBuffers(dev, pool, 1, &cmd);
-        } else {
-            std::lock_guard<std::mutex> lock(commandPoolMutex);
-            vkFreeCommandBuffers(dev, pool, 1, &cmd);
+        // Ring-pool command buffers are pre-allocated and reused — skip
+        // freeing them to avoid the alloc/free churn every frame.
+        bool isRingPool = false;
+        for (uint32_t i = 0; i < ASYNC_CMD_POOL_RING_SIZE; i++) {
+            if (pool == asyncCmdPoolRing[i]) { isRingPool = true; break; }
+        }
+        if (!isRingPool) {
+            if (pool == transientCommandPool) {
+                std::lock_guard<std::mutex> lock(transientPoolMutex);
+                vkFreeCommandBuffers(dev, pool, 1, &cmd);
+            } else {
+                std::lock_guard<std::mutex> lock(commandPoolMutex);
+                vkFreeCommandBuffers(dev, pool, 1, &cmd);
+            }
         }
 
         // Remove any submit mapping for this command buffer (cleanup trace state)
@@ -2715,10 +2721,6 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
 
         // If this was a temporary pool (not ring, not persistent), destroy it now.
         // Ring pools are recycled; persistent pools live for the app lifetime.
-        bool isRingPool = false;
-        for (uint32_t i = 0; i < ASYNC_CMD_POOL_RING_SIZE; i++) {
-            if (pool == asyncCmdPoolRing[i]) { isRingPool = true; break; }
-        }
         if (!isRingPool && pool != VK_NULL_HANDLE && pool != commandPool && pool != transientCommandPool && pool != transferCommandPool) {
             resources.removeCommandPool(pool);
             vkDestroyCommandPool(dev, pool, nullptr);
