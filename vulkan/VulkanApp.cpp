@@ -4976,6 +4976,7 @@ void VulkanApp::drawFrame() {
     submitInfo.commandBufferInfoCount = 1;
     submitInfo.pCommandBufferInfos = &cmdBufInfo;
 
+    uint64_t submitId = 0;
     {
         // Serialize pre-apply and submission to ensure tracked layouts match
         // the submission order. Acquire `graphicsSubmitMutex` first.
@@ -4983,7 +4984,7 @@ void VulkanApp::drawFrame() {
 
         // Assign a submit id for this frame submission for diagnostics and
         // expose it via g_cmdSubmitMap so preApply/apply logging can show it.
-        uint64_t submitId = g_submitCounter.fetch_add(1);
+        submitId = g_submitCounter.fetch_add(1);
         {
             std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
             g_cmdSubmitMap[commandBuffer] = submitId;
@@ -5018,9 +5019,11 @@ void VulkanApp::drawFrame() {
         });
     }
     if (r == VK_ERROR_DEVICE_LOST) {
+        std::cerr << "[drawFrame] vkQueueSubmit2 returned VK_ERROR_DEVICE_LOST (submitId=" << submitId << ")" << std::endl;
+        deviceLost.store(true);
         return;
     } else if (r != VK_SUCCESS) {
-        std::cerr << "vkQueueSubmit2 failed: " << r << std::endl;
+        std::cerr << "[drawFrame] vkQueueSubmit2 failed: " << r << " (submitId=" << submitId << ")" << std::endl;
         return;
     }
 
