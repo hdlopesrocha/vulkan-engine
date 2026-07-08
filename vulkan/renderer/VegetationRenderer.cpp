@@ -235,13 +235,17 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             if (reqs.size < concatSize) needsCreate = true;
         }
         if (needsCreate) {
-            if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE) {
-                app->destroyBuffer(concatenatedInstanceBuffer);
-                concatenatedInstanceBuffer = {};
-            }
+            Buffer old = concatenatedInstanceBuffer;
+            concatenatedInstanceBuffer = {};
             concatenatedInstanceBuffer = app->createBuffer(concatSize,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            if (old.buffer != VK_NULL_HANDLE) {
+                app->deferDestroyUntilAllPending([app, old]() {
+                    if (old.buffer != VK_NULL_HANDLE)
+                        app->resources.removeBufferVma(old.buffer, old.allocation);
+                });
+            }
         }
     }
 
@@ -254,13 +258,17 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             if (reqs.size < metaSize) needsCreate = true;
         }
         if (needsCreate) {
-            if (chunkMetaBuffer.buffer != VK_NULL_HANDLE) {
-                app->destroyBuffer(chunkMetaBuffer);
-                chunkMetaBuffer = {};
-            }
+            Buffer old = chunkMetaBuffer;
+            chunkMetaBuffer = {};
             chunkMetaBuffer = app->createBuffer(metaSize,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            if (old.buffer != VK_NULL_HANDLE) {
+                app->deferDestroyUntilAllPending([app, old]() {
+                    if (old.buffer != VK_NULL_HANDLE)
+                        app->resources.removeBufferVma(old.buffer, old.allocation);
+                });
+            }
         }
     }
 
@@ -273,14 +281,19 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             if (reqs.size < compactedSize) needsCreate = true;
         }
         if (needsCreate) {
-            if (compactedCmdBuffers[f].buffer != VK_NULL_HANDLE) {
-                app->destroyBuffer(compactedCmdBuffers[f]);
-                compactedCmdBuffers[f] = {};
-            }
+            compactedCmdMapped[f] = nullptr;
+            Buffer old = compactedCmdBuffers[f];
+            compactedCmdBuffers[f] = {};
             compactedCmdBuffers[f] = app->createBuffer(compactedSize,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             compactedCmdMapped[f] = static_cast<VkDrawIndexedIndirectCommand*>(compactedCmdBuffers[f].map(0));
+            if (old.buffer != VK_NULL_HANDLE) {
+                app->deferDestroyUntilAllPending([app, old]() {
+                    if (old.buffer != VK_NULL_HANDLE)
+                        app->resources.removeBufferVma(old.buffer, old.allocation);
+                });
+            }
         }
         if (visibleCountBuffers[f].buffer == VK_NULL_HANDLE) {
             visibleCountBuffers[f] = app->createBuffer(sizeof(uint32_t),

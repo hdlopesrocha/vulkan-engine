@@ -2238,6 +2238,21 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
             g_cmdSubmitMap[commandBuffer] = submitId;
         }
 
+        // Track the command buffer in pendingCommandBuffers BEFORE calling
+        // vkQueueSubmit2 so that processPendingCommandBuffers() sees the entry
+        // when checking pendingCommandBuffers.empty().  Without this ordering a
+        // concurrent processPendingCommandBuffers call may see an empty list,
+        // pass the safety check for VK_NULL_HANDLE deferred destroys, and free
+        // GPU memory that this submission's commands still reference — causing
+        // a GPU page fault → VK_ERROR_DEVICE_LOST.
+        {
+            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+            if (commandBufferPoolMap.find(commandBuffer) == commandBufferPoolMap.end()) {
+                commandBufferPoolMap[commandBuffer] = transientCommandPool;
+            }
+            pendingCommandBuffers.emplace_back(commandBuffer, fence);
+        }
+
         // Promote pending layout updates before submit so validation sees
         // a populated authoritative layout for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
@@ -2256,18 +2271,16 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
                         std::cerr << "[VulkanApp] submit id=" << submitId << " allocation backtrace:\n" << it->second;
                     }
                 }
-                // Ensure the fence is tracked (it was added earlier).  Also
-                // record the command-buffer -> pool mapping if missing so the
-                // centralized cleanup can free the command buffer later.
-                {
-                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-                    if (commandBufferPoolMap.find(commandBuffer) == commandBufferPoolMap.end()) {
-                        commandBufferPoolMap[commandBuffer] = transientCommandPool;
-                    }
-                    pendingCommandBuffers.emplace_back(commandBuffer, fence);
-                }
                 // Keep semaphore and fence registered; centralized cleanup handles them.
                 return fence;
+            }
+            // On non-device-lost failure, remove from pendingCommandBuffers
+            // before destroying the fence and semaphore.
+            {
+                std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+                for (auto it = pendingCommandBuffers.begin(); it != pendingCommandBuffers.end(); ++it) {
+                    if (it->first == commandBuffer) { pendingCommandBuffers.erase(it); break; }
+                }
             }
             if (semaphore != VK_NULL_HANDLE) {
                 resources.removeSemaphore(semaphore);
@@ -2277,17 +2290,6 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
             vkDestroyFence(device, fence, nullptr);
             throw std::runtime_error("failed to submit async command buffer");
         }
-    }
-
-    // Track command buffer+fence ownership so we can free command buffers later when fence signals
-    {
-        std::lock_guard<std::mutex> lk(pendingCmdMutex);
-        // If there is no explicit mapping for which pool the command buffer
-        // came from, assume it was allocated from the transient pool.
-        if (commandBufferPoolMap.find(commandBuffer) == commandBufferPoolMap.end()) {
-            commandBufferPoolMap[commandBuffer] = transientCommandPool;
-        }
-        pendingCommandBuffers.emplace_back(commandBuffer, fence);
     }
 
     if (semaphore != VK_NULL_HANDLE && outSemaphore) {
@@ -2379,9 +2381,18 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
             std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
             g_cmdSubmitMap[commandBuffer] = submitId;
         }
-        std::cerr << "[VulkanApp] submitToQueue id=" << submitId << " cmd=" << (void*)commandBuffer << " fence=" << (void*)fence << " sem=" << (void*)semaphore << " targetQueue=" << (void*)targetQueue << std::endl;
+        // Track the command buffer in pendingCommandBuffers BEFORE calling
+        // vkQueueSubmit2 (same reasoning as submitCommandBufferAsync — prevents
+        // a concurrent processPendingCommandBuffers from seeing an empty list
+        // and freeing GPU memory still referenced by this submission).
+        {
+            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+            if (commandBufferPoolMap.find(commandBuffer) == commandBufferPoolMap.end()) {
+                commandBufferPoolMap[commandBuffer] = transientCommandPool;
+            }
+            pendingCommandBuffers.emplace_back(commandBuffer, fence);
+        }
 
-       
         // Promote pending layout updates for this submission
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
@@ -2405,30 +2416,21 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
                         std::cerr << "[VulkanApp] submitToQueue id=" << submitId << " allocation backtrace:\n" << it->second;
                     }
                 }
-                // Ensure the command buffer is tracked and deferred for cleanup
-                // so we don't attempt to free it while the driver still
-                // considers it pending.
-                {
-                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-                    if (commandBufferPoolMap.find(commandBuffer) == commandBufferPoolMap.end()) {
-                        commandBufferPoolMap[commandBuffer] = transientCommandPool;
-                    }
-                    pendingCommandBuffers.emplace_back(commandBuffer, fence);
-                }
                 // Leave fence registered for centralized cleanup and return the fence so caller can still defer destroys.
                 return fence;
             } else {
+                // Non-device-lost failure: remove the pending entry before cleanup
+                {
+                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
+                    for (auto it = pendingCommandBuffers.begin(); it != pendingCommandBuffers.end(); ++it) {
+                        if (it->first == commandBuffer) { pendingCommandBuffers.erase(it); break; }
+                    }
+                }
                 resources.removeFence(fence);
                 vkDestroyFence(device, fence, nullptr);
                 throw std::runtime_error("failed to submit async command buffer to target queue");
             }
         }
-    }
-
-    // Track command buffer+fence ownership so we can free command buffers later when fence signals
-    {
-        std::lock_guard<std::mutex> lk(pendingCmdMutex);
-        pendingCommandBuffers.emplace_back(commandBuffer, fence);
     }
 
     if (semaphore != VK_NULL_HANDLE && outSemaphore) {
@@ -4843,6 +4845,13 @@ void VulkanApp::drawFrame() {
         return;
     }
 
+    // Process any completed async generation submissions and free their command buffers/fences/semaphores
+    // and run deferred-destruction callbacks.  Must run BEFORE preRenderPass so newly-generated
+    // vegetation chunks are available for the shadow pass.  Execution before vkBeginCommandBuffer
+    // avoids a TOCTOU race where deferred destroys could free GPU memory still referenced by the
+    // current frame's descriptor sets / command buffer being recorded.
+    processPendingCommandBuffers();
+
     // Begin recording commands
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -4852,10 +4861,6 @@ void VulkanApp::drawFrame() {
         std::cerr << "vkBeginCommandBuffer failed: " << beginCmdResult << std::endl;
         return;
     }
-
-    // Process any completed async generation submissions and free their command buffers/fences/semaphores.
-    // Must run BEFORE preRenderPass so newly-generated vegetation chunks are available for the shadow pass.
-    processPendingCommandBuffers();
 
     // Only run scene hooks when the app is fully set up
     if (!isLoading) {
