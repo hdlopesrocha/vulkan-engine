@@ -331,7 +331,9 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     uint32_t size = shadowMapSizes[cascadeIndex];
     auto& cas = cascades[cascadeIndex];
 
-    // Combined barrier: transition color + depth for this cascade
+    // Barrier: transition cascade color from SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
+    // so the shadow pipeline can write EVSM moments.  The previous pass sampled
+    // this image as a texture; after the barrier it becomes a render target.
     VkImageMemoryBarrier2 beginBarriers[2]{};
     beginBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     beginBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -345,6 +347,9 @@ void ShadowRenderer::beginShadowPass(VulkanApp* app, VkCommandBuffer commandBuff
     beginBarriers[0].image = cas.colorImage;
     beginBarriers[0].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
+    // Barrier: transition cascade depth from DEPTH_STENCIL_READ_ONLY → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    // so the shadow pipeline can perform depth testing.  The depth was left in
+    // read-only layout after the previous frame's sampling.
     beginBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     beginBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
     beginBarriers[1].dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
@@ -424,7 +429,9 @@ void ShadowRenderer::endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer
 
     auto& cas = cascades[cascadeIndex];
 
-    // Combined barrier: transition color + depth back to read-only
+    // Barrier: transition cascade color from COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    // after the shadow pass finishes rendering EVSM moments.  The next cascade
+    // (or the main scene pass) samples this as a texture.
     VkImageMemoryBarrier2 endBarriers[2]{};
     endBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     endBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -438,6 +445,8 @@ void ShadowRenderer::endShadowPass(VulkanApp* app, VkCommandBuffer commandBuffer
     endBarriers[0].image = cas.colorImage;
     endBarriers[0].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
+    // Barrier: transition cascade depth from DEPTH_STENCIL_ATTACHMENT_OPTIMAL → DEPTH_STENCIL_READ_ONLY_OPTIMAL
+    // so the depth can be sampled as a shadow-map texture in the main scene pass.
     endBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     endBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
     endBarriers[1].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -466,7 +475,8 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
     auto& cas = cascades[cascadeIndex];
 
     // ── Horizontal blur: read cascade color → write to blurTemp ──
-    // Transition blurTemp: SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
+    // Transition blurTemp from SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
+    // so the horizontal blur pass can write intermediate EVSM results.
     app->recordTransitionImageLayoutLayer(commandBuffer, blurTempImage, EVSM_FORMAT,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
 
@@ -513,12 +523,14 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
         vkCmdEndRendering(commandBuffer);
     }
 
-    // Transition blurTemp: COLOR_ATTACHMENT → SHADER_READ_ONLY
+    // Transition blurTemp from COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    // so the vertical blur pass can sample the intermediate result.
     app->recordTransitionImageLayoutLayer(commandBuffer, blurTempImage, EVSM_FORMAT,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
 
     // ── Vertical blur: read blurTemp → write back to cascade color ──
-    // Transition cascade color: SHADER_READ_ONLY → COLOR_ATTACHMENT
+    // Transition cascade color from SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
+    // so the vertical blur pass can write the final EVSM result back.
     app->recordTransitionImageLayoutLayer(commandBuffer, cas.colorImage, EVSM_FORMAT,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
 
@@ -560,9 +572,10 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
         vkCmdEndRendering(commandBuffer);
     }
 
-    // Transition cascade color back to SHADER_READ_ONLY for next cascade.
-    // blurTemp is already in SHADER_READ_ONLY (transitioned after h-blur above),
-    // so only cascade color needs a transition here.
+    // Transition cascade color from COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    // after vertical blur completes.  The next cascade (or the main scene pass)
+    // samples this as a texture.  blurTemp is already in SHADER_READ_ONLY
+    // (transitioned after h-blur above), so only cascade color needs a barrier.
     app->recordTransitionImageLayoutLayer(commandBuffer, cas.colorImage, EVSM_FORMAT,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
 }

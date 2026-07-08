@@ -336,12 +336,15 @@ void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint
 
     if (colorView == VK_NULL_HANDLE && depthView == VK_NULL_HANDLE) return;
 
-    // Ensure images are in attachment layouts before beginRendering
+    // Barrier: transition water color from its tracked layout → COLOR_ATTACHMENT_OPTIMAL
+    // so the clear rendering pass can write black.
     if (waterDepthImages[frameIndex] != VK_NULL_HANDLE) {
         app->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex], VK_FORMAT_R32G32B32A32_SFLOAT,
             waterDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 0, 1);
         app->recordTrackedLayoutForCommandBuffer(cmd, waterDepthImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
     }
+    // Barrier: transition water geometry depth from its tracked layout → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    // for a clear-to-1.0 before the geometry pass.
     if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
         app->recordTransitionImageLayoutLayer(cmd, waterGeomDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT,
             waterGeomDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
@@ -380,7 +383,9 @@ void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint
     vkCmdBeginRendering(cmd, &renderingInfo);
     vkCmdEndRendering(cmd);
 
-    // Transition color image back to shader-read layout for sampling
+    // Barrier: transition water color from COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    // after the clear so the geometry pass can read it (if needed) or leave it
+    // in a known layout for the next beginWaterGeometryPass transition.
     if (waterDepthImages[frameIndex] != VK_NULL_HANDLE) {
         app->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex], VK_FORMAT_R32G32B32A32_SFLOAT,
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
@@ -728,17 +733,19 @@ void WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
 
     activeWaterFrameIndex = frameIndex;
 
-    // Transition water color image: tracked → COLOR_ATTACHMENT_OPTIMAL
+    // Transition water color image: SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
+    // so the water pipeline can write EVSM depth-linearisation output.
     appPtr->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex],
         VK_FORMAT_R32G32B32A32_SFLOAT,
-        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        waterDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         1, 0, 1);
 
     // Transition water geometry depth: tracked → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    // for per-pixel occlusion testing during water rasterization.
     if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
         appPtr->recordTransitionImageLayoutLayer(cmd, waterGeomDepthImages[frameIndex],
             VK_FORMAT_D32_SFLOAT,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            waterGeomDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             1, 0, 1);
     }
 
@@ -792,6 +799,8 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
 
     uint32_t frameIndex = activeWaterFrameIndex;
     if (waterDepthImages[frameIndex] != VK_NULL_HANDLE && appPtr) {
+        // Barrier: transition water color output from COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+        // after the geometry pass so the forward swapchain pass can sample it.
         appPtr->recordTransitionImageLayoutLayer(cmd, waterDepthImages[frameIndex],
             VK_FORMAT_R32G32B32A32_SFLOAT,
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -960,11 +969,11 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
 
 
 
-    // Record the water geometry pass directly on the main command buffer.
-    // The solid render pass already ended (finalLayout transitions images to
-    // SHADER_READ_ONLY_OPTIMAL) but we still need an execution+memory barrier
-    // so that COLOR_ATTACHMENT_OUTPUT writes from the solid pass are visible
-    // to FRAGMENT_SHADER reads in the water pass.
+    // Memory barrier: ensure COLOR_ATTACHMENT_OUTPUT + depth writes from the
+    // solid pass are visible to FRAGMENT_SHADER reads in the water pass.
+    // The solid render pass already images to SHADER_READ_ONLY_OPTIMAL via
+    // explicit endPass barriers, but we need an execution + memory dependency
+    // between the two command sequences on the same command buffer.
     VkMemoryBarrier2 memBarrier{};
     memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
     memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
@@ -982,49 +991,24 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
 void WaterRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex) {
     if (cmd == VK_NULL_HANDLE) return;
 
-    // Build image barriers for per-frame water outputs so fragment shader
-    // sampling in the swapchain render pass sees completed color writes.
-    std::vector<VkImageMemoryBarrier> barriers;
+    // endWaterGeometryPass already transitions the water color output to
+    // SHADER_READ_ONLY_OPTIMAL with COLOR_ATTACHMENT_OUTPUT → ALL_GRAPHICS
+    // visibility.  However, that barrier covers the image layout transition
+    // on the specific sub-resource; this memory barrier ensures that *any*
+    // color-attachment writes from the water geometry pass are globally
+    // visible to subsequent fragment-shader reads in the swapchain pass.
+    VkMemoryBarrier2 memBarrier{};
+    memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    memBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
 
-    auto pushColorBarrier = [&](VkImage img) {
-        if (img == VK_NULL_HANDLE) return;
-        VkImageMemoryBarrier b{};
-        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.image = img;
-        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        b.subresourceRange.baseMipLevel = 0;
-        b.subresourceRange.levelCount = 1;
-        b.subresourceRange.baseArrayLayer = 0;
-        b.subresourceRange.layerCount = 1;
-        barriers.push_back(b);
-    };
-
-    // color outputs
-    pushColorBarrier(waterDepthImages[frameIndex]);
-
-    // Depth-based back-face image barriers are handled by SceneRenderer-owned back-face renderer.
-
-    if (!barriers.empty()) {
-        VulkanApp* a = this->appPtr ? this->appPtr : getImGuiVulkanApp();
-        if (!a) {
-            throw std::runtime_error("WaterRenderer::postRenderBarrier requires VulkanApp (no fallback allowed)");
-        }
-        for (auto &b : barriers) {
-            // Pass VK_IMAGE_LAYOUT_UNDEFINED so VulkanApp resolves the
-            // authoritative old layout (avoid caller-supplied guesses).
-            a->recordTransitionImageLayoutLayer(cmd, b.image, VK_FORMAT_R32G32B32A32_SFLOAT,
-                                                VK_IMAGE_LAYOUT_UNDEFINED, b.newLayout,
-                                                b.subresourceRange.levelCount,
-                                                b.subresourceRange.baseArrayLayer,
-                                                b.subresourceRange.layerCount);
-        }
-    }
+    VkDependencyInfo depInfo{};
+    depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    depInfo.memoryBarrierCount = 1;
+    depInfo.pMemoryBarriers = &memBarrier;
+    vkCmdPipelineBarrier2(cmd, &depInfo);
 }
 
 void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex, VkImageView sceneColorView, VkImageView sceneDepthView, VkImageView skyView) {

@@ -96,7 +96,9 @@ void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearV
     }
     if (!app) throw std::runtime_error("SolidRenderer::beginPass requires valid VulkanApp");
 
-    // Transition color image: SHADER_READ_ONLY_OPTIMAL → COLOR_ATTACHMENT_OPTIMAL
+    // Barrier: transition solid color from SHADER_READ_ONLY → COLOR_ATTACHMENT_OPTIMAL
+    // so the solid pipeline can write scene color.  The image was left in read-only
+    // layout after the previous frame for ImGui / debug overlay sampling.
     if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
         VkImageMemoryBarrier2 colorBarrier{};
         colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -119,7 +121,9 @@ void SolidRenderer::beginPass(VkCommandBuffer cmd, uint32_t frameIndex, VkClearV
         app->setImageLayoutTracked(solidColorImages[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
     }
 
-    // Transition depth image: tracked layout → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    // Barrier: transition solid depth from its tracked layout to DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    // for depth testing during the solid geometry pass.  The depth is usually
+    // in SHADER_READ_ONLY (sampled by water / debug) or read-only attachment.
     if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
         if (solidDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
             app->recordTransitionImageLayoutLayer(cmd, solidDepthImages[frameIndex], VK_FORMAT_D32_SFLOAT, solidDepthImageLayouts[frameIndex], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
@@ -160,7 +164,8 @@ void SolidRenderer::endPass(VkCommandBuffer cmd, uint32_t frameIndex, VulkanApp*
     if (cmd == VK_NULL_HANDLE) return;
     vkCmdEndRendering(cmd);
 
-    // Transition color: COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    // Barrier: transition solid color from COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    // after the solid pass so water / sky / debug renderers can sample it.
     if (frameIndex < solidColorImages.size() && solidColorImages[frameIndex] != VK_NULL_HANDLE) {
         VkImageMemoryBarrier2 colorBarrier{};
         colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -182,7 +187,8 @@ void SolidRenderer::endPass(VkCommandBuffer cmd, uint32_t frameIndex, VulkanApp*
         if (app) app->setImageLayoutTracked(solidColorImages[frameIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
     }
 
-    // Transition depth: DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    // Barrier: transition solid depth from DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+    // so water / debug / post-process renderers can sample the depth buffer.
     if (frameIndex < solidDepthImages.size() && solidDepthImages[frameIndex] != VK_NULL_HANDLE) {
         if (solidDepthImageLayouts[frameIndex] != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             if (app) {
