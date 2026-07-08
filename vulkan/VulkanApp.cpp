@@ -1903,16 +1903,16 @@ void VulkanApp::processPendingCommandBuffers() {
                         allFramesIdle = true;
                     }
                     if (allFramesIdle) {
-                        // Sanity-check: verify all in-flight fences (except
-                        // current, which was just reset) are signaled.
-                        // vkGetSemaphoreCounterValue can return stale values
-                        // on some drivers (RADV/amdgpu PCIe ordering), causing
-                        // memory to be freed while the GPU still accesses it
-                        // → GPU page fault → VK_ERROR_DEVICE_LOST.
+                        // Verify ALL in-flight fences are signaled before
+                        // running any deferred-destroy callback.  The timeline
+                        // semaphore (vkGetSemaphoreCounterValue) can return
+                        // stale values on RADV/amdgpu due to PCIe ordering,
+                        // so we must not rely on it alone — freeing GPU memory
+                        // while it is still accessed causes GPU page faults
+                        // → VK_ERROR_DEVICE_LOST.
                         // vkGetFenceStatus is non-blocking and reliable.
                         bool fenceCheck = true;
                         for (uint32_t fi = 0; fi < inFlightFences.size(); fi++) {
-                            if (fi == currentFrame) continue;
                             VkResult fs = vkGetFenceStatus(device, inFlightFences[fi]);
                             if (fs == VK_NOT_READY) { fenceCheck = false; break; }
                         }
@@ -4728,6 +4728,12 @@ void VulkanApp::drawFrame() {
         imageLayerLayouts[key] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     }
 
+    // Process any completed async generation submissions and free their command buffers/fences/semaphores
+    // and run deferred-destruction callbacks.  Must run BEFORE resetting the current frame's fence so
+    // that the fence check in processPendingCommandBuffers() sees ALL fences in their signaled state
+    // and does not skip the current frame slot — this eliminates the stale-timelessmaphore race.
+    processPendingCommandBuffers();
+
     // reset current frame fence so vkQueueSubmit2 can signal it
     VkResult resetFenceResult = vkResetFences(device, 1, &inFlightFences[currentFrame]);
     if (resetFenceResult == VK_ERROR_DEVICE_LOST) return;
@@ -4850,13 +4856,6 @@ void VulkanApp::drawFrame() {
         std::cerr << "vkResetCommandPool failed: " << resetCmdResult << std::endl;
         return;
     }
-
-    // Process any completed async generation submissions and free their command buffers/fences/semaphores
-    // and run deferred-destruction callbacks.  Must run BEFORE preRenderPass so newly-generated
-    // vegetation chunks are available for the shadow pass.  Execution before vkBeginCommandBuffer
-    // avoids a TOCTOU race where deferred destroys could free GPU memory still referenced by the
-    // current frame's descriptor sets / command buffer being recorded.
-    processPendingCommandBuffers();
 
     // Begin recording commands
     VkCommandBufferBeginInfo beginInfo{};
