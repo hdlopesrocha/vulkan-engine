@@ -161,6 +161,7 @@ uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
     m.baseVertex = static_cast<uint32_t>(mergedVertices.size());
     m.firstIndex = static_cast<uint32_t>(mergedIndices.size());
     m.indexCount = static_cast<uint32_t>(mesh.indices.size());
+    m.drawIndex = static_cast<uint32_t>(indirectCommands.size());
     m.active = true;
 
     if (mesh.vertices.empty()) {
@@ -443,42 +444,42 @@ void IndirectRenderer::uploadMeshMetaBuffers(VulkanApp* app) {
 void IndirectRenderer::doUploadMeshMetaBuffers(VulkanApp* app) {
     if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
 
-    // Append-only: skip already-written entries to avoid rewriting data
-    // that in-flight GPU frames may be reading from.
-    size_t activeIdx = 0;
-    size_t skipped = 0;
-    for (auto& kv : meshes) {
-        MeshInfo& info = kv.second;
-        if (!info.active) continue;
-        if (skipped < metaBuffersWrittenCount) {
-            ++skipped;
-            ++activeIdx;
-            continue;
+    // Write new entries (those past metaBuffersWrittenCount) in
+    // indirectCommands order.  This is critical: prepareCull dispatches
+    // numCmds workgroups indexed by drawIndex, and drawPrepared caps the
+    // indirect draw at indirectCommands.size() — so GPU buffer positions
+    // must match indirectCommands positions.  Iterating the unordered_map
+    // (used before drawIndex was added) produces a different ordering,
+    // causing newly-added meshes to read stale bounds at their drawIndex
+    // and get incorrectly culled.
+    for (size_t i = metaBuffersWrittenCount; i < indirectCommands.size(); i++) {
+        const auto& cmd = indirectCommands[i];
+        VkDeviceSize cmdOffset = i * sizeof(VkDrawIndexedIndirectCommand);
+        void* data = indirectBuffer.map(cmdOffset);
+        memcpy(data, &cmd, sizeof(cmd));
+        indirectBuffer.unmap();
+
+        // Find the MeshInfo for this position via drawIndex.
+        MeshInfo* info = nullptr;
+        for (auto& kv : meshes) {
+            if (kv.second.active && kv.second.drawIndex == i) {
+                info = &kv.second;
+                break;
+            }
         }
 
-        VkDrawIndexedIndirectCommand cmd{};
-        cmd.indexCount = info.indexCount;
-        cmd.instanceCount = 1;
-        cmd.firstIndex = info.firstIndex;
-        cmd.vertexOffset = static_cast<int32_t>(info.baseVertex);
-        cmd.firstInstance = static_cast<uint32_t>(activeIdx);
-        VkDeviceSize cmdOffset = activeIdx * sizeof(VkDrawIndexedIndirectCommand);
-        VkDeviceSize cmdSize = sizeof(VkDrawIndexedIndirectCommand);
-        void* data;
-        data = indirectBuffer.map(cmdOffset);
-        memcpy(data, &cmd, cmdSize);
-        indirectBuffer.unmap(); // VMA persistent mapping
-        info.indirectOffset = cmdOffset;
-        if (boundsBuffer.buffer != VK_NULL_HANDLE) {
-            VkDeviceSize boundsOffset = activeIdx * 2 * sizeof(glm::vec4);
-            glm::vec4 bounds[2] = { info.boundsMin, info.boundsMax };
-            data = boundsBuffer.map(boundsOffset);
-            memcpy(data, bounds, sizeof(bounds));
-            boundsBuffer.unmap(); // VMA persistent mapping
+        if (info) {
+            info->indirectOffset = cmdOffset;
+            if (boundsBuffer.buffer != VK_NULL_HANDLE) {
+                VkDeviceSize boundsOffset = i * 2 * sizeof(glm::vec4);
+                glm::vec4 bounds[2] = { info->boundsMin, info->boundsMax };
+                data = boundsBuffer.map(boundsOffset);
+                memcpy(data, bounds, sizeof(bounds));
+                boundsBuffer.unmap();
+            }
         }
-        ++activeIdx;
     }
-    metaBuffersWrittenCount = activeIdx;
+    metaBuffersWrittenCount = indirectCommands.size();
 }
 
 void IndirectRenderer::rebuild(VulkanApp* app) {
@@ -645,15 +646,16 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     // Rebuild indirect command list from active meshes so GPU-side compaction matches models/bounds
     std::vector<VkDrawIndexedIndirectCommand> cmds;
     cmds.reserve(meshes.size());
-    for (const auto& kv : meshes) {
-        const MeshInfo& info = kv.second;
+    for (auto& kv : meshes) {
+        MeshInfo& info = kv.second;
         if (!info.active) continue;
+        info.drawIndex = static_cast<uint32_t>(cmds.size());
         VkDrawIndexedIndirectCommand cmd{};
         cmd.indexCount = info.indexCount;
         cmd.instanceCount = 1;
         cmd.firstIndex = info.firstIndex;
         cmd.vertexOffset = static_cast<int32_t>(info.baseVertex);
-        cmd.firstInstance = static_cast<uint32_t>(cmds.size());
+        cmd.firstInstance = info.drawIndex;
         cmds.push_back(cmd);
     }
     indirectCommands = cmds;
