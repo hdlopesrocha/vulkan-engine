@@ -554,6 +554,7 @@ protected:
     private:
         static constexpr uint32_t ASYNC_CMD_POOL_RING_SIZE = 64;
         VkCommandPool asyncCmdPoolRing[ASYNC_CMD_POOL_RING_SIZE]{};
+        VkCommandBuffer asyncCmdBufferRing[ASYNC_CMD_POOL_RING_SIZE]{};
         std::atomic<uint32_t> asyncCmdPoolNext{0};
         void createAsyncCmdPoolRing();
         // Cache: shader file path → VkShaderModule, created on first use and kept for app lifetime.
