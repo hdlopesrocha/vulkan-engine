@@ -13,17 +13,20 @@ layout(location = ATTR_INSTANCE) in vec4 instanceData;
 
 layout(location = VARY_POSWORLD) out vec3 outWorldPos;
 
-layout(push_constant) uniform PushConstants {
-    float billboardScale;
-    float windEnabled;
-    float windTime;
-    float impostorDistance;
+layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 windDirAndStrength;
     vec4 windNoise;
     vec4 windShape;
     vec4 windTurbulence;
     vec4 densityParams;
     vec4 cameraPosAndFalloff;
+} windParams;
+
+layout(push_constant) uniform PushConstants {
+    float billboardScale;
+    float windEnabled;
+    float windTime;
+    float impostorDistance;
 };
 
 layout(set = 0, binding = 0) uniform SolidParamsUBO {
@@ -46,7 +49,7 @@ void main() {
 
     vec3 worldPos = instanceData.xyz;
 
-    if (impostorDistance > 0.0 && distance(cameraPosAndFalloff.xyz, worldPos) >= impostorDistance) {
+    if (impostorDistance > 0.0 && distance(windParams.cameraPosAndFalloff.xyz, worldPos) >= impostorDistance) {
         outWorldPos = worldPos;
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
         return;
@@ -65,19 +68,19 @@ void main() {
     float heightFactor = (cornerType == 2 || cornerType == 3) ? 1.0 : 0.0;
 
     // Wind (same as vegetation.vert)
-    vec2 windDirXZ = windDirAndStrength.xz;
+    vec2 windDirXZ = windParams.windDirAndStrength.xz;
     float dirLen = length(windDirXZ);
     if (dirLen > 0.0001) windDirXZ /= dirLen; else windDirXZ = vec2(0.0);
-    float amplitude = windDirAndStrength.w;
-    float baseFreq = windNoise.x;
-    float speed = windNoise.y;
-    float gustFreq = windNoise.z;
-    float gustStrength = windNoise.w;
-    float skewAmount = windShape.x;
-    float trunkStiffness = windShape.y;
-    float noiseScale = windShape.z;
-    float verticalFlutter = windShape.w;
-    float turbulence = windTurbulence.x;
+    float amplitude = windParams.windDirAndStrength.w;
+    float baseFreq = windParams.windNoise.x;
+    float speed = windParams.windNoise.y;
+    float gustFreq = windParams.windNoise.z;
+    float gustStrength = windParams.windNoise.w;
+    float skewAmount = windParams.windShape.x;
+    float trunkStiffness = windParams.windShape.y;
+    float noiseScale = windParams.windShape.z;
+    float verticalFlutter = windParams.windShape.w;
+    float turbulence = windParams.windTurbulence.x;
     float bendWeight = pow(clamp(heightFactor, 0.0, 1.0), mix(4.0, 1.0, clamp(trunkStiffness, 0.0, 1.0)));
     vec2 windMotion = windDirXZ * (windTime * speed);
     vec2 p = worldPos.xz * (baseFreq * noiseScale);

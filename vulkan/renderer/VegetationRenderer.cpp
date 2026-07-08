@@ -70,6 +70,13 @@ void VegetationRenderer::cleanup() {
     impostorVBO.indexBuffer.buffer = VK_NULL_HANDLE;
     impostorVBO.indexBuffer.memory = VK_NULL_HANDLE;
     impostorVBO.indexCount = 0;
+    if (appPtr && windParamsBuffer.buffer != VK_NULL_HANDLE) {
+        appPtr->destroyBuffer(windParamsBuffer);
+        windParamsBuffer = {};
+        windParamsMapped = nullptr;
+    }
+    windParamsDescSetLayout = VK_NULL_HANDLE;
+    windParamsDescSet = VK_NULL_HANDLE;
     destroyCulling();
     appPtr = nullptr;
 }
@@ -588,9 +595,57 @@ void VegetationRenderer::init(VulkanApp* app) {
     if (!cmdDrawIndexedIndirectCount)
         cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(device, "vkCmdDrawIndexedIndirectCount");
 
+    // ── Wind params UBO + descriptor set layout (set=2) ────────────────────
+    {
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding         = 0;
+        binding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        binding.descriptorCount = 1;
+        binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo info{};
+        info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+        info.bindingCount = 1;
+        info.pBindings    = &binding;
+        if (vkCreateDescriptorSetLayout(device, &info, nullptr, &windParamsDescSetLayout) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create wind params descriptor set layout");
+        app->resources.addDescriptorSetLayout(windParamsDescSetLayout, "VegetationRenderer: windParamsDescSetLayout");
+    }
+
+
+    // Allocate wind params UBO (persistently mapped host-visible).
+    {
+        windParamsBuffer = app->createBuffer(sizeof(WindParamsUBO),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        windParamsMapped = windParamsBuffer.map(0);
+        // Initialize with defaults
+        WindParamsUBO params{};
+        std::memcpy(windParamsMapped, &params, sizeof(params));
+    }
+
+    // Allocate wind params descriptor set and bind the UBO.
+    {
+        windParamsDescSet = app->createDescriptorSet(windParamsDescSetLayout);
+        VkDescriptorBufferInfo bufInfo{};
+        bufInfo.buffer = windParamsBuffer.buffer;
+        bufInfo.offset = 0;
+        bufInfo.range  = VK_WHOLE_SIZE;
+        VkWriteDescriptorSet write{};
+        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet          = windParamsDescSet;
+        write.dstBinding      = 0;
+        write.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        write.descriptorCount = 1;
+        write.pBufferInfo     = &bufInfo;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        app->registerDescriptorSet(windParamsDescSet);
+    }
+
     std::vector<VkDescriptorSetLayout> setLayouts;
     setLayouts.push_back(app->getDescriptorSetLayout());
     setLayouts.push_back(descriptorSetLayout);
+    setLayouts.push_back(windParamsDescSetLayout);
     VkPushConstantRange pushConstantRange{};
     pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pushConstantRange.offset = 0;
@@ -989,60 +1044,24 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
     if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationShadowPipeline);
     else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
 
-    // Bind the shadow descriptor set at set 0 and vegetation descriptor set at set 1
-    // shadowDescriptorSet contains the light-space UBO for shadow rendering
-    VkDescriptorSet sets[2] = { shadowDescriptorSet, vegDescriptorSet };
-    if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, shadowPipelineLayout, 0, 2, sets, 0, nullptr);
-    else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 2, sets, 0, nullptr);
+    // Bind the shadow descriptor set (set 0), vegetation descriptor set (set 1),
+    // and wind params UBO (set 2)
+    updateWindParamsUBO(cameraPos);
+    VkDescriptorSet sets[3] = { shadowDescriptorSet, vegDescriptorSet, windParamsDescSet };
+    if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
+    else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
 
     // Push constants for shadow pass: same as regular draw but with wind disabled
+    // The UBO already contains the wind parameters; we only push the 16-byte header
     WindPushConstants pc{};
     pc.billboardScale = billboardScale;
     pc.windEnabled = -1.0f;  // Negative means shadow pass: disable wind and tighten impostor cutoff.
     pc.windTime = windTimeSeconds;
-    pc.impostorDistance = impostorDistance; // skip far instances in shadow pass too (same as main pass)
+    pc.impostorDistance = impostorDistance; // skip far instances in shadow pass
 
-    glm::vec2 windDir = windSettings.direction;
-    const float len2 = windDir.x * windDir.x + windDir.y * windDir.y;
-    if (len2 > 1e-8f) {
-        const float invLen = 1.0f / std::sqrt(len2);
-        windDir *= invLen;
-    }
-
-    pc.windDirAndStrength = glm::vec4(windDir.x, 0.0f, windDir.y, std::max(0.0f, windSettings.strength));
-    pc.windNoise = glm::vec4(
-        std::max(0.00001f, windSettings.baseFrequency),
-        std::max(0.0f, windSettings.speed),
-        std::max(0.00001f, windSettings.gustFrequency),
-        std::max(0.0f, windSettings.gustStrength)
-    );
-    pc.windShape = glm::vec4(
-        std::max(0.0f, windSettings.skewAmount),
-        std::clamp(windSettings.trunkStiffness, 0.0f, 1.0f),
-        std::max(0.001f, windSettings.noiseScale),
-        std::max(0.0f, windSettings.verticalFlutter)
-    );
-    pc.windTurbulence = glm::vec4(std::max(0.0f, windSettings.turbulence), 0.0f, 0.0f, 0.0f);
-    
-    // Distance-based density: use camera position for LOD, NOT light position
-    const float nearDistance = std::max(0.0f, distanceDensitySettings.fullDensityDistance);
-    const float farDistance = std::max(nearDistance + 1.0f, distanceDensitySettings.minDensityDistance);
-    const float minFactor = std::clamp(distanceDensitySettings.minDensityFactor, 0.0f, 1.0f);
-    const float safeMinFactor = std::max(minFactor, 0.0001f);
-    const float falloff = (distanceDensitySettings.enabled && minFactor < 1.0f)
-        ? (-std::log(safeMinFactor) / (farDistance - nearDistance))
-        : 0.0f;
-    pc.densityParams = glm::vec4(distanceDensitySettings.enabled ? 1.0f : 0.0f, nearDistance, farDistance, minFactor);
-    pc.cameraPosAndFalloff = glm::vec4(cameraPos, falloff);  // Camera pos, not light pos
-
-    vkCmdPushConstants(
-        commandBuffer,
-        shadowPipelineLayout,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-        0,
-        sizeof(WindPushConstants),
-        &pc
-    );
+    vkCmdPushConstants(commandBuffer, shadowPipelineLayout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(WindPushConstants), &pc);
 
     // Draw consolidated via GPU culling only (no per-chunk fallback).
     // New chunks appear gradually as they are uploaded and consolidated.
@@ -1058,8 +1077,6 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
     }
 
     // ── Impostor shadow pass (EVSM color + depth) ─────────────────────────────
-    // Uses impostors_shadow.frag which reprojects captured depth into light space
-    // and writes EVSM moments so impostors cast shadows.
     VkPipeline impostorShadowPipe = (impostorShadowPipeline != VK_NULL_HANDLE)
                                   ? impostorShadowPipeline : impostorDepthPipeline;
     VkPipelineLayout impostorShadowLayout = (impostorShadowPipelineLayout != VK_NULL_HANDLE)
@@ -1072,11 +1089,11 @@ void VegetationRenderer::drawShadow(VulkanApp* app, VkCommandBuffer& commandBuff
         if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, impostorShadowPipe);
         else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowPipe);
 
-        VkDescriptorSet depthSets[2] = { shadowDescriptorSet, impostorDepthDescSet };
+        VkDescriptorSet depthSets[3] = { shadowDescriptorSet, impostorDepthDescSet, windParamsDescSet };
         if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
-                    impostorShadowLayout, 0, 2, depthSets, 0, nullptr);
+                    impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
         else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    impostorShadowLayout, 0, 2, depthSets, 0, nullptr);
+                    impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
 
         vkCmdPushConstants(commandBuffer, impostorShadowLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1323,7 +1340,8 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
 
         std::vector<VkDescriptorSetLayout> depthSetLayouts = {
             app->getDescriptorSetLayout(),
-            impostorDepthDescSetLayout
+            impostorDepthDescSetLayout,
+            windParamsDescSetLayout
         };
         VkPushConstantRange depthPCRange{};
         depthPCRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -1425,7 +1443,8 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
 
     std::vector<VkDescriptorSetLayout> impSetLayouts = {
         app->getDescriptorSetLayout(),
-        impostorDescSetLayout
+        impostorDescSetLayout,
+        windParamsDescSetLayout
     };
     VkPushConstantRange pcRange{};
     pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -1473,11 +1492,19 @@ void VegetationRenderer::draw(VulkanApp* app, VkCommandBuffer& commandBuffer, Vk
 }
 
 VegetationRenderer::WindPushConstants VegetationRenderer::buildWindPushConstants(const glm::vec3& cameraPos) const {
+    (void)cameraPos;
     WindPushConstants pc{};
     pc.billboardScale     = billboardScale;
     pc.windEnabled        = windSettings.enabled ? 1.0f : 0.0f;
     pc.windTime           = windTimeSeconds;
     pc.impostorDistance   = impostorDistance;
+    return pc;
+}
+
+void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {
+    if (!windParamsMapped) return;
+
+    WindParamsUBO params{};
 
     glm::vec2 windDir = windSettings.direction;
     const float len2 = windDir.x * windDir.x + windDir.y * windDir.y;
@@ -1485,27 +1512,28 @@ VegetationRenderer::WindPushConstants VegetationRenderer::buildWindPushConstants
         const float invLen = 1.0f / std::sqrt(len2);
         windDir *= invLen;
     }
-    pc.windDirAndStrength = glm::vec4(windDir.x, 0.0f, windDir.y, std::max(0.0f, windSettings.strength));
-    pc.windNoise = glm::vec4(
+    params.windDirAndStrength = glm::vec4(windDir.x, 0.0f, windDir.y, std::max(0.0f, windSettings.strength));
+    params.windNoise = glm::vec4(
         std::max(0.00001f, windSettings.baseFrequency),
         std::max(0.0f, windSettings.speed),
         std::max(0.00001f, windSettings.gustFrequency),
         std::max(0.0f, windSettings.gustStrength));
-    pc.windShape = glm::vec4(
+    params.windShape = glm::vec4(
         std::max(0.0f, windSettings.skewAmount),
         std::clamp(windSettings.trunkStiffness, 0.0f, 1.0f),
         std::max(0.001f, windSettings.noiseScale),
         std::max(0.0f, windSettings.verticalFlutter));
-    pc.windTurbulence = glm::vec4(std::max(0.0f, windSettings.turbulence), 0.0f, 0.0f, 0.0f);
+    params.windTurbulence = glm::vec4(std::max(0.0f, windSettings.turbulence), 0.0f, 0.0f, 0.0f);
     const float nearDistance = std::max(0.0f, distanceDensitySettings.fullDensityDistance);
     const float farDistance = std::max(nearDistance + 1.0f, distanceDensitySettings.minDensityDistance);
     const float minFactor = std::clamp(distanceDensitySettings.minDensityFactor, 0.0f, 1.0f);
     const float safeMinFactor = std::max(minFactor, 0.0001f);
     const float falloff = (distanceDensitySettings.enabled && minFactor < 1.0f)
         ? (-std::log(safeMinFactor) / (farDistance - nearDistance)) : 0.0f;
-    pc.densityParams = glm::vec4(distanceDensitySettings.enabled ? 1.0f : 0.0f, nearDistance, farDistance, minFactor);
-    pc.cameraPosAndFalloff = glm::vec4(cameraPos, falloff);
-    return pc;
+    params.densityParams = glm::vec4(distanceDensitySettings.enabled ? 1.0f : 0.0f, nearDistance, farDistance, minFactor);
+    params.cameraPosAndFalloff = glm::vec4(cameraPos, falloff);
+
+    std::memcpy(windParamsMapped, &params, sizeof(params));
 }
 
 void VegetationRenderer::issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLayout activeLayout, VkShaderStageFlags pushConstantStages, const WindPushConstants& pc) {
@@ -1554,17 +1582,18 @@ void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffe
     if (!ensureVegDescriptorSet(app)) return;
     VkDescriptorSet globalSet = app->getMainDescriptorSet();
     if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
+    updateWindParamsUBO(cameraPos);
     WindPushConstants pc = buildWindPushConstants(cameraPos);
-    VkDescriptorSet sets[2] = { globalSet, vegDescriptorSet };
+    VkDescriptorSet sets[3] = { globalSet, vegDescriptorSet, windParamsDescSet };
 
     // Depth prepass
     if (vegetationDepthPipeline != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationDepthPipeline);
         else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationDepthPipeline);
         if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
-            vegetationDepthPipelineLayout, 0, 2, sets, 0, nullptr);
+            vegetationDepthPipelineLayout, 0, 3, sets, 0, nullptr);
         else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            vegetationDepthPipelineLayout, 0, 2, sets, 0, nullptr);
+            vegetationDepthPipelineLayout, 0, 3, sets, 0, nullptr);
         issueVegetationDraws(commandBuffer, vegetationDepthPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }
 
@@ -1579,17 +1608,18 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
     if (!ensureVegDescriptorSet(app)) return;
     VkDescriptorSet globalSet = app->getMainDescriptorSet();
     if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
+    updateWindParamsUBO(cameraPos);
     WindPushConstants pc = buildWindPushConstants(cameraPos);
-    VkDescriptorSet sets[2] = { globalSet, vegDescriptorSet };
+    VkDescriptorSet sets[3] = { globalSet, vegDescriptorSet, windParamsDescSet };
 
     // Shading pass
     if (vegetationPipeline != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationPipeline);
         else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationPipeline);
         if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
-            pipelineLayout, 0, 2, sets, 0, nullptr);
+            pipelineLayout, 0, 3, sets, 0, nullptr);
         else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            pipelineLayout, 0, 2, sets, 0, nullptr);
+            pipelineLayout, 0, 3, sets, 0, nullptr);
         issueVegetationDraws(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }
     // Impostor color pass
@@ -1597,11 +1627,11 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
         impostorDescSet != VK_NULL_HANDLE && impostorDistance > 0.0f) {
         if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, impostorPipeline);
         else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorPipeline);
-        VkDescriptorSet impSets[2] = { globalSet, impostorDescSet };
+        VkDescriptorSet impSets[3] = { globalSet, impostorDescSet, windParamsDescSet };
         if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
-                    impostorPipelineLayout, 0, 2, impSets, 0, nullptr);
+                    impostorPipelineLayout, 0, 3, impSets, 0, nullptr);
         else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    impostorPipelineLayout, 0, 2, impSets, 0, nullptr);
+                    impostorPipelineLayout, 0, 3, impSets, 0, nullptr);
         issueImpostorDraws(commandBuffer, impostorPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }
 }

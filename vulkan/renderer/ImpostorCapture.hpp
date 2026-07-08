@@ -1,6 +1,7 @@
 #pragma once
 #include <vulkan/vulkan.h>
 #include "../VmaContext.hpp"
+#include "../Buffer.hpp"
 #include <glm/glm.hpp>
 #include <array>
 #include "CommandBufferState.hpp"
@@ -116,6 +117,12 @@ private:
     void*          uboMapped = nullptr;
     VkDeviceSize   uboStride = 256;  // aligned to minUniformBufferOffsetAlignment
 
+    // Wind params UBO (set=2, binding=0) — static during capture.
+    Buffer                windParamsBuffer       = {};
+    VkDescriptorSetLayout windParamsDescSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet       windParamsDescSet      = VK_NULL_HANDLE;
+    void*                 windParamsMapped       = nullptr;
+
     // Minimal vertex + instance buffers (single base vertex, one instance).
     VkBuffer       captureVertBuf = VK_NULL_HANDLE;
     VkDeviceMemory captureVertMem = VK_NULL_HANDLE;
@@ -131,18 +138,13 @@ private:
     VkDescriptorSet  uboDescSet     = VK_NULL_HANDLE;
     VkDescriptorSet  texDescSet     = VK_NULL_HANDLE;
 
-    // Push constants must match WindPushConstants layout from vegetation shaders.
+    // Push constants (16 bytes) — matches the vegetation shader layout.
+    // Wind parameters are in the WindParamsUBO at set=2.
     struct CapturePC {
         float     billboardScale;
-        float     windEnabled;
+        float     windEnabled;      // 0 = disabled during capture
         float     windTime;
-        float     impostorDistance; // renamed from pad0; always 0 during capture
-        glm::vec4 windDirAndStrength;
-        glm::vec4 windNoise;
-        glm::vec4 windShape;
-        glm::vec4 windTurbulence;
-        glm::vec4 densityParams;
-        glm::vec4 cameraPosAndFalloff;
+        float     impostorDistance; // always 0 during capture
     };
 
     // ImGui display resources (TOTAL_LAYERS descriptor sets each for albedo and normals).

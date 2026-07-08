@@ -22,13 +22,16 @@ layout(push_constant) uniform PushConstants {
     float windEnabled;
     float windTime;
     float impostorDistance;
+};
+
+layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 windDirAndStrength;
     vec4 windNoise;
     vec4 windShape;
     vec4 windTurbulence;
     vec4 densityParams;
     vec4 cameraPosAndFalloff;
-};
+} windParams;
 
 #include "includes/perlin2d.glsl"
 #include "includes/vegetation_common.glsl"
@@ -39,7 +42,7 @@ void main() {
 
     if (impostorDistance <= 0.0) return;
 
-    float mainCamDist = distance(cameraPosAndFalloff.xyz, worldPos);
+    float mainCamDist = distance(windParams.cameraPosAndFalloff.xyz, worldPos);
     if (mainCamDist < impostorDistance * 0.50) return;
 
     float densityFactor = densityFactorForDistance(mainCamDist);

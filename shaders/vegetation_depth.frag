@@ -12,17 +12,20 @@ layout(location = VARY_POSLIGHT) flat in vec3 inTangentWS;
 layout(set = 1, binding = 1) uniform sampler2DArray normalArray;
 layout(set = 1, binding = 2) uniform sampler2DArray opacityArray;
 
-layout(push_constant) uniform PushConstants {
-    float billboardScale;
-    float windEnabled;
-    float windTime;
-    float impostorDistance;
+layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 windDirAndStrength;
     vec4 windNoise;
     vec4 windShape;
     vec4 windTurbulence;
     vec4 densityParams;
     vec4 cameraPosAndFalloff;
+} windParams;
+
+layout(push_constant) uniform PushConstants {
+    float billboardScale;
+    float windEnabled;
+    float windTime;
+    float impostorDistance;
 };
 
 void main() {

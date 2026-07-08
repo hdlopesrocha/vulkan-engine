@@ -480,6 +480,13 @@ public:
         if (octreeExplorerWidget)
             octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
 
+        // Init the VegetationRenderer before setupVegetationTextures so that
+        // wind params UBO + descriptor set layout exist before captureAll calls
+        // setImpostorData().  SceneRenderer::init() is called later after all
+        // texture/material setup is complete.
+        if (sceneRenderer && sceneRenderer->vegetationRenderer)
+            sceneRenderer->vegetationRenderer->init(this);
+
         setupVegetationTextures();
         setupTextures();
 

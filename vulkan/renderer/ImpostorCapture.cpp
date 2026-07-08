@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cstdio>
+#include "../ubo/VegetationUBO.hpp"
 #include "../includes/locations.hpp"
 #include "../includes/vertex_layouts.hpp"
 
@@ -44,6 +45,31 @@ void ImpostorCapture::init(VulkanApp* app) {
     createCaptureImages(app);
     createDepth(app);
     createDescSetLayouts(app);
+    // Allocate wind params UBO (set=2, binding=0) with safe defaults
+    {
+        VkDevice device = app->getDevice();
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding         = 0;
+        binding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        binding.descriptorCount = 1;
+        binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo info{};
+        info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+        info.bindingCount = 1;
+        info.pBindings    = &binding;
+        if (vkCreateDescriptorSetLayout(device, &info, nullptr, &windParamsDescSetLayout) != VK_SUCCESS)
+            throw std::runtime_error("ImpostorCapture: windParamsDescSetLayout failed");
+        app->resources.addDescriptorSetLayout(windParamsDescSetLayout, "ImpostorCapture: windParamsDescSetLayout");
+
+        windParamsBuffer = app->createBuffer(sizeof(WindParamsUBO),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        windParamsMapped = windParamsBuffer.map(0);
+        // Default wind params: wind disabled, no density culling
+        WindParamsUBO wp{};
+        std::memcpy(windParamsMapped, &wp, sizeof(wp));
+    }
     createPipeline(app);
     createUBO(app);
     createCaptureBuffers(app);
@@ -97,6 +123,19 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
     uboMapped = nullptr;
     uboBuffer = VK_NULL_HANDLE;
     uboMemory = VK_NULL_HANDLE;
+
+    // Wind params descriptor set + UBO.
+    if (windParamsDescSetLayout != VK_NULL_HANDLE) {
+        app->resources.removeDescriptorSetLayout(windParamsDescSetLayout);
+        vkDestroyDescriptorSetLayout(device, windParamsDescSetLayout, nullptr);
+        windParamsDescSetLayout = VK_NULL_HANDLE;
+    }
+    windParamsDescSet = VK_NULL_HANDLE;  // registered via app->registerDescriptorSet
+    windParamsMapped  = nullptr;
+    if (windParamsBuffer.buffer != VK_NULL_HANDLE) {
+        app->destroyBuffer(windParamsBuffer);
+        windParamsBuffer = {};
+    }
 
     // Capture vertex/instance buffers (VMA-managed, destroyed by resource manager on cleanup).
     auto destroyBuf = [&](VkBuffer& b, VkDeviceMemory& m) {
@@ -258,18 +297,19 @@ void ImpostorCapture::capture(VulkanApp* app,
     // Upload updated inv VP data to the GPU buffer (persistently mapped).
     std::memcpy(captureInvVPMapped, captureInvVP.data(), TOTAL_LAYERS * sizeof(glm::mat4));
 
-    // Push constant template: no wind, density culling disabled, impostorDistance=0.
+    // Wind params UBO: center camera at origin, no wind, no density culling.
+    {
+        WindParamsUBO wp{};
+        wp.cameraPosAndFalloff = glm::vec4(center, 0.0f);
+        std::memcpy(windParamsMapped, &wp, sizeof(wp));
+    }
+
+    // Push constant: no wind, density culling disabled, impostorDistance=0.
     CapturePC pc{};
     pc.billboardScale     = billboardScale;
     pc.windEnabled        = 0.0f;
     pc.windTime           = 0.0f;
     pc.impostorDistance   = 0.0f;
-    pc.windDirAndStrength = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
-    pc.windNoise          = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
-    pc.windShape          = glm::vec4(0.0f, 1.0f, 1.0f, 0.0f);
-    pc.windTurbulence     = glm::vec4(0.0f);
-    pc.densityParams      = glm::vec4(0.0f);
-    pc.cameraPosAndFalloff = glm::vec4(center, 0.0f);
 
     app->runSingleTimeCommands([&](VkCommandBuffer cb) {
         VkBuffer     vbs[2]     = { captureVertBuf, captureInstBuf };
@@ -343,11 +383,11 @@ void ImpostorCapture::capture(VulkanApp* app,
             else vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, capturePipeline);
 
             const uint32_t dynOffset = static_cast<uint32_t>(viewIdx * uboStride);
-            VkDescriptorSet sets[2] = { uboDescSet, texDescSet };
+            VkDescriptorSet sets[3] = { uboDescSet, texDescSet, windParamsDescSet };
             if (cmdState) cmdState->bindGraphicsDescriptorSets(cb,
-                                    capturePipelineLayout, 0, 2, sets, 1, &dynOffset);
+                                    capturePipelineLayout, 0, 3, sets, 1, &dynOffset);
             else vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    capturePipelineLayout, 0, 2, sets, 1, &dynOffset);
+                                    capturePipelineLayout, 0, 3, sets, 1, &dynOffset);
 
             vkCmdPushConstants(cb, capturePipelineLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -378,7 +418,7 @@ void ImpostorCapture::capture(VulkanApp* app,
 
 void ImpostorCapture::captureAll(VulkanApp* app,
                                    VkImageView albedoView, VkImageView normalView,
-                                   VkImageView opacityView, VkSampler  sampler,
+                                   VkImageView opacityView, VkSampler sampler,
                                    float billboardScale) {
     for (uint32_t t = 0; t < NUM_BILLBOARD_TYPES; ++t) {
         capture(app, albedoView, normalView, opacityView, sampler, billboardScale, t);
@@ -707,10 +747,10 @@ void ImpostorCapture::createPipeline(VulkanApp* app) {
     pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pcRange.size       = sizeof(CapturePC);
 
-    VkDescriptorSetLayout layouts[2] = { uboDescSetLayout, texDescSetLayout };
+    VkDescriptorSetLayout layouts[3] = { uboDescSetLayout, texDescSetLayout, windParamsDescSetLayout };
     VkPipelineLayoutCreateInfo layoutInfo{};
     layoutInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layoutInfo.setLayoutCount         = 2;
+    layoutInfo.setLayoutCount         = 3;
     layoutInfo.pSetLayouts            = layouts;
     layoutInfo.pushConstantRangeCount = 1;
     layoutInfo.pPushConstantRanges    = &pcRange;
@@ -878,6 +918,22 @@ void ImpostorCapture::allocateDescSets(VulkanApp* app) {
     std::cerr << "[RAW ALLOC] ImpostorCapture: uboDescSet=" << (void*)sets[0] << " texDescSet=" << (void*)sets[1] << " pool=" << (void*)allocInfo.descriptorPool << std::endl;
     uboDescSet = sets[0];
     texDescSet = sets[1];
+
+    // Allocate wind params descriptor set from the app's general pool.
+    windParamsDescSet = app->createDescriptorSet(windParamsDescSetLayout);
+    VkDescriptorBufferInfo wpBufInfo{};
+    wpBufInfo.buffer = windParamsBuffer.buffer;
+    wpBufInfo.offset = 0;
+    wpBufInfo.range  = VK_WHOLE_SIZE;
+    VkWriteDescriptorSet wpWrite{};
+    wpWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    wpWrite.dstSet          = windParamsDescSet;
+    wpWrite.dstBinding      = 0;
+    wpWrite.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    wpWrite.descriptorCount = 1;
+    wpWrite.pBufferInfo     = &wpBufInfo;
+    vkUpdateDescriptorSets(app->getDevice(), 1, &wpWrite, 0, nullptr);
+    app->registerDescriptorSet(windParamsDescSet);
 
     // Write UBO descriptor (DYNAMIC: range = one slot, offset supplied per-draw).
     VkDescriptorBufferInfo bufInfo{};

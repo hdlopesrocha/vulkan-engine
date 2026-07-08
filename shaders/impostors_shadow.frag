@@ -16,17 +16,20 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
 
 layout(location = FRAG_OUT_COLOR) out vec4 outEVSM;
 
-layout(push_constant) uniform PushConstants {
-    float billboardScale;
-    float windEnabled;
-    float windTime;
-    float impostorDistance;
+layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 windDirAndStrength;
     vec4 windNoise;
     vec4 windShape;
     vec4 windTurbulence;
     vec4 densityParams;
     vec4 cameraPosAndFalloff;
+} windParams;
+
+layout(push_constant) uniform PushConstants {
+    float billboardScale;
+    float windEnabled;
+    float windTime;
+    float impostorDistance;
 };
 
 void main() {

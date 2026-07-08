@@ -7,6 +7,7 @@
 #include "../../utils/BillboardManager.hpp"
 #include "../VertexBufferObject.hpp"
 #include "../../utils/Scene.hpp" // for NodeID
+#include "../ubo/VegetationUBO.hpp"
 #include <vector>
 #include <deque>
 #include <unordered_map>
@@ -38,14 +39,9 @@ public:
         float billboardScale = 1.0f;
         float windEnabled = 1.0f;
         float windTime = 0.0f;
-        float impostorDistance = 0.0f; // formerly pad0; 0 = impostor rendering disabled
-        glm::vec4 windDirAndStrength = glm::vec4(1.0f, 0.0f, 0.0f, 4.0f);
-        glm::vec4 windNoise = glm::vec4(0.003f, 0.75f, 0.012f, 0.45f);
-        glm::vec4 windShape = glm::vec4(1.75f, 0.70f, 1.0f, 0.20f);
-        glm::vec4 windTurbulence = glm::vec4(0.60f, 0.0f, 0.0f, 0.0f);
-        glm::vec4 densityParams = glm::vec4(1.0f, 512.0f, 4096.0f, 0.10f);
-        glm::vec4 cameraPosAndFalloff = glm::vec4(0.0f);
+        float impostorDistance = 0.0f;
     };
+    static_assert(sizeof(WindPushConstants) == 16, "WindPushConstants expected 16 bytes");
 
     struct DistanceDensitySettings {
         bool enabled = true;
@@ -153,6 +149,11 @@ public:
     // Auto-cycles through triple-buffered culling slots internally.
     void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj);
 
+    // Update the wind params UBO with current settings.
+    // Must be called before any draw that uses wind.  Updates per-frame values
+    // (camera position, falloff) so windParams on the GPU stays in sync.
+    void updateWindParamsUBO(const glm::vec3& cameraPos);
+
 private:
     
     VkPipeline vegetationPipeline = VK_NULL_HANDLE;          // shading pass (depthWrite=false, EQUAL)
@@ -240,6 +241,12 @@ private:
 
     float                 impostorDistance       = 0.0f;
     VkRenderPass          storedSolidRenderPass  = VK_NULL_HANDLE;
+
+    // Wind params UBO (set=2, binding=0) — updated once per frame.
+    Buffer                windParamsBuffer       = {};
+    VkDescriptorSetLayout windParamsDescSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet       windParamsDescSet      = VK_NULL_HANDLE;
+    void*                 windParamsMapped       = nullptr;
 
     // ── GPU frustum culling (indirection via concatenated instance buffer) ──────
     struct ChunkMeta {
