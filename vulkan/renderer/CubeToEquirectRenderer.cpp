@@ -18,22 +18,12 @@ void CubeToEquirectRenderer::cleanup(VulkanApp* app) {
         VkImage tmp_img = img;
         VmaAllocation tmp_alloc = alloc;
         VkDeviceMemory tmp_mem = mem;
-        if (app->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = app->getCurrentFrame();
-            if (fi < app->inFlightFences.size()) f = app->inFlightFences[fi];
-            app->deferDestroyUntilFence(f, [tmp_iv, tmp_img, tmp_alloc, tmp_mem, app]() {
-                if (tmp_iv != VK_NULL_HANDLE) {
-                    if (app->resources.removeImageView(tmp_iv)) vkDestroyImageView(app->getDevice(), tmp_iv, nullptr);
-                }
-                app->destroyImageWithVma(tmp_img, tmp_alloc, tmp_mem);
-            });
-        } else {
+        app->deferDestroyUntilAllPending([tmp_iv, tmp_img, tmp_alloc, tmp_mem, app]() {
             if (tmp_iv != VK_NULL_HANDLE) {
-                if (app->resources.removeImageView(tmp_iv)) vkDestroyImageView(device, tmp_iv, nullptr);
+                if (app->resources.removeImageView(tmp_iv)) vkDestroyImageView(app->getDevice(), tmp_iv, nullptr);
             }
             app->destroyImageWithVma(tmp_img, tmp_alloc, tmp_mem);
-        }
+        });
         iv = VK_NULL_HANDLE;
         img = VK_NULL_HANDLE;
         alloc = VK_NULL_HANDLE;
@@ -43,16 +33,9 @@ void CubeToEquirectRenderer::cleanup(VulkanApp* app) {
     auto destroyVkObject = [&](auto &handle, auto removeFn, auto destroyFn) {
         if (handle == VK_NULL_HANDLE) return;
         auto tmp = handle;
-        if (app->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = app->getCurrentFrame();
-            if (fi < app->inFlightFences.size()) f = app->inFlightFences[fi];
-            app->deferDestroyUntilFence(f, [tmp, app, removeFn, destroyFn, device]() {
-                if ((app->resources.*removeFn)(tmp)) destroyFn(device, tmp, nullptr);
-            });
-        } else {
+        app->deferDestroyUntilAllPending([tmp, app, removeFn, destroyFn, device]() {
             if ((app->resources.*removeFn)(tmp)) destroyFn(device, tmp, nullptr);
-        }
+        });
         handle = VK_NULL_HANDLE;
     };
 
@@ -65,16 +48,9 @@ void CubeToEquirectRenderer::cleanup(VulkanApp* app) {
 
     if (cube360EquirectSampleDescriptorSet != VK_NULL_HANDLE) {
         VkDescriptorSet tmp = cube360EquirectSampleDescriptorSet;
-        if (app->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = app->getCurrentFrame();
-            if (fi < app->inFlightFences.size()) f = app->inFlightFences[fi];
-            app->deferDestroyUntilFence(f, [tmp, app]() {
-                app->resources.removeDescriptorSet(tmp);
-            });
-        } else {
+        app->deferDestroyUntilAllPending([tmp, app]() {
             app->resources.removeDescriptorSet(tmp);
-        }
+        });
         cube360EquirectSampleDescriptorSet = VK_NULL_HANDLE;
     }
 }

@@ -40,7 +40,13 @@ void TextureArrayManager::notifyAllocationListeners() {
 	}
 }
 
-// Helper to cleanup a TextureImage if it already has resources
+// Helper to cleanup a TextureImage if it already has resources.
+// Always defers GPU resource destruction via deferDestroyUntilAllPending
+// to ensure in-flight graphics frames (tracked by the timeline semaphore)
+// have completed before freeing memory.  The old check using
+// hasPendingCommandBuffers() only considered async submissions, not
+// in-flight graphics frames, and could destroy memory still accessible
+// by the GPU — causing GPUVM faults and VK_ERROR_DEVICE_LOST.
 static void cleanupTextureImage(VulkanApp* app, TextureImage &ti) {
 	if (!app) return;
 	VkDevice device = app->getDevice();
@@ -48,52 +54,36 @@ static void cleanupTextureImage(VulkanApp* app, TextureImage &ti) {
 	// Destroy view
 	if (ti.view != VK_NULL_HANDLE) {
 		VkImageView v = ti.view;
-		if (app->hasPendingCommandBuffers()) {
-			std::cerr << "[TextureArrayManager] deferring vkDestroyImageView(" << (void*)v << ") until pending cmds complete" << std::endl;
-			app->deferDestroyUntilAllPending([device, v, app](){ if (app->resources.removeImageView(v)) vkDestroyImageView(device, v, nullptr); });
-			ti.view = VK_NULL_HANDLE;
-		} else {
-			std::cerr << "[TextureArrayManager] destroying vkDestroyImageView(" << (void*)v << ") now" << std::endl;
-			if (app->resources.removeImageView(v)) vkDestroyImageView(device, v, nullptr);
-			ti.view = VK_NULL_HANDLE;
-		}
+		std::cerr << "[TextureArrayManager] deferring vkDestroyImageView(" << (void*)v << ") until all pending GPU work completes" << std::endl;
+		app->deferDestroyUntilAllPending([device, v, app](){ if (app->resources.removeImageView(v)) vkDestroyImageView(device, v, nullptr); });
+		ti.view = VK_NULL_HANDLE;
 	}
 	// Destroy image + memory via VMA if allocated through VMA
 	if (ti.image != VK_NULL_HANDLE) {
 		VkImage img = ti.image;
 		VmaAllocation alloc = ti.allocation;
 		VkDeviceMemory mem = ti.memory;
-		if (app->hasPendingCommandBuffers()) {
-			std::cerr << "[TextureArrayManager] deferring vmaDestroyImage(" << (void*)img << ") until pending cmds complete" << std::endl;
-			app->deferDestroyUntilAllPending([device, img, alloc, mem, app](){ app->destroyImageWithVma(img, alloc, mem); });
-			ti.image = VK_NULL_HANDLE;
-		} else {
-			std::cerr << "[TextureArrayManager] destroying vmaDestroyImage(" << (void*)img << ") now" << std::endl;
-			app->destroyImageWithVma(img, alloc, mem);
-			ti.image = VK_NULL_HANDLE;
-		}
+		std::cerr << "[TextureArrayManager] deferring vmaDestroyImage(" << (void*)img << ") until all pending GPU work completes" << std::endl;
+		app->deferDestroyUntilAllPending([device, img, alloc, mem, app](){ app->destroyImageWithVma(img, alloc, mem); });
+		ti.image = VK_NULL_HANDLE;
 		ti.allocation = VK_NULL_HANDLE;
 		ti.memory = VK_NULL_HANDLE;
 	}
 	ti.mipLevels = 1;
 }
 
-// Cleanup sampler if present
+// Cleanup sampler if present.
+// Always defers GPU resource destruction via deferDestroyUntilAllPending
+// to ensure in-flight graphics frames have completed before freeing.
 static void cleanupSampler(VulkanApp* app, VkSampler &s) {
 	if (!app) return;
 	VkDevice device = app->getDevice();
 	std::cerr << "[TextureArrayManager] cleanupSampler: sampler=" << (void*)s << std::endl;
 	if (s != VK_NULL_HANDLE) {
 		VkSampler ss = s;
-		if (app->hasPendingCommandBuffers()) {
-			std::cerr << "[TextureArrayManager] deferring vkDestroySampler(" << (void*)ss << ") until pending cmds complete" << std::endl;
-			app->deferDestroyUntilAllPending([device, ss, app](){ if (app->resources.removeSampler(ss)) vkDestroySampler(device, ss, nullptr); });
-			s = VK_NULL_HANDLE;
-		} else {
-			std::cerr << "[TextureArrayManager] destroying vkDestroySampler(" << (void*)ss << ") now" << std::endl;
-			if (app->resources.removeSampler(ss)) vkDestroySampler(device, ss, nullptr);
-			s = VK_NULL_HANDLE;
-		}
+		std::cerr << "[TextureArrayManager] deferring vkDestroySampler(" << (void*)ss << ") until all pending GPU work completes" << std::endl;
+		app->deferDestroyUntilAllPending([device, ss, app](){ if (app->resources.removeSampler(ss)) vkDestroySampler(device, ss, nullptr); });
+		s = VK_NULL_HANDLE;
 	}
 }
 

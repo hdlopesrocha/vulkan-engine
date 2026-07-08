@@ -973,15 +973,11 @@ void VulkanApp::cleanup() {
         vkDestroySemaphore(device, uploadTimeline, nullptr);
         uploadTimeline = VK_NULL_HANDLE;
     }
-    // Destroy the frame timeline semaphore
-    if (frameTimeline != VK_NULL_HANDLE) {
-        resources.removeSemaphore(frameTimeline);
-        vkDestroySemaphore(device, frameTimeline, nullptr);
-        frameTimeline = VK_NULL_HANDLE;
-    }
     // Process any deferred-destruction callbacks immediately so resources
     // scheduled with deferDestroyUntilAllPending() are released while the
-    // device is still valid.
+    // device is still valid.  Must happen BEFORE destroying frameTimeline
+    // because processPendingCommandBuffers queries the timeline semaphore
+    // value to determine whether all in-flight frames have completed.
     processPendingCommandBuffers();
 
     // Do not destroy objects that are tracked by VulkanResourceManager here.
@@ -995,6 +991,13 @@ void VulkanApp::cleanup() {
             if (!deviceLost) p.second();
         }
         deferredDestroys.clear();
+    }
+    // Destroy the frame timeline semaphore — kept alive above so that
+    // processPendingCommandBuffers can safely call vkGetSemaphoreCounterValue.
+    if (frameTimeline != VK_NULL_HANDLE) {
+        resources.removeSemaphore(frameTimeline);
+        vkDestroySemaphore(device, frameTimeline, nullptr);
+        frameTimeline = VK_NULL_HANDLE;
     }
     // ImGui cleanup (must happen before destroying descriptor pools and device)
     printf("[VulkanApp] calling cleanupImGui() - imguiDescriptorPool=%p\n", (void*)imguiDescriptorPool);
@@ -1893,7 +1896,22 @@ void VulkanApp::processPendingCommandBuffers() {
                     if (st == VK_SUCCESS && curVal >= frameTimelineValue.load()) {
                         allFramesIdle = true;
                     }
-                    if (allFramesIdle) canRun = true;
+                    if (allFramesIdle) {
+                        // Sanity-check: verify all in-flight fences (except
+                        // current, which was just reset) are signaled.
+                        // vkGetSemaphoreCounterValue can return stale values
+                        // on some drivers (RADV/amdgpu PCIe ordering), causing
+                        // memory to be freed while the GPU still accesses it
+                        // → GPU page fault → VK_ERROR_DEVICE_LOST.
+                        // vkGetFenceStatus is non-blocking and reliable.
+                        bool fenceCheck = true;
+                        for (uint32_t fi = 0; fi < inFlightFences.size(); fi++) {
+                            if (fi == currentFrame) continue;
+                            VkResult fs = vkGetFenceStatus(device, inFlightFences[fi]);
+                            if (fs == VK_NOT_READY) { fenceCheck = false; break; }
+                        }
+                        if (fenceCheck) canRun = true;
+                    }
                 }
             } else {
                 // If the resource manager no longer tracks this fence the

@@ -626,16 +626,14 @@ void RenderTargetsWidget::destroyLinearTargets() {
     if (!a) return;
 
     // Remove ImGui descriptors owned by this widget and destroy associated
-    // images, views, framebuffers and pipeline. Defer if GPU work is pending.
+    // images, views, framebuffers and pipeline. Always defer via
+    // deferDestroyUntilAllPending to ensure in-flight graphics frames
+    // complete before freeing resources.
     auto removeDescIfOwned = [&](VkDescriptorSet &ds, bool &owned) {
         if (ds == VK_NULL_HANDLE) return;
         if (!owned) { ds = VK_NULL_HANDLE; return; }
         VkDescriptorSet tmp = ds;
-        if (a->hasPendingCommandBuffers()) {
-            a->deferDestroyUntilAllPending([tmp]() { ImGui_ImplVulkan_RemoveTexture(tmp); });
-        } else {
-            ImGui_ImplVulkan_RemoveTexture(tmp);
-        }
+        a->deferDestroyUntilAllPending([tmp]() { ImGui_ImplVulkan_RemoveTexture(tmp); });
         ds = VK_NULL_HANDLE;
         owned = false;
     };
@@ -646,31 +644,22 @@ void RenderTargetsWidget::destroyLinearTargets() {
         removeDescIfOwned(linearShadowDepthDescriptor[i], linearShadowDepthDescriptorOwned[i]);
     }
 
-    // Destroy images, views, memories and framebuffers created for linearization
+    // Destroy images, views, memories and framebuffers created for linearization.
+    // Always defer via deferDestroyUntilAllPending to ensure in-flight graphics
+    // frames complete before freeing memory.
     auto destroyImageAndMemory = [&](VkImageView &iv, VkImage &img, VmaAllocation &alloc, VkDeviceMemory &mem) {
         if (iv == VK_NULL_HANDLE && img == VK_NULL_HANDLE && mem == VK_NULL_HANDLE) return;
         VkImageView tmp_iv = iv;
         VkImage tmp_img = img;
         VmaAllocation tmp_alloc = alloc;
         VkDeviceMemory tmp_mem = mem;
-        if (a->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [tmp_iv, tmp_img, tmp_alloc, tmp_mem, a]() {
-                if (tmp_iv != VK_NULL_HANDLE) {
-                    if (a->resources.removeImageView(tmp_iv))
-                        vkDestroyImageView(a->getDevice(), tmp_iv, nullptr);
-                }
-                a->destroyImageWithVma(tmp_img, tmp_alloc, tmp_mem);
-            });
-        } else {
+        a->deferDestroyUntilAllPending([tmp_iv, tmp_img, tmp_alloc, tmp_mem, a]() {
             if (tmp_iv != VK_NULL_HANDLE) {
                 if (a->resources.removeImageView(tmp_iv))
                     vkDestroyImageView(a->getDevice(), tmp_iv, nullptr);
             }
             a->destroyImageWithVma(tmp_img, tmp_alloc, tmp_mem);
-        }
+        });
         iv = VK_NULL_HANDLE;
         img = VK_NULL_HANDLE;
         alloc = VK_NULL_HANDLE;
@@ -681,16 +670,9 @@ void RenderTargetsWidget::destroyLinearTargets() {
         if (fb == VK_NULL_HANDLE) return;
         VkFramebuffer tmp = fb;
         VkDevice device = a->getDevice();
-        if (a->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [tmp, a]() {
-                if (a->resources.removeFramebuffer(tmp)) vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
-            });
-        } else {
+        a->deferDestroyUntilAllPending([tmp, a]() {
             if (a->resources.removeFramebuffer(tmp)) vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
-        }
+        });
         fb = VK_NULL_HANDLE;
     };
 
@@ -717,11 +699,7 @@ void RenderTargetsWidget::cleanup() {
         if (ds == VK_NULL_HANDLE) return;
         if (!owned) { ds = VK_NULL_HANDLE; return; }
         VkDescriptorSet tmp = ds;
-        if (app && app->hasPendingCommandBuffers()) {
-            app->deferDestroyUntilAllPending([tmp](){ ImGui_ImplVulkan_RemoveTexture(tmp); });
-        } else {
-            ImGui_ImplVulkan_RemoveTexture(tmp);
-        }
+        if (app) app->deferDestroyUntilAllPending([tmp](){ ImGui_ImplVulkan_RemoveTexture(tmp); });
         ds = VK_NULL_HANDLE;
         owned = false;
     };
@@ -761,8 +739,8 @@ void RenderTargetsWidget::cleanup() {
     // owned per-cascade descriptors are removed above in the loop.
 
     // Destroy any images / image views and persistent staging buffers that
-    // this widget created. If GPU work is pending, defer destruction until
-    // it is safe to free these Vulkan objects.
+    // this widget created. Always defer via deferDestroyUntilAllPending to
+    // ensure in-flight graphics frames complete before freeing memory.
     VulkanApp* a = app;
     auto destroyImageAndMemory = [&](VkImageView &iv, VkImage &img, VmaAllocation &alloc, VkDeviceMemory &mem) {
         if (iv == VK_NULL_HANDLE && img == VK_NULL_HANDLE && mem == VK_NULL_HANDLE) return;
@@ -770,24 +748,13 @@ void RenderTargetsWidget::cleanup() {
         VkImage tmp_img = img;
         VmaAllocation tmp_alloc = alloc;
         VkDeviceMemory tmp_mem = mem;
-        if (a && a->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [tmp_iv, tmp_img, tmp_alloc, tmp_mem, a](){
-                if (tmp_iv != VK_NULL_HANDLE) {
-                    if (a->resources.removeImageView(tmp_iv))
-                        vkDestroyImageView(a->getDevice(), tmp_iv, nullptr);
-                }
-                a->destroyImageWithVma(tmp_img, tmp_alloc, tmp_mem);
-            });
-        } else {
+        if (a) a->deferDestroyUntilAllPending([tmp_iv, tmp_img, tmp_alloc, tmp_mem, a](){
             if (tmp_iv != VK_NULL_HANDLE) {
                 if (a->resources.removeImageView(tmp_iv))
                     vkDestroyImageView(a->getDevice(), tmp_iv, nullptr);
             }
             a->destroyImageWithVma(tmp_img, tmp_alloc, tmp_mem);
-        }
+        });
         iv = VK_NULL_HANDLE;
         img = VK_NULL_HANDLE;
         alloc = VK_NULL_HANDLE;
@@ -801,31 +768,15 @@ void RenderTargetsWidget::cleanup() {
         VmaAllocation tmpAlloc = buf.allocation;
         VkDeviceMemory tmpMem = buf.memory;
         if (tmpAlloc && a) {
-            if (a && a->hasPendingCommandBuffers()) {
-                VkFence f = VK_NULL_HANDLE;
-                uint32_t fi = a->getCurrentFrame();
-                if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-                a->deferDestroyUntilFence(f, [a, tmpBuf, tmpAlloc](){
-                    a->resources.removeBuffer(tmpBuf);
-                    vmaDestroyBuffer(a->getVmaAllocator(), tmpBuf, tmpAlloc);
-                });
-            } else {
+            a->deferDestroyUntilAllPending([a, tmpBuf, tmpAlloc](){
                 a->resources.removeBuffer(tmpBuf);
                 vmaDestroyBuffer(a->getVmaAllocator(), tmpBuf, tmpAlloc);
-            }
-        } else {
-            if (a && a->hasPendingCommandBuffers()) {
-                VkFence f = VK_NULL_HANDLE;
-                uint32_t fi = a->getCurrentFrame();
-                if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-                a->deferDestroyUntilFence(f, [device, tmpBuf, tmpMem, a](){
-                    if (a->resources.removeBuffer(tmpBuf)) vkDestroyBuffer(device, tmpBuf, nullptr);
-                    if (a->resources.removeDeviceMemory(tmpMem)) vkFreeMemory(device, tmpMem, nullptr);
-                });
-            } else {
+            });
+        } else if (a) {
+            a->deferDestroyUntilAllPending([device, tmpBuf, tmpMem, a](){
                 if (a->resources.removeBuffer(tmpBuf)) vkDestroyBuffer(device, tmpBuf, nullptr);
                 if (a->resources.removeDeviceMemory(tmpMem)) vkFreeMemory(device, tmpMem, nullptr);
-            }
+            });
         }
         buf = {};
     };
@@ -851,20 +802,14 @@ void RenderTargetsWidget::cleanup() {
 
     // Destroy linearization pipeline, pipeline layout, descriptor set/layout,
     // framebuffers and renderpass created by this widget.
+    // Always defer to ensure in-flight graphics frames complete.
     auto destroyIf = [&](auto &handle, auto removeFn, auto destroyFn) {
         if (handle == VK_NULL_HANDLE) return;
         auto tmp = handle;
         VkDevice device = a ? a->getDevice() : VK_NULL_HANDLE;
-        if (a && a->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [device, tmp, a, removeFn, destroyFn]() mutable {
-                if ((a->resources.*removeFn)(tmp)) destroyFn(device, tmp);
-            });
-        } else {
-            if ((a->resources.*removeFn)(tmp)) destroyFn(a->getDevice(), tmp);
-        }
+        if (a) a->deferDestroyUntilAllPending([device, tmp, a, removeFn, destroyFn]() mutable {
+            if ((a->resources.*removeFn)(tmp)) destroyFn(device, tmp);
+        });
         handle = VK_NULL_HANDLE;
     };
 
@@ -873,63 +818,35 @@ void RenderTargetsWidget::cleanup() {
     // Pipeline
     if (linearizePipeline != VK_NULL_HANDLE) {
         VkPipeline tmp = linearizePipeline;
-        if (a && a->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [tmp, a]() {
-                if (a->resources.removePipeline(tmp)) vkDestroyPipeline(a->getDevice(), tmp, nullptr);
-            });
-        } else {
+        a->deferDestroyUntilAllPending([tmp, a]() {
             if (a->resources.removePipeline(tmp)) vkDestroyPipeline(a->getDevice(), tmp, nullptr);
-        }
+        });
         linearizePipeline = VK_NULL_HANDLE;
     }
 
     // Pipeline layout
     if (linearizePipelineLayout != VK_NULL_HANDLE) {
         VkPipelineLayout tmp = linearizePipelineLayout;
-        if (a && a->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [tmp, a]() {
-                if (a->resources.removePipelineLayout(tmp)) vkDestroyPipelineLayout(a->getDevice(), tmp, nullptr);
-            });
-        } else {
+        a->deferDestroyUntilAllPending([tmp, a]() {
             if (a->resources.removePipelineLayout(tmp)) vkDestroyPipelineLayout(a->getDevice(), tmp, nullptr);
-        }
+        });
         linearizePipelineLayout = VK_NULL_HANDLE;
     }
 
     // Descriptor set + layout
     if (linearizeDescriptorSet != VK_NULL_HANDLE) {
         VkDescriptorSet tmp = linearizeDescriptorSet;
-        if (a && a->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [tmp, a]() {
-                a->resources.removeDescriptorSet(tmp);
-                // Descriptor sets are freed via pool management elsewhere; leave as-is
-            });
-        } else {
+        a->deferDestroyUntilAllPending([tmp, a]() {
             a->resources.removeDescriptorSet(tmp);
-        }
+            // Descriptor sets are freed via pool management elsewhere; leave as-is
+        });
         linearizeDescriptorSet = VK_NULL_HANDLE;
     }
     if (linearizeDescriptorSetLayout != VK_NULL_HANDLE) {
         VkDescriptorSetLayout tmp = linearizeDescriptorSetLayout;
-        if (a && a->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [tmp, a]() {
-                if (a->resources.removeDescriptorSetLayout(tmp)) vkDestroyDescriptorSetLayout(a->getDevice(), tmp, nullptr);
-            });
-        } else {
+        a->deferDestroyUntilAllPending([tmp, a]() {
             if (a->resources.removeDescriptorSetLayout(tmp)) vkDestroyDescriptorSetLayout(a->getDevice(), tmp, nullptr);
-        }
+        });
         linearizeDescriptorSetLayout = VK_NULL_HANDLE;
     }
 
@@ -938,16 +855,9 @@ void RenderTargetsWidget::cleanup() {
     // Destroy widget-owned sampler
     if (widgetSampler != VK_NULL_HANDLE) {
         VkSampler tmp = widgetSampler;
-        if (a && a->hasPendingCommandBuffers()) {
-            VkFence f = VK_NULL_HANDLE;
-            uint32_t fi = a->getCurrentFrame();
-            if (fi < a->inFlightFences.size()) f = a->inFlightFences[fi];
-            a->deferDestroyUntilFence(f, [tmp, a]() {
-                if (a->resources.removeSampler(tmp)) vkDestroySampler(a->getDevice(), tmp, nullptr);
-            });
-        } else {
+        a->deferDestroyUntilAllPending([tmp, a]() {
             if (a->resources.removeSampler(tmp)) vkDestroySampler(a->getDevice(), tmp, nullptr);
-        }
+        });
         widgetSampler = VK_NULL_HANDLE;
     }
 }

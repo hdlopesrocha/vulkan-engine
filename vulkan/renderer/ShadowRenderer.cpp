@@ -31,16 +31,11 @@ void ShadowRenderer::init(VulkanApp* app) {
 
 void ShadowRenderer::cleanup(VulkanApp* app) {
     VkDevice device = app->getDevice();
-    bool pending = app->hasPendingCommandBuffers();
 
     for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
         if (cascades[i].imguiDescSet != VK_NULL_HANDLE) {
             VkDescriptorSet ds = cascades[i].imguiDescSet;
-            if (pending) {
-                app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
-            } else {
-                ImGui_ImplVulkan_RemoveTexture(ds);
-            }
+            app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
             cascades[i].imguiDescSet = VK_NULL_HANDLE;
         }
         cascades[i].colorView = VK_NULL_HANDLE;
