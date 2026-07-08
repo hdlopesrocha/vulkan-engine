@@ -11,6 +11,12 @@
 #define VK_KHR_PIPELINE_BINARY_EXTENSION_NAME "VK_KHR_pipeline_binary"
 #endif
 
+// VK_KHR_maintenance5 is required by VK_KHR_pipeline_binary but may not be
+// defined in older Vulkan headers (pre-1.4).
+#ifndef VK_KHR_MAINTENANCE5_EXTENSION_NAME
+#define VK_KHR_MAINTENANCE5_EXTENSION_NAME "VK_KHR_maintenance5"
+#endif
+
 static const char* layoutName(VkImageLayout l) {
     switch (l) {
         case VK_IMAGE_LAYOUT_UNDEFINED: return "UNDEFINED";
@@ -5619,6 +5625,7 @@ void VulkanApp::createLogicalDevice() {
 
     // Query available device extensions so we can conditionally enable optional
     // extensions like VK_KHR_pipeline_binary (Vulkan 1.4) for granular cache invalidation.
+    bool maintenance5Supported = false;
     pipelineBinarySupported = false;
     uint32_t availExtCount = 0;
     vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &availExtCount, nullptr);
@@ -5626,13 +5633,20 @@ void VulkanApp::createLogicalDevice() {
         std::vector<VkExtensionProperties> availExts(availExtCount);
         vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &availExtCount, availExts.data());
         for (const auto& ext : availExts) {
+            if (strcmp(ext.extensionName, VK_KHR_MAINTENANCE5_EXTENSION_NAME) == 0) {
+                maintenance5Supported = true;
+            }
             if (strcmp(ext.extensionName, VK_KHR_PIPELINE_BINARY_EXTENSION_NAME) == 0) {
-                extensions.push_back(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME);
                 pipelineBinarySupported = true;
-                printf("[VulkanApp] VK_KHR_pipeline_binary supported — enabling for granular pipeline cache invalidation\n");
-                break;
             }
         }
+    }
+    if (maintenance5Supported) {
+        extensions.push_back(VK_KHR_MAINTENANCE5_EXTENSION_NAME);
+    }
+    if (pipelineBinarySupported) {
+        extensions.push_back(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME);
+        printf("[VulkanApp] VK_KHR_pipeline_binary supported — enabling for granular pipeline cache invalidation\n");
     }
 
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
