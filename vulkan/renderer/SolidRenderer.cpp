@@ -342,33 +342,6 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
     if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, graphicsPipeline);
     else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
-    // Set dynamic viewport and scissor (required since pipeline uses dynamic state)
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = static_cast<float>(appArg->getWidth());
-    viewport.height = static_cast<float>(appArg->getHeight());
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    
-    if (!printedOnce) {
-        printf("[SolidRenderer::draw] viewport: x=%.1f y=%.1f w=%.1f h=%.1f depth=[%.1f,%.1f]\n",
-               viewport.x, viewport.y, viewport.width, viewport.height, viewport.minDepth, viewport.maxDepth);
-    }
-    
-    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-
-    VkRect2D scissor{};
-    scissor.offset = {0, 0};
-    scissor.extent = {static_cast<uint32_t>(appArg->getWidth()), static_cast<uint32_t>(appArg->getHeight())};
-    
-    if (!printedOnce) {
-        printf("[SolidRenderer::draw] scissor: offset=(%d,%d) extent=(%u,%u)\n",
-               scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height);
-    }
-    
-    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-
     // Bind descriptor set 0: main UBO/samplers (perTextureDescriptorSet)
     // Main shaders only use set 0, no set 1 needed
     if (!printedOnce) {
@@ -403,21 +376,6 @@ void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp
     if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, depthPrePassPipeline);
     else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
 
-    // Set dynamic viewport and scissor
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = static_cast<float>(appArg->getWidth());
-    viewport.height = static_cast<float>(appArg->getHeight());
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-
-    VkRect2D scissor{};
-    scissor.offset = {0, 0};
-    scissor.extent = {static_cast<uint32_t>(appArg->getWidth()), static_cast<uint32_t>(appArg->getHeight())};
-    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-
     // Bind descriptor set using the depth pre-pass pipeline layout
     if (perTextureDescriptorSet != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, depthPrePassPipelineLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
@@ -432,10 +390,6 @@ void SolidRenderer::drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* appArg,
     if (!appArg || deferredDepthPipeline == VK_NULL_HANDLE) return;
     if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, deferredDepthPipeline);
     else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipeline);
-    VkViewport viewport{0.0f, 0.0f, (float)appArg->getWidth(), (float)appArg->getHeight(), 0.0f, 1.0f};
-    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-    VkRect2D scissor{{0, 0}, {(uint32_t)appArg->getWidth(), (uint32_t)appArg->getHeight()}};
-    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
     if (descSet != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);
         else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);
@@ -447,10 +401,6 @@ void SolidRenderer::drawColor(VkCommandBuffer &commandBuffer, VulkanApp* appArg,
     if (!appArg || deferredColorPipeline == VK_NULL_HANDLE) return;
     if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, deferredColorPipeline);
     else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipeline);
-    VkViewport viewport{0.0f, 0.0f, (float)appArg->getWidth(), (float)appArg->getHeight(), 0.0f, 1.0f};
-    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-    VkRect2D scissor{{0, 0}, {(uint32_t)appArg->getWidth(), (uint32_t)appArg->getHeight()}};
-    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
     if (descSet != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
         else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);

@@ -931,6 +931,13 @@ public:
 
             vkCmdBeginRendering(commandBuffer, &ri);
 
+            {
+                VkViewport vp{0.0f, 0.0f, (float)getWidth(), (float)getHeight(), 0.0f, 1.0f};
+                vkCmdSetViewport(commandBuffer, 0, 1, &vp);
+                VkRect2D sc{{0, 0}, {(uint32_t)getWidth(), (uint32_t)getHeight()}};
+                vkCmdSetScissor(commandBuffer, 0, 1, &sc);
+            }
+
             // Solid geometry depth
             sceneRenderer->solidRenderer->drawDepth(commandBuffer, this, getMainDescriptorSet());
 
@@ -1000,6 +1007,13 @@ public:
             ri.pDepthAttachment = &depthAtt;
 
             vkCmdBeginRendering(commandBuffer, &ri);
+
+            {
+                VkViewport vp{0.0f, 0.0f, (float)getWidth(), (float)getHeight(), 0.0f, 1.0f};
+                vkCmdSetViewport(commandBuffer, 0, 1, &vp);
+                VkRect2D sc{{0, 0}, {(uint32_t)getWidth(), (uint32_t)getHeight()}};
+                vkCmdSetScissor(commandBuffer, 0, 1, &sc);
+            }
 
             // Sky first (background, no depth write)
             if (sceneRenderer->skyRenderer) {
