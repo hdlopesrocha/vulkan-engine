@@ -5,6 +5,12 @@
 #include <execinfo.h>
 #include <fstream>
 
+// VK_KHR_pipeline_binary may not be in older Vulkan headers (pre-1.4).
+// Define the extension name so we can check for runtime support.
+#ifndef VK_KHR_PIPELINE_BINARY_EXTENSION_NAME
+#define VK_KHR_PIPELINE_BINARY_EXTENSION_NAME "VK_KHR_pipeline_binary"
+#endif
+
 static const char* layoutName(VkImageLayout l) {
     switch (l) {
         case VK_IMAGE_LAYOUT_UNDEFINED: return "UNDEFINED";
@@ -223,7 +229,8 @@ void VulkanApp::createPipelineCache() {
         std::cerr << "[VulkanApp] Warning: Failed to create pipeline cache, proceeding without" << std::endl;
         pipelineCache = VK_NULL_HANDLE;
     } else {
-        printf("[VulkanApp] Created pipeline cache (%zu bytes loaded from disk)\n", cacheData.size());
+        printf("[VulkanApp] Created pipeline cache (%zu bytes loaded from disk)%s\n",
+            cacheData.size(), pipelineBinarySupported ? " [VK_KHR_pipeline_binary available]" : "");
     }
 }
 
@@ -887,17 +894,6 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     return VK_FALSE;
 }
 
-// --- New helper methods for basic rendering ---
-std::vector<const char*> deviceExtensions = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-    VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
-    VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME,
-    // VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME promoted to Vulkan 1.2 core — using vulkan12Features instead
-    // VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME promoted to Vulkan 1.1 core
-    // VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME promoted to Vulkan 1.2 core
-};
-
-
 
 void VulkanApp::initWindow() {
     if (!glfwInit()) {
@@ -1152,7 +1148,7 @@ void VulkanApp::initImGui() {
     init_info.Device = device;
     init_info.QueueFamily = findQueueFamilies(physicalDevice).graphicsFamily.value();
     init_info.Queue = graphicsQueue;
-    init_info.PipelineCache = VK_NULL_HANDLE;
+    init_info.PipelineCache = pipelineCache;
     init_info.DescriptorPool = imguiDescriptorPool;
     init_info.MinImageCount = 2;
     init_info.ImageCount = static_cast<uint32_t>(swapchainImages.size());
@@ -5223,7 +5219,7 @@ void VulkanApp::recreateSwapchain() {
     init_info.Device = device;
     init_info.QueueFamily = findQueueFamilies(physicalDevice).graphicsFamily.value();
     init_info.Queue = graphicsQueue;
-    init_info.PipelineCache = VK_NULL_HANDLE;
+    init_info.PipelineCache = pipelineCache;
     init_info.DescriptorPool = imguiDescriptorPool;
     init_info.MinImageCount = 2;
     init_info.ImageCount = static_cast<uint32_t>(swapchainImages.size());
@@ -5591,9 +5587,33 @@ void VulkanApp::createLogicalDevice() {
     createInfo.pEnabledFeatures = &deviceFeatures;
 
 
-    // No extension dependency logic needed
-    createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
-    createInfo.ppEnabledExtensionNames = deviceExtensions.data();
+    // Build device extension list. Required extensions first, then optional ones.
+    std::vector<const char*> extensions = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
+        VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME,
+    };
+
+    // Query available device extensions so we can conditionally enable optional
+    // extensions like VK_KHR_pipeline_binary (Vulkan 1.4) for granular cache invalidation.
+    pipelineBinarySupported = false;
+    uint32_t availExtCount = 0;
+    vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &availExtCount, nullptr);
+    if (availExtCount > 0) {
+        std::vector<VkExtensionProperties> availExts(availExtCount);
+        vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &availExtCount, availExts.data());
+        for (const auto& ext : availExts) {
+            if (strcmp(ext.extensionName, VK_KHR_PIPELINE_BINARY_EXTENSION_NAME) == 0) {
+                extensions.push_back(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME);
+                pipelineBinarySupported = true;
+                printf("[VulkanApp] VK_KHR_pipeline_binary supported — enabling for granular pipeline cache invalidation\n");
+                break;
+            }
+        }
+    }
+
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+    createInfo.ppEnabledExtensionNames = extensions.data();
 
     // Device layers are deprecated since Vulkan 1.0 — must be 0.
     // Validation layers are enabled at instance creation only.

@@ -73,6 +73,9 @@ class VulkanApp {
     // Pipeline cache for reducing shader compilation time across runs.
     // Created after device creation, serialized to disk on shutdown.
     VkPipelineCache pipelineCache = VK_NULL_HANDLE;
+    // Whether VK_KHR_pipeline_binary (Vulkan 1.4) is supported by the physical device.
+    // When true, per-pipeline binary keys can be used for granular cache invalidation.
+    bool pipelineBinarySupported = false;
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     VkQueue presentQueue = VK_NULL_HANDLE;
     // Dedicated queues for async subsystems
