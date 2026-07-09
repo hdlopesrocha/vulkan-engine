@@ -3,7 +3,9 @@
 #include <cstring>
 #include <thread>
 #include <execinfo.h>
+#include <cxxabi.h>
 #include <fstream>
+#include <exception>
 
 // VK_KHR_pipeline_binary may not be in older Vulkan headers (pre-1.4).
 // Define the extension name so we can check for runtime support.
@@ -5792,8 +5794,11 @@ void VulkanApp::run() {
 
     try {
         mainLoop();
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[VulkanApp] mainLoop threw: %s, proceeding with cleanup\n", e.what());
     } catch (...) {
-        fprintf(stderr, "[VulkanApp] mainLoop threw, proceeding with cleanup\n");
+        std::type_info* ti = abi::__cxa_current_exception_type();
+        fprintf(stderr, "[VulkanApp] mainLoop threw unknown exception (type=%s), proceeding with cleanup\n", ti ? ti->name() : "null");
     }
     cleanup();
 }
