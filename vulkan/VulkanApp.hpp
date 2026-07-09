@@ -600,8 +600,12 @@ protected:
         static constexpr uint32_t ASYNC_CMD_POOL_RING_SIZE = 64;
         VkCommandPool asyncCmdPoolRing[ASYNC_CMD_POOL_RING_SIZE]{};
         VkCommandBuffer asyncCmdBufferRing[ASYNC_CMD_POOL_RING_SIZE]{};
+        VkFence asyncCmdFenceRing[ASYNC_CMD_POOL_RING_SIZE]{};
         std::atomic<uint32_t> asyncCmdPoolNext{0};
+        std::unordered_map<VkCommandBuffer, uint32_t> m_cmdToRingSlot;
+        std::mutex m_cmdToRingSlotMtx;
         void createAsyncCmdPoolRing();
+        void signalRingSlotFence(VkCommandBuffer cmd, VkQueue queue);
         // Cache: shader file path → VkShaderModule, created on first use and kept for app lifetime.
         // Destruction is handled by VulkanResourceManager at shutdown (createShaderModule registers
         // each module with resources).

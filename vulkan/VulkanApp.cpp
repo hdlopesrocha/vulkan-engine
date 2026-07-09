@@ -1407,6 +1407,9 @@ void VulkanApp::createAsyncCmdPoolRing() {
     poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     poolInfo.queueFamilyIndex = qfi.graphicsFamily.value();
     poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     for (uint32_t i = 0; i < ASYNC_CMD_POOL_RING_SIZE; i++) {
         if (vkCreateCommandPool(device, &poolInfo, nullptr, &asyncCmdPoolRing[i]) != VK_SUCCESS) {
             throw std::runtime_error("failed to create async command pool ring");
@@ -1421,6 +1424,10 @@ void VulkanApp::createAsyncCmdPoolRing() {
         if (vkAllocateCommandBuffers(device, &allocInfo, &asyncCmdBufferRing[i]) != VK_SUCCESS) {
             throw std::runtime_error("failed to pre-allocate async command buffer");
         }
+        if (vkCreateFence(device, &fenceInfo, nullptr, &asyncCmdFenceRing[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create async ring fence");
+        }
+        resources.addFence(asyncCmdFenceRing[i], "VulkanApp: asyncCmdFenceRing");
     }
 }
 
@@ -2246,6 +2253,9 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
         VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
+        if (submitRes == VK_SUCCESS) {
+            signalRingSlotFence(commandBuffer, graphicsQueue);
+        }
         if (submitRes != VK_SUCCESS) {
             if (submitRes == VK_ERROR_DEVICE_LOST) {
                 // Mark global device lost state so other subsystems can adapt.
@@ -2385,6 +2395,9 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
         VkResult submitRes = vkQueueSubmit2(targetQueue, 1, &submitInfo, fence);
+        if (submitRes == VK_SUCCESS) {
+            signalRingSlotFence(commandBuffer, targetQueue);
+        }
         if (submitRes != VK_SUCCESS) {
             if (semaphore != VK_NULL_HANDLE) {
                 if (submitRes == VK_ERROR_DEVICE_LOST) {
@@ -2621,9 +2634,27 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         VkCommandPool pool = asyncCmdPoolRing[idx];
         VkCommandBuffer cmd = asyncCmdBufferRing[idx];
 
+        // Wait for the previous submission using this ring slot to complete
+        // before resetting the command buffer. Without this wait the GPU may
+        // still be consuming the old recording, causing memory corruption and
+        // GPU hangs.
+        VkFence slotFence = asyncCmdFenceRing[idx];
+        if (slotFence != VK_NULL_HANDLE) {
+            VkResult waitRes = vkWaitForFences(device, 1, &slotFence, VK_TRUE, UINT64_MAX);
+            if (waitRes != VK_SUCCESS && waitRes != VK_TIMEOUT) {
+                throw std::runtime_error("vkWaitForFences failed on async ring slot");
+            }
+            vkResetFences(device, 1, &slotFence);
+        }
+
         VkResult resetRes = vkResetCommandBuffer(cmd, 0);
         if (resetRes != VK_SUCCESS) {
             throw std::runtime_error("failed to reset async command buffer");
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(m_cmdToRingSlotMtx);
+            m_cmdToRingSlot[cmd] = idx;
         }
 
         // Track mapping so we can free using the correct pool later.
@@ -2691,12 +2722,35 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             g_cmdSubmitMap.erase(cmd);
             g_cmdBacktraces.erase(cmd);
         }
+        // Remove ring-slot mapping
+        {
+            std::lock_guard<std::mutex> lk(m_cmdToRingSlotMtx);
+            m_cmdToRingSlot.erase(cmd);
+        }
 
         // If this was a temporary pool (not ring, not persistent), destroy it now.
         // Ring pools are recycled; persistent pools live for the app lifetime.
         if (!isRingPool && pool != VK_NULL_HANDLE && pool != commandPool && pool != transientCommandPool && pool != transferCommandPool) {
             resources.removeCommandPool(pool);
             vkDestroyCommandPool(dev, pool, nullptr);
+        }
+    }
+
+    void VulkanApp::signalRingSlotFence(VkCommandBuffer cmd, VkQueue queue) {
+        uint32_t ringSlot;
+        {
+            std::lock_guard<std::mutex> lk(m_cmdToRingSlotMtx);
+            auto it = m_cmdToRingSlot.find(cmd);
+            if (it == m_cmdToRingSlot.end()) return;
+            ringSlot = it->second;
+        }
+        VkFence slotFence = asyncCmdFenceRing[ringSlot];
+        VkSubmitInfo2 emptySubmit{};
+        emptySubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+        VkResult sr = vkQueueSubmit2(queue, 1, &emptySubmit, slotFence);
+        if (sr != VK_SUCCESS && sr != VK_ERROR_DEVICE_LOST) {
+            std::cerr << "[VulkanApp] WARNING: signalRingSlotFence failed for slot "
+                      << ringSlot << " (VkResult=" << sr << ")\n";
         }
     }
 
