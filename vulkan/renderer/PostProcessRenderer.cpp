@@ -1,6 +1,7 @@
 
 #include "PostProcessRenderer.hpp"
 #include "DescriptorAllocator.hpp"
+#include "DescriptorWriter.hpp"
 #include "RendererUtils.hpp"
 #include "WaterRenderer.hpp"   // WaterParams, WaterUBO
 #include "../../utils/FileReader.hpp"
@@ -183,59 +184,31 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
 
     VkDescriptorSet currentDs = descriptorSets[frameIdx % FRAMES_IN_FLIGHT];
 
-    std::vector<VkWriteDescriptorSet> writes;
+    DescriptorWriter writer(device);
     for (int i = 0; i < 5; ++i) {
         if (imageInfos[i].imageView == VK_NULL_HANDLE || imageInfos[i].sampler == VK_NULL_HANDLE) {
             continue;
         }
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = currentDs;
-        write.dstBinding = i;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.descriptorCount = 1;
-        write.pImageInfo = &imageInfos[i];
-        writes.push_back(write);
+        writer.writeImage(currentDs, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          imageInfos[i].sampler, imageInfos[i].imageView,
+                          imageInfos[i].imageLayout);
     }
 
     if (bufferInfo.buffer != VK_NULL_HANDLE) {
-        VkWriteDescriptorSet bufWrite{};
-        bufWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        bufWrite.dstSet = currentDs;
-        bufWrite.dstBinding = 5;
-        bufWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        bufWrite.descriptorCount = 1;
-        bufWrite.pBufferInfo = &bufferInfo;
-        writes.push_back(bufWrite);
+        writer.writeBuffer(currentDs, 5, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                           bufferInfo.buffer, bufferInfo.offset, bufferInfo.range);
     } else {
         std::cerr << "[PostProcessRenderer] Skipping UBO binding: buffer is VK_NULL_HANDLE" << std::endl;
     }
 
     // Sky color texture (binding 6)
     if (skyImageInfo.imageView != VK_NULL_HANDLE && skyImageInfo.sampler != VK_NULL_HANDLE) {
-        VkWriteDescriptorSet skyWrite{};
-        skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        skyWrite.dstSet = currentDs;
-        skyWrite.dstBinding = 6;
-        skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        skyWrite.descriptorCount = 1;
-        skyWrite.pImageInfo = &skyImageInfo;
-        writes.push_back(skyWrite);
+        writer.writeImage(currentDs, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          skyImageInfo.sampler, skyImageInfo.imageView,
+                          skyImageInfo.imageLayout);
     }
 
-    if (!writes.empty()) {
-        std::vector<VkWriteDescriptorSet> safeWrites;
-        safeWrites.reserve(writes.size());
-        for (auto &w : writes) {
-            if ((uint64_t)w.dstSet == 0x6c100000006c1ULL) {
-                std::cerr << "[PostProcessRenderer] *** SKIPPING BAD HANDLE 0x6c100000006c1 *** binding=" << w.dstBinding << std::endl;
-                continue;
-            }
-            safeWrites.push_back(w);
-        }
-        if (!safeWrites.empty())
-            vkUpdateDescriptorSets(device, static_cast<uint32_t>(safeWrites.size()), safeWrites.data(), 0, nullptr);
-    }
+    writer.flush();
 
     // Set viewport and scissor (safe to call inside already-open dynamic rendering scope)
     VkViewport viewport{};

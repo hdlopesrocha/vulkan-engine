@@ -1,5 +1,6 @@
 #include "VegetationRenderer.hpp"
 #include "DescriptorAllocator.hpp"
+#include "DescriptorWriter.hpp"
 
 #include <vulkan/vulkan.h>
 #include <cstdint>
@@ -352,38 +353,15 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
 
     // Update descriptor sets
     for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f) {
-        VkDescriptorBufferInfo metaBI{};
-        metaBI.buffer = chunkMetaBuffer.buffer;
-        metaBI.offset = 0;
-        metaBI.range = VK_WHOLE_SIZE;
-        VkDescriptorBufferInfo compactedBI{};
-        compactedBI.buffer = compactedCmdBuffers[f].buffer;
-        compactedBI.offset = 0;
-        compactedBI.range = VK_WHOLE_SIZE;
-        VkDescriptorBufferInfo countBI{};
-        countBI.buffer = visibleCountBuffers[f].buffer;
-        countBI.offset = 0;
-        countBI.range = VK_WHOLE_SIZE;
-        VkWriteDescriptorSet writes[3]{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = vegCullDescSets[f];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[0].pBufferInfo = &metaBI;
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = vegCullDescSets[f];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[1].pBufferInfo = &compactedBI;
-        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[2].dstSet = vegCullDescSets[f];
-        writes[2].dstBinding = 2;
-        writes[2].descriptorCount = 1;
-        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[2].pBufferInfo = &countBI;
-        vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+        VkDescriptorSet cullDs = vegCullDescSets[f];
+        DescriptorWriter(device)
+            .writeBuffer(cullDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         chunkMetaBuffer.buffer, 0, VK_WHOLE_SIZE)
+            .writeBuffer(cullDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         compactedCmdBuffers[f].buffer, 0, VK_WHOLE_SIZE)
+            .writeBuffer(cullDs, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         visibleCountBuffers[f].buffer, 0, VK_WHOLE_SIZE)
+            .flush();
     }
 
     vegConsolidationDirty = false;
@@ -518,27 +496,17 @@ bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
     if (vegDescriptorSet == VK_NULL_HANDLE) {
         vegDescriptorSet = app->createDescriptorSet(descriptorSetLayout);
 
-        VkDescriptorImageInfo infos[3]{};
-        infos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        infos[0].imageView   = billboardAlbedoView;
-        infos[0].sampler     = billboardArraySampler;
-        infos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        infos[1].imageView   = billboardNormalView;
-        infos[1].sampler     = billboardArraySampler;
-        infos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        infos[2].imageView   = billboardOpacityView;
-        infos[2].sampler     = billboardArraySampler;
-
-        VkWriteDescriptorSet writes[3]{};
-        for (uint32_t i = 0; i < 3; ++i) {
-            writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[i].dstSet          = vegDescriptorSet;
-            writes[i].dstBinding      = i;
-            writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[i].descriptorCount = 1;
-            writes[i].pImageInfo      = &infos[i];
-        }
-        vkUpdateDescriptorSets(app->getDevice(), 3, writes, 0, nullptr);
+        DescriptorWriter writer(app->getDevice());
+        writer.writeImage(vegDescriptorSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          billboardArraySampler, billboardAlbedoView,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        writer.writeImage(vegDescriptorSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          billboardArraySampler, billboardNormalView,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        writer.writeImage(vegDescriptorSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          billboardArraySampler, billboardOpacityView,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        writer.flush();
         vegDescriptorVersion = 1;
         app->registerDescriptorSet(vegDescriptorSet);
         std::cerr << "[VEGETATION] Allocated vegDescriptorSet=" << (void*)vegDescriptorSet << " (3 sampler2DArray)" << std::endl;
@@ -602,18 +570,10 @@ void VegetationRenderer::init(VulkanApp* app) {
     // Allocate wind params descriptor set and bind the UBO.
     {
         windParamsDescSet = app->createDescriptorSet(windParamsDescSetLayout);
-        VkDescriptorBufferInfo bufInfo{};
-        bufInfo.buffer = windParamsBuffer.buffer;
-        bufInfo.offset = 0;
-        bufInfo.range  = VK_WHOLE_SIZE;
-        VkWriteDescriptorSet write{};
-        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet          = windParamsDescSet;
-        write.dstBinding      = 0;
-        write.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        write.descriptorCount = 1;
-        write.pBufferInfo     = &bufInfo;
-        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        DescriptorWriter(device)
+            .writeBuffer(windParamsDescSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                         windParamsBuffer.buffer, 0, VK_WHOLE_SIZE)
+            .flush();
         app->registerDescriptorSet(windParamsDescSet);
     }
 
@@ -1158,45 +1118,21 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
 
         impostorDescSet = descAlloc.allocateSet(impostorDescPool, impostorDescSetLayout);
 
-        VkDescriptorImageInfo imgInfos[3]{};
-        imgInfos[0] = { sampler, albedoArray60, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        imgInfos[1] = { sampler, normalArray60, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        if (hasImpostorDepth)
-            imgInfos[2] = { sampler, depthArray60, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-
-        VkDescriptorBufferInfo bufInfo{};
+        DescriptorWriter writer(device);
+        writer.writeImage(impostorDescSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          sampler, albedoArray60,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        writer.writeImage(impostorDescSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          sampler, normalArray60,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         if (hasImpostorDepth) {
-            bufInfo.buffer = captureInvVPBuf;
-            bufInfo.offset = 0;
-            bufInfo.range  = VK_WHOLE_SIZE;
+            writer.writeImage(impostorDescSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              sampler, depthArray60,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            writer.writeBuffer(impostorDescSet, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                               captureInvVPBuf, 0, VK_WHOLE_SIZE);
         }
-
-        VkWriteDescriptorSet ws[4]{};
-        for (uint32_t i = 0; i < 2; ++i) {
-            ws[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            ws[i].dstSet          = impostorDescSet;
-            ws[i].dstBinding      = i;
-            ws[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            ws[i].descriptorCount = 1;
-            ws[i].pImageInfo      = &imgInfos[i];
-        }
-        uint32_t numWrites = 2;
-        if (hasImpostorDepth) {
-            ws[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            ws[2].dstSet          = impostorDescSet;
-            ws[2].dstBinding      = 2;
-            ws[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            ws[2].descriptorCount = 1;
-            ws[2].pImageInfo      = &imgInfos[2];
-            ws[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            ws[3].dstSet          = impostorDescSet;
-            ws[3].dstBinding      = 3;
-            ws[3].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            ws[3].descriptorCount = 1;
-            ws[3].pBufferInfo     = &bufInfo;
-            numWrites = 4;
-        }
-        vkUpdateDescriptorSets(device, numWrites, ws, 0, nullptr);
+        writer.flush();
     }
 
     // ── Set 1 (depth variant): depth array + capture inv VP buffer ──────
@@ -1228,30 +1164,12 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
 
         impostorDepthDescSet = depthDescAlloc.allocateSet(impostorDepthDescPool, impostorDepthDescSetLayout);
 
-        VkDescriptorImageInfo depthImgInfo{};
-        depthImgInfo.sampler     = sampler;
-        depthImgInfo.imageView   = depthArray60;
-        depthImgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkDescriptorBufferInfo bufInfo{};
-        bufInfo.buffer = captureInvVPBuf;
-        bufInfo.offset = 0;
-        bufInfo.range  = VK_WHOLE_SIZE;
-
-        VkWriteDescriptorSet ws[2]{};
-        ws[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        ws[0].dstSet          = impostorDepthDescSet;
-        ws[0].dstBinding      = 0;
-        ws[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        ws[0].descriptorCount = 1;
-        ws[0].pImageInfo      = &depthImgInfo;
-        ws[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        ws[1].dstSet          = impostorDepthDescSet;
-        ws[1].dstBinding      = 1;
-        ws[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        ws[1].descriptorCount = 1;
-        ws[1].pBufferInfo     = &bufInfo;
-        vkUpdateDescriptorSets(device, 2, ws, 0, nullptr);
+        DescriptorWriter(device)
+            .writeImage(impostorDepthDescSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                        sampler, depthArray60, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            .writeBuffer(impostorDepthDescSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         captureInvVPBuf, 0, VK_WHOLE_SIZE)
+            .flush();
 
         // ── Build impostor depth pipeline ────────────────────────────────
         VkShaderModule depthVertMod = app->getOrCreateShaderModule("shaders/impostors_depth.vert.spv");

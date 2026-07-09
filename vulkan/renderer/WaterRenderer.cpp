@@ -1,6 +1,7 @@
 
 #include "WaterRenderer.hpp"
 #include "DescriptorAllocator.hpp"
+#include "DescriptorWriter.hpp"
 #include <cstdlib>
 #include "RendererUtils.hpp"
 
@@ -804,50 +805,14 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     // Scene position (binding 5) — g-buffer world position. If not available, fall back to scene color view.
     // Removed image info for Scene position/world-position texture (g-buffer)
 
-    std::array<VkWriteDescriptorSet, 5> writes{};
-
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = waterDepthDescriptorSets[frameIndex];
-    writes[0].dstBinding = 0;
-    writes[0].dstArrayElement = 0;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[0].descriptorCount = 1;
-    writes[0].pImageInfo = &imageInfos[0];
-
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = waterDepthDescriptorSets[frameIndex];
-    writes[1].dstBinding = 1;
-    writes[1].dstArrayElement = 0;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].descriptorCount = 1;
-    writes[1].pImageInfo = &imageInfos[1];
-
-    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = waterDepthDescriptorSets[frameIndex];
-    writes[2].dstBinding = 2;
-    writes[2].dstArrayElement = 0;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[2].descriptorCount = 1;
-    writes[2].pImageInfo = &imageInfos[2];
-
-    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet = waterDepthDescriptorSets[frameIndex];
-    writes[3].dstBinding = 3;
-    writes[3].dstArrayElement = 0;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[3].descriptorCount = 1;
-    writes[3].pImageInfo = &imageInfos[3];
-
-    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[4].dstSet = waterDepthDescriptorSets[frameIndex];
-    writes[4].dstBinding = 4;
-    writes[4].dstArrayElement = 0;
-    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[4].descriptorCount = 1;
-    writes[4].pImageInfo = &imageInfos[4];
-
-    // Removed write descriptor set for Scene position/world-position texture (g-buffer)
-    vkUpdateDescriptorSets(app->getDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    VkDescriptorSet ds = waterDepthDescriptorSets[frameIndex];
+    DescriptorWriter writer(app->getDevice());
+    for (uint32_t i = 0; i < 5; ++i) {
+        writer.writeImage(ds, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          imageInfos[i].sampler, imageInfos[i].imageView,
+                          imageInfos[i].imageLayout);
+    }
+    writer.flush();
 }
 
 void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams) {
@@ -1241,28 +1206,18 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
     dummyCubeInfo.imageView = cubemapDummyCubeView;
     dummyCubeInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 5> writes{};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = cubemapWaterDepthDS; writes[0].dstBinding = 0;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[0].descriptorCount = 1; writes[0].pImageInfo = &dummyColorInfo;
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = cubemapWaterDepthDS; writes[1].dstBinding = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].descriptorCount = 1; writes[1].pImageInfo = &depthInfo;
-    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = cubemapWaterDepthDS; writes[2].dstBinding = 2;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[2].descriptorCount = 1; writes[2].pImageInfo = &dummyColorInfo;
-    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet = cubemapWaterDepthDS; writes[3].dstBinding = 3;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[3].descriptorCount = 1; writes[3].pImageInfo = &dummyDepthInfo;
-    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[4].dstSet = cubemapWaterDepthDS; writes[4].dstBinding = 4;
-    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[4].descriptorCount = 1; writes[4].pImageInfo = &dummyCubeInfo;
-    vkUpdateDescriptorSets(device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
+    DescriptorWriter writer(device);
+    writer.writeImage(cubemapWaterDepthDS, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                      dummyColorInfo.sampler, dummyColorInfo.imageView, dummyColorInfo.imageLayout);
+    writer.writeImage(cubemapWaterDepthDS, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                      depthInfo.sampler, depthInfo.imageView, depthInfo.imageLayout);
+    writer.writeImage(cubemapWaterDepthDS, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                      dummyColorInfo.sampler, dummyColorInfo.imageView, dummyColorInfo.imageLayout);
+    writer.writeImage(cubemapWaterDepthDS, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                      dummyDepthInfo.sampler, dummyDepthInfo.imageView, dummyDepthInfo.imageLayout);
+    writer.writeImage(cubemapWaterDepthDS, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                      dummyCubeInfo.sampler, dummyCubeInfo.imageView, dummyCubeInfo.imageLayout);
+    writer.flush();
 
     // Bind pipeline and descriptor sets
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, cubemapWaterPipeline);

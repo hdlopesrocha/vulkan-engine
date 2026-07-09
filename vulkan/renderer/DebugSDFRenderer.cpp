@@ -1,5 +1,6 @@
 #include "DebugSDFRenderer.hpp"
 #include "DescriptorAllocator.hpp"
+#include "DescriptorWriter.hpp"
 #include "../ShaderStage.hpp"
 #include "../../utils/FileReader.hpp"
 #include <glm/gtc/matrix_transform.hpp>
@@ -115,21 +116,10 @@ void DebugSDFRenderer::createDescriptorSet(VulkanApp* app) {
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
 
-    VkDescriptorBufferInfo bufferInfo{};
-    bufferInfo.buffer = instanceBuffer.buffer;
-    bufferInfo.offset = 0;
-    bufferInfo.range = VK_WHOLE_SIZE;
-
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descriptorSet;
-    write.dstBinding = 0;
-    write.dstArrayElement = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    write.descriptorCount = 1;
-    write.pBufferInfo = &bufferInfo;
-
-    vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
+    DescriptorWriter(app->getDevice())
+        .writeBuffer(descriptorSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                     instanceBuffer.buffer, 0, VK_WHOLE_SIZE)
+        .flush();
 }
 
 void DebugSDFRenderer::updateInstanceBuffer(VulkanApp* app) {
@@ -151,21 +141,10 @@ void DebugSDFRenderer::updateInstanceBuffer(VulkanApp* app) {
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
         );
 
-        VkDescriptorBufferInfo bufferInfo{};
-        bufferInfo.buffer = instanceBuffer.buffer;
-        bufferInfo.offset = 0;
-        bufferInfo.range = VK_WHOLE_SIZE;
-
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = descriptorSet;
-        write.dstBinding = 0;
-        write.dstArrayElement = 0;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        write.descriptorCount = 1;
-        write.pBufferInfo = &bufferInfo;
-
-        vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
+        DescriptorWriter(app->getDevice())
+            .writeBuffer(descriptorSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         instanceBuffer.buffer, 0, VK_WHOLE_SIZE)
+            .flush();
     }
 
     std::vector<InstanceData> instanceData;

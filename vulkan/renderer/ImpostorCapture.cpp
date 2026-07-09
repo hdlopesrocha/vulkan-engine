@@ -1,5 +1,6 @@
 #include "ImpostorCapture.hpp"
 #include "DescriptorAllocator.hpp"
+#include "DescriptorWriter.hpp"
 #include "../VulkanApp.hpp"
 #include "../../math/Vertex.hpp"
 #include "../../utils/FileReader.hpp"
@@ -881,54 +882,31 @@ void ImpostorCapture::allocateDescSets(VulkanApp* app) {
 
     // Allocate wind params descriptor set from the app's general pool.
     windParamsDescSet = app->createDescriptorSet(windParamsDescSetLayout);
-    VkDescriptorBufferInfo wpBufInfo{};
-    wpBufInfo.buffer = windParamsBuffer.buffer;
-    wpBufInfo.offset = 0;
-    wpBufInfo.range  = VK_WHOLE_SIZE;
-    VkWriteDescriptorSet wpWrite{};
-    wpWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    wpWrite.dstSet          = windParamsDescSet;
-    wpWrite.dstBinding      = 0;
-    wpWrite.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    wpWrite.descriptorCount = 1;
-    wpWrite.pBufferInfo     = &wpBufInfo;
-    vkUpdateDescriptorSets(app->getDevice(), 1, &wpWrite, 0, nullptr);
+    DescriptorWriter(app->getDevice())
+        .writeBuffer(windParamsDescSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                     windParamsBuffer.buffer, 0, VK_WHOLE_SIZE)
+        .flush();
     app->registerDescriptorSet(windParamsDescSet);
 
     // Write UBO descriptor (DYNAMIC: range = one slot, offset supplied per-draw).
-    VkDescriptorBufferInfo bufInfo{};
-    bufInfo.buffer = uboBuffer;
-    bufInfo.offset = 0;
-    bufInfo.range  = sizeof(CaptureUBO);
-    VkWriteDescriptorSet w{};
-    w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w.dstSet          = uboDescSet;
-    w.dstBinding      = 0;
-    w.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-    w.descriptorCount = 1;
-    w.pBufferInfo     = &bufInfo;
-    vkUpdateDescriptorSets(app->getDevice(), 1, &w, 0, nullptr);
+    DescriptorWriter(app->getDevice())
+        .writeBuffer(uboDescSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                     uboBuffer, 0, sizeof(CaptureUBO))
+        .flush();
     // Texture descriptor is written in updateTexDescSet() at capture time.
 }
 
 void ImpostorCapture::updateTexDescSet(VkDevice device,
                                        VkImageView albedo, VkImageView normal,
                                        VkImageView opacity, VkSampler sampler) {
-    VkDescriptorImageInfo infos[3]{};
-    infos[0] = { sampler, albedo,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    infos[1] = { sampler, normal,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    infos[2] = { sampler, opacity, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-
-    VkWriteDescriptorSet ws[3]{};
-    for (uint32_t i = 0; i < 3; ++i) {
-        ws[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        ws[i].dstSet          = texDescSet;
-        ws[i].dstBinding      = i;
-        ws[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        ws[i].descriptorCount = 1;
-        ws[i].pImageInfo      = &infos[i];
-    }
-    vkUpdateDescriptorSets(device, 3, ws, 0, nullptr);
+    DescriptorWriter writer(device);
+    writer.writeImage(texDescSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                      sampler, albedo, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    writer.writeImage(texDescSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                      sampler, normal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    writer.writeImage(texDescSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                      sampler, opacity, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    writer.flush();
 }
 
 void ImpostorCapture::createImGuiDescSetsForType(VulkanApp* app, uint32_t billboardType) {

@@ -1,5 +1,6 @@
 #include "ShadowRenderer.hpp"
 #include "DescriptorAllocator.hpp"
+#include "DescriptorWriter.hpp"
 #include "RendererUtils.hpp"
 
 #include "../VulkanApp.hpp"
@@ -274,18 +275,11 @@ void ShadowRenderer::createBlurResources(VulkanApp* app) {
         if (vkAllocateDescriptorSets(device, &alloc, &blurVerticalDS) != VK_SUCCESS)
             throw std::runtime_error("ShadowRenderer: failed to allocate blurVerticalDS");
 
-        VkDescriptorImageInfo imgInfo{};
-        imgInfo.sampler = shadowMapSampler;
-        imgInfo.imageView = blurTempView;
-        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = blurVerticalDS;
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo = &imgInfo;
-        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        DescriptorWriter(device)
+            .writeImage(blurVerticalDS, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                        shadowMapSampler, blurTempView,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            .flush();
     }
 
     // Allocate one horizontal-blur DS per cascade (reads cascade color image)
@@ -298,18 +292,11 @@ void ShadowRenderer::createBlurResources(VulkanApp* app) {
         if (vkAllocateDescriptorSets(device, &alloc, &blurHorizontalDS[c]) != VK_SUCCESS)
             throw std::runtime_error("ShadowRenderer: failed to allocate blurHorizontalDS");
 
-        VkDescriptorImageInfo imgInfo{};
-        imgInfo.sampler = shadowMapSampler;
-        imgInfo.imageView = cascades[c].colorView;
-        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = blurHorizontalDS[c];
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo = &imgInfo;
-        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        DescriptorWriter(device)
+            .writeImage(blurHorizontalDS[c], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                        shadowMapSampler, cascades[c].colorView,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            .flush();
     }
 }
 

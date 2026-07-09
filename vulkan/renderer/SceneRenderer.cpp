@@ -1,5 +1,5 @@
-// ...existing code...
 #include "SceneRenderer.hpp"
+#include "DescriptorWriter.hpp"
 
 
 #include <stdexcept>
@@ -779,88 +779,43 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         VkDescriptorSet ds = app->createDescriptorSet(app->getDescriptorSetLayout());
         shadowDescriptorSets[fi] = ds;
 
-        VkDescriptorBufferInfo shadowBufInfo{ mainUniformBuffers[fi].buffer, 0, sizeof(UniformObject) };
-        VkWriteDescriptorSet shadowUboWrite{};
-        shadowUboWrite.sType          = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        shadowUboWrite.dstSet         = ds;
-        shadowUboWrite.dstBinding     = 0;
-        shadowUboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        shadowUboWrite.descriptorCount = 1;
-        shadowUboWrite.pBufferInfo    = &shadowBufInfo;
+        DescriptorWriter wr(app->getDevice());
+        wr.writeBuffer(ds, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                       mainUniformBuffers[fi].buffer, 0, sizeof(UniformObject));
 
-        std::vector<VkWriteDescriptorSet> shadowWrites;
-        shadowWrites.push_back(shadowUboWrite);
-
-        auto addShadowImageWrite = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
+        auto addImg = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
             if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
-            VkDescriptorImageInfo* info = new VkDescriptorImageInfo();
-            info->sampler     = sampler;
-            info->imageView   = view;
-            info->imageLayout = layout;
-            VkWriteDescriptorSet w{};
-            w.sType          = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            w.dstSet         = ds;
-            w.dstBinding     = binding;
-            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            w.descriptorCount = 1;
-            w.pImageInfo     = info;
-            shadowWrites.push_back(w);
+            wr.writeImage(ds, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          sampler, view, layout);
         };
 
         if (textureArrayManager) {
-            addShadowImageWrite(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addShadowImageWrite(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addShadowImageWrite(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addShadowImageWrite(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addShadowImageWrite(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImg(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImg(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImg(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImg(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImg(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
-        addShadowImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        addShadowImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        addShadowImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImg(4, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImg(8, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImg(9, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        // Binding 11: environment cubemap (if available) for shadow passes that use the same layout
         if (solid360Renderer) {
             VkImageView cubeView = solid360Renderer->getSolid360View();
             VkSampler cubeSampler = solid360Renderer->getSolid360Sampler();
             if (cubeView != VK_NULL_HANDLE && cubeSampler != VK_NULL_HANDLE) {
-                addShadowImageWrite(11, cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                addImg(11, cubeSampler, cubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             }
         }
 
-        VkDescriptorBufferInfo shadowMatInfo{ materialsBuffer.buffer, 0, VK_WHOLE_SIZE };
-        VkWriteDescriptorSet shadowMatWrite{};
-        shadowMatWrite.sType          = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        shadowMatWrite.dstSet         = ds;
-        shadowMatWrite.dstBinding     = 5;
-        shadowMatWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        shadowMatWrite.descriptorCount = 1;
-        shadowMatWrite.pBufferInfo    = &shadowMatInfo;
-        shadowWrites.push_back(shadowMatWrite);
+        wr.writeBuffer(ds, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                       materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
+        wr.writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                       waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
+        wr.writeBuffer(ds, 10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                       waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO));
+        wr.flush();
 
-        VkDescriptorBufferInfo shadowWaterInfo{ waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE };
-        VkWriteDescriptorSet shadowWaterWrite{};
-        shadowWaterWrite.sType          = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        shadowWaterWrite.dstSet         = ds;
-        shadowWaterWrite.dstBinding     = 7;
-        shadowWaterWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        shadowWaterWrite.descriptorCount = 1;
-        shadowWaterWrite.pBufferInfo    = &shadowWaterInfo;
-        shadowWrites.push_back(shadowWaterWrite);
-
-        VkDescriptorBufferInfo shadowWaterRenderInfo{ waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO) };
-        VkWriteDescriptorSet shadowWaterRenderWrite{};
-        shadowWaterRenderWrite.sType          = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        shadowWaterRenderWrite.dstSet         = ds;
-        shadowWaterRenderWrite.dstBinding     = 10;
-        shadowWaterRenderWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        shadowWaterRenderWrite.descriptorCount = 1;
-        shadowWaterRenderWrite.pBufferInfo    = &shadowWaterRenderInfo;
-        shadowWrites.push_back(shadowWaterRenderWrite);
-
-        app->updateDescriptorSet(shadowWrites);
-        for (auto &w : shadowWrites) {
-            if (w.pImageInfo) delete w.pImageInfo;
-        }
         std::cerr << "[SceneRenderer::init] shadowDescriptorSet[" << fi << "] = " << (void*)ds << std::endl;
     }
 
@@ -929,48 +884,25 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(s));
     if (mainDs == VK_NULL_HANDLE) continue;
 
-    std::vector<VkWriteDescriptorSet> writes;
-    std::vector<VkDescriptorImageInfo> imageInfos;
-    std::vector<VkDescriptorBufferInfo> bufferInfos;
-    imageInfos.reserve(16);
-    bufferInfos.reserve(8);
+    DescriptorWriter writer(app->getDevice());
 
-    // Helper to add image write (stack-allocated, no heap)
-    auto addImageWrite = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
+    auto addImg = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
         if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
-        imageInfos.push_back({sampler, view, layout});
-        VkWriteDescriptorSet w{};
-        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w.dstSet = mainDs;
-        w.dstBinding = binding;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        w.descriptorCount = 1;
-        w.pImageInfo = &imageInfos.back();
-        writes.push_back(w);
-    };
-    auto addBufWrite = [&](uint32_t binding, VkDescriptorType type, VkBuffer buf, VkDeviceSize sz) {
-        bufferInfos.push_back({buf, 0, sz});
-        VkWriteDescriptorSet w{};
-        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w.dstSet = mainDs;
-        w.dstBinding = binding;
-        w.descriptorType = type;
-        w.descriptorCount = 1;
-        w.pBufferInfo = &bufferInfos.back();
-        writes.push_back(w);
+        writer.writeImage(mainDs, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          sampler, view, layout);
     };
 
-    addImageWrite(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImageWrite(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImageWrite(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImageWrite(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImageWrite(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    addImg(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    addImg(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    addImg(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    addImg(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    addImg(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     // Shadow map samplers (bindings 4, 8, 9) for all cascades
     if (shadowMapper) {
-        addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        addImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        addImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImg(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImg(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImg(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
     // Materials SSBO (binding 5) — refresh from MaterialManager in case the buffer
@@ -979,40 +911,25 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
         materialsBuffer = materialManagerPtr->getBuffer();
     }
     if (materialsBuffer.buffer != VK_NULL_HANDLE)
-        addBufWrite(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, materialsBuffer.buffer, VK_WHOLE_SIZE);
+        writer.writeBuffer(mainDs, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
     else
         std::cerr << "[SceneRenderer::updateTextureDescriptorSet] materials buffer not available — skipping binding 5\n";
 
     if (waterParamsBuffer_.buffer != VK_NULL_HANDLE)
-        addBufWrite(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, waterParamsBuffer_.buffer, VK_WHOLE_SIZE);
+        writer.writeBuffer(mainDs, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
 
-    // Apply descriptor updates
-    app->updateDescriptorSet(writes);
+    writer.flush();
 
     // ── Also update shadow descriptor sets (bindings 1-3, 5, 7) with new textures/materials.
     if (!shadowDescriptorSets.empty()) {
         for (size_t si = 0; si < shadowDescriptorSets.size(); ++si) {
             VkDescriptorSet ds = shadowDescriptorSets[si];
-            std::vector<VkWriteDescriptorSet> shadowWrites;
-            std::vector<VkDescriptorImageInfo> sImg;
-            std::vector<VkDescriptorBufferInfo> sBuf;
-            sImg.reserve(8);
-            sBuf.reserve(4);
+            DescriptorWriter sw(app->getDevice());
             auto addImg = [&](uint32_t b, VkSampler sm, VkImageView vw, VkImageLayout ly) {
                 if (vw == VK_NULL_HANDLE || sm == VK_NULL_HANDLE) return;
-                sImg.push_back({sm, vw, ly});
-                VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                w.dstSet = ds; w.dstBinding = b;
-                w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.descriptorCount = 1;
-                w.pImageInfo = &sImg.back();
-                shadowWrites.push_back(w);
-            };
-            auto addBuf = [&](uint32_t b, VkDescriptorType t, VkBuffer bu, VkDeviceSize sz) {
-                sBuf.push_back({bu, 0, sz});
-                VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                w.dstSet = ds; w.dstBinding = b; w.descriptorType = t; w.descriptorCount = 1;
-                w.pBufferInfo = &sBuf.back();
-                shadowWrites.push_back(w);
+                sw.writeImage(ds, b, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sm, vw, ly);
             };
             addImg(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             addImg(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1020,12 +937,14 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
             addImg(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             addImg(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             if (materialsBuffer.buffer != VK_NULL_HANDLE)
-                addBuf(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, materialsBuffer.buffer, VK_WHOLE_SIZE);
+                sw.writeBuffer(ds, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                               materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
             else
                 std::cerr << "[SceneRenderer::updateTextureDescriptorSet] shadow materials buffer not available — skipping shadow binding 5\n";
             if (waterParamsBuffer_.buffer != VK_NULL_HANDLE)
-                addBuf(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, waterParamsBuffer_.buffer, VK_WHOLE_SIZE);
-            app->updateDescriptorSet(shadowWrites);
+                sw.writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                               waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
+            sw.flush();
         }
     }
     } // for each main descriptor set

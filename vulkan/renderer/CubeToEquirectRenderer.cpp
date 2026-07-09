@@ -1,5 +1,6 @@
 #include "CubeToEquirectRenderer.hpp"
 #include "DescriptorAllocator.hpp"
+#include "DescriptorWriter.hpp"
 #include "RendererUtils.hpp"
 #include "../VulkanApp.hpp"
 #include "../../utils/FileReader.hpp"
@@ -142,18 +143,12 @@ void CubeToEquirectRenderer::createDescriptorResources(VulkanApp* app, VkSampler
         cube360EquirectSampleDescriptorSet = app->createDescriptorSet(cube360EquirectDescriptorSetLayout);
     }
 
-    VkDescriptorImageInfo descInfo{};
-    descInfo.sampler = sampler;
-    descInfo.imageView = cubeMapView;
-    descInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = cube360EquirectSampleDescriptorSet;
-    write.dstBinding = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.descriptorCount = 1;
-    write.pImageInfo = &descInfo;
-    app->updateDescriptorSet({ write });
+    DescriptorWriter(app->getDevice())
+        .writeImage(cube360EquirectSampleDescriptorSet, 0,
+                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    sampler, cubeMapView,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        .flush();
 }
 
 void CubeToEquirectRenderer::ensureResources(VulkanApp* app) {

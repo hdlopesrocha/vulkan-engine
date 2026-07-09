@@ -1,5 +1,6 @@
 #include "DebugCubeRenderer.hpp"
 #include "DescriptorAllocator.hpp"
+#include "DescriptorWriter.hpp"
 #include "../VertexBufferObjectBuilder.hpp"
 #include "../ShaderStage.hpp"
 #include "../../utils/FileReader.hpp"
@@ -211,22 +212,11 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
 
     gridDescriptorSet = descAlloc.allocateSet(gridDescriptorPool, gridDescriptorSetLayout, "DebugCubeRenderer: gridDescriptorSet");
     
-    // Update descriptor set with texture
-    VkDescriptorImageInfo imageInfo{};
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfo.imageView = gridTextureView;
-    imageInfo.sampler = gridTextureSampler;
-    
-    VkWriteDescriptorSet descriptorWrite{};
-    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrite.dstSet = gridDescriptorSet;
-    descriptorWrite.dstBinding = 1;
-    descriptorWrite.dstArrayElement = 0;
-    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    descriptorWrite.descriptorCount = 1;
-    descriptorWrite.pImageInfo = &imageInfo;
-    
-    vkUpdateDescriptorSets(app->getDevice(), 1, &descriptorWrite, 0, nullptr);
+    DescriptorWriter(app->getDevice())
+        .writeImage(gridDescriptorSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    gridTextureSampler, gridTextureView,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        .flush();
     
     // Create initial instance buffer (will be resized as needed)
     instanceBufferCapacity = 128;
@@ -236,22 +226,10 @@ void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
     
-    // Update descriptor set with instance buffer
-    VkDescriptorBufferInfo bufferInfo{};
-    bufferInfo.buffer = instanceBuffer.buffer;
-    bufferInfo.offset = 0;
-    bufferInfo.range = VK_WHOLE_SIZE;
-    
-    VkWriteDescriptorSet bufferWrite{};
-    bufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    bufferWrite.dstSet = gridDescriptorSet;
-    bufferWrite.dstBinding = 2;
-    bufferWrite.dstArrayElement = 0;
-    bufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bufferWrite.descriptorCount = 1;
-    bufferWrite.pBufferInfo = &bufferInfo;
-    
-    vkUpdateDescriptorSets(app->getDevice(), 1, &bufferWrite, 0, nullptr);
+    DescriptorWriter(app->getDevice())
+        .writeBuffer(gridDescriptorSet, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                     instanceBuffer.buffer, 0, VK_WHOLE_SIZE)
+        .flush();
 }
 
 void DebugCubeRenderer::updateInstanceBuffer(VulkanApp* app) {
@@ -271,22 +249,10 @@ void DebugCubeRenderer::updateInstanceBuffer(VulkanApp* app) {
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
         );
         
-        // Update descriptor with new buffer
-        VkDescriptorBufferInfo bufferInfo{};
-        bufferInfo.buffer = instanceBuffer.buffer;
-        bufferInfo.offset = 0;
-        bufferInfo.range = VK_WHOLE_SIZE;
-        
-        VkWriteDescriptorSet bufferWrite{};
-        bufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        bufferWrite.dstSet = gridDescriptorSet;
-        bufferWrite.dstBinding = 2;
-        bufferWrite.dstArrayElement = 0;
-        bufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bufferWrite.descriptorCount = 1;
-        bufferWrite.pBufferInfo = &bufferInfo;
-        
-        vkUpdateDescriptorSets(app->getDevice(), 1, &bufferWrite, 0, nullptr);
+        DescriptorWriter(app->getDevice())
+            .writeBuffer(gridDescriptorSet, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         instanceBuffer.buffer, 0, VK_WHOLE_SIZE)
+            .flush();
     }
     
     // Upload instance data

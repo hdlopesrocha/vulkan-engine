@@ -1,5 +1,6 @@
 #include "IndirectRenderer.hpp"
 #include "DescriptorAllocator.hpp"
+#include "DescriptorWriter.hpp"
 #include "../VulkanApp.hpp"
 #include "../../utils/FileReader.hpp"
 #include <cassert>
@@ -887,25 +888,17 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             countBuf.offset = 0;
             countBuf.range = VK_WHOLE_SIZE;
 
-            VkWriteDescriptorSet writes[4] = {};
-            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[0].dstSet = computeDescriptorSets[f];
-            writes[0].dstBinding = 0;
-            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[0].descriptorCount = 1;
-            writes[0].pBufferInfo = &inBuf;
-
-            writes[1] = writes[0];
-            writes[1].dstBinding = 1; 
-            writes[1].pBufferInfo = &outBuf;
-            writes[2] = writes[0]; 
-            writes[2].dstBinding = 2;
-            writes[2].pBufferInfo = &boundsBufInfo;
-            writes[3] = writes[0]; 
-            writes[3].dstBinding = 3;
-            writes[3].pBufferInfo = &countBuf;
-
-            vkUpdateDescriptorSets(app->getDevice(), 4, writes, 0, nullptr);
+            VkDescriptorSet computeDs = computeDescriptorSets[f];
+            DescriptorWriter(app->getDevice())
+                .writeBuffer(computeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             inBuf.buffer, inBuf.offset, inBuf.range)
+                .writeBuffer(computeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             outBuf.buffer, outBuf.offset, outBuf.range)
+                .writeBuffer(computeDs, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             boundsBufInfo.buffer, boundsBufInfo.offset, boundsBufInfo.range)
+                .writeBuffer(computeDs, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             countBuf.buffer, countBuf.offset, countBuf.range)
+                .flush();
         }
     }
 
