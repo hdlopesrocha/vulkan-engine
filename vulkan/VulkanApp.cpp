@@ -4784,7 +4784,11 @@ void VulkanApp::drawFrame() {
     // and does not skip the current frame slot — this eliminates the stale-timelessmaphore race.
     processPendingCommandBuffers();
 
-    // reset current frame fence so vkQueueSubmit2 can signal it
+    // A deferred-destroy callback run above may have triggered a new submission
+    // that uses inFlightFences[currentFrame]. Wait pending it before reset.
+    if (vkGetFenceStatus(device, inFlightFences[currentFrame]) == VK_NOT_READY) {
+        vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+    }
     VkResult resetFenceResult = vkResetFences(device, 1, &inFlightFences[currentFrame]);
     if (resetFenceResult == VK_ERROR_DEVICE_LOST) return;
     if (resetFenceResult != VK_SUCCESS) {
