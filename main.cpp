@@ -2236,23 +2236,25 @@ void MyApp::ensureCubemapResources() {
 
         // Write descriptor set bindings (same as main DS but with cube360UBO)
         std::vector<VkWriteDescriptorSet> gfxWrites;
-        VkDescriptorBufferInfo* uboInfo = new VkDescriptorBufferInfo{ cube360UBO.buffer, 0, sizeof(UniformObject) };
+        std::vector<VkDescriptorImageInfo> gfxImg;
+        std::vector<VkDescriptorBufferInfo> gfxBuf;
+        VkDescriptorBufferInfo& uboInfo = gfxBuf.emplace_back(cube360UBO.buffer, 0, sizeof(UniformObject));
         VkWriteDescriptorSet uboWrite{};
         uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         uboWrite.dstSet = cube360GfxDs;
         uboWrite.dstBinding = 0;
         uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         uboWrite.descriptorCount = 1;
-        uboWrite.pBufferInfo = uboInfo;
+        uboWrite.pBufferInfo = &uboInfo;
         gfxWrites.push_back(uboWrite);
 
         auto addImageWrite = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
             if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
-            VkDescriptorImageInfo* info = new VkDescriptorImageInfo();
-            info->sampler = sampler; info->imageView = view; info->imageLayout = layout;
+            VkDescriptorImageInfo& info = gfxImg.emplace_back();
+            info.sampler = sampler; info.imageView = view; info.imageLayout = layout;
             VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w.dstSet = cube360GfxDs; w.dstBinding = binding; w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            w.descriptorCount = 1; w.pImageInfo = info;
+            w.descriptorCount = 1; w.pImageInfo = &info;
             gfxWrites.push_back(w);
         };
 
@@ -2280,34 +2282,34 @@ void MyApp::ensureCubemapResources() {
         }
 
         if (sceneRenderer->materialsBuffer.buffer != VK_NULL_HANDLE) {
-            VkDescriptorBufferInfo* matInfo = new VkDescriptorBufferInfo{ sceneRenderer->materialsBuffer.buffer, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo& matInfo = gfxBuf.emplace_back(sceneRenderer->materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
             VkWriteDescriptorSet matWrite{}; matWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             matWrite.dstSet = cube360GfxDs; matWrite.dstBinding = 5; matWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            matWrite.descriptorCount = 1; matWrite.pBufferInfo = matInfo;
+            matWrite.descriptorCount = 1; matWrite.pBufferInfo = &matInfo;
             gfxWrites.push_back(matWrite);
         }
         if (sceneRenderer->waterParamsBuffer_.buffer != VK_NULL_HANDLE) {
-            VkDescriptorBufferInfo* waterInfo = new VkDescriptorBufferInfo{ sceneRenderer->waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo& waterInfo = gfxBuf.emplace_back(sceneRenderer->waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
             VkWriteDescriptorSet waterWrite{}; waterWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             waterWrite.dstSet = cube360GfxDs; waterWrite.dstBinding = 7; waterWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            waterWrite.descriptorCount = 1; waterWrite.pBufferInfo = waterInfo;
+            waterWrite.descriptorCount = 1; waterWrite.pBufferInfo = &waterInfo;
             gfxWrites.push_back(waterWrite);
         }
         {
             Buffer skyBuf = sceneRenderer->skyRenderer->getSkyUniformBuffer();
             if (skyBuf.buffer != VK_NULL_HANDLE) {
-                VkDescriptorBufferInfo* skyInfo = new VkDescriptorBufferInfo{ skyBuf.buffer, 0, sizeof(SkyUniform) };
+                VkDescriptorBufferInfo& skyInfo = gfxBuf.emplace_back(skyBuf.buffer, 0, sizeof(SkyUniform));
                 VkWriteDescriptorSet skyWrite{}; skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 skyWrite.dstSet = cube360GfxDs; skyWrite.dstBinding = 6; skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                skyWrite.descriptorCount = 1; skyWrite.pBufferInfo = skyInfo;
+                skyWrite.descriptorCount = 1; skyWrite.pBufferInfo = &skyInfo;
                 gfxWrites.push_back(skyWrite);
             }
         }
         if (sceneRenderer->waterRenderUBOBuffer_.buffer != VK_NULL_HANDLE) {
-            VkDescriptorBufferInfo* wrInfo = new VkDescriptorBufferInfo{ sceneRenderer->waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO) };
+            VkDescriptorBufferInfo& wrInfo = gfxBuf.emplace_back(sceneRenderer->waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO));
             VkWriteDescriptorSet wrWrite{}; wrWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             wrWrite.dstSet = cube360GfxDs; wrWrite.dstBinding = 10; wrWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            wrWrite.descriptorCount = 1; wrWrite.pBufferInfo = wrInfo;
+            wrWrite.descriptorCount = 1; wrWrite.pBufferInfo = &wrInfo;
             gfxWrites.push_back(wrWrite);
         }
 
@@ -2317,7 +2319,6 @@ void MyApp::ensureCubemapResources() {
             if (w.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && w.pImageInfo)
                 std::cerr << "[CUBE360_WRITE] bind=" << w.dstBinding << " view=" << (void*)w.pImageInfo->imageView << std::endl;
         }
-        for (auto &w : gfxWrites) { if (w.pImageInfo) delete w.pImageInfo; if (w.pBufferInfo) delete w.pBufferInfo; }
         cube360TexVersion = textureArrayManager.getVersion();
     }
 

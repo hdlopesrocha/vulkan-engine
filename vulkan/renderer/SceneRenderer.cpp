@@ -604,6 +604,8 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Bind texture arrays (bindings 1, 2, 3)
     // Prepare descriptor writes dynamically: only include image samplers that have valid image views
     std::vector<VkWriteDescriptorSet> writes;
+    std::vector<VkDescriptorImageInfo> writesImg;
+    std::vector<VkDescriptorBufferInfo> writesBuf;
 
     // UBO write (always present) — update for each per-frame descriptor set
     // We'll write descriptors per-frame so each descriptor set references a dedicated UBO buffer.
@@ -616,17 +618,17 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
                       << " sampler=" << (void*)sampler << std::endl;
             return;
         }
-        VkDescriptorImageInfo* info = new VkDescriptorImageInfo();
-        info->sampler = sampler;
-        info->imageView = view;
-        info->imageLayout = layout;
+        VkDescriptorImageInfo& info = writesImg.emplace_back();
+        info.sampler = sampler;
+        info.imageView = view;
+        info.imageLayout = layout;
         VkWriteDescriptorSet w{};
         w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         w.dstSet = mainDs;
         w.dstBinding = binding;
         w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         w.descriptorCount = 1;
-        w.pImageInfo = info;
+        w.pImageInfo = &info;
         writes.push_back(w);
     };
 
@@ -652,14 +654,14 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     if (materialsBuffer.buffer == VK_NULL_HANDLE) {
         throw std::runtime_error("MaterialManager provided but materials buffer is not allocated");
     }
-    VkDescriptorBufferInfo* materialsInfo = new VkDescriptorBufferInfo{ materialsBuffer.buffer, 0, VK_WHOLE_SIZE };
+    VkDescriptorBufferInfo& materialsInfo = writesBuf.emplace_back(materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
     VkWriteDescriptorSet materialsWrite{};
     materialsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     materialsWrite.dstSet = mainDs;
     materialsWrite.dstBinding = 5;
     materialsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     materialsWrite.descriptorCount = 1;
-    materialsWrite.pBufferInfo = materialsInfo;
+    materialsWrite.pBufferInfo = &materialsInfo;
     writes.push_back(materialsWrite);
 
     // Initialize WaterRenderer early and allocate a params SSBO sized to texture layers.
@@ -703,73 +705,58 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     }
 
     // Bind water params SSBO to binding 7 of main descriptor set.
-    // Allocate on heap — the cleanup loop below uniformly delete-s all pBufferInfo.
-    VkDescriptorBufferInfo* waterParamsInfo = new VkDescriptorBufferInfo{ waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE };
+    VkDescriptorBufferInfo& waterParamsInfo = writesBuf.emplace_back(waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
     VkWriteDescriptorSet waterParamsWrite{};
     waterParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     waterParamsWrite.dstSet = mainDs;
     waterParamsWrite.dstBinding = 7;
     waterParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     waterParamsWrite.descriptorCount = 1;
-    waterParamsWrite.pBufferInfo = waterParamsInfo;
+    waterParamsWrite.pBufferInfo = &waterParamsInfo;
     writes.push_back(waterParamsWrite);
 
     // Bind water render UBO to binding 10 of main descriptor set
     waterRenderUBOBuffer_ = app->createBuffer(sizeof(WaterRenderUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VkDescriptorBufferInfo* waterRenderUBOInfo = new VkDescriptorBufferInfo{ waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO) };
+    VkDescriptorBufferInfo& waterRenderUBOInfo = writesBuf.emplace_back(waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO));
     VkWriteDescriptorSet waterRenderUBOWrite{};
     waterRenderUBOWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     waterRenderUBOWrite.dstSet = mainDs;
     waterRenderUBOWrite.dstBinding = 10;
     waterRenderUBOWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     waterRenderUBOWrite.descriptorCount = 1;
-    waterRenderUBOWrite.pBufferInfo = waterRenderUBOInfo;
+    waterRenderUBOWrite.pBufferInfo = &waterRenderUBOInfo;
     writes.push_back(waterRenderUBOWrite);
 
     // Perform descriptor updates per-frame
     for (size_t fi = 0; fi < mainUniformBuffers.size(); ++fi) {
         std::vector<VkWriteDescriptorSet> frameWrites;
+        std::vector<VkDescriptorImageInfo> frameImg;
+        std::vector<VkDescriptorBufferInfo> frameBuf;
         frameWrites.reserve(writes.size());
 
-        // UBO for this frame — allocate on heap so the cleanup loop below
-        // can uniformly delete all pBufferInfo pointers.
-        VkDescriptorBufferInfo* mainBufInfo = new VkDescriptorBufferInfo{ mainUniformBuffers[fi].buffer, 0, sizeof(UniformObject) };
+        VkDescriptorBufferInfo mainBufInfo{ mainUniformBuffers[fi].buffer, 0, sizeof(UniformObject) };
         VkWriteDescriptorSet uboWriteLocal = uboWrite;
         uboWriteLocal.dstSet = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
-        uboWriteLocal.pBufferInfo = mainBufInfo;
+        uboWriteLocal.pBufferInfo = &mainBufInfo;
         frameWrites.push_back(uboWriteLocal);
 
         // Rebuild image/buffer writes for the other bindings using the same logic as above
         for (auto &w : writes) {
             if (w.dstBinding == 0) continue; // skip original ubo placeholder
             VkWriteDescriptorSet copy = w;
-            // For image writes we need to allocate fresh VkDescriptorImageInfo so pointers are valid
-            if (w.pImageInfo) {
-                VkDescriptorImageInfo* info = new VkDescriptorImageInfo();
-                *info = w.pImageInfo[0];
-                copy.pImageInfo = info;
-            } else if (w.pBufferInfo) {
-                VkDescriptorBufferInfo* info = new VkDescriptorBufferInfo();
-                *info = w.pBufferInfo[0];
-                copy.pBufferInfo = info;
-            }
             copy.dstSet = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
+            if (w.pImageInfo) {
+                VkDescriptorImageInfo& info = frameImg.emplace_back(w.pImageInfo[0]);
+                copy.pImageInfo = &info;
+            } else if (w.pBufferInfo) {
+                VkDescriptorBufferInfo& info = frameBuf.emplace_back(w.pBufferInfo[0]);
+                copy.pBufferInfo = &info;
+            }
             frameWrites.push_back(copy);
         }
 
         app->updateDescriptorSet(frameWrites);
-
-        // Clean up any allocated infos for this frameWrites
-        for (auto &w : frameWrites) {
-            if (w.pImageInfo) delete w.pImageInfo;
-            if (w.pBufferInfo) delete w.pBufferInfo;
-        }
-    }
-    // Clean up original template writes' allocated infos
-    for (auto &w : writes) {
-        if (w.pImageInfo) { delete w.pImageInfo; w.pImageInfo = nullptr; }
-        if (w.pBufferInfo) { delete w.pBufferInfo; w.pBufferInfo = nullptr; }
     }
 
     // ── Allocate shadow-specific descriptor sets per-frame (mirror main sets but use a dummy depth view)
