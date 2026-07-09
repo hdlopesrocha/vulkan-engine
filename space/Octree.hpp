@@ -29,12 +29,14 @@ public:
     OctreeAllocator * allocator;
     int threadsCreated;
     std::shared_ptr<std::atomic<int>> shapeCounter;
+    std::atomic<int> inFlightShapeOps{0};
     tsl::robin_map<glm::vec3, ThreadContext> chunks;
     ThreadPool threadPool = ThreadPool(std::thread::hardware_concurrency());
     std::mutex mutex;
 
     Octree(BoundingCube minCube, float chunkSize);
     Octree();
+    ~Octree();
 
     void expand(const ShapeArgs &args);
     void apply(float (*operation)(float, float), WrappedSignedDistanceFunction *function, const Transformation model, glm::vec4 translate, glm::vec4 scale, const TexturePainter &painter, float minSize, Simplifier &simplifier, const OctreeChangeHandler &changeHandler);

@@ -1,6 +1,7 @@
 #include "Octree.hpp"
 #include <memory>
 #include <atomic>
+#include <thread>
 #include "../math/BrushMode.hpp"
 #include "NodeOperationResult.hpp"
 #include "OctreeNodeCubeSerialized.hpp"
@@ -650,9 +651,11 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
         if(isChildThread) {
             ++threadsCreated;
             NodeOperationResult * result = &childResult[i];
+            inFlightShapeOps.fetch_add(1);
             futures.push_back(threadPool.enqueue([this, childFrame, args, result]() {
                 ThreadContext localThreadContext(childFrame.cube);
                 shape(*result, childFrame, args, &localThreadContext, true);
+                inFlightShapeOps.fetch_sub(1);
             }));
         } else {
             shape(childResult[i], childFrame, args, threadContext);
@@ -847,7 +850,17 @@ void Octree::exportNodesSerialization(std::vector<OctreeNodeCubeSerialized> * no
 	std::cout << "exportNodesSerialization Ok!" << std::endl;
 }
 
+Octree::~Octree() {
+    while (inFlightShapeOps.load() > 0) {
+        std::this_thread::yield();
+    }
+    delete allocator;
+}
+
 void Octree::reset() {
+    while (inFlightShapeOps.load() > 0) {
+        std::this_thread::yield();
+    }
     if(root != NULL) {
         allocator->childAllocator.reset();
         allocator->nodeAllocator.reset();
