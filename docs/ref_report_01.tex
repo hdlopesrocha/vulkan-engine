@@ -1,0 +1,736 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{tabularx}
+
+\geometry{margin=1in}
+\setlength{\emergencystretch}{3em}
+\setlist{nosep}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black
+}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    columns=fullflexible,
+    keepspaces=true,
+    frame=single,
+    breaklines=true,
+    backgroundcolor=\color{black!3}
+}
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\file}[1]{\textsl{#1}}
+\newcommand{\todo}[1]{\textbf{\textcolor{red}{TODO: #1}}}
+
+\title{Code Refactoring Report --- Duplicated Code Analysis}
+\author{Henrique Rocha}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report analyses structural code duplication across the Vulkan rendering engine codebase. It catalogues eleven distinct duplication patterns, identifies exact file locations and line numbers, quantifies the severity and impact of each pattern, and proposes concrete refactoring strategies. Eliminating these duplications will reduce the codebase by an estimated 1,500--2,500 lines while improving maintainability, consistency, and reducing the surface area for bugs.
+\end{abstract}
+
+\tableofcontents
+
+\section{Scope and Methodology}
+
+The analysis covers approximately 34,000 lines of C++ source (excluding third-party dependencies and shaders) across four major subsystems:
+\begin{itemize}
+    \item \textbf{Vulkan rendering layer} (\code{vulkan/} and \code{vulkan/renderer/}) --- approximately 12,000 lines
+    \item \textbf{SDF primitives} (\code{sdf/}) --- approximately 8,500 lines
+    \item \textbf{Spatial data structures} (\code{space/}) --- approximately 7,000 lines  
+    \item \textbf{Math utilities} (\code{math/}) --- approximately 4,000 lines
+\end{itemize}
+
+Duplication was identified by manual inspection and pattern matching. Each finding was verified across multiple source files.
+
+\section{Summary of Findings}
+
+\begin{center}
+\begin{tabular}{lcrr}
+\toprule
+\# & Duplication Pattern & Occurrences & Est. Savings \\
+\midrule
+1 & Sampler creation boilerplate & 7+ & 120--180 lines \\
+2 & Layout transition barriers & 7+ & 100--160 lines \\
+3 & Descriptor set layout+pool+alloc & 10+ & 400--600 lines \\
+4 & VkWriteDescriptorSet boilerplate & 15+ & 150--250 lines \\
+5 & Buffer create/map/memcpy/unmap & 10+ & 80--120 lines \\
+6 & Wrapped* SDF classes (templatable) & 16 files & 400--500 lines \\
+7 & DistanceFunction getCenter/getType & 13 files & 80--120 lines \\
+8 & cleanup() nullification pattern & 10+ renderers & 150--200 lines \\
+9 & cmdState dispatch if/else pattern & 15+ locations & 80--120 lines \\
+10 & createGraphicsPipeline calls & 5+ locations & 60--100 lines \\
+11 & Ad-hoc image+view creation & 7+ locations & 80--120 lines \\
+\midrule
+& \textbf{Total} & & \textbf{1,700--2,470 lines} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Catalogue of Duplication}
+
+\subsection{Sampler Creation Boilerplate}
+\label{sec:sampler}
+
+\textbf{Severity: Medium.} The same 15-line \code{VkSamplerCreateInfo} setup with minor parameter variations (address mode, anisotropy, mipmap mode) is hand-written in at least seven locations.
+
+\textbf{Affected files and lines:}
+\begin{itemize}
+    \item \file{vulkan/renderer/ShadowRenderer.cpp} lines 76--89
+    \item \file{vulkan/renderer/PostProcessRenderer.cpp} lines 44--63
+    \item \file{vulkan/renderer/WaterRenderer.cpp} lines 93--110
+    \item \file{vulkan/renderer/DebugCubeRenderer.cpp} lines 158--178
+    \item \file{vulkan/renderer/ImpostorCapture.cpp} lines 867--880 and 967--980
+    \item \file{vulkan/EditableTexture.cpp} lines 41--50
+    \item \file{vulkan/VulkanApp.cpp} lines 3698--3710
+\end{itemize}
+
+\textbf{Example} (\file{PostProcessRenderer.cpp:44--63}):
+\begin{lstlisting}
+VkSamplerCreateInfo samplerInfo{};
+samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+samplerInfo.magFilter = VK_FILTER_LINEAR;
+samplerInfo.minFilter = VK_FILTER_LINEAR;
+samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+samplerInfo.anisotropyEnable = VK_FALSE;
+samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+samplerInfo.unnormalizedCoordinates = VK_FALSE;
+samplerInfo.compareEnable = VK_FALSE;
+samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr,
+    &linearSampler) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create sampler!");
+app->resources.addSampler(linearSampler, "name");
+\end{lstlisting}
+
+\textbf{Refactoring strategy:} Add factory methods to \code{VulkanApp} (or a dedicated \code{SamplerBuilder}):
+\begin{itemize}
+    \item \code{VkSampler createSampler(VkSamplerCreateInfo\& info, const char* name)}
+    \item \code{VkSampler createSamplerLinearClamp(const char* name)} --- the most common variant
+    \item \code{VkSampler createSamplerNearestClamp(const char* name)} --- for shadow/comparison
+\end{itemize}
+Each caller reduces to a single expression, e.g.~\code{linearSampler = app->createSamplerLinearClamp("PostProcess linear")}.
+
+\subsection{Color/Depth Image Layout Transition Barriers}
+\label{sec:barriers}
+
+\textbf{Severity: Medium.} The pattern of constructing a \code{VkImageMemoryBarrier2} to transition between \code{SHADER\_READ\_ONLY\_OPTIMAL} and \code{COLOR\_ATTACHMENT\_OPTIMAL} (or \code{DEPTH\_STENCIL\_ATTACHMENT\_OPTIMAL}) is repeated with only the image handle, old/new layout, and access/stage masks differing.
+
+\textbf{Affected files and lines:}
+\begin{itemize}
+    \item \file{vulkan/renderer/SolidRenderer.cpp} lines 103--121 (color: SRV $\to$ color-attachment)
+    \item \file{vulkan/renderer/SolidRenderer.cpp} lines 170--188 (color: color-attachment $\to$ SRV)
+    \item \file{vulkan/renderer/SkyRenderer.cpp} lines 301--325 (color: tracked $\to$ color-attachment)
+    \item \file{vulkan/renderer/SkyRenderer.cpp} lines 371--388 (color: color-attachment $\to$ SRV)
+    \item \file{vulkan/renderer/Solid360Renderer.cpp} lines 405--422 (color: tracked $\to$ color-attachment)
+    \item \file{main.cpp} lines 870--885 (cubemap coherence barrier)
+    \item \file{main.cpp} lines 890--910 (depth image layout transition)
+\end{itemize}
+
+\textbf{Example} --- barrier pair in \file{SolidRenderer.cpp}:
+\begin{lstlisting}
+// beginPass (lines 103-121):
+VkImageMemoryBarrier2 colorBarrier{};
+colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+colorBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+colorBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+colorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+colorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+colorBarrier.image = solidColorImages[frameIndex];
+colorBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT,
+                                  0, 1, 0, 1 };
+colorBarrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+colorBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+colorBarrier.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+colorBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+VkDependencyInfo depInfo{};
+depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+depInfo.imageMemoryBarrierCount = 1;
+depInfo.pImageMemoryBarriers = &colorBarrier;
+vkCmdPipelineBarrier2(cmd, &depInfo);
+
+// endPass (lines 170-188): nearly identical swap of old/new layouts
+\end{lstlisting}
+
+\textbf{Refactoring strategy:} Add inline helper functions in \file{RendererUtils.hpp} (which already exists for image creation and pipeline building):
+\begin{lstlisting}
+// Single-image barrier helper in RendererUtils.hpp
+inline void transitionImageLayout(VkCommandBuffer cmd,
+    VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout,
+    VkAccessFlags2 srcAccess, VkAccessFlags2 dstAccess,
+    VkPipelineStageFlags2 srcStage, VkPipelineStageFlags2 dstStage,
+    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT)
+{
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange = { aspect, 0, 1, 0, 1 };
+    barrier.srcAccessMask = srcAccess;
+    barrier.dstAccessMask = dstAccess;
+    barrier.srcStageMask = srcStage;
+    barrier.dstStageMask = dstStage;
+    VkDependencyInfo depInfo{};
+    depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    depInfo.imageMemoryBarrierCount = 1;
+    depInfo.pImageMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(cmd, &depInfo);
+}
+\end{lstlisting}
+
+Note that \code{VulkanApp} already has \code{recordTransitionImageLayoutLayer()} and \code{transitionImageLayoutLayer()} used by the SkyRenderer; migrating all barriers to these helpers would unify the code and eliminate \textasciitilde150 lines of boilerplate.
+
+\subsection{Descriptor Set Layout + Pool + Allocation}
+\label{sec:descriptors}
+
+\textbf{Severity: High.} Every renderer repeats a 30--40 line sequence: create \code{VkDescriptorSetLayoutBinding} array $\to$ \code{VkDescriptorSetLayoutCreateInfo} $\to$ \code{vkCreateDescriptorSetLayout} $\to$ \code{VkDescriptorPoolCreateInfo} $\to$ \code{vkCreateDescriptorPool} $\to$ \code{VkDescriptorSetAllocateInfo} $\to$ \code{vkAllocateDescriptorSets}. The pool size types and counts differ but the structure is invariant.
+
+\textbf{Affected files (representative sample):}
+\begin{itemize}
+    \item \file{vulkan/renderer/DebugCubeRenderer.cpp} lines 185--248
+    \item \file{vulkan/renderer/DebugSDFRenderer.cpp} lines 86--131
+    \item \file{vulkan/renderer/PostProcessRenderer.cpp} lines 71--173
+    \item \file{vulkan/renderer/IndirectRenderer.cpp} lines 781--830
+    \item \file{vulkan/renderer/VegetationRenderer.cpp} lines 133--150, 573--605, 1144--1163, 1242--1253
+    \item \file{vulkan/renderer/WaterRenderer.cpp} lines 424--476
+    \item \file{vulkan/renderer/ImpostorCapture.cpp} lines 51--63, 622--650
+    \item \file{vulkan/renderer/CubeToEquirectRenderer.cpp} lines 69--82
+\end{itemize}
+
+\textbf{Example} --- compare \file{DebugSDFRenderer.cpp:86--131} with \file{DebugCubeRenderer.cpp:185--248}:
+\begin{lstlisting}
+// DebugSDFRenderer (86-103):
+VkDescriptorSetLayoutBinding instanceBinding{};
+instanceBinding.binding = 0;
+instanceBinding.descriptorCount = 1;
+instanceBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+instanceBinding.pImmutableSamplers = nullptr;
+instanceBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+// ... layout create, pool create, alloc ...
+
+// DebugCubeRenderer (185-248): same structure, different type/count
+VkDescriptorSetLayoutBinding samplerLayoutBinding{};
+samplerLayoutBinding.binding = 1;
+samplerLayoutBinding.descriptorCount = 1;
+samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+samplerLayoutBinding.pImmutableSamplers = nullptr;
+samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+// ... layout create, pool create, alloc ...
+\end{lstlisting}
+
+\textbf{Refactoring strategy:} Create a \code{DescriptorAllocator} utility class:
+\begin{lstlisting}
+// DescriptorAllocator.hpp
+struct DescriptorAllocator {
+    VkDevice device;
+    VulkanApp* app;
+
+    VkDescriptorSetLayout createLayout(
+        const std::vector<VkDescriptorSetLayoutBinding>& bindings,
+        VkDescriptorSetLayoutCreateFlags flags = 0,
+        const char* name = "");
+
+    VkDescriptorPool createPool(
+        const std::vector<VkDescriptorPoolSize>& poolSizes,
+        uint32_t maxSets,
+        VkDescriptorPoolCreateFlags flags = 0,
+        const char* name = "");
+
+    VkDescriptorSet allocateSet(
+        VkDescriptorPool pool, VkDescriptorSetLayout layout,
+        const char* name = "");
+};
+\end{lstlisting}
+
+Each renderer's descriptor creation reduces from \textasciitilde40 lines to 5--8 lines. The \code{DescriptorAllocator} also simplifies pool lifecycle management and ensures consistent error handling.
+
+\subsection{VkWriteDescriptorSet Boilerplate}
+\label{sec:writes}
+
+\textbf{Severity: High.} Building \code{VkWriteDescriptorSet} structs with repeated \code{.sType}, \code{.dstSet}, \code{.dstBinding}, \code{.descriptorType}, \code{.descriptorCount}, and \code{.pImageInfo} / \code{.pBufferInfo} appears in over 15 locations. Every renderer that uses descriptors does this.
+
+\textbf{Affected files (representative sample):}
+\begin{itemize}
+    \item \file{vulkan/renderer/DebugCubeRenderer.cpp} lines 259--267, 284--292, 319--327
+    \item \file{vulkan/renderer/DebugSDFRenderer.cpp} lines 145--154, 181--190
+    \item \file{vulkan/renderer/PostProcessRenderer.cpp} lines 235--242, 246--253, 260--268
+    \item \file{vulkan/renderer/CubeToEquirectRenderer.cpp} lines 150--157
+    \item \file{vulkan/renderer/ShadowRenderer.cpp} lines 294--300, 318--325
+    \item \file{vulkan/renderer/WaterRenderer.cpp} lines 869--880, 1306--1315
+    \item \file{vulkan/renderer/SceneRenderer.cpp} lines 596--610, 656--670, 708--730, 783--850, 932--1012
+    \item \file{vulkan/renderer/ImpostorCapture.cpp} lines 919--935, 953--960
+\end{itemize}
+
+\textbf{Example} (\file{DebugSDFRenderer.cpp:145--154}):
+\begin{lstlisting}
+VkWriteDescriptorSet write{};
+write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+write.dstSet = descriptorSet;
+write.dstBinding = 0;
+write.dstArrayElement = 0;
+write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+write.descriptorCount = 1;
+write.pBufferInfo = &bufferInfo;
+vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
+\end{lstlisting}
+
+\textbf{Refactoring strategy:} Create a \code{DescriptorWriter} builder that accumulates writes and flushes them in one call:
+\begin{lstlisting}
+class DescriptorWriter {
+    VkDevice device;
+    std::vector<VkWriteDescriptorSet> writes;
+    std::vector<VkDescriptorBufferInfo> bufferInfos;
+    std::vector<VkDescriptorImageInfo> imageInfos;
+public:
+    DescriptorWriter(VkDevice dev) : device(dev) {}
+
+    DescriptorWriter& writeBuffer(VkDescriptorSet dst, uint32_t binding,
+        VkDescriptorType type, VkBuffer buffer,
+        VkDeviceSize offset, VkDeviceSize range);
+
+    DescriptorWriter& writeImage(VkDescriptorSet dst, uint32_t binding,
+        VkDescriptorType type, VkSampler sampler,
+        VkImageView view, VkImageLayout layout);
+
+    void flush(uint32_t count = 0);
+};
+\end{lstlisting}
+
+Each call site reduces to:
+\begin{lstlisting}
+DescriptorWriter(device)
+    .writeBuffer(descriptorSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                 instanceBuffer.buffer, 0, VK_WHOLE_SIZE)
+    .flush();
+\end{lstlisting}
+
+\subsection{Buffer Create / Map / memcpy / Unmap Pattern}
+\label{sec:buffers}
+
+\textbf{Severity: Low--Medium.} The pattern of \code{app->createBuffer()}, then \code{buffer.map(0)}, \code{memcpy()}, \code{buffer.unmap()} appears in many renderers for uploading data to GPU buffers. While \code{VulkanApp::createDeviceLocalBuffer()} already handles the common case of staging-upload to device-local, the persistent-mapped buffer pattern for per-frame updates is still repeated.
+
+\textbf{Affected files:}
+\begin{itemize}
+    \item \file{vulkan/renderer/PostProcessRenderer.cpp} lines 22--24 (create), 202--205 (map+memcpy+unmap)
+    \item \file{vulkan/renderer/DebugCubeRenderer.cpp} lines 97--104 (staging buffer), 272--276 (instance buffer)
+    \item \file{vulkan/renderer/DebugSDFRenderer.cpp} lines 77--82 (device-local), 134--138 (instance buffer)
+    \item \file{vulkan/renderer/ImpostorCapture.cpp} lines 65--68, 790--800, 848--860
+    \item \file{vulkan/renderer/VegetationRenderer.cpp} lines 244--340, 615--620, 1638--1650
+    \item \file{vulkan/renderer/IndirectRenderer.cpp} lines 342--350, 587--620, 674--770
+    \item \file{vulkan/renderer/SceneRenderer.cpp} lines 567--575, 674--680, 718--725
+    \item \file{vulkan/renderer/WaterRenderer.cpp} lines 62--66 (updateGPUParamsForLayer)
+\end{itemize}
+
+\textbf{Example} (\file{WaterRenderer.cpp:62--66}):
+\begin{lstlisting}
+void* data = nullptr;
+data = waterParamsBuffer.map(offset);
+memcpy(data, &gpu, sizeof(WaterParamsGPU));
+waterParamsBuffer.unmap();
+\end{lstlisting}
+
+\textbf{Refactoring strategy:} Add a template helper to \code{VulkanApp} or \code{Buffer}:
+\begin{lstlisting}
+// In Buffer.hpp:
+template<typename T>
+void fill(VkDeviceSize offset, const T& value) {
+    void* data = map(offset);
+    memcpy(data, &value, sizeof(T));
+    unmap();
+}
+
+template<typename T>
+void fillArray(VkDeviceSize offset,
+    const T* data, size_t count) {
+    void* dst = map(offset);
+    memcpy(dst, data, count * sizeof(T));
+    unmap();
+}
+\end{lstlisting}
+
+Each call site becomes:
+\begin{lstlisting}
+waterParamsBuffer.fill(offset, gpu);
+\end{lstlisting}
+
+\subsection{Wrapped* SDF Classes --- 16 Near-Identical Files}
+\label{sec:wrapped}
+
+\textbf{Severity: High.} Each SDF primitive (Box, Sphere, Cone, Cylinder, Capsule, Torus, Pyramid, Octahedron, HeightMap, Road, TriangleStrip, TaperedCapsule, TaperedCylinder) plus effect wrappers (PerlinCarve, PerlinDistort, SignedDistanceEffect, VoronoiCarve, SineDistort) and the OctreeDifference wrapper --- 19 files total --- follow the identical template: constructor, destructor, \code{getSphere()}, \code{check()}, \code{isContained()}, \code{getLength()}, \code{accept()}, \code{getLabel()}. The only differing lines are:
+\begin{itemize}
+    \item The C-style cast in \code{getSphere()}
+    \item The radius formula in \code{getSphere()}
+    \item The \code{getLabel()} return string
+\end{itemize}
+
+\textbf{Affected files (all under \file{sdf/}):}
+\begin{itemize}
+    \item \file{WrappedBox.cpp} (36 lines), \file{WrappedSphere.cpp}, \file{WrappedCone.cpp},
+    \item \file{WrappedCylinder.cpp}, \file{WrappedCapsule.cpp}, \file{WrappedTorus.cpp},
+    \item \file{WrappedPyramid.cpp}, \file{WrappedOctahedron.cpp}, \file{WrappedHeightMap.cpp},
+    \item \file{WrappedRoad.cpp}, \file{WrappedTriangleStrip.cpp},
+    \item \file{WrappedTaperedCapsule.cpp}, \file{WrappedTaperedCylinder.cpp},
+    \item \file{WrappedPerlinCarveDistanceEffect.cpp}, \file{WrappedPerlinDistortDistanceEffect.cpp},
+    \item \file{WrappedSignedDistanceEffect.cpp}, \file{WrappedVoronoiCarveDistanceEffect.cpp},
+    \item \file{WrappedSineDistortDistanceEffect.cpp}, \file{WrappedOctreeDifference.cpp}
+\end{itemize}
+
+\textbf{Example} --- compare \file{WrappedBox.cpp:11--35} and \file{WrappedCone.cpp:11--35}:
+\begin{lstlisting}
+// WrappedBox.cpp (lines 11-35):
+BoundingSphere WrappedBox::getSphere(...) const {
+    BoxDistanceFunction* f = (BoxDistanceFunction*) function;
+    return BoundingSphere(f->getCenter(model),
+                          glm::length(model.scale) + bias);
+}
+ContainmentType WrappedBox::check(...) const { /* identical */ }
+bool WrappedBox::isContained(...) const { /* identical */ }
+float WrappedBox::getLength(...) const {
+    return glm::length(model.scale) + bias;
+}
+const char* WrappedBox::getLabel() const { return "Box"; }
+
+// WrappedCone.cpp (lines 11-35): same structure
+BoundingSphere WrappedCone::getSphere(...) const {
+    ConeDistanceFunction* f = (ConeDistanceFunction*) function;
+    return BoundingSphere(f->getCenter(model),
+                          sqrt(0.5f) * glm::length(model.scale) + bias);
+}
+// check(), isContained(), getLength() --- identical!
+const char* WrappedCone::getLabel() const { return "Cone"; }
+\end{lstlisting}
+
+\textbf{Refactoring strategy:} Replace with a single CRTP template class:
+\begin{lstlisting}
+template<typename Derived, const char* Label>
+class WrappedDistanceFunction : public WrappedSignedDistanceFunction {
+public:
+    WrappedDistanceFunction(SignedDistanceFunction* func)
+        : WrappedSignedDistanceFunction(func) {}
+
+    BoundingSphere getSphere(const Transformation& model,
+                             float bias) const override {
+        auto* f = static_cast<Derived*>(function);
+        return BoundingSphere(f->getCenter(model),
+                              getRadius(model, bias));
+    }
+    ContainmentType check(const BoundingCube& cube,
+        const Transformation& model, float bias) const override {
+        return getSphere(model, bias).test(cube);
+    }
+    bool isContained(const BoundingCube& cube,
+        const Transformation& model, float bias) const override {
+        return cube.contains(getSphere(model, bias));
+    }
+    float getLength(const Transformation& model,
+                    float bias) const override {
+        return glm::length(model.scale) + bias;
+    }
+    const char* getLabel() const override { return Label; }
+
+    // Override in derived for non-standard radius formulas
+    virtual float getRadius(const Transformation& model,
+                            float bias) const {
+        return glm::length(model.scale) + bias;
+    }
+};
+\end{lstlisting}
+
+Each concrete wrapper becomes a 5--10 line header:
+\begin{lstlisting}
+using WrappedBox = WrappedDistanceFunction<BoxDistanceFunction, "Box">;
+using WrappedSphere = WrappedDistanceFunction<SphereDistanceFunction,
+    "Sphere">; // plus getRadius override for sqrt(0.5f) factor
+\end{lstlisting}
+
+This eliminates 19 duplicate \file{.cpp} files and their corresponding \file{.hpp} headers, saving approximately 400--500 lines.
+
+\subsection{DistanceFunction getCenter{} / getType{} in Every SDF}
+\label{sec:sdfbase}
+
+\textbf{Severity: Medium.} Each of the 13+ primitive \code{DistanceFunction} classes implements identical \code{getCenter()} (returns \code{model.translate}) and \code{getType()} (returns its \code{SdfType} enum) methods.
+
+\textbf{Affected files:}
+\begin{itemize}
+    \item \file{BoxDistanceFunction.cpp} lines 1--21
+    \item \file{SphereDistanceFunction.cpp} lines 1--25
+    \item \file{CylinderDistanceFunction.cpp} lines 1--30
+    \item \file{ConeDistanceFunction.cpp} lines 1--31
+    \item \file{CapsuleDistanceFunction.cpp}, \file{TorusDistanceFunction.cpp},
+    \item \file{PyramidDistanceFunction.cpp}, \file{OctahedronDistanceFunction.cpp},
+    \item \file{TriangleStripDistanceFunction.cpp}, \file{RoadDistanceFunction.cpp},
+    \item \file{HeightMapDistanceFunction.cpp}, \file{TaperedCapsuleDistanceFunction.cpp},
+    \item \file{TaperedCylinderDistanceFunction.cpp}
+\end{itemize}
+
+\textbf{Example} --- identical code across files:
+\begin{lstlisting}
+// BoxDistanceFunction.cpp:
+glm::vec3 BoxDistanceFunction::getCenter(const Transformation& model) const {
+    return model.translate;
+}
+SdfType BoxDistanceFunction::getType() const { return SdfType::BOX; }
+
+// ConeDistanceFunction.cpp:
+glm::vec3 ConeDistanceFunction::getCenter(const Transformation& model) const {
+    return model.translate;
+}
+SdfType ConeDistanceFunction::getType() const { return SdfType::CONE; }
+\end{lstlisting}
+
+\textbf{Refactoring strategy:} Move both into the base class \code{SignedDistanceFunction}:
+\begin{lstlisting}
+class SignedDistanceFunction {
+protected:
+    SdfType type;
+    SignedDistanceFunction(SdfType t) : type(t) {}
+public:
+    glm::vec3 getCenter(const Transformation& model) const final {
+        return model.translate;
+    }
+    SdfType getType() const final { return type; }
+    // pure virtual distance() remains per-primitive
+};
+\end{lstlisting}
+
+Each derived constructor changes from \code{BoxDistanceFunction() \{\}} to \code{BoxDistanceFunction() : SignedDistanceFunction(SdfType::BOX) \{\}} and the \code{getCenter()}/\code{getType()} overrides are deleted entirely. This eliminates approximately 80--120 lines.
+
+\subsection{cleanup() Nullification Pattern}
+\label{sec:cleanup}
+
+\textbf{Severity: Low.} Every renderer has a \code{cleanup()} method that sets all \code{VkHandle} members to \code{VK\_NULL\_HANDLE} (or \code{\{\}} for buffers). Since actual destruction is centralized in \code{VulkanResourceManager}, these methods are purely cosmetic. Nevertheless, they are 20--60 lines of near-identical nullification per renderer.
+
+\textbf{Affected files:} Every renderer in \file{vulkan/renderer/}:
+\begin{itemize}
+    \item \file{ShadowRenderer.cpp} lines 32--70
+    \item \file{SolidRenderer.cpp} lines 67--90
+    \item \file{WaterRenderer.cpp} lines 69--91
+    \item \file{DebugCubeRenderer.cpp} lines 390--412
+    \item \file{DebugSDFRenderer.cpp} lines 250--264
+    \item \file{PostProcessRenderer.cpp} lines 27--35
+    \item \file{ImpostorCapture.cpp} lines 101--180
+    \item \file{CubeToEquirectRenderer.cpp} lines 11--57
+    \item \file{VegetationRenderer.cpp} (multiple methods)
+    \item \file{WireframeRenderer.cpp} lines 231--234
+    \item \file{SkyRenderer.cpp} (cleanup method)
+\end{itemize}
+
+\textbf{Example} (\file{DebugSDFRenderer.cpp:250--264}):
+\begin{lstlisting}
+void DebugSDFRenderer::cleanup() {
+    pipeline = VK_NULL_HANDLE;
+    pipelineLayout = VK_NULL_HANDLE;
+    vertModule = VK_NULL_HANDLE;
+    fragModule = VK_NULL_HANDLE;
+    vertexBuffer = {};
+    indexBuffer = {};
+    indexCount = 0;
+    descriptorSetLayout = VK_NULL_HANDLE;
+    descriptorPool = VK_NULL_HANDLE;
+    descriptorSet = VK_NULL_HANDLE;
+    instanceBuffer = {};
+    instanceBufferCapacity = 0;
+    activeCubes.clear();
+}
+\end{lstlisting}
+
+\textbf{Refactoring strategy (two options):}
+\begin{enumerate}
+    \item \textbf{Wrapper handles:} Define a \code{TrackedHandle<T>} that auto-nullifies in its destructor. This is zero-overhead at runtime (the compiler elides the store when destruction immediately follows) but requires changing member declarations.
+    \item \textbf{Mixin / RESET macro:} A simpler approach --- a single \code{clearMembers()} macro or template that iterates over a static list of member pointers:
+    \begin{lstlisting}
+#define CLEANUP_VK_HANDLE(name) name = VK_NULL_HANDLE
+#define CLEANUP_BUFFER(name) name = {}
+    \end{lstlisting}
+    While not eliminating the list, it at least makes the intent uniform.
+\end{enumerate}
+
+\subsection{cmdState Dispatch if/else Pattern}
+\label{sec:cmdstate}
+
+\textbf{Severity: Medium.} Every render method in every renderer contains the same if/else dispatch:
+\begin{lstlisting}
+if (cmdState) cmdState->bindGraphicsPipeline(cmd, pipeline);
+else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, layout, 0, 2, sets, 0, nullptr);
+else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 2, sets, 0, nullptr);
+\end{lstlisting}
+
+\textbf{Affected files (15+ locations):}
+\begin{itemize}
+    \item \file{vulkan/renderer/SolidRenderer.cpp} (every render method)
+    \item \file{vulkan/renderer/SkyRenderer.cpp} lines 349--353
+    \item \file{vulkan/renderer/PostProcessRenderer.cpp} lines 300--304
+    \item \file{vulkan/renderer/DebugCubeRenderer.cpp} lines 368--375
+    \item \file{vulkan/renderer/DebugSDFRenderer.cpp} lines 235--241
+    \item \file{vulkan/renderer/CubeToEquirectRenderer.cpp} lines 193--198
+    \item \file{vulkan/renderer/WireframeRenderer.cpp} lines 195--226
+    \item \file{vulkan/renderer/WaterBackFaceRenderer.cpp} (render method)
+    \item \file{vulkan/renderer/Solid360Renderer.cpp} lines 472--475 (multiple)
+    \item \file{vulkan/renderer/ImpostorCapture.cpp} (render method)
+\end{itemize}
+
+\textbf{Refactoring strategy:} Make \code{CommandBufferState} handle the \code{nullptr} case internally. Currently the check is on the caller side because \code{cmdState} is a raw pointer that may be null for async renderers. Modify \code{CommandBufferState} methods to be static-friendly:
+
+\begin{lstlisting}
+// Option A: Null-object pattern -- always pass a valid ref
+// (requires restructuring async paths)
+
+// Option B: Move dispatch into a free function
+inline void bindGraphicsPipeline(
+    CommandBufferState* state,
+    VkCommandBuffer cmd, VkPipeline pipeline)
+{
+    if (state) state->bindGraphicsPipeline(cmd, pipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+}
+\end{lstlisting}
+
+Option B saves one line per call site (no if/else) while keeping the same semantics.
+
+\subsection{createGraphicsPipeline Call Patterns}
+\label{sec:pipeline}
+
+\textbf{Severity: Low.} Several renderers call \code{app->createGraphicsPipeline()} with long, repetitive argument lists. While structural duplication is inherent to Vulkan's pipeline creation, the common defaults (polygon mode, cull mode, depth test, topology) could be wrapped.
+
+\textbf{Affected files:}
+\begin{itemize}
+    \item \file{vulkan/renderer/SkyRenderer.cpp} lines 30--45, 58--73
+    \item \file{vulkan/renderer/DebugCubeRenderer.cpp} lines 41--63
+    \item \file{vulkan/renderer/DebugSDFRenderer.cpp} lines 28--49
+    \item \file{vulkan/renderer/SolidRenderer.cpp} (createPipelines method)
+\end{itemize}
+
+\textbf{Example} (\file{SkyRenderer.cpp:30--45} vs \file{DebugCubeRenderer.cpp:41--63}):
+\begin{lstlisting}
+// SkyRenderer:
+auto [pipeline, layout] = app->createGraphicsPipeline(
+    { skyVert.info, skyFrag.info },
+    { {0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX} },
+    { {ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
+      {ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)} },
+    setLayouts, nullptr,
+    VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true,
+    VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    false, {}, VK_FORMAT_D32_SFLOAT, false);
+
+// DebugCubeRenderer:
+std::tie(pipeline, layout) = app->createGraphicsPipeline(
+    { vertStage.info, fragStage.info },
+    { {0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX} },
+    { {ATTR_POS, 0, ...}, {ATTR_NORMAL, 0, ...}, {ATTR_UV, 0, ...} },
+    setLayouts, nullptr,
+    VK_POLYGON_MODE_LINE, VK_CULL_MODE_NONE, true, true,
+    VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+    false, {}, VK_FORMAT_D32_SFLOAT, false);
+\end{lstlisting}
+
+\textbf{Refactoring strategy:} Define a \code{GraphicsPipelineConfig} struct with sensible defaults:
+\begin{lstlisting}
+struct GraphicsPipelineConfig {
+    VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
+    VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
+    VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    bool depthTestEnable = true;
+    bool depthWriteEnable = true;
+    VkCompareOp depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    // ...
+};
+\end{lstlisting}
+
+Then \code{createGraphicsPipeline} takes a \code{const GraphicsPipelineConfig\&} instead of 12 positional arguments. Each caller overrides only what differs:
+\begin{lstlisting}
+GraphicsPipelineConfig cfg{};
+cfg.cullMode = VK_CULL_MODE_FRONT_BIT; // sky is inside-out
+auto [pipeline, layout] = app->createGraphicsPipeline(
+    stages, bindings, attrs, setLayouts, cfg);
+\end{lstlisting}
+
+\subsection{Ad-hoc Image + View Creation}
+\label{sec:images}
+
+\textbf{Severity: Low--Medium.} While \code{RendererUtils::createImage2DWithVma()} exists and handles the common case, several ad-hoc image+view creation sequences remain scattered across renderers.
+
+\textbf{Affected files:}
+\begin{itemize}
+    \item \file{vulkan/renderer/CubeToEquirectRenderer.cpp} lines 110--135
+    \item \file{vulkan/renderer/DebugCubeRenderer.cpp} lines 109--155
+    \item \file{vulkan/renderer/ShadowRenderer.cpp} lines 100--145
+    \item \file{vulkan/renderer/SolidRenderer.cpp} lines 23--33
+    \item \file{vulkan/VulkanApp.cpp} lines 1669, 3575, 3916
+    \item \file{vulkan/TextureArrayManager.cpp} line 211
+\end{itemize}
+
+\textbf{Refactoring strategy:} Migrate all ad-hoc image creations to use \code{RendererUtils::createImage2DWithVma()} or add overloads for cube maps and 3D images to the same utility. The function already handles VMA suballocation, image view creation, and resource manager registration.
+
+\section{Recommended Action Plan}
+
+\begin{enumerate}
+    \item \textbf{Priority 1 (Template Wrapped* SDF):} Replace the 19 near-identical Wrapped* SDF files with a single CRTP template. This is the highest-impact, lowest-risk change \textemdash{} it eliminates \textasciitilde500 lines, removes no functionality, and the template compiles to identical code.
+    \item \textbf{Priority 2 (Move getCenter/getType to base):} Fold the redundant \code{getCenter()} and \code{getType()} methods into \code{SignedDistanceFunction}. Straightforward refactoring with zero behavioral change.
+    \item \textbf{Priority 3 (DescriptorAllocator + DescriptorWriter):} Introduce utility classes for descriptor set lifecycle management. This eliminates 500+ lines of boilerplate and standardizes descriptor creation across all renderers.
+    \item \textbf{Priority 4 (Sampler factory methods):} Add \code{VulkanApp::createSampler*} factory methods. Quick win that touches 7+ files.
+    \item \textbf{Priority 5 (Layout transition helpers):} Add barrier helpers to \code{RendererUtils.hpp}. Low risk, immediate readability improvement.
+    \item \textbf{Priority 6 (Buffer fill template):} Add \code{Buffer::fill<T>()} template. Small but eliminates repetitive map/memcpy/unmap triples.
+    \item \textbf{Priority 7 (GraphicsPipelineConfig struct):} Wrap the 12+ positional parameters into a named struct with defaults. Aids readability and reduces error-prone long argument lists.
+    \item \textbf{Priority 8 (cmdState dispatch helpers):} Create free-function wrappers that internalize the if/else check.
+    \item \textbf{Priority 9 (Use createImage2DWithVma consistently):} Convert remaining ad-hoc image creation to the existing utility.
+    \item \textbf{Priority 10 (cleanup() automation):} Consider tracked handles or a uniform pattern. Lowest priority since the methods are harmless and only run during shutdown.
+\end{enumerate}
+
+\section{Estimated Effort}
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Refactoring & Est. Effort & Lines Removed \\
+\midrule
+Wrapped* SDF CRTP & 2--3 hours & 450--500 \\
+getCenter/getType to base & 1 hour & 80--120 \\
+DescriptorAllocator + DescriptorWriter & 3--4 hours & 550--850 \\
+Sampler factories & 1--2 hours & 120--180 \\
+Layout transition helpers & 2--3 hours & 100--160 \\
+Buffer::fill template & 1 hour & 80--120 \\
+GraphicsPipelineConfig struct & 1--2 hours & 60--100 \\
+cmdState dispatch helpers & 1 hour & 80--120 \\
+createImage2DWithVma migration & 1 hour & 80--120 \\
+cleanup() automation & 0.5--1 hour & 150--200 \\
+\midrule
+\textbf{Total} & \textbf{13.5--20 hours} & \textbf{1,700--2,470} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Risk Assessment}
+
+\begin{itemize}
+    \item \textbf{Low risk:} Sampler factories, Buffer::fill, layout transition helpers, GraphicsPipelineConfig, cmdState helpers, createImage2DWithVma migration \textemdash{} these changes are additive or pure refactoring with no semantic change.
+    \item \textbf{Medium risk:} Wrapped* SDF CRTP, getCenter/getType to base \textemdash{} template metaprogramming can produce confusing compiler errors. Needs careful review of virtual dispatch and type casting.
+    \item \textbf{Medium risk:} DescriptorAllocator + DescriptorWriter \textemdash{} touching descriptor creation in every renderer. Requires methodical testing per renderer.
+    \item \textbf{Low risk (behavior unchanged):} cleanup() automation \textemdash{} cosmetic only.
+\end{itemize}
+
+All changes should be validated against the existing test suite and visual inspection of the rendered output.
+
+\end{document}
