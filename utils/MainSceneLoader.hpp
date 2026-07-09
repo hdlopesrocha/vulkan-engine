@@ -53,9 +53,6 @@
 #include "../sdf/TriangleStripDistanceFunction.hpp"
 #include "../sdf/WrappedTriangleStrip.hpp"
 
-// tree generation
-#include "../tree/TreeHandler.hpp"
-
 // change handlers & brushes
 #include "LiquidSpaceChangeHandler.hpp"
 #include "SolidSpaceChangeHandler.hpp"
@@ -272,22 +269,6 @@ public:
         }
 
     
-        if(false){
-            std::cout << "\topaqueLayer.add(proceduralTree)"<< std::endl;
-            tree::TreeHandler treeHandler;
-            // Long thin branches: thin root, long segments, wide sparse crown
-            treeHandler.setRoot(glm::vec3(0.0f, -1.0f, 0.0f), 0.06f);
-            treeHandler.setParams(tree::TreeParams{1.5f, 0.25f, 0.35f, 50});
-            treeHandler.populateEllipsoid(glm::vec3(0.0f, 0.5f, 0.0f), 0.6f, 0.15f, 250, 42u);
-            treeHandler.generate();
-
-            glm::vec3 treeCenter = glm::vec3(512, 512, 512*6);
-            float treeScale = 280.0f;
-            Transformation treeModel(glm::vec3(treeScale), treeCenter, 0, 0, 0);
-            treeHandler.applyToOctree(opaqueLayer, opaqueHandler, treeModel, translate, scale,
-                                      11, minSize*0.25f, simplifier);
-        
-       }
 
         {
             std::cout << "\topaqueLayer.add(perlinDistort)"<< std::endl;

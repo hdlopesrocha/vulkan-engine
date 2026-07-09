@@ -1,6 +1,3 @@
-// Forward declare SkyWidget to avoid including widget headers here
-class SkyWidget;
-
 template<typename T>
 struct PassUBO {
     Buffer buffer;

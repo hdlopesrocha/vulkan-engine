@@ -21,7 +21,6 @@ class Octree;
 #include <glm/gtc/type_ptr.hpp>
 #include <cmath>
 #include "../TextureArrayManager.hpp"
-#include "../TextureTriple.hpp"
 #include "../MaterialManager.hpp"
 #include "../ShaderStage.hpp"
 #include "../../utils/FileReader.hpp"

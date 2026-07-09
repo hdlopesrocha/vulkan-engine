@@ -21,10 +21,9 @@ public:
     // that actually draws the water geometry.
     void renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                             IndirectRenderer& indirect, VkPipelineLayout pipelineLayout,
-                                              VkDescriptorSet mainDs, VkDescriptorSet materialDs, VkDescriptorSet sceneDs,
-                                              VkImage sceneDepthImage,
-                                              VkBuffer compactIndirectBuffer = VK_NULL_HANDLE,
-                                              VkBuffer visibleCountBuffer = VK_NULL_HANDLE);
+                            VkDescriptorSet mainDs, VkDescriptorSet materialDs, VkDescriptorSet sceneDs,
+                            VkBuffer compactIndirectBuffer = VK_NULL_HANDLE,
+                            VkBuffer visibleCountBuffer = VK_NULL_HANDLE);
     // Map the application frame index into the internal double-buffered arrays.
     // This allows callers to pass the swapchain frame index directly; the
     // implementation will use modulo mapping into the two back-face buffers.
@@ -33,9 +32,6 @@ public:
     // Accessor for tracked per-frame layout (used by widgets to emit correct barriers)
     VkImageLayout getBackFaceDepthLayout(uint32_t frameIndex) const { return backFaceDepthImageLayouts[frameIndex % backFaceDepthImageLayouts.size()]; }
     void setBackFaceDepthLayout(uint32_t frameIndex, VkImageLayout layout) { if (frameIndex < backFaceDepthImageLayouts.size()) backFaceDepthImageLayouts[frameIndex] = layout; }
-
-    // Add post-render barriers for the back-face depth image
-    void postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex);
 
 private:
     VkPipeline backFacePipeline = VK_NULL_HANDLE;

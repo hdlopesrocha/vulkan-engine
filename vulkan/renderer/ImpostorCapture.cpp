@@ -614,9 +614,6 @@ void ImpostorCapture::createDepth(VulkanApp* app) {
     app->resources.addImageView(depthView, "ImpostorCapture: depthView");
 }
 
-void ImpostorCapture::createCaptureRenderPass(VulkanApp* /*app*/) {}
-void ImpostorCapture::createFramebuffers(VulkanApp* /*app*/) {}
-
 void ImpostorCapture::createDescSetLayouts(VulkanApp* app) {
     VkDevice device = app->getDevice();
 

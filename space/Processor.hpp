@@ -5,7 +5,6 @@
 #include "ForwardingHandler.hpp"
 #include <vector>
 #include <unordered_set>
-#include "../math/BoundingCubeHasher.hpp"
 
 class Processor : public IteratorHandler {
     ThreadPool &threadPool;

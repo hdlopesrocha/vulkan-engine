@@ -208,7 +208,6 @@ void WaterBackFaceRenderer::destroyRenderTargets(VulkanApp* app) {
 void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                                               IndirectRenderer& indirect, VkPipelineLayout pipelineLayout,
                                               VkDescriptorSet mainDs, VkDescriptorSet materialDs, VkDescriptorSet sceneDs,
-                                              VkImage sceneDepthImage,
                                               VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer) {
     if (!app || cmd == VK_NULL_HANDLE) return;
     if (backFacePipeline == VK_NULL_HANDLE) return;
@@ -294,12 +293,6 @@ void WaterBackFaceRenderer::renderBackFacePass(VulkanApp* app, VkCommandBuffer c
             1, 0, 1);
     }
     backFaceDepthImageLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-}
-
-void WaterBackFaceRenderer::postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex) {
-    // Transition already performed inside renderBackFacePass; this is a no-op.
-    (void)cmd;
-    (void)frameIndex;
 }
 
 // getBackFaceDepthLayout is defined inline in the header (maps indices via modulo).

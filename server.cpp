@@ -6,7 +6,6 @@
 int main(int argc, char** argv) {
 
     NodeDataCallback liquidNodeEventCallback = [](const OctreeNodeData& nd) {
-        NodeID nid = reinterpret_cast<NodeID>(nd.node);
         std::cout << "Transparent node updated" << std::endl;
     };
     
@@ -15,7 +14,6 @@ int main(int argc, char** argv) {
     };
 
     NodeDataCallback solidNodeEventCallback = [](const OctreeNodeData& nd) {
-        NodeID nid = reinterpret_cast<NodeID>(nd.node);
         std::cout << "Opaque node updated" << std::endl;
     };
 

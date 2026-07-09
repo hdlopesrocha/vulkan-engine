@@ -169,8 +169,6 @@ private:
     void generateFibonacciDirs();
     void createCaptureImages(VulkanApp* app);
     void createDepth(VulkanApp* app);
-    void createCaptureRenderPass(VulkanApp* app);
-    void createFramebuffers(VulkanApp* app);
     void createDescSetLayouts(VulkanApp* app);
     void createPipeline(VulkanApp* app);
     void createUBO(VulkanApp* app);

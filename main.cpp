@@ -1265,7 +1265,6 @@ public:
                                             app->getMainDescriptorSet(),
                                             app->getMaterialDescriptorSet(),
                                             this->sceneRenderer->waterRenderer->getWaterDepthDescriptorSet(frameIdx),
-                                            this->sceneRenderer->solidRenderer->getDepthImage(frameIdx),
                                             (computeDs != VK_NULL_HANDLE) ? taskCompact.buffer : VK_NULL_HANDLE,
                                             (computeDs != VK_NULL_HANDLE) ? taskVisible.buffer : VK_NULL_HANDLE);
 
