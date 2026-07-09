@@ -606,6 +606,8 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     std::vector<VkWriteDescriptorSet> writes;
     std::vector<VkDescriptorImageInfo> writesImg;
     std::vector<VkDescriptorBufferInfo> writesBuf;
+    writesImg.reserve(9);  // max image descriptors: 5 texture arrays + 3 shadow maps + 1 cubemap
+    writesBuf.reserve(3);  // materials SSBO + water params + water render UBO
 
     // UBO write (always present) — update for each per-frame descriptor set
     // We'll write descriptors per-frame so each descriptor set references a dedicated UBO buffer.
@@ -731,8 +733,6 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Perform descriptor updates per-frame
     for (size_t fi = 0; fi < mainUniformBuffers.size(); ++fi) {
         std::vector<VkWriteDescriptorSet> frameWrites;
-        std::vector<VkDescriptorImageInfo> frameImg;
-        std::vector<VkDescriptorBufferInfo> frameBuf;
         frameWrites.reserve(writes.size());
 
         VkDescriptorBufferInfo mainBufInfo{ mainUniformBuffers[fi].buffer, 0, sizeof(UniformObject) };
@@ -740,6 +740,19 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         uboWriteLocal.dstSet = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
         uboWriteLocal.pBufferInfo = &mainBufInfo;
         frameWrites.push_back(uboWriteLocal);
+
+        // Count image and buffer writes first so we can pre-allocate
+        // (prevents emplace_back from invalidating stored pointers on reallocation).
+        size_t imgCount = 0, bufCount = 0;
+        for (auto &w : writes) {
+            if (w.dstBinding == 0) continue;
+            if (w.pImageInfo) ++imgCount;
+            else if (w.pBufferInfo) ++bufCount;
+        }
+        std::vector<VkDescriptorImageInfo> frameImg;
+        std::vector<VkDescriptorBufferInfo> frameBuf;
+        frameImg.reserve(imgCount);
+        frameBuf.reserve(bufCount);
 
         // Rebuild image/buffer writes for the other bindings using the same logic as above
         for (auto &w : writes) {

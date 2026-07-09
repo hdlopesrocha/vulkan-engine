@@ -2238,6 +2238,8 @@ void MyApp::ensureCubemapResources() {
         std::vector<VkWriteDescriptorSet> gfxWrites;
         std::vector<VkDescriptorImageInfo> gfxImg;
         std::vector<VkDescriptorBufferInfo> gfxBuf;
+        gfxImg.reserve(9);  // max image descriptors: 5 texture arrays + 3 shadow maps + 1 cubemap
+        gfxBuf.reserve(5);  // UBO + materials + waterParams + sky + waterRenderUBO
         VkDescriptorBufferInfo& uboInfo = gfxBuf.emplace_back(cube360UBO.buffer, 0, sizeof(UniformObject));
         VkWriteDescriptorSet uboWrite{};
         uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

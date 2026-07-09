@@ -4867,7 +4867,7 @@ void VulkanApp::drawFrame() {
     initialWait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
     initialWait.semaphore = imageAvailableSemaphores[semaphoreIndex];
     initialWait.value = 0;
-    initialWait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    initialWait.stageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
     initialWait.deviceIndex = 0;
     waitSemaphoreInfos.push_back(initialWait);
 
@@ -4962,7 +4962,7 @@ void VulkanApp::drawFrame() {
         colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
         colorBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         colorBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        colorBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        colorBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
         colorBarrier.srcAccessMask = 0;
         colorBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         colorBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;

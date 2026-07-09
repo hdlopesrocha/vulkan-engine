@@ -82,6 +82,7 @@ void VegetationRenderer::destroyCulling() {
         }
     }
     if (vegCullDescPool != VK_NULL_HANDLE) {
+        appPtr->resources.removeDescriptorPool(vegCullDescPool);
         vkDestroyDescriptorPool(device, vegCullDescPool, nullptr);
     }
     if (consolidationFence != VK_NULL_HANDLE) {

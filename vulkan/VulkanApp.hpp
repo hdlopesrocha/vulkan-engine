@@ -246,6 +246,7 @@ protected:
     // expose the GLFW window to derived classes for input polling
     GLFWwindow* getWindow();
 
+public:
     // Per-queue mutexes for concurrent submissions without cross-queue contention.
     // Transfer, graphics, and compute can submit independently without serializing.
     std::mutex graphicsSubmitMutex;
