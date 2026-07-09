@@ -169,13 +169,7 @@ void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    
-    if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &gridTextureSampler) != VK_SUCCESS) {
-        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to create grid texture sampler!" << std::endl;
-    }
-    std::cout << "[DebugCubeRenderer] createSampler: gridTextureSampler=" << (void*)gridTextureSampler << std::endl;
-    // Register grid texture sampler
-    app->resources.addSampler(gridTextureSampler, "DebugCubeRenderer: gridTextureSampler");
+    gridTextureSampler = app->createSampler(samplerInfo, "DebugCubeRenderer: gridTextureSampler");
     
     std::cout << "[DebugCubeRenderer] Loaded grid texture: " << texWidth << "x" << texHeight << std::endl;
 }

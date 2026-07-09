@@ -91,34 +91,8 @@ void WaterRenderer::cleanup(VulkanApp* app) {
 }
 
 void WaterRenderer::createSamplers(VulkanApp* app) {
-    VkSamplerCreateInfo samplerInfo{};
-    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.anisotropyEnable = VK_FALSE;
-    samplerInfo.maxAnisotropy = 1.0f;
-    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-    samplerInfo.unnormalizedCoordinates = VK_FALSE;
-    samplerInfo.compareEnable = VK_FALSE;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    
-    if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &linearSampler) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create water linear sampler!");
-    }
-    std::cerr << "[WaterRenderer] createSampler: linearSampler=" << (void*)linearSampler << std::endl;
-    app->resources.addSampler(linearSampler, "WaterRenderer: linearSampler");
-
-    samplerInfo.magFilter = VK_FILTER_NEAREST;
-    samplerInfo.minFilter = VK_FILTER_NEAREST;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &nearestSampler) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create water nearest sampler!");
-    }
-    std::cerr << "[WaterRenderer] createSampler: nearestSampler=" << (void*)nearestSampler << std::endl;
-    app->resources.addSampler(nearestSampler, "WaterRenderer: nearestSampler");
+    linearSampler = app->createSamplerLinearClamp("WaterRenderer: linearSampler");
+    nearestSampler = app->createSamplerNearestClamp("WaterRenderer: nearestSampler");
 }
 
 void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {

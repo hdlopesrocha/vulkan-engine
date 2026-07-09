@@ -361,6 +361,9 @@ protected:
         TextureImage createTextureImage(const char * filename);
     TextureImage createTextureImageArray(const std::vector<std::string>& filenames, bool srgb = false);
         VkSampler createTextureSampler(uint32_t mipLevels);
+        VkSampler createSampler(const VkSamplerCreateInfo& info, const char* name);
+        VkSampler createSamplerLinearClamp(const char* name);
+        VkSampler createSamplerNearestClamp(const char* name);
         void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
     void createDescriptorPool(uint32_t uboCount, uint32_t samplerCount);
         VkDescriptorSet createDescriptorSet(VkDescriptorSetLayout layout);

@@ -42,25 +42,7 @@ void PostProcessRenderer::setRenderSize(uint32_t width, uint32_t height) {
 // ─── Sampler ──────────────────────────────────────────────────────────────────
 
 void PostProcessRenderer::createSampler(VulkanApp* app) {
-    VkSamplerCreateInfo samplerInfo{};
-    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.anisotropyEnable = VK_FALSE;
-    samplerInfo.maxAnisotropy = 1.0f;
-    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-    samplerInfo.unnormalizedCoordinates = VK_FALSE;
-    samplerInfo.compareEnable = VK_FALSE;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-
-    if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &linearSampler) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create post-process linear sampler!");
-    }
-    std::cout << "[PostProcessRenderer] createSampler: linearSampler=" << (void*)linearSampler << std::endl;
-    app->resources.addSampler(linearSampler, "PostProcessRenderer: linearSampler");
+    linearSampler = app->createSamplerLinearClamp("PostProcessRenderer: linearSampler");
 }
 
 // ─── Pipeline ─────────────────────────────────────────────────────────────────

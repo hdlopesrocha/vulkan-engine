@@ -53,10 +53,7 @@ void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt,
 	samplerInfo.compareEnable = VK_FALSE;
 	samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
 	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-
-	if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &sampler) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create texture sampler");
-	}
+	sampler = app->createSampler(samplerInfo, "EditableTexture: sampler");
     printf("[EditableTexture] createSampler: sampler=%p\n", (void*)sampler);
 	// Register sampler
 	app->resources.addSampler(sampler, "EditableTexture: sampler");

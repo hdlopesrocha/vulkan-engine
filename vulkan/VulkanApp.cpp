@@ -3694,6 +3694,47 @@ void VulkanApp::createTextureImageView(TextureImage &textureImage) {
     resources.addImageView(textureImage.view, "VulkanApp: textureImage.view");
 }
 
+VkSampler VulkanApp::createSampler(const VkSamplerCreateInfo& info, const char* name) {
+    VkSampler sampler = VK_NULL_HANDLE;
+    if (vkCreateSampler(device, &info, nullptr, &sampler) != VK_SUCCESS) {
+        throw std::runtime_error(std::string("Failed to create sampler: ") + name);
+    }
+    resources.addSampler(sampler, name);
+    return sampler;
+}
+
+VkSampler VulkanApp::createSamplerLinearClamp(const char* name) {
+    VkSamplerCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    info.magFilter = VK_FILTER_LINEAR;
+    info.minFilter = VK_FILTER_LINEAR;
+    info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.anisotropyEnable = VK_FALSE;
+    info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    info.unnormalizedCoordinates = VK_FALSE;
+    info.compareEnable = VK_FALSE;
+    info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    return createSampler(info, name);
+}
+
+VkSampler VulkanApp::createSamplerNearestClamp(const char* name) {
+    VkSamplerCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    info.magFilter = VK_FILTER_NEAREST;
+    info.minFilter = VK_FILTER_NEAREST;
+    info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.anisotropyEnable = VK_FALSE;
+    info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    info.unnormalizedCoordinates = VK_FALSE;
+    info.compareEnable = VK_FALSE;
+    info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    return createSampler(info, name);
+}
+
 VkSampler VulkanApp::createTextureSampler(uint32_t mipLevels) {
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;

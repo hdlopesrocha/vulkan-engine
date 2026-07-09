@@ -86,10 +86,7 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.compareOp = VK_COMPARE_OP_LESS;
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    if (vkCreateSampler(device, &samplerInfo, nullptr, &shadowMapSampler) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create EVSM shadow map sampler!");
-    }
-    app->resources.addSampler(shadowMapSampler, "ShadowRenderer: EVSM sampler");
+    shadowMapSampler = app->createSampler(samplerInfo, "ShadowRenderer: EVSM sampler");
 
     for (int c = 0; c < SHADOW_CASCADE_COUNT; c++) {
         uint32_t size = shadowMapSizes[c];

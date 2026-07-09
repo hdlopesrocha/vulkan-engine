@@ -864,18 +864,7 @@ void ImpostorCapture::createCaptureInvVPBuffer(VulkanApp* app) {
 }
 
 void ImpostorCapture::createSceneSampler(VulkanApp* app) {
-    VkSamplerCreateInfo si{};
-    si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    si.magFilter    = VK_FILTER_LINEAR;
-    si.minFilter    = VK_FILTER_LINEAR;
-    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    si.anisotropyEnable = VK_FALSE;
-    if (vkCreateSampler(app->getDevice(), &si, nullptr, &sceneSampler) != VK_SUCCESS)
-        throw std::runtime_error("ImpostorCapture: vkCreateSampler (scene) failed");
-    app->resources.addSampler(sceneSampler, "ImpostorCapture: sceneSampler");
+    sceneSampler = app->createSamplerLinearClamp("ImpostorCapture: sceneSampler");
 }
 
 void ImpostorCapture::allocateDescSets(VulkanApp* app) {
@@ -971,9 +960,12 @@ void ImpostorCapture::createImGuiDescSetsForType(VulkanApp* app, uint32_t billbo
         si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.anisotropyEnable = VK_FALSE;
+        si.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        si.unnormalizedCoordinates = VK_FALSE;
+        si.compareEnable = VK_FALSE;
         si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-        vkCreateSampler(app->getDevice(), &si, nullptr, &imguiSampler);
-        app->resources.addSampler(imguiSampler, "ImpostorCapture: imguiSampler");
+        imguiSampler = app->createSampler(si, "ImpostorCapture: imguiSampler");
     }
     const uint32_t layerBase = billboardType * NUM_VIEWS;
     for (uint32_t v = 0; v < NUM_VIEWS; ++v) {
