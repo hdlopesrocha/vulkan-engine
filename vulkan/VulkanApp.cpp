@@ -647,11 +647,13 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
 }
 
 bool VulkanApp::ensureVegetationComputePipeline() {
-    // Fast path: already initialized
-    {
-        std::lock_guard<std::mutex> lk(vegComputeMutex);
-        if (vegComputePipeline != VK_NULL_HANDLE) return true;
-    }
+    // Fast path: already initialized (no lock needed for scalar read)
+    if (vegComputePipeline != VK_NULL_HANDLE) return true;
+
+    std::lock_guard<std::mutex> lk(vegComputeMutex);
+
+    // Double-check after acquiring lock
+    if (vegComputePipeline != VK_NULL_HANDLE) return true;
 
     VkDevice dev = getDevice();
 
@@ -747,45 +749,34 @@ bool VulkanApp::ensureVegetationComputePipeline() {
         return false;
     }
 
-    // Commit cached state atomically
+    // Commit — we hold the lock so no other thread can race here
+    vegComputePipeline       = pipe;
+    vegComputePipelineLayout = pipeLayout;
+    vegComputeDescSetLayout  = descLayout;
+    vegComputeDescPool       = pool;
+    vegComputeShaderModule   = compModule;
+
+    resources.addPipeline(pipe, "VulkanApp: cachedVegetation ComputePipeline");
+    resources.addPipelineLayout(pipeLayout, "VulkanApp: cachedVegetation ComputePipelineLayout");
+    resources.addDescriptorSetLayout(descLayout, "VulkanApp: cachedVegetation ComputeDescSetLayout");
+    resources.addDescriptorPool(pool, "VulkanApp: cachedVegetation ComputeDescPool");
+    resources.addShaderModule(compModule, "VulkanApp: cachedVegetation ComputeShaderModule");
+
+    // Pre-allocate one descriptor set for serialized async dispatches.
+    // Since generateChunkInstances waits for the fence before returning,
+    // only one dispatch is in flight at a time, so a single cached set
+    // can be safely reused across all dispatches.
     {
-        std::lock_guard<std::mutex> lk(vegComputeMutex);
-        if (vegComputePipeline == VK_NULL_HANDLE) {
-            vegComputePipeline       = pipe;
-            vegComputePipelineLayout = pipeLayout;
-            vegComputeDescSetLayout  = descLayout;
-            vegComputeDescPool       = pool;
-            vegComputeShaderModule   = compModule;
-
-            resources.addPipeline(pipe, "VulkanApp: cachedVegetation ComputePipeline");
-            resources.addPipelineLayout(pipeLayout, "VulkanApp: cachedVegetation ComputePipelineLayout");
-            resources.addDescriptorSetLayout(descLayout, "VulkanApp: cachedVegetation ComputeDescSetLayout");
-            resources.addDescriptorPool(pool, "VulkanApp: cachedVegetation ComputeDescPool");
-            resources.addShaderModule(compModule, "VulkanApp: cachedVegetation ComputeShaderModule");
-
-            // Pre-allocate one descriptor set for serialized async dispatches.
-            // Since generateChunkInstances waits for the fence before returning,
-            // only one dispatch is in flight at a time, so a single cached set
-            // can be safely reused across all dispatches.
-            {
-                VkDescriptorSetAllocateInfo ai{};
-                ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                ai.descriptorPool = pool;
-                ai.descriptorSetCount = 1;
-                ai.pSetLayouts = &descLayout;
-                if (vkAllocateDescriptorSets(dev, &ai, &vegComputeDescSet) == VK_SUCCESS)
-                    resources.addDescriptorSet(vegComputeDescSet, "VulkanApp: cachedVegetation ComputeDescSet");
-            }
-            std::cerr << "[VulkanApp] Cached vegetation compute pipeline ready: pipe=" << (void*)pipe << "\n";
-        } else {
-            // Another thread already initialized; clean up duplicates
-            // The shader module is shared via the cache — do not destroy it.
-            vkDestroyDescriptorPool(dev, pool, nullptr);
-            vkDestroyPipeline(dev, pipe, nullptr);
-            vkDestroyPipelineLayout(dev, pipeLayout, nullptr);
-            vkDestroyDescriptorSetLayout(dev, descLayout, nullptr);
-        }
+        VkDescriptorSetAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool = pool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &descLayout;
+        if (vkAllocateDescriptorSets(dev, &ai, &vegComputeDescSet) == VK_SUCCESS)
+            resources.addDescriptorSet(vegComputeDescSet, "VulkanApp: cachedVegetation ComputeDescSet");
     }
+    std::cerr << "[VulkanApp] Cached vegetation compute pipeline ready: pipe=" << (void*)pipe << "\n";
+
     return true;
 }
 
