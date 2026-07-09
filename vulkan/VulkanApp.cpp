@@ -45,13 +45,28 @@ static void loadBuildTimestamp() {
 }
 
 Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkFence* outFence) {
+    // RAII guard: calls destroyBuffer on scope exit unless released.
+    // Ensures no leak if a later allocation or queue submission throws.
+    struct BufGuard {
+        VulkanApp* app;
+        Buffer buf;
+        bool owned = true;
+        BufGuard(VulkanApp* a, const Buffer& b) : app(a), buf(b) {}
+        ~BufGuard() noexcept { if (owned) app->destroyBuffer(buf); }
+        void release() noexcept { owned = false; }
+        BufGuard(const BufGuard&) = delete;
+        BufGuard& operator=(const BufGuard&) = delete;
+    };
+
     auto stagingAlloc = stagingRing.allocate(size);
     if (!stagingAlloc.mappedPtr) {
         // Ring buffer exhausted or fragmented — fall back to dedicated staging buffer
         Buffer stagingBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        BufGuard stagingGuard{this, stagingBuffer};
         memcpy(stagingBuffer.mappedData, data, (size_t)size);
 
         Buffer gpuBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        BufGuard gpuGuard{this, gpuBuffer};
 
         VkFence fence = runSingleTimeCommandsAsyncOnTransfer([&](VkCommandBuffer cmd) {
             VkBufferCopy copyRegion{};
@@ -72,6 +87,9 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
             }
         });
 
+        stagingGuard.release();
+        gpuGuard.release();
+
         if (outFence) *outFence = fence;
         return gpuBuffer;
     }
@@ -79,6 +97,7 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
     memcpy(stagingAlloc.mappedPtr, data, (size_t)size);
 
     Buffer gpuBuffer = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    BufGuard gpuGuard{this, gpuBuffer};
 
     VkBuffer stagingBuf = stagingRing.buffer();
     VkFence fence = runSingleTimeCommandsAsyncOnTransfer([&](VkCommandBuffer cmd) {
@@ -95,6 +114,8 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
             stagingRing.release(off, sz);
         });
     }
+
+    gpuGuard.release();
 
     if (outFence) *outFence = fence;
     return gpuBuffer;
