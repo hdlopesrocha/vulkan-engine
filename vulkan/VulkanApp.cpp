@@ -4723,21 +4723,19 @@ Buffer VulkanApp::createDeviceLocalBufferExclusive(const void* data, VkDeviceSiz
     bufferInfo.size = size;
     bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(device, &bufferInfo, nullptr, &gpuBuffer.buffer) != VK_SUCCESS)
-        throw std::runtime_error("createDeviceLocalBufferExclusive: vkCreateBuffer failed");
-    resources.addBuffer(gpuBuffer.buffer, "createDeviceLocalBufferExclusive: buffer");
 
-    VkMemoryRequirements memReq;
-    vkGetBufferMemoryRequirements(device, gpuBuffer.buffer, &memReq);
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memReq.size;
-    allocInfo.memoryTypeIndex = findMemoryType(memReq.memoryTypeBits,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &gpuBuffer.memory) != VK_SUCCESS)
-        throw std::runtime_error("createDeviceLocalBufferExclusive: vkAllocateMemory failed");
-    vkBindBufferMemory(device, gpuBuffer.buffer, gpuBuffer.memory, 0);
-    resources.addDeviceMemory(gpuBuffer.memory, "createDeviceLocalBufferExclusive: memory");
+    VmaAllocationCreateInfo allocCI{};
+    allocCI.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    allocCI.flags = VMA_ALLOCATION_CREATE_STRATEGY_MIN_MEMORY_BIT;
+
+    VmaAllocation allocation;
+    VmaAllocationInfo allocInfo;
+    if (vmaCreateBuffer(vma.allocator, &bufferInfo, &allocCI, &gpuBuffer.buffer, &allocation, &allocInfo) != VK_SUCCESS)
+        throw std::runtime_error("createDeviceLocalBufferExclusive: vmaCreateBuffer failed");
+
+    gpuBuffer.allocation = allocation;
+    gpuBuffer.memory = allocInfo.deviceMemory;
+    resources.addBufferVma(gpuBuffer.buffer, allocation, "createDeviceLocalBufferExclusive: buffer");
 
     runSingleTimeCommandsOnTransfer([&](VkCommandBuffer cmd){
         VkBufferCopy copyRegion{};
