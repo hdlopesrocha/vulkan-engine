@@ -74,10 +74,10 @@ void IteratorHandler::iterateParallelBFS(const Octree &tree, OctreeNodeData &roo
         }
     };
 
-    // Launch worker threads
+    // Launch worker threads (fire-and-forget — futures are unused)
     size_t threads = pool.threadCount();
     for (size_t i = 0; i < threads; ++i) {
-        pool.enqueue(worker);
+        pool.enqueueDetached(worker);
     }
 
     // Wait until all work is complete

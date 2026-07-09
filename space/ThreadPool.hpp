@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <iostream>
+#include "SmallFunction.hpp"
 
 class ThreadPool {
 public:
@@ -20,14 +21,19 @@ public:
     template<class F, class... Args>
     auto enqueue(F&& f, Args&&... args) 
         -> std::future<std::invoke_result_t<F, Args...>>;
+
+    // Enqueue a fire-and-forget task (no future, no heap-allocated packaged_task)
+    template<class F, class... Args>
+    void enqueueDetached(F&& f, Args&&... args);
+
     size_t threadCount() const;
 
 private:
     // Worker threads
     std::vector<std::thread> workers;
 
-    // Task queue
-    std::queue<std::function<void()>> tasks;
+    // Task queue (small-buffer-optimized, avoids heap allocation for small callables)
+    std::queue<SmallFunction> tasks;
 
     // Synchronization
     std::mutex queue_mutex;
