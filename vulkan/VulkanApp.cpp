@@ -4928,7 +4928,11 @@ void VulkanApp::drawFrame() {
     }
 
     // Transition swapchain image: UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
-    // Synchronization2: embed stage/access masks in the barrier struct.
+    // Vestigial: the acquire semaphore already provides the execution
+    // dependency (TOP_OF_PIPE → COLOR_ATTACHMENT_OUTPUT).  This barrier is
+    // kept only to make the layout transition explicit for readability;
+    // the srcStageMask/srcAccessMask values are semantically irrelevant
+    // because the UNDEFINED layout has no prior content to make visible.
     {
         VkImageMemoryBarrier2 colorBarrier{};
         colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
