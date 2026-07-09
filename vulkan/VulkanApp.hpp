@@ -322,7 +322,7 @@ public:
         // Record and submit a short-lived command buffer asynchronously to the transfer queue.
         // Returns a fence that will be signaled when the submission completes.
         // If `outSemaphore` is non-null the submission will signal that semaphore
-        // when finished and it will be added to `extraWaitSemaphores` so frame
+        // when finished and it will be added to `m_extraWaitSemaphores` so frame
         // submission can wait on it.
         VkFence runSingleTimeCommandsAsyncOnTransfer(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore = nullptr);
         // Synchronous variant: record, submit to the transfer queue and wait for completion.
@@ -616,6 +616,20 @@ public:
         // Destruction is handled by VulkanResourceManager at shutdown (createShaderModule registers
         // each module with resources).
         std::unordered_map<std::string, VkShaderModule> m_shaderModuleCache;
+
+        // Single mutex guarding all submission/tracking state below.
+        // Replaces per-object mutexes to eliminate lock-ordering deadlocks.
+        mutable std::mutex m_submissionMutex;
+
+        // Async submission bookkeeping (moved from file-scope globals)
+        std::vector<std::pair<VkCommandBuffer,VkFence>> m_pendingCommandBuffers;
+        std::atomic<uint64_t> m_submitCounter{1};
+        std::unordered_map<VkCommandBuffer, uint64_t> m_cmdSubmitMap;
+        std::unordered_map<VkCommandBuffer, VkCommandPool> m_commandBufferPoolMap;
+        std::unordered_map<VkCommandBuffer, std::string> m_cmdBacktraces;
+        std::vector<std::pair<VkSemaphore, VkPipelineStageFlags2>> m_extraWaitSemaphores;
+        std::vector<std::pair<VkSemaphore,uint64_t>> m_semaphoresPendingDestroy;
+        std::vector<std::pair<VkFence, std::function<void()>>> m_deferredDestroys;
 
 };
 

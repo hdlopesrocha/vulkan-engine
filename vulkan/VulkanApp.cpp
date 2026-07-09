@@ -132,35 +132,7 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
 #include <vector>
 #include <limits>
 
-// Async submission bookkeeping
-std::mutex pendingCmdMutex;
-std::vector<std::pair<VkCommandBuffer,VkFence>> pendingCommandBuffers;
-// Global submit counter and mapping to correlate vkQueueSubmit2 failures with commandbuffers
-std::atomic<uint64_t> g_submitCounter{1};
-std::unordered_map<VkCommandBuffer, uint64_t> g_cmdSubmitMap;
-// Map command buffers to the command pool they were allocated from.
-// This allows allocating per-thread temporary pools for async recording
-// and freeing/destroying the correct pool when work completes.
-std::unordered_map<VkCommandBuffer, VkCommandPool> commandBufferPoolMap;
-// Optional per-command-buffer allocation backtrace to help correlate
-// failing vkQueueSubmit2() calls with the code that recorded/allocated
-// the command buffer.
-std::unordered_map<VkCommandBuffer, std::string> g_cmdBacktraces;
-
-std::mutex extraSemaphoreMutex;
-// Extra semaphores signaled by async submissions paired with the pipeline
-// stage mask the frame submit should wait on for that semaphore.
-std::vector<std::pair<VkSemaphore, VkPipelineStageFlags2>> extraWaitSemaphores;
-// semaphores scheduled for destruction paired with the frame fence they were associated with
-std::vector<std::pair<VkSemaphore,uint64_t>> semaphoresPendingDestroy; // paired with frameTimeline value
-
-// Deferred destruction bookkeeping (resource destroy callbacks paired with a fence to wait on)
-std::mutex deferredDestroyMutex;
-std::vector<std::pair<VkFence, std::function<void()>>> deferredDestroys;
-
-// Buffers registered for automatic cleanup at final app shutdown.
-std::mutex buffersPendingMutex;
-std::vector<std::pair<VkBuffer, VkDeviceMemory>> buffersPendingAutoDestroy;
+// Async submission bookkeeping migrated to VulkanApp members (m_submissionMutex guards all).
 #include "VulkanApp.hpp"
 #include "TextureArrayManager.hpp"
 #include "../utils/FileReader.hpp"
@@ -884,9 +856,11 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         std::cerr << "validation(" << sev << ":" << tstr << ") [build: " << buildTimestamp << "] " << (pCallbackData && pCallbackData->pMessage ? pCallbackData->pMessage : "") << std::endl;
     }
 
-    // Exit immediately on any real ERROR or WARNING so we can fix it.
+    // Trap on any real ERROR or WARNING so we can fix it.
+    // abort() generates a core dump (if ulimit permits) and allows
+    // signal handlers / debuggers to catch the fault, unlike _exit().
     if (isWarningOrError) {
-        _exit(1);
+        abort();
     }
     return VK_FALSE;
     return VK_FALSE;
@@ -985,11 +959,11 @@ void VulkanApp::cleanup() {
     // then invoke the resource manager to cleanup tracked Vulkan objects.
     processPendingCommandBuffers();
     {
-        std::lock_guard<std::mutex> dd(deferredDestroyMutex);
-        for (auto &p : deferredDestroys) {
+        std::lock_guard<std::mutex> dd(m_submissionMutex);
+        for (auto &p : m_deferredDestroys) {
             if (!deviceLost) p.second();
         }
-        deferredDestroys.clear();
+        m_deferredDestroys.clear();
     }
     // Destroy the frame timeline semaphore — kept alive above so that
     // processPendingCommandBuffers can safely call vkGetSemaphoreCounterValue.
@@ -1039,20 +1013,20 @@ void VulkanApp::cleanup() {
     // the device and related objects are still valid. This prevents vkDestroyDevice
     // object-tracking warnings for things that were missed.
     {
-        std::lock_guard<std::mutex> dd(deferredDestroyMutex);
-        for (auto &p : deferredDestroys) {
+        std::lock_guard<std::mutex> dd(m_submissionMutex);
+        for (auto &p : m_deferredDestroys) {
             if (!deviceLost) p.second();
         }
-        deferredDestroys.clear();
+        m_deferredDestroys.clear();
     }
     // Final sweep of pending callbacks before destroying device
     processPendingCommandBuffers();
     {
-        std::lock_guard<std::mutex> dd(deferredDestroyMutex);
-        for (auto &p : deferredDestroys) {
+        std::lock_guard<std::mutex> dd(m_submissionMutex);
+        for (auto &p : m_deferredDestroys) {
             if (!deviceLost) p.second();
         }
-        deferredDestroys.clear();
+        m_deferredDestroys.clear();
     }
     printf("[VulkanApp] about to vkDestroyDevice(device=%p)\n", (void*)device);
         resources.cleanup(device);
@@ -1412,11 +1386,10 @@ void VulkanApp::createCommandPool() {
         resources.addCommandPool(transferCommandPool, "VulkanApp: transferCommandPool");
     }
 
-    // initialize async bookkeeping containers
-    // pendingCommandBuffers and extraWaitSemaphores are guarded by mutexes
-    pendingCommandBuffers.clear();
-    extraWaitSemaphores.clear();
-    semaphoresPendingDestroy.clear();
+    // initialize async bookkeeping containers (m_submissionMutex guards all)
+    m_pendingCommandBuffers.clear();
+    m_extraWaitSemaphores.clear();
+    m_semaphoresPendingDestroy.clear();
 }
 
 // Pre-allocate async command pool ring so allocatePrimaryCommandBuffer can
@@ -1517,10 +1490,10 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
     {
         std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
         // Assign a submit id for this submission for diagnostics
-        uint64_t submitId = g_submitCounter.fetch_add(1);
+        uint64_t submitId = m_submitCounter.fetch_add(1);
         {
-            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-            g_cmdSubmitMap[cmd] = submitId;
+            std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+            m_cmdSubmitMap[cmd] = submitId;
         }
 
         // Promote pending layout updates before submit so validation sees
@@ -1561,7 +1534,7 @@ VkFence VulkanApp::runSingleTimeCommandsAsync(const std::function<void(VkCommand
     }
     fn(cmd);
     // Do NOT call vkEndCommandBuffer here; submitCommandBufferAsync will end and submit it.
-    // Note: allocatePrimaryCommandBuffer already set commandBufferPoolMap and
+    // Note: allocatePrimaryCommandBuffer already set m_commandBufferPoolMap and
     // m_cmdToRingSlot, so submitCommandBufferAsync will find them and avoid
     // assigning a transientCommandPool fallback.
 
@@ -1855,8 +1828,8 @@ void VulkanApp::processPendingCommandBuffers() {
     // VK_NULL_HANDLE (wait-for-all), execute them only when there are no pending
     // command buffers remaining.
     {
-        std::lock_guard<std::mutex> dd(deferredDestroyMutex);
-        for (auto it = deferredDestroys.begin(); it != deferredDestroys.end(); ) {
+        std::lock_guard<std::mutex> dd(m_submissionMutex);
+        for (auto it = m_deferredDestroys.begin(); it != m_deferredDestroys.end(); ) {
             VkFence f = it->first;
             auto fn = it->second; // copy the function so we can call it safely
             bool canRun = false;
@@ -1867,8 +1840,8 @@ void VulkanApp::processPendingCommandBuffers() {
                 // by submitted render command buffers (which use inFlightFences).
                 bool pendingEmpty = false;
                 {
-                    std::lock_guard<std::mutex> lk(pendingCmdMutex);
-                    pendingEmpty = pendingCommandBuffers.empty();
+                    std::lock_guard<std::mutex> lk(m_submissionMutex);
+                    pendingEmpty = m_pendingCommandBuffers.empty();
                 }
                 if (pendingEmpty) {
                     bool allFramesIdle = false;
@@ -1907,16 +1880,16 @@ void VulkanApp::processPendingCommandBuffers() {
             }
             if (canRun) {
                 if (f == VK_NULL_HANDLE) {
-                    std::cerr << "[PROCESS PENDING] Running deferDestroyUntilAllPending callback at queue size=" << deferredDestroys.size() << std::endl;
+                    std::cerr << "[PROCESS PENDING] Running deferDestroyUntilAllPending callback at queue size=" << m_deferredDestroys.size() << std::endl;
                 }
                 fn();
-                it = deferredDestroys.erase(it);
+                it = m_deferredDestroys.erase(it);
             } else ++it;
         }
     }
 
     // Now process pending command buffers and free their command buffers when fences signal.
-    // We first collect signaled entries while holding the pendingCmdMutex, then
+    // We first collect signaled entries while holding the m_submissionMutex, then
     // perform frees/destroys without holding that mutex to avoid lock reentrancy.
     // To avoid long CPU spikes while still preventing unbounded resource buildup,
     // process up to `MAX_PENDING_FREE_PER_FRAME` signaled entries per-frame. If a
@@ -1924,8 +1897,8 @@ void VulkanApp::processPendingCommandBuffers() {
     // them all to avoid allowing growth to spiral out of control.
     std::vector<std::pair<VkCommandBuffer, VkFence>> toFree;
     {
-        std::lock_guard<std::mutex> lk(pendingCmdMutex);
-        for (auto it = pendingCommandBuffers.begin(); it != pendingCommandBuffers.end(); ) {
+        std::lock_guard<std::mutex> lk(m_submissionMutex);
+        for (auto it = m_pendingCommandBuffers.begin(); it != m_pendingCommandBuffers.end(); ) {
             VkCommandBuffer cmd = it->first;
             VkFence fence = it->second;
             // Guard vkGetFenceStatus by ensuring the fence is still tracked
@@ -1940,7 +1913,7 @@ void VulkanApp::processPendingCommandBuffers() {
             }
             if (signaledOrGone) {
                 toFree.emplace_back(cmd, fence);
-                it = pendingCommandBuffers.erase(it);
+                it = m_pendingCommandBuffers.erase(it);
             } else {
                 ++it;
             }
@@ -1957,9 +1930,9 @@ void VulkanApp::processPendingCommandBuffers() {
     // If we won't process all signaled entries this frame, re-insert the remainder
     // back into the pending list so they'll be handled in subsequent frames.
     if (processCount < toFree.size()) {
-        std::lock_guard<std::mutex> lk(pendingCmdMutex);
+        std::lock_guard<std::mutex> lk(m_submissionMutex);
         for (size_t i = processCount; i < toFree.size(); ++i) {
-            pendingCommandBuffers.emplace_back(toFree[i]);
+            m_pendingCommandBuffers.emplace_back(toFree[i]);
         }
     }
 
@@ -1973,19 +1946,19 @@ void VulkanApp::processPendingCommandBuffers() {
 
         // Free the command buffer using the correct originating pool (may destroy the pool)
         freeCommandBuffer(cmd);
-        // Destroy and unregister the fence.  Hold deferredDestroyMutex to:
+        // Destroy and unregister the fence.  Hold m_submissionMutex to:
         //  1) run and remove any deferred callbacks registered for this fence,
         //     so that no future processPendingCommandBuffers call will call
         //     vkGetFenceStatus on a fence we are about to destroy, and
         //  2) make the removeFence+vkDestroyFence pair atomic with respect
         //     to the deferred-destroy loop which also calls vkGetFenceStatus.
         {
-            std::lock_guard<std::mutex> dd(deferredDestroyMutex);
-            for (auto dit = deferredDestroys.begin(); dit != deferredDestroys.end(); ) {
+            std::lock_guard<std::mutex> dd(m_submissionMutex);
+            for (auto dit = m_deferredDestroys.begin(); dit != m_deferredDestroys.end(); ) {
                 if (dit->first == fence) {
                     auto fn = dit->second;
                     fn();
-                    dit = deferredDestroys.erase(dit);
+                    dit = m_deferredDestroys.erase(dit);
                 } else {
                     ++dit;
                 }
@@ -2023,9 +1996,9 @@ void VulkanApp::applyPendingLayoutUpdatesForCommandBuffer(VkCommandBuffer cmd) {
     {
         uint64_t submitId = 0;
         {
-            std::lock_guard<std::mutex> lk(pendingCmdMutex);
-            auto it = g_cmdSubmitMap.find(cmd);
-            if (it != g_cmdSubmitMap.end()) submitId = it->second;
+            std::lock_guard<std::mutex> lk(m_submissionMutex);
+            auto it = m_cmdSubmitMap.find(cmd);
+            if (it != m_cmdSubmitMap.end()) submitId = it->second;
         }
     }
 }
@@ -2036,9 +2009,9 @@ void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer
     // with callers that hold graphicsSubmitMutex.
     uint64_t submitId = 0;
     {
-        std::lock_guard<std::mutex> lk(pendingCmdMutex);
-        auto it = g_cmdSubmitMap.find(commandBuffer);
-        if (it != g_cmdSubmitMap.end()) submitId = it->second;
+        std::lock_guard<std::mutex> lk(m_submissionMutex);
+        auto it = m_cmdSubmitMap.find(commandBuffer);
+        if (it != m_cmdSubmitMap.end()) submitId = it->second;
     }
 
     // Build a map of latest-seen pending updates for affected subresources.
@@ -2101,9 +2074,9 @@ void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer
 void VulkanApp::waitForAllPendingCommandBuffers() {
     std::vector<VkFence> fences;
     {
-        std::lock_guard<std::mutex> lk(pendingCmdMutex);
-        fences.reserve(pendingCommandBuffers.size());
-        for (auto &p : pendingCommandBuffers) fences.push_back(p.second);
+        std::lock_guard<std::mutex> lk(m_submissionMutex);
+        fences.reserve(m_pendingCommandBuffers.size());
+        for (auto &p : m_pendingCommandBuffers) fences.push_back(p.second);
     }
     if (!fences.empty()) {
         // Wait indefinitely until all tracked fences signal
@@ -2121,8 +2094,8 @@ void VulkanApp::throttleIfTooManyPending() {
     const size_t MAX_PENDING = 128;
     size_t pending = 0;
     {
-        std::lock_guard<std::mutex> lk(pendingCmdMutex);
-        pending = pendingCommandBuffers.size();
+        std::lock_guard<std::mutex> lk(m_submissionMutex);
+        pending = m_pendingCommandBuffers.size();
     }
     if (pending <= MAX_PENDING) return;
     // Wait for all currently pending command buffers to complete.
@@ -2131,8 +2104,8 @@ void VulkanApp::throttleIfTooManyPending() {
 
 // Check whether a fence is currently tracked as pending
 bool VulkanApp::isFencePending(VkFence fence) {
-    std::lock_guard<std::mutex> lk(pendingCmdMutex);
-    for (auto &p : pendingCommandBuffers) {
+    std::lock_guard<std::mutex> lk(m_submissionMutex);
+    for (auto &p : m_pendingCommandBuffers) {
         if (p.second == fence) return true;
     }
     return false;
@@ -2196,8 +2169,8 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
 
         // Double-use validation: check if this command buffer is already pending
         {
-            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-            for (const auto& cbf : pendingCommandBuffers) {
+            std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+            for (const auto& cbf : m_pendingCommandBuffers) {
                 if (cbf.first == commandBuffer) {
                     std::cerr << "[VulkanApp][ERROR] Attempted to submit command buffer " << (void*)commandBuffer << " which is already pending! Aborting submission to prevent device loss." << std::endl;
                     // Clean up and abort
@@ -2213,25 +2186,25 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
         }
 
         // Assign a submit id for this submission to aid post-mortem correlation
-        uint64_t submitId = g_submitCounter.fetch_add(1);
+        uint64_t submitId = m_submitCounter.fetch_add(1);
         {
-            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-            g_cmdSubmitMap[commandBuffer] = submitId;
+            std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+            m_cmdSubmitMap[commandBuffer] = submitId;
         }
 
-        // Track the command buffer in pendingCommandBuffers BEFORE calling
+        // Track the command buffer in m_pendingCommandBuffers BEFORE calling
         // vkQueueSubmit2 so that processPendingCommandBuffers() sees the entry
-        // when checking pendingCommandBuffers.empty().  Without this ordering a
+        // when checking m_pendingCommandBuffers.empty().  Without this ordering a
         // concurrent processPendingCommandBuffers call may see an empty list,
         // pass the safety check for VK_NULL_HANDLE deferred destroys, and free
         // GPU memory that this submission's commands still reference — causing
         // a GPU page fault → VK_ERROR_DEVICE_LOST.
         {
-            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-            if (commandBufferPoolMap.find(commandBuffer) == commandBufferPoolMap.end()) {
-                commandBufferPoolMap[commandBuffer] = transientCommandPool;
+            std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+            if (m_commandBufferPoolMap.find(commandBuffer) == m_commandBufferPoolMap.end()) {
+                m_commandBufferPoolMap[commandBuffer] = transientCommandPool;
             }
-            pendingCommandBuffers.emplace_back(commandBuffer, fence);
+            m_pendingCommandBuffers.emplace_back(commandBuffer, fence);
         }
 
         // Promote pending layout updates before submit so validation sees
@@ -2249,21 +2222,21 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
                 std::cerr << "[VulkanApp] submitCommandBufferAsync: vkQueueSubmit2 returned VK_ERROR_DEVICE_LOST\n";
                 // Print allocation backtrace (if available) to aid root-cause analysis
                 {
-                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-                    auto it = g_cmdBacktraces.find(commandBuffer);
-                    if (it != g_cmdBacktraces.end()) {
+                    std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+                    auto it = m_cmdBacktraces.find(commandBuffer);
+                    if (it != m_cmdBacktraces.end()) {
                         std::cerr << "[VulkanApp] submit id=" << submitId << " allocation backtrace:\n" << it->second;
                     }
                 }
                 // Keep semaphore and fence registered; centralized cleanup handles them.
                 return fence;
             }
-            // On non-device-lost failure, remove from pendingCommandBuffers
+            // On non-device-lost failure, remove from m_pendingCommandBuffers
             // before destroying the fence and semaphore.
             {
-                std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-                for (auto it = pendingCommandBuffers.begin(); it != pendingCommandBuffers.end(); ++it) {
-                    if (it->first == commandBuffer) { pendingCommandBuffers.erase(it); break; }
+                std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+                for (auto it = m_pendingCommandBuffers.begin(); it != m_pendingCommandBuffers.end(); ++it) {
+                    if (it->first == commandBuffer) { m_pendingCommandBuffers.erase(it); break; }
                 }
             }
             if (semaphore != VK_NULL_HANDLE) {
@@ -2281,9 +2254,9 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
         // register the semaphore so drawFrame will wait on it and later clean it up
         // Use a conservative union of likely consumer stages when the
         // producing queue is the graphics/compute family.
-        std::lock_guard<std::mutex> lk(extraSemaphoreMutex);
+        std::lock_guard<std::mutex> lk(m_submissionMutex);
         VkPipelineStageFlags2 waitStage = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        extraWaitSemaphores.emplace_back(semaphore, waitStage);
+        m_extraWaitSemaphores.emplace_back(semaphore, waitStage);
     }
 
     return fence;
@@ -2344,8 +2317,8 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
 
         // Double-use validation: check if this command buffer is already pending
         {
-            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-            for (const auto& cbf : pendingCommandBuffers) {
+            std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+            for (const auto& cbf : m_pendingCommandBuffers) {
                 if (cbf.first == commandBuffer) {
                     std::cerr << "[VulkanApp][ERROR] Attempted to submit command buffer " << (void*)commandBuffer << " which is already pending! Aborting submission to prevent device loss." << std::endl;
                     if (semaphore != VK_NULL_HANDLE) {
@@ -2360,21 +2333,21 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         }
 
         // Assign a submit id for this submission to aid post-mortem correlation
-        uint64_t submitId = g_submitCounter.fetch_add(1);
+        uint64_t submitId = m_submitCounter.fetch_add(1);
         {
-            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-            g_cmdSubmitMap[commandBuffer] = submitId;
+            std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+            m_cmdSubmitMap[commandBuffer] = submitId;
         }
-        // Track the command buffer in pendingCommandBuffers BEFORE calling
+        // Track the command buffer in m_pendingCommandBuffers BEFORE calling
         // vkQueueSubmit2 (same reasoning as submitCommandBufferAsync — prevents
         // a concurrent processPendingCommandBuffers from seeing an empty list
         // and freeing GPU memory still referenced by this submission).
         {
-            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-            if (commandBufferPoolMap.find(commandBuffer) == commandBufferPoolMap.end()) {
-                commandBufferPoolMap[commandBuffer] = transientCommandPool;
+            std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+            if (m_commandBufferPoolMap.find(commandBuffer) == m_commandBufferPoolMap.end()) {
+                m_commandBufferPoolMap[commandBuffer] = transientCommandPool;
             }
-            pendingCommandBuffers.emplace_back(commandBuffer, fence);
+            m_pendingCommandBuffers.emplace_back(commandBuffer, fence);
         }
 
         // Promote pending layout updates for this submission
@@ -2397,9 +2370,9 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
                 deviceLost.store(true);
                 // Print allocation backtrace (if available) to aid debugging
                 {
-                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-                    auto it = g_cmdBacktraces.find(commandBuffer);
-                    if (it != g_cmdBacktraces.end()) {
+                    std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+                    auto it = m_cmdBacktraces.find(commandBuffer);
+                    if (it != m_cmdBacktraces.end()) {
                         std::cerr << "[VulkanApp] submitToQueue id=" << submitId << " allocation backtrace:\n" << it->second;
                     }
                 }
@@ -2408,9 +2381,9 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
             } else {
                 // Non-device-lost failure: remove the pending entry before cleanup
                 {
-                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-                    for (auto it = pendingCommandBuffers.begin(); it != pendingCommandBuffers.end(); ++it) {
-                        if (it->first == commandBuffer) { pendingCommandBuffers.erase(it); break; }
+                    std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+                    for (auto it = m_pendingCommandBuffers.begin(); it != m_pendingCommandBuffers.end(); ++it) {
+                        if (it->first == commandBuffer) { m_pendingCommandBuffers.erase(it); break; }
                     }
                 }
                 resources.removeFence(fence);
@@ -2423,13 +2396,13 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
     if (semaphore != VK_NULL_HANDLE && outSemaphore) {
         *outSemaphore = semaphore;
 
-        std::lock_guard<std::mutex> lk(extraSemaphoreMutex);
+        std::lock_guard<std::mutex> lk(m_submissionMutex);
         VkPipelineStageFlags2 waitStage =
             VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
             VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
             VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
             VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT;
-        extraWaitSemaphores.emplace_back(semaphore, waitStage);
+        m_extraWaitSemaphores.emplace_back(semaphore, waitStage);
     }
 
     return fence;
@@ -2469,9 +2442,9 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
                 // Print allocation backtrace (if available) to help correlate
                 // the failing submit with the recording site.
                 {
-                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-                    auto it = g_cmdBacktraces.find(commandBuffer);
-                    if (it != g_cmdBacktraces.end()) {
+                    std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+                    auto it = m_cmdBacktraces.find(commandBuffer);
+                    if (it != m_cmdBacktraces.end()) {
                         std::cerr << "[VulkanApp] submitCommandBufferAndWait allocation backtrace:\n" << it->second;
                     }
                 }
@@ -2480,11 +2453,11 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
                 // the driver still considers it in use.
                 resources.addFence(fence, "VulkanApp::submitCommandBufferAndWait: fence");
                 {
-                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-                    if (commandBufferPoolMap.find(commandBuffer) == commandBufferPoolMap.end()) {
-                        commandBufferPoolMap[commandBuffer] = commandPool;
+                    std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+                    if (m_commandBufferPoolMap.find(commandBuffer) == m_commandBufferPoolMap.end()) {
+                        m_commandBufferPoolMap[commandBuffer] = commandPool;
                     }
-                    pendingCommandBuffers.emplace_back(commandBuffer, fence);
+                    m_pendingCommandBuffers.emplace_back(commandBuffer, fence);
                 }
                 return;
             }
@@ -2645,8 +2618,8 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
 
         // Track mapping so we can free using the correct pool later.
         {
-            std::lock_guard<std::mutex> lk(pendingCmdMutex);
-            commandBufferPoolMap[cmd] = pool;
+            std::lock_guard<std::mutex> lk(m_submissionMutex);
+            m_commandBufferPoolMap[cmd] = pool;
 
             // Capture an allocation backtrace for this command buffer so
             // we can later correlate failing vkQueueSubmit2() calls with
@@ -2662,7 +2635,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
                 }
             }
             if (bt_syms) free(bt_syms);
-            g_cmdBacktraces[cmd] = bt_str;
+            m_cmdBacktraces[cmd] = bt_str;
         }
         return cmd;
     }
@@ -2673,11 +2646,11 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         VkCommandPool pool = VK_NULL_HANDLE;
         // Extract mapping (if any)
         {
-            std::lock_guard<std::mutex> lk(pendingCmdMutex);
-            auto it = commandBufferPoolMap.find(cmd);
-            if (it != commandBufferPoolMap.end()) {
+            std::lock_guard<std::mutex> lk(m_submissionMutex);
+            auto it = m_commandBufferPoolMap.find(cmd);
+            if (it != m_commandBufferPoolMap.end()) {
                 pool = it->second;
-                commandBufferPoolMap.erase(it);
+                m_commandBufferPoolMap.erase(it);
             }
         }
         if (pool == VK_NULL_HANDLE) pool = commandPool;
@@ -2709,9 +2682,9 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
 
         // Remove any submit mapping for this command buffer (cleanup trace state)
         {
-            std::lock_guard<std::mutex> lk(pendingCmdMutex);
-            g_cmdSubmitMap.erase(cmd);
-            g_cmdBacktraces.erase(cmd);
+            std::lock_guard<std::mutex> lk(m_submissionMutex);
+            m_cmdSubmitMap.erase(cmd);
+            m_cmdBacktraces.erase(cmd);
         }
         // Remove ring-slot mapping
         {
@@ -3423,9 +3396,9 @@ void VulkanApp::deferDestroyUntilAllPending(std::function<void()> destroyFn) {
     // buffers are outstanding risks destroying resources that are still
     // referenced by submitted render command buffers; defer to the
     // centralized processor to make the destruction decision.
-    std::lock_guard<std::mutex> dd(deferredDestroyMutex);
-    deferredDestroys.emplace_back(VK_NULL_HANDLE, destroyFn);
-    std::cerr << "[VulkanApp] deferDestroyUntilAllPending: scheduled wait-for-all destroy (queue size=" << deferredDestroys.size() << ")" << std::endl;
+    std::lock_guard<std::mutex> dd(m_submissionMutex);
+    m_deferredDestroys.emplace_back(VK_NULL_HANDLE, destroyFn);
+    std::cerr << "[VulkanApp] deferDestroyUntilAllPending: scheduled wait-for-all destroy (queue size=" << m_deferredDestroys.size() << ")" << std::endl;
 }
 
 void VulkanApp::deferDestroyUntilFence(VkFence fence, std::function<void()> destroyFn) {
@@ -3433,18 +3406,18 @@ void VulkanApp::deferDestroyUntilFence(VkFence fence, std::function<void()> dest
         deferDestroyUntilAllPending(destroyFn);
         return;
     }
-    std::lock_guard<std::mutex> dd(deferredDestroyMutex);
-    deferredDestroys.emplace_back(fence, destroyFn);
+    std::lock_guard<std::mutex> dd(m_submissionMutex);
+    m_deferredDestroys.emplace_back(fence, destroyFn);
 }
 
 bool VulkanApp::hasPendingCommandBuffers() {
-    std::lock_guard<std::mutex> lk(pendingCmdMutex);
-    return !pendingCommandBuffers.empty();
+    std::lock_guard<std::mutex> lk(m_submissionMutex);
+    return !m_pendingCommandBuffers.empty();
 }
 
 void VulkanApp::addExtraWaitSemaphore(VkSemaphore sem, VkPipelineStageFlags2 stage) {
-    std::lock_guard<std::mutex> lk(pendingCmdMutex);
-    extraWaitSemaphores.emplace_back(sem, stage);
+    std::lock_guard<std::mutex> lk(m_submissionMutex);
+    m_extraWaitSemaphores.emplace_back(sem, stage);
 }
 
 
@@ -3568,9 +3541,9 @@ void VulkanApp::createSyncObjects() {
     }
 
     // async submission bookkeeping
-    pendingCommandBuffers.clear();
-    semaphoresPendingDestroy.clear();
-    extraWaitSemaphores.clear();
+    m_pendingCommandBuffers.clear();
+    m_semaphoresPendingDestroy.clear();
+    m_extraWaitSemaphores.clear();
 }
 
 TextureImage VulkanApp::createTextureImageArray(const std::vector<std::string>& filenames, bool srgb) {
@@ -4873,8 +4846,8 @@ void VulkanApp::drawFrame() {
 
     // Pull extra semaphores signaled by async generation submissions (if any)
     {
-        std::lock_guard<std::mutex> lk(extraSemaphoreMutex);
-        for (auto &e : extraWaitSemaphores) {
+        std::lock_guard<std::mutex> lk(m_submissionMutex);
+        for (auto &e : m_extraWaitSemaphores) {
             VkSemaphoreSubmitInfo extraWait{};
             extraWait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
             extraWait.semaphore = e.first;
@@ -4883,10 +4856,10 @@ void VulkanApp::drawFrame() {
             extraWait.deviceIndex = 0;
             waitSemaphoreInfos.push_back(extraWait);
         }
-        // Move them to semaphoresPendingDestroy so they can be destroyed after this frame's fence signals
-        if (!extraWaitSemaphores.empty()) {
-            for (auto &e : extraWaitSemaphores) semaphoresPendingDestroy.emplace_back(e.first, frameTimelineValue.load() + 1);
-            extraWaitSemaphores.clear();
+        // Move them to m_semaphoresPendingDestroy so they can be destroyed after this frame's fence signals
+        if (!m_extraWaitSemaphores.empty()) {
+            for (auto &e : m_extraWaitSemaphores) m_semaphoresPendingDestroy.emplace_back(e.first, frameTimelineValue.load() + 1);
+            m_extraWaitSemaphores.clear();
         }
     }
 
@@ -5064,11 +5037,11 @@ void VulkanApp::drawFrame() {
         std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
 
         // Assign a submit id for this frame submission for diagnostics and
-        // expose it via g_cmdSubmitMap so preApply/apply logging can show it.
-        submitId = g_submitCounter.fetch_add(1);
+        // expose it via m_cmdSubmitMap so preApply/apply logging can show it.
+        submitId = m_submitCounter.fetch_add(1);
         {
-            std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-            g_cmdSubmitMap[commandBuffer] = submitId;
+            std::lock_guard<std::mutex> cmdlk(m_submissionMutex);
+            m_cmdSubmitMap[commandBuffer] = submitId;
         }
 
         // Log submit details (verbose — disabled for production)
@@ -5112,13 +5085,13 @@ void VulkanApp::drawFrame() {
     {
         uint64_t curVal = 0;
         vkGetSemaphoreCounterValue(device, frameTimeline, &curVal);
-        for (auto it = semaphoresPendingDestroy.begin(); it != semaphoresPendingDestroy.end(); ) {
+        for (auto it = m_semaphoresPendingDestroy.begin(); it != m_semaphoresPendingDestroy.end(); ) {
             VkSemaphore s = it->first;
             uint64_t waitVal = it->second;
             if (curVal >= waitVal) {
                 resources.removeSemaphore(s);
                 vkDestroySemaphore(device, s, nullptr);
-                it = semaphoresPendingDestroy.erase(it);
+                it = m_semaphoresPendingDestroy.erase(it);
             } else {
                 ++it;
             }
@@ -5156,12 +5129,12 @@ void VulkanApp::drawFrame() {
     {
         uint64_t curVal = 0;
         vkGetSemaphoreCounterValue(device, frameTimeline, &curVal);
-        for (auto it = semaphoresPendingDestroy.begin(); it != semaphoresPendingDestroy.end();) {
+        for (auto it = m_semaphoresPendingDestroy.begin(); it != m_semaphoresPendingDestroy.end();) {
             VkSemaphore s = it->first; uint64_t waitVal = it->second;
             if (curVal >= waitVal) {
                 resources.removeSemaphore(s);
                 vkDestroySemaphore(device, s, nullptr);
-                it = semaphoresPendingDestroy.erase(it);
+                it = m_semaphoresPendingDestroy.erase(it);
             } else ++it;
         }
     }
