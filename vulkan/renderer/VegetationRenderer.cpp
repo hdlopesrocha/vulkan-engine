@@ -1461,12 +1461,7 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     drawCmd.firstIndex = 0;
     drawCmd.vertexOffset = 0;
     drawCmd.firstInstance = 0;
-    void* indirectData;
-    if (vkMapMemory(device, indirectMemory, 0, sizeof(VkDrawIndexedIndirectCommand), 0, &indirectData) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to map vegetation indirect buffer");
-    }
-    std::memcpy(indirectData, &drawCmd, sizeof(VkDrawIndexedIndirectCommand));
-    vkUnmapMemory(device, indirectMemory);
+    std::memcpy(indirect.mappedData, &drawCmd, sizeof(VkDrawIndexedIndirectCommand));
 
     // Dispatch compute to fill instanceBuffer asynchronously on vegetation queue
     VkFence fence = VK_NULL_HANDLE;
