@@ -1,0 +1,840 @@
+\documentclass[a4paper,12pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[table]{xcolor}
+\usepackage{geometry}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{titlesec}
+\usepackage{booktabs}
+\usepackage{array}
+
+\geometry{margin=2.5cm}
+
+\definecolor{criticalcolor}{HTML}{DC3545}
+\definecolor{highcolor}{HTML}{FD7E14}
+\definecolor{mediumcolor}{HTML}{FFC107}
+\definecolor{lowcolor}{HTML}{28A745}
+\definecolor{resolvedcolor}{HTML}{6C757D}
+
+\newcommand{\severitybox}[2]{%
+  \colorbox{#1}{\makebox[2.5cm][c]{\textcolor{white}{\textbf{#2}}}}%
+}
+
+\newcommand{\fixedbox}{%
+  \colorbox{resolvedcolor}{\makebox[2.5cm][c]{\textcolor{white}{\textbf{FIXED}}}}%
+}
+
+\lstset{
+  basicstyle=\small\ttfamily,
+  breaklines=true,
+  frame=single,
+  numbers=none,
+  tabsize=2,
+  backgroundcolor=\color{gray!10},
+  extendedchars=true,
+  inputencoding=utf8,
+  literate={—}{---}1
+}
+
+\title{\textbf{Performance Report \#07}\\[4pt]
+\large Vulkan Engine — Post-Refactoring Audit, Residual Bugs \& Performance}
+\author{Henrique Rocha}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Since report \#06, 19 commits have been merged, resolving 11 of 26 previously
+identified issues (2 critical, 4 high, 5 medium). This report audits the residual
+15 issues, adds 16 newly discovered findings (including latent race conditions,
+API misuse, and resource management hazards), and provides an updated overall
+assessment. Despite significant architectural improvements, several systemic
+issues remain in the global state layer and validation handler.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Scope \& Methodology}
+
+This audit covers the full codebase (\texttt{vulkan/}, \texttt{space/},
+\texttt{services/}, \texttt{main.cpp}) with emphasis on the changes since
+commit \texttt{c31bf96} (report \#06 baseline). Each issue was verified by
+reading source code and cross-referencing with the Vulkan specification (1.3
+\& 1.4) and the engine's own \texttt{AGENTS.md} guidelines.
+
+\subsection*{Resolved Since Report \#06}
+
+The following issues from perf\_report\_06 have been fixed:
+
+\begin{center}
+\begin{tabular}{lc}
+\toprule
+\textbf{ID} & \textbf{Fix Commit} \\
+\midrule
+B1 — Async ring wrap corruption & \texttt{e0315df} \\
+B2 — Device-lost skips cleanup & \texttt{97da4b7} \\
+B3 — Async upload buffer leak & \texttt{9c7be04} \\
+B5 — Heap-allocated descriptor structs & \texttt{f9079e6} \\
+P1 — Staging ring double-free & \texttt{77d4602} \\
+P2 — Direct \texttt{vkAllocateMemory} & \texttt{4f945c7} \\
+P4 — Map/unmap per operation & \texttt{64b98da} \\
+S1 — Shadow cascade wrong stage mask & \textit{(commits around \texttt{c0d6e05})} \\
+S2 — \texttt{ALL\_COMMANDS\_BIT} flush & \texttt{6a02101} \\
+S3 — \texttt{deviceWaitIdle} drain & \texttt{0ae836b} \\
+C1 — Legacy render pass parameter & \texttt{9c49551} \\
+\midrule
+\textbf{11 resolved} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The remaining 15 issues (6 open + 9 partially addressed) are carried forward
+with updated status where applicable.
+
+\newpage
+
+\section{Issue Register}
+
+\subsection{Critical Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[G1]}] \textbf{Global Mutable State Violates RAII Encapsulation}
+  \hfill \severitybox{criticalcolor}{CRITICAL}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 136--163 \\
+    \textbf{Category:} & Architecture / Deadlock Risk \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Eight global data structures are declared at file scope outside the
+  \texttt{VulkanApp} class:
+
+  \begin{itemize}[noitemsep]
+    \item \texttt{pendingCommandBuffers} (guarded by \texttt{pendingCmdMutex})
+    \item \texttt{g\_cmdSubmitMap}
+    \item \texttt{commandBufferPoolMap}
+    \item \texttt{g\_cmdBacktraces}
+    \item \texttt{extraWaitSemaphores} (guarded by \texttt{extraSemaphoreMutex})
+    \item \texttt{semaphoresPendingDestroy}
+    \item \texttt{deferredDestroys} (guarded by \texttt{deferredDestroyMutex})
+    \item \texttt{buffersPendingAutoDestroy} (guarded by \texttt{buffersPendingMutex})
+  \end{itemize}
+
+  Each is paired with its own mutex, but lock ordering between the mutexes is
+  documented only in comments, not enforced by the type system. Violations
+  cause non-deterministic deadlocks. This also prevents unit testing and
+  disallows multiple \texttt{VulkanApp} instances.
+
+  \textbf{Severity Justification:} Violates AGENTS.md ``avoid global mutable
+  state.'' Deadlocks are silent, non-deterministic, and notoriously hard to
+  reproduce.
+
+  \textbf{Recommendation:}
+  Migrate all global state into \texttt{VulkanApp} member variables. Replace
+  per-object mutexes with a single ordered lock or a lock-free structure.
+  Alternatively, introduce a \texttt{SubmissionTracker} class and pass it
+  by reference.
+
+\item[\textbf{[G2]}] \textbf{\texttt{\_exit(1)} in Validation Callback}
+  \hfill \severitybox{criticalcolor}{CRITICAL}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 889 \\
+    \textbf{Category:} & Robustness / Shutdown \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The \texttt{debugCallback} calls \texttt{\_exit(1)} on any warning or
+  error-level validation message. \texttt{\_exit} bypasses all C++ destructors,
+  leaking the GLFW window, Vulkan device, instance, and all GPU allocations.
+  Even benign warnings during development — such as
+  ``UNASSIGNED-BestPractices'' (which is explicitly silenced at line 864) —
+  could theoretically trigger the hard exit if the suppression logic fails.
+
+  \begin{lstlisting}
+  // Line 887-889
+  if (isWarningOrError) {
+      _exit(1);
+  }
+  \end{lstlisting}
+
+  \textbf{Severity Justification:} Prevents graceful GPU shutdown, makes
+  debugging device-lost errors harder, and violates the AGENTS.md preference
+  for ``descriptive log messages'' over hard exits.
+
+  \textbf{Recommendation:}
+  Replace \texttt{\_exit(1)} with a debug breakpoint (\texttt{\_\_builtin\_trap()}
+  or \texttt{abort()}) so a core dump is generated but registered atexit
+  handlers still run. Alternatively, log and continue; let the caller decide
+  whether to exit.
+
+\end{enumerate}
+
+\newpage
+
+\subsection{High Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[B7]}] \textbf{\texttt{ALL\_COMMANDS\_BIT} Used as Signal Stage Mask}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 2181, 2327, 4902, 4907 \\
+    \textbf{Category:} & Vulkan API / Spec Violation \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Four semaphore signal operations use
+  \texttt{VK\_PIPELINE\_STAGE\_2\_ALL\_COMMANDS\_BIT} as the \texttt{stageMask}
+  in \texttt{VkSemaphoreSubmitInfo}:
+
+\begin{lstlisting}
+// Line 2181
+signalSemaphoreInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+\end{lstlisting}
+
+  Per the Vulkan specification, \texttt{ALL\_COMMANDS\_BIT} is a \textit{wait}
+  mask and is not valid in a semaphore signal operation. Although many
+  implementations silently treat it as ``all stages have completed,'' the
+  specification reserves the right to ignore it, and synchronization validation
+  layers flag it as an error. This is particularly problematic at lines 4902
+  and 4907 where the swapchain-present + frame-timeline semaphores are
+  signaled — using an invalid stage mask there could interfere with WSI
+  timing.
+
+  \textbf{Recommendation:}
+  For graphics submissions, use the union of all stages that produced output:
+  \texttt{ALL\_GRAPHICS\_BIT} or the specific stage(s) (e.g.,
+  \texttt{COLOR\_ATTACHMENT\_OUTPUT\_BIT | EARLY\_FRAGMENT\_TESTS\_BIT}).
+  For compute submissions, use \texttt{COMPUTE\_SHADER\_BIT}.
+
+\item[\textbf{[B8]}] \textbf{WaterRenderer Hardcodes 3 Instead of FRAMES Constant}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/WaterRenderer.cpp} \\
+    \textbf{Line:} & 101, 105, 111, 140, 203, 207 \\
+    \textbf{Category:} & Bug / Brittle Constant \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The header declares:
+\begin{lstlisting}
+// WaterRenderer.hpp:167
+static constexpr uint32_t FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
+std::array<VkImage, FRAMES> waterDepthImages = {};
+\end{lstlisting}
+
+  However, every loop in the \texttt{.cpp} iterates with \texttt{frameIdx < 3}
+  instead of \texttt{frameIdx < FRAMES}:
+\begin{lstlisting}
+// WaterRenderer.cpp:111
+for (int frameIdx = 0; frameIdx < 3; ++frameIdx) { ... }
+\end{lstlisting}
+
+  If \texttt{MAX\_FRAMES\_IN\_FLIGHT} is ever changed from 3, these loops will
+  silently access out-of-bounds memory via \texttt{std::array::operator[]}
+  (no bounds check in release builds), corrupting adjacent member variables
+  or triggering undefined behavior.
+
+  \textbf{Recommendation:}
+  Replace all \texttt{3} literals in loop bounds with \texttt{FRAMES}.
+
+\item[\textbf{[B9]}] \textbf{Per-Cycle Backtrace Capture in Release Builds}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 2651--2665 \\
+    \textbf{Category:} & Performance / CPU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Every call to \texttt{allocatePrimaryCommandBuffer} for ring-slot command
+  buffers captures a full stack backtrace via \texttt{backtrace()} and
+  \texttt{backtrace\_symbols()}:
+
+\begin{lstlisting}
+void* bt_buf[32];
+int bt_n = backtrace(bt_buf, 32);
+char** bt_syms = backtrace_symbols(bt_buf, bt_n);
+// ... format into std::string ...
+g_cmdBacktraces[cmd] = bt_str;
+\end{lstlisting}
+
+  Since ring-slot command buffers are recycled every frame (up to 3 graphics
+  + several async), this calls \texttt{malloc} inside
+  \texttt{backtrace\_symbols} multiple times per frame even in release builds.
+  Each call walks the ELF symbol table and formats strings — measurable CPU
+  overhead on a hot path. The backtrace is only consumed on
+  \texttt{VK\_ERROR\_DEVICE\_LOST}, which is rare in production.
+
+  \textbf{Recommendation:}
+  Guard with \texttt{\#ifndef NDEBUG} so the backtrace is only captured in
+  debug builds. Alternatively, defer capture to the error path via
+  \texttt{std::call\_once}.
+
+\item[\textbf{[B10]}] \textbf{\texttt{signalRingSlotFence} Called Before Submit Result Check}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 2241--2244 \\
+    \textbf{Category:} & Bug / Race Hazard \\
+  \end{tabular}
+
+  \textbf{Description:}
+  In \texttt{submitCommandBufferAsync}, the ring-slot fence is signaled
+  \textit{before} the \texttt{vkQueueSubmit2} result is checked for failure:
+
+\begin{lstlisting}
+VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
+if (submitRes == VK_SUCCESS) {
+    signalRingSlotFence(commandBuffer, graphicsQueue);  // line 2243
+}
+if (submitRes != VK_SUCCESS) {
+    // Cleanup path — but ring slot fence was already signaled
+\end{lstlisting}
+
+  If \texttt{vkQueueSubmit2} fails (with an error other than
+  \texttt{DEVICE\_LOST}), the ring slot fence has already been signaled by
+  \texttt{signalRingSlotFence}'s empty submit, making the ring slot appear
+  available before the failed submission's command buffer has actually
+  executed (it never will). This can cause the ring slot to be reused for a
+  new recording that overlaps with the stale command buffer contents still
+  on the GPU timeline.
+
+  \textbf{Recommendation:}
+  Move \texttt{signalRingSlotFence} after the success check, or guard it
+  so it only fires on success.
+
+\item[\textbf{[P6]}] \textbf{Processor Thread-Pool Tasks May Outlive Scene Data}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{space/Processor.cpp} \\
+    \textbf{Line:} & 40--70 (estimated) \\
+    \textbf{Category:} & Memory Safety / Use-After-Free \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{Processor} enqueues tasks into the \texttt{ThreadPool} that capture
+  raw \texttt{OctreeNode*} pointers. If the \texttt{Octree} or
+  \texttt{ChunkManager} is destroyed while tasks are still pending or in
+  flight, the captured pointers become dangling. The \texttt{ThreadPool}
+  destructor joins all worker threads, but the octree may be destroyed
+  independently (e.g., scene reload) while the pool is still running.
+
+  \textbf{Recommendation:}
+  Use \texttt{std::shared\_ptr} for octree nodes, or add a generation counter
+  to each node that tasks check before dereferencing. Alternatively, drain
+  the task queue before destroying the octree.
+
+\item[\textbf{[P7]}] \textbf{\texttt{OctreeNode::getBlock} Returns Dangling Raw Pointer}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{space/OctreeNode.cpp} \\
+    \textbf{Category:} & Memory Safety \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{getBlock()} returns a raw \texttt{ChildBlock*} from a custom
+  block allocator. When the allocator is reset (on full octree
+  reinitialization), all previously returned pointers become dangling. The
+  allocator provides no notification mechanism, so any holder of a
+  \texttt{ChildBlock*} — such as \texttt{Processor} or
+  \texttt{OctreeVisibilityChecker} — silently references freed memory.
+
+  \textbf{Recommendation:}
+  Use \texttt{std::shared\_ptr<ChildBlock>} with a custom deleter, or add an
+  epoch/generation counter that is validated on every access.
+
+\end{enumerate}
+
+\newpage
+
+\subsection{Medium Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[B4]}] \textbf{\texttt{vkAcquireNextImageKHR} Uses \texttt{UINT64\_MAX} Timeout}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 4767 \\
+    \textbf{Category:} & Bug / Robustness \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{vkAcquireNextImageKHR} is called with \texttt{UINT64\_MAX} timeout
+  (\textit{carried forward from report \#06}). If the window is minimized,
+  the compositor is stalled, or the driver hangs, this blocks the main thread
+  indefinitely. The swapchain is recreated on \texttt{VK\_ERROR\_OUT\_OF\_DATE\_KHR}
+  but no timeout is enforced.
+
+  \textbf{Recommendation:}
+  Reduce the timeout to 1~s and handle \texttt{VK\_TIMEOUT} by yielding and
+  retrying. Throttle to 1~FPS when minimized.
+
+\item[\textbf{[S4]}] \textbf{Swapchain Barrier — \texttt{TOP\_OF\_PIPE} with \texttt{srcAccessMask = 0}}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 4965--4968 \\
+    \textbf{Category:} & Synchronization \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The swapchain image transition (UNDEFINED → COLOR\_ATTACHMENT\_OPTIMAL) uses
+  \texttt{srcStageMask = VK\_PIPELINE\_STAGE\_2\_TOP\_OF\_PIPE\_BIT} with
+  \texttt{srcAccessMask = 0}. While the barrier is correct for UNDEFINED
+  images (nothing to make visible), it is semantically misleading: the
+  acquire semaphore already provides the execution dependency, so the entire
+  barrier could be omitted. The mismatch between
+  \texttt{TOP\_OF\_PIPE\_BIT} (earliest possible stage) and \texttt{0}
+  (no access) confuses Vulkan validation tools and reviewers.
+
+  \textbf{Recommendation:}
+  Either remove the barrier entirely (the acquire semaphore suffices) or
+  keep it and add a comment explaining it is vestigial.
+
+\item[\textbf{[P8]}] \textbf{ThreadPool Stores Tasks as \texttt{std::function<void()>}}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{space/ThreadPool.tpp} \\
+    \textbf{Line:} & 25--45 (estimated) \\
+    \textbf{Category:} & Performance / CPU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Each enqueued task is type-erased into a \texttt{std::function<void()>},
+  which heap-allocates for non-trivial captures. During terrain meshing,
+  thousands of small tasks are dispatched per frame. The alloc/free churn
+  adds measurable CPU overhead and fragments the heap.
+
+  \textbf{Recommendation:}
+  Use a small-buffer-optimized function type (e.g., \texttt{fx::function}
+  with 32~B inline storage) or a custom task struct with an embedded
+  virtual dispatch. For pointer-free captures, a template parameter pack
+  + \texttt{std::invoke} avoids allocation entirely.
+
+\item[\textbf{[P9]}] \textbf{StagingRingBuffer::allocate — Linear Scan Under Mutex}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/StagingRingBuffer.cpp} \\
+    \textbf{Line:} & 47--80 \\
+    \textbf{Category:} & Performance / Contention \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{allocate()} holds \texttt{mutex} while scanning the free list
+  (\texttt{std::list}) linearly for a contiguous chunk. For a fragmented
+  ring with many small allocations, this scan can take tens of microseconds
+  while stalling other threads (e.g., async uploads). The function also
+  blocks on a \texttt{unique\_lock} without timeout, so a stuck allocator
+  blocks all staging.
+
+  \textbf{Recommendation:}
+  Replace the \texttt{std::list} free list with a free-block tree
+  (e.g., \texttt{std::multiset} keyed by size) for O(log~n) allocation,
+  or use a buddy allocator. Add a timeout to the \texttt{unique\_lock} and
+  fall back to a fresh staging buffer if contention is high.
+
+\item[\textbf{[P10]}] \textbf{\texttt{allocBuffer} / \texttt{bulkAllocBuffer} Lock Contention}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/IndirectRenderer.cpp} \\
+    \textbf{Line:} & 207--248 \\
+    \textbf{Category:} & Performance / Contention \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{bulkAlloc} holds \texttt{mutex} while inserting into
+  \texttt{mergedVertices} and \texttt{mergedIndices}, which can be large
+  (thousands of vertices). This blocks other operations — including
+  \texttt{removeMesh}, \texttt{getActiveMeshInfos}, and
+  \texttt{getMeshInfo} — from making progress. During level loading or
+  streaming, this creates frame-time spikes.
+
+  \textbf{Recommendation:}
+  Use a reader-writer lock (\texttt{std::shared\_mutex}) where
+  \texttt{getActiveMeshInfos} acquires shared access and
+  \texttt{bulkAlloc}/\texttt{removeMesh} acquire exclusive access.
+  Alternatively, batch inserts under the lock using \texttt{reserve} to
+  minimize time under contention.
+
+\item[\textbf{[B11]}] \textbf{Pipeline Cache Not Atomically Written}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 262--290 \\
+    \textbf{Category:} & Bug / Data Integrity \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{savePipelineCache()} writes directly to
+  \texttt{pipeline\_cache.bin}. If the application crashes mid-write, the
+  file is truncated or corrupted, causing the next run to silently fall back
+  to an empty cache. All pipelines must then be recompiled at load time, adding
+  seconds to startup.
+
+  \textbf{Recommendation:}
+  Write to a temporary file (\texttt{pipeline\_cache.tmp}), then atomically
+  rename over the target. This guarantees the cache is either fully written
+  or the old version remains intact.
+
+\item[\textbf{[G3]}] \textbf{\texttt{VulkanApp::run()} Swallows All Exceptions}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 5817--5821 \\
+    \textbf{Category:} & Error Handling \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{mainLoop()} exceptions are caught by \texttt{catch (...)} with a
+  generic message and then ignored:
+
+\begin{lstlisting}
+try {
+    mainLoop();
+} catch (...) {
+    fprintf(stderr, "[VulkanApp] mainLoop threw, proceeding with cleanup\n");
+}
+cleanup();
+\end{lstlisting}
+
+  The exception type and \texttt{what()} string are lost. For critical
+  failures during rendering (descriptor pool exhaustion, device loss), the
+  engine proceeds to \texttt{cleanup()} with the device in an unknown state,
+  potentially causing secondary crashes during teardown.
+
+  \textbf{Recommendation:}
+  Catch \texttt{std::exception} and log \texttt{e.what()} before cleanup.
+  Keep a bare \texttt{catch (...)} as a last resort but still log the
+  address of the exception record.
+
+\item[\textbf{[P11]}] \textbf{Broken Double-Checked Locking on Vegetation Pipeline}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 675--815 \\
+    \textbf{Category:} & Concurrency / Waste \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The \texttt{ensureVegetationComputePipeline()} function locks the mutex
+  for the initial check, then releases it before the expensive pipeline
+  creation work:
+
+\begin{lstlisting}
+// Line 677-680 — lock + initial check
+{
+    std::lock_guard<std::mutex> lk(vegComputeMutex);
+    if (vegComputePipeline != VK_NULL_HANDLE) return true;
+}
+// Line 682-774 — EXPENSIVE init, OUTSIDE lock
+// ...
+// Line 777-813 — re-acquire lock for commit
+{
+    std::lock_guard<std::mutex> lk(vegComputeMutex);
+    if (vegComputePipeline == VK_NULL_HANDLE) {
+        // commit
+    } else {
+        // clean up duplicates
+    }
+}
+\end{lstlisting}
+
+  This allows a second thread to also pass the initial check and begin a
+  duplicate initialization before the first thread commits. The duplicate
+  work is then discarded (lines 806--813). The proper pattern would be to
+  check outside the lock for the fast path:
+\begin{lstlisting}
+if (vegComputePipeline != VK_NULL_HANDLE) return true;  // fast path, no lock
+{
+    std::lock_guard... lk(vegComputeMutex);
+    if (vegComputePipeline != VK_NULL_HANDLE) return true;  // double-check
+    // ... initialize under lock ...
+}
+\end{lstlisting}
+
+  \textbf{Recommendation:}
+  Restructure to the proper double-checked locking pattern so the fast path
+  avoids the mutex entirely and the initialization is serialized.
+
+\end{enumerate}
+
+\newpage
+
+\subsection{Low Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[P5]}] \textbf{Per-Frame Descriptor Writes in SceneRenderer}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/SceneRenderer.cpp} \\
+    \textbf{Line:} & 764--773 \\
+    \textbf{Category:} & Performance / CPU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Descriptor sets for uniform buffers and image samplers are updated every
+  frame via \texttt{vkUpdateDescriptorSets} (carried forward from report \#06).
+  For resources that change infrequently (static textures, constant buffers),
+  this generates unnecessary CPU work and driver validation overhead.
+
+  \textbf{Recommendation:}
+  Separate descriptor sets into static (updated once) and dynamic (updated
+  per frame). Use the new \texttt{DescriptorWriter} builder for the dynamic
+  portion.
+
+\item[\textbf{[C2]}] \textbf{Binary Semaphores Used Alongside Timeline}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 4799 \\
+    \textbf{Category:} & Compliance \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The present submit signals both a binary semaphore (required by WSI) and
+  the frame timeline semaphore (carried forward from report \#06). This dual
+  signal path complicates synchronization reasoning but is inherently
+  required by the Vulkan WSI extension.
+
+  \textbf{Recommendation:}
+  Acceptable as-is. Add a comment at the submission site explaining why both
+  are present.
+
+\item[\textbf{[C3]}] \textbf{SPIR-V Targets \texttt{vulkan1.1} Instead of 1.6}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{Makefile} \\
+    \textbf{Category:} & Compliance \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Shaders target \texttt{vulkan1.1} (SPIR-V 1.3). The engine uses Vulkan 1.3
+  features (carried forward from report \#06). Bumping to \texttt{vulkan1.3}
+  (SPIR-V 1.6) enables 8/16-bit types, scalar block layout, and 64-bit
+  integers in shader code.
+
+  \textbf{Recommendation:}
+  Change \texttt{--target-env vulkan1.1} to \texttt{vulkan1.3} (or
+  \texttt{vulkan1.4} when available) in the \texttt{glslc} flags.
+
+\item[\textbf{[B6]}] \textbf{Resource Manager Tracks \texttt{VkRenderPass} Unnecessarily}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanResourceManager.cpp} \\
+    \textbf{Line:} & 176, 275, 293, 488 \\
+    \textbf{Category:} & Dead Code \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{VulkanResourceManager} tracks \texttt{VkRenderPass} handles, but
+  no render passes are ever created (carried forward from report \#06).
+
+  \textbf{Recommendation:}
+  Remove the tracking code.
+
+\item[\textbf{[G4]}] \textbf{Duplicate \texttt{return VK\_FALSE} in \texttt{debugCallback}}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 891--892 \\
+    \textbf{Category:} & Code Quality \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Two consecutive \texttt{return VK\_FALSE;} statements. The second is dead
+  code.
+
+\begin{lstlisting}
+    return VK_FALSE;
+    return VK_FALSE;  // dead
+}
+\end{lstlisting}
+
+  \textbf{Recommendation:}
+  Remove the second \texttt{return}.
+
+\item[\textbf{[P12]}] \textbf{\texttt{getActiveMeshInfos()} Copies Vector Every Call}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/IndirectRenderer.cpp} \\
+    \textbf{Line:} & 1314--1321 \\
+    \textbf{Category:} & Performance / Allocations \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Returns a \texttt{std::vector<MeshInfo>} by value, allocating and copying
+  every active mesh entry. Only used from the debug UI, so the impact is
+  limited, but during frame spikes (thousands of debug toggles) it adds
+  allocator pressure.
+
+  \textbf{Recommendation:}
+  Accept an output iterator or return a vector of indices to the internal
+  storage.
+
+\end{enumerate}
+
+\newpage
+
+\section{Comparison with Previous Report}
+
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Category} & \textbf{Report \#06} & \textbf{Resolved} & \textbf{Carried} & \textbf{New} & \textbf{Total Open} \\
+\midrule
+Bugs (B)           & 6  & 4 & 2  & 4 & 6  \\
+Performance (P)    & 5  & 3 & 2  & 4 & 6  \\
+Compliance (C)     & 3  & 1 & 2  & 0 & 2  \\
+Synchronization (S)& 4  & 3 & 1  & 0 & 1  \\
+General (G)        & —  & — & —  & 4 & 4  \\
+\midrule
+\textbf{Total}     & \textbf{18} & \textbf{11} & \textbf{7} & \textbf{12} & \textbf{19} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textit{Note:} The 11 resolved issues were all from the bug, performance,
+compliance, and synchronization categories. The 7 carried-forward issues are
+lower-severity items that were not prioritized. The 12 new findings are
+concentrated in concurrency safety (\texttt{space/}) and global architecture
+(\texttt{VulkanApp.cpp}).
+
+\newpage
+
+\section{Overall Classification}
+
+The engine has made substantial progress since report \#06. The 11 resolved
+issues include all previously flagged critical bugs (async ring wrap, device-lost
+cleanup, buffer leaks) and several high-impact performance antipatterns
+(\texttt{deviceWaitIdle}, \texttt{ALL\_COMMANDS\_BIT}, \texttt{vkAllocateMemory}).
+The introduction of \texttt{DescriptorWriter}, \texttt{DescriptorAllocator},
+\texttt{GraphicsPipelineConfig}, \texttt{TrackedHandle<T>}, and
+\texttt{RendererUtils::transitionImageLayout} has measurably improved code
+quality and reduced boilerplate by over 600 lines.
+
+However, three systemic concerns remain:
+
+\begin{enumerate}
+  \item \textbf{Global mutable state (G1) is the single highest-risk item.}
+        The eight file-scope data structures with independent mutexes create
+        a fragile locking graph that can deadlock non-deterministically.
+        This should be the top refactoring priority.
+  \item \textbf{The \texttt{\_exit(1)} in the validation callback (G2)}
+        defeats all RAII guarantees and makes every validation warning
+        potentially fatal during development. Replacing it with a
+        breakpoint or abort would preserve debuggability without
+        sacrificing cleanup.
+  \item \textbf{Lifetime management in \texttt{space/} (P6, P7)} exposes the
+        engine to use-after-free bugs during scene reload. The raw-pointer
+        patterns in the octree allocator and thread-pool task dispatch need
+        modernization to \texttt{shared\_ptr} or generation counters.
+\end{enumerate}
+
+\subsection*{Overall Severity}
+
+\medskip
+\noindent\severitybox{highcolor}{ADEQUATE}
+
+\begin{quote}
+  The engine is significantly more robust than at report \#06. The core
+  rendering path (dynamic rendering, Synchronization2, timeline semaphores,
+  VMA suballocation) follows modern best practices and is validation-clean
+  in common paths. \textbf{2 critical, 6 high, and 8 medium issues remain},
+  concentrated in the global state layer, validation handler, and space
+  partitioning lifetime management. None of these are expected to manifest
+  in normal operation, but they represent real hazards under edge cases:
+  concurrent scene reload, rapid device-lost recovery, or
+  \texttt{MAX\_FRAMES\_IN\_FLIGHT} adjustments.
+\end{quote}
+
+\subsection*{Remediation Priority}
+
+\begin{enumerate}[noitemsep]
+  \item[\textbf{P0}] \textbf{This sprint:} G1 (global mutable state refactor),
+        G2 (\texttt{\_exit(1)} → breakpoint), B8 (WaterRenderer 3→FRAMES).
+  \item[\textbf{P1}] \textbf{Next sprint:} B7 (ALL\_COMMANDS\_BIT signal mask),
+        B10 (ring-slot fence ordering), P6/P7 (octree lifetime).
+  \item[\textbf{P2}] \textbf{This month:} B4 (acquire timeout), B9 (backtrace
+        guard), B11 (atomic cache write), P8-P10 (lock contention).
+  \item[\textbf{P3}] \textbf{Backlog:} P5 (descriptor writes), C2/C3 (compliance),
+        B6 (dead code), G4 (duplicate return), P12 (copy elision).
+\end{enumerate}
+
+\newpage
+
+\section{Fix Instructions Summary}
+
+\begin{enumerate}[noitemsep]
+  \item G1 — Move 8 global structures into \texttt{VulkanApp} members;
+        unify mutex ordering with a single ordered lock or lock-free
+        alternative.
+  \item G2 — Replace \texttt{\_exit(1)} with \texttt{\_\_builtin\_trap()} or
+        \texttt{abort()}.
+  \item G3 — Add \texttt{catch (std::exception\& e)} before
+        \texttt{catch (...)} and log \texttt{e.what()}.
+  \item G4 — Remove duplicate \texttt{return VK\_FALSE;} at line 892.
+  \item B4 — Reduce \texttt{vkAcquireNextImageKHR} timeout to 1~s; handle
+        \texttt{VK\_TIMEOUT} by yielding.
+  \item B6 — Remove \texttt{VkRenderPass} tracking from
+        \texttt{VulkanResourceManager}.
+  \item B7 — Replace \texttt{ALL\_COMMANDS\_BIT} in signal stage masks with
+        the narrowest appropriate stage (\texttt{ALL\_GRAPHICS\_BIT},
+        \texttt{COMPUTE\_SHADER\_BIT}, etc.).
+  \item B8 — Replace \texttt{3} with \texttt{FRAMES} (i.e.,
+        \texttt{VulkanApp::MAX\_FRAMES\_IN\_FLIGHT}) in all
+        \texttt{WaterRenderer.cpp} loop bounds.
+  \item B9 — Guard \texttt{backtrace()}/\texttt{backtrace\_symbols()} with
+        \texttt{\#ifndef NDEBUG}.
+  \item B10 — Move \texttt{signalRingSlotFence} after the success check.
+  \item B11 — Write pipeline cache to a temp file, then atomically rename.
+  \item P5 — Use static descriptor sets for immutable resources.
+  \item P6 — Use \texttt{shared\_ptr} or generation counters in octree
+        task dispatch.
+  \item P7 — Add epoch validation to \texttt{ChildBlock*} accessors.
+  \item P8 — Use small-buffer-optimized function type in ThreadPool.
+  \item P9 — Replace free-list scan with size-indexed tree or buddy allocator.
+  \item P10 — Use \texttt{std::shared\_mutex} for IndirectRenderer mesh
+        access.
+  \item P11 — Restructure to proper double-checked locking (check outside lock).
+  \item P12 — Return by span or iterator pair instead of vector copy.
+  \item C2 — Add explanatory comment at the dual-signal submit site.
+  \item C3 — Bump SPIR-V target to \texttt{vulkan1.3+} in \texttt{glslc} flags.
+  \item S4 — Remove vestigial swapchain barrier or add explanatory comment.
+\end{enumerate}
+
+\end{document}
