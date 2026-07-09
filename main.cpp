@@ -152,7 +152,7 @@ public:
     // until after the current frame is submitted to avoid waiting on fences
     // while the frame is being recorded (causes deadlock). Set by UI,
     // consumed in `postSubmit()`.
-    bool brushRebuildPending = true;
+    bool brushRebuildPending = false;
     bool generateMapPending = false;
     bool loadScenePending = false;
     std::string pendingLoadPath;
@@ -1819,6 +1819,10 @@ void MyApp::preAllocateAsyncDescriptorPools() {
 // Implementation: rebuild the brush scene from Brush3dWidget entries
 void MyApp::rebuildBrushScene() {
     if (!brushScene || !sceneRenderer || !brush3dWidget) return;
+
+    // Wait for all GPU work to complete so in-flight frames don't read
+    // stale buffer data while we rebuild the brush scene's indirect buffers.
+    deviceWaitIdle();
 
     // Process only the currently-selected brush entry from the manager
     const BrushEntry* selectedEntry = brushManager.getSelectedEntry();
