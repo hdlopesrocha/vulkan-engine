@@ -181,4 +181,41 @@ inline VkPipeline buildFullscreenPipeline(
     return pipeline;
 }
 
+// Record a single-image layout transition barrier into a command buffer.
+// Wraps VkImageMemoryBarrier2 + vkCmdPipelineBarrier2 for the common case
+// of transitioning a single subresource (mip 0, layer 0).
+inline void transitionImageLayout(
+    VkCommandBuffer           cmd,
+    VkImage                   image,
+    VkImageLayout             oldLayout,
+    VkImageLayout             newLayout,
+    VkAccessFlags2            srcAccess,
+    VkAccessFlags2            dstAccess,
+    VkPipelineStageFlags2     srcStage,
+    VkPipelineStageFlags2     dstStage,
+    VkImageAspectFlags        aspect     = VK_IMAGE_ASPECT_COLOR_BIT,
+    uint32_t                  baseLayer  = 0,
+    uint32_t                  layerCount = 1)
+{
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType                = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.oldLayout            = oldLayout;
+    barrier.newLayout            = newLayout;
+    barrier.srcQueueFamilyIndex  = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex  = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image                = image;
+    barrier.subresourceRange     = { aspect, 0, 1, baseLayer, layerCount };
+    barrier.srcAccessMask        = srcAccess;
+    barrier.dstAccessMask        = dstAccess;
+    barrier.srcStageMask         = srcStage;
+    barrier.dstStageMask         = dstStage;
+
+    VkDependencyInfo depInfo{};
+    depInfo.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    depInfo.imageMemoryBarrierCount = 1;
+    depInfo.pImageMemoryBarriers    = &barrier;
+
+    vkCmdPipelineBarrier2(cmd, &depInfo);
+}
+
 } // namespace RendererUtils

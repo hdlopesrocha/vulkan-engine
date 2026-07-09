@@ -1,4 +1,5 @@
 #include "Solid360Renderer.hpp"
+#include "RendererUtils.hpp"
 #include "../../utils/FileReader.hpp"
 #include "../ShaderStage.hpp"
 #include "../includes/vertex_layouts.hpp"
@@ -402,24 +403,14 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
 
         // Transition color layer: tracked layout → COLOR_ATTACHMENT_OPTIMAL
         {
-            VkImageMemoryBarrier2 colorBarrier{};
-            colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-            colorBarrier.oldLayout = cube360ColorLayouts[face];
-            colorBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            colorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            colorBarrier.image = cube360ColorImage;
-            colorBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, face, 1 };
-            colorBarrier.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            colorBarrier.srcAccessMask = (cube360ColorLayouts[face] == VK_IMAGE_LAYOUT_UNDEFINED)
+            VkAccessFlags2 srcAccess = (cube360ColorLayouts[face] == VK_IMAGE_LAYOUT_UNDEFINED)
                 ? 0 : VK_ACCESS_2_SHADER_READ_BIT;
-            colorBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-            colorBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-            VkDependencyInfo dep{};
-            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dep.imageMemoryBarrierCount = 1;
-            dep.pImageMemoryBarriers = &colorBarrier;
-            vkCmdPipelineBarrier2(cmd, &dep);
+            RendererUtils::transitionImageLayout(
+                cmd, cube360ColorImage,
+                cube360ColorLayouts[face], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                srcAccess, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, face, 1);
         }
 
         // Transition depth layer: tracked layout → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
@@ -605,23 +596,12 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
 
         // Transition color: COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
         {
-            VkImageMemoryBarrier2 colorBarrier{};
-            colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-            colorBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            colorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            colorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            colorBarrier.image = cube360ColorImage;
-            colorBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, face, 1 };
-            colorBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-            colorBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-            colorBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            colorBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            VkDependencyInfo dep{};
-            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dep.imageMemoryBarrierCount = 1;
-            dep.pImageMemoryBarriers = &colorBarrier;
-            vkCmdPipelineBarrier2(cmd, &dep);
+            RendererUtils::transitionImageLayout(
+                cmd, cube360ColorImage,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, face, 1);
         }
         cube360ColorLayouts[face] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -669,20 +649,11 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
     // Global same-layout barrier: make all per-face COLOR_ATTACHMENT_WRITEs
     // visible to subsequent SHADER_SAMPLED_READs (e.g. in the main pass on the same queue).
     {
-        VkImageMemoryBarrier2 globalBarrier{};
-        globalBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        globalBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        globalBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-        globalBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        globalBarrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-        globalBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        globalBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        globalBarrier.image = cube360ColorImage;
-        globalBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6 };
-        VkDependencyInfo dep{};
-        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep.imageMemoryBarrierCount = 1;
-        dep.pImageMemoryBarriers = &globalBarrier;
-        vkCmdPipelineBarrier2(cmd, &dep);
+        RendererUtils::transitionImageLayout(
+            cmd, cube360ColorImage,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, 0, 6);
     }
 }

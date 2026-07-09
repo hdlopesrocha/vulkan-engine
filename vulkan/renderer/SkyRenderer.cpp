@@ -298,31 +298,22 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
 
     // Transition color image: tracked layout → COLOR_ATTACHMENT_OPTIMAL
     {
-        VkImageMemoryBarrier2 barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        barrier.oldLayout = skyColorLayouts[frameIndex];
-        barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = skyColorImages[frameIndex];
-        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-
+        VkAccessFlags2 srcAccess;
         VkPipelineStageFlags2 srcStage;
         if (skyColorLayouts[frameIndex] == VK_IMAGE_LAYOUT_UNDEFINED) {
-            barrier.srcAccessMask = 0;
+            srcAccess = 0;
             srcStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
         } else {
-            barrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            srcStage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            srcAccess = VK_ACCESS_2_SHADER_READ_BIT;
+            srcStage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         }
-        barrier.srcStageMask = srcStage;
-        barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        VkDependencyInfo depInfo{};
-        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.imageMemoryBarrierCount = 1;
-        depInfo.pImageMemoryBarriers = &barrier;
-        vkCmdPipelineBarrier2(cmd, &depInfo);
+        RendererUtils::transitionImageLayout(
+            cmd, skyColorImages[frameIndex],
+            skyColorLayouts[frameIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            srcAccess, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            srcStage, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
     }
 
     VkClearValue clear{};
@@ -368,23 +359,14 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
 
     // Transition color: COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
     {
-        VkImageMemoryBarrier2 barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = skyColorImages[frameIndex];
-        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-        VkDependencyInfo depInfo{};
-        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        depInfo.imageMemoryBarrierCount = 1;
-        depInfo.pImageMemoryBarriers = &barrier;
-        vkCmdPipelineBarrier2(cmd, &depInfo);
+        RendererUtils::transitionImageLayout(
+            cmd, skyColorImages[frameIndex],
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
     }
     skyColorLayouts[frameIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }

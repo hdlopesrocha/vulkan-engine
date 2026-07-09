@@ -26,6 +26,7 @@
 #include "vulkan/ubo/SkyUniform.hpp"
 #include "vulkan/VulkanApp.hpp"
 #include "vulkan/renderer/SceneRenderer.hpp"
+#include "vulkan/renderer/RendererUtils.hpp"
 #include "utils/LocalScene.hpp"
 #include "widgets/SettingsWidget.hpp"
 #include "widgets/SkyWidget.hpp"
@@ -867,21 +868,12 @@ public:
             if (sceneRenderer && sceneRenderer->solid360Renderer) {
                 VkImage cubeImg = sceneRenderer->solid360Renderer->getCube360ColorImage();
                 if (cubeImg != VK_NULL_HANDLE) {
-                    VkImageMemoryBarrier2 barrier{};
-                    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                    barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-                    barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-                    barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-                    barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                    barrier.image = cubeImg;
-                    barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6 };
-                    VkDependencyInfo dep{};
-                    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                    dep.imageMemoryBarrierCount = 1;
-                    dep.pImageMemoryBarriers = &barrier;
-                    vkCmdPipelineBarrier2(commandBuffer, &dep);
+                    RendererUtils::transitionImageLayout(
+                        commandBuffer, cubeImg,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                        VK_IMAGE_ASPECT_COLOR_BIT, 0, 6);
                 }
             }
 
@@ -890,22 +882,13 @@ public:
         {
             VkImage solidDepthImg = sceneRenderer->solidRenderer->getDepthImage(frameIdx);
             if (solidDepthImg != VK_NULL_HANDLE) {
-                VkImageMemoryBarrier2 barrier{};
-                barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                barrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-                barrier.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
-                barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
-                                      | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-                barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                barrier.image = solidDepthImg;
-                barrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
-                VkDependencyInfo dep{};
-                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                dep.imageMemoryBarrierCount = 1;
-                dep.pImageMemoryBarriers = &barrier;
-                vkCmdPipelineBarrier2(commandBuffer, &dep);
+                RendererUtils::transitionImageLayout(
+                    commandBuffer, solidDepthImg,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT);
                 setImageLayoutTracked(solidDepthImg, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
             }
         }
@@ -961,21 +944,11 @@ public:
         {
             VkImage solidColorImg = sceneRenderer->solidRenderer->getColorImage(frameIdx);
             if (solidColorImg != VK_NULL_HANDLE) {
-                VkImageMemoryBarrier2 barrier{};
-                barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                barrier.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-                barrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-                barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-                barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                barrier.image = solidColorImg;
-                barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-                VkDependencyInfo dep{};
-                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                dep.imageMemoryBarrierCount = 1;
-                dep.pImageMemoryBarriers = &barrier;
-                vkCmdPipelineBarrier2(commandBuffer, &dep);
+                RendererUtils::transitionImageLayout(
+                    commandBuffer, solidColorImg,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
                 setImageLayoutTracked(solidColorImg, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
             }
         }
