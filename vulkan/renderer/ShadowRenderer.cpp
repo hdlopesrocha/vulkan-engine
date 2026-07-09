@@ -124,6 +124,11 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
     if (app->getDescriptorSetLayout() != VK_NULL_HANDLE)
         setLayouts.push_back(app->getDescriptorSetLayout());
 
+    GraphicsPipelineConfig cfg{};
+    cfg.cullMode = VK_CULL_MODE_NONE;
+    cfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    cfg.colorFormats = { EVSM_FORMAT };
+    cfg.depthBiasEnable = true;
     auto [pipeline, layout] = app->createGraphicsPipeline(
         { vertexShader.info, tescShader.info, teseShader.info, evsmFragment.info },
         std::vector<VkVertexInputBindingDescription>{
@@ -132,17 +137,7 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
         vk_layouts::defaultAttributes(),
         setLayouts,
         nullptr,
-        VK_POLYGON_MODE_FILL,
-        VK_CULL_MODE_NONE,
-        true,   // depthWrite
-        true,   // colorWrite (EVSM moments)
-        VK_COMPARE_OP_LESS_OR_EQUAL,
-        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        false,
-        std::vector<VkFormat>{EVSM_FORMAT},
-        VK_FORMAT_D32_SFLOAT,
-        false,  // noColorAttachment = false (we HAVE a color attachment)
-        true    // depthBiasEnable
+        cfg
     );
     shadowPipeline = pipeline;
     shadowPipelineLayout = layout;

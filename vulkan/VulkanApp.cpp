@@ -4251,7 +4251,9 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     VkFormat depthFormat,
     bool noColorAttachment,
     bool depthBiasEnable,
-    VkRenderPass legacyRenderPass) {
+    VkRenderPass legacyRenderPass,
+    VkFrontFace frontFace,
+    bool depthTestEnable) {
 
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages(stages);
     const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions = descriptions;
@@ -4300,7 +4302,7 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     rasterizer.polygonMode = polygonMode;
     rasterizer.lineWidth = 1.0f;
     rasterizer.cullMode = cullMode;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.frontFace = frontFace;
     rasterizer.depthBiasEnable = depthBiasEnable ? VK_TRUE : VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
@@ -4357,7 +4359,7 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
 
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthTestEnable = depthTestEnable ? VK_TRUE : VK_FALSE;
     depthStencil.depthWriteEnable = depthWrite ? VK_TRUE : VK_FALSE;
     depthStencil.depthCompareOp = depthCompare;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
@@ -4418,6 +4420,23 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     std::cout << "graphics pipeline created\n";
     registeredPipelines.push_back(graphicsPipeline);
     return {graphicsPipeline, pipelineLayout};
+}
+
+std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
+    std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
+    const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
+    const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions,
+    const std::vector<VkDescriptorSetLayout>& setLayouts,
+    const VkPushConstantRange* pushConstantRange,
+    const GraphicsPipelineConfig& config) {
+
+    return createGraphicsPipeline(stages, bindingDescriptions, attributeDescriptions,
+        setLayouts, pushConstantRange,
+        config.polygonMode, config.cullMode, config.depthWriteEnable, config.colorWrite,
+        config.depthCompareOp, config.topology, config.depthClampEnable,
+        config.colorFormats, config.depthFormat, config.noColorAttachment,
+        config.depthBiasEnable, config.legacyRenderPass, config.frontFace,
+        config.depthTestEnable);
 }
 
 uint32_t VulkanApp::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {

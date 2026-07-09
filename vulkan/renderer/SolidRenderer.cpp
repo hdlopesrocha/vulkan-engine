@@ -204,6 +204,8 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     // Note: Removed material descriptor set layout since main shaders don't use set = 1
 
     // No per-mesh model push-constants are used anymore (models are identity in shaders).
+    GraphicsPipelineConfig cfg{};
+    cfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     auto [pipeline, layout] = app->createGraphicsPipeline(
         {
             vertexShader.info,
@@ -215,11 +217,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         vk_layouts::defaultAttributes(),
         setLayouts,
         nullptr,
-        VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        false,
-        {},
-        VK_FORMAT_D32_SFLOAT,
-        false
+        cfg
     );
     graphicsPipeline = pipeline;
     graphicsPipelineLayout = layout;
@@ -230,6 +228,9 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     }
 
 
+    GraphicsPipelineConfig depthCfg{};
+    depthCfg.colorWrite = false;
+    depthCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     auto [depthPipeline, depthLayout] = app->createGraphicsPipeline(
         {
             vertexShader.info,
@@ -241,11 +242,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         vk_layouts::defaultAttributes(),
         setLayouts,
         nullptr,
-        VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, true, false, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        false,
-        {},
-        VK_FORMAT_D32_SFLOAT,
-        false
+        depthCfg
     );
     depthPrePassPipeline = depthPipeline;
     depthPrePassPipelineLayout = depthLayout;
@@ -257,14 +254,16 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             app->getOrCreateShaderModule("shaders/depth_only.frag.spv"),
             VK_SHADER_STAGE_FRAGMENT_BIT
         );
+        GraphicsPipelineConfig ddCfg{};
+        ddCfg.colorWrite = false;
+        ddCfg.depthCompareOp = VK_COMPARE_OP_LESS;
+        ddCfg.noColorAttachment = true;
         auto [dp, dl] = app->createGraphicsPipeline(
             { vertexShader.info, tescShader.info, teseShader.info, depthFrag.info },
             std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
             vk_layouts::defaultAttributes(),
             setLayouts, nullptr,
-            VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT,
-            true, false, VK_COMPARE_OP_LESS, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            false, {}, VK_FORMAT_D32_SFLOAT, true
+            ddCfg
         );
         deferredDepthPipeline = dp;
         deferredDepthPipelineLayout = dl;
@@ -272,14 +271,16 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     }
     {
         // Color-only: full main.frag, LESS_OR_EQUAL compare, no depth write
+        GraphicsPipelineConfig dcCfg{};
+        dcCfg.depthWriteEnable = false;
+        dcCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        dcCfg.colorFormats = { app->getSwapchainImageFormat() };
         auto [cp, cl] = app->createGraphicsPipeline(
             { vertexShader.info, tescShader.info, teseShader.info, fragmentShader.info },
             std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
             vk_layouts::defaultAttributes(),
             setLayouts, nullptr,
-            VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT,
-            false, true, VK_COMPARE_OP_LESS_OR_EQUAL, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            false, { app->getSwapchainImageFormat() }, VK_FORMAT_D32_SFLOAT
+            dcCfg
         );
         deferredColorPipeline = cp;
         deferredColorPipelineLayout = cl;

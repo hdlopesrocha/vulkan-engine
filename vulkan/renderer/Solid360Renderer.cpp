@@ -260,20 +260,17 @@ void Solid360Renderer::createSolid360Pipelines(VulkanApp* app) {
 
     // Depth-only pipeline: lightweight fragment shader, no color attachment, depth write, LESS compare
     {
+        GraphicsPipelineConfig depthCfg{};
+        depthCfg.colorWrite = false;
+        depthCfg.depthCompareOp = VK_COMPARE_OP_LESS;
+        depthCfg.noColorAttachment = true;
         auto [pipeline, layout] = app->createGraphicsPipeline(
             { vertexShader.info, tescShader.info, teseShader.info, depthFragmentShader.info },
             std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
             vk_layouts::defaultAttributes(),
             setLayouts,
             nullptr,
-            VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT,
-            true, false,                    // depthWrite=true, colorWrite=false
-            VK_COMPARE_OP_LESS,
-            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            false,
-            {},                             // no color formats
-            VK_FORMAT_D32_SFLOAT,
-            true                            // noColorAttachment=true
+            depthCfg
         );
         depthOnlyPipeline = pipeline;
         depthOnlyPipelineLayout = layout;
@@ -281,19 +278,17 @@ void Solid360Renderer::createSolid360Pipelines(VulkanApp* app) {
 
     // EQUAL-compare color pipeline: full fragment shader, color write, EQUAL depth compare, no depth write
     {
+        GraphicsPipelineConfig colorCfg{};
+        colorCfg.depthWriteEnable = false;
+        colorCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        colorCfg.colorFormats = { app->getSwapchainImageFormat() };
         auto [pipeline, layout] = app->createGraphicsPipeline(
             { vertexShader.info, tescShader.info, teseShader.info, mainFragmentShader.info },
             std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
             vk_layouts::defaultAttributes(),
             setLayouts,
             nullptr,
-            VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT,
-            false, true,                    // depthWrite=false, colorWrite=true
-            VK_COMPARE_OP_LESS_OR_EQUAL,
-            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            false,
-            { app->getSwapchainImageFormat() },
-            VK_FORMAT_D32_SFLOAT
+            colorCfg
         );
         equalComparePipeline = pipeline;
         equalComparePipelineLayout = layout;

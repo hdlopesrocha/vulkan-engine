@@ -38,6 +38,11 @@ void DebugCubeRenderer::init(VulkanApp* app) {
     };
     
     // Create pipeline with alpha blending enabled for transparency
+    GraphicsPipelineConfig cfg{};
+    cfg.polygonMode = VK_POLYGON_MODE_LINE;
+    cfg.cullMode = VK_CULL_MODE_NONE;
+    cfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    cfg.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
     VkPipeline pipelineHandle;
     VkPipelineLayout layoutHandle;
     std::tie(pipelineHandle, layoutHandle) = app->createGraphicsPipeline(
@@ -51,17 +56,8 @@ void DebugCubeRenderer::init(VulkanApp* app) {
             VkVertexInputAttributeDescription{ ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
         },
         setLayouts,
-        nullptr,  // No push constants
-        VK_POLYGON_MODE_LINE,      // Wireframe mode
-        VK_CULL_MODE_NONE,         // No culling for wireframe
-        true,                      // Enable blending
-        true,                      // Depth test enabled
-        VK_COMPARE_OP_LESS_OR_EQUAL,
-        VK_PRIMITIVE_TOPOLOGY_LINE_LIST, // Lines for wireframe
-        false,
-        {},
-        VK_FORMAT_D32_SFLOAT,
-        false
+        nullptr,
+        cfg
     );
     
     pipeline = pipelineHandle;

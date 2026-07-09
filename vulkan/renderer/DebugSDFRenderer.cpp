@@ -27,6 +27,9 @@ void DebugSDFRenderer::init(VulkanApp* app) {
         descriptorSetLayout
     };
 
+    GraphicsPipelineConfig cfg{};
+    cfg.cullMode = VK_CULL_MODE_NONE;
+    cfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     auto [pipelineHandle, layoutHandle] = app->createGraphicsPipeline(
         { vertStage.info, fragStage.info },
         std::vector<VkVertexInputBindingDescription>{
@@ -38,16 +41,7 @@ void DebugSDFRenderer::init(VulkanApp* app) {
         },
         setLayouts,
         nullptr,
-        VK_POLYGON_MODE_FILL,
-        VK_CULL_MODE_NONE,
-        true,
-        true,
-        VK_COMPARE_OP_LESS_OR_EQUAL,
-        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        false,
-        {},
-        VK_FORMAT_D32_SFLOAT,
-        false
+        cfg
     );
 
     pipeline = pipelineHandle;

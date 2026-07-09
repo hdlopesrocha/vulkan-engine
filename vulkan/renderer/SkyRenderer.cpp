@@ -27,6 +27,10 @@ void SkyRenderer::init(VulkanApp* app) {
     std::vector<VkDescriptorSetLayout> setLayouts;
     setLayouts.push_back(app->getDescriptorSetLayout());
     // No push-constants required for sky pipeline (sky uses UBO/viewPos to position the sphere).
+    GraphicsPipelineConfig cfg{};
+    cfg.cullMode = VK_CULL_MODE_FRONT_BIT;
+    cfg.depthWriteEnable = false;
+    cfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     auto [pipeline, layout] = app->createGraphicsPipeline(
         { skyVert.info, skyFrag.info },
         std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
@@ -36,12 +40,7 @@ void SkyRenderer::init(VulkanApp* app) {
         },
         setLayouts,
         nullptr,
-        VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true, VK_COMPARE_OP_LESS_OR_EQUAL,
-        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        false,
-        {},
-        VK_FORMAT_D32_SFLOAT,
-        false
+        cfg
     );
     skyPipeline = pipeline;
     skyPipelineLayout = layout;
@@ -55,6 +54,10 @@ void SkyRenderer::init(VulkanApp* app) {
     skyGridFragModule = app->getOrCreateShaderModule("shaders/sky_grid.frag.spv");
     ShaderStage skyGridFrag = ShaderStage(skyGridFragModule, VK_SHADER_STAGE_FRAGMENT_BIT);
 
+    GraphicsPipelineConfig gridCfg{};
+    gridCfg.cullMode = VK_CULL_MODE_FRONT_BIT;
+    gridCfg.depthWriteEnable = false;
+    gridCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     auto [gridPipeline, gridLayout] = app->createGraphicsPipeline(
         { skyVert.info, skyGridFrag.info },
         std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
@@ -64,12 +67,7 @@ void SkyRenderer::init(VulkanApp* app) {
         },
         setLayouts,
         nullptr,
-        VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, false, true, VK_COMPARE_OP_LESS_OR_EQUAL,
-        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        false,
-        {},
-        VK_FORMAT_D32_SFLOAT,
-        false
+        gridCfg
     );
     skyGridPipeline = gridPipeline;
     skyGridPipelineLayout = gridLayout;

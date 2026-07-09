@@ -22,6 +22,23 @@
 #include "VulkanResourceManager.hpp"
 #include "VmaContext.hpp"
 
+struct GraphicsPipelineConfig {
+    VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
+    VkCullModeFlagBits cullMode = VK_CULL_MODE_BACK_BIT;
+    VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE;
+    bool depthTestEnable = true;
+    bool depthWriteEnable = true;
+    bool colorWrite = true;
+    VkCompareOp depthCompareOp = VK_COMPARE_OP_LESS;
+    VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    bool depthClampEnable = false;
+    std::vector<VkFormat> colorFormats = {};
+    VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
+    bool noColorAttachment = false;
+    bool depthBiasEnable = false;
+    VkRenderPass legacyRenderPass = VK_NULL_HANDLE;
+};
+
 class VulkanApp {
     public:
         // Main descriptor sets (one per frame-in-flight). Use
@@ -428,7 +445,18 @@ protected:
         VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
         bool noColorAttachment = false,
         bool depthBiasEnable = false,
-        VkRenderPass legacyRenderPass = VK_NULL_HANDLE);
+        VkRenderPass legacyRenderPass = VK_NULL_HANDLE,
+        VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE,
+        bool depthTestEnable = true);
+
+    // Config-based overload — callers override only what differs from defaults
+    std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
+        std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
+        const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
+        const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions,
+        const std::vector<VkDescriptorSetLayout>& setLayouts,
+        const VkPushConstantRange* pushConstantRange,
+        const GraphicsPipelineConfig& config);
 
     // Backwards-compatible wrapper for callers that pass an initializer_list
     inline std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
@@ -448,11 +476,25 @@ protected:
         VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
         bool noColorAttachment = false,
         bool depthBiasEnable = false,
-        VkRenderPass legacyRenderPass = VK_NULL_HANDLE) {
+        VkRenderPass legacyRenderPass = VK_NULL_HANDLE,
+        VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE,
+        bool depthTestEnable = true) {
         std::vector<VkVertexInputAttributeDescription> vec(attributeDescriptions);
         return createGraphicsPipeline(stages, bindingDescriptions, vec, setLayouts, pushConstantRange,
             polygonMode, cullMode, depthWrite, colorWrite, depthCompare, topology, depthClampEnable,
-            colorFormats, depthFormat, noColorAttachment, depthBiasEnable, legacyRenderPass);
+            colorFormats, depthFormat, noColorAttachment, depthBiasEnable, legacyRenderPass, frontFace, depthTestEnable);
+    }
+
+    // Config-based wrapper for initializer_list attribute descriptions
+    inline std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
+        std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
+        const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
+        std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions,
+        const std::vector<VkDescriptorSetLayout>& setLayouts,
+        const VkPushConstantRange* pushConstantRange,
+        const GraphicsPipelineConfig& config) {
+        std::vector<VkVertexInputAttributeDescription> vec(attributeDescriptions);
+        return createGraphicsPipeline(stages, bindingDescriptions, vec, setLayouts, pushConstantRange, config);
     }
         std::vector<VkCommandBuffer> createCommandBuffers();
 

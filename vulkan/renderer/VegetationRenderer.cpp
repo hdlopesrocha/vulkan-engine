@@ -588,15 +588,16 @@ void VegetationRenderer::init(VulkanApp* app) {
     attribDescs[4] = { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 };
 
     // ── Shading pass pipeline (TRIANGLE_LIST, no geometry shader) ──
+    GraphicsPipelineConfig vegCfg{};
+    vegCfg.cullMode = VK_CULL_MODE_NONE;
+    vegCfg.depthWriteEnable = false;
+    vegCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     auto [pipeline, layout] = app->createGraphicsPipeline(
         { stages[0], stages[1] },
         std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
         attribDescs,
         setLayouts, &pushConstantRange,
-        VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE,
-        false, true, VK_COMPARE_OP_LESS_OR_EQUAL,
-        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false, {},
-        VK_FORMAT_D32_SFLOAT, false
+        vegCfg
     );
     vegetationPipeline = pipeline;
     pipelineLayout = layout;
@@ -624,23 +625,17 @@ void VegetationRenderer::init(VulkanApp* app) {
 
         VkPipelineShaderStageCreateInfo depthStages[] = { depthVertStage, depthFragStage };
 
+        GraphicsPipelineConfig depthCfg{};
+        depthCfg.cullMode = VK_CULL_MODE_NONE;
+        depthCfg.depthCompareOp = VK_COMPARE_OP_LESS;
+        depthCfg.noColorAttachment = true;
         auto [depthPipe, depthLayout] = app->createGraphicsPipeline(
             { depthStages[0], depthStages[1] },
             std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
             attribDescs,
             setLayouts,
             &pushConstantRange,
-            VK_POLYGON_MODE_FILL,
-            VK_CULL_MODE_NONE,
-            true,  // depthWrite — depth prepass writes depth
-            true,  // colorWrite (ignored since noColorAttachment=true)
-            VK_COMPARE_OP_LESS,
-            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            false,
-            {},
-            VK_FORMAT_D32_SFLOAT,
-            true,  // noColorAttachment — depth-only pass
-            false  // depthBiasEnable
+            depthCfg
         );
         vegetationDepthPipeline = depthPipe;
         vegetationDepthPipelineLayout = depthLayout;
@@ -675,23 +670,18 @@ void VegetationRenderer::init(VulkanApp* app) {
             attribDescs[3], // ATTR_BRUSH_INDEX (location 4)
             attribDescs[4], // ATTR_INSTANCE   (location 5)
         };
+        GraphicsPipelineConfig shadowCfg{};
+        shadowCfg.cullMode = VK_CULL_MODE_NONE;
+        shadowCfg.depthCompareOp = VK_COMPARE_OP_LESS;
+        shadowCfg.colorFormats = { VK_FORMAT_R32G32B32A32_SFLOAT };
+        shadowCfg.depthBiasEnable = true;
         auto [shadowPipeline, shadowLayout] = app->createGraphicsPipeline(
             { shadowStages[0], shadowStages[1] },
             std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1]},
             shadowAttribDescs,
             setLayouts,
             &pushConstantRange,
-            VK_POLYGON_MODE_FILL,
-            VK_CULL_MODE_NONE,
-            true,   // depthWrite
-            true,   // colorWrite (EVSM moments)
-            VK_COMPARE_OP_LESS,
-            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            false,
-            std::vector<VkFormat>{VK_FORMAT_R32G32B32A32_SFLOAT},
-            VK_FORMAT_D32_SFLOAT,
-            false,  // noColorAttachment = false (EVSM moments)
-            true    // depthBiasEnable
+            shadowCfg
         );
         vegetationShadowPipeline = shadowPipeline;
         shadowPipelineLayout = shadowLayout;
@@ -1167,6 +1157,11 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         depthPCRange.offset     = 0;
         depthPCRange.size       = sizeof(WindPushConstants);
 
+        GraphicsPipelineConfig impDepthCfg{};
+        impDepthCfg.cullMode = VK_CULL_MODE_NONE;
+        impDepthCfg.colorWrite = false;
+        impDepthCfg.depthCompareOp = VK_COMPARE_OP_LESS;
+        impDepthCfg.noColorAttachment = true;
         auto [depthPipe, depthLayout] = app->createGraphicsPipeline(
             { depthStages[0], depthStages[1] },
             std::vector<VkVertexInputBindingDescription>{ depthBindingDescs[0], depthBindingDescs[1] },
@@ -1176,17 +1171,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             },
             depthSetLayouts,
             &depthPCRange,
-            VK_POLYGON_MODE_FILL,
-            VK_CULL_MODE_NONE,
-            true,  // depthWrite — write correct per-pixel depth to shadow map
-            false, // colorWrite — depth-only pass
-            VK_COMPARE_OP_LESS,
-            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            false,
-            {},
-            VK_FORMAT_D32_SFLOAT,
-            true,  // noColorAttachment
-            false  // depthBiasEnable (false to match color pass, avoiding precision mismatch with EQUAL compare)
+            impDepthCfg
         );
         impostorDepthPipeline       = depthPipe;
         impostorDepthPipelineLayout = depthLayout;
@@ -1201,6 +1186,11 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         depthStages[1].module = shadowFragMod;  // reuse depthStages array, swap frag
 
         VkFormat evsmColorFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
+        GraphicsPipelineConfig impShadowCfg{};
+        impShadowCfg.cullMode = VK_CULL_MODE_NONE;
+        impShadowCfg.depthCompareOp = VK_COMPARE_OP_LESS;
+        impShadowCfg.colorFormats = { evsmColorFormat };
+        impShadowCfg.depthBiasEnable = true;
         auto [shadowPipe, shadowLayout] = app->createGraphicsPipeline(
             { depthStages[0], depthStages[1] },
             std::vector<VkVertexInputBindingDescription>{ depthBindingDescs[0], depthBindingDescs[1] },
@@ -1210,17 +1200,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             },
             depthSetLayouts,
             &depthPCRange,
-            VK_POLYGON_MODE_FILL,
-            VK_CULL_MODE_NONE,
-            true,  // depthWrite
-            true,  // colorWrite — write EVSM moments
-            VK_COMPARE_OP_LESS,
-            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            false,
-            { evsmColorFormat }, // one color attachment (EVSM RGBA32F)
-            VK_FORMAT_D32_SFLOAT,
-            false, // hasColorAttachment
-            true   // depthBiasEnable — match regular shadow pipeline to avoid acne
+            impShadowCfg
         );
         impostorShadowPipeline       = shadowPipe;
         impostorShadowPipelineLayout = shadowLayout;
@@ -1263,6 +1243,9 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
     pcRange.offset     = 0;
     pcRange.size       = sizeof(WindPushConstants);
 
+    GraphicsPipelineConfig impCfg{};
+    impCfg.cullMode = VK_CULL_MODE_NONE;
+    impCfg.depthCompareOp = VK_COMPARE_OP_LESS;
     auto [impPipeline, impLayout] = app->createGraphicsPipeline(
         { vertStage, fragStage },
         std::vector<VkVertexInputBindingDescription>{ bindingDescs[0], bindingDescs[1] },
@@ -1272,16 +1255,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         },
         impSetLayouts,
         &pcRange,
-        VK_POLYGON_MODE_FILL,
-        VK_CULL_MODE_NONE,
-        true,  // depthWrite — single-pass: impostor writes both color and depth
-        true,  // colorWrite
-        VK_COMPARE_OP_LESS, // LESS compare against depth prepass (solid + veg)
-        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        false,
-        {},
-        VK_FORMAT_D32_SFLOAT,
-        false
+        impCfg
     );
 
     impostorPipeline       = impPipeline;
