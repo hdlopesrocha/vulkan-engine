@@ -4,6 +4,7 @@
 #include <bluetooth/bluetooth.h>
 #include <cmath>
 #include <cstdio>
+#include <chrono>
 #endif
 
 NunchukPublisher::NunchukPublisher() {}
@@ -14,7 +15,21 @@ NunchukPublisher::~NunchukPublisher() {
 
 void NunchukPublisher::connect() {
 #ifdef HAS_CWIID
-    if (wiimote || connecting) return;
+    if (connecting.load()) return;
+
+    if (connectThread.joinable()) {
+        connectThread.join();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (wiimote) {
+            cwiid_close(wiimote);
+            wiimote = nullptr;
+        }
+        state = NunchukState{};
+    }
+
     connecting = true;
     connectThread = std::thread(&NunchukPublisher::connectAsync, this);
 #else
@@ -26,22 +41,37 @@ void NunchukPublisher::connect() {
 void NunchukPublisher::disconnect() {
 #ifdef HAS_CWIID
     connecting = false;
+
     if (connectThread.joinable()) {
         connectThread.join();
     }
-    if (wiimote) {
-        cwiid_close(wiimote);
-        wiimote = nullptr;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (wiimote) {
+            cwiid_close(wiimote);
+            wiimote = nullptr;
+        }
+        state = NunchukState{};
     }
-#endif
+#else
     state = NunchukState{};
+#endif
 }
 
 void NunchukPublisher::update() {
 #ifdef HAS_CWIID
+    std::lock_guard<std::mutex> lock(mutex);
     if (!wiimote) return;
     readState();
 #endif
+}
+
+NunchukState NunchukPublisher::getState() const {
+#ifdef HAS_CWIID
+    std::lock_guard<std::mutex> lock(mutex);
+#endif
+    return state;
 }
 
 #ifdef HAS_CWIID
@@ -50,8 +80,8 @@ void NunchukPublisher::connectAsync() {
 
     fprintf(stdout, "[Nunchuk] Scanning for Wiimote (press 1+2)...\n");
 
-    wiimote = cwiid_open(&bdaddr, 0);
-    if (!wiimote) {
+    cwiid_wiimote_t* wm = cwiid_open(&bdaddr, 0);
+    if (!wm) {
         fprintf(stderr, "[Nunchuk] No Wiimote found or connection failed\n");
         connecting = false;
         return;
@@ -59,52 +89,75 @@ void NunchukPublisher::connectAsync() {
 
     fprintf(stdout, "[Nunchuk] Wiimote connected\n");
 
-    // Enable nunchuk extension data in reports
-    unsigned char rptMode = CWIID_RPT_NUNCHUK;
-    cwiid_set_rpt_mode(wiimote, rptMode);
+    unsigned char rptMode = CWIID_RPT_BTN | CWIID_RPT_ACC | CWIID_RPT_NUNCHUK;
+    if (cwiid_set_rpt_mode(wm, rptMode)) {
+        fprintf(stderr, "[Nunchuk] Failed to set report mode\n");
+        cwiid_close(wm);
+        connecting = false;
+        return;
+    }
 
-    // Request status to get extension info
-    cwiid_request_status(wiimote);
+    if (cwiid_request_status(wm)) {
+        fprintf(stderr, "[Nunchuk] Warning: cwiid_request_status failed\n");
+    }
+
+    // Poll briefly for the nunchuk extension to appear.
+    // cwiid_get_state() returns the last received Wiimote data report,
+    // which may not have arrived yet right after setting the report mode.
+    bool foundNunchuk = false;
+    for (int i = 0; i < 20; i++) {
+        cwiid_state cs;
+        if (cwiid_get_state(wm, &cs) == 0 && cs.ext_type == CWIID_EXT_NUNCHUK) {
+            foundNunchuk = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    if (foundNunchuk) {
+        fprintf(stdout, "[Nunchuk] Nunchuk extension detected\n");
+    } else {
+        fprintf(stdout, "[Nunchuk] Wiimote connected (no nunchuk detected yet, will keep polling)\n");
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (wiimote) {
+            cwiid_close(wiimote);
+        }
+        wiimote = wm;
+    }
 
     connecting = false;
 }
 
 void NunchukPublisher::readState() {
-    if (!wiimote) return;
-
     cwiid_state cwState;
     if (cwiid_get_state(wiimote, &cwState)) return;
 
-    std::lock_guard<std::mutex> lock(stateMutex);
-
     if (cwState.ext_type == CWIID_EXT_NUNCHUK) {
+        if (!state.connected) {
+            fprintf(stdout, "[Nunchuk] Nunchuk extension detected\n");
+        }
         state.connected = true;
 
-        // Joystick: raw 0..255, map to -1..1 (center ~128)
         float rawX = static_cast<float>(cwState.ext.nunchuk.stick[0]);
         float rawY = static_cast<float>(cwState.ext.nunchuk.stick[1]);
         state.joystickX = (rawX - 128.0f) / 128.0f;
         state.joystickY = (rawY - 128.0f) / 128.0f;
 
-        // Clamp to [-1, 1]
         if (state.joystickX < -1.0f) state.joystickX = -1.0f;
         if (state.joystickX > 1.0f) state.joystickX = 1.0f;
         if (state.joystickY < -1.0f) state.joystickY = -1.0f;
         if (state.joystickY > 1.0f) state.joystickY = 1.0f;
 
-        // Buttons
         state.buttonC = (cwState.ext.nunchuk.buttons & CWIID_NUNCHUK_BTN_C) != 0;
         state.buttonZ = (cwState.ext.nunchuk.buttons & CWIID_NUNCHUK_BTN_Z) != 0;
 
-        // Raw accelerometer
         state.accelX = cwState.ext.nunchuk.acc[0];
         state.accelY = cwState.ext.nunchuk.acc[1];
         state.accelZ = cwState.ext.nunchuk.acc[2];
 
-        // Derive roll and pitch from accelerometer
-        // At rest: accelZ ~ 200 (gravity), accelX/accelY ~ 120
-        // Normalize so that Z at rest in neutral orientation is ~1.0g
-        float ax = static_cast<float>(state.accelX - 120); // bias to center
+        float ax = static_cast<float>(state.accelX - 120);
         float ay = static_cast<float>(state.accelY - 120);
         float az = static_cast<float>(state.accelZ - 120);
 
@@ -116,8 +169,10 @@ void NunchukPublisher::readState() {
             state.roll  = std::atan2(-ax, az) * 180.0f / static_cast<float>(M_PI);
             state.pitch = std::atan2(ay, std::sqrt(ax * ax + az * az)) * 180.0f / static_cast<float>(M_PI);
         }
-    } else {
-        state.connected = false;
     }
+    // Don't set state.connected = false when ext_type doesn't match.
+    // cwiid_get_state() returns the last received Wiimote data report,
+    // which may not include extension info on the very first reads.
+    // The nunchuk data will arrive in a subsequent frame.
 }
 #endif

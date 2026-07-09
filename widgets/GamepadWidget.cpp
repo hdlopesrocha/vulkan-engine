@@ -147,7 +147,7 @@ void GamepadWidget::render() {
         return;
     }
 
-    const NunchukState& nc = nunchukPublisher->getState();
+    NunchukState nc = nunchukPublisher->getState();
 
     if (!nc.connected) {
         ImGui::TextColored(ImVec4(0.8f, 0.4f, 0.2f, 1.0f), "Disconnected");

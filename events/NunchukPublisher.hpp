@@ -6,6 +6,7 @@
 #include <cwiid.h>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #endif
 
 class NunchukPublisher {
@@ -13,29 +14,21 @@ public:
     NunchukPublisher();
     ~NunchukPublisher();
 
-    // Call each frame to poll nunchuk state
     void update();
-
-    // Connect to a Wiimote with nunchuk (scans via Bluetooth)
     void connect();
-
-    // Disconnect the Wiimote
     void disconnect();
 
-    // Access current state
-    const NunchukState& getState() const { return state; }
-
-    // Connection status
-    bool isConnecting() const { return connecting; }
+    NunchukState getState() const;
+    bool isConnecting() const { return connecting.load(); }
 
 private:
     NunchukState state;
-    bool connecting = false;
+    std::atomic<bool> connecting = false;
 
 #ifdef HAS_CWIID
     cwiid_wiimote_t* wiimote = nullptr;
     std::thread connectThread;
-    std::mutex stateMutex;
+    mutable std::mutex mutex;
 
     void connectAsync();
     void readState();
