@@ -95,8 +95,7 @@ inline VkPipeline buildFullscreenPipeline(
     VkPipelineLayout            layout,
     const std::vector<VkPipelineShaderStageCreateInfo>& stages,
     const FullscreenPipelineOpts& opts,
-    const char*                 name,
-    VkRenderPass                legacyRenderPass = VK_NULL_HANDLE)
+    const char*                 name)
 {
     VkPipelineVertexInputStateCreateInfo vi{};
     vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -166,13 +165,8 @@ inline VkPipeline buildFullscreenPipeline(
     renderingInfo.depthAttachmentFormat = depthFormat;
     renderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 
-    if (legacyRenderPass != VK_NULL_HANDLE) {
-        pi.pNext = nullptr;
-        pi.renderPass = legacyRenderPass;
-    } else {
-        pi.pNext = &renderingInfo;
-        pi.renderPass = VK_NULL_HANDLE;
-    }
+    pi.pNext = &renderingInfo;
+    pi.renderPass = VK_NULL_HANDLE;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (vkCreateGraphicsPipelines(device, app->getPipelineCache(), 1, &pi, nullptr, &pipeline) != VK_SUCCESS)

@@ -36,7 +36,6 @@ struct GraphicsPipelineConfig {
     VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
     bool noColorAttachment = false;
     bool depthBiasEnable = false;
-    VkRenderPass legacyRenderPass = VK_NULL_HANDLE;
 };
 
 class VulkanApp {
@@ -445,7 +444,6 @@ protected:
         VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
         bool noColorAttachment = false,
         bool depthBiasEnable = false,
-        VkRenderPass legacyRenderPass = VK_NULL_HANDLE,
         VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE,
         bool depthTestEnable = true);
 
@@ -476,13 +474,12 @@ protected:
         VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
         bool noColorAttachment = false,
         bool depthBiasEnable = false,
-        VkRenderPass legacyRenderPass = VK_NULL_HANDLE,
         VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE,
         bool depthTestEnable = true) {
         std::vector<VkVertexInputAttributeDescription> vec(attributeDescriptions);
         return createGraphicsPipeline(stages, bindingDescriptions, vec, setLayouts, pushConstantRange,
             polygonMode, cullMode, depthWrite, colorWrite, depthCompare, topology, depthClampEnable,
-            colorFormats, depthFormat, noColorAttachment, depthBiasEnable, legacyRenderPass, frontFace, depthTestEnable);
+            colorFormats, depthFormat, noColorAttachment, depthBiasEnable, frontFace, depthTestEnable);
     }
 
     // Config-based wrapper for initializer_list attribute descriptions
@@ -606,6 +603,14 @@ protected:
         std::mutex m_cmdToRingSlotMtx;
         void createAsyncCmdPoolRing();
         void signalRingSlotFence(VkCommandBuffer cmd, VkQueue queue);
+
+        static constexpr uint32_t SINGLE_TIME_CMD_RING_SIZE = 4;
+        VkCommandPool singleTimeCmdPools[SINGLE_TIME_CMD_RING_SIZE]{};
+        VkCommandBuffer singleTimeCmdBuffers[SINGLE_TIME_CMD_RING_SIZE]{};
+        VkFence singleTimeCmdFences[SINGLE_TIME_CMD_RING_SIZE]{};
+        std::atomic<uint32_t> singleTimeCmdNext{0};
+        void createSingleTimeCmdRing();
+
         // Cache: shader file path → VkShaderModule, created on first use and kept for app lifetime.
         // Destruction is handled by VulkanResourceManager at shutdown (createShaderModule registers
         // each module with resources).

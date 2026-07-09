@@ -223,6 +223,7 @@ void VulkanApp::initVulkan() {
     createDescriptorSetLayout();
     createCommandPool();
     createAsyncCmdPoolRing();
+    createSingleTimeCmdRing();
     createDepthResources();
     commandBuffers = createCommandBuffers();
     createSyncObjects();
@@ -1450,56 +1451,58 @@ void VulkanApp::createAsyncCmdPoolRing() {
     }
 }
 
-void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>& fn) {
-    // Allocate from the shared transient command pool while holding
-    // `transientPoolMutex` to avoid using the same pool concurrently from
-    // multiple threads. Submissions and waits remain serialized by
-    // `graphicsSubmitMutex` to prevent simultaneous use of the VkQueue.
-    if (transientCommandPool == VK_NULL_HANDLE) {
-        throw std::runtime_error("transientCommandPool not initialized in runSingleTimeCommands");
-    }
-
-    VkCommandBufferAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandPool = transientCommandPool;
-    allocInfo.commandBufferCount = 1;
-
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    // Serialize allocation, begin, recording and end under the same mutex so
-    // the transient command pool is not used concurrently by multiple threads
-    // while command buffers are being recorded. Submissions/waits remain
-    // serialized separately by `graphicsSubmitMutex`.
-    {
-        std::lock_guard<std::mutex> poolLock(transientPoolMutex);
-        if (vkAllocateCommandBuffers(device, &allocInfo, &cmd) != VK_SUCCESS) {
-            throw std::runtime_error("failed to allocate command buffer in runSingleTimeCommands");
-        }
-
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
-            vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
-            throw std::runtime_error("failed to begin command buffer in runSingleTimeCommands");
-        }
-
-        fn(cmd);
-
-        if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-            vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
-            throw std::runtime_error("failed to end command buffer in runSingleTimeCommands");
-        }
-    }
-
+void VulkanApp::createSingleTimeCmdRing() {
+    QueueFamilyIndices qfi = findQueueFamilies(physicalDevice);
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.queueFamilyIndex = qfi.graphicsFamily.value();
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     VkFenceCreateInfo fenceInfo{};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fenceInfo.flags = 0;
-    VkFence fence = VK_NULL_HANDLE;
-    if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
-        std::lock_guard<std::mutex> poolLock(transientPoolMutex);
-        vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
-        throw std::runtime_error("failed to create fence for single-time submit");
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    for (uint32_t i = 0; i < SINGLE_TIME_CMD_RING_SIZE; i++) {
+        if (vkCreateCommandPool(device, &poolInfo, nullptr, &singleTimeCmdPools[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create single-time command pool");
+        }
+        resources.addCommandPool(singleTimeCmdPools[i], "VulkanApp: singleTimeCmdPool");
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandPool = singleTimeCmdPools[i];
+        allocInfo.commandBufferCount = 1;
+        if (vkAllocateCommandBuffers(device, &allocInfo, &singleTimeCmdBuffers[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to pre-allocate single-time command buffer");
+        }
+        if (vkCreateFence(device, &fenceInfo, nullptr, &singleTimeCmdFences[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create single-time ring fence");
+        }
+        resources.addFence(singleTimeCmdFences[i], "VulkanApp: singleTimeCmdFence");
+    }
+}
+
+void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>& fn) {
+    uint32_t idx = singleTimeCmdNext.fetch_add(1) % SINGLE_TIME_CMD_RING_SIZE;
+    VkCommandBuffer cmd = singleTimeCmdBuffers[idx];
+    VkFence fence = singleTimeCmdFences[idx];
+    VkCommandPool pool = singleTimeCmdPools[idx];
+
+    // Wait for the previous submission using this ring slot to complete
+    // before resetting the command buffer.
+    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    vkResetFences(device, 1, &fence);
+    vkResetCommandBuffer(cmd, 0);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+        throw std::runtime_error("failed to begin command buffer in runSingleTimeCommands");
+    }
+
+    fn(cmd);
+
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        throw std::runtime_error("failed to end command buffer in runSingleTimeCommands");
     }
 
     VkCommandBufferSubmitInfo cmdBufInfo{};
@@ -1528,75 +1531,39 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
         if (submitRes != VK_SUCCESS) {
             if (submitRes == VK_ERROR_DEVICE_LOST) {
                 deviceLost.store(true);
-                std::cerr << "[VulkanApp] runSingleTimeCommands: vkQueueSubmit2 returned VK_ERROR_DEVICE_LOST; registering fence and deferring command-buffer cleanup\n";
-                resources.addFence(fence, "VulkanApp::runSingleTimeCommands: fence");
-                {
-                    std::lock_guard<std::mutex> cmdlk(pendingCmdMutex);
-                    if (commandBufferPoolMap.find(cmd) == commandBufferPoolMap.end()) {
-                        commandBufferPoolMap[cmd] = transientCommandPool;
-                    }
-                    pendingCommandBuffers.emplace_back(cmd, fence);
-                }
+                std::cerr << "[VulkanApp] runSingleTimeCommands: vkQueueSubmit2 returned VK_ERROR_DEVICE_LOST\n";
                 return;
             } else {
-                vkDestroyFence(device, fence, nullptr);
-                std::lock_guard<std::mutex> poolLock(transientPoolMutex);
-                vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
                 throw std::runtime_error("failed to submit command buffer in runSingleTimeCommands");
             }
         }
     }
 
     // Wait for completion of the submitted command buffer via the fence,
-    // then apply pending layout updates and free the command buffer.
+    // then apply pending layout updates.
     vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 
     // Apply any pending layout updates recorded while recording this
-    // single-time command buffer before freeing it (the GPU work is
-    // complete because we waited on the fence).
+    // single-time command buffer (GPU work is complete — waited on fence).
     applyPendingLayoutUpdatesForCommandBuffer(cmd);
-
-    {
-        std::lock_guard<std::mutex> poolLock(transientPoolMutex);
-        vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
-    }
-    vkDestroyFence(device, fence, nullptr);
 }
 
 VkFence VulkanApp::runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore) {
-    if (transientCommandPool == VK_NULL_HANDLE) {
-        throw std::runtime_error("transientCommandPool not initialized in runSingleTimeCommandsAsync");
+    // Use the pre-allocated async command buffer ring to avoid per-call
+    // vkAllocateCommandBuffers / vkFreeCommandBuffers churn.
+    VkCommandBuffer cmd = allocatePrimaryCommandBuffer();
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+        throw std::runtime_error("failed to begin command buffer in runSingleTimeCommandsAsync");
     }
-
-    VkCommandBufferAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandPool = transientCommandPool;
-    allocInfo.commandBufferCount = 1;
-
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    {
-        std::lock_guard<std::mutex> poolLock(transientPoolMutex);
-        if (vkAllocateCommandBuffers(device, &allocInfo, &cmd) != VK_SUCCESS) {
-            throw std::runtime_error("failed to allocate command buffer in runSingleTimeCommandsAsync");
-        }
-
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
-            vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
-            throw std::runtime_error("failed to begin command buffer in runSingleTimeCommandsAsync");
-        }    
-        fn(cmd);
-        // Do NOT call vkEndCommandBuffer here; submitCommandBufferAsync will end and submit it.
-    }
-
-    // Record mapping so pending processing knows which pool to free from
-    {
-        std::lock_guard<std::mutex> lk(pendingCmdMutex);
-        commandBufferPoolMap[cmd] = transientCommandPool;
-    }
+    fn(cmd);
+    // Do NOT call vkEndCommandBuffer here; submitCommandBufferAsync will end and submit it.
+    // Note: allocatePrimaryCommandBuffer already set commandBufferPoolMap and
+    // m_cmdToRingSlot, so submitCommandBufferAsync will find them and avoid
+    // assigning a transientCommandPool fallback.
 
     // Submit asynchronously and return the fence so the caller may track completion.
     VkFence fence = submitCommandBufferAsync(cmd, outSemaphore);
@@ -4324,7 +4291,6 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     VkFormat depthFormat,
     bool noColorAttachment,
     bool depthBiasEnable,
-    VkRenderPass legacyRenderPass,
     VkFrontFace frontFace,
     bool depthTestEnable) {
 
@@ -4477,13 +4443,8 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     pipelineInfo.subpass = 0;
     if (hasTessellation) pipelineInfo.pTessellationState = &tessState;
 
-    if (legacyRenderPass != VK_NULL_HANDLE) {
-        pipelineInfo.pNext = nullptr;
-        pipelineInfo.renderPass = legacyRenderPass;
-    } else {
-        pipelineInfo.pNext = &pipelineRenderingInfo;
-        pipelineInfo.renderPass = VK_NULL_HANDLE;
-    }
+    pipelineInfo.pNext = &pipelineRenderingInfo;
+    pipelineInfo.renderPass = VK_NULL_HANDLE;
     VkPipeline graphicsPipeline;
     if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create graphics pipeline!");
@@ -4508,7 +4469,7 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
         config.polygonMode, config.cullMode, config.depthWriteEnable, config.colorWrite,
         config.depthCompareOp, config.topology, config.depthClampEnable,
         config.colorFormats, config.depthFormat, config.noColorAttachment,
-        config.depthBiasEnable, config.legacyRenderPass, config.frontFace,
+        config.depthBiasEnable, config.frontFace,
         config.depthTestEnable);
 }
 
