@@ -619,7 +619,7 @@ public:
 
         // Single mutex guarding all submission/tracking state below.
         // Replaces per-object mutexes to eliminate lock-ordering deadlocks.
-        mutable std::mutex m_submissionMutex;
+        mutable std::recursive_mutex m_submissionMutex;
 
         // Async submission bookkeeping (moved from file-scope globals)
         std::vector<std::pair<VkCommandBuffer,VkFence>> m_pendingCommandBuffers;
