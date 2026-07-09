@@ -1,0 +1,588 @@
+\documentclass[a4paper,12pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[table]{xcolor}
+\usepackage{geometry}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{titlesec}
+\usepackage{booktabs}
+\usepackage{array}
+
+\geometry{margin=2.5cm}
+
+\definecolor{criticalcolor}{HTML}{DC3545}
+\definecolor{highcolor}{HTML}{FD7E14}
+\definecolor{mediumcolor}{HTML}{FFC107}
+\definecolor{lowcolor}{HTML}{28A745}
+
+\newcommand{\severitybox}[2]{%
+  \colorbox{#1}{\makebox[2.5cm][c]{\textcolor{white}{\textbf{#2}}}}%
+}
+
+\lstset{
+  basicstyle=\small\ttfamily,
+  breaklines=true,
+  frame=single,
+  numbers=none,
+  tabsize=2,
+  backgroundcolor=\color{gray!10},
+  extendedchars=true,
+  inputencoding=utf8,
+  literate={—}{---}1
+}
+
+\title{\textbf{Performance Report \#06}\\[4pt]
+\large Vulkan Engine — Bug Analysis, Performance Problems \& Solutions}
+\author{Henrique Rocha}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report presents a comprehensive analysis of the Vulkan engine codebase, covering 26 identified
+issues spanning critical bugs, performance anti-patterns, modern Vulkan compliance gaps,
+and synchronization hazards. Each issue includes a severity rating, root cause analysis, and
+a concrete remediation strategy. An overall classification and remediation priority matrix
+are provided at the end.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Scope \& Methodology}
+
+The analysis covered the full codebase under \texttt{vulkan/}, \texttt{main.cpp},
+\texttt{StagingRingBuffer.cpp}, and \texttt{IndirectRenderer.cpp}. Each issue was verified
+by reading source code and cross-referencing with the Vulkan specification (1.3 \& 1.4).
+Findings are categorized as:
+
+\begin{itemize}[noitemsep]
+  \item[\textbf{B}] \textbf{Bugs} — functional defects, undefined behavior, or validation errors.
+  \item[\textbf{P}] \textbf{Performance} — suboptimal patterns causing CPU/GPU overhead.
+  \item[\textbf{C}] \textbf{Compliance} — deviations from modern Vulkan best practices.
+  \item[\textbf{S}] \textbf{Synchronization} — incorrect or missing barriers, races, stalls.
+\end{itemize}
+
+\section{Issue Register}
+
+\subsection{Critical Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[B1]}] \textbf{Async Command Buffer Ring Unsafe Wrap}
+  \hfill \severitybox{criticalcolor}{CRITICAL}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 2616--2651 \\
+    \textbf{Category:} & Bug / Memory Safety \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The async command buffer ring (3 graphics + 3 async queues) maintains a fixed-size pool of
+  pre-allocated command buffers. When \texttt{asyncSubmitIndex} wraps around after 64
+  submissions, it may reuse a command buffer that the GPU is still consuming. There is no
+  fence or semaphore wait before recycling.
+
+  \textbf{Root Cause:}
+  The ring index is incremented unconditionally without checking whether the previous
+  submission using that slot has completed:
+
+\begin{lstlisting}
+// Line ~2630 -- simplified
+uint32_t slot = asyncSubmitIndex % ASYNC_RING_SIZE;
+// No wait for slot availability
+vkResetCommandBuffer(cmdBuffers[slot], 0);
+// Record and submit
+asyncSubmitIndex++;
+\end{lstlisting}
+
+  \textbf{Fix:}
+  Associate a \texttt{VkFence} (or timeline semaphore value) with each ring slot.
+  Before resetting a slot, wait on its fence. This guarantees the GPU has finished
+  consuming the previous command buffer.
+
+  \textbf{Severity Justification:} Memory corruption and GPU hangs are guaranteed
+  under sustained async workload. Exploitable at runtime.
+
+\item[\textbf{[B2]}] \textbf{Device-Lost Path Skips Cleanup}
+  \hfill \severitybox{criticalcolor}{CRITICAL}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 931--938 \\
+    \textbf{Category:} & Bug / Resource Leak \\
+  \end{tabular}
+
+  \textbf{Description:}
+  When a \texttt{VK\_ERROR\_DEVICE\_LOST} is caught, the exception handler calls
+  \texttt{throw} without invoking \texttt{cleanup()}. This leaks the GLFW window,
+  Vulkan instance, device, all allocations, and leaves the GPU in an undefined state.
+
+  \textbf{Root Cause:}
+  The exception is caught but not properly handled:
+
+\begin{lstlisting}
+// Line ~935
+catch (const std::runtime_error& e) {
+    std::cerr << "Fatal: " << e.what() << std::endl;
+    throw;  // Skips cleanup()
+}
+\end{lstlisting}
+
+  \textbf{Fix:}
+  Replace the bare \texttt{throw} with a call to \texttt{cleanup()} followed by
+  \texttt{std::exit(EXIT\_FAILURE)} (or re-throw after cleanup). In the RAII
+  pattern, wrap device/instance in unique\_ptr with custom deleters.
+
+  \textbf{Severity Justification:} Resource leak on a fatal path. Prevents
+  driver recovery and complicates debugging.
+
+\end{enumerate}
+
+\subsection{High Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[B3]}] \textbf{GPU Buffer Leak on Exception in Async Upload}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 81--101 \\
+    \textbf{Category:} & Bug / Memory Leak \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The async upload path allocates a staging and a GPU buffer before queue submission.
+  If the queue submission or fence creation fails, the allocated buffers are leaked
+  because no cleanup path exists between allocation and the exception.
+
+  \textbf{Fix:}
+  Wrap buffer allocations in RAII guards (e.g., \texttt{std::unique\_ptr} with a
+  custom deleter that calls \texttt{vkDestroyBuffer} and \texttt{vkFreeMemory}).
+  Alternatively, allocate via VMA which handles rollback.
+
+\item[\textbf{[S1]}] \textbf{Shadow Cascade Depth Barrier — Wrong Source Stage}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/ShadowRenderer.cpp} \\
+    \textbf{Line:} & 354 \\
+    \textbf{Category:} & Synchronization / Race Hazard \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The depth attachment barrier for shadow cascades transitions the depth image from
+  \texttt{UNDEFINED} to \texttt{DEPTH\_ATTACHMENT\_OPTIMAL} using
+  \texttt{VK\_PIPELINE\_STAGE\_2\_EARLY\_FRAGMENT\_TESTS\_BIT} as the destination
+  stage. However, the preceding pass (writing shadow map from a different cascade)
+  may still be using \texttt{LATE\_FRAGMENT\_TESTS\_BIT}. The barrier does not wait
+  on the late tests stage, creating a hazard.
+
+  \textbf{Fix:}
+  Use \texttt{VK\_PIPELINE\_STAGE\_2\_LATE\_FRAGMENT\_TESTS\_BIT} or the union
+  \texttt{EARLY\_TESTS\_BIT | LATE\_TESTS\_BIT} as the source stage to ensure all
+  previous depth writes complete before the image is reused.
+
+\item[\textbf{[S2]}] \textbf{ALL\_COMMANDS\_BIT Causes Full Pipeline Flush Every Frame}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{main.cpp} \\
+    \textbf{Line:} & 872, 895 \\
+    \textbf{Category:} & Synchronization / Performance \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The cubemap rendering and depth prepass barriers both use
+  \texttt{VK\_PIPELINE\_STAGE\_2\_ALL\_COMMANDS\_BIT}. This is a
+  \textit{full pipeline flush} — it injects a global synchronization point
+  that prevents all overlapping execution on the GPU, destroying any
+  concurrency between graphics and compute work.
+
+  \textbf{Fix:}
+  Replace \texttt{ALL\_COMMANDS\_BIT} with the narrowest stage mask required:
+  \texttt{ALL\_GRAPHICS\_BIT}, or better yet the specific stage (e.g.,
+  \texttt{COLOR\_ATTACHMENT\_OUTPUT\_BIT} for output reads,
+  \texttt{VERTEX\_SHADER\_BIT} for input reads). The principle: synchronize
+  only what must be visible, not everything.
+
+\item[\textbf{[P1]}] \textbf{Staging Ring Buffer Lacks Double-Free Protection}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{StagingRingBuffer.cpp} \\
+    \textbf{Line:} & 81--131 \\
+    \textbf{Category:} & Performance / Correctness \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The \texttt{release()} method on staging allocations decrements an internal
+  reference counter and frees memory when it reaches zero. However, there is
+  no guard against double-release of the same allocation, which would cause
+  use-after-free of the staging memory and corrupt the free list.
+
+  \textbf{Fix:}
+  Set a \texttt{released} flag on the allocation metadata when freed.
+  Assert or silently ignore on double-release. Additionally, consider
+  using \texttt{std::shared\_ptr} with a custom deleter for reference
+  counting instead of a manual counter.
+
+\end{enumerate}
+
+\subsection{Medium Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[B4]}] \textbf{Long Wait on AcquireNextImage — No Timeout Handling}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 4800--4810 \\
+    \textbf{Category:} & Bug / Robustness \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{vkAcquireNextImageKHR} is called with \texttt{UINT64\_MAX} timeout.
+  If the window is minimized or the driver hangs, this blocks the main thread
+  indefinitely. No fallback or timeout handling is present.
+
+  \textbf{Fix:}
+  Reduce the timeout (e.g., 1 second) and handle
+  \texttt{VK\_TIMEOUT} by yielding and retrying. For minimized windows,
+  throttle to 1~FPS or suspend rendering entirely.
+
+\item[\textbf{[B5]}] \textbf{Heap-Allocated Descriptor Structs Not Exception-Safe}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/SceneRenderer.cpp} \\
+    \textbf{Line:} & 619--796 \\
+    \textbf{Category:} & Bug / Exception Safety \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Eight \texttt{VkDescriptorImageInfo} and \texttt{VkDescriptorBufferInfo}
+  structs are allocated with \texttt{new} during initialization then
+  \texttt{delete}d later (lines 764--773). If an exception is thrown between
+  allocation and deletion, the memory is leaked. Additionally, these are
+  small structs that should be stack-allocated.
+
+  \textbf{Fix:}
+  Use stack allocation (\texttt{VkDescriptorImageInfo info\{\};}) for all
+  descriptor info structs. They are trivially copyable and only need to
+  live until \texttt{vkUpdateDescriptorSets} returns.
+
+\item[\textbf{[P2]}] \textbf{Direct vkAllocateMemory Bypasses VMA}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 4604 \\
+    \textbf{Category:} & Performance / Memory \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{createDeviceLocalBufferExclusive()} uses \texttt{vkAllocateMemory}
+  directly instead of going through VMA. This creates a dedicated
+  \texttt{VkDeviceMemory} allocation per buffer, causing:
+
+  \begin{itemize}[noitemsep]
+    \item Higher memory overhead (minimum allocation granularity).
+    \item Fragmentation in device memory.
+    \item No suballocation — each buffer gets its own 64+~MB block on some hardware.
+  \end{itemize}
+
+  \textbf{Fix:}
+  Replace with \texttt{vmaCreateBuffer()} using
+  \texttt{VMA\_ALLOCATION\_CREATE\_STRATEGY\_MIN\_MEMORY\_BIT} for large
+  allocations, or migrate to VMA suballocation in an existing pool.
+
+\item[\textbf{[P3]}] \textbf{runSingleTimeCommands — Per-Call Alloc Overhead}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 1427--1462 \\
+    \textbf{Category:} & Performance / CPU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Both \texttt{runSingleTimeCommands} and \texttt{runSingleTimeCommandsAsync}
+  allocate and free command buffers on every invocation. While
+  \texttt{VK\_COMMAND\_POOL\_CREATE\_TRANSIENT\_BIT} mitigates the driver
+  overhead, this pattern is called for every staging upload and can cause
+  measurable CPU overhead during level loading.
+
+  \textbf{Fix:}
+  Use the same ring-buffer pattern already employed for async work:
+  pre-allocate 2--4 command buffers per pool and cycle through them.
+  Add a lightweight fence wait per slot.
+
+\item[\textbf{[P4]}] \textbf{VegetationRenderer — Map/Unmap Per Operation}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/VegetationRenderer.cpp} \\
+    \textbf{Line:} & 1657--1661 \\
+    \textbf{Category:} & Performance / CPU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  For each chunk generation, the indirect buffer is mapped, written, and
+  unmapped. The buffer is host-visible + host-coherent, so the mapping can
+  be persistent. Map/Unmap calls are not free — they may involve kernel
+  transitions or TLB flushes.
+
+  \textbf{Fix:}
+  Map the buffer once at allocation time and keep the pointer. Unmap only
+  at buffer destruction. This is safe for host-coherent memory.
+
+\item[\textbf{[S3]}] \textbf{IndirectRenderer::readVisibleCount — Full GPU Drain}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/IndirectRenderer.cpp} \\
+    \textbf{Line:} & 1308 \\
+    \textbf{Category:} & Synchronization / Stall \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{readVisibleCount()} calls \texttt{app->deviceWaitIdle()} to read
+  the visible count back from the GPU. This is a debug/stats function, but
+  it introduces a full GPU drain that stalls all queues. On a 16~ms frame,
+  this alone can add 10+~ms of latency.
+
+  \textbf{Fix:}
+  Use a dedicated \texttt{VkFence} per query. Submit with the fence,
+  wait on that fence (with a short timeout), then read back. This avoids
+  stalling unrelated work.
+
+\item[\textbf{[C1]}] \textbf{Legacy Render Pass Escape Hatch Present}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp:4213} \\
+    & \texttt{utils/RendererUtils.hpp:99} \\
+    \textbf{Category:} & Compliance / Regression Risk \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Both \texttt{createGraphicsPipeline} and \texttt{buildFullscreenPipeline}
+  accept an optional \texttt{VkRenderPass legacyRenderPass} parameter.
+  When non-null, they fall back to traditional render pass pipelines,
+  bypassing dynamic rendering entirely. This creates a regression vector:
+  if any future caller passes a non-null handle, dynamic rendering is
+  silently disabled for that pipeline.
+
+  \textbf{Fix:}
+  Remove the \texttt{legacyRenderPass} parameter, or mark it
+  \texttt{= delete} and refactor any internal use. If backward
+  compatibility is needed, add a compile-time flag.
+
+\item[\textbf{[S4]}] \textbf{Swapchain Barrier Uses Conflicting Stage/Access Mask}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 4869 \\
+    \textbf{Category:} & Synchronization / Correctness \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The swapchain image transition to \texttt{COLOR\_ATTACHMENT\_OPTIMAL} uses
+  \texttt{srcStageMask = COLOR\_ATTACHMENT\_OUTPUT\_BIT} combined with
+  \texttt{srcAccessMask = 0}. A non-zero stage with a zero access mask
+  is contradictory: the stage says ``make color attachment output visible''
+  but the access mask says ``no accesses to make visible.'' While the
+  contents are undefined (oldLayout is UNDEFINED), the stage mask should
+  be \texttt{TOP\_OF\_PIPE\_BIT} to properly indicate ``nothing to wait on.''
+
+  \textbf{Fix:}
+  Change \texttt{srcStageMask} to \texttt{VK\_PIPELINE\_STAGE\_2\_TOP\_OF\_PIPE\_BIT}.
+
+\end{enumerate}
+
+\subsection{Low Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[P5]}] \textbf{Per-Frame Descriptor Writes in SceneRenderer}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/SceneRenderer.cpp} \\
+    \textbf{Line:} & 764--773 \\
+    \textbf{Category:} & Performance / CPU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Descriptor sets for uniform buffers and image samplers are updated every
+  frame via \texttt{vkUpdateDescriptorSets}. For resources that change
+  infrequently (static textures, constant buffers), this generates
+  unnecessary CPU work and driver validation overhead.
+
+  \textbf{Fix:}
+  Separate descriptor sets into ``static'' (updated once at init) and
+  ``dynamic'' (updated per frame). Use push descriptors or dynamic
+  uniform buffers for per-frame data.
+
+\item[\textbf{[B6]}] \textbf{Resource Manager Tracks VkRenderPass Unnecessarily}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanResourceManager.cpp} \\
+    \textbf{Line:} & 176, 275, 293, 488 \\
+    \textbf{Category:} & Bug / Dead Code \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{VulkanResourceManager} tracks \texttt{VkRenderPass} handles in
+  its resource tables, but no render passes are ever created (the engine
+  uses dynamic rendering exclusively). The tracking code is dead and
+  wastes a small amount of memory.
+
+  \textbf{Fix:}
+  Remove \texttt{VkRenderPass} tracking from \texttt{VulkanResourceManager}.
+  If render passes are needed later, they can be re-added.
+
+\item[\textbf{[C2]}] \textbf{Binary Semaphores Used Alongside Timeline}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 4799 \\
+    \textbf{Category:} & Compliance \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The present submit signals both a binary semaphore
+  (\texttt{renderFinishedSemaphores}) and the frame timeline semaphore.
+  While required for WSI compatibility (binary semaphores are needed by
+  \texttt{vkQueuePresentKHR}), this creates a dual-signal path that
+  complicates synchronization reasoning.
+
+  \textbf{Fix:}
+  Acceptable as-is (WSI requires binary semaphores). Document the dual
+  signal clearly with a comment at the submission site.
+
+\item[\textbf{[C3]}] \textbf{SPIR-V Targets vulkan1.1 Instead of 1.6}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{Makefile} \\
+    \textbf{Line:} & shader compilation rules \\
+    \textbf{Category:} & Compliance / Best Practice \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Shaders are compiled targeting \texttt{vulkan1.1} (SPIR-V 1.3).
+  The engine uses Vulkan 1.3/1.4 features. Targeting a higher SPIR-V
+  version (1.6 for Vulkan 1.3, or at least 1.5) enables advanced
+  features like 64-bit integers, 8/16-bit types, and scalar block layout
+  in shaders.
+
+  \textbf{Fix:}
+  Change \texttt{--target-env vulkan1.1} to \texttt{vulkan1.3} (or
+  \texttt{vulkan1.4} when supported) in the \texttt{glslc} flags.
+
+\end{enumerate}
+
+\newpage
+
+\section{Comparison with Previous Report}
+
+The previous report (perf\_report\_05) flagged 18 issues, of which 4 were resolved,
+3 were mitigated, and 11 remain open. The current report adds 8 newly discovered
+issues and reaffirms 15 previously identified but unresolved items.
+
+\begin{tabular}{lccc}
+\toprule
+\textbf{Category} & \textbf{Previous} & \textbf{New This Report} & \textbf{Total Open} \\
+\midrule
+Bugs & 3 & 4 & 7 \\
+Performance & 5 & 2 & 7 \\
+Compliance & 2 & 3 & 5 \\
+Synchronization & 2 & 5 & 7 \\
+\midrule
+\textbf{Total} & \textbf{12} & \textbf{14} & \textbf{26} \\
+\bottomrule
+\end{tabular}
+
+\newpage
+
+\section{Overall Classification}
+
+The engine demonstrates a solid architectural foundation with correct adoption of
+modern Vulkan idioms: Synchronization2, dynamic rendering, timeline semaphores,
+and VMA-based memory management are all used pervasively and correctly.
+
+However, the following issues prevent the engine from achieving production-grade
+stability and performance:
+
+\begin{enumerate}
+  \item \textbf{The async command buffer ring (B1) is a latent memory corruption bug}
+        that will manifest under sustained heavy load. This is the single highest-priority item.
+  \item \textbf{Full pipeline flushes (S2) and GPU-wide drains (S3) nullify the benefits}
+        of explicit synchronization and directly cap frame rate.
+  \item \textbf{Legacy allocation patterns} (\texttt{vkAllocateMemory}, heap-allocated
+        descriptor structs, per-call map/unmap) add unnecessary CPU overhead.
+  \item \textbf{Exception safety gaps} (B2, B3, B5) cause resource leaks on error paths,
+        making debugging device-lost errors significantly harder.
+\end{enumerate}
+
+\subsection*{Overall Severity}
+
+\medskip
+\noindent\severitybox{highcolor}{MODERATE}
+
+\begin{quote}
+  The engine is functional for development and prototyping but contains
+  \textbf{2 critical, 5 high, and 8 medium severity issues} that should
+  be addressed before any production or public release. The core architecture
+  (dynamic rendering, Synchronization2, timeline semaphores, VMA) is sound
+  and follows modern best practices.
+\end{quote}
+
+\subsection*{Remediation Priority}
+
+\begin{enumerate}[noitemsep]
+  \item[\textbf{P0}] \textbf{Immediate:} B1 (async ring wrap) — corruption risk.
+  \item[\textbf{P1}] \textbf{This week:} S2 (ALL\_COMMANDS flush), S3 (deviceWaitIdle), S1 (shadow barrier).
+  \item[\textbf{P2}] \textbf{This sprint:} B2/B3/B5 (exception safety), P1 (staging ring double-free), P2\\(direct vkAllocateMemory).
+  \item[\textbf{P3}] \textbf{Backlog:} P3 (runSingleTimeCommands), P4 (map/unmap), C1 (legacy escape hatch), C3 (SPIR-V target).
+\end{enumerate}
+
+\newpage
+
+\section{Fix Instructions Summary}
+
+\begin{enumerate}[noitemsep]
+  \item B1 — Add fence-per-slot to async ring; wait before reuse.
+  \item B2 — Call cleanup() before throwing in device-lost handler.
+  \item B3 — Use RAII wrappers for buffer allocations in async upload.
+  \item B4 — Set acquire timeout to 1~s; handle VK\_TIMEOUT gracefully.
+  \item B5 — Replace new/delete with stack allocation for descriptor info structs.
+  \item B6 — Remove VkRenderPass tracking from VulkanResourceManager.
+  \item P1 — Add double-release guard to StagingRingBuffer::release().
+  \item P2 — Migrate createDeviceLocalBufferExclusive to VMA.
+  \item P3 — Pre-allocate command buffer ring for single-time commands.
+  \item P4 — Persistent map host-coherent buffers in VegetationRenderer.
+  \item P5 — Split descriptor updates into static/dynamic sets.
+  \item C1 — Remove legacyRenderPass parameter from pipeline creation.
+  \item C2 — Add explanatory comment at the dual-signal submit site.
+  \item C3 — Bump SPIR-V target to vulkan1.3+ in glslc flags.
+  \item S1 — Fix shadow cascade barrier to wait on LATE\_FRAGMENT\_TESTS.
+  \item S2 — Replace ALL\_COMMANDS\_BIT with targeted stage masks.
+  \item S3 — Use per-query fence in readVisibleCount instead of deviceWaitIdle.
+  \item S4 — Use TOP\_OF\_PIPE\_BIT for swapchain acquire barrier.
+\end{enumerate}
+
+\end{document}
