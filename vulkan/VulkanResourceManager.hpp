@@ -27,7 +27,6 @@ public:
         descriptorPools.reserve(1);
         descriptorSets.reserve(1);
         descriptorSetLayouts.reserve(1);
-        renderPasses.reserve(1);
         semaphores.reserve(1);
         fences.reserve(1);
         commandPools.reserve(1);
@@ -44,7 +43,6 @@ public:
     void addImageView(VkImageView iv, const char* desc = nullptr);
     void addSampler(VkSampler s, const char* desc = nullptr);
     void addFramebuffer(VkFramebuffer fb, const char* desc = nullptr);
-    void addRenderPass(VkRenderPass rp, const char* desc = nullptr);
     void addSemaphore(VkSemaphore s, const char* desc = nullptr);
     void addFence(VkFence f, const char* desc = nullptr);
     void addCommandPool(VkCommandPool cp, const char* desc = nullptr);
@@ -76,7 +74,6 @@ public:
     const ResourceMap<VkDescriptorPool> &getDescriptorPoolMap() const;
     const ResourceMap<VkDescriptorSet> &getDescriptorSetMap() const;
     const ResourceMap<VkDescriptorSetLayout> &getDescriptorSetLayoutMap() const;
-    const ResourceMap<VkRenderPass> &getRenderPassMap() const;
     const ResourceMap<VkSemaphore> &getSemaphoreMap() const;
     const ResourceMap<VkFence> &getFenceMap() const;
     const ResourceMap<VkCommandPool> &getCommandPoolMap() const;
@@ -106,7 +103,6 @@ public:
     // VMA-aware image tracking
     void addImageVma(VkImage img, VmaAllocation alloc, const char* desc = nullptr);
     bool removeImageVma(VkImage img);
-    bool removeRenderPass(VkRenderPass rp);
     bool removeSemaphore(VkSemaphore s);
     bool removeFence(VkFence f);
     bool removeCommandPool(VkCommandPool cp);
@@ -126,7 +122,6 @@ private:
     ResourceMap<VkDescriptorPool> descriptorPools;
     ResourceMap<VkDescriptorSet> descriptorSets;
     ResourceMap<VkDescriptorSetLayout> descriptorSetLayouts;
-    ResourceMap<VkRenderPass> renderPasses;
     ResourceMap<VkSemaphore> semaphores;
     ResourceMap<VkFence> fences;
     ResourceMap<VkCommandPool> commandPools;

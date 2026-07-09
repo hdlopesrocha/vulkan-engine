@@ -152,8 +152,15 @@ public:
     // Query mesh info (copy) for use in the app (bounds, offsets, flags).
     MeshInfo getMeshInfo(uint32_t meshId) const;
 
-    // Return a copy of all active mesh infos (thread-safe)
-    std::vector<MeshInfo> getActiveMeshInfos() const;
+    // Invoke `visitor(const MeshInfo&)` for each active mesh (thread-safe).
+    // Avoids allocating a temporary vector.
+    template<typename F>
+    void visitActiveMeshInfos(F&& visitor) const {
+        std::shared_lock<std::shared_mutex> guard(mutex);
+        for (const auto& kv : meshes) {
+            if (kv.second.active) std::forward<F>(visitor)(kv.second);
+        }
+    }
 
 private:
     struct PendingTransfer {

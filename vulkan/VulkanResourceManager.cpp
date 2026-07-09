@@ -173,16 +173,6 @@ void VulkanResourceManager::addDescriptorSetLayout(VkDescriptorSetLayout dsl, co
     descriptorSetLayouts[(uintptr_t)dsl] = {dsl, desc ? std::string(desc) : std::string()};
 }
 
-void VulkanResourceManager::addRenderPass(VkRenderPass rp, const char* desc) {
-    if (rp == VK_NULL_HANDLE) return;
-    if (desc) {
-        std::string d(desc);
-        if (d.find("ImGui:") != std::string::npos) return;
-    }
-    std::lock_guard<std::mutex> lk(mtx);
-    renderPasses[(uintptr_t)rp] = {rp, desc ? std::string(desc) : std::string()};
-}
-
 void VulkanResourceManager::addSemaphore(VkSemaphore s, const char* desc) {
     if (s == VK_NULL_HANDLE) return;
     if (desc) {
@@ -272,7 +262,6 @@ bool VulkanResourceManager::removeShaderModule(VkShaderModule m) { std::lock_gua
 bool VulkanResourceManager::removeDescriptorPool(VkDescriptorPool dp) { std::lock_guard<std::mutex> lk(mtx); return descriptorPools.erase((uintptr_t)dp) > 0; }
 bool VulkanResourceManager::removeDescriptorSet(VkDescriptorSet ds) { std::lock_guard<std::mutex> lk(mtx); return descriptorSets.erase((uintptr_t)ds) > 0; }
 bool VulkanResourceManager::removeDescriptorSetLayout(VkDescriptorSetLayout dsl) { std::lock_guard<std::mutex> lk(mtx); return descriptorSetLayouts.erase((uintptr_t)dsl) > 0; }
-bool VulkanResourceManager::removeRenderPass(VkRenderPass rp) { std::lock_guard<std::mutex> lk(mtx); return renderPasses.erase((uintptr_t)rp) > 0; }
 bool VulkanResourceManager::removeSemaphore(VkSemaphore s) { std::lock_guard<std::mutex> lk(mtx); return semaphores.erase((uintptr_t)s) > 0; }
 bool VulkanResourceManager::removeFence(VkFence f) { std::lock_guard<std::mutex> lk(mtx); return fences.erase((uintptr_t)f) > 0; }
 bool VulkanResourceManager::removeCommandPool(VkCommandPool cp) { std::lock_guard<std::mutex> lk(mtx); return commandPools.erase((uintptr_t)cp) > 0; }
@@ -290,7 +279,6 @@ const VulkanResourceManager::ResourceMap<VkShaderModule> &VulkanResourceManager:
 const VulkanResourceManager::ResourceMap<VkDescriptorPool> &VulkanResourceManager::getDescriptorPoolMap() const { return descriptorPools; }
 const VulkanResourceManager::ResourceMap<VkDescriptorSet> &VulkanResourceManager::getDescriptorSetMap() const { return descriptorSets; }
 const VulkanResourceManager::ResourceMap<VkDescriptorSetLayout> &VulkanResourceManager::getDescriptorSetLayoutMap() const { return descriptorSetLayouts; }
-const VulkanResourceManager::ResourceMap<VkRenderPass> &VulkanResourceManager::getRenderPassMap() const { return renderPasses; }
 const VulkanResourceManager::ResourceMap<VkSemaphore> &VulkanResourceManager::getSemaphoreMap() const { return semaphores; }
 const VulkanResourceManager::ResourceMap<VkFence> &VulkanResourceManager::getFenceMap() const { return fences; }
 const VulkanResourceManager::ResourceMap<VkCommandPool> &VulkanResourceManager::getCommandPoolMap() const { return commandPools; }
@@ -332,7 +320,6 @@ std::optional<VulkanResourceManager::Entry> VulkanResourceManager::find(uintptr_
     if (auto e = check(descriptorPools, VK_OBJECT_TYPE_DESCRIPTOR_POOL)) return e;
     if (auto e = check(descriptorSets, VK_OBJECT_TYPE_DESCRIPTOR_SET)) return e;
     if (auto e = check(descriptorSetLayouts, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)) return e;
-    if (auto e = check(renderPasses, VK_OBJECT_TYPE_RENDER_PASS)) return e;
     if (auto e = check(semaphores, VK_OBJECT_TYPE_SEMAPHORE)) return e;
     if (auto e = check(fences, VK_OBJECT_TYPE_FENCE)) return e;
     if (auto e = check(commandPools, VK_OBJECT_TYPE_COMMAND_POOL)) return e;
@@ -366,7 +353,6 @@ void VulkanResourceManager::cleanup(VkDevice device) {
         deviceMemories.clear();
         descriptorPools.clear();
         descriptorSetLayouts.clear();
-        renderPasses.clear();
         semaphores.clear();
         fences.clear();
         commandPools.clear();
@@ -484,8 +470,6 @@ void VulkanResourceManager::cleanup(VkDevice device) {
     std::cerr << "[VulkanResourceManager] cleanup: destroying descriptorSetLayouts\n"; fflush(stderr);
     destroyAndClear(descriptorSetLayouts, [](VkDevice d, uintptr_t h){ vkDestroyDescriptorSetLayout(d, reinterpret_cast<VkDescriptorSetLayout>(h), nullptr); });
 
-    std::cerr << "[VulkanResourceManager] cleanup: destroying renderPasses\n"; fflush(stderr);
-    destroyAndClear(renderPasses, [](VkDevice d, uintptr_t h){ vkDestroyRenderPass(d, reinterpret_cast<VkRenderPass>(h), nullptr); });
     std::cerr << "[VulkanResourceManager] cleanup: destroying semaphores\n"; fflush(stderr);
     destroyAndClear(semaphores, [](VkDevice d, uintptr_t h){ vkDestroySemaphore(d, reinterpret_cast<VkSemaphore>(h), nullptr); });
     std::cerr << "[VulkanResourceManager] cleanup: destroying fences\n"; fflush(stderr);

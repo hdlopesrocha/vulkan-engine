@@ -856,7 +856,6 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         abort();
     }
     return VK_FALSE;
-    return VK_FALSE;
 }
 
 

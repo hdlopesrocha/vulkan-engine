@@ -1047,10 +1047,9 @@ public:
             if (settings.showBoundingBoxes && sceneRenderer && sceneRenderer->boundingBoxRenderer) {
                 std::vector<DebugCubeRenderer::CubeWithColor> boxes;
                 auto gatherBoxesFrom = [&](const IndirectRenderer &ir, const glm::vec3 &color){
-                    auto infos = ir.getActiveMeshInfos();
-                    boxes.reserve(boxes.size() + infos.size());
-                    for (const auto &mi : infos)
+                    ir.visitActiveMeshInfos([&](const IndirectRenderer::MeshInfo &mi){
                         boxes.push_back({BoundingBox(glm::vec3(mi.boundsMin), glm::vec3(mi.boundsMax)), color});
+                    });
                 };
                 gatherBoxesFrom(sceneRenderer->solidRenderer->getIndirectRenderer(), glm::vec3(0.0f, 1.0f, 0.0f));
                 gatherBoxesFrom(sceneRenderer->waterRenderer->getIndirectRenderer(), glm::vec3(0.0f, 0.5f, 1.0f));

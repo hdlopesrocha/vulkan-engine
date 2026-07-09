@@ -1311,14 +1311,7 @@ IndirectRenderer::MeshInfo IndirectRenderer::getMeshInfo(uint32_t meshId) const 
     return it->second;
 }
 
-std::vector<IndirectRenderer::MeshInfo> IndirectRenderer::getActiveMeshInfos() const {
-    std::vector<MeshInfo> out;
-    std::shared_lock<std::shared_mutex> guard(mutex);
-    for (const auto& kv : meshes) {
-        if (kv.second.active) out.push_back(kv.second);
-    }
-    return out;
-}
+
 
 // Erase a mesh's indirect command on the GPU so it will not be drawn
 // before a full `rebuild()` updates the indirect buffer. This attempts
