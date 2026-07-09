@@ -6,7 +6,8 @@
 RoadDistanceFunction::RoadDistanceFunction(RoadSpline* spline, float width, float height,
                                             float tMin, float tMax,
                                             bool applyStartCap, bool applyEndCap)
-    : m_spline(spline)
+    : SignedDistanceFunction(SdfType::ROAD)
+    , m_spline(spline)
     , m_width(width)
     , m_height(height)
     , m_tMin(tMin)
@@ -64,10 +65,6 @@ float RoadDistanceFunction::distance(const glm::vec3 &p, const Transformation &m
     }
 
     return road;
-}
-
-SdfType RoadDistanceFunction::getType() const {
-    return SdfType::ROAD;
 }
 
 glm::vec3 RoadDistanceFunction::getCenter(const Transformation &model) const {

@@ -2,9 +2,7 @@
 #include "SDF.hpp"
 
 
-ConeDistanceFunction::ConeDistanceFunction() {
-    
-}
+ConeDistanceFunction::ConeDistanceFunction() : SignedDistanceFunction(SdfType::CONE) {}
 
 float ConeDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
  // Transform point into local space
@@ -18,14 +16,6 @@ float ConeDistanceFunction::distance(const glm::vec3 &p, const Transformation &m
     // Rescale back to world space
     float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
     return d * minScale;
-}
-
-SdfType ConeDistanceFunction::getType() const {
-    return SdfType::CONE;
-}
-
-glm::vec3 ConeDistanceFunction::getCenter(const Transformation &model) const {
-    return model.translate;
 }
 
 

@@ -3,9 +3,8 @@
 #include "../math/HeightMap.hpp"
 
 
-HeightMapDistanceFunction::HeightMapDistanceFunction(HeightMap * map) {
-    this->map = map;
-}
+HeightMapDistanceFunction::HeightMapDistanceFunction(HeightMap * map)
+    : SignedDistanceFunction(SdfType::HEIGHTMAP), map(map) {}
 
 float HeightMapDistanceFunction::distance(const glm::vec3 &p, const Transformation &model)  {
     glm::vec3 len = map->getLength()*0.5f;
@@ -20,10 +19,6 @@ float HeightMapDistanceFunction::distance(const glm::vec3 &p, const Transformati
     );
 
     return d;
-}
-
-SdfType HeightMapDistanceFunction::getType() const {
-    return SdfType::HEIGHTMAP; 
 }
 
 glm::vec3 HeightMapDistanceFunction::getCenter(const Transformation &model) const {

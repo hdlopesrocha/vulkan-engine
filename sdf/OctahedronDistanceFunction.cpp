@@ -1,9 +1,7 @@
 #include "OctahedronDistanceFunction.hpp"
 
 
-OctahedronDistanceFunction::OctahedronDistanceFunction() {
-    
-}
+OctahedronDistanceFunction::OctahedronDistanceFunction() : SignedDistanceFunction(SdfType::OCTAHEDRON) {}
 
 float OctahedronDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
     glm::vec3 pos = p - getCenter(model);
@@ -15,13 +13,5 @@ float OctahedronDistanceFunction::distance(const glm::vec3 &p, const Transformat
     float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
 
     return d * minScale;
-}
-
-SdfType OctahedronDistanceFunction::getType() const {
-    return SdfType::OCTAHEDRON;
-}
-
-glm::vec3 OctahedronDistanceFunction::getCenter(const Transformation &model) const {
-    return model.translate;
 }
 

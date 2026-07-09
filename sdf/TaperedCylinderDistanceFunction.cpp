@@ -2,7 +2,7 @@
 #include "SDF.hpp"
 
 TaperedCylinderDistanceFunction::TaperedCylinderDistanceFunction(float r1, float r2)
-    : r1(r1), r2(r2) {
+    : SignedDistanceFunction(SdfType::TAPERED_CYLINDER), r1(r1), r2(r2) {
 }
 
 float TaperedCylinderDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
@@ -17,12 +17,4 @@ float TaperedCylinderDistanceFunction::distance(const glm::vec3 &p, const Transf
     // Rescale back to world space
     float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
     return d * minScale;
-}
-
-SdfType TaperedCylinderDistanceFunction::getType() const {
-    return SdfType::TAPERED_CYLINDER;
-}
-
-glm::vec3 TaperedCylinderDistanceFunction::getCenter(const Transformation &model) const {
-    return model.translate;
 }

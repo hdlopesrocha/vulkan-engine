@@ -1,9 +1,7 @@
 #include "PyramidDistanceFunction.hpp"
 
 
-PyramidDistanceFunction::PyramidDistanceFunction() {
-    
-}
+PyramidDistanceFunction::PyramidDistanceFunction() : SignedDistanceFunction(SdfType::PYRAMID) {}
 
 float PyramidDistanceFunction::distance(const glm::vec3 &p, const Transformation &model)  {
    glm::vec3 pos = p - getCenter(model);
@@ -18,12 +16,4 @@ float PyramidDistanceFunction::distance(const glm::vec3 &p, const Transformation
     // corrigir métrica multiplicando pela menor escala
     float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
     return d * minScale;
-}
-
-SdfType PyramidDistanceFunction::getType() const {
-    return SdfType::PYRAMID;
-}
-
-glm::vec3 PyramidDistanceFunction::getCenter(const Transformation &model) const {
-    return model.translate;
 }

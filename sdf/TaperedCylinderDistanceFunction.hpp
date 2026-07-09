@@ -7,8 +7,6 @@ public:
     TaperedCylinderDistanceFunction(float r1 = 0.25f, float r2 = 0.5f);
     virtual ~TaperedCylinderDistanceFunction() = default;
     float distance(const glm::vec3 &p, const Transformation &model) override;
-    SdfType getType() const override;
-    glm::vec3 getCenter(const Transformation &model) const override;
 
     float r1; // bottom radius (y = -h)
     float r2; // top radius    (y = +h)

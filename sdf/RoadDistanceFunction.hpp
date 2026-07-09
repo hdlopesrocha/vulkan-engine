@@ -10,7 +10,6 @@ public:
                          bool applyStartCap = false, bool applyEndCap = false);
     virtual ~RoadDistanceFunction() = default;
     float distance(const glm::vec3 &p, const Transformation &model) override;
-    SdfType getType() const override;
     glm::vec3 getCenter(const Transformation &model) const override;
 
     RoadSpline* getSpline() const { return m_spline; }

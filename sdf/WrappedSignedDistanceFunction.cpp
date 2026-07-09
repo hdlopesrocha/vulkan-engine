@@ -1,7 +1,7 @@
 #include "WrappedSignedDistanceFunction.hpp"
 
 WrappedSignedDistanceFunction::WrappedSignedDistanceFunction(SignedDistanceFunction * function)
-: function(function) {}
+: SignedDistanceFunction(), function(function) {}
 
 WrappedSignedDistanceFunction::~WrappedSignedDistanceFunction() = default;
 

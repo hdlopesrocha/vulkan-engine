@@ -2,9 +2,7 @@
 #include "SDF.hpp"
 
 
-CylinderDistanceFunction::CylinderDistanceFunction() {
-    
-}
+CylinderDistanceFunction::CylinderDistanceFunction() : SignedDistanceFunction(SdfType::CYLINDER) {}
 
 float CylinderDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
  // Transform point into local space
@@ -18,13 +16,5 @@ float CylinderDistanceFunction::distance(const glm::vec3 &p, const Transformatio
     // Rescale back to world space
     float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
     return d * minScale;
-}
-
-SdfType CylinderDistanceFunction::getType() const {
-    return SdfType::CYLINDER;
-}
-
-glm::vec3 CylinderDistanceFunction::getCenter(const Transformation &model) const {
-    return model.translate;
 }
 

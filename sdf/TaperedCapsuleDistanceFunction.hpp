@@ -14,6 +14,5 @@ public:
                                    float r1 = 0.5f, float r2 = 0.25f);
     virtual ~TaperedCapsuleDistanceFunction() = default;
     float distance(const glm::vec3 &p, const Transformation &model) override;
-    SdfType getType() const override;
     glm::vec3 getCenter(const Transformation &model) const override;
 };
