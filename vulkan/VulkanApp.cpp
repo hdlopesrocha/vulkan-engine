@@ -2111,10 +2111,7 @@ bool VulkanApp::isFencePending(VkFence fence) {
 
 // Submit a pre-recorded command buffer asynchronously and return a fence that will be signaled on completion.
 VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSemaphore* outSemaphore) {
-    // If the app has too many pending async submissions, block briefly
-    // until some complete to avoid overwhelming the driver.
     throttleIfTooManyPending();
-    // End command buffer here (caller recorded commands assumed)
     vkEndCommandBuffer(commandBuffer);
 
     VkFenceCreateInfo fenceInfo{};
@@ -2124,7 +2121,6 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
     if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
         throw std::runtime_error("failed to create fence for async submit");
     }
-    // Register fence for async submit
     resources.addFence(fence, "VulkanApp::submitCommandBufferAsync: fence");
 
     VkSemaphore semaphore = VK_NULL_HANDLE;
@@ -2136,7 +2132,6 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
             vkDestroyFence(device, fence, nullptr);
             throw std::runtime_error("failed to create semaphore for async submit");
         }
-        // Register semaphore for async submit
         resources.addSemaphore(semaphore, "VulkanApp::submitCommandBufferAsync: semaphore");
     }
 
@@ -2148,7 +2143,7 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
     signalSemaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
     signalSemaphoreInfo.semaphore = semaphore;
     signalSemaphoreInfo.value = 0;
-    signalSemaphoreInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    signalSemaphoreInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     signalSemaphoreInfo.deviceIndex = 0;
 
     VkSubmitInfo2 submitInfo{};
@@ -2290,11 +2285,19 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
     cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
     cmdBufInfo.commandBuffer = commandBuffer;
 
+    // Determine stage mask based on the target queue family.
+    // Graphics and vegetation (compute) queues support graphics + compute stages;
+    // transfer queues only support COPY and related stages.
+    VkPipelineStageFlags2 signalStageMask =
+        (targetQueue == transferQueue)
+            ? VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_RESOLVE_BIT)
+            : VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+
     VkSemaphoreSubmitInfo signalSemaphoreInfo{};
     signalSemaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
     signalSemaphoreInfo.semaphore = semaphore;
     signalSemaphoreInfo.value = 0;
-    signalSemaphoreInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    signalSemaphoreInfo.stageMask = signalStageMask;
     signalSemaphoreInfo.deviceIndex = 0;
 
     VkSubmitInfo2 submitInfo{};
@@ -2305,7 +2308,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
     submitInfo.pSignalSemaphoreInfos = (semaphore != VK_NULL_HANDLE) ? &signalSemaphoreInfo : nullptr;
 
     {
-        // Serialize pre-apply and submission to maintain consistent ordering
+        // Serialize for submit and maintain consistent ordering
         // Select per-queue mutex to avoid serializing transfer/graphics/compute
         std::mutex& submitMtx = (targetQueue == transferQueue) ? transferSubmitMutex :
                                 (targetQueue == vegetationQueue) ? vegetationSubmitMutex :
@@ -4869,12 +4872,12 @@ void VulkanApp::drawFrame() {
     signalSemaphoreInfos[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
     signalSemaphoreInfos[0].semaphore = renderFinishedSemaphores[imageIndex];
     signalSemaphoreInfos[0].value = 0;
-    signalSemaphoreInfos[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    signalSemaphoreInfos[0].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
     signalSemaphoreInfos[0].deviceIndex = 0;
     signalSemaphoreInfos[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
     signalSemaphoreInfos[1].semaphore = frameTimeline;
     signalSemaphoreInfos[1].value = nextTimelineValue;
-    signalSemaphoreInfos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    signalSemaphoreInfos[1].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
     signalSemaphoreInfos[1].deviceIndex = 0;
 
     VkSubmitInfo2 submitInfo{};
