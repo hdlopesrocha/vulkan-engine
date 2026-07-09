@@ -933,7 +933,8 @@ void VulkanApp::cleanup() {
         VkResult waitRes = deviceWaitIdle();
         if (waitRes == VK_ERROR_DEVICE_LOST) {
             deviceLost = true;
-            throw std::runtime_error("[VulkanApp] cleanup: device lost detected, skipping explicit destroy callbacks\n");
+            fprintf(stderr, "[VulkanApp] cleanup: device lost detected during vkDeviceWaitIdle, "
+                            "continuing with degraded cleanup (skipping Vulkan destroy calls)\n");
         }
     }
 
@@ -5831,6 +5832,10 @@ void VulkanApp::run() {
     setup();
     isLoading = false;
 
-    mainLoop();  
+    try {
+        mainLoop();
+    } catch (...) {
+        fprintf(stderr, "[VulkanApp] mainLoop threw, proceeding with cleanup\n");
+    }
     cleanup();
 }
