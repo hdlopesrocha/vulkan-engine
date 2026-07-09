@@ -189,6 +189,7 @@ public:
     VkDescriptorSet cube360GfxDs = VK_NULL_HANDLE;
     VkDescriptorSet cube360ComputeDs = VK_NULL_HANDLE;
     VkDescriptorSet cube360WaterComputeDs = VK_NULL_HANDLE;
+    uint32_t cube360TexVersion = 0;
 
     ~MyApp() {
         if (sceneProcessThread.joinable()) sceneProcessThread.join();
@@ -2344,6 +2345,44 @@ void MyApp::ensureCubemapResources() {
                 std::cerr << "[CUBE360_WRITE] bind=" << w.dstBinding << " view=" << (void*)w.pImageInfo->imageView << std::endl;
         }
         for (auto &w : gfxWrites) { if (w.pImageInfo) delete w.pImageInfo; if (w.pBufferInfo) delete w.pBufferInfo; }
+        cube360TexVersion = textureArrayManager.getVersion();
+    }
+
+    // Refresh texture bindings on cube360GfxDs if texture arrays were re-allocated
+    // (e.g. after TextureMixer generates new layers). Without this, the cubemap
+    // capture would sample stale/deleted image views, producing wrong reflections.
+    if (cube360GfxDs != VK_NULL_HANDLE && cube360TexVersion != textureArrayManager.getVersion()) {
+        cube360TexVersion = textureArrayManager.getVersion();
+        std::vector<VkWriteDescriptorSet> texWrites;
+        VkDescriptorImageInfo texInfos[8];
+        uint32_t ti = 0;
+        auto addImg = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
+            if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
+            texInfos[ti] = {sampler, view, layout};
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = cube360GfxDs;
+            w.dstBinding = binding;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            w.descriptorCount = 1;
+            w.pImageInfo = &texInfos[ti];
+            texWrites.push_back(w);
+            ++ti;
+        };
+        if (textureArrayManager.albedoSampler != VK_NULL_HANDLE) {
+            addImg(1, textureArrayManager.albedoSampler, textureArrayManager.albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImg(2, textureArrayManager.normalSampler, textureArrayManager.normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImg(3, textureArrayManager.bumpSampler, textureArrayManager.bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImg(12, textureArrayManager.roughnessSampler, textureArrayManager.roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImg(13, textureArrayManager.aoSampler, textureArrayManager.aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+        if (sceneRenderer && sceneRenderer->shadowMapper) {
+            addImg(4, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImg(8, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImg(9, sceneRenderer->shadowMapper->getShadowMapSampler(), sceneRenderer->shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+        if (!texWrites.empty())
+            vkUpdateDescriptorSets(device, static_cast<uint32_t>(texWrites.size()), texWrites.data(), 0, nullptr);
     }
 
     // 5. Solid compute descriptor set — allocate lazily, always refresh buffer bindings

@@ -561,13 +561,12 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
         }
     }
 
-    if (dstView != VK_NULL_HANDLE && dstDescriptor == VK_NULL_HANDLE) {
-        std::cerr << "[RTW] runLinearizePass CALLING AddTexture dstView=" << (void*)dstView << " sampler=" << (void*)previewSampler << std::endl;
-        dstDescriptor = ImGui_ImplVulkan_AddTexture(previewSampler, dstView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        std::cerr << "[RTW] runLinearizePass AddTexture RETURNED " << (void*)dstDescriptor << std::endl;
-        if ((uint64_t)dstDescriptor == 0x6c100000006c1ULL) {
-            std::cerr << "[RenderTargetsWidget::runLinearizePass] *** ALLOCATED BAD HANDLE 0x6c100000006c1 ***" << std::endl;
+    if (dstView != VK_NULL_HANDLE) {
+        if (dstDescriptorOwned) {
+            ImGui_ImplVulkan_RemoveTexture(dstDescriptor);
+            dstDescriptorOwned = false;
         }
+        dstDescriptor = ImGui_ImplVulkan_AddTexture(previewSampler, dstView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         dstDescriptorOwned = true;
     }
 
@@ -915,47 +914,54 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
     switch (selectedPreview) {
         case PreviewTarget::Sky: {
-            if (skyDescriptor == VK_NULL_HANDLE) {
-                skyDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, skyRenderer->getSkyView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                skyDescriptorOwned = true;
+            if (skyDescriptorOwned) {
+                ImGui_ImplVulkan_RemoveTexture(skyDescriptor);
+                skyDescriptorOwned = false;
             }
-            
+            skyDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, skyRenderer->getSkyView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            skyDescriptorOwned = true;
         } break;
 
         case PreviewTarget::SolidColor: {
-            if (solidColorDescriptor == VK_NULL_HANDLE) {
-                solidColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, solidRenderer->getColorView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                solidColorDescriptorOwned = true;
+            if (solidColorDescriptorOwned) {
+                ImGui_ImplVulkan_RemoveTexture(solidColorDescriptor);
+                solidColorDescriptorOwned = false;
             }
-            
+            solidColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, solidRenderer->getColorView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            solidColorDescriptorOwned = true;
         } break;
 
         case PreviewTarget::SolidDepth: {
-            if (solidDepthDescriptor == VK_NULL_HANDLE) {
-                VkSampler depthSampler = widgetSampler;
-                // Sample the previously-produced frame's depth (one-frame latency)
-                // to avoid binding the current-frame attachment before it's rendered.
-                uint32_t producerFrame = (frameIndex + 1) % 2;
-                solidDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler,  solidRenderer->getDepthView(producerFrame), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                solidDepthDescriptorOwned = true;
+            if (solidDepthDescriptorOwned) {
+                ImGui_ImplVulkan_RemoveTexture(solidDepthDescriptor);
+                solidDepthDescriptorOwned = false;
             }
-            
+            VkSampler depthSampler = widgetSampler;
+            // Sample the previously-produced frame's depth (one-frame latency)
+            // to avoid binding the current-frame attachment before it's rendered.
+            uint32_t producerFrame = (frameIndex + 1) % 2;
+            solidDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler,  solidRenderer->getDepthView(producerFrame), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            solidDepthDescriptorOwned = true;
         } break;
 
         case PreviewTarget::Solid360Equirect: {
             cube360EquirectRenderer.render(app, widgetSampler, sceneRenderer->solid360Renderer->getSolid360View());
-            if (cube360EquirectDescriptor == VK_NULL_HANDLE) {
-                cube360EquirectDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, cube360EquirectRenderer.getEquirectView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                cube360EquirectDescriptorOwned = true;
-                
+            if (cube360EquirectDescriptorOwned) {
+                ImGui_ImplVulkan_RemoveTexture(cube360EquirectDescriptor);
+                cube360EquirectDescriptorOwned = false;
             }
-            
+            cube360EquirectDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, cube360EquirectRenderer.getEquirectView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            cube360EquirectDescriptorOwned = true;
         } break;
 
         case PreviewTarget::Solid360Cube: {
             uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
             VkImageView faceView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360FaceView(f) : VK_NULL_HANDLE;
-            if (faceView != VK_NULL_HANDLE && cube360FaceDescriptor[f] == VK_NULL_HANDLE) {
+            if (faceView != VK_NULL_HANDLE) {
+                if (cube360FaceDescriptorOwned[f]) {
+                    ImGui_ImplVulkan_RemoveTexture(cube360FaceDescriptor[f]);
+                    cube360FaceDescriptorOwned[f] = false;
+                }
                 cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(widgetSampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 cube360FaceDescriptorOwned[f] = true;
             }
@@ -964,7 +970,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         case PreviewTarget::Solid360DepthCube: {
             uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
             VkImageView depthView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360DepthView(f) : VK_NULL_HANDLE;
-            if (depthView != VK_NULL_HANDLE && cube360FaceDepthDescriptor[f] == VK_NULL_HANDLE) {
+            if (depthView != VK_NULL_HANDLE) {
                 VkSampler depthSampler = widgetSampler;
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
@@ -978,7 +984,11 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         case PreviewTarget::WaterColor: {
             VkImageView waterView = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getWaterDepthView(frameIndex) : VK_NULL_HANDLE;
-            if (waterView != VK_NULL_HANDLE && waterColorDescriptor == VK_NULL_HANDLE) {
+            if (waterView != VK_NULL_HANDLE) {
+                if (waterColorDescriptorOwned) {
+                    ImGui_ImplVulkan_RemoveTexture(waterColorDescriptor);
+                    waterColorDescriptorOwned = false;
+                }
                 waterColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 waterColorDescriptorOwned = true;
             }
