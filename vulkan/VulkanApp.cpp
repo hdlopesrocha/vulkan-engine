@@ -2621,14 +2621,17 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
             m_commandBufferPoolMap[cmd] = pool;
 
+#ifndef NDEBUG
             // Capture an allocation backtrace for this command buffer so
             // we can later correlate failing vkQueueSubmit2() calls with
             // the code path that allocated/recorded the command buffer.
+            // Debug-only: backtrace_symbols calls malloc and walks ELF
+            // symbol tables — measurable overhead on a hot path.
             void* bt_buf[32];
             int bt_n = backtrace(bt_buf, 32);
             char** bt_syms = backtrace_symbols(bt_buf, bt_n);
             std::string bt_str;
-            for (int i = 1; i < bt_n; ++i) { // skip frame 0 (this function)
+            for (int i = 1; i < bt_n; ++i) {
                 if (bt_syms && bt_syms[i]) {
                     bt_str += bt_syms[i];
                     bt_str += "\n";
@@ -2636,6 +2639,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             }
             if (bt_syms) free(bt_syms);
             m_cmdBacktraces[cmd] = bt_str;
+#endif
         }
         return cmd;
     }
