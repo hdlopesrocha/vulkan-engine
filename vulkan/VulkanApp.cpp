@@ -1839,8 +1839,15 @@ void VulkanApp::processPendingCommandBuffers() {
                 // prevents destroying resources that may still be referenced
                 // by submitted render command buffers (which use inFlightFences).
                 // No re-lock needed: m_submissionMutex is already held by the outer scope.
-                bool pendingEmpty = m_pendingCommandBuffers.empty();
-                if (pendingEmpty) {
+                // Check that every pending fence is signaled — entries re-inserted
+                // by the per-frame processing cap are already signaled but held back
+                // to throttle free operations and must not block deferred destroys.
+                bool allPendingSignaled = true;
+                for (const auto& pcb : m_pendingCommandBuffers) {
+                    VkResult fs = vkGetFenceStatus(device, pcb.second);
+                    if (fs == VK_NOT_READY) { allPendingSignaled = false; break; }
+                }
+                if (allPendingSignaled) {
                     bool allFramesIdle = false;
                     uint64_t curVal = 0;
                     VkResult st = vkGetSemaphoreCounterValue(device, frameTimeline, &curVal);
@@ -1917,23 +1924,7 @@ void VulkanApp::processPendingCommandBuffers() {
         }
     }
 
-    const size_t MAX_PENDING_FREE_PER_FRAME = 4; // user-requested cap
-    const size_t FORCE_PROCESS_ALL_THRESHOLD = 64; // if many signaled, clear backlog
-    size_t processCount = toFree.size();
-    if (processCount > MAX_PENDING_FREE_PER_FRAME && processCount <= FORCE_PROCESS_ALL_THRESHOLD) {
-        processCount = MAX_PENDING_FREE_PER_FRAME;
-    }
-
-    // If we won't process all signaled entries this frame, re-insert the remainder
-    // back into the pending list so they'll be handled in subsequent frames.
-    if (processCount < toFree.size()) {
-        std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
-        for (size_t i = processCount; i < toFree.size(); ++i) {
-            m_pendingCommandBuffers.emplace_back(toFree[i]);
-        }
-    }
-
-    for (size_t i = 0; i < processCount; ++i) {
+    for (size_t i = 0; i < toFree.size(); ++i) {
         VkCommandBuffer cmd = toFree[i].first;
         VkFence fence = toFree[i].second;
         // Apply any pending layout updates recorded for this command buffer
