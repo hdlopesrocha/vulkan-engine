@@ -140,6 +140,10 @@ void IndirectRenderer::cleanup() {
             visibleCountMapped[f] = nullptr;
         }
         visibleCountBuffers[f] = {};
+        if (visibleCountFences[f] != VK_NULL_HANDLE && storedDevice != VK_NULL_HANDLE) {
+            vkDestroyFence(storedDevice, visibleCountFences[f], nullptr);
+            visibleCountFences[f] = VK_NULL_HANDLE;
+        }
     }
 }
 
@@ -767,6 +771,18 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         visibleCountMapped[f] = static_cast<uint32_t*>(visibleCountBuffers[f].map(0));
         // Initialize with full count (fallback when culling is off)
         *visibleCountMapped[f] = initialCount;
+
+        // Create or reset per-frame fence for lightweight readVisibleCount
+        if (visibleCountFences[f] != VK_NULL_HANDLE) {
+            vkResetFences(dev, 1, &visibleCountFences[f]);
+        } else {
+            VkFenceCreateInfo fenceInfo{};
+            fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+            fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+            if (vkCreateFence(dev, &fenceInfo, nullptr, &visibleCountFences[f]) != VK_SUCCESS) {
+                throw std::runtime_error("IndirectRenderer: failed to create visibleCountFence");
+            }
+        }
     }
 
     // Create compute pipeline + descriptor sets for GPU culling if not present
@@ -1249,12 +1265,38 @@ void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pi
 
 uint32_t IndirectRenderer::readVisibleCount(VulkanApp* app) const {
     const Buffer& visibleCount = visibleCountBuffers[currentCullFrame];
+    const uint32_t frame = currentCullFrame;
     if (!app || visibleCount.buffer == VK_NULL_HANDLE) return 0;
-    // Stats-only: wait for GPU to finish so the counter is coherent.
-    app->deviceWaitIdle();
+
+    VkFence fence = visibleCountFences[frame];
+    VkQueue queue = app->getGraphicsQueue();
+
+    if (fence != VK_NULL_HANDLE && queue != VK_NULL_HANDLE) {
+        // Check if the fence is already signaled (from a previous read).
+        VkResult status = vkGetFenceStatus(app->getDevice(), fence);
+        if (status == VK_NOT_READY) {
+            // Submit an empty batch on the graphics queue.  Since the culling
+            // compute work was recorded into the main graphics command buffer
+            // and submitted earlier via drawFrame(), an empty submit will
+            // execute after all prior work on that queue, making the visible
+            // count coherent on the host timeline.
+            VkSubmitInfo2 emptySubmit{};
+            emptySubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+            {
+                std::lock_guard<std::mutex> lock(app->graphicsSubmitMutex);
+                vkQueueSubmit2(queue, 1, &emptySubmit, fence);
+            }
+            // Wait with a short timeout (100 ms).  On a well-behaved system
+            // the frame work completes well within this window.
+            vkWaitForFences(app->getDevice(), 1, &fence, VK_TRUE, 100'000'000);
+        }
+        // Reset the fence so the next read cycles through the submit path.
+        vkResetFences(app->getDevice(), 1, &fence);
+    }
+
     // Use persistent host mapping — avoid vkMapMemory on already-mapped memory
-    if (visibleCountMapped[currentCullFrame]) {
-        return *visibleCountMapped[currentCullFrame];
+    if (visibleCountMapped[frame]) {
+        return *visibleCountMapped[frame];
     }
     return 0;
 }

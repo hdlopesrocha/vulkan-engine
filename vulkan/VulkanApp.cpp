@@ -2693,6 +2693,11 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             if (pool == asyncCmdPoolRing[i]) { isRingPool = true; break; }
         }
         if (!isRingPool) {
+            for (uint32_t i = 0; i < SINGLE_TIME_CMD_RING_SIZE; i++) {
+                if (pool == singleTimeCmdPools[i]) { isRingPool = true; break; }
+            }
+        }
+        if (!isRingPool) {
             if (pool == transientCommandPool) {
                 std::lock_guard<std::mutex> lock(transientPoolMutex);
                 vkFreeCommandBuffers(dev, pool, 1, &cmd);
