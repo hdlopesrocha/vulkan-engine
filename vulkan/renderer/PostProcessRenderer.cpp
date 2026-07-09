@@ -1,5 +1,6 @@
 
 #include "PostProcessRenderer.hpp"
+#include "DescriptorAllocator.hpp"
 #include "RendererUtils.hpp"
 #include "WaterRenderer.hpp"   // WaterParams, WaterUBO
 #include "../../utils/FileReader.hpp"
@@ -70,16 +71,12 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
     bindings[6].descriptorCount = 1;
     bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-    layoutInfo.pBindings = bindings.data();
-
-    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create post-process descriptor set layout!");
-    }
-    app->resources.addDescriptorSetLayout(descriptorSetLayout, "PostProcessRenderer: descriptorSetLayout");
+    DescriptorAllocator descAlloc{device, app};
+    descriptorSetLayout = descAlloc.createLayout(
+        bindings.data(), static_cast<uint32_t>(bindings.size()),
+        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+        nullptr,
+        "PostProcessRenderer: descriptorSetLayout");
 
     // Pipeline layout
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
@@ -116,43 +113,20 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
 void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
     if (descriptorSetLayout == VK_NULL_HANDLE) return;
 
-    VkDevice device = app->getDevice();
+    DescriptorAllocator descAlloc{app->getDevice(), app};
 
-    // Create descriptor pool for 2 frames in flight
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = 6 * FRAMES_IN_FLIGHT;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[1].descriptorCount = 1 * FRAMES_IN_FLIGHT;
+    VkDescriptorPoolSize poolSizesDesc[] = {
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6 * FRAMES_IN_FLIGHT},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * FRAMES_IN_FLIGHT}
+    };
+    descriptorPool = descAlloc.createPool(
+        poolSizesDesc, 2, FRAMES_IN_FLIGHT,
+        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+        "PostProcessRenderer: descriptorPool");
 
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-    poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = FRAMES_IN_FLIGHT;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create post-process descriptor pool!");
-    }
-    app->resources.addDescriptorPool(descriptorPool, "PostProcessRenderer: descriptorPool");
-
-    // Allocate one descriptor set per frame in flight
-    std::array<VkDescriptorSetLayout, FRAMES_IN_FLIGHT> layouts;
-    layouts.fill(descriptorSetLayout);
-
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = descriptorPool;
-    allocInfo.descriptorSetCount = FRAMES_IN_FLIGHT;
-    allocInfo.pSetLayouts = layouts.data();
-
-    if (app->allocateDescriptorSetsThreadSafe(&allocInfo, descriptorSets.data()) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate post-process descriptor sets!");
-    }
-    for (uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i) {
-        app->resources.addDescriptorSet(descriptorSets[i], "PostProcessRenderer: descriptorSet");
-    }
+    descAlloc.allocateSets(descriptorPool, descriptorSetLayout,
+                           FRAMES_IN_FLIGHT, descriptorSets.data(),
+                           "PostProcessRenderer: descriptorSet");
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────

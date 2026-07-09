@@ -1,5 +1,6 @@
 
 #include "WaterRenderer.hpp"
+#include "DescriptorAllocator.hpp"
 #include <cstdlib>
 #include "RendererUtils.hpp"
 
@@ -226,26 +227,12 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         transitionImageLayout(waterGeomDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, waterGeomDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
     }
 
-    // Allocate and update per-frame descriptor sets for scene textures
     if (waterDepthDescriptorSetLayout != VK_NULL_HANDLE && linearSampler != VK_NULL_HANDLE) {
-        std::vector<VkDescriptorSetLayout> layouts(3, waterDepthDescriptorSetLayout);
-        VkDescriptorSetAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = waterDepthDescriptorPool;
-        allocInfo.descriptorSetCount = 3;
-        allocInfo.pSetLayouts = layouts.data();
-        
-        if (vkAllocateDescriptorSets(device, &allocInfo, waterDepthDescriptorSets.data()) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to allocate water depth descriptor sets!");
-        }
-        for (size_t i = 0; i < 3; ++i) {
-            std::cerr << "[RAW ALLOC] WaterRenderer depth: descSet=" << (void*)waterDepthDescriptorSets[i] << " pool=" << (void*)allocInfo.descriptorPool << std::endl;
-        }
-        // Register allocated descriptor sets
-        for (size_t i = 0; i < 3; ++i) {
-            app->resources.addDescriptorSet(waterDepthDescriptorSets[i], "WaterRenderer: waterDepthDescriptorSet");
-        }
-        
+        DescriptorAllocator descAlloc{device, app};
+        descAlloc.allocateSets(waterDepthDescriptorPool, waterDepthDescriptorSetLayout,
+                               3, waterDepthDescriptorSets.data(),
+                               "WaterRenderer: waterDepthDescriptorSet");
+
         // Descriptor sets allocated. Do not update bindings here with VK_NULL_HANDLE
         // for optional resources; the higher-level caller (SceneRenderer) is
         // responsible for providing valid `sky`, `backFaceDepth` and cubemap
@@ -435,49 +422,26 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     // Scene position/world-position (binding 5) — g-buffer world-space position
     // Removed binding for Scene position/world-position texture (g-buffer)
 
-    std::array<VkDescriptorBindingFlags, 5> bindingFlags = {
+    VkDescriptorBindingFlags bindingFlags[5] = {
         VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
         VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
         VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
         VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
         VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
     };
-    VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};
-    bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-    bindingFlagsInfo.bindingCount = static_cast<uint32_t>(bindingFlags.size());
-    bindingFlagsInfo.pBindingFlags = bindingFlags.data();
 
-    VkDescriptorSetLayoutCreateInfo depthLayoutInfo{};
-    depthLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    depthLayoutInfo.pNext = &bindingFlagsInfo;
-    depthLayoutInfo.bindingCount = static_cast<uint32_t>(sceneBindings.size());
-    depthLayoutInfo.pBindings = sceneBindings.data();
-    depthLayoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    
-    if (vkCreateDescriptorSetLayout(device, &depthLayoutInfo, nullptr, &waterDepthDescriptorSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create water depth descriptor set layout!");
-    }
-    // Register water depth descriptor set layout
-    app->resources.addDescriptorSetLayout(waterDepthDescriptorSetLayout, "WaterRenderer: waterDepthDescriptorSetLayout");
-    
-    // Create descriptor pool for scene textures (color + depth), 2 sets for 2 frames
-    VkDescriptorPoolSize depthPoolSize{};
-    depthPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    depthPoolSize.descriptorCount = 20;  // (color + depth + sky + backfaceDepth + cube) * 4 sets (3 per-frame + 1 cubemap)
-    
-    VkDescriptorPoolCreateInfo depthPoolInfo{};
-    depthPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    depthPoolInfo.poolSizeCount = 1;
-    depthPoolInfo.pPoolSizes = &depthPoolSize;
-    depthPoolInfo.maxSets = 4;  // 3 per-frame sets + 1 cubemap water set
-    // Allow freeing individual descriptor sets if code frees them explicitly
-    depthPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-    
-    if (vkCreateDescriptorPool(device, &depthPoolInfo, nullptr, &waterDepthDescriptorPool) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create water depth descriptor pool!");
-    }
-    // Register water depth descriptor pool with resource manager
-    app->resources.addDescriptorPool(waterDepthDescriptorPool, "WaterRenderer: waterDepthDescriptorPool");
+    DescriptorAllocator descAlloc{device, app};
+    waterDepthDescriptorSetLayout = descAlloc.createLayout(
+        sceneBindings.data(), static_cast<uint32_t>(sceneBindings.size()),
+        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+        bindingFlags,
+        "WaterRenderer: waterDepthDescriptorSetLayout");
+
+    VkDescriptorPoolSize wrPoolSize = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 20};
+    waterDepthDescriptorPool = descAlloc.createPool(
+        &wrPoolSize, 1, 4,
+        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+        "WaterRenderer: waterDepthDescriptorPool");
     
     // Descriptor sets are allocated and updated per-frame in createRenderTargets()
     // after scene images are created

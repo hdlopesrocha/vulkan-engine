@@ -1,4 +1,5 @@
 #include "ImpostorCapture.hpp"
+#include "DescriptorAllocator.hpp"
 #include "../VulkanApp.hpp"
 #include "../../math/Vertex.hpp"
 #include "../../utils/FileReader.hpp"
@@ -53,14 +54,12 @@ void ImpostorCapture::init(VulkanApp* app) {
         binding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         binding.descriptorCount = 1;
         binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        VkDescriptorSetLayoutCreateInfo info{};
-        info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        info.bindingCount = 1;
-        info.pBindings    = &binding;
-        if (vkCreateDescriptorSetLayout(device, &info, nullptr, &windParamsDescSetLayout) != VK_SUCCESS)
-            throw std::runtime_error("ImpostorCapture: windParamsDescSetLayout failed");
-        app->resources.addDescriptorSetLayout(windParamsDescSetLayout, "ImpostorCapture: windParamsDescSetLayout");
+        DescriptorAllocator descAlloc{device, app};
+        windParamsDescSetLayout = descAlloc.createLayout(
+            &binding, 1,
+            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+            nullptr,
+            "ImpostorCapture: windParamsDescSetLayout");
 
         windParamsBuffer = app->createBuffer(sizeof(WindParamsUBO),
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
@@ -616,6 +615,7 @@ void ImpostorCapture::createDepth(VulkanApp* app) {
 
 void ImpostorCapture::createDescSetLayouts(VulkanApp* app) {
     VkDevice device = app->getDevice();
+    DescriptorAllocator descAlloc{device, app};
 
     // Set 0: single DYNAMIC uniform buffer (per-view camera data).
     {
@@ -626,14 +626,11 @@ void ImpostorCapture::createDescSetLayouts(VulkanApp* app) {
         b.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT
                           | VK_SHADER_STAGE_GEOMETRY_BIT
                           | VK_SHADER_STAGE_FRAGMENT_BIT;
-        VkDescriptorSetLayoutCreateInfo info{};
-        info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        info.bindingCount = 1;
-        info.pBindings    = &b;
-        if (vkCreateDescriptorSetLayout(device, &info, nullptr, &uboDescSetLayout) != VK_SUCCESS)
-            throw std::runtime_error("ImpostorCapture: uboDescSetLayout failed");
-        app->resources.addDescriptorSetLayout(uboDescSetLayout, "ImpostorCapture: uboDescSetLayout");
+        uboDescSetLayout = descAlloc.createLayout(
+            &b, 1,
+            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+            nullptr,
+            "ImpostorCapture: uboDescSetLayout");
     }
 
     // Set 1: three combined image samplers (albedo, normal, opacity arrays).
@@ -645,14 +642,11 @@ void ImpostorCapture::createDescSetLayouts(VulkanApp* app) {
             bindings[i].descriptorCount = 1;
             bindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
         }
-        VkDescriptorSetLayoutCreateInfo info{};
-        info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        info.bindingCount = 3;
-        info.pBindings    = bindings;
-        if (vkCreateDescriptorSetLayout(device, &info, nullptr, &texDescSetLayout) != VK_SUCCESS)
-            throw std::runtime_error("ImpostorCapture: texDescSetLayout failed");
-        app->resources.addDescriptorSetLayout(texDescSetLayout, "ImpostorCapture: texDescSetLayout");
+        texDescSetLayout = descAlloc.createLayout(
+            bindings, 3,
+            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+            nullptr,
+            "ImpostorCapture: texDescSetLayout");
     }
 }
 
@@ -868,34 +862,20 @@ void ImpostorCapture::createSceneSampler(VulkanApp* app) {
 }
 
 void ImpostorCapture::allocateDescSets(VulkanApp* app) {
-    // Private descriptor pool (just enough for two sets: UBO + tex).
-    {
-        VkDescriptorPoolSize sizes[2]{};
-        sizes[0].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-        sizes[0].descriptorCount = 1;
-        sizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        sizes[1].descriptorCount = 3;
-        VkDescriptorPoolCreateInfo poolInfo{};
-        poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-        poolInfo.maxSets       = 2;
-        poolInfo.poolSizeCount = 2;
-        poolInfo.pPoolSizes    = sizes;
-        if (vkCreateDescriptorPool(app->getDevice(), &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
-            throw std::runtime_error("ImpostorCapture: vkCreateDescriptorPool failed");
-        app->resources.addDescriptorPool(descriptorPool, "ImpostorCapture: descriptorPool");
-    }
+    DescriptorAllocator descAlloc{app->getDevice(), app};
+
+    VkDescriptorPoolSize poolSizesIC[] = {
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}
+    };
+    descriptorPool = descAlloc.createPool(
+        poolSizesIC, 2, 2,
+        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+        "ImpostorCapture: descriptorPool");
 
     VkDescriptorSetLayout layouts[2] = { uboDescSetLayout, texDescSetLayout };
-    VkDescriptorSet       sets[2];
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool     = descriptorPool;
-    allocInfo.descriptorSetCount = 2;
-    allocInfo.pSetLayouts        = layouts;
-    if (vkAllocateDescriptorSets(app->getDevice(), &allocInfo, sets) != VK_SUCCESS)
-        throw std::runtime_error("ImpostorCapture: vkAllocateDescriptorSets failed");
-    std::cerr << "[RAW ALLOC] ImpostorCapture: uboDescSet=" << (void*)sets[0] << " texDescSet=" << (void*)sets[1] << " pool=" << (void*)allocInfo.descriptorPool << std::endl;
+    VkDescriptorSet sets[2];
+    descAlloc.allocateSets(descriptorPool, 2, layouts, sets);
     uboDescSet = sets[0];
     texDescSet = sets[1];
 

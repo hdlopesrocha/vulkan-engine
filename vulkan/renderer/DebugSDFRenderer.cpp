@@ -1,4 +1,5 @@
 #include "DebugSDFRenderer.hpp"
+#include "DescriptorAllocator.hpp"
 #include "../ShaderStage.hpp"
 #include "../../utils/FileReader.hpp"
 #include <glm/gtc/matrix_transform.hpp>
@@ -84,6 +85,8 @@ void DebugSDFRenderer::createCubeBuffers(VulkanApp* app) {
 }
 
 void DebugSDFRenderer::createDescriptorSet(VulkanApp* app) {
+    DescriptorAllocator descAlloc{app->getDevice(), app};
+
     VkDescriptorSetLayoutBinding instanceBinding{};
     instanceBinding.binding = 0;
     instanceBinding.descriptorCount = 1;
@@ -91,44 +94,19 @@ void DebugSDFRenderer::createDescriptorSet(VulkanApp* app) {
     instanceBinding.pImmutableSamplers = nullptr;
     instanceBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &instanceBinding;
+    descriptorSetLayout = descAlloc.createLayout(
+        &instanceBinding, 1,
+        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+        nullptr,
+        "DebugSDFRenderer: descriptorSetLayout");
 
-    if (vkCreateDescriptorSetLayout(app->getDevice(), &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("DebugSDFRenderer: failed to create descriptor set layout");
-    }
-    app->resources.addDescriptorSetLayout(descriptorSetLayout, "DebugSDFRenderer: descriptorSetLayout");
+    VkDescriptorPoolSize poolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    descriptorPool = descAlloc.createPool(
+        &poolSize, 1, 1,
+        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+        "DebugSDFRenderer: descriptorPool");
 
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = 1;
-
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-    poolInfo.maxSets = 1;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-
-    if (vkCreateDescriptorPool(app->getDevice(), &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
-        throw std::runtime_error("DebugSDFRenderer: failed to create descriptor pool");
-    }
-    app->resources.addDescriptorPool(descriptorPool, "DebugSDFRenderer: descriptorPool");
-
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &descriptorSetLayout;
-
-    if (vkAllocateDescriptorSets(app->getDevice(), &allocInfo, &descriptorSet) != VK_SUCCESS) {
-        throw std::runtime_error("DebugSDFRenderer: failed to allocate descriptor set");
-    }
-    std::cerr << "[RAW ALLOC] DebugSDFRenderer: descSet=" << (void*)descriptorSet << " pool=" << (void*)allocInfo.descriptorPool << std::endl;
-    app->resources.addDescriptorSet(descriptorSet, "DebugSDFRenderer: descriptorSet");
+    descriptorSet = descAlloc.allocateSet(descriptorPool, descriptorSetLayout, "DebugSDFRenderer: descriptorSet");
 
     instanceBufferCapacity = 128;
     instanceBuffer = app->createBuffer(

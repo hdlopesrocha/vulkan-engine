@@ -1,4 +1,5 @@
 #include "ShadowRenderer.hpp"
+#include "DescriptorAllocator.hpp"
 #include "RendererUtils.hpp"
 
 #include "../VulkanApp.hpp"
@@ -200,20 +201,17 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
 void ShadowRenderer::createBlurResources(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
-    // Descriptor set layout: one combined image sampler (the EVSM texture to blur)
     VkDescriptorSetLayoutBinding binding{};
     binding.binding = 0;
     binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     binding.descriptorCount = 1;
     binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    VkDescriptorSetLayoutCreateInfo dslInfo{};
-    dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 1;
-    dslInfo.pBindings = &binding;
-    if (vkCreateDescriptorSetLayout(device, &dslInfo, nullptr, &blurDescSetLayout) != VK_SUCCESS)
-        throw std::runtime_error("ShadowRenderer: failed to create blur descriptor set layout");
-    app->resources.addDescriptorSetLayout(blurDescSetLayout, "ShadowRenderer: blurDescSetLayout");
+    DescriptorAllocator descAlloc{device, app};
+    blurDescSetLayout = descAlloc.createLayout(
+        &binding, 1,
+        0, nullptr,
+        "ShadowRenderer: blurDescSetLayout");
 
     // Pipeline layout
     VkPushConstantRange pcRange{};
@@ -250,18 +248,10 @@ void ShadowRenderer::createBlurResources(VulkanApp* app) {
     vertShader.info.module = VK_NULL_HANDLE;
     fragShader.info.module = VK_NULL_HANDLE;
 
-    // Create dedicated descriptor pool for blur (4 sets: 3 cascade h-blur + 1 v-blur)
-    VkDescriptorPoolSize blurPoolSize{};
-    blurPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    blurPoolSize.descriptorCount = 4;
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets = 4;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &blurPoolSize;
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &blurDescPool) != VK_SUCCESS)
-        throw std::runtime_error("ShadowRenderer: failed to create blur descriptor pool");
-    app->resources.addDescriptorPool(blurDescPool, "ShadowRenderer: blurDescPool");
+    VkDescriptorPoolSize srPoolSize = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4};
+    blurDescPool = descAlloc.createPool(
+        &srPoolSize, 1, 4, 0,
+        "ShadowRenderer: blurDescPool");
 
     // Temporary image for blur ping-pong (sized for the largest cascade)
     RendererUtils::createImage2DWithVma(device, app, shadowMapSizes[0], shadowMapSizes[0],

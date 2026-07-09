@@ -1,4 +1,5 @@
 #include "IndirectRenderer.hpp"
+#include "DescriptorAllocator.hpp"
 #include "../VulkanApp.hpp"
 #include "../../utils/FileReader.hpp"
 #include <cassert>
@@ -776,55 +777,37 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 
     // Create compute pipeline + descriptor sets for GPU culling if not present
     if (computePipeline == VK_NULL_HANDLE) {
-        // Descriptor layout bindings match shaders/indirect.comp:
-        //  binding 0 = inCmds, 1 = outCmds, 2 = bounds, 3 = VisibleCount
         VkDescriptorSetLayoutBinding bindings[4] = {};
-        // inCmds (binding 0)
         bindings[0].binding = 0;
         bindings[0].descriptorCount = 1;
         bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        // outCmds (binding 1)
         bindings[1].binding = 1;
         bindings[1].descriptorCount = 1;
         bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        // bounds (binding 2)
         bindings[2].binding = 2;
         bindings[2].descriptorCount = 1;
         bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        // VisibleCount (binding 3)
         bindings[3].binding = 3;
         bindings[3].descriptorCount = 1;
         bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
-        VkDescriptorBindingFlags bindingFlags[4] = {};
-        bindingFlags[0] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
-        bindingFlags[1] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
-        bindingFlags[2] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
-        bindingFlags[3] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+        VkDescriptorBindingFlags bindingFlags[4] = {
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
+        };
 
-        VkDescriptorSetLayoutBindingFlagsCreateInfo flagsCreateInfo{};
-        flagsCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-        flagsCreateInfo.bindingCount = 4;
-        flagsCreateInfo.pBindingFlags = bindingFlags;
-
-        VkDescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 4; // bindings[0..3]
-        layoutInfo.pBindings = bindings;
-        layoutInfo.pNext = &flagsCreateInfo;
-        // BindingFlags includes VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
-        // so the layout must be created with the UPDATE_AFTER_BIND_POOL flag.
-        layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-
-        if (vkCreateDescriptorSetLayout(app->getDevice(), &layoutInfo, nullptr, &computeDescriptorSetLayout) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create compute descriptor set layout!");
-        }
-        // central manager
-        app->resources.addDescriptorSetLayout(computeDescriptorSetLayout, "IndirectRenderer: computeDescriptorSetLayout");
+        DescriptorAllocator descAlloc{app->getDevice(), app};
+        computeDescriptorSetLayout = descAlloc.createLayout(
+            bindings, 4,
+            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+            bindingFlags,
+            "IndirectRenderer: computeDescriptorSetLayout");
 
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -864,38 +847,15 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         // track compute pipeline
         app->resources.addPipeline(computePipeline, "IndirectRenderer: computePipeline");
 
-        // Descriptor pool
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        // Increase capacity to support many concurrent compute descriptor allocations
-        poolSize.descriptorCount = 256;
-        VkDescriptorPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
-        // Allow more descriptor sets to be allocated from this pool
-        poolInfo.maxSets = 64;
-        // Allow freeing descriptor sets if needed and support update-after-bind allocations
-        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-        if (vkCreateDescriptorPool(app->getDevice(), &poolInfo, nullptr, &computeDescriptorPool) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create compute descriptor pool");
-        }
-        // track descriptor pool in central manager
-        app->resources.addDescriptorPool(computeDescriptorPool, "IndirectRenderer: computeDescriptorPool");
-        app->resources.addDescriptorPool(computeDescriptorPool, "IndirectRenderer: computeDescriptorPool");
-        /* duplicate registration removed */
+        VkDescriptorPoolSize irPoolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 256};
+        computeDescriptorPool = descAlloc.createPool(
+            &irPoolSize, 1, 64,
+            VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+            "IndirectRenderer: computeDescriptorPool");
 
-        VkDescriptorSetAllocateInfo alloc{};
-        alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        alloc.descriptorPool = computeDescriptorPool;
-        alloc.descriptorSetCount = 1;
-        alloc.pSetLayouts = &computeDescriptorSetLayout;
-        for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
-            if (app->allocateDescriptorSetsThreadSafe(&alloc, &computeDescriptorSets[f]) != VK_SUCCESS) {
-                throw std::runtime_error("failed to allocate compute descriptor set");
-            }
-            app->resources.addDescriptorSet(computeDescriptorSets[f], "IndirectRenderer: computeDescriptorSet");
-        }
+        descAlloc.allocateSets(computeDescriptorPool, computeDescriptorSetLayout,
+                               MAX_CULL_FRAMES, computeDescriptorSets.data(),
+                               "IndirectRenderer: computeDescriptorSet");
     }
 
     // Update per-frame compute descriptor sets with buffer infos

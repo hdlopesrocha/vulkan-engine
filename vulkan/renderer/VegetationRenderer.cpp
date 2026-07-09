@@ -1,4 +1,5 @@
 #include "VegetationRenderer.hpp"
+#include "DescriptorAllocator.hpp"
 
 #include <vulkan/vulkan.h>
 #include <cstdint>
@@ -144,14 +145,12 @@ void VegetationRenderer::initCulling(VulkanApp* app) {
     bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    layoutInfo.bindingCount = 3;
-    layoutInfo.pBindings = bindings;
-    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &vegCullDescSetLayout) != VK_SUCCESS)
-        throw std::runtime_error("failed to create vegetation cull desc set layout!");
-    app->resources.addDescriptorSetLayout(vegCullDescSetLayout, "VegetationCull: descSetLayout");
+    DescriptorAllocator descAlloc{device, app};
+    vegCullDescSetLayout = descAlloc.createLayout(
+        bindings, 3,
+        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+        nullptr,
+        "VegetationCull: descSetLayout");
 
     VkPushConstantRange pc{};
     pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -182,30 +181,14 @@ void VegetationRenderer::initCulling(VulkanApp* app) {
         throw std::runtime_error("failed to create vegetation cull compute pipeline!");
     app->resources.addPipeline(vegCullPipeline, "VegetationCull: computePipeline");
 
-    // Shader module is cached by VulkanApp — kept alive for app lifetime.
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = VEG_CULL_FRAMES * 3;
-    VkDescriptorPoolCreateInfo poolCI{};
-    poolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolCI.maxSets = VEG_CULL_FRAMES;
-    poolCI.poolSizeCount = 1;
-    poolCI.pPoolSizes = &poolSize;
-    poolCI.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-    if (vkCreateDescriptorPool(device, &poolCI, nullptr, &vegCullDescPool) != VK_SUCCESS)
-        throw std::runtime_error("failed to create vegetation cull descriptor pool!");
+    VkDescriptorPoolSize vegPoolSize = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VEG_CULL_FRAMES * 3};
+    vegCullDescPool = descAlloc.createPool(
+        &vegPoolSize, 1, VEG_CULL_FRAMES,
+        VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+        "VegetationCull: descPool");
 
-    std::array<VkDescriptorSetLayout, VEG_CULL_FRAMES> layouts;
-    layouts.fill(vegCullDescSetLayout);
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = vegCullDescPool;
-    allocInfo.descriptorSetCount = VEG_CULL_FRAMES;
-    allocInfo.pSetLayouts = layouts.data();
-    if (vkAllocateDescriptorSets(device, &allocInfo, vegCullDescSets.data()) != VK_SUCCESS)
-        throw std::runtime_error("failed to allocate vegetation cull descriptor sets!");
-    for (uint32_t f = 0; f < VEG_CULL_FRAMES; ++f)
-        std::cerr << "[VEG] vegCullDescSet[" << f << "] = " << (void*)vegCullDescSets[f] << std::endl;
+    descAlloc.allocateSets(vegCullDescPool, vegCullDescSetLayout,
+                           VEG_CULL_FRAMES, vegCullDescSets.data());
 }
 
 void VegetationRenderer::consolidateChunks(VulkanApp* app) {
@@ -569,7 +552,8 @@ void VegetationRenderer::init(VulkanApp* app) {
     this->appPtr = app;
     VkDevice device = app->getDevice();
 
-    // Descriptor set layout: set=1, binding 0=albedo, 1=normal, 2=opacity
+    DescriptorAllocator descAlloc{device, app};
+
     VkDescriptorSetLayoutBinding texBindings[3]{};
     for (uint32_t i = 0; i < 3; ++i) {
         texBindings[i].binding         = i;
@@ -578,14 +562,11 @@ void VegetationRenderer::init(VulkanApp* app) {
         texBindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
         texBindings[i].pImmutableSamplers = nullptr;
     }
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    layoutInfo.bindingCount = 3;
-    layoutInfo.pBindings = texBindings;
-    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create vegetation descriptor set layout");
-    app->resources.addDescriptorSetLayout(descriptorSetLayout, "VegetationRenderer: descriptorSetLayout");
+    descriptorSetLayout = descAlloc.createLayout(
+        texBindings, 3,
+        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+        nullptr,
+        "VegetationRenderer: descriptorSetLayout");
 
     // Load indexed indirect draw function pointer
     cmdDrawIndexedIndirectCount = (PFN_vkCmdDrawIndexedIndirectCountKHR)vkGetDeviceProcAddr(device, "vkCmdDrawIndexedIndirectCountKHR");
@@ -599,14 +580,11 @@ void VegetationRenderer::init(VulkanApp* app) {
         binding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         binding.descriptorCount = 1;
         binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        VkDescriptorSetLayoutCreateInfo info{};
-        info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        info.bindingCount = 1;
-        info.pBindings    = &binding;
-        if (vkCreateDescriptorSetLayout(device, &info, nullptr, &windParamsDescSetLayout) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create wind params descriptor set layout");
-        app->resources.addDescriptorSetLayout(windParamsDescSetLayout, "VegetationRenderer: windParamsDescSetLayout");
+        windParamsDescSetLayout = descAlloc.createLayout(
+            &binding, 1,
+            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+            nullptr,
+            "VegetationRenderer: windParamsDescSetLayout");
     }
 
 
@@ -1160,41 +1138,25 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             bindings[3].descriptorCount = 1;
             bindings[3].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
         }
-        VkDescriptorSetLayoutCreateInfo info{};
-        info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        info.bindingCount = numBindings;
-        info.pBindings    = bindings;
-        if (vkCreateDescriptorSetLayout(device, &info, nullptr, &impostorDescSetLayout) != VK_SUCCESS)
-            throw std::runtime_error("VegetationRenderer: impostorDescSetLayout failed");
-        app->resources.addDescriptorSetLayout(impostorDescSetLayout, "VegetationRenderer: impostorDescSetLayout");
+        DescriptorAllocator descAlloc{device, app};
+        impostorDescSetLayout = descAlloc.createLayout(
+            bindings, numBindings,
+            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+            nullptr,
+            "VegetationRenderer: impostorDescSetLayout");
 
-        VkDescriptorPoolSize poolSizes[2]{};
-        poolSizes[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSizes[0].descriptorCount = hasImpostorDepth ? 3 : 2;
-        uint32_t numPoolSizes = 1;
-        if (hasImpostorDepth) {
-            poolSizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            poolSizes[1].descriptorCount = 1;
-            numPoolSizes = 2;
+        {
+            std::vector<VkDescriptorPoolSize> poolSz;
+            poolSz.emplace_back(VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, hasImpostorDepth ? 3u : 2u});
+            if (hasImpostorDepth)
+                poolSz.emplace_back(VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1u});
+            impostorDescPool = descAlloc.createPool(
+                poolSz.data(), static_cast<uint32_t>(poolSz.size()), 1,
+                VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+                "VegetationRenderer: impostorDescPool");
         }
-        VkDescriptorPoolCreateInfo poolInfo{};
-        poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.maxSets       = 1;
-        poolInfo.poolSizeCount = numPoolSizes;
-        poolInfo.pPoolSizes    = poolSizes;
-        poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &impostorDescPool) != VK_SUCCESS)
-            throw std::runtime_error("VegetationRenderer: impostorDescPool failed");
-        app->resources.addDescriptorPool(impostorDescPool, "VegetationRenderer: impostorDescPool");
 
-        VkDescriptorSetAllocateInfo alloc{};
-        alloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        alloc.descriptorPool     = impostorDescPool;
-        alloc.descriptorSetCount = 1;
-        alloc.pSetLayouts        = &impostorDescSetLayout;
-        if (vkAllocateDescriptorSets(device, &alloc, &impostorDescSet) != VK_SUCCESS)
-            throw std::runtime_error("VegetationRenderer: impostorDescSet alloc failed");
+        impostorDescSet = descAlloc.allocateSet(impostorDescPool, impostorDescSetLayout);
 
         VkDescriptorImageInfo imgInfos[3]{};
         imgInfos[0] = { sampler, albedoArray60, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
@@ -1248,37 +1210,23 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         depthBindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         depthBindings[1].descriptorCount = 1;
         depthBindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-        VkDescriptorSetLayoutCreateInfo info{};
-        info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        info.bindingCount = 2;
-        info.pBindings    = depthBindings;
-        if (vkCreateDescriptorSetLayout(device, &info, nullptr, &impostorDepthDescSetLayout) != VK_SUCCESS)
-            throw std::runtime_error("VegetationRenderer: impostorDepthDescSetLayout failed");
-        app->resources.addDescriptorSetLayout(impostorDepthDescSetLayout, "VegetationRenderer: impostorDepthDescSetLayout");
+        DescriptorAllocator depthDescAlloc{device, app};
+        impostorDepthDescSetLayout = depthDescAlloc.createLayout(
+            depthBindings, 2,
+            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+            nullptr,
+            "VegetationRenderer: impostorDepthDescSetLayout");
 
-        VkDescriptorPoolSize depthPoolSizes[2]{};
-        depthPoolSizes[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        depthPoolSizes[0].descriptorCount = 1;
-        depthPoolSizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        depthPoolSizes[1].descriptorCount = 1;
-        VkDescriptorPoolCreateInfo poolInfo{};
-        poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.maxSets       = 1;
-        poolInfo.poolSizeCount = 2;
-        poolInfo.pPoolSizes    = depthPoolSizes;
-        poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &impostorDepthDescPool) != VK_SUCCESS)
-            throw std::runtime_error("VegetationRenderer: impostorDepthDescPool failed");
-        app->resources.addDescriptorPool(impostorDepthDescPool, "VegetationRenderer: impostorDepthDescPool");
+        VkDescriptorPoolSize depthPoolSizes[] = {
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}
+        };
+        impostorDepthDescPool = depthDescAlloc.createPool(
+            depthPoolSizes, 2, 1,
+            VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+            "VegetationRenderer: impostorDepthDescPool");
 
-        VkDescriptorSetAllocateInfo alloc{};
-        alloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        alloc.descriptorPool     = impostorDepthDescPool;
-        alloc.descriptorSetCount = 1;
-        alloc.pSetLayouts        = &impostorDepthDescSetLayout;
-        if (vkAllocateDescriptorSets(device, &alloc, &impostorDepthDescSet) != VK_SUCCESS)
-            throw std::runtime_error("VegetationRenderer: impostorDepthDescSet alloc failed");
+        impostorDepthDescSet = depthDescAlloc.allocateSet(impostorDepthDescPool, impostorDepthDescSetLayout);
 
         VkDescriptorImageInfo depthImgInfo{};
         depthImgInfo.sampler     = sampler;

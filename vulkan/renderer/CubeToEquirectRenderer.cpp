@@ -1,4 +1,5 @@
 #include "CubeToEquirectRenderer.hpp"
+#include "DescriptorAllocator.hpp"
 #include "RendererUtils.hpp"
 #include "../VulkanApp.hpp"
 #include "../../utils/FileReader.hpp"
@@ -72,14 +73,12 @@ void CubeToEquirectRenderer::createPipeline(VulkanApp* app) {
         binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         binding.descriptorCount = 1;
         binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        VkDescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        layoutInfo.bindingCount = 1;
-        layoutInfo.pBindings = &binding;
-        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &cube360EquirectDescriptorSetLayout) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create cube360 equirect descriptor set layout!");
-        app->resources.addDescriptorSetLayout(cube360EquirectDescriptorSetLayout, "CubeToEquirectRenderer: descriptorSetLayout");
+        DescriptorAllocator descAlloc{device, app};
+        cube360EquirectDescriptorSetLayout = descAlloc.createLayout(
+            &binding, 1,
+            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+            nullptr,
+            "CubeToEquirectRenderer: descriptorSetLayout");
     }
     if (cube360EquirectPipelineLayout == VK_NULL_HANDLE) {
         VkPushConstantRange pushRange{};

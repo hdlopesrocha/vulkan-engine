@@ -1,4 +1,5 @@
 #include "DebugCubeRenderer.hpp"
+#include "DescriptorAllocator.hpp"
 #include "../VertexBufferObjectBuilder.hpp"
 #include "../ShaderStage.hpp"
 #include "../../utils/FileReader.hpp"
@@ -175,74 +176,40 @@ void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
 }
 
 void DebugCubeRenderer::createGridDescriptorSet(VulkanApp* app) {
-    // Create descriptor set layout for texture (binding 1) and instance buffer (binding 2)
+    DescriptorAllocator descAlloc{app->getDevice(), app};
+
     VkDescriptorSetLayoutBinding samplerLayoutBinding{};
     samplerLayoutBinding.binding = 1;
     samplerLayoutBinding.descriptorCount = 1;
     samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     samplerLayoutBinding.pImmutableSamplers = nullptr;
     samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    
+
     VkDescriptorSetLayoutBinding instanceBufferBinding{};
     instanceBufferBinding.binding = 2;
     instanceBufferBinding.descriptorCount = 1;
     instanceBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     instanceBufferBinding.pImmutableSamplers = nullptr;
     instanceBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    
+
     VkDescriptorSetLayoutBinding bindings[] = { samplerLayoutBinding, instanceBufferBinding };
-    
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    layoutInfo.bindingCount = 2;
-    layoutInfo.pBindings = bindings;
-    
-    if (vkCreateDescriptorSetLayout(app->getDevice(), &layoutInfo, nullptr, &gridDescriptorSetLayout) != VK_SUCCESS) {
-        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to create grid descriptor set layout!" << std::endl;
-        return;
-    }
-    std::cout << "[DebugCubeRenderer] createDescriptorSetLayout: gridDescriptorSetLayout=" << (void*)gridDescriptorSetLayout << std::endl;
-    // Register descriptor set layout
-    app->resources.addDescriptorSetLayout(gridDescriptorSetLayout, "DebugCubeRenderer: gridDescriptorSetLayout");
-    
-    // Create descriptor pool
-    VkDescriptorPoolSize poolSizes[2];
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = 1;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[1].descriptorCount = 1;
-    
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 2;
-    poolInfo.pPoolSizes = poolSizes;
-    poolInfo.maxSets = 1;
-    // Allow freeing descriptor sets created from this pool
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-    
-    if (vkCreateDescriptorPool(app->getDevice(), &poolInfo, nullptr, &gridDescriptorPool) != VK_SUCCESS) {
-        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to create grid descriptor pool!" << std::endl;
-        return;
-    }
-    std::cout << "[DebugCubeRenderer] createDescriptorPool: gridDescriptorPool=" << (void*)gridDescriptorPool << std::endl;
-    // Register descriptor pool
-    app->resources.addDescriptorPool(gridDescriptorPool, "DebugCubeRenderer: gridDescriptorPool");
-    
-    // Allocate descriptor set
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = gridDescriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &gridDescriptorSetLayout;
-    
-    if (vkAllocateDescriptorSets(app->getDevice(), &allocInfo, &gridDescriptorSet) != VK_SUCCESS) {
-        std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to allocate grid descriptor set!" << std::endl;
-        return;
-    }
-    std::cerr << "[RAW ALLOC] DebugCubeRenderer: descSet=" << (void*)gridDescriptorSet << " pool=" << (void*)allocInfo.descriptorPool << std::endl;
-    // Register descriptor set for tracking
-    app->resources.addDescriptorSet(gridDescriptorSet, "DebugCubeRenderer: gridDescriptorSet");
+
+    gridDescriptorSetLayout = descAlloc.createLayout(
+        bindings, 2,
+        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+        nullptr,
+        "DebugCubeRenderer: gridDescriptorSetLayout");
+
+    VkDescriptorPoolSize poolSizes[] = {
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}
+    };
+    gridDescriptorPool = descAlloc.createPool(
+        poolSizes, 2, 1,
+        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+        "DebugCubeRenderer: gridDescriptorPool");
+
+    gridDescriptorSet = descAlloc.allocateSet(gridDescriptorPool, gridDescriptorSetLayout, "DebugCubeRenderer: gridDescriptorSet");
     
     // Update descriptor set with texture
     VkDescriptorImageInfo imageInfo{};
