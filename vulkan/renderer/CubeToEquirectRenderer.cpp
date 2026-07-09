@@ -26,10 +26,6 @@ void CubeToEquirectRenderer::cleanup(VulkanApp* app) {
             }
             app->destroyImageWithVma(tmp_img, tmp_alloc, tmp_mem);
         });
-        iv = VK_NULL_HANDLE;
-        img = VK_NULL_HANDLE;
-        alloc = VK_NULL_HANDLE;
-        mem = VK_NULL_HANDLE;
     };
 
     auto destroyVkObject = [&](auto &handle, auto removeFn, auto destroyFn) {
@@ -38,15 +34,11 @@ void CubeToEquirectRenderer::cleanup(VulkanApp* app) {
         app->deferDestroyUntilAllPending([tmp, app, removeFn, destroyFn, device]() {
             if ((app->resources.*removeFn)(tmp)) destroyFn(device, tmp, nullptr);
         });
-        handle = VK_NULL_HANDLE;
     };
 
     destroyImageAndMemory(cube360EquirectView, cube360EquirectImage, cube360EquirectAllocation, cube360EquirectMemory);
     destroyVkObject(cube360EquirectPipeline, &VulkanResourceManager::removePipeline, vkDestroyPipeline);
     destroyVkObject(cube360EquirectPipelineLayout, &VulkanResourceManager::removePipelineLayout, vkDestroyPipelineLayout);
-    // Shader modules are cached by VulkanApp — kept alive for app lifetime.
-    cube360EquirectVertModule = VK_NULL_HANDLE;
-    cube360EquirectFragModule = VK_NULL_HANDLE;
     destroyVkObject(cube360EquirectDescriptorSetLayout, &VulkanResourceManager::removeDescriptorSetLayout, vkDestroyDescriptorSetLayout);
 
     if (cube360EquirectSampleDescriptorSet != VK_NULL_HANDLE) {
@@ -54,7 +46,6 @@ void CubeToEquirectRenderer::cleanup(VulkanApp* app) {
         app->deferDestroyUntilAllPending([tmp, app]() {
             app->resources.removeDescriptorSet(tmp);
         });
-        cube360EquirectSampleDescriptorSet = VK_NULL_HANDLE;
     }
 }
 

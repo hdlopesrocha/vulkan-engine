@@ -1,5 +1,6 @@
 #pragma once
 #include "../VulkanApp.hpp"
+#include "../TrackedHandle.hpp"
 #include "IndirectRenderer.hpp"
 #include <array>
 #include "CommandBufferState.hpp"
@@ -34,7 +35,7 @@ public:
     void setBackFaceDepthLayout(uint32_t frameIndex, VkImageLayout layout) { if (frameIndex < backFaceDepthImageLayouts.size()) backFaceDepthImageLayouts[frameIndex] = layout; }
 
 private:
-    VkPipeline backFacePipeline = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> backFacePipeline;
     static constexpr uint32_t FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
     std::array<VkImage, FRAMES> backFaceDepthImages = {};
     std::array<VmaAllocation, FRAMES> backFaceDepthAllocations = {};

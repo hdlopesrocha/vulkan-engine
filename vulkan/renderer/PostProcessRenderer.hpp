@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../VulkanApp.hpp"
+#include "../TrackedHandle.hpp"
 #include <glm/glm.hpp>
 #include <array>
 #include "CommandBufferState.hpp"
@@ -38,15 +39,15 @@ private:
     void createPipeline(VulkanApp* app);
     void createDescriptorSets(VulkanApp* app);
 
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> pipeline;
+    TrackedHandle<VkPipelineLayout> pipelineLayout;
+    TrackedHandle<VkDescriptorSetLayout> descriptorSetLayout;
+    TrackedHandle<VkDescriptorPool> descriptorPool;
     static constexpr uint32_t FRAMES_IN_FLIGHT = VulkanApp::MAX_FRAMES_IN_FLIGHT;
-    std::array<VkDescriptorSet, FRAMES_IN_FLIGHT> descriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<TrackedHandle<VkDescriptorSet>, FRAMES_IN_FLIGHT> descriptorSets;
 
     Buffer uniformBuffer;
-    VkSampler linearSampler = VK_NULL_HANDLE;
+    TrackedHandle<VkSampler> linearSampler;
 
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;

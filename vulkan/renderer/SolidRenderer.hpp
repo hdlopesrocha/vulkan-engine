@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../VulkanApp.hpp"
+#include "../TrackedHandle.hpp"
 #include "IndirectRenderer.hpp"
 #include "../../utils/Model3DVersion.hpp"
 #include "../ShaderStage.hpp"
@@ -63,16 +64,16 @@ public:
 private:
     
     IndirectRenderer indirectRenderer;
-    VkPipeline graphicsPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout graphicsPipelineLayout = VK_NULL_HANDLE;
-    VkPipeline depthPrePassPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout depthPrePassPipelineLayout = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> graphicsPipeline;
+    TrackedHandle<VkPipelineLayout> graphicsPipelineLayout;
+    TrackedHandle<VkPipeline> depthPrePassPipeline;
+    TrackedHandle<VkPipelineLayout> depthPrePassPipelineLayout;
 
     // Deferred depth test pipelines
-    VkPipeline deferredDepthPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout deferredDepthPipelineLayout = VK_NULL_HANDLE;
-    VkPipeline deferredColorPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout deferredColorPipelineLayout = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> deferredDepthPipeline;
+    TrackedHandle<VkPipelineLayout> deferredDepthPipelineLayout;
+    TrackedHandle<VkPipeline> deferredColorPipeline;
+    TrackedHandle<VkPipelineLayout> deferredColorPipelineLayout;
     bool deferredPipelinesCreated = false;
 
     std::unordered_map<NodeID, Model3DVersion> solidChunks;

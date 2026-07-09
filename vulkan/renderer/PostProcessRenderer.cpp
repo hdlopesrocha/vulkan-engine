@@ -27,12 +27,6 @@ void PostProcessRenderer::init(VulkanApp* app) {
 }
 
 void PostProcessRenderer::cleanup(VulkanApp* app) {
-    // Clear local handles; VulkanResourceManager is responsible for actual destruction
-    pipeline = VK_NULL_HANDLE;
-    pipelineLayout = VK_NULL_HANDLE;
-    descriptorPool = VK_NULL_HANDLE;
-    descriptorSetLayout = VK_NULL_HANDLE;
-    linearSampler = VK_NULL_HANDLE;
     uniformBuffer = {};
 }
 
@@ -126,7 +120,7 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
         "PostProcessRenderer: descriptorPool");
 
     descAlloc.allocateSets(descriptorPool, descriptorSetLayout,
-                           FRAMES_IN_FLIGHT, descriptorSets.data(),
+                           FRAMES_IN_FLIGHT, reinterpret_cast<VkDescriptorSet*>(descriptorSets.data()),
                            "PostProcessRenderer: descriptorSet");
 }
 

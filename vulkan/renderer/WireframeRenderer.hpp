@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../VulkanApp.hpp"
+#include "../TrackedHandle.hpp"
 #include "IndirectRenderer.hpp"
 #include "../../math/Vertex.hpp"
 #include <vulkan/vulkan.h>
@@ -41,8 +42,8 @@ public:
     void cleanup();
 
 private:
-    VkPipeline wireframePipeline = VK_NULL_HANDLE;
-    VkPipelineLayout wireframePipelineLayout = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> wireframePipeline;
+    TrackedHandle<VkPipelineLayout> wireframePipelineLayout;
     CommandBufferState* cmdState = nullptr;
 public:
     void setCmdState(CommandBufferState* state) { cmdState = state; }

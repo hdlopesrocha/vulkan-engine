@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../VulkanApp.hpp"
+#include "../TrackedHandle.hpp"
 #include "../VertexBufferObject.hpp"
 #include "../../math/BoundingBox.hpp"
 #include <vector>
@@ -31,10 +32,10 @@ public:
 
 private:
     // VulkanApp is not stored; pass `app` into methods that need it.
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkShaderModule vertModule = VK_NULL_HANDLE;
-    VkShaderModule fragModule = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> pipeline;
+    TrackedHandle<VkPipelineLayout> pipelineLayout;
+    TrackedHandle<VkShaderModule> vertModule;
+    TrackedHandle<VkShaderModule> fragModule;
     
     // Cube line geometry VBO (shared for all cubes, transformed via push constants)
     VertexBufferObject cubeVBO;
@@ -44,10 +45,10 @@ private:
     VmaAllocation gridTextureAllocation = VK_NULL_HANDLE;
     VkDeviceMemory gridTextureMemory = VK_NULL_HANDLE;
     VkImageView gridTextureView = VK_NULL_HANDLE;
-    VkSampler gridTextureSampler = VK_NULL_HANDLE;
-    VkDescriptorSet gridDescriptorSet = VK_NULL_HANDLE;
-    VkDescriptorSetLayout gridDescriptorSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool gridDescriptorPool = VK_NULL_HANDLE;
+    TrackedHandle<VkSampler> gridTextureSampler;
+    TrackedHandle<VkDescriptorSet> gridDescriptorSet;
+    TrackedHandle<VkDescriptorSetLayout> gridDescriptorSetLayout;
+    TrackedHandle<VkDescriptorPool> gridDescriptorPool;
     
     // Instance data buffer (model matrix + color per cube)
     Buffer instanceBuffer;

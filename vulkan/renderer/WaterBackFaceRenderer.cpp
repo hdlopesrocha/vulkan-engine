@@ -17,11 +17,6 @@ void WaterBackFaceRenderer::init(VulkanApp* app) {
 void WaterBackFaceRenderer::cleanup(VulkanApp* app) {
     (void)app;
     appPtr = nullptr;
-    // VulkanResourceManager owns actual Vulkan objects; just clear handles
-    backFacePipeline = VK_NULL_HANDLE;
-    for (auto &v : backFaceDepthImages) v = VK_NULL_HANDLE;
-    for (auto &m : backFaceDepthMemories) m = VK_NULL_HANDLE;
-    for (auto &v : backFaceDepthImageViews) v = VK_NULL_HANDLE;
 }
 
 void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pipelineLayout) {

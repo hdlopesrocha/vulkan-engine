@@ -1,6 +1,7 @@
 #pragma once
 #include <vulkan/vulkan.h>
 #include "../VmaContext.hpp"
+#include "../TrackedHandle.hpp"
 #include "../Buffer.hpp"
 #include <glm/glm.hpp>
 #include <array>
@@ -76,8 +77,8 @@ private:
     VkImage        captureImage      = VK_NULL_HANDLE;
     VmaAllocation  captureAllocation = VK_NULL_HANDLE;
     VkDeviceMemory captureMemory     = VK_NULL_HANDLE;
-    VkImageView    captureArrayView  = VK_NULL_HANDLE;          // 60-layer 2D_ARRAY view
-    std::array<VkImageView, TOTAL_LAYERS> captureLayerViews{};  // per-layer 2D views
+    VkImageView    captureArrayView  = VK_NULL_HANDLE;
+    std::array<VkImageView, TOTAL_LAYERS> captureLayerViews{};
 
     // Normal capture texture array (world-space normals encoded in [0,1]).
     VkImage        captureNormalImage      = VK_NULL_HANDLE;
@@ -100,10 +101,10 @@ private:
     VkImageView    depthView   = VK_NULL_HANDLE;
 
     // Pipeline (vegetation vert/geom/frag with simple 2-set layout).
-    VkPipeline            capturePipeline       = VK_NULL_HANDLE;
-    VkPipelineLayout      capturePipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout uboDescSetLayout      = VK_NULL_HANDLE;
-    VkDescriptorSetLayout texDescSetLayout      = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> capturePipeline;
+    TrackedHandle<VkPipelineLayout> capturePipelineLayout;
+    TrackedHandle<VkDescriptorSetLayout> uboDescSetLayout;
+    TrackedHandle<VkDescriptorSetLayout> texDescSetLayout;
 
     // Per-view camera UBO (dynamic-offset uniform buffer, NUM_VIEWS slots).
     struct alignas(16) CaptureUBO {
@@ -118,9 +119,9 @@ private:
     VkDeviceSize   uboStride = 256;  // aligned to minUniformBufferOffsetAlignment
 
     // Wind params UBO (set=2, binding=0) — static during capture.
-    Buffer                windParamsBuffer       = {};
-    VkDescriptorSetLayout windParamsDescSetLayout = VK_NULL_HANDLE;
-    VkDescriptorSet       windParamsDescSet      = VK_NULL_HANDLE;
+    Buffer                windParamsBuffer;
+    TrackedHandle<VkDescriptorSetLayout> windParamsDescSetLayout;
+    TrackedHandle<VkDescriptorSet> windParamsDescSet;
     void*                 windParamsMapped       = nullptr;
 
     // Minimal vertex + instance buffers (single base vertex, one instance).
@@ -134,9 +135,9 @@ private:
     uint32_t       captureIdxCount = 0;
 
     // Descriptor pool + two descriptor sets (UBO dynamic + texture samplers).
-    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSet  uboDescSet     = VK_NULL_HANDLE;
-    VkDescriptorSet  texDescSet     = VK_NULL_HANDLE;
+    TrackedHandle<VkDescriptorPool> descriptorPool;
+    TrackedHandle<VkDescriptorSet> uboDescSet;
+    TrackedHandle<VkDescriptorSet> texDescSet;
 
     // Push constants (16 bytes) — matches the vegetation shader layout.
     // Wind parameters are in the WindParamsUBO at set=2.
@@ -148,11 +149,11 @@ private:
     };
 
     // ImGui display resources (TOTAL_LAYERS descriptor sets each for albedo and normals).
-    VkSampler imguiSampler = VK_NULL_HANDLE;
-    VkSampler sceneSampler = VK_NULL_HANDLE;  // for scene rendering (created at init)
-    std::array<VkDescriptorSet, TOTAL_LAYERS> imguiDescSets{};
-    std::array<VkDescriptorSet, TOTAL_LAYERS> imguiNormalDescSets{};
-    std::array<VkDescriptorSet, TOTAL_LAYERS> imguiDepthDescSets{};
+    TrackedHandle<VkSampler> imguiSampler;
+    TrackedHandle<VkSampler> sceneSampler;
+    std::array<TrackedHandle<VkDescriptorSet>, TOTAL_LAYERS> imguiDescSets;
+    std::array<TrackedHandle<VkDescriptorSet>, TOTAL_LAYERS> imguiNormalDescSets;
+    std::array<TrackedHandle<VkDescriptorSet>, TOTAL_LAYERS> imguiDepthDescSets;
 
     // Per-layer capture inverse VP matrices for depth reprojection.
     std::array<glm::mat4, TOTAL_LAYERS> captureInvVP{};

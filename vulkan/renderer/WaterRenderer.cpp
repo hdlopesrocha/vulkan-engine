@@ -69,27 +69,8 @@ void WaterRenderer::updateGPUParamsForLayer(uint32_t layer, const WaterParams& p
 }
 
 void WaterRenderer::cleanup(VulkanApp* app) {
-    VkDevice device = app->getDevice();
-    VulkanApp* appPtr = app;
-    
     waterIndirectRenderer.cleanup();
-    // Clear local handles; VulkanResourceManager is responsible for actual destruction
     destroyRenderTargets(app);
-    cubemapDummyDepthImage = VK_NULL_HANDLE;
-    cubemapDummyDepthAllocation = VK_NULL_HANDLE;
-    cubemapDummyDepthMemory = VK_NULL_HANDLE;
-    cubemapDummyDepthView = VK_NULL_HANDLE;
-    cubemapDummyCubeImage = VK_NULL_HANDLE;
-    cubemapDummyCubeAllocation = VK_NULL_HANDLE;
-    cubemapDummyCubeMemory = VK_NULL_HANDLE;
-    cubemapDummyCubeView = VK_NULL_HANDLE;
-    waterGeometryPipeline = VK_NULL_HANDLE;
-    waterDepthPrePassPipeline = VK_NULL_HANDLE;
-    waterDepthDescriptorPool = VK_NULL_HANDLE;
-    waterDepthDescriptorSetLayout = VK_NULL_HANDLE;
-    waterGeometryPipelineLayout = VK_NULL_HANDLE;
-    linearSampler = VK_NULL_HANDLE;
-    nearestSampler = VK_NULL_HANDLE;
 }
 
 void WaterRenderer::createSamplers(VulkanApp* app) {
@@ -231,7 +212,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     if (waterDepthDescriptorSetLayout != VK_NULL_HANDLE && linearSampler != VK_NULL_HANDLE) {
         DescriptorAllocator descAlloc{device, app};
         descAlloc.allocateSets(waterDepthDescriptorPool, waterDepthDescriptorSetLayout,
-                               3, waterDepthDescriptorSets.data(),
+                               3, reinterpret_cast<VkDescriptorSet*>(waterDepthDescriptorSets.data()),
                                "WaterRenderer: waterDepthDescriptorSet");
 
         // Descriptor sets allocated. Do not update bindings here with VK_NULL_HANDLE

@@ -1,6 +1,7 @@
 #pragma once
 #include <vulkan/vulkan.h>
 #include "../VmaContext.hpp"
+#include "../TrackedHandle.hpp"
 #include "CommandBufferState.hpp"
 
 class VulkanApp;
@@ -24,12 +25,12 @@ private:
     VmaAllocation cube360EquirectAllocation = VK_NULL_HANDLE;
     VkDeviceMemory cube360EquirectMemory = VK_NULL_HANDLE;
     VkImageView cube360EquirectView = VK_NULL_HANDLE;
-    VkPipeline cube360EquirectPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout cube360EquirectPipelineLayout = VK_NULL_HANDLE;
-    VkShaderModule cube360EquirectVertModule = VK_NULL_HANDLE;
-    VkShaderModule cube360EquirectFragModule = VK_NULL_HANDLE;
-    VkDescriptorSetLayout cube360EquirectDescriptorSetLayout = VK_NULL_HANDLE;
-    VkDescriptorSet cube360EquirectSampleDescriptorSet = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> cube360EquirectPipeline;
+    TrackedHandle<VkPipelineLayout> cube360EquirectPipelineLayout;
+    TrackedHandle<VkShaderModule> cube360EquirectVertModule;
+    TrackedHandle<VkShaderModule> cube360EquirectFragModule;
+    TrackedHandle<VkDescriptorSetLayout> cube360EquirectDescriptorSetLayout;
+    TrackedHandle<VkDescriptorSet> cube360EquirectSampleDescriptorSet;
 
     static constexpr uint32_t EQ_WIDTH = 1024;
     static constexpr uint32_t EQ_HEIGHT = 512;

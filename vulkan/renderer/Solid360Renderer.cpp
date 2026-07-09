@@ -26,22 +26,18 @@ void Solid360Renderer::cleanup(VulkanApp* app) {
         if (depthOnlyPipeline != VK_NULL_HANDLE) {
             app->resources.removePipeline(depthOnlyPipeline);
             vkDestroyPipeline(dev, depthOnlyPipeline, nullptr);
-            depthOnlyPipeline = VK_NULL_HANDLE;
         }
         if (depthOnlyPipelineLayout != VK_NULL_HANDLE) {
             app->resources.removePipelineLayout(depthOnlyPipelineLayout);
             vkDestroyPipelineLayout(dev, depthOnlyPipelineLayout, nullptr);
-            depthOnlyPipelineLayout = VK_NULL_HANDLE;
         }
         if (equalComparePipeline != VK_NULL_HANDLE) {
             app->resources.removePipeline(equalComparePipeline);
             vkDestroyPipeline(dev, equalComparePipeline, nullptr);
-            equalComparePipeline = VK_NULL_HANDLE;
         }
         if (equalComparePipelineLayout != VK_NULL_HANDLE) {
             app->resources.removePipelineLayout(equalComparePipelineLayout);
             vkDestroyPipelineLayout(dev, equalComparePipelineLayout, nullptr);
-            equalComparePipelineLayout = VK_NULL_HANDLE;
         }
     }
     for (uint32_t i = 0; i < STAGING_FRAMES; ++i) {
@@ -51,16 +47,6 @@ void Solid360Renderer::cleanup(VulkanApp* app) {
         }
     }
     stagingFrameIndex = 0;
-    cube360ColorImage = VK_NULL_HANDLE;
-    cube360ColorAllocation = VK_NULL_HANDLE;
-    cube360ColorMemory = VK_NULL_HANDLE;
-    for (auto& v : cube360FaceViews) v = VK_NULL_HANDLE;
-    cube360CubeView = VK_NULL_HANDLE;
-    solid360Sampler = VK_NULL_HANDLE;
-    cube360DepthImage = VK_NULL_HANDLE;
-    cube360DepthAllocation = VK_NULL_HANDLE;
-    cube360DepthMemory = VK_NULL_HANDLE;
-    for (auto &dv : cube360DepthViews) dv = VK_NULL_HANDLE;
 }
 void Solid360Renderer::createSolid360Targets(VulkanApp* app, VkSampler linearSampler) {
     if (!app) return;

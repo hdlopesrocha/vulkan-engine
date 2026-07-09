@@ -107,121 +107,81 @@ void ImpostorCapture::cleanup(VulkanApp* app) {
     if (imguiSampler != VK_NULL_HANDLE) {
         app->resources.removeSampler(imguiSampler);
         vkDestroySampler(device, imguiSampler, nullptr);
-        imguiSampler = VK_NULL_HANDLE;
     }
 
-    // Descriptor pool (frees uboDescSet + texDescSet implicitly).
     if (descriptorPool != VK_NULL_HANDLE) {
         app->resources.removeDescriptorPool(descriptorPool);
         vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-        descriptorPool = VK_NULL_HANDLE;
-        uboDescSet = texDescSet = VK_NULL_HANDLE;
     }
 
-    // UBO buffer (VMA-managed, destroyed by resource manager on cleanup).
-    // Clear local handles to prevent double-free.
     uboMapped = nullptr;
-    uboBuffer = VK_NULL_HANDLE;
-    uboMemory = VK_NULL_HANDLE;
 
-    // Wind params descriptor set + UBO.
     if (windParamsDescSetLayout != VK_NULL_HANDLE) {
         app->resources.removeDescriptorSetLayout(windParamsDescSetLayout);
         vkDestroyDescriptorSetLayout(device, windParamsDescSetLayout, nullptr);
-        windParamsDescSetLayout = VK_NULL_HANDLE;
     }
-    windParamsDescSet = VK_NULL_HANDLE;  // registered via app->registerDescriptorSet
     windParamsMapped  = nullptr;
     if (windParamsBuffer.buffer != VK_NULL_HANDLE) {
         app->destroyBuffer(windParamsBuffer);
         windParamsBuffer = {};
     }
 
-    // Capture vertex/instance buffers (VMA-managed, destroyed by resource manager on cleanup).
-    auto destroyBuf = [&](VkBuffer& b, VkDeviceMemory& m) {
-        b = VK_NULL_HANDLE;
-        m = VK_NULL_HANDLE;
-    };
-    destroyBuf(captureVertBuf, captureVertMem);
-    destroyBuf(captureInstBuf, captureInstMem);
-    destroyBuf(captureIdxBuf, captureIdxMem);
+    captureInstMapped = nullptr;
 
-    // Framebuffers removed - using dynamic rendering
-
-    // Render pass removed - using dynamic rendering
-
-    // Pipeline + layout.
     if (capturePipeline != VK_NULL_HANDLE) {
         app->resources.removePipeline(capturePipeline);
         vkDestroyPipeline(device, capturePipeline, nullptr);
-        capturePipeline = VK_NULL_HANDLE;
     }
     if (capturePipelineLayout != VK_NULL_HANDLE) {
         app->resources.removePipelineLayout(capturePipelineLayout);
         vkDestroyPipelineLayout(device, capturePipelineLayout, nullptr);
-        capturePipelineLayout = VK_NULL_HANDLE;
     }
 
-    // Descriptor set layouts.
     if (uboDescSetLayout != VK_NULL_HANDLE) {
         app->resources.removeDescriptorSetLayout(uboDescSetLayout);
         vkDestroyDescriptorSetLayout(device, uboDescSetLayout, nullptr);
-        uboDescSetLayout = VK_NULL_HANDLE;
     }
     if (texDescSetLayout != VK_NULL_HANDLE) {
         app->resources.removeDescriptorSetLayout(texDescSetLayout);
         vkDestroyDescriptorSetLayout(device, texDescSetLayout, nullptr);
-        texDescSetLayout = VK_NULL_HANDLE;
     }
 
-    // Depth image.
-    if (depthView   != VK_NULL_HANDLE) { app->resources.removeImageView(depthView);   vkDestroyImageView(device, depthView, nullptr);  depthView   = VK_NULL_HANDLE; }
-    if (depthImage  != VK_NULL_HANDLE) { app->destroyImageWithVma(depthImage, depthAllocation, depthMemory); depthImage = VK_NULL_HANDLE; depthAllocation = VK_NULL_HANDLE; depthMemory = VK_NULL_HANDLE; }
+    if (depthView   != VK_NULL_HANDLE) { app->resources.removeImageView(depthView);   vkDestroyImageView(device, depthView, nullptr); }
+    if (depthImage  != VK_NULL_HANDLE) { app->destroyImageWithVma(depthImage, depthAllocation, depthMemory); }
 
-    // Scene sampler.
     if (sceneSampler != VK_NULL_HANDLE) {
         app->resources.removeSampler(sceneSampler);
         vkDestroySampler(device, sceneSampler, nullptr);
-        sceneSampler = VK_NULL_HANDLE;
     }
 
-    // Capture image views.
     for (auto& v : captureLayerViews) {
-        if (v != VK_NULL_HANDLE) { app->resources.removeImageView(v); vkDestroyImageView(device, v, nullptr); v = VK_NULL_HANDLE; }
+        if (v != VK_NULL_HANDLE) { app->resources.removeImageView(v); vkDestroyImageView(device, v, nullptr); }
     }
     if (captureArrayView != VK_NULL_HANDLE) {
         app->resources.removeImageView(captureArrayView);
         vkDestroyImageView(device, captureArrayView, nullptr);
-        captureArrayView = VK_NULL_HANDLE;
     }
-    if (captureImage  != VK_NULL_HANDLE) { app->destroyImageWithVma(captureImage, captureAllocation, captureMemory); captureImage = VK_NULL_HANDLE; captureAllocation = VK_NULL_HANDLE; captureMemory = VK_NULL_HANDLE; }
+    if (captureImage  != VK_NULL_HANDLE) { app->destroyImageWithVma(captureImage, captureAllocation, captureMemory); }
 
-    // Normal capture image views.
     for (auto& v : captureNormalLayerViews) {
-        if (v != VK_NULL_HANDLE) { app->resources.removeImageView(v); vkDestroyImageView(device, v, nullptr); v = VK_NULL_HANDLE; }
+        if (v != VK_NULL_HANDLE) { app->resources.removeImageView(v); vkDestroyImageView(device, v, nullptr); }
     }
     if (captureNormalArrayView != VK_NULL_HANDLE) {
         app->resources.removeImageView(captureNormalArrayView);
         vkDestroyImageView(device, captureNormalArrayView, nullptr);
-        captureNormalArrayView = VK_NULL_HANDLE;
     }
-    if (captureNormalImage  != VK_NULL_HANDLE) { app->destroyImageWithVma(captureNormalImage, captureNormalAllocation, captureNormalMemory); captureNormalImage = VK_NULL_HANDLE; captureNormalAllocation = VK_NULL_HANDLE; captureNormalMemory = VK_NULL_HANDLE; }
+    if (captureNormalImage  != VK_NULL_HANDLE) { app->destroyImageWithVma(captureNormalImage, captureNormalAllocation, captureNormalMemory); }
 
-    // Depth capture image views.
     for (auto& v : captureDepthLayerViews) {
-        if (v != VK_NULL_HANDLE) { app->resources.removeImageView(v); vkDestroyImageView(device, v, nullptr); v = VK_NULL_HANDLE; }
+        if (v != VK_NULL_HANDLE) { app->resources.removeImageView(v); vkDestroyImageView(device, v, nullptr); }
     }
     if (captureDepthArrayView != VK_NULL_HANDLE) {
         app->resources.removeImageView(captureDepthArrayView);
         vkDestroyImageView(device, captureDepthArrayView, nullptr);
-        captureDepthArrayView = VK_NULL_HANDLE;
     }
-    if (captureDepthImage  != VK_NULL_HANDLE) { app->destroyImageWithVma(captureDepthImage, captureDepthAllocation, captureDepthMemory); captureDepthImage = VK_NULL_HANDLE; captureDepthAllocation = VK_NULL_HANDLE; captureDepthMemory = VK_NULL_HANDLE; }
+    if (captureDepthImage  != VK_NULL_HANDLE) { app->destroyImageWithVma(captureDepthImage, captureDepthAllocation, captureDepthMemory); }
 
-    // Capture inv VP storage buffer (VMA-managed, cleared to avoid double-free).
     captureInvVPMapped = nullptr;
-    captureInvVPBuffer = VK_NULL_HANDLE;
-    captureInvVPMemory = VK_NULL_HANDLE;
 
     capturedTypes = 0;
     initDone = false;
@@ -245,12 +205,12 @@ void ImpostorCapture::capture(VulkanApp* app,
     // Layer range for this billboard type.
     const uint32_t layerBase = billboardType * NUM_VIEWS;
 
-    // Remove old ImGui descriptors for this type before overwriting images.
+    // Remove old descriptor sets for this type before overwriting images.
     for (uint32_t v = 0; v < NUM_VIEWS; ++v) {
-        VkDescriptorSet& ds = imguiDescSets[layerBase + v];
-        if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); ds = VK_NULL_HANDLE; }
-        VkDescriptorSet& dsN = imguiNormalDescSets[layerBase + v];
-        if (dsN != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(dsN); dsN = VK_NULL_HANDLE; }
+        VkDescriptorSet ds = imguiDescSets[layerBase + v];
+        if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); imguiDescSets[layerBase + v] = VK_NULL_HANDLE; }
+        VkDescriptorSet dsN = imguiNormalDescSets[layerBase + v];
+        if (dsN != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(dsN); imguiNormalDescSets[layerBase + v] = VK_NULL_HANDLE; }
     }
 
     // Update the texture descriptor set with current billboard arrays.

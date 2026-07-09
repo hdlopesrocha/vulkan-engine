@@ -229,6 +229,4 @@ void WireframeRenderer::draw(VkCommandBuffer cmd,
 }
 
 void WireframeRenderer::cleanup() {
-    wireframePipeline = VK_NULL_HANDLE;
-    wireframePipelineLayout = VK_NULL_HANDLE;
 }

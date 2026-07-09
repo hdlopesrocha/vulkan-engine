@@ -1,5 +1,6 @@
 #pragma once
 #include "../VulkanApp.hpp"
+#include "../TrackedHandle.hpp"
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
 #include "WaterRenderer.hpp"
@@ -58,17 +59,17 @@ private:
     static constexpr uint32_t CUBE360_FACE_SIZE = 512;
 
     // Deferred depth test pipelines
-    VkPipeline depthOnlyPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout depthOnlyPipelineLayout = VK_NULL_HANDLE;
-    VkPipeline equalComparePipeline = VK_NULL_HANDLE;
-    VkPipelineLayout equalComparePipelineLayout = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> depthOnlyPipeline;
+    TrackedHandle<VkPipelineLayout> depthOnlyPipelineLayout;
+    TrackedHandle<VkPipeline> equalComparePipeline;
+    TrackedHandle<VkPipelineLayout> equalComparePipelineLayout;
 
     VkImage cube360ColorImage = VK_NULL_HANDLE;
     VmaAllocation cube360ColorAllocation = VK_NULL_HANDLE;
     VkDeviceMemory cube360ColorMemory = VK_NULL_HANDLE;
     std::array<VkImageView, 6> cube360FaceViews = {};
     VkImageView cube360CubeView = VK_NULL_HANDLE;
-    VkSampler solid360Sampler = VK_NULL_HANDLE;
+    TrackedHandle<VkSampler> solid360Sampler;
 
     VkImage cube360DummyColorImage = VK_NULL_HANDLE;
     VmaAllocation cube360DummyColorAllocation = VK_NULL_HANDLE;

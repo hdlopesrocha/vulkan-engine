@@ -40,35 +40,7 @@ void ShadowRenderer::cleanup(VulkanApp* app) {
             app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
             cascades[i].imguiDescSet = VK_NULL_HANDLE;
         }
-        cascades[i].colorView = VK_NULL_HANDLE;
-        cascades[i].colorImage = VK_NULL_HANDLE;
-        cascades[i].colorAllocation = VK_NULL_HANDLE;
-        cascades[i].colorMemory = VK_NULL_HANDLE;
-        cascades[i].depthView = VK_NULL_HANDLE;
-        cascades[i].depthImage = VK_NULL_HANDLE;
-        cascades[i].depthAllocation = VK_NULL_HANDLE;
-        cascades[i].depthMemory = VK_NULL_HANDLE;
     }
-
-    shadowMapSampler = VK_NULL_HANDLE;
-    dummyColorView = VK_NULL_HANDLE;
-    dummyColorImage = VK_NULL_HANDLE;
-    dummyColorAllocation = VK_NULL_HANDLE;
-    dummyColorMemory = VK_NULL_HANDLE;
-    shadowPipeline = VK_NULL_HANDLE;
-    shadowPipelineLayout = VK_NULL_HANDLE;
-
-    // Blur resources cleared; central manager handles destruction
-    blurPipeline = VK_NULL_HANDLE;
-    blurPipelineLayout = VK_NULL_HANDLE;
-    blurDescSetLayout = VK_NULL_HANDLE;
-    blurDescPool = VK_NULL_HANDLE;
-    for (auto& ds : blurHorizontalDS) ds = VK_NULL_HANDLE;
-    blurVerticalDS = VK_NULL_HANDLE;
-    blurTempView = VK_NULL_HANDLE;
-    blurTempImage = VK_NULL_HANDLE;
-    blurTempAllocation = VK_NULL_HANDLE;
-    blurTempMemory = VK_NULL_HANDLE;
 }
 
 void ShadowRenderer::createShadowMaps(VulkanApp* app) {

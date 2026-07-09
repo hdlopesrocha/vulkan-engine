@@ -205,17 +205,10 @@ void DebugSDFRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptor
 }
 
 void DebugSDFRenderer::cleanup() {
-    pipeline = VK_NULL_HANDLE;
-    pipelineLayout = VK_NULL_HANDLE;
-    vertModule = VK_NULL_HANDLE;
-    fragModule = VK_NULL_HANDLE;
     vertexBuffer = {};
     indexBuffer = {};
-    indexCount = 0;
-    descriptorSetLayout = VK_NULL_HANDLE;
-    descriptorPool = VK_NULL_HANDLE;
-    descriptorSet = VK_NULL_HANDLE;
     instanceBuffer = {};
+    indexCount = 0;
     instanceBufferCapacity = 0;
     activeCubes.clear();
 }

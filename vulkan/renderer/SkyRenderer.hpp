@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../VulkanApp.hpp"
+#include "../TrackedHandle.hpp"
 #include "../VertexBufferObject.hpp"
 #include "../SkySphere.hpp"
 #include "../VertexBufferObjectBuilder.hpp"
@@ -59,13 +60,13 @@ public:
     Buffer getSkyUniformBuffer() const;
 
 private:
-    VkPipeline skyPipeline = VK_NULL_HANDLE;        // Gradient sky pipeline
-    VkPipelineLayout skyPipelineLayout = VK_NULL_HANDLE;
-    VkPipeline skyGridPipeline = VK_NULL_HANDLE;   // Grid sky pipeline
-    VkPipelineLayout skyGridPipelineLayout = VK_NULL_HANDLE;
-    VkShaderModule skyVertModule = VK_NULL_HANDLE;
-    VkShaderModule skyFragModule = VK_NULL_HANDLE;
-    VkShaderModule skyGridFragModule = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> skyPipeline;
+    TrackedHandle<VkPipelineLayout> skyPipelineLayout;
+    TrackedHandle<VkPipeline> skyGridPipeline;
+    TrackedHandle<VkPipelineLayout> skyGridPipelineLayout;
+    TrackedHandle<VkShaderModule> skyVertModule;
+    TrackedHandle<VkShaderModule> skyFragModule;
+    TrackedHandle<VkShaderModule> skyGridFragModule;
     // Owned sky sphere and VBO
     std::unique_ptr<SkySphere> skySphere;
     VertexBufferObject skyVBO;
@@ -78,10 +79,10 @@ private:
     std::array<VkImageLayout, 2> skyColorLayouts = {VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
 
     // Equirect pipeline (fullscreen triangle, no vertex input, no depth)
-    VkPipeline skyEquirectPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout skyEquirectPipelineLayout = VK_NULL_HANDLE;
-    VkShaderModule skyEquirectVertModule = VK_NULL_HANDLE;
-    VkShaderModule skyEquirectFragModule = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> skyEquirectPipeline;
+    TrackedHandle<VkPipelineLayout> skyEquirectPipelineLayout;
+    TrackedHandle<VkShaderModule> skyEquirectVertModule;
+    TrackedHandle<VkShaderModule> skyEquirectFragModule;
 
     uint32_t offscreenWidth = 0;
     uint32_t offscreenHeight = 0;

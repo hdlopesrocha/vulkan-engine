@@ -315,25 +315,10 @@ void DebugCubeRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescripto
 }
 
 void DebugCubeRenderer::cleanup() {
-    // Destruction of Vulkan objects is centralized in VulkanResourceManager.
-    // Clear local handles to avoid accidental use; actual destroys happen
-    // during `resources.cleanup(device)`.
-    pipeline = VK_NULL_HANDLE;
-    instanceBuffer.buffer = VK_NULL_HANDLE;
-    instanceBuffer.memory = VK_NULL_HANDLE;
-    pipelineLayout = VK_NULL_HANDLE;
-    vertModule = VK_NULL_HANDLE;
-    fragModule = VK_NULL_HANDLE;
-    gridTextureSampler = VK_NULL_HANDLE;
-    gridTextureView = VK_NULL_HANDLE;
-    gridTextureImage = VK_NULL_HANDLE;
-    gridTextureAllocation = VK_NULL_HANDLE;
-    gridTextureMemory = VK_NULL_HANDLE;
-    gridDescriptorSetLayout = VK_NULL_HANDLE;
-    gridDescriptorPool = VK_NULL_HANDLE;
     cubeVBO.vertexBuffer.buffer = VK_NULL_HANDLE;
     cubeVBO.vertexBuffer.memory = VK_NULL_HANDLE;
     cubeVBO.indexBuffer.buffer = VK_NULL_HANDLE;
     cubeVBO.indexBuffer.memory = VK_NULL_HANDLE;
     cubeVBO.indexCount = 0;
+    instanceBuffer = {};
 }

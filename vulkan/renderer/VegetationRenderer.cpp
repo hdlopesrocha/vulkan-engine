@@ -28,40 +28,17 @@ void VegetationRenderer::init() {
 
 
 void VegetationRenderer::cleanup() {
-    // Collect IDs first to avoid erasing while iterating
     std::vector<NodeID> idsToDestroy;
     idsToDestroy.reserve(chunkBuffers.size());
     for (const auto& [id, _] : chunkBuffers) idsToDestroy.push_back(id);
     for (NodeID id : idsToDestroy) destroyInstanceBuffer(id);
     chunkBuffers.clear();
     chunkInstanceCounts.clear();
-    // Clear local handles; central manager handles destruction of Vulkan objects
-    vegetationPipeline = VK_NULL_HANDLE;
-    vegetationDepthPipeline = VK_NULL_HANDLE;
-    vegetationDepthPipelineLayout = VK_NULL_HANDLE;
-    pipelineLayout = VK_NULL_HANDLE;
-    vegetationShadowPipeline = VK_NULL_HANDLE;
-    shadowPipelineLayout = VK_NULL_HANDLE;
-    descriptorSetLayout = VK_NULL_HANDLE;
-    // Clear impostor resources (also tracked by central manager).
-    impostorPipeline       = VK_NULL_HANDLE;
-    impostorPipelineLayout = VK_NULL_HANDLE;
-    impostorDescSetLayout  = VK_NULL_HANDLE;
-    impostorDescPool       = VK_NULL_HANDLE;
-    impostorDescSet        = VK_NULL_HANDLE;
-    // Free and reset vegetation descriptor set handle locally
-    vegDescriptorSet = VK_NULL_HANDLE;
     vegDescriptorVersion = 0;
-    // Unregister allocation listener if set
     if (vegetationTextureArrayManager && vegTextureListenerId != -1) {
         vegetationTextureArrayManager->removeAllocationListener(vegTextureListenerId);
         vegTextureListenerId = -1;
     }
-    // Clear stored app pointer and billboard VBO handles
-    billboardAlbedoView   = VK_NULL_HANDLE;
-    billboardNormalView   = VK_NULL_HANDLE;
-    billboardOpacityView  = VK_NULL_HANDLE;
-    billboardArraySampler = VK_NULL_HANDLE;
     billboardVBO.vertexBuffer.buffer = VK_NULL_HANDLE;
     billboardVBO.vertexBuffer.memory = VK_NULL_HANDLE;
     billboardVBO.indexBuffer.buffer = VK_NULL_HANDLE;
@@ -77,8 +54,6 @@ void VegetationRenderer::cleanup() {
         windParamsBuffer = {};
         windParamsMapped = nullptr;
     }
-    windParamsDescSetLayout = VK_NULL_HANDLE;
-    windParamsDescSet = VK_NULL_HANDLE;
     destroyCulling();
     appPtr = nullptr;
 }
@@ -105,19 +80,12 @@ void VegetationRenderer::destroyCulling() {
             appPtr->destroyBuffer(visibleCountBuffers[f]);
             visibleCountBuffers[f] = {};
         }
-        vegCullDescSets[f] = VK_NULL_HANDLE;
     }
     if (vegCullDescPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(device, vegCullDescPool, nullptr);
-        vegCullDescPool = VK_NULL_HANDLE;
     }
-    // Pipeline and layouts are tracked by central manager — just clear handles
-    vegCullPipeline = VK_NULL_HANDLE;
-    vegCullPipelineLayout = VK_NULL_HANDLE;
-    vegCullDescSetLayout = VK_NULL_HANDLE;
     if (consolidationFence != VK_NULL_HANDLE) {
         vkWaitForFences(device, 1, &consolidationFence, VK_TRUE, UINT64_MAX);
-        consolidationFence = VK_NULL_HANDLE;
     }
     pendingMeta.clear();
     pendingMetaSize = 0;
@@ -189,7 +157,7 @@ void VegetationRenderer::initCulling(VulkanApp* app) {
         "VegetationCull: descPool");
 
     descAlloc.allocateSets(vegCullDescPool, vegCullDescSetLayout,
-                           VEG_CULL_FRAMES, vegCullDescSets.data());
+                           VEG_CULL_FRAMES, reinterpret_cast<VkDescriptorSet*>(vegCullDescSets.data()));
 }
 
 void VegetationRenderer::consolidateChunks(VulkanApp* app) {

@@ -1,5 +1,6 @@
 #pragma once
 #include "../VulkanApp.hpp"
+#include "../TrackedHandle.hpp"
 #include "../TextureArrayManager.hpp"
 #include "../EditableTexture.hpp"
 #include "../../math/Vertex.hpp"
@@ -156,31 +157,31 @@ public:
 
 private:
     
-    VkPipeline vegetationPipeline = VK_NULL_HANDLE;          // shading pass (depthWrite=false, EQUAL)
-    VkPipeline vegetationDepthPipeline = VK_NULL_HANDLE;     // depth-only prepass
-    VkPipelineLayout vegetationDepthPipelineLayout = VK_NULL_HANDLE;
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline vegetationShadowPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> vegetationPipeline;
+    TrackedHandle<VkPipeline> vegetationDepthPipeline;
+    TrackedHandle<VkPipelineLayout> vegetationDepthPipelineLayout;
+    TrackedHandle<VkPipelineLayout> pipelineLayout;
+    TrackedHandle<VkPipeline> vegetationShadowPipeline;
+    TrackedHandle<VkPipelineLayout> shadowPipelineLayout;
+    TrackedHandle<VkDescriptorSetLayout> descriptorSetLayout;
     TextureArrayManager* vegetationTextureArrayManager = nullptr;
     VkImageView billboardAlbedoView   = VK_NULL_HANDLE;
     VkImageView billboardNormalView   = VK_NULL_HANDLE;
     VkImageView billboardOpacityView  = VK_NULL_HANDLE;
-    VkSampler   billboardArraySampler = VK_NULL_HANDLE;
+    TrackedHandle<VkSampler> billboardArraySampler;
 
     // Descriptor set allocated from the app's descriptor pool and re-created when the texture arrays are (re)allocated
-    VkDescriptorSet vegDescriptorSet = VK_NULL_HANDLE;
+    TrackedHandle<VkDescriptorSet> vegDescriptorSet;
     uint32_t vegDescriptorVersion = 0;
     bool ensureVegDescriptorSet(VulkanApp* app);
     // Listener id returned from TextureArrayManager::addAllocationListener(), -1 if none
     int vegTextureListenerId = -1;
 
     struct InstanceBuffer {
-        VkBuffer buffer = VK_NULL_HANDLE; // instance data
+        VkBuffer buffer = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VmaAllocation allocation = VK_NULL_HANDLE;
-        VkBuffer indirectBuffer = VK_NULL_HANDLE; // indirect draw command
+        VkBuffer indirectBuffer = VK_NULL_HANDLE;
         VkDeviceMemory indirectMemory = VK_NULL_HANDLE;
         VmaAllocation indirectAllocation = VK_NULL_HANDLE;
         glm::vec3 center = glm::vec3(0.0f);
@@ -223,29 +224,29 @@ private:
     float windTimeSeconds = 0.0f;
 
     // Impostor pipeline resources (populated via setImpostorData).
-    VkPipeline            impostorPipeline       = VK_NULL_HANDLE;
-    VkPipelineLayout      impostorPipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout impostorDescSetLayout  = VK_NULL_HANDLE;
-    VkDescriptorPool      impostorDescPool       = VK_NULL_HANDLE;
-    VkDescriptorSet       impostorDescSet        = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> impostorPipeline;
+    TrackedHandle<VkPipelineLayout> impostorPipelineLayout;
+    TrackedHandle<VkDescriptorSetLayout> impostorDescSetLayout;
+    TrackedHandle<VkDescriptorPool> impostorDescPool;
+    TrackedHandle<VkDescriptorSet> impostorDescSet;
 
     // Impostor depth pipeline (shadow map depth-only pass).
-    VkPipeline            impostorDepthPipeline       = VK_NULL_HANDLE;
-    VkPipelineLayout      impostorDepthPipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout impostorDepthDescSetLayout  = VK_NULL_HANDLE;
-    VkDescriptorPool      impostorDepthDescPool       = VK_NULL_HANDLE;
-    VkDescriptorSet       impostorDepthDescSet        = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> impostorDepthPipeline;
+    TrackedHandle<VkPipelineLayout> impostorDepthPipelineLayout;
+    TrackedHandle<VkDescriptorSetLayout> impostorDepthDescSetLayout;
+    TrackedHandle<VkDescriptorPool> impostorDepthDescPool;
+    TrackedHandle<VkDescriptorSet> impostorDepthDescSet;
     // Impostor EVSM shadow pipeline (color + depth write, uses impostors_shadow.frag)
-    VkPipeline            impostorShadowPipeline       = VK_NULL_HANDLE;
-    VkPipelineLayout      impostorShadowPipelineLayout = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> impostorShadowPipeline;
+    TrackedHandle<VkPipelineLayout> impostorShadowPipelineLayout;
 
     float                 impostorDistance       = 0.0f;
-    VkRenderPass          storedSolidRenderPass  = VK_NULL_HANDLE;
+    VkRenderPass storedSolidRenderPass = VK_NULL_HANDLE;
 
     // Wind params UBO (set=2, binding=0) — updated once per frame.
-    Buffer                windParamsBuffer       = {};
-    VkDescriptorSetLayout windParamsDescSetLayout = VK_NULL_HANDLE;
-    VkDescriptorSet       windParamsDescSet      = VK_NULL_HANDLE;
+    Buffer                windParamsBuffer;
+    TrackedHandle<VkDescriptorSetLayout> windParamsDescSetLayout;
+    TrackedHandle<VkDescriptorSet> windParamsDescSet;
     void*                 windParamsMapped       = nullptr;
 
     // ── GPU frustum culling (indirection via concatenated instance buffer) ──────
@@ -269,11 +270,11 @@ private:
     mutable std::array<VkDrawIndexedIndirectCommand*, VEG_CULL_FRAMES> compactedCmdMapped = {nullptr, nullptr, nullptr};
 
     // Culling compute pipeline
-    VkPipeline            vegCullPipeline       = VK_NULL_HANDLE;
-    VkPipelineLayout      vegCullPipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout vegCullDescSetLayout  = VK_NULL_HANDLE;
-    VkDescriptorPool      vegCullDescPool       = VK_NULL_HANDLE;
-    std::array<VkDescriptorSet, VEG_CULL_FRAMES> vegCullDescSets = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    TrackedHandle<VkPipeline> vegCullPipeline;
+    TrackedHandle<VkPipelineLayout> vegCullPipelineLayout;
+    TrackedHandle<VkDescriptorSetLayout> vegCullDescSetLayout;
+    TrackedHandle<VkDescriptorPool> vegCullDescPool;
+    std::array<TrackedHandle<VkDescriptorSet>, VEG_CULL_FRAMES> vegCullDescSets;
 
     uint32_t vegNumChunks = 0;             // number of chunks in the consolidated metadata
     uint32_t vegCullFrameIndex = 0;        // auto-cycling frame index for triple buffering
@@ -281,7 +282,7 @@ private:
     bool vegConsolidationDirty = true;     // rebuild concatenated buffer + metadata
 
     // Pipelined consolidation: deferred callback handles fence lifecycle
-    VkFence consolidationFence = VK_NULL_HANDLE;
+    TrackedHandle<VkFence> consolidationFence;
     std::vector<ChunkMeta> pendingMeta;
     VkDeviceSize pendingMetaSize = 0;
     bool consolidationPending = false;

@@ -2,6 +2,7 @@
 
 #include "../Buffer.hpp"
 #include "../VulkanApp.hpp"
+#include "../TrackedHandle.hpp"
 #include "../../math/BoundingCube.hpp"
 #include <array>
 #include <cstdint>
@@ -32,18 +33,18 @@ private:
         uint32_t cornerIndex;
     };
 
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkShaderModule vertModule = VK_NULL_HANDLE;
-    VkShaderModule fragModule = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> pipeline;
+    TrackedHandle<VkPipelineLayout> pipelineLayout;
+    TrackedHandle<VkShaderModule> vertModule;
+    TrackedHandle<VkShaderModule> fragModule;
 
     Buffer vertexBuffer;
     Buffer indexBuffer;
     uint32_t indexCount = 0;
 
-    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    TrackedHandle<VkDescriptorSetLayout> descriptorSetLayout;
+    TrackedHandle<VkDescriptorPool> descriptorPool;
+    TrackedHandle<VkDescriptorSet> descriptorSet;
     Buffer instanceBuffer;
     uint32_t instanceBufferCapacity = 0;
 

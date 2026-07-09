@@ -135,20 +135,6 @@ void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet d
 }
 
 void SkyRenderer::cleanup() {
-    // Clear local handles; actual destruction is handled by VulkanResourceManager
-    skyPipeline = VK_NULL_HANDLE;
-    skyGridPipeline = VK_NULL_HANDLE;
-    skyVertModule = VK_NULL_HANDLE;
-    skyFragModule = VK_NULL_HANDLE;
-    skyGridFragModule = VK_NULL_HANDLE;
-
-    // Offscreen equirect pipeline handles
-    skyEquirectPipeline = VK_NULL_HANDLE;
-    skyEquirectPipelineLayout = VK_NULL_HANDLE;
-    skyEquirectVertModule = VK_NULL_HANDLE;
-    skyEquirectFragModule = VK_NULL_HANDLE;
-
-    // Cleanup sky sphere and VBO handles
     if (skySphere) {
         skySphere->cleanup();
         skySphere.reset();

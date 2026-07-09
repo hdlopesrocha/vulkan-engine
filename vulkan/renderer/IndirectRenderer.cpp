@@ -128,9 +128,7 @@ void IndirectRenderer::init() {
 }
 
 void IndirectRenderer::cleanup() {
-    // meshes no longer own per-mesh buffers; clear CPU lists
     meshes.clear();
-    // Clear local handles; destruction is centralized in VulkanResourceManager.
     vertexBuffer = {};
     indexBuffer = {};
     indirectBuffer = {};
@@ -138,16 +136,11 @@ void IndirectRenderer::cleanup() {
     boundsBuffer = {};
     for (uint32_t f = 0; f < MAX_CULL_FRAMES; f++) {
         if (visibleCountMapped[f] && storedDevice != VK_NULL_HANDLE) {
-            visibleCountBuffers[f].unmap(); // VMA persistent mapping
+            visibleCountBuffers[f].unmap();
             visibleCountMapped[f] = nullptr;
         }
         visibleCountBuffers[f] = {};
     }
-
-    computePipeline = VK_NULL_HANDLE;
-    computePipelineLayout = VK_NULL_HANDLE;
-    computeDescriptorSetLayout = VK_NULL_HANDLE;
-    computeDescriptorPool = VK_NULL_HANDLE;
 }
 
 uint32_t IndirectRenderer::addMesh(const Geometry& mesh) {
@@ -855,7 +848,7 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             "IndirectRenderer: computeDescriptorPool");
 
         descAlloc.allocateSets(computeDescriptorPool, computeDescriptorSetLayout,
-                               MAX_CULL_FRAMES, computeDescriptorSets.data(),
+                               MAX_CULL_FRAMES, reinterpret_cast<VkDescriptorSet*>(computeDescriptorSets.data()),
                                "IndirectRenderer: computeDescriptorSet");
     }
 

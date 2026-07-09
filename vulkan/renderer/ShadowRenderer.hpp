@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../vulkan.hpp"
+#include "../TrackedHandle.hpp"
 #include <array>
 #include "../ubo/UniformObject.hpp"
 #include "CommandBufferState.hpp"
@@ -49,12 +50,12 @@ private:
         VmaAllocation depthAllocation = VK_NULL_HANDLE;
         VkDeviceMemory depthMemory = VK_NULL_HANDLE;
         VkImageView depthView = VK_NULL_HANDLE;
-        VkDescriptorSet imguiDescSet = VK_NULL_HANDLE;
+        TrackedHandle<VkDescriptorSet> imguiDescSet;
     };
     CascadeResources cascades[SHADOW_CASCADE_COUNT];
 
     // Shared sampler for all cascades (LINEAR filtering for EVSM)
-    VkSampler shadowMapSampler = VK_NULL_HANDLE;
+    TrackedHandle<VkSampler> shadowMapSampler;
 
     // Dummy 1x1 RGBA32F image kept in SHADER_READ_ONLY layout for shadow pass descriptor set bindings
     VkImage dummyColorImage = VK_NULL_HANDLE;
@@ -63,18 +64,18 @@ private:
     VkImageView dummyColorView = VK_NULL_HANDLE;
 
     // Shadow pipeline (writes EVSM moments to color)
-    VkPipeline shadowPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> shadowPipeline;
+    TrackedHandle<VkPipelineLayout> shadowPipelineLayout;
 
     // Blur resources
-    VkPipeline blurPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout blurPipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout blurDescSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool blurDescPool = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> blurPipeline;
+    TrackedHandle<VkPipelineLayout> blurPipelineLayout;
+    TrackedHandle<VkDescriptorSetLayout> blurDescSetLayout;
+    TrackedHandle<VkDescriptorPool> blurDescPool;
     // One descriptor set per cascade for horizontal blur (reads cascade color image)
     // + one shared for vertical blur (reads blurTemp)
-    VkDescriptorSet blurHorizontalDS[SHADOW_CASCADE_COUNT] = {};
-    VkDescriptorSet blurVerticalDS = VK_NULL_HANDLE;
+    TrackedHandle<VkDescriptorSet> blurHorizontalDS[SHADOW_CASCADE_COUNT];
+    TrackedHandle<VkDescriptorSet> blurVerticalDS;
     // Temporary image for separable blur ping-pong
     VkImage blurTempImage = VK_NULL_HANDLE;
     VmaAllocation blurTempAllocation = VK_NULL_HANDLE;

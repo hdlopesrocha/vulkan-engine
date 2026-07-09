@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../VulkanApp.hpp"
+#include "../TrackedHandle.hpp"
 #include "IndirectRenderer.hpp"
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
@@ -164,45 +165,45 @@ private:
     // Scene offscreen render target (render main scene here before water)
     // Per-frame offscreen render targets for main scene (color + depth) - 2 frames in flight
     static constexpr uint32_t FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
-    std::array<VkImage, FRAMES> sceneColorImages;
-    std::array<VmaAllocation, FRAMES> sceneColorAllocations;
-    std::array<VkDeviceMemory, FRAMES> sceneColorMemories;
-    std::array<VkImageView, FRAMES> sceneColorImageViews;
-    std::array<VkImage, FRAMES> sceneDepthImages;
-    std::array<VmaAllocation, FRAMES> sceneDepthAllocations;
-    std::array<VkDeviceMemory, FRAMES> sceneDepthMemories;
-    std::array<VkImageView, FRAMES> sceneDepthImageViews;
-    std::array<VkImage, FRAMES> waterDepthImages;
-    std::array<VmaAllocation, FRAMES> waterDepthAllocations;
-    std::array<VkDeviceMemory, FRAMES> waterDepthMemories;
-    std::array<VkImageView, FRAMES> waterDepthImageViews;
-    std::array<VkImageView, FRAMES> waterDepthAlphaImageViews;
-    std::array<VkImage, FRAMES> waterGeomDepthImages;
-    std::array<VmaAllocation, FRAMES> waterGeomDepthAllocations;
-    std::array<VkDeviceMemory, FRAMES> waterGeomDepthMemories;
-    std::array<VkImageView, FRAMES> waterGeomDepthImageViews;
+    std::array<VkImage, FRAMES> sceneColorImages = {};
+    std::array<VmaAllocation, FRAMES> sceneColorAllocations = {};
+    std::array<VkDeviceMemory, FRAMES> sceneColorMemories = {};
+    std::array<VkImageView, FRAMES> sceneColorImageViews = {};
+    std::array<VkImage, FRAMES> sceneDepthImages = {};
+    std::array<VmaAllocation, FRAMES> sceneDepthAllocations = {};
+    std::array<VkDeviceMemory, FRAMES> sceneDepthMemories = {};
+    std::array<VkImageView, FRAMES> sceneDepthImageViews = {};
+    std::array<VkImage, FRAMES> waterDepthImages = {};
+    std::array<VmaAllocation, FRAMES> waterDepthAllocations = {};
+    std::array<VkDeviceMemory, FRAMES> waterDepthMemories = {};
+    std::array<VkImageView, FRAMES> waterDepthImageViews = {};
+    std::array<VkImageView, FRAMES> waterDepthAlphaImageViews = {};
+    std::array<VkImage, FRAMES> waterGeomDepthImages = {};
+    std::array<VmaAllocation, FRAMES> waterGeomDepthAllocations = {};
+    std::array<VkDeviceMemory, FRAMES> waterGeomDepthMemories = {};
+    std::array<VkImageView, FRAMES> waterGeomDepthImageViews = {};
 
     // Pipelines
-    VkPipeline waterGeometryPipeline = VK_NULL_HANDLE;
-    VkPipeline waterDepthPrePassPipeline = VK_NULL_HANDLE;
-    VkPipeline cubemapWaterPipeline = VK_NULL_HANDLE;
+    TrackedHandle<VkPipeline> waterGeometryPipeline;
+    TrackedHandle<VkPipeline> waterDepthPrePassPipeline;
+    TrackedHandle<VkPipeline> cubemapWaterPipeline;
     
     // Water geometry pipeline layout (includes depth texture binding)
-    VkPipelineLayout waterGeometryPipelineLayout = VK_NULL_HANDLE;
+    TrackedHandle<VkPipelineLayout> waterGeometryPipelineLayout;
 
     // Descriptor set for water geometry (scene depth texture)
-    VkDescriptorSetLayout waterDepthDescriptorSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool waterDepthDescriptorPool = VK_NULL_HANDLE;
+    TrackedHandle<VkDescriptorSetLayout> waterDepthDescriptorSetLayout;
+    TrackedHandle<VkDescriptorPool> waterDepthDescriptorPool;
     // Per-frame descriptor sets for scene textures (3 frames in flight)
-    std::array<VkDescriptorSet, FRAMES> waterDepthDescriptorSets = {};
+    std::array<TrackedHandle<VkDescriptorSet>, FRAMES> waterDepthDescriptorSets;
 
     // Cubemap water pass resources
-    VkDescriptorSet cubemapWaterDepthDS = VK_NULL_HANDLE; // set 2 descriptor for cubemap water pass
-    VkImage cubemapDummyDepthImage = VK_NULL_HANDLE;      // depth image cleared to far plane
+    TrackedHandle<VkDescriptorSet> cubemapWaterDepthDS;
+    VkImage cubemapDummyDepthImage = VK_NULL_HANDLE;
     VmaAllocation cubemapDummyDepthAllocation = VK_NULL_HANDLE;
     VkDeviceMemory cubemapDummyDepthMemory = VK_NULL_HANDLE;
     VkImageView cubemapDummyDepthView = VK_NULL_HANDLE;
-    VkImage cubemapDummyCubeImage = VK_NULL_HANDLE;       // dummy cubemap to avoid feedback
+    VkImage cubemapDummyCubeImage = VK_NULL_HANDLE;
     VmaAllocation cubemapDummyCubeAllocation = VK_NULL_HANDLE;
     VkDeviceMemory cubemapDummyCubeMemory = VK_NULL_HANDLE;
     VkImageView cubemapDummyCubeView = VK_NULL_HANDLE;
@@ -215,8 +216,8 @@ private:
     VulkanApp* appPtr = nullptr;
 
     // Samplers
-    VkSampler linearSampler = VK_NULL_HANDLE;
-    VkSampler nearestSampler = VK_NULL_HANDLE;
+    TrackedHandle<VkSampler> linearSampler;
+    TrackedHandle<VkSampler> nearestSampler;
 
     // Whether a cubemap reflection is currently available (set by SceneRenderer)
     bool cube360Available = false;

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "../VulkanApp.hpp"
+#include "../TrackedHandle.hpp"
 #include "../../math/Geometry.hpp"
 #include <glm/glm.hpp>
 #include <vector>
@@ -185,11 +186,11 @@ private:
     VkDevice storedDevice = VK_NULL_HANDLE;
 
     // Compute pipeline objects for GPU culling
-    VkPipeline computePipeline = VK_NULL_HANDLE;
-    VkPipelineLayout computePipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout computeDescriptorSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool computeDescriptorPool = VK_NULL_HANDLE;
-    std::array<VkDescriptorSet, MAX_CULL_FRAMES> computeDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    TrackedHandle<VkPipeline> computePipeline;
+    TrackedHandle<VkPipelineLayout> computePipelineLayout;
+    TrackedHandle<VkDescriptorSetLayout> computeDescriptorSetLayout;
+    TrackedHandle<VkDescriptorPool> computeDescriptorPool;
+    std::array<TrackedHandle<VkDescriptorSet>, MAX_CULL_FRAMES> computeDescriptorSets;
 
     // Optional device function for indirect-count draw (KHR or core 1.2)
     PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
