@@ -108,12 +108,9 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
     });
 
     // Schedule ring buffer region release via deferred destruction
-    {
-        VkDeviceSize off = stagingAlloc.offset;
-        deferDestroyUntilFence(fence, [this, off, sz = size]() {
-            stagingRing.release(off, sz);
-        });
-    }
+    deferDestroyUntilFence(fence, [this, alloc = stagingAlloc]() mutable {
+        stagingRing.release(alloc);
+    });
 
     gpuGuard.release();
 

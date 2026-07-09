@@ -59,6 +59,7 @@ StagingRingBuffer::Allocation StagingRingBuffer::allocate(VkDeviceSize size) {
         if (it->size >= alignedSize) {
             Allocation alloc;
             alloc.offset = it->offset;
+            alloc.size   = alignedSize;
             alloc.mappedPtr = static_cast<char*>(mappedPtr_) + it->offset;
 
             if (it->size == alignedSize) {
@@ -78,10 +79,11 @@ StagingRingBuffer::Allocation StagingRingBuffer::allocate(VkDeviceSize size) {
     return {};
 }
 
-void StagingRingBuffer::release(VkDeviceSize offset, VkDeviceSize size) {
-    if (size == 0) return;
-    const VkDeviceSize alignment = 16;
-    VkDeviceSize alignedSize = (size + alignment - 1) & ~(alignment - 1);
+void StagingRingBuffer::release(Allocation& alloc) {
+    if (alloc.released) return;
+    if (alloc.size == 0) return;
+    VkDeviceSize offset = alloc.offset;
+    VkDeviceSize alignedSize = alloc.size;
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (alignedSize > bytesInUse_) {
@@ -127,5 +129,6 @@ void StagingRingBuffer::release(VkDeviceSize offset, VkDeviceSize size) {
         freeList_.push_back({0, capacity_});
     }
 
+    alloc.released = true;
     cv_.notify_one();
 }

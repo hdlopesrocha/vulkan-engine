@@ -11,7 +11,9 @@ class StagingRingBuffer {
 public:
     struct Allocation {
         VkDeviceSize offset = 0;
+        VkDeviceSize size   = 0;
         void*        mappedPtr = nullptr;
+        bool         released = false;
     };
 
     StagingRingBuffer() = default;
@@ -20,7 +22,7 @@ public:
     void init(VmaAllocator vmaAllocator, VkDeviceSize size = 4 * 1024 * 1024);
     void cleanup();
     Allocation allocate(VkDeviceSize size);
-    void release(VkDeviceSize offset, VkDeviceSize size);
+    void release(Allocation& alloc);
 
     VkBuffer buffer() const { return ringBuffer_; }
 
