@@ -67,13 +67,13 @@ void IndirectRenderer::pollPendingTransfers(VulkanApp* app) {
     // If processPendingCommandBuffers already cleaned up the fence, the
     // transfer is done — skip vkGetFenceStatus on the destroyed handle.
     if (!app->resources.find((uintptr_t)pendingTransfer.fence).has_value()) {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::lock_guard<std::shared_mutex> lock(mutex);
         publishPendingTransfer(app);
         return;
     }
     VkResult r = vkGetFenceStatus(dev, pendingTransfer.fence);
     if (r == VK_NOT_READY) return;
-    std::lock_guard<std::mutex> lock(mutex);
+    std::lock_guard<std::shared_mutex> lock(mutex);
     publishPendingTransfer(app);
 }
 
@@ -111,13 +111,13 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
 }
 
 void IndirectRenderer::setVertexBufferForMesh(uint32_t meshId, Buffer vbuf) {
-    std::lock_guard<std::mutex> guard(mutex);
+    std::lock_guard<std::shared_mutex> guard(mutex);
     // For simplicity, just assign to the main vertexBuffer (per-mesh not tracked in this design)
     vertexBuffer = vbuf;
 }
 
 void IndirectRenderer::setIndexBufferForMesh(uint32_t meshId, Buffer ibuf) {
-    std::lock_guard<std::mutex> guard(mutex);
+    std::lock_guard<std::shared_mutex> guard(mutex);
     indexBuffer = ibuf;
 }
 
@@ -152,7 +152,7 @@ uint32_t IndirectRenderer::addMesh(const Geometry& mesh) {
 }
 
 uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
-    std::lock_guard<std::mutex> guard(mutex);
+    std::lock_guard<std::shared_mutex> guard(mutex);
     //std::cout << "[IndirectRenderer::addMesh] Adding/replacing mesh ID " << customId << " with " << mesh.vertices.size() << " vertices and " << mesh.indices.size() << " indices.\n";
 
     MeshInfo m{};
@@ -196,7 +196,7 @@ uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
 
 
 void IndirectRenderer::removeMesh(uint32_t meshId) {
-    std::lock_guard<std::mutex> guard(mutex);
+    std::lock_guard<std::shared_mutex> guard(mutex);
     auto it = meshes.find(meshId);
     if (it == meshes.end()) return;
     it->second.active = false;
@@ -204,7 +204,7 @@ void IndirectRenderer::removeMesh(uint32_t meshId) {
 }
 
 void IndirectRenderer::removeAllMeshes() {
-    std::lock_guard<std::mutex> guard(mutex);
+    std::lock_guard<std::shared_mutex> guard(mutex);
     meshes.clear();
     mergedVertices.clear();
     mergedIndices.clear();
@@ -214,7 +214,7 @@ void IndirectRenderer::removeAllMeshes() {
 }
 
 bool IndirectRenderer::ensureCapacity(size_t vertexCount, size_t indexCount, size_t meshCount) {
-    std::lock_guard<std::mutex> guard(mutex);
+    std::lock_guard<std::shared_mutex> guard(mutex);
     
     // Add 25% headroom for future growth
     size_t neededVertexCap = vertexCount + vertexCount / 4;
@@ -245,7 +245,7 @@ bool IndirectRenderer::ensureCapacity(size_t vertexCount, size_t indexCount, siz
 }
 
 bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t meshId) {
-    std::lock_guard<std::mutex> guard(mutex);
+    std::lock_guard<std::shared_mutex> guard(mutex);
     auto it = meshes.find(meshId);
     if (it == meshes.end()) {
         //printf("[IndirectRenderer::uploadMeshVerticesAndIndices] meshId %u not found\n", meshId);
@@ -416,12 +416,12 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
 }
 
 size_t IndirectRenderer::getMergedVertexCount() const {
-    std::lock_guard<std::mutex> guard(mutex);
+    std::shared_lock<std::shared_mutex> guard(mutex);
     return mergedVertices.size();
 }
 
 size_t IndirectRenderer::getMergedIndexCount() const {
-    std::lock_guard<std::mutex> guard(mutex);
+    std::shared_lock<std::shared_mutex> guard(mutex);
     return mergedIndices.size();
 }
 
@@ -435,7 +435,7 @@ bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
 
 // Write all mesh indirect/model/bounds buffers for all active meshes
 void IndirectRenderer::uploadMeshMetaBuffers(VulkanApp* app) {
-    std::lock_guard<std::mutex> guard(mutex);
+    std::lock_guard<std::shared_mutex> guard(mutex);
     doUploadMeshMetaBuffers(app);
 }
 
@@ -482,7 +482,7 @@ void IndirectRenderer::doUploadMeshMetaBuffers(VulkanApp* app) {
 }
 
 void IndirectRenderer::rebuild(VulkanApp* app) {
-    std::lock_guard<std::mutex> guard(mutex);
+    std::lock_guard<std::shared_mutex> guard(mutex);
 
     // Publish any pending async upload before rebuilding.
     if (pendingTransfer.fence != VK_NULL_HANDLE) {
@@ -1035,7 +1035,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &descSet, 0, nullptr);
     uint32_t numCmds = 0;
     {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::shared_lock<std::shared_mutex> lock(mutex);
         for (const auto& kv : meshes) if (kv.second.active) ++numCmds;
     }
     // Fast return if nothing to cull — avoids touching the pipeline at all
@@ -1109,7 +1109,7 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
 
     uint32_t numCmds = 0;
     {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::shared_lock<std::shared_mutex> lock(mutex);
         for (const auto& kv : meshes) if (kv.second.active) ++numCmds;
     }
     // Fast return if nothing to cull — avoids touching the pipeline at all
@@ -1183,7 +1183,7 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
 
     static int frameCount = 0;
     if (frameCount < 10) {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::shared_lock<std::shared_mutex> lock(mutex);
         //printf("[IndirectRenderer::drawPrepared] Frame %d: vertexBuffer=%p (verts=%zu), indexBuffer=%p (indices=%zu), drawCommands=%zu\n",
         //       frameCount, (void*)vertexBuffer.buffer, mergedVertices.size(),
         //       (void*)indexBuffer.buffer, mergedIndices.size(), indirectCommands.size());
@@ -1305,7 +1305,7 @@ uint32_t IndirectRenderer::readVisibleCount(VulkanApp* app) const {
 
 IndirectRenderer::MeshInfo IndirectRenderer::getMeshInfo(uint32_t meshId) const {
     IndirectRenderer::MeshInfo empty;
-    std::lock_guard<std::mutex> guard(mutex);
+    std::shared_lock<std::shared_mutex> guard(mutex);
     auto it = meshes.find(meshId);
     if (it == meshes.end()) return empty;
     return it->second;
@@ -1313,7 +1313,7 @@ IndirectRenderer::MeshInfo IndirectRenderer::getMeshInfo(uint32_t meshId) const 
 
 std::vector<IndirectRenderer::MeshInfo> IndirectRenderer::getActiveMeshInfos() const {
     std::vector<MeshInfo> out;
-    std::lock_guard<std::mutex> guard(mutex);
+    std::shared_lock<std::shared_mutex> guard(mutex);
     for (const auto& kv : meshes) {
         if (kv.second.active) out.push_back(kv.second);
     }
@@ -1325,7 +1325,7 @@ std::vector<IndirectRenderer::MeshInfo> IndirectRenderer::getActiveMeshInfos() c
 // an immediate host-write to the `indirectBuffer` (if present) to zero
 // the VkDrawIndexedIndirectCommand for the specified mesh id.
 void IndirectRenderer::eraseMeshFromGPU(VulkanApp* app, uint32_t meshId) {
-    std::lock_guard<std::mutex> guard(mutex);
+    std::lock_guard<std::shared_mutex> guard(mutex);
     auto it = meshes.find(meshId);
     if (it == meshes.end()) return;
     MeshInfo &info = it->second;

@@ -8,6 +8,7 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <shared_mutex>
 #include <cstdint>
 
 #include <array>
@@ -91,7 +92,7 @@ public:
     // still contain stale data from a previous scene.  Callers should force a
     // full rebuild instead of the incremental path.
     bool needsFullRebuild() const {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::shared_lock<std::shared_mutex> lock(mutex);
         return metaBuffersWrittenCount == 0 && !meshes.empty();
     }
 
@@ -133,7 +134,7 @@ public:
 
     // Get count of active meshes
     size_t getMeshCount() const {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::shared_lock<std::shared_mutex> lock(mutex);
         size_t count = 0;
         for (const auto& m : meshes) {
             if (m.second.active) ++count;
@@ -161,7 +162,7 @@ private:
     };
     PendingTransfer pendingTransfer = {};
 
-    mutable std::mutex mutex;
+    mutable std::shared_mutex mutex;
     void publishPendingTransfer(VulkanApp* app);
     // Unlocked variant — caller must hold mutex.
     void doUploadMeshMetaBuffers(VulkanApp* app);
