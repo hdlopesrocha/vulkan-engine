@@ -580,39 +580,38 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     printf("[SceneRenderer::init] mainDescriptorSet[0] = 0x%llx\n", (unsigned long long)mainDs);
 
     // Initialize sky renderer with our owned settings now that descriptor sets are ready.
-    // Must write Sky UBO to ALL per-frame descriptor sets, not just frame 0.
+    // Write Sky UBO to the static descriptor set once; all per-frame descriptor sets
+    // will get binding 6 via the copy loop below.
     if (skyRenderer) {
-        skyRenderer->init(app, *skySettings, mainDs);
-        // Write Sky UBO to remaining per-frame descriptor sets
-        for (uint32_t i = 1; i < static_cast<uint32_t>(app->getMainDescriptorSetCount()); ++i) {
-            VkDescriptorSet ds = app->getMainDescriptorSetForFrame(i);
-            if (ds != VK_NULL_HANDLE) {
-                skyRenderer->init(app, *skySettings, ds);
+        VkDescriptorSet staticDs = app->getStaticDescriptorSet();
+        if (staticDs != VK_NULL_HANDLE) {
+            skyRenderer->init(app, *skySettings, staticDs);
+        } else {
+            skyRenderer->init(app, *skySettings, mainDs);
+            for (uint32_t i = 1; i < static_cast<uint32_t>(app->getMainDescriptorSetCount()); ++i) {
+                VkDescriptorSet ds = app->getMainDescriptorSetForFrame(i);
+                if (ds != VK_NULL_HANDLE) {
+                    skyRenderer->init(app, *skySettings, ds);
+                }
             }
         }
     }
     
-    // Prepare UBO write template (dstSet and pBufferInfo will be set per-frame)
-    VkWriteDescriptorSet uboWrite{};
-    uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    uboWrite.dstBinding = 0;
-    uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    uboWrite.descriptorCount = 1;
-
     printf("[SceneRenderer::init] Binding UBO buffers for %zu frames\n", mainUniformBuffers.size());
     
-    // Bind texture arrays (bindings 1, 2, 3)
-    // Prepare descriptor writes dynamically: only include image samplers that have valid image views
+    // Bind texture arrays, shadow maps, materials, sky, water params (bindings 1-13)
+    // These static bindings are written once to the static descriptor set and then
+    // copied into per-frame descriptor sets. Only binding 0 (per-frame UBO) is
+    // written individually per frame.
     std::vector<VkWriteDescriptorSet> writes;
     std::vector<VkDescriptorImageInfo> writesImg;
     std::vector<VkDescriptorBufferInfo> writesBuf;
     writesImg.reserve(9);  // max image descriptors: 5 texture arrays + 3 shadow maps + 1 cubemap
     writesBuf.reserve(3);  // materials SSBO + water params + water render UBO
 
-    // UBO write (always present) — update for each per-frame descriptor set
-    // We'll write descriptors per-frame so each descriptor set references a dedicated UBO buffer.
-
-    // Helper to add image write if valid
+    // Helper to add image write if valid. dstSet is set to the static descriptor set
+    // so the accumulated writes serve as a template for the static set.
+    VkDescriptorSet staticDs = app->getStaticDescriptorSet();
     auto addImageWrite = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
         if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
             std::cerr << "[SceneRenderer::init] Skipping descriptor binding " << binding
@@ -626,7 +625,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         info.imageLayout = layout;
         VkWriteDescriptorSet w{};
         w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w.dstSet = mainDs;
+        w.dstSet = staticDs;
         w.dstBinding = binding;
         w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         w.descriptorCount = 1;
@@ -659,7 +658,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     VkDescriptorBufferInfo& materialsInfo = writesBuf.emplace_back(materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
     VkWriteDescriptorSet materialsWrite{};
     materialsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    materialsWrite.dstSet = mainDs;
+    materialsWrite.dstSet = staticDs;
     materialsWrite.dstBinding = 5;
     materialsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     materialsWrite.descriptorCount = 1;
@@ -710,7 +709,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     VkDescriptorBufferInfo& waterParamsInfo = writesBuf.emplace_back(waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
     VkWriteDescriptorSet waterParamsWrite{};
     waterParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    waterParamsWrite.dstSet = mainDs;
+    waterParamsWrite.dstSet = staticDs;
     waterParamsWrite.dstBinding = 7;
     waterParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     waterParamsWrite.descriptorCount = 1;
@@ -723,53 +722,75 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     VkDescriptorBufferInfo& waterRenderUBOInfo = writesBuf.emplace_back(waterRenderUBOBuffer_.buffer, 0, sizeof(WaterRenderUBO));
     VkWriteDescriptorSet waterRenderUBOWrite{};
     waterRenderUBOWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    waterRenderUBOWrite.dstSet = mainDs;
+    waterRenderUBOWrite.dstSet = staticDs;
     waterRenderUBOWrite.dstBinding = 10;
     waterRenderUBOWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     waterRenderUBOWrite.descriptorCount = 1;
     waterRenderUBOWrite.pBufferInfo = &waterRenderUBOInfo;
     writes.push_back(waterRenderUBOWrite);
 
-    // Perform descriptor updates per-frame
-    for (size_t fi = 0; fi < mainUniformBuffers.size(); ++fi) {
-        std::vector<VkWriteDescriptorSet> frameWrites;
-        frameWrites.reserve(writes.size());
-
-        VkDescriptorBufferInfo mainBufInfo{ mainUniformBuffers[fi].buffer, 0, sizeof(UniformObject) };
-        VkWriteDescriptorSet uboWriteLocal = uboWrite;
-        uboWriteLocal.dstSet = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
-        uboWriteLocal.pBufferInfo = &mainBufInfo;
-        frameWrites.push_back(uboWriteLocal);
-
-        // Count image and buffer writes first so we can pre-allocate
-        // (prevents emplace_back from invalidating stored pointers on reallocation).
-        size_t imgCount = 0, bufCount = 0;
-        for (auto &w : writes) {
-            if (w.dstBinding == 0) continue;
-            if (w.pImageInfo) ++imgCount;
-            else if (w.pBufferInfo) ++bufCount;
-        }
-        std::vector<VkDescriptorImageInfo> frameImg;
-        std::vector<VkDescriptorBufferInfo> frameBuf;
-        frameImg.reserve(imgCount);
-        frameBuf.reserve(bufCount);
-
-        // Rebuild image/buffer writes for the other bindings using the same logic as above
-        for (auto &w : writes) {
-            if (w.dstBinding == 0) continue; // skip original ubo placeholder
-            VkWriteDescriptorSet copy = w;
-            copy.dstSet = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
-            if (w.pImageInfo) {
-                VkDescriptorImageInfo& info = frameImg.emplace_back(w.pImageInfo[0]);
-                copy.pImageInfo = &info;
-            } else if (w.pBufferInfo) {
-                VkDescriptorBufferInfo& info = frameBuf.emplace_back(w.pBufferInfo[0]);
-                copy.pBufferInfo = &info;
+    // ── Static descriptor set ──
+    // Write bindings 1-13 to the static descriptor set once. These resources
+    // rarely change (texture arrays, materials, shadow maps, sky, water params).
+    // Per-frame descriptor sets will copy these via VkCopyDescriptorSet.
+    {
+        VkDescriptorSet staticDs = app->getStaticDescriptorSet();
+        if (staticDs != VK_NULL_HANDLE) {
+            DescriptorWriter staticWriter(app->getDevice());
+            // Replay accumulated image/buffer writes into the static set
+            for (auto &w : writes) {
+                if (w.dstBinding == 0) continue; // binding 0 is per-frame
+                if (w.pImageInfo) {
+                    staticWriter.writeImage(staticDs, w.dstBinding, w.descriptorType,
+                                            w.pImageInfo[0].sampler, w.pImageInfo[0].imageView,
+                                            w.pImageInfo[0].imageLayout, w.descriptorCount);
+                } else if (w.pBufferInfo) {
+                    staticWriter.writeBuffer(staticDs, w.dstBinding, w.descriptorType,
+                                             w.pBufferInfo[0].buffer, w.pBufferInfo[0].offset,
+                                             w.pBufferInfo[0].range, w.descriptorCount);
+                }
             }
-            frameWrites.push_back(copy);
+            staticWriter.flush();
         }
+    }
 
-        app->updateDescriptorSet(frameWrites);
+    // ── Per-frame descriptor sets ──
+    // For each frame, copy bindings 1-13 from the static set and write binding 0
+    // (per-frame UBO) separately using DescriptorWriter.
+    {
+        VkDescriptorSet staticDs = app->getStaticDescriptorSet();
+        for (size_t fi = 0; fi < mainUniformBuffers.size(); ++fi) {
+            VkDescriptorSet dstSet = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
+
+            // Collect all static bindings (1-13) for copy from staticDs.
+            // The writes template excludes binding 6 (Sky UBO was written by
+            // skyRenderer->init), so we enumerate the union explicitly.
+            std::vector<VkCopyDescriptorSet> copies;
+            auto addCopy = [&](uint32_t binding, uint32_t count = 1) {
+                VkCopyDescriptorSet c{};
+                c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+                c.srcSet = staticDs; c.srcBinding = binding; c.srcArrayElement = 0;
+                c.dstSet = dstSet; c.dstBinding = binding; c.dstArrayElement = 0;
+                c.descriptorCount = count;
+                copies.push_back(c);
+            };
+            for (auto &w : writes) {
+                if (w.dstBinding == 0) continue;
+                addCopy(w.dstBinding, w.descriptorCount);
+            }
+            addCopy(6); // Sky UBO — written to staticDs by skyRenderer->init
+
+            if (!copies.empty()) {
+                vkUpdateDescriptorSets(app->getDevice(), 0, nullptr,
+                                       static_cast<uint32_t>(copies.size()), copies.data());
+            }
+
+            // Write per-frame UBO (binding 0) using DescriptorWriter
+            DescriptorWriter writer(app->getDevice());
+            writer.writeBuffer(dstSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                               mainUniformBuffers[fi].buffer, 0, sizeof(UniformObject));
+            writer.flush();
+        }
     }
 
     // ── Allocate shadow-specific descriptor sets per-frame (mirror main sets but use a dummy depth view)
@@ -857,13 +878,18 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     postProcessRenderer->init(app);
     postProcessRenderer->setRenderSize(app->getWidth(), app->getHeight());
     
-    // Initialize sky renderer with sphere VBO now that descriptor sets are ready.
-    // Write Sky UBO to all per-frame descriptor sets.
-    skyRenderer->init(app, *skySettings, mainDs);
-    for (uint32_t i = 1; i < static_cast<uint32_t>(app->getMainDescriptorSetCount()); ++i) {
-        VkDescriptorSet ds = app->getMainDescriptorSetForFrame(i);
-        if (ds != VK_NULL_HANDLE) {
-            skyRenderer->init(app, *skySettings, ds);
+    // Finalize sky renderer with sphere VBO. Write Sky UBO to static descriptor set
+    // so all per-frame sets inherit it via the static copy (already done above).
+    VkDescriptorSet finalStaticDs = app->getStaticDescriptorSet();
+    if (finalStaticDs != VK_NULL_HANDLE) {
+        skyRenderer->init(app, *skySettings, finalStaticDs);
+    } else {
+        skyRenderer->init(app, *skySettings, mainDs);
+        for (uint32_t i = 1; i < static_cast<uint32_t>(app->getMainDescriptorSetCount()); ++i) {
+            VkDescriptorSet ds = app->getMainDescriptorSetForFrame(i);
+            if (ds != VK_NULL_HANDLE) {
+                skyRenderer->init(app, *skySettings, ds);
+            }
         }
     }
     
@@ -871,59 +897,93 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     printf("[SceneRenderer::init] Initialization complete\n");
 }
 
-// Update only the texture / materials bindings in the app's main descriptor set.
+// Update only the static bindings (textures, materials, water params) in the
+// static descriptor set, then propagate to all per-frame descriptor sets via
+// VkCopyDescriptorSet. This avoids re-writing identical descriptors per frame.
 void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager) {
     if (!app) return;
 
-    // Update ALL main descriptor sets (double-buffered).  Vegetation and
-    // solid draws use getMainDescriptorSet() which round-robins through
-    // mainDescriptorSets; if only the current-frame set is updated, the
-    // other frame's draws miss shadow-map bindings → no self-shadowing.
+    VkDescriptorSet staticDs = app->getStaticDescriptorSet();
+    if (staticDs == VK_NULL_HANDLE) return;
+
+    // 1. Write updated bindings to the static descriptor set
+    {
+        DescriptorWriter writer(app->getDevice());
+
+        auto addImg = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
+            if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
+            writer.writeImage(staticDs, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              sampler, view, layout);
+        };
+
+        addImg(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImg(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImg(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImg(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        addImg(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        // Shadow map samplers (bindings 4, 8, 9) for all cascades
+        if (shadowMapper) {
+            addImg(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImg(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            addImg(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+
+        // Materials SSBO (binding 5) — refresh from MaterialManager in case the buffer
+        // was allocated after SceneRenderer::init (setupTextures may run on a separate thread)
+        if (materialManagerPtr && materialManagerPtr->getBuffer().buffer != VK_NULL_HANDLE) {
+            materialsBuffer = materialManagerPtr->getBuffer();
+        }
+        if (materialsBuffer.buffer != VK_NULL_HANDLE)
+            writer.writeBuffer(staticDs, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                               materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
+        else
+            std::cerr << "[SceneRenderer::updateTextureDescriptorSet] materials buffer not available — skipping binding 5\n";
+
+        if (waterParamsBuffer_.buffer != VK_NULL_HANDLE)
+            writer.writeBuffer(staticDs, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                               waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
+
+        writer.flush();
+    }
+
+    // 2. Propagate static bindings (1-13) to all per-frame descriptor sets
     const size_t setCount = app->getMainDescriptorSetCount();
     for (size_t s = 0; s < setCount; ++s) {
-    VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(s));
-    if (mainDs == VK_NULL_HANDLE) continue;
+        VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(s));
+        if (mainDs == VK_NULL_HANDLE) continue;
 
-    DescriptorWriter writer(app->getDevice());
+        // Build copy descriptors for all bindings 1-13
+        std::vector<VkCopyDescriptorSet> copies;
+        // Binding 1..4, 8, 9, 11 (textures)
+        for (uint32_t b : {1u, 2u, 3u, 4u, 8u, 9u, 11u, 12u, 13u}) {
+            VkCopyDescriptorSet c{};
+            c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+            c.srcSet = staticDs; c.srcBinding = b; c.srcArrayElement = 0;
+            c.dstSet = mainDs; c.dstBinding = b; c.dstArrayElement = 0;
+            c.descriptorCount = 1;
+            copies.push_back(c);
+        }
+        // Binding 5, 7 (storage buffers), 6 (Sky UBO), 10 (Water render UBO)
+        for (uint32_t b : {5u, 6u, 7u, 10u}) {
+            VkCopyDescriptorSet c{};
+            c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+            c.srcSet = staticDs; c.srcBinding = b; c.srcArrayElement = 0;
+            c.dstSet = mainDs; c.dstBinding = b; c.dstArrayElement = 0;
+            c.descriptorCount = 1;
+            copies.push_back(c);
+        }
 
-    auto addImg = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
-        if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
-        writer.writeImage(mainDs, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                          sampler, view, layout);
-    };
-
-    addImg(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImg(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImg(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImg(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImg(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-    // Shadow map samplers (bindings 4, 8, 9) for all cascades
-    if (shadowMapper) {
-        addImg(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        addImg(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        addImg(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (!copies.empty()) {
+            vkUpdateDescriptorSets(app->getDevice(), 0, nullptr,
+                                   static_cast<uint32_t>(copies.size()), copies.data());
+        }
     }
-
-    // Materials SSBO (binding 5) — refresh from MaterialManager in case the buffer
-    // was allocated after SceneRenderer::init (setupTextures may run on a separate thread)
-    if (materialManagerPtr && materialManagerPtr->getBuffer().buffer != VK_NULL_HANDLE) {
-        materialsBuffer = materialManagerPtr->getBuffer();
-    }
-    if (materialsBuffer.buffer != VK_NULL_HANDLE)
-        writer.writeBuffer(mainDs, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                           materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
-    else
-        std::cerr << "[SceneRenderer::updateTextureDescriptorSet] materials buffer not available — skipping binding 5\n";
-
-    if (waterParamsBuffer_.buffer != VK_NULL_HANDLE)
-        writer.writeBuffer(mainDs, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                           waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
-
-    writer.flush();
 
     // ── Also update shadow descriptor sets (bindings 1-3, 5, 7) with new textures/materials.
-    if (!shadowDescriptorSets.empty()) {
+    // Shadow sets use dummy depth views for bindings 4, 8, 9, 11 so they cannot simply copy
+    // from the static set; we write them individually.
+    if (!shadowDescriptorSets.empty() && textureArrayManager) {
         for (size_t si = 0; si < shadowDescriptorSets.size(); ++si) {
             VkDescriptorSet ds = shadowDescriptorSets[si];
             DescriptorWriter sw(app->getDevice());
@@ -947,9 +1007,8 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
             sw.flush();
         }
     }
-    } // for each main descriptor set
 
-    std::cerr << "[SceneRenderer] updateTextureDescriptorSet: updated main descriptor set with texture bindings" << std::endl;
+    std::cerr << "[SceneRenderer] updateTextureDescriptorSet: updated static descriptor set and propagated to per-frame sets" << std::endl;
 }
 
 

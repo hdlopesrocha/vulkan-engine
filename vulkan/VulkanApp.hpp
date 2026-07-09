@@ -6,6 +6,7 @@
 // Standard library includes first
 #include <iostream>
 #include <vector>
+#include <list>
 #include <string>
 #include <stdexcept>
 #include <memory>
@@ -175,6 +176,9 @@ private:
     // texture and descriptor
 
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    // Static descriptor set layout (bindings 1-13: textures, materials, sky, water params, cubemap)
+    // These resources are written once and reused across all per-frame descriptor sets.
+    VkDescriptorSet staticDescriptorSet = VK_NULL_HANDLE;
     // Dedicated descriptor set layout for global materials (binding 5)
     VkDescriptorSetLayout materialDescriptorSetLayout = VK_NULL_HANDLE;
     // Global material descriptor set (bound once and updated when materials change)
@@ -397,6 +401,7 @@ public:
         void setMaterialDescriptorSet(VkDescriptorSet ds) { materialDescriptorSet = ds; }
         VkDescriptorSet getMaterialDescriptorSet() const { return materialDescriptorSet; }
         VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
+        VkDescriptorSet getStaticDescriptorSet() const { return staticDescriptorSet; }
 
         // App-owned graphics pipeline accessor
         void setAppGraphicsPipeline(VkPipeline p) { 
@@ -629,7 +634,7 @@ public:
         std::unordered_map<VkCommandBuffer, std::string> m_cmdBacktraces;
         std::vector<std::pair<VkSemaphore, VkPipelineStageFlags2>> m_extraWaitSemaphores;
         std::vector<std::pair<VkSemaphore,uint64_t>> m_semaphoresPendingDestroy;
-        std::vector<std::pair<VkFence, std::function<void()>>> m_deferredDestroys;
+        std::list<std::pair<VkFence, std::function<void()>>> m_deferredDestroys;
 
 };
 

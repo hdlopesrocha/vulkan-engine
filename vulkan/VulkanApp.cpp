@@ -1826,42 +1826,26 @@ void VulkanApp::processPendingCommandBuffers() {
             auto fn = it->second; // copy the function so we can call it safely
             bool canRun = false;
             if (f == VK_NULL_HANDLE) {
-                // run when no pending async command buffers are outstanding
+                // Run when no pending async command buffers are outstanding
                 // AND when all per-frame inFlight fences are signaled. This
                 // prevents destroying resources that may still be referenced
                 // by submitted render command buffers (which use inFlightFences).
                 // No re-lock needed: m_submissionMutex is already held by the outer scope.
-                // Check that every pending fence is signaled — entries re-inserted
-                // by the per-frame processing cap are already signaled but held back
-                // to throttle free operations and must not block deferred destroys.
+                // The vkGetFenceStatus check is non-blocking and reliable.
+                // The timeline semaphore can return stale values on some drivers,
+                // so we rely on fence state rather than timeline value.
                 bool allPendingSignaled = true;
                 for (const auto& pcb : m_pendingCommandBuffers) {
                     VkResult fs = vkGetFenceStatus(device, pcb.second);
                     if (fs == VK_NOT_READY) { allPendingSignaled = false; break; }
                 }
                 if (allPendingSignaled) {
-                    bool allFramesIdle = false;
-                    uint64_t curVal = 0;
-                    VkResult st = vkGetSemaphoreCounterValue(device, frameTimeline, &curVal);
-                    if (st == VK_SUCCESS && curVal >= frameTimelineValue.load()) {
-                        allFramesIdle = true;
+                    bool fenceCheck = true;
+                    for (uint32_t fi = 0; fi < inFlightFences.size(); fi++) {
+                        VkResult fs = vkGetFenceStatus(device, inFlightFences[fi]);
+                        if (fs == VK_NOT_READY) { fenceCheck = false; break; }
                     }
-                    if (allFramesIdle) {
-                        // Verify ALL in-flight fences are signaled before
-                        // running any deferred-destroy callback.  The timeline
-                        // semaphore (vkGetSemaphoreCounterValue) can return
-                        // stale values on RADV/amdgpu due to PCIe ordering,
-                        // so we must not rely on it alone — freeing GPU memory
-                        // while it is still accessed causes GPU page faults
-                        // → VK_ERROR_DEVICE_LOST.
-                        // vkGetFenceStatus is non-blocking and reliable.
-                        bool fenceCheck = true;
-                        for (uint32_t fi = 0; fi < inFlightFences.size(); fi++) {
-                            VkResult fs = vkGetFenceStatus(device, inFlightFences[fi]);
-                            if (fs == VK_NOT_READY) { fenceCheck = false; break; }
-                        }
-                        if (fenceCheck) canRun = true;
-                    }
+                    if (fenceCheck) canRun = true;
                 }
             } else {
                 // If the resource manager no longer tracks this fence the
@@ -1875,8 +1859,8 @@ void VulkanApp::processPendingCommandBuffers() {
                 }
             }
             if (canRun) {
-                if (f == VK_NULL_HANDLE) {
-                    std::cerr << "[PROCESS PENDING] Running deferDestroyUntilAllPending callback at queue size=" << m_deferredDestroys.size() << std::endl;
+                if (f == VK_NULL_HANDLE && m_deferredDestroys.size() % 100 == 0) {
+                    std::cerr << "[PROCESS PENDING] Running deferDestroyUntilAllPending callback (queue=" << m_deferredDestroys.size() << ")" << std::endl;
                 }
                 fn();
                 it = m_deferredDestroys.erase(it);
@@ -3385,7 +3369,8 @@ void VulkanApp::deferDestroyUntilAllPending(std::function<void()> destroyFn) {
     // centralized processor to make the destruction decision.
     std::lock_guard<std::recursive_mutex> dd(m_submissionMutex);
     m_deferredDestroys.emplace_back(VK_NULL_HANDLE, destroyFn);
-    std::cerr << "[VulkanApp] deferDestroyUntilAllPending: scheduled wait-for-all destroy (queue size=" << m_deferredDestroys.size() << ")" << std::endl;
+    if (m_deferredDestroys.size() % 100 == 0)
+        std::cerr << "[VulkanApp] deferDestroyUntilAllPending: queue size=" << m_deferredDestroys.size() << std::endl;
 }
 
 void VulkanApp::deferDestroyUntilFence(VkFence fence, std::function<void()> destroyFn) {
@@ -3935,6 +3920,11 @@ void VulkanApp::createDescriptorSetLayout() {
     for (uint32_t i = 0; i < MAIN_DESC_SETS; ++i) {
         mainDescriptorSets[i] = createDescriptorSet(descriptorSetLayout);
     }
+
+    // Allocate one static descriptor set for bindings 1-13 (textures, materials, sky,
+    // water params, cubemap). Written once in SceneRenderer::init() and then copied
+    // into per-frame descriptor sets so per-frame updates only touch binding 0 (UBO).
+    staticDescriptorSet = createDescriptorSet(descriptorSetLayout);
 
     // Create a separate material descriptor layout used for materials only
     std::array<VkDescriptorSetLayoutBinding, 1> materialBindings = { bindings[5] };
@@ -4776,10 +4766,15 @@ void VulkanApp::drawFrame() {
     // and does not skip the current frame slot — this eliminates the stale-timelessmaphore race.
     processPendingCommandBuffers();
 
-    // A deferred-destroy callback run above may have triggered a new submission
-    // that uses inFlightFences[currentFrame]. Wait pending it before reset.
-    if (vkGetFenceStatus(device, inFlightFences[currentFrame]) == VK_NOT_READY) {
-        vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+    // Wait for the current frame's fence to be signaled before resetting it.
+    // The timeline semaphore wait above should ensure this returns immediately,
+    // but on some drivers the timeline counter can return stale values, so we
+    // always confirm the fence state directly before reset.
+    VkResult waitForFenceResult = vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+    if (waitForFenceResult == VK_ERROR_DEVICE_LOST) return;
+    if (waitForFenceResult != VK_SUCCESS) {
+        std::cerr << "vkWaitForFences failed: " << waitForFenceResult << std::endl;
+        return;
     }
     VkResult resetFenceResult = vkResetFences(device, 1, &inFlightFences[currentFrame]);
     if (resetFenceResult == VK_ERROR_DEVICE_LOST) return;
