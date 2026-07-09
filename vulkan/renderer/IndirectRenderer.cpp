@@ -1073,7 +1073,7 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     {
         VkMemoryBarrier2 fillBarrier{};
         fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        fillBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        fillBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
         fillBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         fillBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         fillBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
