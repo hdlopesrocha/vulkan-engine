@@ -1838,11 +1838,8 @@ void VulkanApp::processPendingCommandBuffers() {
                 // AND when all per-frame inFlight fences are signaled. This
                 // prevents destroying resources that may still be referenced
                 // by submitted render command buffers (which use inFlightFences).
-                bool pendingEmpty = false;
-                {
-                    std::lock_guard<std::mutex> lk(m_submissionMutex);
-                    pendingEmpty = m_pendingCommandBuffers.empty();
-                }
+                // No re-lock needed: m_submissionMutex is already held by the outer scope.
+                bool pendingEmpty = m_pendingCommandBuffers.empty();
                 if (pendingEmpty) {
                     bool allFramesIdle = false;
                     uint64_t curVal = 0;
