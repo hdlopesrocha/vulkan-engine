@@ -218,6 +218,25 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
             } else linearBackFaceDepthView = VK_NULL_HANDLE;
         }
 
+        if (waterDepthLinearImage == VK_NULL_HANDLE) {
+            app->createImage(static_cast<uint32_t>(width), static_cast<uint32_t>(height), VK_FORMAT_R8G8B8A8_UNORM,
+                             VK_IMAGE_TILING_OPTIMAL, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, waterDepthLinearImage, waterDepthLinearAllocation, waterDepthLinearMemory, "RenderTargetsWidget: waterDepthLinearImage");
+            VkImageViewCreateInfo wiv{};
+            wiv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            wiv.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            wiv.format = VK_FORMAT_R8G8B8A8_UNORM;
+            wiv.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            wiv.subresourceRange.baseMipLevel = 0;
+            wiv.subresourceRange.levelCount = 1;
+            wiv.subresourceRange.baseArrayLayer = 0;
+            wiv.subresourceRange.layerCount = 1;
+            wiv.image = waterDepthLinearImage;
+            if (vkCreateImageView(device, &wiv, nullptr, &waterDepthLinearView) == VK_SUCCESS) {
+                app->resources.addImageView(waterDepthLinearView, "RenderTargetsWidget: waterDepthLinearView");
+            } else waterDepthLinearView = VK_NULL_HANDLE;
+        }
+
         // Framebuffers are no longer needed - using dynamic rendering
 
         // Create per-face linearized targets for cubemap depth previews
@@ -397,10 +416,9 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
     // Transition dst to COLOR_ATTACHMENT_OPTIMAL before rendering
     // We need to find the VkImage for this view - look it up from our known images
     VkImage dstImage = VK_NULL_HANDLE;
-    for (int i = 0; i < 2; ++i) {
-        if (dstView == linearSceneDepthView) { dstImage = linearSceneDepthImage; break; }
-        if (dstView == linearBackFaceDepthView) { dstImage = linearBackFaceDepthImage; break; }
-    }
+    if (dstView == linearSceneDepthView) { dstImage = linearSceneDepthImage; }
+    else if (dstView == linearBackFaceDepthView) { dstImage = linearBackFaceDepthImage; }
+    else if (dstView == waterDepthLinearView) { dstImage = waterDepthLinearImage; }
     if (dstImage == VK_NULL_HANDLE) {
         for (int i = 0; i < 6; ++i) {
             if (dstView == linearCubeFaceDepthView[i]) { dstImage = linearCubeFaceDepthImage[i]; break; }
@@ -639,6 +657,7 @@ void RenderTargetsWidget::destroyLinearTargets() {
 
     removeDescIfOwned(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
     removeDescIfOwned(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
+    removeDescIfOwned(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
         removeDescIfOwned(linearShadowDepthDescriptor[i], linearShadowDepthDescriptorOwned[i]);
     }
@@ -678,6 +697,7 @@ void RenderTargetsWidget::destroyLinearTargets() {
     for (int i = 0; i < 6; ++i) destroyFramebuffer(linearCubeFaceFramebuffer[i]);
     destroyImageAndMemory(linearSceneDepthView, linearSceneDepthImage, linearSceneDepthAllocation, linearSceneDepthMemory);
     destroyImageAndMemory(linearBackFaceDepthView, linearBackFaceDepthImage, linearBackFaceDepthAllocation, linearBackFaceDepthMemory);
+    destroyImageAndMemory(waterDepthLinearView, waterDepthLinearImage, waterDepthLinearAllocation, waterDepthLinearMemory);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
         destroyImageAndMemory(linearShadowDepthView[i], linearShadowDepthImage[i], linearShadowDepthAllocation[i], linearShadowDepthMemory[i]);
     }
@@ -783,6 +803,7 @@ void RenderTargetsWidget::cleanup() {
     // Destroy linear debug images / views
     destroyImageAndMemory(linearSceneDepthView, linearSceneDepthImage, linearSceneDepthAllocation, linearSceneDepthMemory);
     destroyImageAndMemory(linearBackFaceDepthView, linearBackFaceDepthImage, linearBackFaceDepthAllocation, linearBackFaceDepthMemory);
+    destroyImageAndMemory(waterDepthLinearView, waterDepthLinearImage, waterDepthLinearAllocation, waterDepthLinearMemory);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
         destroyImageAndMemory(linearShadowDepthView[i], linearShadowDepthImage[i], linearShadowDepthAllocation[i], linearShadowDepthMemory[i]);
     }
@@ -1065,7 +1086,7 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
         // Water front-face depth pass (linearize the water geometry depth buffer)
         // Water front-face depth pass (linearize the water geometry depth buffer)
-        if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE) {
+        if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE && waterDepthLinearView != VK_NULL_HANDLE) {
             // The water geometry depth is written during the main render pass for
             // the current CPU frame. The widget runs its linearize pass while
             // building ImGui (before the main render pass is submitted), so
@@ -1078,17 +1099,10 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, sceneRenderer->waterRenderer->getWaterGeomDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearSceneDepthView,
-                                 linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
+                runLinearizePass(app, sceneRenderer->waterRenderer->getWaterGeomDepthImage(producerFrame), src, widgetSampler, widgetSampler, waterDepthLinearView,
+                                 waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 1.0f);
                 // std::cerr << "[RenderTargetsWidget] Water linearize: pass completed" << std::endl;
-
-                // Expose the linearized image as the water-depth preview descriptor.
-                if (waterDepthLinearDescriptor == VK_NULL_HANDLE && linearSceneDepthDescriptor != VK_NULL_HANDLE) {
-                    // Point to the same descriptor but mark as not-owned to avoid double-free
-                    waterDepthLinearDescriptor = linearSceneDepthDescriptor;
-                    waterDepthLinearDescriptorOwned = false;
-                }
             }
         }
         // Shadow cascade linearization: create per-cascade RGBA targets and

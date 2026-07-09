@@ -61,6 +61,11 @@ private:
     VkDescriptorSet linearSceneDepthDescriptor = VK_NULL_HANDLE;
     bool linearSceneDepthDescriptorOwned = false;
 
+    VkImage waterDepthLinearImage = VK_NULL_HANDLE;
+    VmaAllocation waterDepthLinearAllocation = VK_NULL_HANDLE;
+    VkDeviceMemory waterDepthLinearMemory = VK_NULL_HANDLE;
+    VkImageView waterDepthLinearView = VK_NULL_HANDLE;
+
     VkImage linearBackFaceDepthImage = VK_NULL_HANDLE;
     VmaAllocation linearBackFaceDepthAllocation = VK_NULL_HANDLE;
     VkDeviceMemory linearBackFaceDepthMemory = VK_NULL_HANDLE;
