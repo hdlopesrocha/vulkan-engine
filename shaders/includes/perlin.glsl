@@ -1,19 +1,46 @@
 // Perlin noise utilities for GLSL shaders
 // 3D and 4D Perlin noise with fractional Brownian motion (FBM)
 
+// PCG-style integer hash (xsh rs) plus a uint->[0,1) float conversion.
+// Bit-mixing replaces the classic fract(sin(dot(...))) hash: it avoids
+// transcendental sin evaluations (a known SFU bottleneck) and the precision
+// artefacts that idiom shows at large coordinates on some vendors.
+// Shared between perlin.glsl and voronoi.glsl via the include guard below.
+#ifndef PERLIN_GLSL_PCG_HELPERS
+#define PERLIN_GLSL_PCG_HELPERS
+uint pcgHash(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float uintToUnitFloat(uint x) {
+    // Map the top 23 bits into the mantissa of a [1.0, 2.0) float, then bias
+    // down to [0.0, 1.0). Pure bit manipulation, no transcendentals.
+    return uintBitsToFloat(0x3f800000u | (x >> 9u)) - 1.0;
+}
+#endif
+
 vec3 hash33(vec3 p) {
-    p = vec3(dot(p, vec3(127.1, 311.7, 74.7)),
-             dot(p, vec3(269.5, 183.3, 246.1)),
-             dot(p, vec3(113.5, 271.9, 124.6)));
-    return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
+    uvec3 u = floatBitsToUint(p);
+    uint s = pcgHash(u.x);
+    s = pcgHash(s ^ u.y);
+    s = pcgHash(s ^ u.z);
+    return vec3(uintToUnitFloat(pcgHash(s + 0x9E3779B9u)),
+                uintToUnitFloat(pcgHash(s + 0x85EBCA6Bu)),
+                uintToUnitFloat(pcgHash(s + 0xC2B2AE35u))) * 2.0 - 1.0;
 }
 
 vec4 hash44(vec4 p) {
-    p = vec4(dot(p, vec4(127.1, 311.7, 74.7, 269.5)),
-             dot(p, vec4(269.5, 183.3, 246.1, 127.1)),
-             dot(p, vec4(113.5, 271.9, 124.6, 311.7)),
-             dot(p, vec4(271.9, 124.6, 113.5, 183.3)));
-    return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
+    uvec4 u = floatBitsToUint(p);
+    uint s = pcgHash(u.x);
+    s = pcgHash(s ^ u.y);
+    s = pcgHash(s ^ u.z);
+    s = pcgHash(s ^ u.w);
+    return vec4(uintToUnitFloat(pcgHash(s + 0x9E3779B9u)),
+                uintToUnitFloat(pcgHash(s + 0x85EBCA6Bu)),
+                uintToUnitFloat(pcgHash(s + 0xC2B2AE35u)),
+                uintToUnitFloat(pcgHash(s + 0x27D4EB2Fu))) * 2.0 - 1.0;
 }
 
 float perlinNoise3D(vec3 p) {

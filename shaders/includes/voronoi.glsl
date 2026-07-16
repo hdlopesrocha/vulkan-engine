@@ -1,11 +1,29 @@
 // Voronoi (Worley) noise helpers — returns nearest (F1) and second-nearest (F2) distances.
 // Returns: vec2(F1, F2)
+
+// PCG integer hash helpers (shared guard with perlin.glsl so both can be
+// included in the same translation unit without duplicate definitions).
+#ifndef PERLIN_GLSL_PCG_HELPERS
+#define PERLIN_GLSL_PCG_HELPERS
+uint pcgHash(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float uintToUnitFloat(uint x) {
+    return uintBitsToFloat(0x3f800000u | (x >> 9u)) - 1.0;
+}
+#endif
+
 vec3 hash3(vec3 p) {
-    return fract(sin(vec3(
-        dot(p, vec3(127.1, 311.7, 74.7)),
-        dot(p, vec3(269.5, 183.3, 246.1)),
-        dot(p, vec3(113.5, 271.9, 124.6))
-    )) * 43758.5453123);
+    uvec3 u = floatBitsToUint(p);
+    uint s = pcgHash(u.x);
+    s = pcgHash(s ^ u.y);
+    s = pcgHash(s ^ u.z);
+    return vec3(uintToUnitFloat(pcgHash(s + 0x9E3779B9u)),
+                uintToUnitFloat(pcgHash(s + 0x85EBCA6Bu)),
+                uintToUnitFloat(pcgHash(s + 0xC2B2AE35u)));
 }
 
 // voronoi3d(x, time, fbmSpatialScale, fbmTimeScale, fbmOctaves, fbmPersistence, fbmLacunarity)
