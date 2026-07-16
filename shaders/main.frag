@@ -73,21 +73,30 @@ void main() {
 
     // Mix triplanar flag across the three materials
     float triFlag = dot(vec3(materials[fragTexIndices.x].triplanarParams.z, materials[fragTexIndices.y].triplanarParams.z, materials[fragTexIndices.z].triplanarParams.z), w);
+
+    // Compute triplanar UVs once per material and reuse across all map fetches below.
+    vec2 uv0X, uv0Y, uv0Z;
+    vec2 uv1X, uv1Y, uv1Z;
+    vec2 uv2X, uv2Y, uv2Z;
+    if (w.x > 0.0) computeTriplanarUVs(fragPosWorldNotDisplaced, fragTexIndices.x, geomN, uv0X, uv0Y, uv0Z);
+    if (w.y > 0.0) computeTriplanarUVs(fragPosWorldNotDisplaced, fragTexIndices.y, geomN, uv1X, uv1Y, uv1Z);
+    if (w.z > 0.0) computeTriplanarUVs(fragPosWorldNotDisplaced, fragTexIndices.z, geomN, uv2X, uv2Y, uv2Z);
+
     if (triFlag > 0.5) {
         usedTriplanar = true;
         // compute triplanar albedo per-layer then blend
-        vec3 a0 = w.x > 0.0 ? computeTriplanarAlbedo(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN) : vec3(0.0);
-        vec3 a1 = w.y > 0.0 ? computeTriplanarAlbedo(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN) : vec3(0.0);
-        vec3 a2 = w.z > 0.0 ? computeTriplanarAlbedo(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN) : vec3(0.0);
+        vec3 a0 = w.x > 0.0 ? computeTriplanarAlbedoUVs(triW, fragTexIndices.x, uv0X, uv0Y, uv0Z) : vec3(0.0);
+        vec3 a1 = w.y > 0.0 ? computeTriplanarAlbedoUVs(triW, fragTexIndices.y, uv1X, uv1Y, uv1Z) : vec3(0.0);
+        vec3 a2 = w.z > 0.0 ? computeTriplanarAlbedoUVs(triW, fragTexIndices.z, uv2X, uv2Y, uv2Z) : vec3(0.0);
         albedoColor = a0 * w.x + a1 * w.y + a2 * w.z;
         // If normal mapping/triplanar normal enabled per-material or global, compute blended triplanar normal
         float mapFlag0 = materials[fragTexIndices.x].mappingParams.x;
         float mapFlag1 = materials[fragTexIndices.y].mappingParams.x;
         float mapFlag2 = materials[fragTexIndices.z].mappingParams.x;
         if ((mapFlag0 * w.x + mapFlag1 * w.y + mapFlag2 * w.z) > 0.5 || ubo.materialFlags.w > 0.5) {
-            tripNormal0 = w.x > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN, N) : vec3(0.0);
-            tripNormal1 = w.y > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN, N) : vec3(0.0);
-            tripNormal2 = w.z > 0.0 ? computeTriplanarNormal(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN, N) : vec3(0.0);
+            tripNormal0 = w.x > 0.0 ? computeTriplanarNormalUVs(triW, fragTexIndices.x, N, uv0X, uv0Y, uv0Z) : vec3(0.0);
+            tripNormal1 = w.y > 0.0 ? computeTriplanarNormalUVs(triW, fragTexIndices.y, N, uv1X, uv1Y, uv1Z) : vec3(0.0);
+            tripNormal2 = w.z > 0.0 ? computeTriplanarNormalUVs(triW, fragTexIndices.z, N, uv2X, uv2Y, uv2Z) : vec3(0.0);
             vec3 blended = tripNormal0 * w.x + tripNormal1 * w.y + tripNormal2 * w.z;
             worldNormal = normalize(blended);
             
@@ -128,9 +137,9 @@ void main() {
     // Sample roughness map (R channel)
     float roughnessValue;
     if (usedTriplanar) {
-        float r0 = computeTriplanarRoughness(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN);
-        float r1 = computeTriplanarRoughness(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN);
-        float r2 = computeTriplanarRoughness(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN);
+        float r0 = w.x > 0.0 ? computeTriplanarRoughnessUVs(triW, fragTexIndices.x, uv0X, uv0Y, uv0Z) : 0.0;
+        float r1 = w.y > 0.0 ? computeTriplanarRoughnessUVs(triW, fragTexIndices.y, uv1X, uv1Y, uv1Z) : 0.0;
+        float r2 = w.z > 0.0 ? computeTriplanarRoughnessUVs(triW, fragTexIndices.z, uv2X, uv2Y, uv2Z) : 0.0;
         roughnessValue = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
     } else {
         float r0 = texture(roughnessArray, vec3(uv, float(fragTexIndices.x))).r;
@@ -143,9 +152,9 @@ void main() {
     // Sample ambient occlusion map (R channel)
     float ambientOcclusion;
     if (usedTriplanar) {
-        float ao0 = computeTriplanarAO(fragPosWorldNotDisplaced, triW, fragTexIndices.x, geomN);
-        float ao1 = computeTriplanarAO(fragPosWorldNotDisplaced, triW, fragTexIndices.y, geomN);
-        float ao2 = computeTriplanarAO(fragPosWorldNotDisplaced, triW, fragTexIndices.z, geomN);
+        float ao0 = w.x > 0.0 ? computeTriplanarAOUVs(triW, fragTexIndices.x, uv0X, uv0Y, uv0Z) : 0.0;
+        float ao1 = w.y > 0.0 ? computeTriplanarAOUVs(triW, fragTexIndices.y, uv1X, uv1Y, uv1Z) : 0.0;
+        float ao2 = w.z > 0.0 ? computeTriplanarAOUVs(triW, fragTexIndices.z, uv2X, uv2Y, uv2Z) : 0.0;
         ambientOcclusion = clamp(ao0 * w.x + ao1 * w.y + ao2 * w.z, 0.0, 1.0);
     } else {
         float ao0 = texture(aoArray, vec3(uv, float(fragTexIndices.x))).r;

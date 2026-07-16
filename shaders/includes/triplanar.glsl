@@ -18,15 +18,21 @@ void computeTriplanarUVs(in vec3 fragPosWorld, in int brushIndex, in vec3 geomN,
     else               uvZ = vec2(-fragPosWorld.x, -fragPosWorld.y) * scale;
 }
 
-// Sample albedo using triplanar blending weights
-vec3 computeTriplanarAlbedo(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN) {
-    vec2 uvX, uvY, uvZ;
-    computeTriplanarUVs(fragPosWorld, brushIndex, geomN, uvX, uvY, uvZ);
+// Sample albedo using precomputed triplanar UVs (weights already blended).
+// The zero-weight guards (triW.x > 0.0) skip unused projections.
+vec3 computeTriplanarAlbedoUVs(in vec3 triW, in int brushIndex, in vec2 uvX, in vec2 uvY, in vec2 uvZ) {
     vec3 cX = triW.x > 0.0 ? texture(albedoArray, vec3(uvX, float(brushIndex))).rgb : vec3(0.0);
     vec3 cY = triW.y > 0.0 ? texture(albedoArray, vec3(uvY, float(brushIndex))).rgb : vec3(0.0);
     vec3 cZ = triW.z > 0.0 ? texture(albedoArray, vec3(uvZ, float(brushIndex))).rgb : vec3(0.0);
    
     return cX * triW.x + cY * triW.y + cZ * triW.z;
+}
+
+// Sample albedo using triplanar blending weights (computes UVs internally).
+vec3 computeTriplanarAlbedo(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN) {
+    vec2 uvX, uvY, uvZ;
+    computeTriplanarUVs(fragPosWorld, brushIndex, geomN, uvX, uvY, uvZ);
+    return computeTriplanarAlbedoUVs(triW, brushIndex, uvX, uvY, uvZ);
 }
 
 // Reoriented Normal Mapping (RNM) helper: reorient a blended world-space normal
@@ -48,11 +54,9 @@ vec3 computeProjectionNormal(vec2 uv, int brushIndex, vec3 surfaceN) {
     return normalize(nSample.x * T + nSample.y * B + nSample.z * surfaceN);
 }
 
-// Compute triplanar normal by sampling the normal map for each projection and transforming each to world-space.
-// `geomN` is the geometric world-space normal (for UV computation), `surfaceN` is the smooth interpolated normal (TBN base).
-vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN, in vec3 surfaceN) {
-    vec2 uvX, uvY, uvZ;
-    computeTriplanarUVs(fragPosWorld, brushIndex, geomN, uvX, uvY, uvZ);
+// Compute triplanar normal by sampling the normal map for each projection and transforming each to world-space,
+// using precomputed triplanar UVs. `surfaceN` is the smooth interpolated normal (TBN base).
+vec3 computeTriplanarNormalUVs(in vec3 triW, in int brushIndex, in vec3 surfaceN, in vec2 uvX, in vec2 uvY, in vec2 uvZ) {
     vec3 nmX = vec3(0.0);
     vec3 nmY = vec3(0.0);
     vec3 nmZ = vec3(0.0);
@@ -80,24 +84,41 @@ vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int brushInde
     return normalize(nmX * w.x + nmY * w.y + nmZ * w.z);
 }
 
-// Sample roughness using triplanar projection (R channel)
-float computeTriplanarRoughness(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN) {
+// Compute triplanar normal (computes UVs internally).
+vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN, in vec3 surfaceN) {
     vec2 uvX, uvY, uvZ;
     computeTriplanarUVs(fragPosWorld, brushIndex, geomN, uvX, uvY, uvZ);
+    return computeTriplanarNormalUVs(triW, brushIndex, surfaceN, uvX, uvY, uvZ);
+}
+
+// Sample roughness using precomputed triplanar UVs (R channel)
+float computeTriplanarRoughnessUVs(in vec3 triW, in int brushIndex, in vec2 uvX, in vec2 uvY, in vec2 uvZ) {
     float rX = triW.x > 0.0 ? texture(roughnessArray, vec3(uvX, float(brushIndex))).r : 0.0;
     float rY = triW.y > 0.0 ? texture(roughnessArray, vec3(uvY, float(brushIndex))).r : 0.0;
     float rZ = triW.z > 0.0 ? texture(roughnessArray, vec3(uvZ, float(brushIndex))).r : 0.0;
     return rX * triW.x + rY * triW.y + rZ * triW.z;
 }
 
-// Sample ambient occlusion using triplanar projection (R channel)
-float computeTriplanarAO(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN) {
+// Sample roughness using triplanar projection (R channel), computing UVs internally.
+float computeTriplanarRoughness(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN) {
     vec2 uvX, uvY, uvZ;
     computeTriplanarUVs(fragPosWorld, brushIndex, geomN, uvX, uvY, uvZ);
+    return computeTriplanarRoughnessUVs(triW, brushIndex, uvX, uvY, uvZ);
+}
+
+// Sample ambient occlusion using precomputed triplanar UVs (R channel)
+float computeTriplanarAOUVs(in vec3 triW, in int brushIndex, in vec2 uvX, in vec2 uvY, in vec2 uvZ) {
     float aX = triW.x > 0.0 ? texture(aoArray, vec3(uvX, float(brushIndex))).r : 0.0;
     float aY = triW.y > 0.0 ? texture(aoArray, vec3(uvY, float(brushIndex))).r : 0.0;
     float aZ = triW.z > 0.0 ? texture(aoArray, vec3(uvZ, float(brushIndex))).r : 0.0;
     return aX * triW.x + aY * triW.y + aZ * triW.z;
+}
+
+// Sample ambient occlusion using triplanar projection (R channel), computing UVs internally.
+float computeTriplanarAO(in vec3 fragPosWorld, in vec3 triW, in int brushIndex, in vec3 geomN) {
+    vec2 uvX, uvY, uvZ;
+    computeTriplanarUVs(fragPosWorld, brushIndex, geomN, uvX, uvY, uvZ);
+    return computeTriplanarAOUVs(triW, brushIndex, uvX, uvY, uvZ);
 }
 
 vec4 computeTriplanarTangent(in ivec3 texIndices, in vec3 matWeights, in vec3 geomN, in vec3 triW, in vec3 fragPosWorld, in vec2 fragUV, in vec3 N, out vec3 T, out vec3 B) {
