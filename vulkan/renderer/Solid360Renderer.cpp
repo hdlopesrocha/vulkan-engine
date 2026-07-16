@@ -347,6 +347,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
 
         UniformObject faceUBO = ubo;
         faceUBO.viewProjection = faceVP;
+        faceUBO.materialFlags.x = 1.0f;
 
         // Wait for previous face's draws to finish reading the UBO before overwriting it
         {

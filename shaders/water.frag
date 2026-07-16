@@ -69,7 +69,8 @@ void main() {
     bool enableReflection = wp.reserved1.x > 0.5;
     bool enableRefraction = wp.reserved1.y > 0.5;
     // During 360 cubemap capture, skip reflection/refraction to avoid feedback.
-    if (ubo.materialFlags.x > 0.5) { enableReflection = false; enableRefraction = false; }
+    const bool captureMode = ubo.materialFlags.x > 0.5;
+    if (captureMode) { enableReflection = false; enableRefraction = false; }
     bool enableBlur       = wp.reserved1.z > 0.5;
     float blurRadius      = wp.reserved1.w;
     int   blurSamples     = max(int(wp.reserved2.x), 1);
@@ -329,7 +330,7 @@ void main() {
     // Use causticParams.w (depth-scale) as a per-layer reference distance; if unset,
     // fall back to a small stable value so division is safe.
     float tintDepthScale = max(wp.causticParams.w, 0.0001);
-    float volumeFactor = clamp(waterThickness / tintDepthScale, 0.0, 1.0);
+    float volumeFactor = 1.0f;
 
     // Water tint color transitions from shallow → deep depending on volume.
     vec3 waterTintColor = mix(shallowTint, deepTint, volumeFactor);
@@ -348,7 +349,11 @@ void main() {
     // enabled, use `reflectionStrength` directly so reflection appears
     // across all pixels uniformly (useful for debugging/stylized look).
     vec3 waterColor;
-    if (enableReflection) {
+    if (captureMode) {
+        // 360 capture: no env feedback. Use the base tint so water is not
+        // black (refraction/reflection are disabled, leaving sceneColor zero).
+        waterColor = waterTintColor;
+    } else if (enableReflection) {
         float reflMix = uniformReflection ? reflectionStrength : (fresnel * reflectionStrength);
         waterColor = mix(refractedColor, skyColor, reflMix);
     } else {
