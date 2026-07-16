@@ -79,14 +79,18 @@ void main() {
     // Apply noise time speed
     float animTime = time * noiseTimeSpeed;
 
+    // Compute the clip → screen UV once and reuse it everywhere (the conversion
+    // is identical for every use below). Sample scene depth once at this UV and
+    // reuse the raw value to avoid redundant texture fetches.
+    vec2 screenUV = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
+    float sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
+
     // === WATER VOLUME THICKNESS ===
     // Compute volume thickness from back-face depth (rendered with reversed winding)
     // before the normal computation, so we can modulate bump amplitude.
-    vec2 earlyScreenUV0 = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
-    float backFaceDepthRaw = texture(waterBackDepthTex, earlyScreenUV0).r;
+    float backFaceDepthRaw = texture(waterBackDepthTex, screenUV).r;
     float frontFaceLinear  = linearizeDepth(gl_FragCoord.z);
     float backFaceLinear   = linearizeDepth(backFaceDepthRaw);
-    float sceneDepthRaw    = texture(sceneDepthTex, earlyScreenUV0).r;
     float sceneDepthEarly  = linearizeDepth(sceneDepthRaw);
 
     // Clamp to scene depth so thickness doesn't extend beyond solid ground.
@@ -95,9 +99,9 @@ void main() {
 
     // Reconstruct world-space positions for a true view-ray thickness measurement.
     mat4 invViewProj = ubo.invViewProjection;
-    vec4 backFaceWorldH = invViewProj * vec4(earlyScreenUV0 * 2.0 - 1.0, backFaceDepthRaw, 1.0);
+    vec4 backFaceWorldH = invViewProj * vec4(screenUV * 2.0 - 1.0, backFaceDepthRaw, 1.0);
     vec3 backFaceWorld = backFaceWorldH.xyz / backFaceWorldH.w;
-    vec4 sceneWorldH = invViewProj * vec4(earlyScreenUV0 * 2.0 - 1.0, sceneDepthRaw, 1.0);
+    vec4 sceneWorldH = invViewProj * vec4(screenUV * 2.0 - 1.0, sceneDepthRaw, 1.0);
     vec3 sceneWorldPos = sceneWorldH.xyz / sceneWorldH.w;
 
     vec3 worldFrontPos = fragPosWorld;
@@ -138,10 +142,8 @@ void main() {
     // the procedural normal is consistent with the displaced geometry).
     float waveDepthTransition = wp.shallowColor.w;
     if (waveDepthTransition > 0.0) {
-        vec2 earlyScreenUV = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
-        float earlySceneDepth = texture(sceneDepthTex, earlyScreenUV).r;
         float earlyWaterDepth = gl_FragCoord.z;
-        float earlyDepthDiff = max(linearizeDepth(earlySceneDepth) - linearizeDepth(earlyWaterDepth), 0.0);
+        float earlyDepthDiff = max(sceneDepthEarly - linearizeDepth(earlyWaterDepth), 0.0);
         bAmp *= smoothstep(0.0, waveDepthTransition, earlyDepthDiff);
     }
 
@@ -178,9 +180,7 @@ void main() {
     if (dot(normal, viewDir) < 0.0) normal = -normal;
     vec3 lightDir = normalize(-ubo.lightDir.xyz);
     
-    // Base screen UV from clip position
-    vec2 screenUV = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
-    
+    // Base screen UV already computed at the top of main() and reused above.
     int dbgMode = int(ubo.debugParams.x + 0.5);
 
     // === PERLIN NOISE-BASED REFRACTION ===
@@ -246,7 +246,7 @@ void main() {
         sceneColor = mix(screenSample, cubeColor, clamp(refractionStrength, 0.0, 1.0));
     } 
 
-    sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
+    // sceneDepthRaw already sampled once at the top of main() and reused.
     // Sample g-buffer attachments produced by the main pass (if available)
 
     // === DEPTH-BASED EFFECTS ===
@@ -528,15 +528,13 @@ void main() {
     // Debug mode 33: raw scene color — verifies whether the solid pass
     // output actually reaches the water fragment shader.
     if (dbgMode == 33) {
-        vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
-        vec3 sc = texture(sceneColorTex, uv).rgb*0.9;
+        vec3 sc = texture(sceneColorTex, screenUV).rgb*0.9;
         outColor = vec4(sc, 1.0);
     }
 
     // Debug mode 34: screen UV — verifies correct clip → UV conversion.
     if (dbgMode == 34) {
-        vec2 uv = (fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5;
-        outColor = vec4(uv, 0.0, 1.0);
+        outColor = vec4(screenUV, 0.0, 1.0);
     }
 
 
