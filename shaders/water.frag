@@ -152,23 +152,17 @@ void main() {
     vec3 T  = normalize(cross(up, N));
     vec3 B  = cross(N, T);
 
-    // Scale step size to noise wavelength (matching TES)
-    float epsFrag = max(0.5 / max(noiseScale, 0.001), 0.05);
-
     vec3 normal;
     if (ubo.passParams.y > 0.5) {
         normal = N;
     } else {
         // When tessellation is inactive, approximate the bumped normal from
-        // the procedural displacement on the flat base mesh.
-        float h0 = waterWaveDisplacement(fragPos, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bAmp, 1.0);
-        float ht_pos = waterWaveDisplacement(fragPos + epsFrag * T, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bAmp, 1.0);
-        float ht_neg = waterWaveDisplacement(fragPos - epsFrag * T, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bAmp, 1.0);
-        float hb_pos = waterWaveDisplacement(fragPos + epsFrag * B, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bAmp, 1.0);
-        float hb_neg = waterWaveDisplacement(fragPos - epsFrag * B, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bAmp, 1.0);
-
-        float dhdT = (ht_pos - ht_neg) / (2.0 * epsFrag);
-        float dhdB = (hb_pos - hb_neg) / (2.0 * epsFrag);
+        // the procedural displacement on the flat base mesh.  The analytic
+        // gradient from a single noise evaluation replaces 5 finite-difference
+        // samples (the epsFrag scale is no longer needed).
+        vec4 wave = waterWaveSample(fragPos.xyz, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bAmp, 1.0);
+        float dhdT = dot(wave.yzw, T);
+        float dhdB = dot(wave.yzw, B);
 
         normal = normalize(N - dhdT * T - dhdB * B);
     }

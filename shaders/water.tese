@@ -116,10 +116,18 @@ void main() {
         }
     }
 
-    // Calculate wave displacement using 4D Perlin FBM (pos.xyz, time)
+    // Calculate wave displacement and its analytic spatial gradient using 4D
+    // Perlin FBM.  A single noise evaluation yields both the height and the
+    // gradient, replacing the previous 5-evaluation central-difference scheme.
     float animTime = time * noiseTimeSpeed;
     vec3 xyz = pos.xyz;
-    float waveDisplacement = waterWaveDisplacement(
+
+    // Surface basis (tangent plane) for projecting the analytic gradient.
+    vec3 upVec = abs(normal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(upVec, normal));
+    vec3 B = cross(normal, T);
+
+    vec4 wave = waterWaveSample(
         xyz,
         animTime,
         noiseScale,
@@ -130,21 +138,12 @@ void main() {
         waveScale
     );
 
-    // Compute gradient of the displacement via central differences and derive
-    // the bumped normal.  Then displace the vertex along that bumped normal so
-    // the geometry's surface matches the shading normal (gradient-based displacement).
-    vec3 upVec = abs(normal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 T = normalize(cross(upVec, normal));
-    vec3 B = cross(normal, T);
+    float waveDisplacement = wave.x;
 
-    float epsTes = max(0.5 / max(noiseScale, 0.001), 0.05);
-    float hT_pos = waterWaveDisplacement(xyz + epsTes * T, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bumpAmp, waveScale);
-    float hT_neg = waterWaveDisplacement(xyz - epsTes * T, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bumpAmp, waveScale);
-    float hB_pos = waterWaveDisplacement(xyz + epsTes * B, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bumpAmp, waveScale);
-    float hB_neg = waterWaveDisplacement(xyz - epsTes * B, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bumpAmp, waveScale);
-
-    float dhdT = (hT_pos - hT_neg) / (2.0 * epsTes);
-    float dhdB = (hB_pos - hB_neg) / (2.0 * epsTes);
+    // Project the analytic gradient onto the tangent basis to get the
+    // height-field slopes along T and B.
+    float dhdT = dot(wave.yzw, T);
+    float dhdB = dot(wave.yzw, B);
 
     vec3 bumpedN = normalize(normal - dhdT * T - dhdB * B);
     if (dot(bumpedN, normal) < 0.0) bumpedN = -bumpedN;
