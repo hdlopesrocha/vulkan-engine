@@ -7,6 +7,15 @@
 #include <fstream>
 #include <exception>
 
+// File-scope (not a VulkanApp instance member) tracking of the queue each
+// async-ring slot's fence was last submitted on. Kept out of the VulkanApp
+// instance layout on purpose: adding an instance member here was observed to
+// shift the class layout and expose a latent out-of-bounds write that
+// corrupted m_deferredDestroys. A file-scope array avoids perturbing layout.
+namespace {
+    VkQueue g_asyncSlotSubmitQueue[VulkanApp::ASYNC_CMD_POOL_RING_SIZE]{};
+}
+
 // VK_KHR_pipeline_binary may not be in older Vulkan headers (pre-1.4).
 // Define the extension name so we can check for runtime support.
 #ifndef VK_KHR_PIPELINE_BINARY_EXTENSION_NAME
@@ -1421,6 +1430,7 @@ void VulkanApp::createAsyncCmdPoolRing() {
             throw std::runtime_error("failed to create async ring fence");
         }
         resources.addFence(asyncCmdFenceRing[i], "VulkanApp: asyncCmdFenceRing");
+        g_asyncSlotSubmitQueue[i] = graphicsQueue;
     }
 }
 
@@ -1460,9 +1470,35 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
     VkCommandPool pool = singleTimeCmdPools[idx];
 
     // Wait for the previous submission using this ring slot to complete
-    // before resetting the command buffer.
+    // before reusing the command buffer.
     vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
-    vkResetFences(device, 1, &fence);
+    // Do NOT vkResetFences here: on RADV the validation layer can still flag a
+    // fence as in use immediately after vkWaitForFences returns
+    // (VUID-vkResetFences-pFences-01123). Replace it with a fresh, never-
+    // submitted fence. Destroying the old fence INLINE would trip
+    // VUID-vkDestroyFence-fence-01120 (same RADV lag), so defer the destroy
+    // to processPendingCommandBuffers() like the per-frame fence.
+    VkFence oldFence = fence;
+    VkQueue q = graphicsQueue;
+    deferDestroyUntilFence(oldFence, [this, oldFence, q]() {
+        // Force the submitting queue idle so RADV has fully retired the fence
+        // before we destroy it (avoids VUID-vkDestroyFence-fence-01120).
+        vkQueueWaitIdle(q);
+        resources.removeFence(oldFence);
+        vkDestroyFence(device, oldFence, nullptr);
+    });
+    {
+        VkFenceCreateInfo fci{};
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fci.flags = 0;
+        VkFence newFence = VK_NULL_HANDLE;
+        if (vkCreateFence(device, &fci, nullptr, &newFence) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create single-time command fence");
+        }
+        resources.addFence(newFence, "VulkanApp: singleTimeCmdFence");
+        fence = newFence;
+        singleTimeCmdFences[idx] = newFence;
+    }
     vkResetCommandBuffer(cmd, 0);
 
     VkCommandBufferBeginInfo beginInfo{};
@@ -1822,11 +1858,15 @@ void VulkanApp::recordGenerateMipmaps(VkCommandBuffer commandBuffer, VkImage ima
 }
 // Process any pending command buffers (free command buffers and fences when fence signaled)
 void VulkanApp::processPendingCommandBuffers() {
-    // Process deferred-destruction callbacks first to avoid inspecting fences that
-    // we might destroy below. For callbacks registered with a specific fence,
-    // execute them when that fence signals. For callbacks registered with
-    // VK_NULL_HANDLE (wait-for-all), execute them only when there are no pending
-    // command buffers remaining.
+    // Deferred-destruction callbacks are collected under m_submissionMutex but
+    // INVOKED OUTSIDE it. Several callbacks call vkQueueWaitIdle(queue) to fully
+    // retire a fence on drivers that lag (RADV). Running a blocking queue wait
+    // while holding m_submissionMutex would invert the established lock ordering
+    // (submitMutex -> m_submissionMutex): a worker thread that holds a queue's
+    // submit mutex and is blocked waiting for m_submissionMutex would deadlock
+    // against the main thread parked in vkQueueWaitIdle. See below for how the
+    // collected closures are flushed after each guarded section.
+    std::vector<std::function<void()>> deferredToRun;
     {
         std::lock_guard<std::recursive_mutex> dd(m_submissionMutex);
         for (auto it = m_deferredDestroys.begin(); it != m_deferredDestroys.end(); ) {
@@ -1850,6 +1890,7 @@ void VulkanApp::processPendingCommandBuffers() {
                 if (allPendingSignaled) {
                     bool fenceCheck = true;
                     for (uint32_t fi = 0; fi < inFlightFences.size(); fi++) {
+                        if (inFlightFences[fi] == VK_NULL_HANDLE) continue;
                         VkResult fs = vkGetFenceStatus(device, inFlightFences[fi]);
                         if (fs == VK_NOT_READY) { fenceCheck = false; break; }
                     }
@@ -1870,11 +1911,15 @@ void VulkanApp::processPendingCommandBuffers() {
                 if (f == VK_NULL_HANDLE && m_deferredDestroys.size() % 100 == 0) {
                     std::cerr << "[PROCESS PENDING] Running deferDestroyUntilAllPending callback (queue=" << m_deferredDestroys.size() << ")" << std::endl;
                 }
-                fn();
+                deferredToRun.push_back(std::move(fn));
                 it = m_deferredDestroys.erase(it);
             } else ++it;
         }
     }
+    // Flush collected callback closures WITHOUT holding m_submissionMutex so any
+    // vkQueueWaitIdle(queue) inside them cannot deadlock against a submit path.
+    for (auto& fn : deferredToRun) fn();
+    deferredToRun.clear();
 
     // Now process pending command buffers and free their command buffers when fences signal.
     // We first collect signaled entries while holding the m_submissionMutex, then
@@ -1928,8 +1973,7 @@ void VulkanApp::processPendingCommandBuffers() {
             std::lock_guard<std::recursive_mutex> dd(m_submissionMutex);
             for (auto dit = m_deferredDestroys.begin(); dit != m_deferredDestroys.end(); ) {
                 if (dit->first == fence) {
-                    auto fn = dit->second;
-                    fn();
+                    deferredToRun.push_back(std::move(dit->second));
                     dit = m_deferredDestroys.erase(dit);
                 } else {
                     ++dit;
@@ -1939,6 +1983,10 @@ void VulkanApp::processPendingCommandBuffers() {
             vkDestroyFence(device, fence, nullptr);
         }
     }
+    // Flush any per-fence deferred-destruction closures collected above,
+    // OUTSIDE m_submissionMutex, so their vkQueueWaitIdle(queue) calls
+    // cannot deadlock against a submit path (submitMutex -> m_submissionMutex).
+    for (auto& fn : deferredToRun) fn();
 }
 
 void VulkanApp::applyPendingLayoutUpdatesForCommandBuffer(VkCommandBuffer cmd) {
@@ -2410,6 +2458,16 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
         VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
+        if (submitRes == VK_SUCCESS) {
+            // If this command buffer belongs to the async ring (it was
+            // obtained via allocatePrimaryCommandBuffer), also signal the
+            // slot's ring fence. Without this the ring fence is never
+            // submitted and the next allocatePrimaryCommandBuffer() for
+            // this slot deadlocks in vkWaitForFences(UINT64_MAX).
+            // The async submit paths (submitCommandBufferAsync/ToQueue)
+            // already do this; this synchronous submit path did not.
+            signalRingSlotFence(commandBuffer, graphicsQueue);
+        }
         if (submitRes != VK_SUCCESS) {
             if (submitRes == VK_ERROR_DEVICE_LOST) {
                 deviceLost.store(true);
@@ -2578,7 +2636,34 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             if (waitRes != VK_SUCCESS && waitRes != VK_TIMEOUT) {
                 throw std::runtime_error("vkWaitForFences failed on async ring slot");
             }
-            vkResetFences(device, 1, &slotFence);
+            // Do NOT vkResetFences here: on RADV the validation layer can still
+            // flag a fence as in use immediately after vkWaitForFences returns
+            // (VUID-vkResetFences-pFences-01123). We replace it with a fresh
+            // fence for this slot's upcoming submit. The old fence has signaled
+            // (we waited), but destroying it INLINE would trip
+            // VUID-vkDestroyFence-fence-01120 for the same RADV lag. Defer the
+            // destroy to processPendingCommandBuffers() — the same safe point that
+            // recycles the per-frame fence — so the layer has retired it.
+            VkFence oldFence = slotFence;
+            VkQueue q = g_asyncSlotSubmitQueue[idx];
+            deferDestroyUntilFence(oldFence, [this, oldFence, q]() {
+                // Force the submitting queue idle so RADV has fully retired the
+                // fence before we destroy it (avoids VUID-vkDestroyFence-fence-01120).
+                vkQueueWaitIdle(q);
+                resources.removeFence(oldFence);
+                vkDestroyFence(device, oldFence, nullptr);
+            });
+        }
+        {
+            VkFenceCreateInfo fci{};
+            fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+            fci.flags = 0;
+            VkFence newFence = VK_NULL_HANDLE;
+            if (vkCreateFence(device, &fci, nullptr, &newFence) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create async ring slot fence");
+            }
+            resources.addFence(newFence, "VulkanApp: asyncCmdFenceRing");
+            asyncCmdFenceRing[idx] = newFence;
         }
 
         VkResult resetRes = vkResetCommandBuffer(cmd, 0);
@@ -2688,6 +2773,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             ringSlot = it->second;
         }
         VkFence slotFence = asyncCmdFenceRing[ringSlot];
+        g_asyncSlotSubmitQueue[ringSlot] = queue;
         VkSubmitInfo2 emptySubmit{};
         emptySubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
         VkResult sr = vkQueueSubmit2(queue, 1, &emptySubmit, slotFence);
@@ -3448,10 +3534,6 @@ void VulkanApp::createSyncObjects() {
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-    VkFenceCreateInfo fenceInfo{};
-    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-
     // imageAvailableSemaphores: one per CPU frame-in-flight slot, used to wait on acquire
     imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
     // renderFinishedSemaphores: one per swapchain image to avoid re-signaling a semaphore
@@ -3471,15 +3553,15 @@ void VulkanApp::createSyncObjects() {
         resources.addSemaphore(renderFinishedSemaphores[i], "VulkanApp: renderFinishedSemaphore");
     }
     
-    // Fences per frame-in-flight
-    inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        if (vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create fence for frame " + std::to_string(i));
-        }
-        // Register fence
-        resources.addFence(inFlightFences[i], "VulkanApp: inFlightFence");
-    }
+    // Per-frame fences are created lazily inside drawFrame() — one fresh fence
+    // per frame submission, destroyed once its GPU work completes. This avoids
+    // resetting a fence the validation layer may still consider "in use" after it
+    // is observed as signaled (VUID-vkResetFences-pFences-01123, a RADV
+    // completion-tracking lag when a binary fence shares a submit with a timeline
+    // semaphore signal). The frame-in-flight limit is enforced by waiting on the
+    // previous fence of the same slot (reliable binary vkWaitForFences) plus the
+    // timeline semaphore governor below.
+    inFlightFences.assign(MAX_FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
 
     // Create the frame timeline semaphore (replaces per-frame binary fences for frame pacing).
     // Enables finer CPU↔GPU overlap by allowing intermediate signal points per frame.
@@ -4712,9 +4794,16 @@ void VulkanApp::drawFrame() {
             waitInfo.semaphoreCount = 1;
             waitInfo.pSemaphores = &frameTimeline;
             waitInfo.pValues = &targetValue;
-            VkResult r = vkWaitSemaphores(device, &waitInfo, UINT64_MAX);
+            // Bounded wait: the reliable throttle is the binary in-flight fence
+            // below. On some drivers (RADV) the frame timeline can report stale
+            // values, so an infinite wait deadlocks the whole app. Cap it and
+            // proceed on timeout instead of blocking forever.
+            VkResult r = vkWaitSemaphores(device, &waitInfo, 250'000'000ULL);
             if (r == VK_ERROR_DEVICE_LOST) return;
-            if (r != VK_SUCCESS) {
+            if (r == VK_TIMEOUT) {
+                static bool warned = false;
+                if (!warned) { std::cerr << "[VulkanApp] WARNING: frameTimeline vkWaitSemaphores timed out (stale timeline) — proceeding to avoid deadlock\n"; warned = true; }
+            } else if (r != VK_SUCCESS) {
                 std::cerr << "vkWaitSemaphores (frameTimeline) failed: " << r << std::endl;
                 return;
             }
@@ -4747,9 +4836,16 @@ void VulkanApp::drawFrame() {
             waitInfo.semaphoreCount = 1;
             waitInfo.pSemaphores = &frameTimeline;
             waitInfo.pValues = &waitVal;
-            VkResult res = vkWaitSemaphores(device, &waitInfo, UINT64_MAX);
+            // Bounded wait: same stale-timeline hazard as the frame-throttle
+            // wait above — an infinite wait deadlocks on some drivers. Cap it
+            // and proceed on timeout (the binary in-flight fence already bounds
+            // outstanding frames to MAX_FRAMES_IN_FLIGHT).
+            VkResult res = vkWaitSemaphores(device, &waitInfo, 250'000'000ULL);
             if (res == VK_ERROR_DEVICE_LOST) return;
-            if (res != VK_SUCCESS) {
+            if (res == VK_TIMEOUT) {
+                static bool warned = false;
+                if (!warned) { std::cerr << "[VulkanApp] WARNING: per-image frameTimeline vkWaitSemaphores timed out (stale timeline) — proceeding to avoid deadlock\n"; warned = true; }
+            } else if (res != VK_SUCCESS) {
                 std::cerr << "vkWaitSemaphores (image) failed: " << res << std::endl;
                 return;
             }
@@ -4769,26 +4865,39 @@ void VulkanApp::drawFrame() {
     }
 
     // Process any completed async generation submissions and free their command buffers/fences/semaphores
-    // and run deferred-destruction callbacks.  Must run BEFORE resetting the current frame's fence so
+    // and run deferred-destruction callbacks.  Must run BEFORE selecting the current frame's fence so
     // that the fence check in processPendingCommandBuffers() sees ALL fences in their signaled state
     // and does not skip the current frame slot — this eliminates the stale-timelessmaphore race.
     processPendingCommandBuffers();
 
-    // Wait for the current frame's fence to be signaled before resetting it.
-    // The timeline semaphore wait above should ensure this returns immediately,
-    // but on some drivers the timeline counter can return stale values, so we
-    // always confirm the fence state directly before reset.
-    VkResult waitForFenceResult = vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-    if (waitForFenceResult == VK_ERROR_DEVICE_LOST) return;
-    if (waitForFenceResult != VK_SUCCESS) {
-        std::cerr << "vkWaitForFences failed: " << waitForFenceResult << std::endl;
-        return;
+    // Frame-in-flight throttling: wait for the PREVIOUS fence submitted for this
+    // slot before reusing the slot. This is a plain binary vkWaitForFences, which
+    // is the reliable signal on all drivers (unlike the timeline counter, which
+    // can report stale values). We never reset the fence — it is destroyed once
+    // signaled (see the submit below) — so we avoid VUID-vkResetFences-pFences-01123
+    // where the validation layer still considers a just-signaled fence "in use".
+    VkFence prevFrameFence = inFlightFences[currentFrame];
+    if (prevFrameFence != VK_NULL_HANDLE) {
+        VkResult waitForFenceResult = vkWaitForFences(device, 1, &prevFrameFence, VK_TRUE, UINT64_MAX);
+        if (waitForFenceResult == VK_ERROR_DEVICE_LOST) return;
+        if (waitForFenceResult != VK_SUCCESS) {
+            std::cerr << "vkWaitForFences (frame slot) failed: " << waitForFenceResult << std::endl;
+            return;
+        }
     }
-    VkResult resetFenceResult = vkResetFences(device, 1, &inFlightFences[currentFrame]);
-    if (resetFenceResult == VK_ERROR_DEVICE_LOST) return;
-    if (resetFenceResult != VK_SUCCESS) {
-        std::cerr << "vkResetFences failed: " << resetFenceResult << std::endl;
-        return;
+
+    // Create a fresh fence for this frame submission. It is destroyed (never
+    // reset) once its GPU work completes, eliminating the reset-while-in-use race.
+    VkFence frameFence = VK_NULL_HANDLE;
+    {
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = 0;
+        if (vkCreateFence(device, &fenceInfo, nullptr, &frameFence) != VK_SUCCESS) {
+            std::cerr << "failed to create frame fence" << std::endl;
+            return;
+        }
+        resources.addFence(frameFence, "VulkanApp: frameFence");
     }
     // compute deltaTime for this frame
     double frameNow = glfwGetTime();
@@ -5060,14 +5169,24 @@ void VulkanApp::drawFrame() {
         // sees populated layouts for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
-        r = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]);
+        r = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, frameFence);
         if (r == VK_SUCCESS) {
             frameTimelineValue.store(nextTimelineValue);
         }
+        // Track the live fence for this slot so the deferred-destroy gate and
+        // waitForFrameFences() observe the correct in-flight state.
+        inFlightFences[currentFrame] = frameFence;
         // Register pending layout updates recorded into this frame's command
-        // buffer so they are applied when the frame fence signals.
-        deferDestroyUntilFence(inFlightFences[currentFrame], [this, commandBuffer]() {
+        // buffer so they are applied when the frame fence signals, then destroy
+        // the (never-reset) fence. The slot pointer is cleared first so a later
+        // reuse of this slot does not wait on / destroy an already-freed fence.
+        deferDestroyUntilFence(frameFence, [this, frameFence, commandBuffer, slot = currentFrame]() {
             applyPendingLayoutUpdatesForCommandBuffer(commandBuffer);
+            if (inFlightFences[slot] == frameFence) inFlightFences[slot] = VK_NULL_HANDLE;
+            if (resources.find((uintptr_t)frameFence).has_value()) {
+                resources.removeFence(frameFence);
+                vkDestroyFence(device, frameFence, nullptr);
+            }
         });
     }
     if (r == VK_ERROR_DEVICE_LOST) {

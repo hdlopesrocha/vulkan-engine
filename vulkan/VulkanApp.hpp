@@ -599,8 +599,11 @@ public:
         // Called after a frame has been submitted/presented. Derived apps may override.
         virtual void postSubmit();
 
-    private:
+    public:
+        // Size of the async command-buffer / fence ring. constexpr static, so it
+        // does not affect the VulkanApp instance layout.
         static constexpr uint32_t ASYNC_CMD_POOL_RING_SIZE = 64;
+    private:
         VkCommandPool asyncCmdPoolRing[ASYNC_CMD_POOL_RING_SIZE]{};
         VkCommandBuffer asyncCmdBufferRing[ASYNC_CMD_POOL_RING_SIZE]{};
         VkFence asyncCmdFenceRing[ASYNC_CMD_POOL_RING_SIZE]{};
