@@ -1,0 +1,500 @@
+\documentclass[a4paper,12pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[table]{xcolor}
+\usepackage{geometry}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{titlesec}
+\usepackage{booktabs}
+\usepackage{array}
+
+\geometry{margin=2.5cm}
+
+\definecolor{criticalcolor}{HTML}{DC3545}
+\definecolor{highcolor}{HTML}{FD7E14}
+\definecolor{mediumcolor}{HTML}{FFC107}
+\definecolor{lowcolor}{HTML}{28A745}
+\definecolor{resolvedcolor}{HTML}{6C757D}
+
+\newcommand{\severitybox}[2]{%
+  \colorbox{#1}{\makebox[2.5cm][c]{\textcolor{white}{\textbf{#2}}}}%
+}
+
+\lstset{
+  basicstyle=\small\ttfamily,
+  breaklines=true,
+  frame=single,
+  numbers=none,
+  tabsize=2,
+  backgroundcolor=\color{gray!10},
+  extendedchars=true,
+  inputencoding=utf8,
+  literate={—}{---}1 {·}{$\cdot$}1 {≈}{$\approx$}1 {×}{$\times$}1
+}
+
+\title{\textbf{Performance Report \#09}\\[4pt]
+\large Vulkan Engine — Shader Performance Audit}
+\author{Henrique Rocha}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Unlike previous reports, which focused on CPU-side host code, synchronization
+and resource lifetime, this audit is dedicated exclusively to the
+\textbf{GPU shader programs} under \texttt{shaders/}. Every finding below is a
+pure \emph{performance} concern: none of them require any change to the
+rendered result. All existing features — triplanar mapping, cascaded EVSM
+shadows, tessellated displacement, procedural water (refraction, reflection,
+caustics, glitter), GPU vegetation and every debug visualization mode — are to
+be \textbf{preserved unchanged}. The recommendations only remove redundant work,
+hoist invariant computation out of per-fragment scope, and gate
+development-only code behind specialization constants. 12 issues are reported
+(3 high, 6 medium, 3 low), concentrated in the two heaviest fragment shaders
+(\texttt{water.frag}, \texttt{main.frag}) and the shared procedural-noise
+library.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Scope \& Methodology}
+
+This audit covers the shader tree only:
+\texttt{shaders/*.\{vert,frag,geom,tesc,tese,comp\}} and the shared
+\texttt{shaders/includes/*.glsl}. Each shader was read in full and analysed for
+per-invocation cost, focusing on the fragment and tessellation stages where
+invocation counts are highest. Cost estimates assume the default configuration
+(3 cascades, tessellation enabled, procedural water with caustics). The guiding
+constraint from \texttt{AGENTS.md} is respected: \emph{functionality must be
+kept}; only work that is provably redundant or hoistable is targeted.
+
+\subsection*{Shader Hotspot Overview}
+
+\begin{center}
+\begin{tabular}{lcl}
+\toprule
+\textbf{Shader} & \textbf{Lines} & \textbf{Dominant cost} \\
+\midrule
+\texttt{water.frag}      & 611 & 4D FBM noise, matrix inverse, caustics \\
+\texttt{main.frag}       & 514 & triplanar sampling, env cubemap, debug chain \\
+\texttt{water.tese}      & 166 & 5$\times$ FBM displacement per vertex \\
+\texttt{vegetation.geom} & 187 & already well-optimized (per-plane wind) \\
+\texttt{includes/perlin.glsl} & 131 & \texttt{sin()}-based hash, 8/16 taps \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\newpage
+
+\section{Issue Register}
+
+\subsection{High Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[SH1]}] \textbf{Per-Fragment 4$\times$4 Matrix Inverse in \texttt{water.frag}}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/water.frag} \\
+    \textbf{Line:} & 97 \\
+    \textbf{Category:} & Fragment ALU / Invariant Hoisting \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Every water fragment recomputes a full inverse of the view-projection matrix:
+
+\begin{lstlisting}
+mat4 invViewProj = inverse(ubo.viewProjection);
+\end{lstlisting}
+
+  \texttt{inverse(mat4)} expands to roughly 150--200 scalar ops (cofactors +
+  reciprocal determinant). This is entirely camera-constant: it is identical for
+  every fragment of every water pixel in the frame, yet it is evaluated
+  millions of times. The result is used only to reconstruct two world-space
+  positions (lines 98--101).
+
+  \textbf{Recommendation:}
+  Compute the inverse once on the CPU and upload it in the UBO. The
+  \texttt{WaterUBO} used by \texttt{postprocess.frag} already carries an
+  \texttt{invViewProjection} field, so the pattern and the CPU value already
+  exist — add the same \texttt{mat4} to \texttt{SolidParamsUBO} (or the water
+  render UBO) and read it directly. Identical output, one matrix multiply
+  instead of a per-fragment inverse.
+
+\item[\textbf{[SH2]}] \textbf{Procedural Noise Explosion in Water Caustics/Refraction}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/water.frag}, \texttt{includes/water\_noise.glsl} \\
+    \textbf{Line:} & 285--296, 413--468 \\
+    \textbf{Category:} & Fragment ALU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The Perlin caustic path (lines 435--468) evaluates
+  \texttt{waterRefractionNoise} up to \textbf{5 times} per fragment (front
+  centre reused, plus 2 tangent perturbations, plus back centre and 2 more
+  perturbations). Each \texttt{waterRefractionNoise} call itself performs
+  \emph{four} \texttt{waterFbmNoise} evaluations (lines 24--33), and each FBM
+  runs \texttt{noiseOctaves} iterations of \texttt{perlinNoise4D} — 16
+  \texttt{hash44} evaluations per octave. On top of that the shader adds
+  specular noise (line 285), two glitter FBM calls (lines 291--294) and the
+  refraction noise (line 188). A single deep-water fragment can therefore issue
+  \textbf{hundreds} of 4D gradient-noise evaluations.
+
+  \textbf{Recommendation (feature-preserving):}
+  \begin{itemize}[noitemsep]
+    \item Skip the entire caustic block when \texttt{causticIntensity} $\approx 0$
+          (see also SH9) — no visual change where caustics are off.
+    \item Reduce the caustic Jacobian to a single-sided estimate blended by
+          \texttt{depthInfluence} only when the back face is valid; the flat-water
+          case (\texttt{hasValidBackFace == false}) never needs the back-face
+          FBM set.
+    \item Compute the shared FBM lattice once and derive the perturbed samples
+          via analytic gradient rather than re-sampling at $\pm\varepsilon$
+          (finite differences already assume smoothness).
+  \end{itemize}
+  These reduce redundant octave work while keeping the same wave/caustic look.
+
+\item[\textbf{[SH3]}] \textbf{\texttt{sin()}-Based Hash in Noise Library}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{includes/perlin.glsl}, \texttt{includes/voronoi.glsl} \\
+    \textbf{Line:} & perlin.glsl 4--17; voronoi.glsl 3--9 \\
+    \textbf{Category:} & Fragment/Tessellation ALU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  All gradient/feature hashing uses the classic
+  \texttt{fract(sin(dot(...)) * 43758.5453)} idiom:
+
+\begin{lstlisting}
+return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
+\end{lstlisting}
+
+  \texttt{hash33} issues 3 \texttt{sin} calls, \texttt{hash44} issues 4. Since
+  \texttt{perlinNoise3D} calls \texttt{hash33} 8 times and
+  \texttt{perlinNoise4D} calls \texttt{hash44} 16 times, a single 4D noise
+  octave costs 64 transcendental \texttt{sin} evaluations. \texttt{sin} is a
+  multi-instruction special-function-unit op and is a well-known bottleneck for
+  procedural noise. This hash also has known precision artefacts at large
+  coordinates on some vendors.
+
+  \textbf{Recommendation:}
+  Replace the \texttt{sin} hash with an integer/bit-mixing hash (e.g.\ a
+  Wang/PCG-style \texttt{uint} mix on \texttt{floatBitsToUint(p)}), which
+  produces statistically equivalent noise with pure integer ALU. This is a
+  drop-in change to \texttt{hash33}/\texttt{hash44}/\texttt{hash3} and benefits
+  water, terrain displacement and vegetation simultaneously without altering the
+  noise character (only the numeric seed constants change).
+
+\end{enumerate}
+
+\newpage
+
+\subsection{Medium Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[SH4]}] \textbf{Redundant \texttt{screenUV} and Scene-Depth Samples in \texttt{water.frag}}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/water.frag} \\
+    \textbf{Line:} & 85, 89, 141--142, 182, 249 \\
+    \textbf{Category:} & Fragment ALU / Texture Bandwidth \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The clip-to-screen conversion
+  \texttt{(fragPosClip.xy / fragPosClip.w) * 0.5 + 0.5} is recomputed at least
+  four times (lines 85, 141, 182, and again in debug at 514/521) producing the
+  identical value each time. Worse, \texttt{sceneDepthTex} is sampled three
+  times at effectively the same coordinate: line 89 (\texttt{earlyScreenUV0}),
+  line 142 (\texttt{earlyScreenUV}) and line 249 (\texttt{screenUV}). These are
+  the same texel fetched repeatedly.
+
+  \textbf{Recommendation:}
+  Compute \texttt{screenUV} once at the top of \texttt{main()} and reuse it;
+  sample \texttt{sceneDepthTex} once into a local and reuse the raw value.
+  Bit-identical output, fewer texture fetches and address computations per
+  fragment.
+
+\item[\textbf{[SH5]}] \textbf{Environment Cubemap Sampled Even When Reflection Strength Is Zero}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/main.frag} \\
+    \textbf{Line:} & 216--228 \\
+    \textbf{Category:} & Texture Bandwidth \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The environment reflection block samples the cubemap unconditionally whenever
+  \texttt{ubo.materialFlags.x < 0.5} (i.e.\ not during 360 capture):
+
+\begin{lstlisting}
+vec3 envColor = texture(environmentMap, normalize(envReflectDir)).rgb;
+...
+blendedRefStrength = refStrength0*w.x + refStrength1*w.y + refStrength2*w.z;
+envReflection = envColor * envBlend * blendedRefStrength;
+\end{lstlisting}
+
+  For the overwhelming majority of terrain materials \texttt{reflectionStrength}
+  (\texttt{tessLevelParams.z}) is 0, so the cubemap sample and the subsequent
+  \texttt{reflect}/\texttt{normalize} are pure waste — the result is multiplied
+  by zero and \texttt{mix()} at line 503 collapses to the lit colour.
+
+  \textbf{Recommendation:}
+  Compute \texttt{blendedRefStrength} first (it is a cheap dot product on data
+  already loaded), and only sample the cubemap when it exceeds a small epsilon.
+  Because \texttt{blendedRefStrength} is per-material and largely uniform across
+  a draw, the branch is highly coherent. Identical output; skips a cubemap fetch
+  on all non-reflective surfaces.
+
+\item[\textbf{[SH6]}] \textbf{Triplanar UV Recomputation and Repeated Sampling}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{includes/triplanar.glsl}, \texttt{shaders/main.frag} \\
+    \textbf{Line:} & triplanar.glsl 22--101 \\
+    \textbf{Category:} & Fragment ALU / Texture Bandwidth \\
+  \end{tabular}
+
+  \textbf{Description:}
+  In the triplanar path, \texttt{computeTriplanarAlbedo},
+  \texttt{computeTriplanarNormal}, \texttt{computeTriplanarRoughness} and
+  \texttt{computeTriplanarAO} each independently call
+  \texttt{computeTriplanarUVs} for the \emph{same} \texttt{fragPosWorld} and
+  \texttt{brushIndex}, so the projected UVs (with their branch on
+  \texttt{geomN} sign) are recomputed four times per material. Because
+  \texttt{main.frag} blends three materials, that is up to \textbf{12}
+  UV-recomputations and up to \textbf{36} texture samples (3 projections
+  $\times$ 3 materials $\times$ up to 4 maps) per fragment.
+
+  \textbf{Recommendation:}
+  Compute the three projected UV sets once per material (a single call
+  producing \texttt{uvX/uvY/uvZ}) and pass them into the albedo/normal/
+  roughness/AO samplers, or fold the four map fetches into one helper that
+  reuses the UVs. The per-projection zero-weight guards (\texttt{triW.x > 0.0})
+  already skip unused projections — preserve them. No change to blend result.
+
+\item[\textbf{[SH7]}] \textbf{Debug Visualization Chains Compiled Into Release Shaders}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/main.frag}, \texttt{shaders/water.frag} \\
+    \textbf{Line:} & main.frag 230--499; water.frag 481--604 \\
+    \textbf{Category:} & Shader Size / ICache / ALU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{main.frag} contains \textbf{34} sequential \texttt{if (debugMode == N)}
+  branches and \texttt{water.frag} contains \textbf{17} \texttt{if (dbgMode == N)}
+  branches. Several of these blocks perform texture samples and even full
+  triplanar/noise recomputation (e.g.\ main.frag modes 17--30 call
+  \texttt{computeTriplanarNormal}; water.frag mode 32 recomputes
+  \texttt{waterWaveDisplacement}). Although \texttt{debugMode} is uniform and the
+  branches are coherent, the entire chain is compiled into the production
+  pipeline: it bloats the shader, keeps live registers for otherwise-dead paths,
+  and every fragment still evaluates the comparison ladder.
+
+  \textbf{Recommendation:}
+  Gate the debug blocks behind a \texttt{layout(constant\_id = N) const int}
+  specialization constant (or a preprocessor \texttt{\#ifdef DEBUG\_MODES}). In
+  release pipelines the compiler then dead-code-eliminates the whole ladder,
+  shrinking the shader and freeing registers, while debug builds keep every
+  visualization mode exactly as-is.
+
+\item[\textbf{[SH8]}] \textbf{Five Displacement Evaluations Per Water Tessellation Vertex}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/water.tese} \\
+    \textbf{Line:} & 122--149 \\
+    \textbf{Category:} & Tessellation ALU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Each tessellated water vertex calls \texttt{waterWaveDisplacement} five times:
+  once for the height (line 122) and four times for the central-difference
+  normal (lines 141--144, at $\pm\varepsilon T$ and $\pm\varepsilon B$). Each
+  call is a two-FBM evaluation. With high tessellation factors the vertex count
+  is large, making this the dominant tessellation cost. The same 4$\times$
+  finite-difference pattern is repeated in \texttt{water.frag} (lines 162--169)
+  for the no-tessellation fallback.
+
+  \textbf{Recommendation:}
+  Derive the surface gradient analytically from a single noise evaluation, or
+  reduce to a forward difference (3 evaluations instead of 5) — the wave normal
+  is already an approximation. Alternatively cache the centre height and reuse it
+  across both the displacement and gradient. Visual result is preserved within
+  the existing approximation tolerance.
+
+\item[\textbf{[SH9]}] \textbf{Caustics Computed When Intensity Is Zero}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/water.frag} \\
+    \textbf{Line:} & 416--474 \\
+    \textbf{Category:} & Fragment ALU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The full caustic computation (either the 27-cell \texttt{voronoi3d} loop or the
+  Perlin Jacobian with its 5 FBM evaluations, see SH2) runs before
+  \texttt{caustic} is scaled by \texttt{causticIntensity} at line 472. When a
+  water material has caustics disabled (\texttt{causticIntensity == 0}), all of
+  that work is discarded.
+
+  \textbf{Recommendation:}
+  Wrap the caustic block in \texttt{if (causticIntensity > 0.0)}. The value comes
+  from the per-material SSBO and is uniform across a draw, so the branch is fully
+  coherent and free where caustics are on. No visual change.
+
+\end{enumerate}
+
+\newpage
+
+\subsection{Low Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[SH10]}] \textbf{Vegetation Background Mips Sampled Before Discard}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/vegetation.frag} \\
+    \textbf{Line:} & 53--55, 70 \\
+    \textbf{Category:} & Texture Bandwidth \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Two \texttt{textureLod} background samples (\texttt{bgAlbedo},
+  \texttt{bgNormEnc} at mip 5) are taken at lines 54--55, then the fragment may
+  \texttt{discard} at line 70 when \texttt{weight < 0.3}. For the many
+  transparent billboard texels that are discarded, the background fetches are
+  wasted bandwidth.
+
+  \textbf{Recommendation:}
+  Move the two background \texttt{textureLod} fetches below the
+  \texttt{weight < 0.3} discard test. They are only consumed at line 131, well
+  after the discard, so reordering is safe and changes nothing visually. (Note:
+  keep the opacity/albedo/normal fetches where derivatives are still valid, or
+  switch background to explicit-LOD which is already the case.)
+
+\item[\textbf{[SH11]}] \textbf{$O(n^2)$ Refraction Blur Tap Loop}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/water.frag} \\
+    \textbf{Line:} & 228--244 \\
+    \textbf{Category:} & Texture Bandwidth \\
+  \end{tabular}
+
+  \textbf{Description:}
+  When \texttt{enableBlur} is set, the refraction blur uses a nested
+  \texttt{(2\,halfK+1)$^2$} loop of \texttt{sceneColorTex} samples. For
+  \texttt{blurSamples = 5} that is 25 dependent texture reads per fragment, all
+  with an unrolled loop. This is optional (guarded by \texttt{enableBlur}), hence
+  low severity, but it dominates cost when enabled.
+
+  \textbf{Recommendation:}
+  Replace the box blur with a separable two-pass Gaussian, or reduce to a small
+  fixed weighted kernel (e.g.\ 5-tap cross). Since the water refraction is
+  already a soft effect, a separable approximation keeps the look while turning
+  $n^2$ taps into $2n$.
+
+\item[\textbf{[SH12]}] \textbf{Water Debug Mode 32 Recomputes Displacement}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/water.frag} \\
+    \textbf{Line:} & 481--509 \\
+    \textbf{Category:} & Fragment ALU (debug path) \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Debug mode 32 recomputes \texttt{waterWaveDisplacement} (another full FBM
+  evaluation) purely to visualize displacement, duplicating work already done by
+  the TES and available in \texttt{fragDebug}. This is subsumed by SH7 once the
+  debug ladder is specialization-gated, but is noted separately because it adds
+  a heavy FBM call inside the debug path.
+
+  \textbf{Recommendation:}
+  Fold into the SH7 specialization-constant gating; when kept, prefer the
+  interpolated \texttt{fragDebug} value the shader already receives.
+
+\end{enumerate}
+
+\newpage
+
+\section{Summary Table}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{ID} & \textbf{Shader} & \textbf{Severity} & \textbf{Nature} \\
+\midrule
+SH1  & water.frag              & HIGH   & Per-fragment \texttt{inverse(mat4)} \\
+SH2  & water.frag / water\_noise & HIGH & Redundant FBM/caustic noise \\
+SH3  & perlin.glsl / voronoi.glsl & HIGH & \texttt{sin()}-based hash \\
+SH4  & water.frag              & MEDIUM & Repeated screenUV / depth samples \\
+SH5  & main.frag               & MEDIUM & Unconditional env cubemap fetch \\
+SH6  & triplanar.glsl          & MEDIUM & UV recompute + repeated sampling \\
+SH7  & main.frag / water.frag  & MEDIUM & Debug ladder in release build \\
+SH8  & water.tese              & MEDIUM & 5$\times$ displacement per vertex \\
+SH9  & water.frag              & MEDIUM & Caustics run when intensity 0 \\
+SH10 & vegetation.frag         & LOW    & BG mips fetched before discard \\
+SH11 & water.frag              & LOW    & $O(n^2)$ blur tap loop \\
+SH12 & water.frag              & LOW    & Debug 32 recomputes displacement \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Overall Classification}
+
+The shader suite is functionally rich and correct, but the two procedural-heavy
+fragment shaders carry substantial redundant per-fragment cost. The highest-
+impact wins require \textbf{no visual change whatsoever}:
+
+\begin{itemize}[noitemsep]
+  \item \textbf{SH1} (hoist the matrix inverse to a UBO) is a near-free CPU-side
+        change removing $\sim$200 ops per water fragment.
+  \item \textbf{SH3} (integer hash) accelerates \emph{all} procedural noise —
+        water, terrain displacement and vegetation — by removing dozens of
+        \texttt{sin} evaluations per noise octave.
+  \item \textbf{SH2/SH8/SH9} attack the water noise budget, which is by far the
+        most expensive per-fragment / per-vertex workload in the engine.
+\end{itemize}
+
+\medskip
+\noindent\severitybox{mediumcolor}{OPTIMIZABLE}
+
+\begin{quote}
+  The shaders are validation-clean and feature-complete. Performance headroom is
+  significant but entirely recoverable through invariant hoisting, hash
+  replacement, coherent early-outs and specialization-constant gating of debug
+  code. None of the recommended changes alter the rendered image.
+\end{quote}
+
+\subsection*{Remediation Priority}
+
+\begin{enumerate}[noitemsep]
+  \item[\textbf{P0}] SH1 (matrix inverse $\to$ UBO), SH3 (integer hash).
+  \item[\textbf{P1}] SH2 (caustic noise reduction), SH9 (caustic early-out),
+        SH5 (env fetch guard).
+  \item[\textbf{P2}] SH4 (dedupe screenUV/depth), SH6 (triplanar UV reuse),
+        SH8 (tese displacement), SH7 (debug specialization constants).
+  \item[\textbf{P3}] SH10, SH11, SH12.
+\end{enumerate}
+
+\end{document}
