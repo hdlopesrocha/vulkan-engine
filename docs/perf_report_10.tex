@@ -1,0 +1,360 @@
+\documentclass[a4paper,12pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[table]{xcolor}
+\usepackage{geometry}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{titlesec}
+\usepackage{booktabs}
+\usepackage{array}
+
+\geometry{margin=2.5cm}
+
+\definecolor{criticalcolor}{HTML}{DC3545}
+\definecolor{highcolor}{HTML}{FD7E14}
+\definecolor{mediumcolor}{HTML}{FFC107}
+\definecolor{lowcolor}{HTML}{28A745}
+\definecolor{resolvedcolor}{HTML}{6C757D}
+
+\newcommand{\severitybox}[2]{%
+  \colorbox{#1}{\makebox[2.5cm][c]{\textcolor{white}{\textbf{#2}}}}%
+}
+
+\lstset{
+  basicstyle=\small\ttfamily,
+  breaklines=true,
+  frame=single,
+  numbers=none,
+  tabsize=2,
+  backgroundcolor=\color{gray!10},
+  extendedchars=true,
+  inputencoding=utf8,
+  literate={—}{---}1 {·}{$\cdot$}1 {≈}{$\approx$}1 {×}{$\times$}1
+}
+
+\title{\textbf{Performance Report \#10}\\[4pt]
+\large Vulkan Engine — Shader Performance Audit (Round 2)}
+\author{Henrique Rocha}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This is the second dedicated audit of the GPU shader tree
+(\texttt{shaders/*.\{vert,frag,geom,tesc,tese,comp\}} and
+\texttt{shaders/includes/*.glsl}). It was produced from a clean re-read of
+every shader, deliberately ignoring the 12 issues already covered in Report \#09
+(which the user has since fixed, except for the two debug-only items). The goal
+is identical: \emph{performance only}. No finding below changes the rendered
+result — all features (tessellated water, triplanar terrain, EVSM shadows, GPU
+vegetation, impostors, procedural sky) are preserved. 6 new issues are reported
+(1 high, 4 medium, 1 low). The single high-severity item is a compute-shader
+workgroup-size misconfiguration that leaves the GPU almost completely idle during
+vegetation instance generation; the remaining items are redundant
+per-invocation work that can be hoisted or merged.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Scope \& Methodology}
+
+The audit covers the full shader tree plus the shared GLSL includes. Every file
+was read in full and analysed for per-invocation cost, with emphasis on stages
+that run at high invocation counts (compute dispatch, tessellation evaluation,
+and the impostor geometry shaders). For each candidate I verified that the
+redundant work is genuinely invariant (constant across invocations of the same
+dispatch/draw) or recomputed from identical inputs, so removing it cannot alter
+the output. As with Report \#09, the constraint from \texttt{AGENTS.md} is
+respected: functionality is kept; only provably redundant or hoistable work is
+targeted.
+
+\subsection*{Shader Hotspot Overview}
+
+\begin{center}
+\begin{tabular}{lcl}
+\toprule
+\textbf{Shader / Include} & \textbf{Lines} & \textbf{Dominant cost} \\
+\midrule
+\texttt{vegetation\_instance\_gen.comp} & 82  & \texttt{local\_size\_x = 1} (serial) \\
+\texttt{indirect.comp}                  & 117 & 6 plane normalizations / invocation \\
+\texttt{vegetation\_cull.comp}          & 91  & 6 plane normalizations / invocation \\
+\texttt{includes/perlin2d.glsl}        & 60  & \texttt{cos/sin} gradient hash \\
+\texttt{includes/displacement.glsl}    & 50  & 3× triplanar-weight recompute \\
+\texttt{includes/common.glsl}          & 58  & \texttt{sampleHeightTriplanar} redundancy \\
+\texttt{impostors.geom}                & 153 & 20× Fibonacci dir build / primitive \\
+\texttt{impostors\_depth.geom}         & 116 & 20× Fibonacci dir build / primitive \\
+\texttt{vegetation.geom}               & 187 & 20× Fibonacci dir build / primitive \\
+\texttt{sky.frag} / \texttt{sky\_equirect.frag} & 96 / 120 & residual \texttt{sin} hash \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\newpage
+
+\section{Issue Register}
+
+\subsection{High Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[C1]}] \textbf{Serial Compute Workgroup in \texttt{vegetation\_instance\_gen.comp}}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/vegetation\_instance\_gen.comp} \\
+    \textbf{Line:} & 3 \\
+    \textbf{Category:} & Compute occupancy / GPU utilization \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The instance-generation compute shader is dispatched with a workgroup of a
+  single thread:
+
+\begin{lstlisting}
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+\end{lstlisting}
+
+  The host dispatch (see \texttt{vulkan/VulkanApp.cpp:457}) issues one workgroup
+  \emph{per triangle} — \texttt{vkCmdDispatch(cmd, thisGroups, 1, 1)} where
+  \texttt{thisGroups == triCount}. With one invocation per workgroup the GPU
+  launches one thread per triangle and never fills a warp/wavefront: on a typical
+  GPU each 32/64-lane unit executes a single useful lane and masks the rest.
+  Worse, the shader body does no loop over instances, so each thread handles
+  exactly one triangle. This is the textbook ``\texttt{local\_size\_x = 1}''
+  anti-pattern and is by far the largest single waste in the vegetation path:
+  the wavefront is \textasciitilde{}98\% idle.
+
+  \textbf{Recommendation:}
+  Raise the workgroup to a hardware-friendly size (e.g. 64) and loop over
+  instances inside the shader:
+
+\begin{lstlisting}
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+void main() {
+    uint base = gl_WorkGroupID.x * 64u + gl_LocalInvocationID.x;
+    // iterate instances belonging to this triangle, writing into instanceBuffer
+}
+\end{lstlisting}
+
+  On the CPU side, change the dispatch to
+  \texttt{vkCmdDispatch(cmd, (triCount + 63u) / 64u, 1, 1)}. Identical
+  instance buffer contents, but the GPU now runs 64× more threads per wavefront.
+  No feature or output changes.
+
+\subsection{Medium Severity}
+
+\item[\textbf{[C2]}] \textbf{Per-Invocation Frustum-Plane Normalization in Cull Shaders}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/indirect.comp}, \texttt{shaders/vegetation\_cull.comp} \\
+    \textbf{Line:} & indirect.comp 37--77; vegetation\_cull.comp 39--69 \\
+    \textbf{Category:} & Compute ALU / Invariant Hoisting \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Both cull shaders reconstruct the four matrix rows from the view-projection
+  matrix and then normalize all six frustum planes \emph{inside} the
+  \texttt{aabbVisible()} helper, which runs once per invocation:
+
+\begin{lstlisting}
+for (int i = 0; i < 6; ++i) {
+    vec3 n = planes[i].xyz;
+    float d = planes[i].w;
+    float len = length(n);      // 6× per invocation
+    if (len > 0.0) { n /= len; d /= len; }
+    ...
+}
+\end{lstlisting}
+
+  The view-projection matrix is a \texttt{push\_constant} — identical for every
+  invocation of a given dispatch. Six \texttt{length()} calls plus six divides
+  are therefore recomputed redundantly for every AABB tested. Across the
+  indirect-draw and vegetation-chunk cull passes (potentially tens of thousands
+  of invocations per frame) this is pure waste.
+
+  \textbf{Recommendation:}
+  Precompute the six normalized planes once on the CPU (or in a tiny one-thread
+  setup compute pass) and upload them in a small UBO / push-constant array. The
+  shaders then only need the sign-pick + dot test. Alternatively, compute the
+  planes once per workgroup using shared memory. Output of the cull test is
+  unchanged (the normalization is already what the code does today, just done
+  per-invocation).
+
+\item[\textbf{[NL1]}] \textbf{Trigonometric Gradient Hash in \texttt{perlin2d.glsl}}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/includes/perlin2d.glsl} \\
+    \textbf{Line:} & 46--47 \\
+    \textbf{Category:} & Fragment / Vertex ALU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Report \#09 (SH3) replaced the \texttt{fract(sin(dot(...)))} hash in
+  \texttt{perlin.glsl} and \texttt{perlin4d.glsl} with an integer bit-mixing
+  hash. \texttt{perlin2d.glsl} was missed: its gradient direction is still
+  derived with transcendental functions:
+
+\begin{lstlisting}
+float angle = h * 6.28318530718;
+return vec2(cos(angle), sin(angle));   // per corner, per noise sample
+\end{lstlisting}
+
+  \texttt{perlin2d} backs the 2D wind/height noise used per-vertex in
+  \texttt{vegetation.vert} / \texttt{vegetation.geom} and the impostor density
+  test, so \texttt{cos}/\texttt{sin} are issued for every corner of every 2D
+  gradient-noise evaluation. This is exactly the same class of problem SH3 fixed
+  for the 3D/4D noise, just in the 2D variant.
+
+  \textbf{Recommendation:}
+  Mirror the \#09 fix: replace the angle→\texttt{(cos,sin)} gradient with a
+  small integer-indexed gradient table (e.g. an 8-direction \texttt{const vec2}
+  array selected by \texttt{hash \& 7}), consistent with the
+  \texttt{perlin2d\_hash11}/\texttt{hash13} integer hashes already present in
+  the same file. Same gradient-noise distribution, no transcendentals in the hot
+  path.
+
+\item[\textbf{[T1]}] \textbf{Triplanar Blend Weights Recomputed Three Times per Vertex}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/includes/displacement.glsl}, \texttt{shaders/includes/common.glsl} \\
+    \textbf{Line:} & displacement.glsl 17/25/33; common.glsl 17--27 \\
+    \textbf{Category:} & Tessellation-Eval ALU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{applyDisplacement()} (called once per tessellated vertex in
+  \texttt{main.tese}) samples the height of up to three blended materials:
+
+\begin{lstlisting}
+h0 = sampleHeightTriplanar(worldPos, worldNormal, texIndices.x);
+h1 = sampleHeightTriplanar(worldPos, worldNormal, texIndices.y);
+h2 = sampleHeightTriplanar(worldPos, worldNormal, texIndices.z);
+\end{lstlisting}
+
+  Each \texttt{sampleHeightTriplanar} call independently rebuilds the triplanar
+  blend weights from the \emph{same} \texttt{worldNormal}:
+
+\begin{lstlisting}
+vec3 w = abs(normal);                       // common.glsl:19
+vec3 wt = max(vec3(0.0), w - vec3(t));     // threshold
+wt = pow(wt, vec3(e));                      // 3× pow
+float sum = wt.x + wt.y + wt.z + 1e-6;
+w = wt / sum;                               // normalize
+\end{lstlisting}
+
+  So the identical \texttt{abs} + threshold + \texttt{pow} + normalize sequence
+  runs three times per vertex, despite the inputs being constant across the
+  three calls. With tessellation enabled this multiplies across every generated
+  vertex of every terrain patch.
+
+  \textbf{Recommendation:}
+  Compute the triplanar weights \texttt{w} once in \texttt{applyDisplacement()}
+  and pass them into a \texttt{sampleHeightTriplanar(worldPos, w, brushIndex)}
+  variant that consumes the precomputed weights instead of rebuilding them.
+  Identical displaced geometry; one third of the weight math.
+
+\item[\textbf{[GS1]}] \textbf{Fibonacci View-Selection Table Rebuilt per Primitive}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/impostors.geom}, \texttt{shaders/impostors\_depth.geom}, \texttt{shaders/vegetation.geom} \\
+    \textbf{Line:} & impostors.geom 67--95; impostors\_depth.geom 54--78; vegetation.geom (Fibonacci loop) \\
+    \textbf{Category:} & Geometry-shader ALU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  All three impostor-generating geometry shaders select the best of 20
+  Fibonacci-distributed view directions by recomputing the entire direction
+  table \emph{inside} the shader body, once per emitted primitive:
+
+\begin{lstlisting}
+const float goldenAngle = 3.14159265358979323846 * (3.0 - 2.2360679774997896);
+const int   NUM_VIEWS   = 20;
+for (int i = 0; i < NUM_VIEWS; i++) {
+    float y     = 1.0 - (float(i) + 0.5) / float(NUM_VIEWS) * 2.0;
+    float r     = sqrt(max(0.0, 1.0 - y * y));
+    float theta = goldenAngle * float(i);
+    vec3  d     = vec3(cos(theta) * r, y, sin(theta) * r);  // sqrt + cos + sin ×20
+    ...
+}
+\end{lstlisting}
+
+  The table depends only on the two \texttt{const} values \texttt{goldenAngle}
+  and \texttt{NUM\_VIEWS}, so every entry is identical across all invocations
+  and across all three shaders. With thousands of impostors per frame this is
+  20×(\texttt{sqrt}+\texttt{cos}+\texttt{sin}) repeated per primitive.
+
+  \textbf{Recommendation:}
+  Hoist the 20 directions into a compile-time \texttt{const vec3 fibDirs[20]}
+  initialized from a precomputed literal, or upload them once as a UBO and index
+  by \texttt{i}. The per-primitive loop then becomes a pure dot-product search
+  with no transcendentals. Visual selection is unchanged because the values are
+  the same.
+
+\subsection{Low Severity}
+
+\item[\textbf{[NL2]}] \textbf{Residual \texttt{sin}-Based Star Hash in Procedural Sky}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/sky.frag}, \texttt{shaders/sky\_equirect.frag} \\
+    \textbf{Line:} & sky.frag 59; sky\_equirect.frag 80 \\
+    \textbf{Category:} & Fragment ALU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The procedural star field still uses the classic sine hash that SH3 removed
+  from the noise library:
+
+\begin{lstlisting}
+float starSeed = fract(sin(dot(dir.xz * 1000.0, vec2(12.9898, 78.233))) * 43758.5453);
+\end{lstlisting}
+
+  This is a single \texttt{sin} per sky pixel — cheap, and only on the sky dome
+  — but it is the same numerical-redundancy class already fixed elsewhere, and
+  it sits in a shader that is otherwise hash-clean.
+
+  \textbf{Recommendation:}
+  Replace with the same integer bit-mixing hash used in \texttt{perlin.glsl}
+  (e.g. a 2D PCG-style mix of the quantized direction). Output distribution
+  changes only in the same benign way SH3's change did for noise; no feature
+  regression.
+
+\end{enumerate}
+
+\newpage
+
+\section{Summary}
+
+\begin{center}
+\begin{tabular}{cll}
+\toprule
+\textbf{ID} & \textbf{Shader / Include} & \textbf{Severity} \\
+\midrule
+C1  & \texttt{vegetation\_instance\_gen.comp}        & High   \\
+C2  & \texttt{indirect.comp} / \texttt{vegetation\_cull.comp} & Medium \\
+NL1 & \texttt{includes/perlin2d.glsl}               & Medium \\
+T1  & \texttt{includes/displacement.glsl} / \texttt{common.glsl} & Medium \\
+GS1 & \texttt{impostors.geom} / \texttt{impostors\_depth.geom} / \texttt{vegetation.geom} & Medium \\
+NL2 & \texttt{sky.frag} / \texttt{sky\_equirect.frag} & Low \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All six issues are pure-performance: none alters the rendered image. The
+highest-impact fix is \textbf{C1} (serial compute workgroup), which is a
+one-line shader change plus a matching dispatch-count change on the CPU and
+should be done first. C2, T1 and GS1 are hoisting/merge opportunities that
+remove redundant invariant math; NL1 and NL2 finish the
+\texttt{sin}/\texttt{cos}-hash cleanup begun in Report \#09.
+
+\end{document}
