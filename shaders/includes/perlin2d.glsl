@@ -17,9 +17,23 @@ float perlin2d_hash13(vec3 p3) {
     return fract((p3.x + p3.y) * p3.z);
 }
 
+// 8 fixed unit directions. Indexed by an integer hash so the gradient is
+// selected without any transcendental cos/sin in the hot path (mirrors the
+// SH3 fix applied to the 3D/4D noise in perlin.glsl).
+const vec2 perlin2d_grad_table[8] = vec2[8](
+    vec2( 1.0,         0.0),
+    vec2( 0.70710678,  0.70710678),
+    vec2( 0.0,         1.0),
+    vec2(-0.70710678,  0.70710678),
+    vec2(-1.0,         0.0),
+    vec2(-0.70710678, -0.70710678),
+    vec2( 0.0,        -1.0),
+    vec2( 0.70710678, -0.70710678)
+);
+
 vec2 perlin2d_grad(vec2 ip) {
-    float a = perlin2d_hash12(ip) * 6.28318530718;
-    return vec2(cos(a), sin(a));
+    int idx = int(perlin2d_hash12(ip) * 8.0) & 7;
+    return perlin2d_grad_table[idx];
 }
 
 float perlin2(vec2 p) {
