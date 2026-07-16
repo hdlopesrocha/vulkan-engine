@@ -44,34 +44,31 @@ void main() {
     bool shadowPass = windEnabled < 0.0;
     fragPosWorld = inWorldPos; // must be set before any ShadowCalculation call
 
-    // Per-pixel samples.
+    // Per-pixel leaf samples.
     vec4  leafAlbedo  = texture(albedoArray,  coord);
     float opacity     = texture(opacityArray, coord).r;
     vec3  leafNormEnc = texture(normalArray,  coord).rgb;
 
-    // Background: nearest-leaf-filled by CPU compositor; high-mip gives spatial blend.
-    const float kAvgMip = 5.0;
-    vec3 bgAlbedo  = textureLod(albedoArray, coord, kAvgMip).rgb;
-    vec3 bgNormEnc = textureLod(normalArray, coord, kAvgMip).rgb;
-
-    // Decode tangent-space normals from [0,1] to [-1,1].
+    // Decode tangent-space normal from [0,1] to [-1,1].
     vec3 leafNorm = normalize(leafNormEnc * 2.0 - 1.0);
-    vec3 bgNorm   = normalize(bgNormEnc   * 2.0 - 1.0);
 
     // Normal confidence: Z in tangent space — 1 = facing viewer, 0 = grazing.
     float leafNConf = clamp(leafNorm.z, 0.0, 1.0);
-    float bgNConf   = clamp(bgNorm.z,   0.0, 1.0);
 
-    // Compositing weight: opacity sigmoid + normal confidence.
+    // Leaf-only weight component.
     float opacityWeight = smoothstep(0.35, 0.65, opacity);
-    float normalWeight  = mix(bgNConf, leafNConf, opacityWeight);
-    float weight        = opacityWeight * normalWeight;
 
-    if (weight < 0.3) discard;
+    // Early-out for fully transparent texels: with opacityWeight == 0 the final
+    // weight is 0 independently of the background, so deferring the background
+    // fetches below saves bandwidth on these discarded fragments. This is exactly
+    // equivalent to the later `weight < 0.3` test for these texels.
+    if (opacityWeight == 0.0) discard;
+
     // Cross-fade with impostors: dithered fade-out in the transition zone.
     // Vegetation fades from fully opaque (at 0.85×impostorDistance) to fully gone
     // (at 1.15×impostorDistance) using complementary Bayer 4×4 ordered dithering.
     // The impostor shader uses the inverse condition, so together they cover 100% of pixels.
+    // Depends only on geometry/distance, so it runs before the background fetches.
     if (!shadowPass && impostorDistance > 0.0) {
         float dist       = distance(ubo.viewPos.xyz, inWorldPos);
         float fadeAlpha  = 1.0 - smoothstep(impostorDistance * 0.50, impostorDistance * 1.15, dist);
@@ -79,6 +76,20 @@ void main() {
         float threshold  = float(M[(int(gl_FragCoord.y) & 3) * 4 + (int(gl_FragCoord.x) & 3)]) / 16.0;
         if (threshold >= fadeAlpha) discard;
     }
+
+    // Background: nearest-leaf-filled by CPU compositor; high-mip gives spatial blend.
+    const float kAvgMip = 5.0;
+    vec3 bgAlbedo  = textureLod(albedoArray, coord, kAvgMip).rgb;
+    vec3 bgNormEnc = textureLod(normalArray, coord, kAvgMip).rgb;
+
+    vec3  bgNorm  = normalize(bgNormEnc * 2.0 - 1.0);
+    float bgNConf = clamp(bgNorm.z,   0.0, 1.0);
+
+    // Compositing weight: opacity sigmoid + normal confidence.
+    float normalWeight = mix(bgNConf, leafNConf, opacityWeight);
+    float weight       = opacityWeight * normalWeight;
+
+    if (weight < 0.3) discard;
     // ---------------------------------------------------------------
     // Build TBN from billboard plane geometry.
     //
