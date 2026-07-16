@@ -32,7 +32,7 @@ The codebase is written in modern C++ (C++20 or newer) and prioritizes:
 | `make callgrind` | Profiling with valgrind callgrind + kcachegrind |
 | `MAKE_JOBS=16 make` | Override parallel jobs (default 8) |
 
-Compiler is `g++` (`-std=c++23 -pthread`). Dependencies via `pkg-config`: glfw3, vulkan, stb, jpeg, gdal, zlib. Optional Wii Nunchuk via libcwiid (auto-detected). Shaders target `vulkan1.1`. Build outputs go to `bin/` and the binary expects resources (textures, fonts, shaders) relative to CWD — always run from `bin/`. ImGui is only compiled with `-DUSE_IMGUI` (release builds). Never modify `third_party/` files.
+Compiler is `g++` (`-std=c++23 -pthread`). Dependencies via `pkg-config`: glfw3, vulkan, stb, jpeg, gdal, zlib, bluez. Optional Wiimote/Nunchuk via vendored `third_party/wiiuse` (auto-detected, compiled from source). Shaders target `vulkan1.1`. Build outputs go to `bin/` and the binary expects resources (textures, fonts, shaders) relative to CWD — always run from `bin/`. ImGui is only compiled with `-DUSE_IMGUI` (release builds). Never modify `third_party/` files.
 
 ## Architecture
 

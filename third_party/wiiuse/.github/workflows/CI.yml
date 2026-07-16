@@ -1,0 +1,102 @@
+name: CI
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - master
+  pull_request:
+  release:
+    types:
+      - created
+
+jobs:
+  build-linux:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository code
+        uses: "actions/checkout@v3"
+      - name: Install dependencies
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'debian-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install cmake libbluetooth-dev libsdl1.2-dev freeglut3-dev
+      - name: Build (shared lib)
+        run: |
+          cmake -B build-shared -DBUILD_SHARED_LIBS=TRUE
+          cmake --build build-shared
+      - name: Build (static lib)
+        run: |
+          cmake -B build-static
+          cmake --build build-static
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository code
+        uses: "actions/checkout@v3"
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install cmake freeglut sdl
+      - name: Build (shared lib)
+        run: |
+          cmake -B build-shared -DBUILD_SHARED_LIBS=TRUE
+          cmake --build build-shared
+      - name: Build (static lib)
+        run: |
+          cmake -B build-static
+          cmake --build build-static
+
+  build-windows-msvc:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository code
+        uses: "actions/checkout@v3"
+      - name: Setup MSVC development environment
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Build (shared lib)
+        run: |
+          cmake -B build-shared -DBUILD_SHARED_LIBS=TRUE
+          cmake --build build-shared
+      - name: Build (static lib)
+        run: |
+          cmake -B build-static
+          cmake --build build-static
+
+  build-windows-mingw:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - { sys: mingw64, env: x86_64 }
+          - { sys: mingw32, env: i686 }
+          - { sys: ucrt64,  env: ucrt-x86_64 }
+          - { sys: clang64, env: clang-x86_64 }
+    steps:
+      - name: Check out repository code
+        uses: "actions/checkout@v3"
+      - name: Setup msys2 and mingw-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{matrix.sys}}
+          update: true
+          pacboy: >-
+            cmake:p
+            ninja:p
+            SDL2:p
+            toolchain:p
+            windows-default-manifest:p
+      - name: Build (shared lib)
+        shell: msys2 {0}
+        run: |
+          cmake -B build-shared -DBUILD_SHARED_LIBS=TRUE -DBUILD_EXAMPLE=OFF -DBUILD_EXAMPLE_SDL=OFF
+          cmake --build build-shared
+      - name: Build (static lib)
+        shell: msys2 {0}
+        run: |
+          cmake -B build-static -DBUILD_EXAMPLE=OFF -DBUILD_EXAMPLE_SDL=OFF
+          cmake --build build-static

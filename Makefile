@@ -19,13 +19,19 @@ endif
 INCLUDES = `pkg-config --cflags glfw3 vulkan` -I. -Ithird_party/imgui -Ithird_party/imgui/backends -I/usr/include/stb
 LIBS = `pkg-config --libs glfw3 vulkan` -lstb -ljpeg -lgdal -lz
 
-# Optional Wii Nunchuk support via libcwiid (installed separately)
-HAS_CWIID := $(shell pkg-config --exists cwiid 2>/dev/null && echo 1 || echo 0)
-ifeq ($(HAS_CWIID),1)
-    INCLUDES += $(shell pkg-config --cflags cwiid)
-    LIBS += $(shell pkg-config --libs cwiid)
-    CFLAGS += -DHAS_CWIID
-endif
+# Wii Remote support via vendored wiiuse (third_party/wiiuse).
+# Auto-detects BlueZ so the library can be compiled even if not installed.
+HAS_WIIUSE := 1
+WIIUSE_SRC := third_party/wiiuse/src
+WIIUSE_SRCS := $(WIIUSE_SRC)/classic.c $(WIIUSE_SRC)/dynamics.c $(WIIUSE_SRC)/events.c \
+                $(WIIUSE_SRC)/guitar_hero_3.c $(WIIUSE_SRC)/io.c $(WIIUSE_SRC)/ir.c \
+                $(WIIUSE_SRC)/nunchuk.c $(WIIUSE_SRC)/wiiuse.c $(WIIUSE_SRC)/wiiboard.c \
+                $(WIIUSE_SRC)/motion_plus.c $(WIIUSE_SRC)/os_nix.c $(WIIUSE_SRC)/tatacon.c \
+                $(WIIUSE_SRC)/util.c
+WIIUSE_OBJS = $(patsubst third_party/wiiuse/src/%.c,$(OBJ_DIR)/wiiuse/%.o,$(WIIUSE_SRCS))
+INCLUDES += -I$(WIIUSE_SRC)
+LIBS += $(shell pkg-config --libs bluez) -lm -lrt
+CFLAGS += -DHAS_WIIUSE -DWIIUSE_STATIC -DWIIUSE_COMPILE_LIB
 
 # Output directory for runtime binary and resources
 OUT_DIR = bin
@@ -46,7 +52,7 @@ SRCS := $(filter-out utils/Camera.cpp,$(SRCS))
 OBJ_DIR := $(OUT_DIR)/obj
 
 # Compose object lists, then forcibly filter out any absolute /imgui/*.o
-OBJS := $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(SRCS)) $(IMGUI_OBJS)
+OBJS := $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(SRCS)) $(IMGUI_OBJS) $(WIIUSE_OBJS)
 
 OUT = $(OUT_DIR)/app
 
@@ -128,6 +134,12 @@ $(OBJ_DIR)/imgui/backends/%.o: third_party/imgui/backends/%.cpp
 	@echo "Compiling ImGui Backend: $<"
 	@$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
+# Compile vendored wiiuse C sources with gcc (no C++ flags).
+$(OBJ_DIR)/wiiuse/%.o: third_party/wiiuse/src/%.c
+	@mkdir -p $(dir $@)
+	@echo "Compiling wiiuse: $<"
+	@gcc -O2 -Wall -Wno-unused-parameter -Wno-unused-variable -Ithird_party/wiiuse/src $(shell pkg-config --cflags bluez) -DWIIUSE_STATIC -DWIIUSE_COMPILE_LIB -c $< -o $@
+
 
 shaders: $(OUT_SPVS)
 	@# Copy compiled SPIR-V back to the source shaders/ folder so FileReader can load shaders/*.spv at runtime
@@ -197,7 +209,8 @@ install:
 						libshaderc-dev \
 						libstb-dev \
 						libgdal-dev \
-						libcwiid-dev
+						libbluetooth-dev
+	# Wiimote support uses the vendored wiiuse library (third_party/wiiuse)
 	# 2. Clone Dear ImGui
 	mkdir -p third_party
 

@@ -536,6 +536,8 @@ public:
         cameraWidget = std::make_shared<CameraWidget>(&camera);
         controllerParametersWidget = std::make_shared<ControllerParametersWidget>(controllerManager.getParameters(), &brushManager);
         gamepadWidget = std::make_shared<GamepadWidget>(controllerManager.getParameters(), &nunchukPublisher);
+        // Auto-connect to a Wiimote (with or without Nunchuk) on startup.
+        nunchukPublisher.connect();
         lightWidget = std::make_shared<LightWidget>(&light);
         vulkanResourcesManagerWidget = std::make_shared<VulkanResourcesManagerWidget>(&resources);
         vulkanResourcesManagerWidget->updateWithApp(this);

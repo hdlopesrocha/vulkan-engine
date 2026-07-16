@@ -2,35 +2,47 @@
 
 #include "NunchukState.hpp"
 
-#ifdef HAS_CWIID
-#include <cwiid.h>
-#include <thread>
-#include <mutex>
 #include <atomic>
-#endif
+#include <mutex>
+#include <thread>
+#include <vector>
 
+struct wiimote_t;
+
+// Publishes the full state of a Wiimote (and any attached Nunchuk expansion)
+// using the wiiuse library. Supports auto-connect with a retry loop so a
+// Wiimote can be connected with or without a Nunchuk at any time.
 class NunchukPublisher {
 public:
     NunchukPublisher();
     ~NunchukPublisher();
 
-    void update();
+    // Starts the background auto-connect loop. It will keep scanning and
+    // reconnecting until disconnect() is called.
     void connect();
     void disconnect();
 
-    NunchukState getState() const;
-    bool isConnecting() const { return connecting.load(); }
+    // Polls the Wiimote and refreshes the published state. Call each frame.
+    void update();
+
+    WiimoteState getState() const;
+    bool isAutoConnecting() const { return autoConnecting.load(); }
+    bool isConnected() const { return state.connected; }
 
 private:
-    NunchukState state;
-    std::atomic<bool> connecting = false;
+    WiimoteState state;
+    std::atomic<bool> autoConnecting = false;
+    std::atomic<bool> stopThread = false;
+    std::atomic<bool> connected = false;
 
-#ifdef HAS_CWIID
-    cwiid_wiimote_t* wiimote = nullptr;
+    wiimote_t** wiimotes = nullptr;
+    int wiimoteCount = 0;
+
     std::thread connectThread;
     mutable std::mutex mutex;
 
-    void connectAsync();
+    void autoConnectLoop();
     void readState();
-#endif
+    void readStateLocked();
+    void resetStateLocked();
 };
