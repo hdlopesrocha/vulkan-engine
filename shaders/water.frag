@@ -115,6 +115,15 @@ void main() {
     bool hasValidBackFace = (backFaceDepthRaw < 0.9999) && (backFaceThickness > kMinVolumeThickness);
     float waterThickness  = hasValidBackFace ? min(backFaceThickness, sceneThickness) : sceneThickness;
 
+    // Early depth-based discard: if solid geometry is in front of the water
+    // surface, this fragment is fully occluded and contributes nothing. Testing
+    // here (instead of after the expensive noise/refraction/caustic work below)
+    // skips all of that computation for hidden water pixels at zero visual cost.
+    // Uses the same raw-depth comparison as the original test to stay exact.
+    if (sceneDepthRaw + 1e-6 < gl_FragCoord.z) {
+        discard;
+    }
+
     // Depth-based modulation factors (exponential ramp)
         float volumeBlurFactor = (volumeBlurRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBlurRate)) : 1.0;
         float volumeBumpFactor = (volumeBumpRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBumpRate)) : 1.0;
@@ -242,17 +251,8 @@ void main() {
 
     // === DEPTH-BASED EFFECTS ===
     float waterDepthRaw = gl_FragCoord.z;
-
-    // Depth test against solid geometry: in Vulkan depth [0,1], smaller means
-    // closer to the camera. So if the solid depth is smaller than water depth,
-    // the solid is in front and water must be discarded.
-    //
-    // Compare in raw depth space (monotonic), with only a tiny epsilon to avoid
-    // z-fighting flicker at equal-depth boundaries.
-    const float depthEpsilonRaw = 1e-6;
-    if (sceneDepthRaw + depthEpsilonRaw < waterDepthRaw) {
-        discard;
-    }
+    // Occluded fragments are already discarded early (see depth test near the
+    // top of main()), so no second discard is needed here.
 
     float sceneDepthLinear = linearizeDepth(sceneDepthRaw);
     float waterDepthLinear = linearizeDepth(waterDepthRaw);
@@ -407,6 +407,11 @@ void main() {
     float lineFinal = 0.0;
     float lineCombined = 0.0;
 
+    // Reuse the refraction noise already computed above (same fragPos, same
+    // octaves/scale/time) for the front-face caustic Jacobian instead of
+    // recomputing waterRefractionNoise a second time this fragment.
+    vec2 caustRef0 = refractionNoise * refractionStrength;
+
     // Compute only the selected caustic noise per-fragment
     if (causticType == 1) {
         // VORONOI-based measures (Worley noise) — jitter feature points using FBM
@@ -429,20 +434,23 @@ void main() {
         lineFinal = pow(max(lineCombined, 1e-6), causticPower);
     } else {
         // PERLIN-based measures (existing Jacobian method)
-        vec2 ref0 = waterRefractionNoise(fragPos.xyz, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
+        // Front face: reuse caustRef0 (= waterRefractionNoise(fragPos)) and only
+        // compute the two tangent-perturbed samples that differ.
         vec2 refT = waterRefractionNoise(fragPos + eps * T, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
         vec2 refB = waterRefractionNoise(fragPos + eps * B, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
-        vec2 ddT = (refT - ref0) / eps;
-        vec2 ddB = (refB - ref0) / eps;
+        vec2 ddT = (refT - caustRef0) / eps;
+        vec2 ddB = (refB - caustRef0) / eps;
         float detJFront = ddT.x * ddB.y - ddT.y * ddB.x;
         float trFront = ddT.x + ddB.y;
         float anisFront = sqrt(max(trFront * trFront - 4.0 * detJFront, 0.0));
 
-        vec2 ref0b = waterRefractionNoise(backPos.xyz, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
+        // Back face: compute waterRefractionNoise(backPos) once and reuse it for
+        // the back Jacobian, perturbing only along the tangent frame.
+        vec2 caustRef0b = waterRefractionNoise(backPos.xyz, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
         vec2 refTb = waterRefractionNoise(backPos + eps * T, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
         vec2 refBb = waterRefractionNoise(backPos + eps * B, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
-        vec2 ddTb = (refTb - ref0b) / eps;
-        vec2 ddBb = (refBb - ref0b) / eps;
+        vec2 ddTb = (refTb - caustRef0b) / eps;
+        vec2 ddBb = (refBb - caustRef0b) / eps;
         float detJBack = ddTb.x * ddBb.y - ddTb.y * ddBb.x;
         float trBack = ddTb.x + ddBb.y;
         float anisBack = sqrt(max(trBack * trBack - 4.0 * detJBack, 0.0));

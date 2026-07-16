@@ -139,10 +139,16 @@ void main() {
         vec3 tangent = rotateY(baseTangents[p], cosT, sinT);
         vec3 outward = rotateY(outwardDirs[p],  cosT, sinT);
 
-        vec3 bl = worldPos - tangent * hs + applyWindSkew(worldPos, tangent, 0.0);
-        vec3 br = worldPos + tangent * hs + applyWindSkew(worldPos, tangent, 0.0);
-        vec3 tl = worldPos - tangent * hs + worldUp * h + outward * tilt + applyWindSkew(worldPos, tangent, 1.0);
-        vec3 tr = worldPos + tangent * hs + worldUp * h + outward * tilt + applyWindSkew(worldPos, tangent, 1.0);
+        // Wind skew depends only on worldPos + tangent + heightFactor, which are
+        // identical for all four corners of a plane. Compute bottom/top once each
+        // instead of per-corner (4x fewer perlin2 evaluations per plane).
+        vec3 windBottom = applyWindSkew(worldPos, tangent, 0.0);
+        vec3 windTop    = applyWindSkew(worldPos, tangent, 1.0);
+
+        vec3 bl = worldPos - tangent * hs + windBottom;
+        vec3 br = worldPos + tangent * hs + windBottom;
+        vec3 tl = worldPos - tangent * hs + worldUp * h + outward * tilt + windTop;
+        vec3 tr = worldPos + tangent * hs + worldUp * h + outward * tilt + windTop;
 
         // Plane normal = cross(tangent, planeUpDir).
         // For 45-degree tilt (tilt == h), planeUpDir = normalize(worldUp + outward).
@@ -160,10 +166,13 @@ void main() {
     for (int p = 4; p < 6; ++p) {
         vec3 tangent = rotateY(baseTangents[p], cosT, sinT);
 
-        vec3 bl = worldPos - tangent * hs + applyWindSkew(worldPos, tangent, 0.0);
-        vec3 br = worldPos + tangent * hs + applyWindSkew(worldPos, tangent, 0.0);
-        vec3 tl = worldPos - tangent * hs + worldUp * h + applyWindSkew(worldPos, tangent, 1.0);
-        vec3 tr = worldPos + tangent * hs + worldUp * h + applyWindSkew(worldPos, tangent, 1.0);
+        vec3 windBottom = applyWindSkew(worldPos, tangent, 0.0);
+        vec3 windTop    = applyWindSkew(worldPos, tangent, 1.0);
+
+        vec3 bl = worldPos - tangent * hs + windBottom;
+        vec3 br = worldPos + tangent * hs + windBottom;
+        vec3 tl = worldPos - tangent * hs + worldUp * h + windTop;
+        vec3 tr = worldPos + tangent * hs + worldUp * h + windTop;
 
         // Vertical plane: planeUpDir = worldUp, so normal = cross(tangent, worldUp).
         outPlaneNormal = normalize(cross(tangent, worldUp));

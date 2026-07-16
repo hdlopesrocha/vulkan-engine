@@ -141,12 +141,15 @@ void main() {
         return;
     }
 
+    // Per-instance height variation depends only on worldPos.xz — compute once
+    // per instance instead of per vertex (24 vertices share the same result).
+    float heightScale = vegetationHeightScale(worldPos.xz);
+
     // Rotate tangent and local position by Y-rotation
     vec3 tangent = rotateY(inLocalTangent, cosT, sinT);
 
     // Scale the pre-computed corner offsets by the per-instance billboard size.
     // Base corners use hs=0.5, h=1.0, tilt=1.0 — scale by billboardScale * heightVariation.
-    float heightScale = vegetationHeightScale(worldPos.xz);
     float scale = billboardScale * heightScale;
     vec3 localPos = rotateY(inLocalPos, cosT, sinT) * scale;
 

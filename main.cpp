@@ -2170,7 +2170,7 @@ void MyApp::ensureCubemapResources() {
     uint32_t solidCmds = std::max(static_cast<uint32_t>(solidInd.getMeshCount()), 1u);
     VkDeviceSize compactSize = sizeof(VkDrawIndexedIndirectCommand) * solidCmds;
     ensureBufferSize(cube360Compact, compactSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         "cube360Compact");
     ensureBufferSize(cube360Visible, std::max(sizeof(uint32_t), VkDeviceSize(4)),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
@@ -2181,7 +2181,7 @@ void MyApp::ensureCubemapResources() {
     uint32_t waterCmds = std::max(static_cast<uint32_t>(waterInd.getMeshCount()), 1u);
     VkDeviceSize waterCompactSize = sizeof(VkDrawIndexedIndirectCommand) * waterCmds;
     ensureBufferSize(cube360WaterCompact, waterCompactSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         "cube360WaterCompact");
     ensureBufferSize(cube360WaterVisible, std::max(sizeof(uint32_t), VkDeviceSize(4)),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
