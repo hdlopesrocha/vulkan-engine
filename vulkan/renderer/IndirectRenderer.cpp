@@ -676,10 +676,16 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         }
     }
     // Write data to the (existing or newly-created) indirect buffer
-    if (indirectBuffer.buffer != VK_NULL_HANDLE && indirectDataSize > 0) {
+    if (indirectBuffer.buffer != VK_NULL_HANDLE) {
         void* data;
         data = indirectBuffer.map(0);
-        memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
+        // Zero the entire buffer, then copy only the valid commands. The
+        // capacity headroom must never hold allocator garbage, otherwise the
+        // compute cull shader reads invalid DrawCmd entries as visible.
+        memset(data, 0, (size_t)indirectBufferSize);
+        if (indirectDataSize > 0) {
+            memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
+        }
         indirectBuffer.unmap(); // VMA persistent mapping
     }
 
@@ -742,6 +748,11 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             if (indirectDataSize > 0) {
                 void* data;
                 data = compactIndirectBuffers[f].map(0);
+                // Zero the ENTIRE buffer first so any headroom (capacity beyond
+                // the valid command count) is never left as uninitialized
+                // allocator garbage that could be read as a giant indexCount by
+                // vkCmdDrawIndexedIndirectCount and spin the GPU.
+                memset(data, 0, (size_t)compactSize);
                 memcpy(data, indirectCommands.data(), (size_t)indirectDataSize);
                 compactIndirectBuffers[f].unmap(); // VMA persistent mapping
             }
@@ -999,6 +1010,15 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // instead of vkCmdUpdateBuffer to avoid the latter's implicit FULL_QUEUE
     // barrier (top-of-pipe → bottom-of-pipe) that drains the entire graphics queue.
     vkCmdFillBuffer(cmd, visibleCount.buffer, 0, sizeof(uint32_t), 0);
+
+    // Also zero the ENTIRE compact indirect buffer so any slot the compute
+    // shader does NOT write (e.g. because it early-returns or the dst index
+    // lands beyond the valid command count) is a clean zeroed DrawCmd
+    // (indexCount=0) instead of stale/allocator garbage.  A non-zero
+    // garbage indexCount read by vkCmdDrawIndexedIndirectCount would make
+    // the GE process a draw with a giant index count and never finish
+    // (GPU hang observed on RADV / Radeon 680M).
+    vkCmdFillBuffer(cmd, compactBuf.buffer, 0, VK_WHOLE_SIZE, 0);
 
     // Barrier B: ensure the transfer write (zeroCount) and any prior
     // indirect-draw reads of compactBuf are complete before the compute
