@@ -36,28 +36,25 @@ layout(push_constant) uniform PC {
     uint numChunks;
 } pc;
 
-bool aabbVisible(mat4 mvp, vec3 minp, vec3 maxp) {
-    vec4 row0 = vec4(mvp[0][0], mvp[1][0], mvp[2][0], mvp[3][0]);
-    vec4 row1 = vec4(mvp[0][1], mvp[1][1], mvp[2][1], mvp[3][1]);
-    vec4 row2 = vec4(mvp[0][2], mvp[1][2], mvp[2][2], mvp[3][2]);
-    vec4 row3 = vec4(mvp[0][3], mvp[1][3], mvp[2][3], mvp[3][3]);
+// Shared, per-workgroup cache of the six frustum planes. The viewProj matrix is
+// a push constant identical for every invocation of a dispatch, so extracting and
+// normalizing the planes once per workgroup (instead of once per invocation) avoids
+// thousands of redundant length()/divide ALU ops per frame.
+shared vec4 gPlanes[6];
 
-    vec4 planes[6];
-    planes[0] = row3 + row0;
-    planes[1] = row3 - row0;
-    planes[2] = row3 + row1;
-    planes[3] = row3 - row1;
-    planes[4] = row2;          // near (Vulkan NDC z in [0,w])
-    planes[5] = row3 - row2;   // far
+// Normalize a frustum plane (n, d) by its normal length so the distance test is
+// stable. Length is never zero for a valid view-projection matrix.
+vec4 normalizePlane(vec4 pl) {
+    float len = length(pl.xyz);
+    return pl / max(len, 1e-8);
+}
 
+// Robust AABB vs frustum test. `planes` already holds the normalized clip-space
+// planes (left, right, bottom, top, near, far).
+bool aabbVisible(vec4 planes[6], vec3 minp, vec3 maxp) {
     for (int i = 0; i < 6; ++i) {
         vec3 n = planes[i].xyz;
         float d = planes[i].w;
-        float len = length(n);
-        if (len > 0.0) {
-            n /= len;
-            d /= len;
-        }
         vec3 p;
         p.x = (n.x >= 0.0) ? maxp.x : minp.x;
         p.y = (n.y >= 0.0) ? maxp.y : minp.y;
@@ -70,11 +67,32 @@ bool aabbVisible(mat4 mvp, vec3 minp, vec3 maxp) {
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
+
+    // Extract and normalize the frustum planes once per workgroup from the
+    // viewProj push constant. All threads must reach the barrier, so this runs
+    // before any early return below.
+    if (gl_LocalInvocationIndex < 6u) {
+        mat4 mvp = pc.viewProj;
+        vec4 row0 = vec4(mvp[0][0], mvp[1][0], mvp[2][0], mvp[3][0]);
+        vec4 row1 = vec4(mvp[0][1], mvp[1][1], mvp[2][1], mvp[3][1]);
+        vec4 row2 = vec4(mvp[0][2], mvp[1][2], mvp[2][2], mvp[3][2]);
+        vec4 row3 = vec4(mvp[0][3], mvp[1][3], mvp[2][3], mvp[3][3]);
+
+        vec4 p;
+        if (gl_LocalInvocationIndex == 0u)      p = normalizePlane(row3 + row0); // left
+        else if (gl_LocalInvocationIndex == 1u) p = normalizePlane(row3 - row0); // right
+        else if (gl_LocalInvocationIndex == 2u) p = normalizePlane(row3 + row1); // bottom
+        else if (gl_LocalInvocationIndex == 3u) p = normalizePlane(row3 - row1); // top
+        else if (gl_LocalInvocationIndex == 4u) p = normalizePlane(row2);        // near (Vulkan NDC z in [0,w])
+        else                                   p = normalizePlane(row3 - row2);  // far
+        gPlanes[gl_LocalInvocationIndex] = p;
+    }
+    barrier();
+
     if (idx >= pc.numChunks) return;
 
     ChunkMeta chunk = metaBuf.chunks[idx];
-    mat4 mvp = pc.viewProj;
-    if (!aabbVisible(mvp, chunk.aabbMin, chunk.aabbMax)) return;
+    if (!aabbVisible(gPlanes, chunk.aabbMin, chunk.aabbMax)) return;
 
     uint dst = atomicAdd(count, 1);
 

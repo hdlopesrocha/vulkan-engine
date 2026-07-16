@@ -32,34 +32,27 @@ layout(push_constant) uniform PC {
     uint numCmds;     // actual number of draw commands (guards against uninitialized buffer tail)
 } pc;
 
-// Robust AABB vs frustum test using extracted clip-space planes from the viewProj matrix
-// (models are identity in this pipeline). Normalize planes for stable distance tests and avoid false negatives when the camera is inside the AABB.
-bool aabbVisible(mat4 mvp, vec3 minp, vec3 maxp) {
-    // Extract rows: GLSL `mat4` is column-major, so mvp[i] returns a column.
-    // Build rows explicitly from columns
-    vec4 row0 = vec4(mvp[0][0], mvp[1][0], mvp[2][0], mvp[3][0]);
-    vec4 row1 = vec4(mvp[0][1], mvp[1][1], mvp[2][1], mvp[3][1]);
-    vec4 row2 = vec4(mvp[0][2], mvp[1][2], mvp[2][2], mvp[3][2]);
-    vec4 row3 = vec4(mvp[0][3], mvp[1][3], mvp[2][3], mvp[3][3]);
+// Shared, per-workgroup cache of the six frustum planes. The viewProj matrix is
+// a push constant identical for every invocation of a dispatch, so extracting and
+// normalizing the planes once per workgroup (instead of once per invocation) avoids
+// thousands of redundant length()/divide ALU ops per frame.
+shared vec4 gPlanes[6];
 
-    // Planes: left, right, bottom, top, near, far
-    vec4 planes[6];
-    planes[0] = row3 + row0; // left
-    planes[1] = row3 - row0; // right
-    planes[2] = row3 + row1; // bottom
-    planes[3] = row3 - row1; // top
-    planes[4] = row2; // near (Vulkan NDC z in [0,w])
-    planes[5] = row3 - row2; // far
+// Normalize a frustum plane (n, d) by its normal length so the distance test is
+// stable. Length is never zero for a valid view-projection matrix.
+vec4 normalizePlane(vec4 pl) {
+    float len = length(pl.xyz);
+    return pl / max(len, 1e-8);
+}
 
-    // For each plane, normalize and test the AABB's most positive vertex
+// Robust AABB vs frustum test. `planes` already holds the normalized clip-space
+// planes (left, right, bottom, top, near, far). Normalization keeps the distance
+// test stable and avoids false negatives when the camera is inside the AABB.
+bool aabbVisible(vec4 planes[6], vec3 minp, vec3 maxp) {
+    // For each plane, test the AABB's most positive (closest) vertex
     for (int i = 0; i < 6; ++i) {
         vec3 n = planes[i].xyz;
         float d = planes[i].w;
-        float len = length(n);
-        if (len > 0.0) {
-            n /= len;
-            d /= len;
-        }
 
         vec3 p;
         p.x = (n.x >= 0.0) ? maxp.x : minp.x;
@@ -78,6 +71,30 @@ bool aabbVisible(mat4 mvp, vec3 minp, vec3 maxp) {
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
+
+    // Extract and normalize the frustum planes once per workgroup from the
+    // viewProj push constant. All threads must reach the barrier, so this runs
+    // before any early return below.
+    if (gl_LocalInvocationIndex < 6u) {
+        mat4 mvp = pc.viewProj; // models are identity in this pipeline
+        // Extract rows: GLSL `mat4` is column-major, so mvp[i] returns a column.
+        vec4 row0 = vec4(mvp[0][0], mvp[1][0], mvp[2][0], mvp[3][0]);
+        vec4 row1 = vec4(mvp[0][1], mvp[1][1], mvp[2][1], mvp[3][1]);
+        vec4 row2 = vec4(mvp[0][2], mvp[1][2], mvp[2][2], mvp[3][2]);
+        vec4 row3 = vec4(mvp[0][3], mvp[1][3], mvp[2][3], mvp[3][3]);
+
+        // Planes: left, right, bottom, top, near, far
+        vec4 p;
+        if (gl_LocalInvocationIndex == 0u)      p = normalizePlane(row3 + row0); // left
+        else if (gl_LocalInvocationIndex == 1u) p = normalizePlane(row3 - row0); // right
+        else if (gl_LocalInvocationIndex == 2u) p = normalizePlane(row3 + row1); // bottom
+        else if (gl_LocalInvocationIndex == 3u) p = normalizePlane(row3 - row1); // top
+        else if (gl_LocalInvocationIndex == 4u) p = normalizePlane(row2);        // near (Vulkan NDC z in [0,w])
+        else                                   p = normalizePlane(row3 - row2);  // far
+        gPlanes[gl_LocalInvocationIndex] = p;
+    }
+    barrier();
+
     // Belt-and-suspenders: guard against uninitialized buffer slots.
     // The dispatch covers up to the next multiple of 64, and the buffer may
     // have capacity beyond the valid command count. Check BOTH the push
@@ -101,11 +118,8 @@ void main() {
         return;
     }
 
-    // Models are identity now
-    mat4 model = mat4(1.0);
-    mat4 mvp = pc.viewProj * model;
-
-    if (!aabbVisible(mvp, minp, maxp)) return;
+    // Models are identity now; frustum planes already extracted into gPlanes.
+    if (!aabbVisible(gPlanes, minp, maxp)) return;
 
     uint dst = atomicAdd(count, 1);
     // Keep the original firstInstance (idx) for identification (models are identity)
