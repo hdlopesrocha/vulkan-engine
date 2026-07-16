@@ -21,8 +21,9 @@ struct UniformObject {
     glm::vec4 passParams;            // offset 256, size 16  x=isShadowPass, y=tessEnabled, z=nearPlane, w=farPlane
     glm::mat4 lightSpaceMatrix1;     // offset 272, size 64  (cascade 1 = 4x ortho0)
     glm::mat4 lightSpaceMatrix2;     // offset 336, size 64  (cascade 2 = 16x ortho0)
-    
-    // Total size: 400 bytes
+    glm::mat4 invViewProjection;     // offset 400, size 64  inverse of viewProjection (camera-constant)
+
+    // Total size: 464 bytes
 
     // Note: sky-related data moved to SkyUniform
 

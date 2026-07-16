@@ -727,6 +727,7 @@ public:
         // Build per-frame UBO (viewProj now includes the updated projection)
         glm::mat4 viewProj = camera.getViewProjectionMatrix();
         uboStatic.viewProjection = viewProj;
+        uboStatic.invViewProjection = glm::inverse(viewProj);
         uboStatic.viewPos = glm::vec4(camera.getPosition(), 1.0f);
         uboStatic.lightDir = glm::vec4(light.getDirection(), 0.0f);
         uboStatic.lightColor = glm::vec4(1.0f, 1.0f, 0.9f, 1.0f);

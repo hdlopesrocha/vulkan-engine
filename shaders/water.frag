@@ -94,7 +94,7 @@ void main() {
     float effectiveBack    = min(backFaceLinear, sceneDepthEarly);
 
     // Reconstruct world-space positions for a true view-ray thickness measurement.
-    mat4 invViewProj = inverse(ubo.viewProjection);
+    mat4 invViewProj = ubo.invViewProjection;
     vec4 backFaceWorldH = invViewProj * vec4(earlyScreenUV0 * 2.0 - 1.0, backFaceDepthRaw, 1.0);
     vec3 backFaceWorld = backFaceWorldH.xyz / backFaceWorldH.w;
     vec4 sceneWorldH = invViewProj * vec4(earlyScreenUV0 * 2.0 - 1.0, sceneDepthRaw, 1.0);
