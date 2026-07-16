@@ -214,17 +214,21 @@ void main() {
     vec3 envReflection = vec3(0.0);
     float blendedRefStrength = 0.0;
     if (ubo.materialFlags.x < 0.5) {
-        vec3 envReflectDir = reflect(viewDir, worldNormal);
-        vec3 envColor = texture(environmentMap, normalize(envReflectDir)).rgb;
-        // Full-strength environment reflection at all angles
-        float envBlend = 1.0;
         float refStrength0 = materials[fragTexIndices.x].tessLevelParams.z;
         float refStrength1 = materials[fragTexIndices.y].tessLevelParams.z;
         float refStrength2 = materials[fragTexIndices.z].tessLevelParams.z;
         blendedRefStrength = refStrength0 * w.x + refStrength1 * w.y + refStrength2 * w.z;
-        envReflection = envColor * envBlend * blendedRefStrength;
-        // Apply global AO and roughness to environment reflection
-        envReflection *= aoBlend * (1.0 - roughnessValue * roughnessFactor);
+        // Skip the cubemap fetch on non-reflective surfaces (the result is
+        // multiplied by zero and mix() later collapses to the lit colour).
+        if (blendedRefStrength > 1e-4) {
+            vec3 envReflectDir = reflect(viewDir, worldNormal);
+            vec3 envColor = texture(environmentMap, normalize(envReflectDir)).rgb;
+            // Full-strength environment reflection at all angles
+            float envBlend = 1.0;
+            envReflection = envColor * envBlend * blendedRefStrength;
+            // Apply global AO and roughness to environment reflection
+            envReflection *= aoBlend * (1.0 - roughnessValue * roughnessFactor);
+        }
     }
 
     // Debug visualisation modes (0 = normal render)
