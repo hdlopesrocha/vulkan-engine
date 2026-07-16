@@ -407,6 +407,13 @@ void main() {
     float lineFinal = 0.0;
     float lineCombined = 0.0;
 
+    // Skip the entire caustic block when caustics are effectively disabled
+    // (intensity ≈ 0) and we are not visualizing them in a debug mode. This
+    // avoids hundreds of redundant 4D-noise evaluations per deep-water fragment
+    // with zero visual change where caustics are off.
+    bool causticDebugMode = (dbgMode >= 39 && dbgMode <= 42);
+    if (causticIntensity > 0.001 || causticDebugMode) {
+
     // Reuse the refraction noise already computed above (same fragPos, same
     // octaves/scale/time) for the front-face caustic Jacobian instead of
     // recomputing waterRefractionNoise a second time this fragment.
@@ -444,21 +451,29 @@ void main() {
         float trFront = ddT.x + ddB.y;
         float anisFront = sqrt(max(trFront * trFront - 4.0 * detJFront, 0.0));
 
-        // Back face: compute waterRefractionNoise(backPos) once and reuse it for
-        // the back Jacobian, perturbing only along the tangent frame.
-        vec2 caustRef0b = waterRefractionNoise(backPos.xyz, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
-        vec2 refTb = waterRefractionNoise(backPos + eps * T, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
-        vec2 refBb = waterRefractionNoise(backPos + eps * B, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
-        vec2 ddTb = (refTb - caustRef0b) / eps;
-        vec2 ddBb = (refBb - caustRef0b) / eps;
-        float detJBack = ddTb.x * ddBb.y - ddTb.y * ddBb.x;
-        float trBack = ddTb.x + ddBb.y;
-        float anisBack = sqrt(max(trBack * trBack - 4.0 * detJBack, 0.0));
-
         caustFront = max(-detJFront * causticScale, 0.0);
-        caustBack  = max(-detJBack  * causticScale, 0.0);
         lineFrontRaw  = max(anisFront * causticScale * lineScale, 0.0);
-        lineBackRaw   = max(anisBack  * causticScale * lineScale, 0.0);
+
+        // Back face: only needed for genuinely thick water volumes. For flat /
+        // co-planar surfaces (hasValidBackFace == false) the bottom Jacobian
+        // equals the surface Jacobian, so reuse the front estimate instead of
+        // issuing the full back-face FBM sample set.
+        if (hasValidBackFace) {
+            vec2 caustRef0b = waterRefractionNoise(backPos.xyz, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
+            vec2 refTb = waterRefractionNoise(backPos + eps * T, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
+            vec2 refBb = waterRefractionNoise(backPos + eps * B, noiseScale, causticAnimTime, int(noiseOctaves), noisePersistence, noiseLacunarity) * refractionStrength;
+            vec2 ddTb = (refTb - caustRef0b) / eps;
+            vec2 ddBb = (refBb - caustRef0b) / eps;
+            float detJBack = ddTb.x * ddBb.y - ddTb.y * ddBb.x;
+            float trBack = ddTb.x + ddBb.y;
+            float anisBack = sqrt(max(trBack * trBack - 4.0 * detJBack, 0.0));
+
+            caustBack = max(-detJBack * causticScale, 0.0);
+            lineBackRaw = max(anisBack * causticScale * lineScale, 0.0);
+        } else {
+            caustBack = caustFront;
+            lineBackRaw = lineFrontRaw;
+        }
 
         // Compose final cloud/line measures and apply power/intensity
         float cloudCombined = mix(caustFront, caustBack, depthInfluence);
@@ -466,6 +481,8 @@ void main() {
         lineCombined = mix(lineFrontRaw, lineBackRaw, depthInfluence);
         lineFinal = pow(max(lineCombined, 1e-6), causticPower);
     }
+
+    } // end caustic-intensity / debug guard
 
     // Blend cloud vs line patterns, then apply intensity and modulations
     float caustRaw = mix(cloudFinal, lineFinal, lineMix);
