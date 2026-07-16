@@ -451,12 +451,16 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
             uint32_t remaining = triCount;
             uint32_t baseTri = 0;
             while (remaining > 0) {
-                uint32_t thisGroups = remaining > maxGroupsX ? maxGroupsX : remaining;
+                // Each workgroup now covers 64 triangles (local_size_x = 64),
+                // so dispatch ceil(remaining/64) workgroups, capped by the device limit.
+                uint32_t workgroups = (remaining + 63u) / 64u;
+                uint32_t thisGroups = workgroups > maxGroupsX ? maxGroupsX : workgroups;
                 push[4] = baseTri;
                 vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
                 vkCmdDispatch(cmd, thisGroups, 1, 1);
-                baseTri += thisGroups;
-                remaining -= thisGroups;
+                uint32_t threadsDone = thisGroups * 64u;
+                baseTri += threadsDone;
+                remaining = (threadsDone < remaining) ? (remaining - threadsDone) : 0u;
             }
 
             // Ensure shader writes are visible to subsequent vertex input after all chunks
@@ -608,12 +612,16 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
         uint32_t remaining = triCount;
         uint32_t baseTri = 0;
         while (remaining > 0) {
-            uint32_t thisGroups = remaining > maxGroupsX ? maxGroupsX : remaining;
+            // Each workgroup now covers 64 triangles (local_size_x = 64),
+            // so dispatch ceil(remaining/64) workgroups, capped by the device limit.
+            uint32_t workgroups = (remaining + 63u) / 64u;
+            uint32_t thisGroups = workgroups > maxGroupsX ? maxGroupsX : workgroups;
             push[4] = baseTri;
             vkCmdPushConstants(cmd, vegComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
             vkCmdDispatch(cmd, thisGroups, 1, 1);
-            baseTri += thisGroups;
-            remaining -= thisGroups;
+            uint32_t threadsDone = thisGroups * 64u;
+            baseTri += threadsDone;
+            remaining = (threadsDone < remaining) ? (remaining - threadsDone) : 0u;
         }
 
         VkBufferMemoryBarrier2 bufBarrier{};

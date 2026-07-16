@@ -3,7 +3,7 @@
 // vegetation_instance_gen.comp: Generate vegetation instance positions from indexed geometry
 // layout: binding 0 = vertex buffer (vec3 position[]), binding 1 = index buffer (uint[]), binding 2 = output instance buffer (vec4[] or vec3[])
 // push constants: instancesPerTriangle, vertexCount, indexCount, seed, pad
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 // vec3 in std430 has 16-byte stride, but CPU uploads tightly-packed 12-byte glm::vec3.
 // Read as raw floats to avoid the stride mismatch.
