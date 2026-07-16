@@ -11,10 +11,13 @@ vec3 applyDisplacement(vec3 localPos, vec3 localNormal, vec3 worldPos, vec3 worl
     float h1 = 0.5;
     float h2 = 0.5;
 
+    // Compute triplanar blend weights once for all three materials (same worldNormal)
+    vec3 triplanarWeights = computeTriplanarWeights(worldNormal);
+
     // Material 0
     if (materials[texIndices.x].mappingParams.x > 0.5) {
         if (materials[texIndices.x].triplanarParams.z > 0.5 || triFlag > 0.5) {
-            h0 = sampleHeightTriplanar(worldPos, worldNormal, texIndices.x);
+            h0 = sampleHeightTriplanarW(worldPos, worldNormal, triplanarWeights, texIndices.x);
         } else {
             h0 = sampleHeight(uv, texIndices.x);
         }
@@ -22,7 +25,7 @@ vec3 applyDisplacement(vec3 localPos, vec3 localNormal, vec3 worldPos, vec3 worl
     // Material 1
     if (materials[texIndices.y].mappingParams.x > 0.5) {
         if (materials[texIndices.y].triplanarParams.z > 0.5 || triFlag > 0.5) {
-            h1 = sampleHeightTriplanar(worldPos, worldNormal, texIndices.y);
+            h1 = sampleHeightTriplanarW(worldPos, worldNormal, triplanarWeights, texIndices.y);
         } else {
             h1 = sampleHeight(uv, texIndices.y);
         }
@@ -30,7 +33,7 @@ vec3 applyDisplacement(vec3 localPos, vec3 localNormal, vec3 worldPos, vec3 worl
     // Material 2
     if (materials[texIndices.z].mappingParams.x > 0.5) {
         if (materials[texIndices.z].triplanarParams.z > 0.5 || triFlag > 0.5) {
-            h2 = sampleHeightTriplanar(worldPos, worldNormal, texIndices.z);
+            h2 = sampleHeightTriplanarW(worldPos, worldNormal, triplanarWeights, texIndices.z);
         } else {
             h2 = sampleHeight(uv, texIndices.z);
         }

@@ -13,9 +13,10 @@ float sampleHeight(vec2 texCoords, int brushIndex) {
     return clamp(h, 0.0, 1.0);
 }
 
-// Triplanar height sampling: blend height from world-space projected UVs
-float sampleHeightTriplanar(vec3 worldPos, vec3 normal, int brushIndex) {
-    // Calculate blend weights from world normal using global triplanar settings (threshold + exponent)
+// Compute triplanar blend weights from a world normal using the global triplanar
+// settings (threshold + exponent). Shared across materials so the abs + threshold
+// + pow + normalize sequence runs only once per vertex/fragment.
+vec3 computeTriplanarWeights(vec3 normal) {
     vec3 w = abs(normal);
     // apply threshold (dead-zone) and exponent (steepness)
     float t = ubo.triplanarSettings.x; // threshold
@@ -23,8 +24,12 @@ float sampleHeightTriplanar(vec3 worldPos, vec3 normal, int brushIndex) {
     float e = max(1.0, ubo.triplanarSettings.y);
     wt = pow(wt, vec3(e));
     float sum = wt.x + wt.y + wt.z + 1e-6;
-    w = wt / sum;
+    return wt / sum;
+}
 
+// Triplanar height sampling with precomputed blend weights (and the world normal
+// used only for projection sign selection)
+float sampleHeightTriplanarW(vec3 worldPos, vec3 normal, vec3 w, int brushIndex) {
     vec2 scale = vec2(materials[brushIndex].triplanarParams.x, materials[brushIndex].triplanarParams.y);
     if (materials[brushIndex].mappingParams.z > 0.5) {
         scale.y = -scale.y;
@@ -55,4 +60,10 @@ float sampleHeightTriplanar(vec3 worldPos, vec3 normal, int brushIndex) {
 
     float h = hX * w.x + hY * w.y + hZ * w.z;
     return clamp(h, 0.0, 1.0);
+}
+
+// Triplanar height sampling: blend height from world-space projected UVs.
+// Convenience wrapper that computes the blend weights from the world normal.
+float sampleHeightTriplanar(vec3 worldPos, vec3 normal, int brushIndex) {
+    return sampleHeightTriplanarW(worldPos, normal, computeTriplanarWeights(normal), brushIndex);
 }
