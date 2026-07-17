@@ -2160,7 +2160,14 @@ void MyApp::ensureCubemapResources() {
             VkMemoryRequirements reqs;
             vkGetBufferMemoryRequirements(device, buf.buffer, &reqs);
             if (reqs.size >= needed) return; // already large enough
-            destroyBuffer(buf);
+            // The old buffer may still be referenced by command buffers that are
+            // currently in flight (the cube360 culling pass runs every frame).
+            // Destroying it synchronously here is the VUID-vkDestroyBuffer-buffer-00922
+            // crash; defer the destruction until the GPU is idle instead.
+            Buffer old = buf;
+            deferDestroyUntilAllPending([old, this]() mutable {
+                destroyBuffer(old);
+            });
             buf = Buffer{};
         }
         buf = createBuffer(needed, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
