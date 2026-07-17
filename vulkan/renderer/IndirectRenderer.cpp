@@ -973,7 +973,13 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         // No meshes loaded yet (e.g. during parallel background loading). Nothing to cull.
         return;
     }
-    
+
+    // Acquire uploaded geometry/meta buffers (written by async vkCmdCopyBuffer /
+    // host staging) so the cull dispatch and subsequent indirect draw observe
+    // their TRANSFER/HOST writes. Without this, the draw's VERTEX_ATTRIBUTE_READ
+    // races the async transfer write (SYNC-HAZARD-READ-AFTER-WRITE).
+    acquireBuffers(cmd);
+
     static bool printedOnce = false;
     if (!printedOnce) {
 #if 0
@@ -1117,6 +1123,10 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     if (outCompactBuffer == VK_NULL_HANDLE || computeDesc == VK_NULL_HANDLE) {
         throw std::runtime_error("IndirectRenderer::prepareCullWithDescriptor requires valid outCompactBuffer and computeDesc");
     }
+
+    // Acquire uploaded geometry/meta buffers (async vkCmdCopyBuffer / host staging)
+    // so the cull dispatch and indirect draw observe their TRANSFER/HOST writes.
+    acquireBuffers(cmd);
 
     // Reset visible count via host mapped write (outVisibleCountBuffer is HOST_VISIBLE|HOST_COHERENT).
     // vkCmdFillBuffer + TRANSFER_BIT barrier is unreliable on RADV.
