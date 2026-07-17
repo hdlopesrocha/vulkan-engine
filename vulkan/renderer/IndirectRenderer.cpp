@@ -52,6 +52,13 @@ void IndirectRenderer::publishPendingTransfer(VulkanApp* app) {
     // earlier entries were written in a prior upload.
     doUploadMeshMetaBuffers(app);
 
+    // Release the staging region. For the ring-backed path this returns the
+    // suballocated region to the persistent StagingRingBuffer (no vkFreeMemory);
+    // for the fallback path the dedicated staging buffer is destroyed.
+    if (pendingTransfer.stagingAlloc.mappedPtr) {
+        app->stagingRing.release(pendingTransfer.stagingAlloc);
+        pendingTransfer.stagingAlloc = {};
+    }
     if (pendingTransfer.stagingBuffer.buffer != VK_NULL_HANDLE) {
         app->resources.removeBufferVma(pendingTransfer.stagingBuffer.buffer, pendingTransfer.stagingBuffer.allocation);
         pendingTransfer.stagingBuffer = {};
@@ -366,10 +373,27 @@ bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>&
 
     if (reqs.empty()) return true;
 
-    Buffer staging = app->createBuffer(totalStaging,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    void* mapped = staging.map(0);
+    // Suballocate the staging region from the app's persistent StagingRingBuffer
+    // (persistently-mapped, avoids a per-chunk vkAllocateMemory + map + free).
+    // Fall back to a dedicated host-visible staging buffer only if the ring is
+    // exhausted or fragmented.
+    StagingRingBuffer::Allocation stagingAlloc = app->stagingRing.allocate(totalStaging);
+    Buffer stagingFallback;
+    void* mapped = nullptr;
+    VkBuffer stagingVk = VK_NULL_HANDLE;
+    VkDeviceSize stagingBase = 0;
+    if (stagingAlloc.mappedPtr) {
+        mapped = stagingAlloc.mappedPtr;
+        stagingVk = app->stagingRing.buffer();
+        stagingBase = stagingAlloc.offset;
+    } else {
+        stagingFallback = app->createBuffer(totalStaging,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        mapped = stagingFallback.map(0);
+        stagingVk = stagingFallback.buffer;
+        stagingBase = 0;
+    }
     VkDeviceSize off = 0;
     for (auto& r : reqs) {
         if (r.doVertex) {
@@ -383,7 +407,9 @@ bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>&
             off += r.indexSize;
         }
     }
-    staging.unmap(); // VMA persistent mapping
+    if (stagingFallback.buffer != VK_NULL_HANDLE) {
+        stagingFallback.unmap(); // VMA persistent mapping
+    }
 
     // Submit the staging→device-local copies asynchronously and defer the
     // meta-buffer write until the fence signals. The whole batch is coalesced
@@ -433,21 +459,22 @@ bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>&
         for (auto& r : reqs) {
             if (r.doVertex) {
                 VkBufferCopy vCopy{};
-                vCopy.srcOffset = r.stagingVertexOffset;
+                vCopy.srcOffset = stagingBase + r.stagingVertexOffset;
                 vCopy.dstOffset = r.vertexOffset;
                 vCopy.size = r.vertexSize;
-                vkCmdCopyBuffer(cmd, staging.buffer, vertexBuffer.buffer, 1, &vCopy);
+                vkCmdCopyBuffer(cmd, stagingVk, vertexBuffer.buffer, 1, &vCopy);
             }
             if (r.doIndex) {
                 VkBufferCopy iCopy{};
-                iCopy.srcOffset = r.stagingIndexOffset;
+                iCopy.srcOffset = stagingBase + r.stagingIndexOffset;
                 iCopy.dstOffset = r.indexOffset;
                 iCopy.size = r.indexSize;
-                vkCmdCopyBuffer(cmd, staging.buffer, indexBuffer.buffer, 1, &iCopy);
+                vkCmdCopyBuffer(cmd, stagingVk, indexBuffer.buffer, 1, &iCopy);
             }
         }
     });
-    pendingTransfer.stagingBuffer = staging;
+    pendingTransfer.stagingAlloc = stagingAlloc;
+    pendingTransfer.stagingBuffer = stagingFallback;
     return true;
 }
 

@@ -169,6 +169,10 @@ public:
 private:
     struct PendingTransfer {
         VkFence fence = VK_NULL_HANDLE;
+        // Staging region suballocated from the app's persistent StagingRingBuffer
+        // (preferred). When the ring cannot satisfy the request we fall back to a
+        // dedicated staging buffer stored in `stagingBuffer`.
+        StagingRingBuffer::Allocation stagingAlloc = {};
         Buffer stagingBuffer = {};
     };
     PendingTransfer pendingTransfer = {};
