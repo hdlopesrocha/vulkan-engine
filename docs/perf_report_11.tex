@@ -1,0 +1,431 @@
+\documentclass[a4paper,12pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[table]{xcolor}
+\usepackage{geometry}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{titlesec}
+\usepackage{booktabs}
+\usepackage{array}
+
+\geometry{margin=2.5cm}
+
+\definecolor{criticalcolor}{HTML}{DC3545}
+\definecolor{highcolor}{HTML}{FD7E14}
+\definecolor{mediumcolor}{HTML}{FFC107}
+\definecolor{lowcolor}{HTML}{28A745}
+\definecolor{resolvedcolor}{HTML}{6C757D}
+
+\newcommand{\severitybox}[2]{%
+  \colorbox{#1}{\makebox[2.5cm][c]{\textcolor{white}{\textbf{#2}}}}%
+}
+
+\lstset{
+  basicstyle=\small\ttfamily,
+  breaklines=true,
+  frame=single,
+  numbers=none,
+  tabsize=2,
+  backgroundcolor=\color{gray!10},
+  extendedchars=true,
+  inputencoding=utf8,
+  literate={—}{---}1 {·}{$\cdot$}1 {≈}{$\approx$}1 {×}{$\times$}1 {→}{$\rightarrow$}1
+}
+
+\title{\textbf{Performance Report \#11}\\[4pt]
+\large Vulkan Engine — GPU Synchronization, Avoidable Waits \&
+Octree Geometry-Chunk Upload Path}
+\author{Henrique Rocha}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Where Reports \#09 and \#10 audited the shader tree, this report audits the
+\emph{CPU$\leftrightarrow$GPU synchronization surface} that governs how fast the
+engine can turn a freshly meshed octree node into a drawable geometry chunk on
+the GPU. The scope is deliberately narrow: host-side stalls
+(\texttt{vkWaitForFences}, \texttt{vkQueueWaitIdle}, \texttt{vkDeviceWaitIdle},
+empty-submit readbacks), queue contention, and staging/allocation churn on the
+octree chunk-streaming path (\texttt{SceneRenderer::processPendingMeshes} $\rightarrow$
+\texttt{IndirectRenderer::uploadMesh*} $\rightarrow$ \texttt{runSingleTimeCommandsAsync}).
+Seven issues are reported (2 high, 3 medium, 2 low). None changes rendered
+output; every fix removes a host stall or allocation without altering geometry,
+culling results, or feature behaviour. All recommendations respect
+\texttt{AGENTS.md}: Synchronization2 is preserved, no legacy render passes or
+legacy sync are introduced, feature detection is retained, and the same-queue
+RADV workarounds documented in the code are kept as fallbacks.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Scope \& Methodology}
+
+The audit followed the geometry-chunk data path end to end:
+
+\begin{enumerate}[leftmargin=*]
+  \item Background tessellation: \texttt{LocalScene::requestModel3D}
+        (\texttt{utils/LocalScene.cpp:37}) meshes a node and hands a
+        \texttt{Geometry} to the scene callback, which enqueues it on
+        \texttt{pendingMeshQueue}.
+  \item Main-thread drain: \texttt{SceneRenderer::processPendingMeshes}
+        (\texttt{vulkan/renderer/SceneRenderer.cpp:1019}) pops a batch and
+        uploads each chunk.
+  \item GPU upload: \texttt{IndirectRenderer::uploadMeshVerticesAndIndices}
+        (\texttt{vulkan/renderer/IndirectRenderer.cpp:247}) stages and copies
+        vertex/index data, then defers the indirect/bounds meta-buffer write.
+  \item Submission \& lifetime: \texttt{VulkanApp::runSingleTimeCommandsAsync},
+        \texttt{processPendingCommandBuffers}, and the
+        \texttt{deferDestroyUntilFence} recycle point.
+\end{enumerate}
+
+Every host-side wait reachable from the per-frame loop was traced to determine
+whether it blocks the main (render) thread or a worker, how often it fires, and
+whether the ordering it enforces could be achieved without a stall. Findings are
+ordered by measured impact on chunk-streaming throughput and frame pacing.
+
+\subsection*{Synchronization Hotspot Overview}
+
+\begin{center}
+\begin{tabular}{lcl}
+\toprule
+\textbf{Site} & \textbf{File:Line} & \textbf{Stall type} \\
+\midrule
+Per-chunk transfer publish   & \texttt{IndirectRenderer.cpp:47,361}  & \texttt{vkWaitForFences} UINT64\_MAX \\
+Visible-count readback       & \texttt{IndirectRenderer.cpp:1359}    & empty submit + wait + queue idle \\
+Per-chunk staging alloc      & \texttt{IndirectRenderer.cpp:341}     & \texttt{createBuffer}/free per chunk \\
+Deferred fence destroy       & \texttt{IndirectRenderer.cpp:797,1398}& \texttt{vkQueueWaitIdle} in callback \\
+Transfer queue routing       & \texttt{VulkanApp.cpp:1582,5851}      & single graphics queue contention \\
+Legacy GPU veg. gen          & \texttt{VegetationRenderer.cpp:1488}  & \texttt{vkWaitForFences} per chunk \\
+Water target reset           & \texttt{WaterRenderer.cpp:259}        & \texttt{vkDeviceWaitIdle} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\newpage
+
+\section{Issue Register}
+
+\subsection{High Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[S1]}] \textbf{Per-Chunk Upload Serializes on the Previous Chunk's Transfer Fence}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/IndirectRenderer.cpp} \\
+    \textbf{Line:} & 361--364 (publish), 39--62 (\texttt{publishPendingTransfer}), 47 (wait) \\
+    \textbf{Category:} & Avoidable wait / octree chunk-upload throughput \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{processPendingMeshes} drains up to \texttt{kMaxPerFrame = 10} chunks
+  per frame (\texttt{SceneRenderer.cpp:1022}, loop at 1100--1103), calling
+  \texttt{uploadMesh} $\rightarrow$ \texttt{uploadMeshVerticesAndIndices} for
+  each. Before recording a new staging copy, that function flushes any
+  outstanding transfer:
+
+\begin{lstlisting}
+if (pendingTransfer.fence != VK_NULL_HANDLE) {
+    publishPendingTransfer(app);   // IndirectRenderer.cpp:361
+}
+pendingTransfer.fence = app->runSingleTimeCommandsAsync(...);
+\end{lstlisting}
+
+  and \texttt{publishPendingTransfer} \emph{blocks the main thread} on the
+  previous chunk's fence:
+
+\begin{lstlisting}
+if (app->resources.find((uintptr_t)pendingTransfer.fence).has_value()) {
+    vkWaitForFences(dev, 1, &pendingTransfer.fence, VK_TRUE, UINT64_MAX); // :47
+}
+\end{lstlisting}
+
+  Because only \emph{one} \texttt{pendingTransfer} slot exists, chunk $N+1$
+  cannot begin recording until chunk $N$'s copy has fully retired on the GPU.
+  The nominally ``async'' upload path (\texttt{runSingleTimeCommandsAsync}) is
+  therefore run \emph{synchronously}, one round-trip per chunk. With a batch of
+  10 small chunks this is 10 serialized CPU$\leftrightarrow$GPU round trips on
+  the render thread every frame — the single largest limiter on how fast a
+  streaming/edited octree becomes visible.
+
+  \textbf{Recommendation:}
+  Pipeline the uploads. Either (a) coalesce the whole batch into a
+  \emph{single} command buffer: record all vertex/index copies for the batch,
+  submit once, and publish every mesh's meta-buffer entry when that one fence
+  signals; or (b) keep a small ring of in-flight \texttt{pendingTransfer} slots
+  (e.g. 3, matching frames-in-flight) and only wait when the ring is full,
+  reclaiming slots lazily via \texttt{pollPendingTransfers} (already called at
+  \texttt{SceneRenderer.cpp:1046}). Option (a) is simplest and also amortizes
+  submission overhead. Meta-buffers are append-only (documented at
+  \texttt{IndirectRenderer.cpp:49--53}), so deferred publication remains correct.
+  Identical GPU buffer contents; the per-chunk stall disappears.
+
+\item[\textbf{[S2]}] \textbf{Per-Frame Visible-Count Readback: Empty Submit, Timed Wait, and a Queued \texttt{vkQueueWaitIdle}}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/IndirectRenderer.cpp}, \texttt{main.cpp} \\
+    \textbf{Line:} & IndirectRenderer.cpp 1359--1416; main.cpp 1327, 1334 \\
+    \textbf{Category:} & Avoidable wait / frame pacing \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The stats overlay reads the GPU cull count twice every frame — once for solid,
+  once for water (\texttt{main.cpp:1327,1334}). Each
+  \texttt{readVisibleCount} does three expensive things on the render thread:
+
+\begin{lstlisting}
+// 1) push an empty batch just to get a completion signal
+vkQueueSubmit2(queue, 1, &emptySubmit, fence);        // :1380
+// 2) block up to 100 ms on it
+vkWaitForFences(dev, 1, &fence, VK_TRUE, 100'000'000);// :1384
+// 3) UNCONDITIONALLY defer-destroy the fence, and that
+//    callback forces a full-queue idle:
+app->deferDestroyUntilFence(oldFence, [app, oldFence]() {
+    vkQueueWaitIdle(app->getGraphicsQueue());         // :1398
+    vkDestroyFence(app->getDevice(), oldFence, nullptr);
+});
+\end{lstlisting}
+
+  The deferred closure runs inside \texttt{processPendingCommandBuffers}
+  (\texttt{VulkanApp.cpp:1921}), so \emph{each frame enqueues two
+  \texttt{vkQueueWaitIdle(graphicsQueue)} calls} that fully drain the graphics
+  queue at the next safe point — defeating frames-in-flight pipelining. In
+  addition, the empty-submit + 100\,ms wait is a GPU$\rightarrow$CPU sync taken
+  purely to render a debug label.
+
+  \textbf{Recommendation:}
+  Make the read non-blocking and stop churning the fence. Keep a small
+  ring of count buffers already indexed by \texttt{currentCullFrame}
+  (\texttt{visibleCountBuffers[]} exists) and simply return the value produced
+  by a frame that has \emph{already} completed (last frame's persistently-mapped
+  count at \texttt{visibleCountMapped[frame]}, IndirectRenderer.cpp:1412). Drop
+  the empty submit, the 100\,ms wait, and the per-call fence recreate/defer.
+  This removes both the readback stall and the two per-frame queue idles; the
+  displayed count lags by at most one frame, which is invisible in a stats
+  overlay.
+
+\subsection{Medium Severity}
+
+\item[\textbf{[S3]}] \textbf{Fresh Staging Buffer Allocated (and Freed) Per Chunk}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/IndirectRenderer.cpp} \\
+    \textbf{Line:} & 341--354 (alloc), 55--58 (free in \texttt{publishPendingTransfer}) \\
+    \textbf{Category:} & Allocation churn / \texttt{vkAllocateMemory} minimization \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Each chunk upload creates a brand-new host-visible staging buffer and destroys
+  it once the transfer completes:
+
+\begin{lstlisting}
+Buffer staging = app->createBuffer(stagingSize,
+    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT); // :341
+...
+app->resources.removeBufferVma(pendingTransfer.stagingBuffer.buffer, ...);       // :56
+\end{lstlisting}
+
+  This is a VMA allocation + map + unmap + free for every geometry chunk. The
+  engine already owns a \texttt{StagingRingBuffer}
+  (\texttt{vulkan/StagingRingBuffer.cpp}) with a persistently-mapped suballocator
+  designed for exactly this. \texttt{AGENTS.md} explicitly calls for
+  ``persistent mapped upload buffers'' and ``minimize \texttt{vkAllocateMemory}
+  calls''; the current path violates both on the hottest streaming loop.
+
+  \textbf{Recommendation:}
+  Suballocate the per-chunk staging region from \texttt{StagingRingBuffer}
+  (\texttt{allocate}/\texttt{release}) instead of \texttt{createBuffer}. Release
+  the ring region in the transfer-completion path (or the deferred callback)
+  exactly where the buffer is freed today. Combined with \textbf{S1}'s batch
+  coalescing, a single ring region can back the whole batch's copies. No
+  behavioural change; the per-chunk allocator traffic is eliminated.
+
+\item[\textbf{[S4]}] \textbf{Deferred Fence Destruction Forces a Full-Queue Idle}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/IndirectRenderer.cpp}, \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & IndirectRenderer.cpp 797--802, 1395--1400; VulkanApp.cpp 1483--1489 \\
+    \textbf{Category:} & Avoidable wait / queue serialization \\
+  \end{tabular}
+
+  \textbf{Description:}
+  To work around RADV's validation lag on \texttt{vkDestroyFence}
+  (VUID-vkDestroyFence-fence-01120), several sites recreate a fence and
+  defer-destroy the old one via a closure that first drains the whole queue:
+
+\begin{lstlisting}
+app->deferDestroyUntilFence(oldFence, [app, oldFence]() {
+    vkQueueWaitIdle(app->getGraphicsQueue());   // full graphics-queue stall
+    vkDestroyFence(app->getDevice(), oldFence, nullptr);
+});
+\end{lstlisting}
+
+  These closures execute in \texttt{processPendingCommandBuffers}
+  (\texttt{VulkanApp.cpp:1921}). Every path that rotates a fence — the
+  single-time ring (\texttt{VulkanApp.cpp:1486}), the visible-count fences
+  (\texttt{IndirectRenderer.cpp:800}, and \textbf{S2}'s per-frame recreate at
+  1398) — thus contributes a full \texttt{vkQueueWaitIdle} at a per-frame safe
+  point. The idle is only there to make \emph{fence destruction} legal, not to
+  order any real work.
+
+  \textbf{Recommendation:}
+  Stop destroying these fences. Maintain a per-purpose fence free-list: after a
+  fence signals, \texttt{vkResetFences} it (at a point where it is provably no
+  longer pending — the deferred callback already guarantees that via the
+  tracking fence) and return it to the pool for reuse. Fence reset does not need
+  a queue idle. Where the RADV lag genuinely requires it, destroy in a single
+  batched pass guarded by one \texttt{vkGetFenceStatus} check rather than a
+  \texttt{vkQueueWaitIdle} per fence. This removes the per-frame queue stalls
+  while keeping validation clean.
+
+\item[\textbf{[S5]}] \textbf{All Chunk Transfers Funnel Through the Graphics Queue; \texttt{geometryQueue} Is Acquired but Unused}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/VulkanApp.cpp} \\
+    \textbf{Line:} & 1582--1595 (routing), 5851 (queue acquired) \\
+    \textbf{Category:} & Queue contention / parallelism \\
+  \end{tabular}
+
+  \textbf{Description:}
+  A third graphics-family queue is acquired specifically for geometry work:
+
+\begin{lstlisting}
+if (gfxRequested > 2) vkGetDeviceQueue(device, indices.graphicsFamily.value(), 2, &geometryQueue);
+else geometryQueue = graphicsQueue;                    // VulkanApp.cpp:5851
+\end{lstlisting}
+
+  but the transfer entry points force everything onto \texttt{graphicsQueue}:
+
+\begin{lstlisting}
+VkFence VulkanApp::runSingleTimeCommandsAsyncOnTransfer(...) {
+    return runSingleTimeCommandsAsync(fn, outSemaphore); // uses graphicsQueue
+}
+\end{lstlisting}
+
+  Consequently every chunk staging copy takes \texttt{graphicsSubmitMutex} and
+  competes with per-frame render submission on one queue. \texttt{geometryQueue}
+  is dead. (The comments correctly note that a dedicated \emph{transfer-family}
+  queue caused GPUVM faults on RADV; that is a separate hardware queue from the
+  \emph{graphics-family} \texttt{geometryQueue} acquired here.)
+
+  \textbf{Recommendation:}
+  Route batched geometry-chunk copies (post \textbf{S1}) to \texttt{geometryQueue}
+  when \texttt{gfxRequested > 2}, ordering the graphics consumer with a timeline
+  semaphore (already the preferred primitive per \texttt{AGENTS.md}). This must
+  be feature-detected: fall back to the current single-graphics-queue path when
+  a distinct queue is unavailable, preserving the documented RADV safety net.
+  Upload work then overlaps frame rendering instead of contending for the same
+  submit mutex.
+
+\subsection{Low Severity}
+
+\item[\textbf{[S6]}] \textbf{Legacy GPU Vegetation Generation Still Blocks Synchronously}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/VegetationRenderer.cpp} \\
+    \textbf{Line:} & 1488 \\
+    \textbf{Category:} & Dead-weight wait \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{generateChunkInstances} dispatches the instance-gen compute shader and
+  then blocks per chunk:
+
+\begin{lstlisting}
+vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX); // :1488
+\end{lstlisting}
+
+  The active code path is \texttt{generateChunkInstancesCPU}
+  (called at \texttt{SceneRenderer.cpp:1345}), which correctly batches all copies
+  into one async submission and publishes chunks from a deferred callback
+  (\texttt{VegetationRenderer.cpp:1719--1757}) — the pattern \textbf{S1} should
+  adopt. The blocking GPU path appears to survive only as a fallback but still
+  carries a per-chunk full stall if ever taken.
+
+  \textbf{Recommendation:}
+  Either delete the blocking GPU path or convert it to the same
+  \texttt{runSingleTimeCommandsAsync} + \texttt{deferDestroyUntilFence} deferred
+  publish used by the CPU path. No behaviour change on the live path.
+
+\item[\textbf{[S7]}] \textbf{Water Target Reset Uses \texttt{vkDeviceWaitIdle}}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/WaterRenderer.cpp} \\
+    \textbf{Line:} & 259 \\
+    \textbf{Category:} & Avoidable device-wide stall \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Recreating the water offscreen targets resets the descriptor pool behind a
+  full device idle:
+
+\begin{lstlisting}
+VkResult r = app->deviceWaitIdle();          // :259
+if (r == VK_SUCCESS) vkResetDescriptorPool(device, waterDepthDescriptorPool, 0);
+\end{lstlisting}
+
+  This is a whole-device stall on every water-target rebuild (window resize,
+  render-scale change). \texttt{AGENTS.md} restricts \texttt{vkDeviceWaitIdle} to
+  shutdown and major rebuilds; a target resize is borderline but hits the entire
+  device, including compute and unrelated graphics work.
+
+  \textbf{Recommendation:}
+  Prefer per-frame (frames-in-flight) descriptor pools so a rebuild only needs
+  to wait on the specific in-flight fences that reference the old sets, or defer
+  the pool reset through \texttt{deferDestroyUntilFence} instead of idling the
+  device. If a wait is unavoidable, scope it to \texttt{queueWaitIdle} on the
+  graphics queue rather than the whole device.
+
+\end{enumerate}
+
+\newpage
+
+\section{Summary}
+
+\begin{center}
+\begin{tabular}{cll}
+\toprule
+\textbf{ID} & \textbf{Site} & \textbf{Severity} \\
+\midrule
+S1 & \texttt{IndirectRenderer::uploadMeshVerticesAndIndices} (per-chunk fence wait) & High   \\
+S2 & \texttt{IndirectRenderer::readVisibleCount} (per-frame readback + queue idle) & High   \\
+S3 & \texttt{IndirectRenderer} per-chunk staging \texttt{createBuffer} & Medium \\
+S4 & \texttt{deferDestroyUntilFence} closures calling \texttt{vkQueueWaitIdle} & Medium \\
+S5 & Chunk transfers on \texttt{graphicsQueue}; \texttt{geometryQueue} unused & Medium \\
+S6 & \texttt{VegetationRenderer::generateChunkInstances} blocking wait & Low    \\
+S7 & \texttt{WaterRenderer} descriptor-pool reset \texttt{vkDeviceWaitIdle} & Low    \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All seven issues are pure host-side synchronization/allocation waste: none
+changes geometry, culling results, or any rendered feature. The two
+highest-impact items both throttle the octree geometry-chunk pipeline —
+\textbf{S1} serializes the per-frame upload batch into one-round-trip-per-chunk,
+and \textbf{S2} injects a GPU readback plus two full-queue idles \emph{every
+frame} for a debug counter. Fixing S1 (batch-coalesce or a small in-flight
+fence ring) and S2 (return last-completed frame's mapped count, no submit/wait)
+should be done first; they also make S3 (reuse \texttt{StagingRingBuffer}) and
+S4 (fence free-list instead of destroy-with-idle) natural follow-ups. S5 unlocks
+true upload/render overlap via the already-acquired \texttt{geometryQueue} behind
+feature detection, and S6/S7 remove residual stalls on the vegetation-fallback
+and resize paths. Every recommendation keeps Synchronization2, dynamic
+rendering, timeline semaphores, and the documented RADV same-queue fallbacks
+intact.
+
+\end{document}
