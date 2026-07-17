@@ -140,10 +140,6 @@ void IndirectRenderer::cleanup() {
             visibleCountMapped[f] = nullptr;
         }
         visibleCountBuffers[f] = {};
-        if (visibleCountFences[f] != VK_NULL_HANDLE && storedDevice != VK_NULL_HANDLE) {
-            vkDestroyFence(storedDevice, visibleCountFences[f], nullptr);
-            visibleCountFences[f] = VK_NULL_HANDLE;
-        }
     }
 }
 
@@ -822,31 +818,6 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
         visibleCountMapped[f] = static_cast<uint32_t*>(visibleCountBuffers[f].map(0));
         // Initialize with full count (fallback when culling is off)
         *visibleCountMapped[f] = initialCount;
-
-        // Create or recreate per-frame fence for lightweight readVisibleCount.
-        // We never vkResetFences here: on RADV the validation layer can still
-        // flag a fence as in use immediately after vkWaitForFences returns
-        // (VUID-vkResetFences-pFences-01123), nor may we vkDestroyFence it
-        // inline (VUID-vkDestroyFence-fence-01120). Recreate a fresh fence
-        // and defer-destroy the old one via the app's safe recycle point.
-        VkFence oldFence = visibleCountFences[f];
-        if (oldFence != VK_NULL_HANDLE) {
-            // Not tracked in resources: the deferred callback fires at the next
-            // processPendingCommandBuffers() safe point. Cleanup (~IndirectRenderer
-            // destroy) already owns the fence, so we must not double-track it.
-            app->deferDestroyUntilFence(oldFence, [app, oldFence]() {
-                // Force the submitting queue (graphics) idle so RADV has fully
-                // retired the fence before destroy (VUID-vkDestroyFence-fence-01120).
-                vkQueueWaitIdle(app->getGraphicsQueue());
-                vkDestroyFence(app->getDevice(), oldFence, nullptr);
-            });
-        }
-        VkFenceCreateInfo fenceInfo{};
-        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-        if (vkCreateFence(dev, &fenceInfo, nullptr, &visibleCountFences[f]) != VK_SUCCESS) {
-            throw std::runtime_error("IndirectRenderer: failed to create visibleCountFence");
-        }
     }
 
     // Create compute pipeline + descriptor sets for GPU culling if not present
@@ -1397,58 +1368,16 @@ void IndirectRenderer::drawIndirectOnly(VkCommandBuffer cmd, VkPipelineLayout pi
 }
 
 uint32_t IndirectRenderer::readVisibleCount(VulkanApp* app) const {
-    const Buffer& visibleCount = visibleCountBuffers[currentCullFrame];
     const uint32_t frame = currentCullFrame;
+    const Buffer& visibleCount = visibleCountBuffers[frame];
     if (!app || visibleCount.buffer == VK_NULL_HANDLE) return 0;
 
-    VkFence fence = visibleCountFences[frame];
-    VkQueue queue = app->getGraphicsQueue();
-
-    if (fence != VK_NULL_HANDLE && queue != VK_NULL_HANDLE) {
-        // Check if the fence is already signaled (from a previous read).
-        VkResult status = vkGetFenceStatus(app->getDevice(), fence);
-        if (status == VK_NOT_READY) {
-            // Submit an empty batch on the graphics queue.  Since the culling
-            // compute work was recorded into the main graphics command buffer
-            // and submitted earlier via drawFrame(), an empty submit will
-            // execute after all prior work on that queue, making the visible
-            // count coherent on the host timeline.
-            VkSubmitInfo2 emptySubmit{};
-            emptySubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-            {
-                std::lock_guard<std::mutex> lock(app->graphicsSubmitMutex);
-                vkQueueSubmit2(queue, 1, &emptySubmit, fence);
-            }
-            // Wait with a short timeout (100 ms).  On a well-behaved system
-            // the frame work completes well within this window.
-            vkWaitForFences(app->getDevice(), 1, &fence, VK_TRUE, 100'000'000);
-        }
-        // Reset the fence so the next read cycles through the submit path.
-        // Do NOT vkResetFences here (RADV validation lag:
-        // VUID-vkResetFences-pFences-01123) and do not vkDestroyFence it
-        // inline (VUID-vkDestroyFence-fence-01120). Replace with a fresh fence
-        // and defer-destroy the old one via the app's safe recycle point.
-        VkFence oldFence = fence;
-        // Not tracked in resources: the deferred callback fires at the next
-        // processPendingCommandBuffers() safe point. Cleanup already owns the
-        // fence, so do not double-track it.
-        app->deferDestroyUntilFence(oldFence, [app, oldFence]() {
-            // Force the submitting queue (graphics) idle so RADV has fully
-            // retired the fence before destroy (VUID-vkDestroyFence-fence-01120).
-            vkQueueWaitIdle(app->getGraphicsQueue());
-            vkDestroyFence(app->getDevice(), oldFence, nullptr);
-        });
-        {
-            VkFenceCreateInfo fci{};
-            fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-            fci.flags = 0;
-            VkFence newFence = VK_NULL_HANDLE;
-            vkCreateFence(app->getDevice(), &fci, nullptr, &newFence);
-            visibleCountFences[frame] = newFence;
-        }
-    }
-
-    // Use persistent host mapping — avoid vkMapMemory on already-mapped memory
+    // Non-blocking read of the persistently-mapped, host-coherent count buffer.
+    // The value reflects the most recent GPU cull result for this frame slot,
+    // which (due to the frames-in-flight rotation) is always from an already
+    // completed frame. Reading it is lock-free and never stalls the render
+    // thread: no empty submit, no fence wait, no queue idle. The count shown in
+    // the stats overlay lags by at most a few frames, which is invisible.
     if (visibleCountMapped[frame]) {
         return *visibleCountMapped[frame];
     }

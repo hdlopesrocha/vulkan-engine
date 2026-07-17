@@ -196,8 +196,6 @@ private:
     std::array<Buffer, MAX_CULL_FRAMES> visibleCountBuffers;
     // Persistent host mapping for zeroing visible counts (avoids vkCmdFillBuffer + barrier on RADV)
     mutable std::array<uint32_t*, MAX_CULL_FRAMES> visibleCountMapped = {nullptr, nullptr, nullptr};
-    // Dedicated fences per cull frame for lightweight readVisibleCount (avoids deviceWaitIdle).
-    mutable std::array<VkFence, MAX_CULL_FRAMES> visibleCountFences = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkDevice storedDevice = VK_NULL_HANDLE;
 
     // Compute pipeline objects for GPU culling
