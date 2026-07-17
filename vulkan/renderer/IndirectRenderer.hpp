@@ -23,8 +23,13 @@ public:
     static constexpr uint32_t MAX_CULL_FRAMES = 3;
         // Allow external code to force the dirty flag
         void setDirty(bool value) { dirty = value; }
-    // Upload vertex and index data for a single mesh
-    bool uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t meshId);
+    // Upload vertex and index data for a single mesh (coalesced into one transfer)
+    bool uploadMesh(VulkanApp* app, uint32_t meshId);
+    // Upload vertex and index data for a batch of meshes in a single staging
+    // buffer / command buffer submission.  Coalescing amortizes submission
+    // overhead and removes the per-chunk fence stall that serialized chunk
+    // uploads when processed one-by-one (see perf_report).
+    bool uploadMeshes(VulkanApp* app, const std::vector<uint32_t>& meshIds);
     // Write all mesh indirect/model/bounds buffers for all active meshes
     void uploadMeshMetaBuffers(VulkanApp* app);
     struct MeshInfo {
@@ -63,7 +68,6 @@ public:
 
     // Upload a single mesh to GPU (incremental update). Requires buffers to have capacity.
     // Returns true if upload succeeded, false if rebuild() is needed (capacity exceeded or buffers not created).
-    bool uploadMesh(VulkanApp* app, uint32_t meshId);
     // Setters for async buffer publication (called when an async upload finishes)
     void setVertexBufferForMesh(uint32_t meshId, Buffer vbuf);
     void setIndexBufferForMesh(uint32_t meshId, Buffer ibuf);

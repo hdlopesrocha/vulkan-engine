@@ -244,92 +244,116 @@ bool IndirectRenderer::ensureCapacity(size_t vertexCount, size_t indexCount, siz
     return !needsRebuild;
 }
 
-bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t meshId) {
+bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>& meshIds) {
     std::lock_guard<std::shared_mutex> guard(mutex);
-    auto it = meshes.find(meshId);
-    if (it == meshes.end()) {
-        //printf("[IndirectRenderer::uploadMeshVerticesAndIndices] meshId %u not found\n", meshId);
-        return false;
-    }
-    MeshInfo& info = it->second;
-    if (!info.active) {
-        //printf("[IndirectRenderer::uploadMeshVerticesAndIndices] meshId %u is inactive\n", meshId);
-        return false;
-    }
-    if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) {
-        //printf("[IndirectRenderer::uploadMeshVerticesAndIndices] buffers not created, need rebuild()\n");
-        return false;
-    }
-    // Basic bounds validations to detect corrupted mesh data early.
-    size_t indicesAvailable = mergedIndices.size();
-    size_t verticesAvailable = mergedVertices.size();
-    if (info.firstIndex + static_cast<uint64_t>(info.indexCount) > indicesAvailable) {
-        std::cerr << "[IndirectRenderer] uploadMeshVerticesAndIndices: mesh " << meshId
-                  << " index range out of bounds: firstIndex=" << info.firstIndex
-                  << " indexCount=" << info.indexCount
-                  << " mergedIndices.size=" << indicesAvailable << std::endl;
-        assert(false && "mesh index range out of bounds");
-        return false;
-    }
+    if (meshIds.empty()) return true;
 
-    uint32_t maxVertexIdx = 0;
-    for (size_t i = info.firstIndex; i < info.firstIndex + info.indexCount; ++i) {
-        uint32_t idx = mergedIndices[i];
-        if (idx > maxVertexIdx) maxVertexIdx = idx;
-    }
-    size_t meshVertexCount = static_cast<size_t>(maxVertexIdx) + 1;
+    // Per-mesh copy request gathered before any GPU work is recorded.
+    struct Req {
+        uint32_t meshId;
+        size_t meshVertexCount;
+        VkDeviceSize vertexOffset;
+        VkDeviceSize vertexSize;
+        VkDeviceSize indexOffset;
+        VkDeviceSize indexSize;
+        VkDeviceSize stagingVertexOffset;
+        VkDeviceSize stagingIndexOffset;
+        bool doVertex;
+        bool doIndex;
+    };
+    std::vector<Req> reqs;
+    reqs.reserve(meshIds.size());
+    VkDeviceSize totalStaging = 0;
+    bool anyVertex = false;
+    bool anyIndex = false;
 
-    if (info.baseVertex + meshVertexCount > verticesAvailable) {
-        std::cerr << "[IndirectRenderer] uploadMeshVerticesAndIndices: mesh " << meshId
-                  << " vertex range out of bounds: baseVertex=" << info.baseVertex
-                  << " meshVertexCount=" << meshVertexCount
-                  << " mergedVertices.size=" << verticesAvailable << std::endl;
-        assert(false && "mesh vertex range out of bounds");
-        return false;
-    }
-
-    if (info.baseVertex + meshVertexCount > vertexCapacity) {
-        std::cerr << "[IndirectRenderer] uploadMeshVerticesAndIndices] vertex capacity exceeded (" << info.baseVertex << " + " << meshVertexCount << " > " << vertexCapacity << ")\n";
-        return false;
-    }
-    if (info.firstIndex + info.indexCount > indexCapacity) {
-        std::cerr << "[IndirectRenderer] uploadMeshVerticesAndIndices: index capacity exceeded (" << info.firstIndex << " + " << info.indexCount << " > " << indexCapacity << ")\n";
-        return false;
-    }
-
-    // Ensure every index references a local vertex (before vertexOffset is applied)
-    for (size_t i = info.firstIndex; i < info.firstIndex + info.indexCount; ++i) {
-        uint32_t idx = mergedIndices[i];
-        if (idx >= meshVertexCount) {
-            std::cerr << "[IndirectRenderer] uploadMeshVerticesAndIndices: mesh " << meshId
-                      << " index value out of local vertex range: indexPos=" << i
-                      << " indexVal=" << idx << " meshVertexCount=" << meshVertexCount << std::endl;
-            assert(false && "index value out of range for mesh");
+    for (uint32_t meshId : meshIds) {
+        auto it = meshes.find(meshId);
+        if (it == meshes.end()) {
+            //printf("[IndirectRenderer::uploadMeshes] meshId %u not found\n", meshId);
+            continue;
+        }
+        MeshInfo& info = it->second;
+        if (!info.active) {
+            //printf("[IndirectRenderer::uploadMeshes] meshId %u is inactive\n", meshId);
+            continue;
+        }
+        if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) {
+            //printf("[IndirectRenderer::uploadMeshes] buffers not created, need rebuild()\n");
             return false;
         }
-    }
 
-    // Check for non-finite vertex positions which indicate memory corruption or bad generation
-    for (size_t v = info.baseVertex; v < info.baseVertex + meshVertexCount; ++v) {
-        const Vertex &vert = mergedVertices[v];
-        if (!std::isfinite(vert.position.x) || !std::isfinite(vert.position.y) || !std::isfinite(vert.position.z)) {
-            std::cerr << "[IndirectRenderer] uploadMeshVerticesAndIndices: mesh " << meshId
-                      << " has non-finite vertex at index=" << v << " pos=(" << vert.position.x << "," << vert.position.y << "," << vert.position.z << ")\n";
-            assert(false && "non-finite vertex position");
+        // Basic bounds validations to detect corrupted mesh data early.
+        size_t indicesAvailable = mergedIndices.size();
+        size_t verticesAvailable = mergedVertices.size();
+        if (info.firstIndex + static_cast<uint64_t>(info.indexCount) > indicesAvailable) {
+            std::cerr << "[IndirectRenderer] uploadMeshes: mesh " << meshId
+                      << " index range out of bounds: firstIndex=" << info.firstIndex
+                      << " indexCount=" << info.indexCount
+                      << " mergedIndices.size=" << indicesAvailable << std::endl;
+            assert(false && "mesh index range out of bounds");
             return false;
         }
-    }
 
-    if (info.indexCount % 3 != 0) {
-        std::cerr << "[IndirectRenderer] warning: mesh " << meshId << " indexCount not multiple of 3: " << info.indexCount << std::endl;
-    }
-    VkDeviceSize vertexOffset = info.baseVertex * sizeof(Vertex);
-    VkDeviceSize vertexSize = meshVertexCount * sizeof(Vertex);
-    VkDeviceSize indexOffset = info.firstIndex * sizeof(uint32_t);
-    VkDeviceSize indexSize = info.indexCount * sizeof(uint32_t);
-    bool doVertexUpload = (vertexSize > 0 && info.baseVertex < mergedVertices.size());
-    bool doIndexUpload = (indexSize > 0 && info.firstIndex < mergedIndices.size());
-    if (doVertexUpload || doIndexUpload) {
+        uint32_t maxVertexIdx = 0;
+        for (size_t i = info.firstIndex; i < info.firstIndex + info.indexCount; ++i) {
+            uint32_t idx = mergedIndices[i];
+            if (idx > maxVertexIdx) maxVertexIdx = idx;
+        }
+        size_t meshVertexCount = static_cast<size_t>(maxVertexIdx) + 1;
+
+        if (info.baseVertex + meshVertexCount > verticesAvailable) {
+            std::cerr << "[IndirectRenderer] uploadMeshes: mesh " << meshId
+                      << " vertex range out of bounds: baseVertex=" << info.baseVertex
+                      << " meshVertexCount=" << meshVertexCount
+                      << " mergedVertices.size=" << verticesAvailable << std::endl;
+            assert(false && "mesh vertex range out of bounds");
+            return false;
+        }
+
+        if (info.baseVertex + meshVertexCount > vertexCapacity) {
+            std::cerr << "[IndirectRenderer] uploadMeshes] vertex capacity exceeded (" << info.baseVertex << " + " << meshVertexCount << " > " << vertexCapacity << ")\n";
+            return false;
+        }
+        if (info.firstIndex + info.indexCount > indexCapacity) {
+            std::cerr << "[IndirectRenderer] uploadMeshes: index capacity exceeded (" << info.firstIndex << " + " << info.indexCount << " > " << indexCapacity << ")\n";
+            return false;
+        }
+
+        // Ensure every index references a local vertex (before vertexOffset is applied)
+        for (size_t i = info.firstIndex; i < info.firstIndex + info.indexCount; ++i) {
+            uint32_t idx = mergedIndices[i];
+            if (idx >= meshVertexCount) {
+                std::cerr << "[IndirectRenderer] uploadMeshes: mesh " << meshId
+                          << " index value out of local vertex range: indexPos=" << i
+                          << " indexVal=" << idx << " meshVertexCount=" << meshVertexCount << std::endl;
+                assert(false && "index value out of range for mesh");
+                return false;
+            }
+        }
+
+        // Check for non-finite vertex positions which indicate memory corruption or bad generation
+        for (size_t v = info.baseVertex; v < info.baseVertex + meshVertexCount; ++v) {
+            const Vertex &vert = mergedVertices[v];
+            if (!std::isfinite(vert.position.x) || !std::isfinite(vert.position.y) || !std::isfinite(vert.position.z)) {
+                std::cerr << "[IndirectRenderer] uploadMeshes: mesh " << meshId
+                          << " has non-finite vertex at index=" << v << " pos=(" << vert.position.x << "," << vert.position.y << "," << vert.position.z << ")\n";
+                assert(false && "non-finite vertex position");
+                return false;
+            }
+        }
+
+        if (info.indexCount % 3 != 0) {
+            std::cerr << "[IndirectRenderer] warning: mesh " << meshId << " indexCount not multiple of 3: " << info.indexCount << std::endl;
+        }
+        VkDeviceSize vertexOffset = info.baseVertex * sizeof(Vertex);
+        VkDeviceSize vertexSize = meshVertexCount * sizeof(Vertex);
+        VkDeviceSize indexOffset = info.firstIndex * sizeof(uint32_t);
+        VkDeviceSize indexSize = info.indexCount * sizeof(uint32_t);
+        bool doVertexUpload = (vertexSize > 0 && info.baseVertex < mergedVertices.size());
+        bool doIndexUpload = (indexSize > 0 && info.firstIndex < mergedIndices.size());
+        if (doVertexUpload) anyVertex = true;
+        if (doIndexUpload) anyIndex = true;
 
         // Direct memcpy to HOST_VISIBLE staging buffer, then vkCmdCopyBuffer
         // to device-local vertex/index buffers. Device-local memory is
@@ -338,80 +362,96 @@ bool IndirectRenderer::uploadMeshVerticesAndIndices(VulkanApp* app, uint32_t mes
         if (doVertexUpload || doIndexUpload) {
             VkDeviceSize stagingSize = (doVertexUpload ? vertexSize : 0)
                                      + (doIndexUpload  ? indexSize  : 0);
-            Buffer staging = app->createBuffer(stagingSize,
-                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            void* mapped = nullptr;
-            mapped = staging.map(0);
-            VkDeviceSize off = 0;
-            if (doVertexUpload) {
-                std::memcpy(static_cast<char*>(mapped) + off, &mergedVertices[info.baseVertex], vertexSize);
-                off += vertexSize;
-            }
-            if (doIndexUpload) {
-                std::memcpy(static_cast<char*>(mapped) + off, &mergedIndices[info.firstIndex], indexSize);
-            }
-            staging.unmap(); // VMA persistent mapping
-
-            // Submit the staging→device-local copy asynchronously and
-            // defer the meta-buffer write until the fence signals.
-            // The meta-buffer (indirect + bounds) is append-only, so
-            // publishing it later is safe: in-flight draws that already
-            // reference earlier offsets still see valid data.
-            if (pendingTransfer.fence != VK_NULL_HANDLE) {
-                publishPendingTransfer(app);
-            }
-            pendingTransfer.fence = app->runSingleTimeCommandsAsync([&](VkCommandBuffer cmd) {
-                // Barrier: prior vertex/index reads must complete before
-                // the transfer writes to those buffers.
-                VkBufferMemoryBarrier2 vb{};
-                vb.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-                vb.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
-                vb.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-                vb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-                vb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                vb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                vb.offset = 0;
-                vb.size = VK_WHOLE_SIZE;
-                if (doVertexUpload) {
-                    vb.srcAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
-                    vb.buffer = vertexBuffer.buffer;
-
-                    VkDependencyInfo depInfo{};
-                    depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                    depInfo.bufferMemoryBarrierCount = 1;
-                    depInfo.pBufferMemoryBarriers = &vb;
-                    vkCmdPipelineBarrier2(cmd, &depInfo);
-                }
-                if (doIndexUpload) {
-                    vb.srcAccessMask = VK_ACCESS_2_INDEX_READ_BIT;
-                    vb.buffer = indexBuffer.buffer;
-
-                    VkDependencyInfo depInfo{};
-                    depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                    depInfo.bufferMemoryBarrierCount = 1;
-                    depInfo.pBufferMemoryBarriers = &vb;
-                    vkCmdPipelineBarrier2(cmd, &depInfo);
-                }
-                VkDeviceSize o = 0;
-                if (doVertexUpload) {
-                    VkBufferCopy vCopy{};
-                    vCopy.dstOffset = vertexOffset;
-                    vCopy.size = vertexSize;
-                    vkCmdCopyBuffer(cmd, staging.buffer, vertexBuffer.buffer, 1, &vCopy);
-                    o += vertexSize;
-                }
-                if (doIndexUpload) {
-                    VkBufferCopy iCopy{};
-                    iCopy.srcOffset = o;
-                    iCopy.dstOffset = indexOffset;
-                    iCopy.size = indexSize;
-                    vkCmdCopyBuffer(cmd, staging.buffer, indexBuffer.buffer, 1, &iCopy);
-                }
-            });
-            pendingTransfer.stagingBuffer = staging;
+            totalStaging += stagingSize;
+            reqs.push_back({meshId, meshVertexCount, vertexOffset, vertexSize,
+                            indexOffset, indexSize, 0, 0, doVertexUpload, doIndexUpload});
         }
     }
+
+    if (reqs.empty()) return true;
+
+    Buffer staging = app->createBuffer(totalStaging,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    void* mapped = staging.map(0);
+    VkDeviceSize off = 0;
+    for (auto& r : reqs) {
+        if (r.doVertex) {
+            r.stagingVertexOffset = off;
+            std::memcpy(static_cast<char*>(mapped) + off, &mergedVertices[meshes[r.meshId].baseVertex], r.vertexSize);
+            off += r.vertexSize;
+        }
+        if (r.doIndex) {
+            r.stagingIndexOffset = off;
+            std::memcpy(static_cast<char*>(mapped) + off, &mergedIndices[meshes[r.meshId].firstIndex], r.indexSize);
+            off += r.indexSize;
+        }
+    }
+    staging.unmap(); // VMA persistent mapping
+
+    // Submit the staging→device-local copies asynchronously and defer the
+    // meta-buffer write until the fence signals. The whole batch is coalesced
+    // into a single command buffer, so one fence covers every mesh's copy:
+    // when it signals, all vertex/index data has landed and publishing the
+    // (append-only) meta-buffer entries for the batch is safe.  The meta-buffer
+    // (indirect + bounds) is append-only, so publishing it later is safe:
+    // in-flight draws that already reference earlier offsets still see valid data.
+    // Publishing the previous batch first avoids overwriting its single
+    // in-flight staging buffer / fence slot.
+    if (pendingTransfer.fence != VK_NULL_HANDLE) {
+        publishPendingTransfer(app);
+    }
+    pendingTransfer.fence = app->runSingleTimeCommandsAsync([&](VkCommandBuffer cmd) {
+        // Barrier: prior vertex/index reads must complete before the transfers
+        // write to those buffers. A single barrier per destination buffer (the
+        // whole buffer) covers every disjoint copy in this batch.
+        VkBufferMemoryBarrier2 vb{};
+        vb.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        vb.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+        vb.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        vb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        vb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        vb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        vb.offset = 0;
+        vb.size = VK_WHOLE_SIZE;
+        if (anyVertex) {
+            vb.srcAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
+            vb.buffer = vertexBuffer.buffer;
+
+            VkDependencyInfo depInfo{};
+            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            depInfo.bufferMemoryBarrierCount = 1;
+            depInfo.pBufferMemoryBarriers = &vb;
+            vkCmdPipelineBarrier2(cmd, &depInfo);
+        }
+        if (anyIndex) {
+            vb.srcAccessMask = VK_ACCESS_2_INDEX_READ_BIT;
+            vb.buffer = indexBuffer.buffer;
+
+            VkDependencyInfo depInfo{};
+            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            depInfo.bufferMemoryBarrierCount = 1;
+            depInfo.pBufferMemoryBarriers = &vb;
+            vkCmdPipelineBarrier2(cmd, &depInfo);
+        }
+        for (auto& r : reqs) {
+            if (r.doVertex) {
+                VkBufferCopy vCopy{};
+                vCopy.srcOffset = r.stagingVertexOffset;
+                vCopy.dstOffset = r.vertexOffset;
+                vCopy.size = r.vertexSize;
+                vkCmdCopyBuffer(cmd, staging.buffer, vertexBuffer.buffer, 1, &vCopy);
+            }
+            if (r.doIndex) {
+                VkBufferCopy iCopy{};
+                iCopy.srcOffset = r.stagingIndexOffset;
+                iCopy.dstOffset = r.indexOffset;
+                iCopy.size = r.indexSize;
+                vkCmdCopyBuffer(cmd, staging.buffer, indexBuffer.buffer, 1, &iCopy);
+            }
+        }
+    });
+    pendingTransfer.stagingBuffer = staging;
     return true;
 }
 
@@ -426,7 +466,7 @@ size_t IndirectRenderer::getMergedIndexCount() const {
 }
 
 bool IndirectRenderer::uploadMesh(VulkanApp* app, uint32_t meshId) {
-    if (!uploadMeshVerticesAndIndices(app, meshId)) {
+    if (!uploadMeshes(app, std::vector<uint32_t>{meshId})) {
         return false;
     }
     // uploadMeshMetaBuffers deferred until pendingTransfer fence signals.

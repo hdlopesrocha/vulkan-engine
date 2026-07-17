@@ -1097,10 +1097,21 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
 
     // Process meshes and attempt incremental upload only when pre-sizing succeeded.
     bool solidOrWaterHadRemovals = false;
+    std::vector<uint32_t> solidUploads;
+    std::vector<uint32_t> waterUploads;
     for (auto& pd : batch) {
         bool attemptUpload = (pd.layer == LAYER_OPAQUE) ? solidCanIncremental : waterCanIncremental;
-        updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, pd.geom, attemptUpload, pd.version, &solidOrWaterHadRemovals);
+        updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, pd.geom, attemptUpload, pd.version,
+                          &solidOrWaterHadRemovals,
+                          pd.layer == LAYER_OPAQUE ? &solidUploads : &waterUploads);
     }
+
+    // Coalesce each layer's incremental uploads into a single GPU transfer.
+    // This batches up to kMaxPerFrame vertex/index copies into one command
+    // buffer per layer per frame instead of one round-trip per chunk, removing
+    // the per-chunk fence stall on the render thread.
+    if (!solidUploads.empty()) solidIR.uploadMeshes(app, solidUploads);
+    if (!waterUploads.empty()) waterIR.uploadMeshes(app, waterUploads);
 
     // Batch rebuild: only needed when buffers were created/grown (canIncremental == false)
     // OR when meshes were removed — removals leave stale indirect commands on GPU
@@ -1214,7 +1225,7 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
 
 
 // Ensure mesh exists and is up-to-date for a node: insert or replace when needed
-void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom, bool attemptUpload, uint sourceVersion, bool* hadRemovals) {
+void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, const OctreeNodeData &nd, const Geometry &geom, bool attemptUpload, uint sourceVersion, bool* hadRemovals, std::vector<uint32_t>* pendingUploads) {
     std::lock_guard<std::recursive_mutex> lock(chunksMutex);
     IndirectRenderer &renderer = layer == LAYER_OPAQUE ? solidRenderer->getIndirectRenderer() : waterRenderer->getIndirectRenderer();
     auto &cur = layer == LAYER_OPAQUE ? solidChunks : transparentChunks;
@@ -1243,8 +1254,14 @@ void SceneRenderer::updateMeshForNode(VulkanApp* app, Layer layer, NodeID nid, c
     // Upload mesh into the renderer (may mark renderer dirty). The renderer
     // rebuild will perform GPU uploads; we keep that responsibility centralized
     // so uploads may be performed asynchronously inside the renderer.
+    // When a batch collector is provided the upload is deferred and the mesh id
+    // queued so the caller can coalesce the whole batch into one transfer.
     if (attemptUpload) {
-        renderer.uploadMesh(app, meshId);
+        if (pendingUploads) {
+            pendingUploads->push_back(meshId);
+        } else {
+            renderer.uploadMesh(app, meshId);
+        }
     }
     // Rebuild is deferred to the end of processPendingMeshes() for efficiency.
     // When called from brush rebuild paths, the caller invokes rebuild() explicitly.
