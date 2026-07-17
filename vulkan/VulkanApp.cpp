@@ -1472,33 +1472,12 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
     // Wait for the previous submission using this ring slot to complete
     // before reusing the command buffer.
     vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
-    // Do NOT vkResetFences here: on RADV the validation layer can still flag a
-    // fence as in use immediately after vkWaitForFences returns
-    // (VUID-vkResetFences-pFences-01123). Replace it with a fresh, never-
-    // submitted fence. Destroying the old fence INLINE would trip
-    // VUID-vkDestroyFence-fence-01120 (same RADV lag), so defer the destroy
-    // to processPendingCommandBuffers() like the per-frame fence.
-    VkFence oldFence = fence;
-    VkQueue q = graphicsQueue;
-    deferDestroyUntilFence(oldFence, [this, oldFence, q]() {
-        // Force the submitting queue idle so RADV has fully retired the fence
-        // before we destroy it (avoids VUID-vkDestroyFence-fence-01120).
-        vkQueueWaitIdle(q);
-        resources.removeFence(oldFence);
-        vkDestroyFence(device, oldFence, nullptr);
-    });
-    {
-        VkFenceCreateInfo fci{};
-        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        fci.flags = 0;
-        VkFence newFence = VK_NULL_HANDLE;
-        if (vkCreateFence(device, &fci, nullptr, &newFence) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create single-time command fence");
-        }
-        resources.addFence(newFence, "VulkanApp: singleTimeCmdFence");
-        fence = newFence;
-        singleTimeCmdFences[idx] = newFence;
-    }
+    // The fence is now provably signaled (we waited) and therefore no longer
+    // pending, so it is legal to reset and reuse it.  This avoids the old
+    // recreate + defer-destroy path, which forced a full vkQueueWaitIdle(q) per
+    // rotation inside processPendingCommandBuffers() and serialized the queue.
+    // Fence reset does not require a queue idle.
+    vkResetFences(device, 1, &fence);
     vkResetCommandBuffer(cmd, 0);
 
     VkCommandBufferBeginInfo beginInfo{};
@@ -1859,13 +1838,13 @@ void VulkanApp::recordGenerateMipmaps(VkCommandBuffer commandBuffer, VkImage ima
 // Process any pending command buffers (free command buffers and fences when fence signaled)
 void VulkanApp::processPendingCommandBuffers() {
     // Deferred-destruction callbacks are collected under m_submissionMutex but
-    // INVOKED OUTSIDE it. Several callbacks call vkQueueWaitIdle(queue) to fully
-    // retire a fence on drivers that lag (RADV). Running a blocking queue wait
-    // while holding m_submissionMutex would invert the established lock ordering
-    // (submitMutex -> m_submissionMutex): a worker thread that holds a queue's
-    // submit mutex and is blocked waiting for m_submissionMutex would deadlock
-    // against the main thread parked in vkQueueWaitIdle. See below for how the
-    // collected closures are flushed after each guarded section.
+    // INVOKED OUTSIDE it. Callbacks may still perform a blocking queue wait to
+    // fully retire a fence on drivers that lag (RADV). Running a blocking queue
+    // wait while holding m_submissionMutex would invert the established lock
+    // ordering (submitMutex -> m_submissionMutex): a worker thread that holds a
+    // queue's submit mutex and is blocked waiting for m_submissionMutex would
+    // deadlock against the main thread parked in vkQueueWaitIdle. See below for
+    // how the collected closures are flushed after each guarded section.
     std::vector<std::function<void()>> deferredToRun;
     {
         std::lock_guard<std::recursive_mutex> dd(m_submissionMutex);
@@ -1917,7 +1896,7 @@ void VulkanApp::processPendingCommandBuffers() {
         }
     }
     // Flush collected callback closures WITHOUT holding m_submissionMutex so any
-    // vkQueueWaitIdle(queue) inside them cannot deadlock against a submit path.
+    // blocking queue wait inside them cannot deadlock against a submit path.
     for (auto& fn : deferredToRun) fn();
     deferredToRun.clear();
 
@@ -2636,34 +2615,12 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             if (waitRes != VK_SUCCESS && waitRes != VK_TIMEOUT) {
                 throw std::runtime_error("vkWaitForFences failed on async ring slot");
             }
-            // Do NOT vkResetFences here: on RADV the validation layer can still
-            // flag a fence as in use immediately after vkWaitForFences returns
-            // (VUID-vkResetFences-pFences-01123). We replace it with a fresh
-            // fence for this slot's upcoming submit. The old fence has signaled
-            // (we waited), but destroying it INLINE would trip
-            // VUID-vkDestroyFence-fence-01120 for the same RADV lag. Defer the
-            // destroy to processPendingCommandBuffers() — the same safe point that
-            // recycles the per-frame fence — so the layer has retired it.
-            VkFence oldFence = slotFence;
-            VkQueue q = g_asyncSlotSubmitQueue[idx];
-            deferDestroyUntilFence(oldFence, [this, oldFence, q]() {
-                // Force the submitting queue idle so RADV has fully retired the
-                // fence before we destroy it (avoids VUID-vkDestroyFence-fence-01120).
-                vkQueueWaitIdle(q);
-                resources.removeFence(oldFence);
-                vkDestroyFence(device, oldFence, nullptr);
-            });
-        }
-        {
-            VkFenceCreateInfo fci{};
-            fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-            fci.flags = 0;
-            VkFence newFence = VK_NULL_HANDLE;
-            if (vkCreateFence(device, &fci, nullptr, &newFence) != VK_SUCCESS) {
-                throw std::runtime_error("failed to create async ring slot fence");
-            }
-            resources.addFence(newFence, "VulkanApp: asyncCmdFenceRing");
-            asyncCmdFenceRing[idx] = newFence;
+            // The fence is now signaled (we waited) and therefore no longer
+            // pending, so it is legal to reset and reuse it.  This avoids the old
+            // recreate + defer-destroy path, which forced a full vkQueueWaitIdle(q)
+            // per rotation inside processPendingCommandBuffers() and serialized the
+            // queue.  Fence reset does not require a queue idle.
+            vkResetFences(device, 1, &slotFence);
         }
 
         VkResult resetRes = vkResetCommandBuffer(cmd, 0);
