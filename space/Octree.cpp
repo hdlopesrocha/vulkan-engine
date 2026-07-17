@@ -166,7 +166,6 @@ void Octree::iterateTriangles(
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const {
     (void)fromLevel;
-    (void)context;
 
     struct EdgeCell {
         OctreeNode *node = NULL;
@@ -177,6 +176,12 @@ void Octree::iterateTriangles(
             return node != NULL && node->getType() == SpaceType::Surface && node->isSimplified();
         }
     };
+
+    // Anchor for the upper-traversal cache: findCellAt climbs from a cached
+    // ancestor of this cell (via context->parentOf) instead of the root. The
+    // parent links (and their child indices) are registered/seeded by the tree
+    // traversal (IteratorHandler), so they are NOT stored inside the nodes.
+    EdgeCell hint;
 
     struct EdgeSpan {
         int axis = 0;
@@ -204,15 +209,61 @@ void Octree::iterateTriangles(
         }
     };
 
-    auto findCellAt = [this](const glm::vec3 &pos) {
+    auto findCellAt = [this, context, &hint, &fromCube](const glm::vec3 &pos) {
         EdgeCell result;
         if(root == NULL || !contains(pos)) {
             return result;
         }
 
-        OctreeNode *node = root;
-        BoundingCube cube = *this;
-        int level = 0;
+        // Default to the original root descent; the cache below only shortens it.
+        OctreeNode *startNode = root;
+        BoundingCube startCube = *this;
+
+        if(context != NULL && hint.node != NULL) {
+            // Rebuild root-consistent cubes by replaying the parent-index chain
+            // stored in context->parentOf. This is essential: the cached cubes
+            // (fromCube / data.cube) drift from the root-descended cubes by
+            // floating-point error, and at a chunk-boundary face that drift
+            // flips getNodeIndex, sending descent into the wrong (cross-chunk)
+            // cell and leaving holes. Rebuilding from *this keeps every cube
+            // bit-identical to a root descent, so the result matches HEAD.
+            std::vector<OctreeNode*> nodes;
+            std::vector<int> indices;
+            OctreeNode *n = hint.node;
+            bool chainOk = true;
+            while(n != NULL && n != root) {
+                auto it = context->parentOf.find(n);
+                if(it == context->parentOf.end()) { chainOk = false; break; }
+                nodes.push_back(n);
+                indices.push_back(it->second.second);
+                n = it->second.first;
+            }
+            if(chainOk && n == root && !nodes.empty()) {
+                std::reverse(nodes.begin(), nodes.end());
+                std::reverse(indices.begin(), indices.end());
+                BoundingCube c = *this;
+                std::vector<BoundingCube> cubes(nodes.size());
+                for(size_t i = 0; i < nodes.size(); ++i) {
+                    c = c.getChild(indices[i]);
+                    cubes[i] = c;
+                }
+                if(cubes.back().contains(pos)) {
+                    startNode = nodes.back();
+                    startCube = cubes.back();
+                } else {
+                    for(int i = (int)nodes.size() - 2; i >= 0; --i) {
+                        if(cubes[i].contains(pos)) {
+                            startNode = nodes[i];
+                            startCube = cubes[i];
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        OctreeNode *node = startNode;
+        BoundingCube cube = startCube;
 
         while(node != NULL && !node->isSimplified() && !node->isLeaf()) {
             ChildBlock *block = node->getBlock(*allocator);
@@ -230,16 +281,23 @@ void Octree::iterateTriangles(
 
             cube = cube.getChild(childIndex);
             node = child;
-            ++level;
         }
 
         if(node != NULL) {
             result.node = node;
             result.cube = cube;
-            result.level = level;
+        }
+        if(result.node != NULL) {
+            hint = result;
         }
         return result;
     };
+
+    // Anchor the cache on `from`: its ancestor chain (seeded by the traversal,
+    // rooted at the world root) is already in context->parentOf, so neighbor
+    // lookups climb from a cached parent instead of the root.
+    hint.node = from;
+    hint.cube = fromCube;
 
     auto sideCoordinate = [](float value, int side) {
         return std::nextafter(value, side < 0 ? -std::numeric_limits<float>::infinity()

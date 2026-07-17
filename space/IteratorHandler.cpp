@@ -176,7 +176,39 @@ void IteratorHandler::iterateOctree(const Octree &tree, OctreeNodeData &params) 
 }
 
 void IteratorHandler::iterateFlatIn(const Octree &tree, OctreeNodeData &params) {
-    params.context = NULL;
+    if (params.context != NULL) {
+        ThreadContext *tc = reinterpret_cast<ThreadContext*>(params.context);
+        tc->parentOf.clear();
+
+        // Seed parentOf with the world-root path down to params.node (the chunk
+        // root) so findCellAt can rebuild root-consistent cubes. Without this,
+        // the cached cubes drift from the root-descended cubes and getNodeIndex
+        // flips at chunk-boundary faces, returning the wrong (cross-chunk) cell
+        // and leaving holes in the mesh.
+        OctreeNode *n = tree.root;
+        BoundingCube c = static_cast<const BoundingCube&>(tree);
+        for (int l = 0; l < params.level && n != NULL; ++l) {
+            ChildBlock *block = n->getBlock(*tree.allocator);
+            if (block == NULL) break;
+            const glm::vec3 center = params.cube.getCenter();
+            const glm::vec3 cc = c.getCenter();
+            int idx = (center.x >= cc.x ? 4 : 0)
+                    + (center.y >= cc.y ? 2 : 0)
+                    + (center.z >= cc.z ? 1 : 0);
+            OctreeNode *child = block->get(idx, *tree.allocator);
+            if (child == NULL) break;
+            tc->parentOf.try_emplace(child, n, idx);
+            c = c.getChild(idx);
+            n = child;
+        }
+        // If the descent didn't land exactly on params.node, the seed is
+        // unusable; disable the cache (findCellAt falls back to root descent,
+        // which is correct, just not optimized).
+        if (n != params.node) {
+            tc->parentOf.clear();
+        }
+    }
+
     uint8_t internalOrder[8];
 
     flatData.push(params);
@@ -199,6 +231,12 @@ void IteratorHandler::iterateFlatIn(const Octree &tree, OctreeNodeData &params) 
                 }
 
                 if (child != NULL) {
+                    // Cache the parent link (with child index) for upper
+                    // traversal during triangle iteration.
+                    if (data.context != NULL) {
+                        reinterpret_cast<ThreadContext*>(data.context)
+                            ->parentOf.try_emplace(child, node, j);
+                    }
                     flatData.push(OctreeNodeData(
                         data.level + 1,
                         child,

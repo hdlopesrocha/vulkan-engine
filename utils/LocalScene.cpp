@@ -43,7 +43,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
     std::vector<OctreeNodeTriangleHandler*> handlers;
     handlers.emplace_back(&tesselator);
     Processor processor(&tessCount, threadPool, &context, &handlers);
-    tree->iterateFlat(processor, data);
+    tree->iterateFlat(processor, OctreeNodeData(data.level, data.node, data.cube, &context));
 #if 0
     std::cout << "[requestModel3D] Node " << data.node 
               << ", Triangles=" << tesselator.geometry.indices.size() / 3

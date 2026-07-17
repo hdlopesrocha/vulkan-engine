@@ -34,5 +34,11 @@ public:
     tsl::robin_set<glm::vec4> invokedCubeCalls;
     std::shared_mutex mutex;
     BoundingCube cube;
+    // child node -> (parent node, child index within parent). Populated by the
+    // tree traversal (IteratorHandler), seeded with the world-root path to the
+    // chunk root, so neighbor lookups during triangle extraction can rebuild
+    // root-consistent cubes (see Octree::iterateTriangles). The parent link is
+    // NOT stored inside the octree nodes.
+    tsl::robin_map<OctreeNode*, std::pair<OctreeNode*, int>> parentOf;
     ThreadContext(BoundingCube cube);
 };
