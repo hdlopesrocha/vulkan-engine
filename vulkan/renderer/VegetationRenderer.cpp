@@ -1440,8 +1440,6 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
     uint32_t triCount = indexCount / 3;
     uint32_t instanceCount = triCount * instancesPerTriangle;
 
-    VkDevice device = app->getDevice();
-
     // Create device-local storage/vertex buffer for instances (vec4 per-instance) via VMA
     VkDeviceSize instanceBufferSize = static_cast<VkDeviceSize>(instanceCount) * sizeof(float) * 4; // vec4
     Buffer instanceBuf = app->createBuffer(instanceBufferSize,
@@ -1474,38 +1472,39 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
         return;
     }
 
-    // Now that we have a valid fence, destroy any previous chunk buffers.
-    // The fence signals after the previous frame's draw (same queue, earlier
-    // submission), guaranteeing the old buffers are no longer in use.
-    destroyInstanceBuffer(chunkId, app, fence);
-
     std::cout << "[VegetationRenderer::generateChunkInstances] async dispatched, expected = " << expected << " fence=" << (void*)fence << std::endl;
 
-    // Wait for the compute dispatch to complete before returning.
-    // RADV GPUVM faults (TCP read permission) occur when too many
-    // concurrent compute dispatches are in flight, even with correct
-    // synchronization.  Serializing eliminates the concurrency.
-    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    // Publish the new chunk and release inputs from a deferred callback that
+    // runs once the compute dispatch's fence signals — mirroring the CPU path
+    // (generateChunkInstancesCPU) instead of blocking the caller per chunk.
+    // deferDestroyUntilFence fires on the render thread during fence polling, so
+    // map mutation and buffer destruction happen without in-flight references,
+    // and the old chunk buffers are freed here (also fence-gated) rather than up
+    // front. Removes the per-chunk full GPU stall with no live-path change.
+    Buffer vtx = vertexBuffer;
+    Buffer idx = indexBuffer;
+    app->deferDestroyUntilFence(fence, [this, app, chunkId, expected, chunkCenter,
+                                        instanceBuf, indirect, vtx, idx]() mutable {
+        // Destroy the previous chunk's buffers (fence-gated: GPU is done).
+        destroyInstanceBuffer(chunkId, app);
 
-    // Insert the instance buffer into visible maps immediately (fence
-    // already signaled).
-    InstanceBuffer ibuf;
-    ibuf.buffer = instanceBuffer;
-    ibuf.memory = instanceMemory;
-    ibuf.allocation = instanceBuf.allocation;
-    ibuf.indirectBuffer = indirectBuffer;
-    ibuf.indirectMemory = indirectMemory;
-    ibuf.indirectAllocation = indirect.allocation;
-    ibuf.center = chunkCenter;
-    ibuf.count = expected;
-    chunkBuffers[chunkId] = ibuf;
-    chunkInstanceCounts[chunkId] = expected;
-    std::cout << "[VegetationRenderer] chunk " << (unsigned long long)chunkId << " instances ready: " << expected << std::endl;
+        InstanceBuffer ibuf;
+        ibuf.buffer = instanceBuf.buffer;
+        ibuf.memory = instanceBuf.memory;
+        ibuf.allocation = instanceBuf.allocation;
+        ibuf.indirectBuffer = indirect.buffer;
+        ibuf.indirectMemory = indirect.memory;
+        ibuf.indirectAllocation = indirect.allocation;
+        ibuf.center = chunkCenter;
+        ibuf.count = expected;
+        chunkBuffers[chunkId] = ibuf;
+        chunkInstanceCounts[chunkId] = expected;
+        vegConsolidationDirty = true;
 
-    // Transfer input buffers (vertex/index) — the fence is already signaled
-    // (vkWaitForFences above), so destroy them immediately.
-    app->destroyBuffer(vertexBuffer);
-    app->destroyBuffer(indexBuffer);
+        // Release input buffers (vertex/index) — GPU no longer reads them.
+        app->destroyBuffer(vtx);
+        app->destroyBuffer(idx);
+    });
 }
 
 // ── CPU-side instance generation ─────────────────────────────────────────────
@@ -1775,8 +1774,9 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, V
     // Destroy old buffers immediately.  The CPU-generation path runs on the
     // render thread via processPendingChunks() which is called from draw()
     // before command buffer submission, so no in-flight work references them.
-    // The GPU path (generateChunkInstances) waits synchronously on the fence
-    // before returning, so the GPU is done by the time we reach here.
+    // The GPU path (generateChunkInstances) invokes this from a
+    // deferDestroyUntilFence callback, so its dispatch fence has already
+    // signaled and the GPU is done by the time we reach here.
     {
         Buffer tmpBuf{};
         tmpBuf.buffer = old.buffer;
