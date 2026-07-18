@@ -101,6 +101,14 @@ class VulkanApp {
     // Optional dedicated transfer queue (if available)
     VkQueue transferQueue = VK_NULL_HANDLE;
 
+    // Returns a distinct graphics-family queue for upload/transfer work when one
+    // was acquired (gfxRequested > 2), else VK_NULL_HANDLE so callers fall back
+    // to the main graphics queue. Feature-detected to preserve the single-queue
+    // (and RADV) safety net.
+    VkQueue geometryTransferQueue() const {
+        return (geometryQueue != graphicsQueue) ? geometryQueue : VK_NULL_HANDLE;
+    }
+
     // Cached vegetation compute pipeline (created once, reused for all chunks)
     VkPipeline           vegComputePipeline       = VK_NULL_HANDLE;
     VkPipelineLayout     vegComputePipelineLayout = VK_NULL_HANDLE;
@@ -256,6 +264,10 @@ public:
     std::mutex graphicsSubmitMutex;
     std::mutex transferSubmitMutex;
     std::mutex vegetationSubmitMutex;
+    // Separate submit mutex for the graphics-family geometry queue so upload
+    // submission does not contend with per-frame render submission on the main
+    // graphics queue's mutex. Only used when a distinct geometry queue exists.
+    std::mutex geometrySubmitMutex;
     // Mutex used to serialize command pool operations (alloc/free/reset) across threads
     std::mutex commandPoolMutex;
     // Mutex used to serialize vkAllocateDescriptorSets calls across threads
@@ -323,6 +335,10 @@ public:
         // Record and submit a short-lived command buffer asynchronously.
         // Returns a fence that will be signaled when the submission completes.
         VkFence runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore = nullptr);
+        // Overload that submits to a specific queue (e.g. the graphics-family
+        // geometry queue for uploads). targetQueue==VK_NULL_HANDLE falls back to
+        // the main graphics queue and is equivalent to the 2-arg overload.
+        VkFence runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore, VkQueue targetQueue);
         // Record and submit a short-lived command buffer asynchronously to the transfer queue.
         // Returns a fence that will be signaled when the submission completes.
         // If `outSemaphore` is non-null the submission will signal that semaphore

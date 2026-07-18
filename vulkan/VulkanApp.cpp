@@ -1537,6 +1537,10 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
 }
 
 VkFence VulkanApp::runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore) {
+    return runSingleTimeCommandsAsync(fn, outSemaphore, VK_NULL_HANDLE);
+}
+
+VkFence VulkanApp::runSingleTimeCommandsAsync(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore, VkQueue targetQueue) {
     // Use the pre-allocated async command buffer ring to avoid per-call
     // vkAllocateCommandBuffers / vkFreeCommandBuffers churn.
     VkCommandBuffer cmd = allocatePrimaryCommandBuffer();
@@ -1554,14 +1558,37 @@ VkFence VulkanApp::runSingleTimeCommandsAsync(const std::function<void(VkCommand
     // assigning a transientCommandPool fallback.
 
     // Submit asynchronously and return the fence so the caller may track completion.
-    VkFence fence = submitCommandBufferAsync(cmd, outSemaphore);
+    // When targetQueue is a distinct queue (e.g. the graphics-family geometry
+    // queue) we submit there so upload work overlaps frame rendering instead of
+    // contending for the main graphics queue's submit mutex. Cross-queue ordering
+    // is preserved: submitCommandBufferAsyncToQueue registers the completion
+    // semaphore in m_extraWaitSemaphores, which drawFrame waits on before rendering.
+    VkFence fence;
+    if (targetQueue != VK_NULL_HANDLE)
+        fence = submitCommandBufferAsyncToQueue(cmd, targetQueue, outSemaphore);
+    else
+        fence = submitCommandBufferAsync(cmd, outSemaphore);
     return fence;
 }
 
 VkFence VulkanApp::runSingleTimeCommandsAsyncOnTransfer(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore) {
-    // All transfers use the graphics queue. The dedicated transfer queue on
-    // RADV/RENOIR causes GPU instability with buffer copies later read by
-    // rendering. Same-queue transfers with pipeline barriers are always safe.
+    // Route uploads to the distinct graphics-family geometry queue when one was
+    // acquired (gfxRequested > 2), so staging copies overlap frame rendering
+    // instead of contending for the main graphics queue's submit mutex. This is
+    // feature-detected: when no distinct queue exists the path falls back to the
+    // main graphics queue, preserving the documented RADV/RENOIR safety net (a
+    // dedicated *transfer-family* queue is the one that caused GPUVM faults;
+    // geometryQueue is the same graphics family, just a separate queue object).
+    // A completion semaphore is always registered so drawFrame waits for the
+    // upload before consuming the (newly created) buffer, keeping cross-queue
+    // ordering correct.
+    VkQueue q = geometryTransferQueue();
+    if (q != VK_NULL_HANDLE) {
+        VkSemaphore sem = VK_NULL_HANDLE;
+        VkFence fence = runSingleTimeCommandsAsync(fn, &sem, q);
+        if (outSemaphore) *outSemaphore = sem;
+        return fence;
+    }
     return runSingleTimeCommandsAsync(fn, outSemaphore);
 }
 
@@ -2310,10 +2337,18 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
     submitInfo.pSignalSemaphoreInfos = (semaphore != VK_NULL_HANDLE) ? &signalSemaphoreInfo : nullptr;
 
     {
-        // Serialize for submit and maintain consistent ordering
-        // Select per-queue mutex to avoid serializing transfer/graphics/compute
+        // Serialize for submit and maintain consistent ordering.
+        // Select per-queue mutex to avoid serializing transfer/graphics/compute.
+        // IMPORTANT: geometryQueue may alias graphicsQueue (same handle when only
+        // one graphics queue exists). When it aliases, it MUST use the same
+        // graphicsSubmitMutex that drawFrame uses for that queue — otherwise two
+        // mutexes guard one physical queue and a race corrupts shared state. Only
+        // use the separate geometrySubmitMutex when geometryQueue is genuinely
+        // distinct. Distinct queues need no shared mutex (GPU ordering is via
+        // semaphores), so separate mutexes are safe there.
         std::mutex& submitMtx = (targetQueue == transferQueue) ? transferSubmitMutex :
                                 (targetQueue == vegetationQueue) ? vegetationSubmitMutex :
+                                (targetQueue == geometryQueue && geometryQueue != graphicsQueue) ? geometrySubmitMutex :
                                 graphicsSubmitMutex;
         std::lock_guard<std::mutex> lock(submitMtx);
 
@@ -2611,8 +2646,21 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         // GPU hangs.
         VkFence slotFence = asyncCmdFenceRing[idx];
         if (slotFence != VK_NULL_HANDLE) {
-            VkResult waitRes = vkWaitForFences(device, 1, &slotFence, VK_TRUE, UINT64_MAX);
-            if (waitRes != VK_SUCCESS && waitRes != VK_TIMEOUT) {
+            // Finite wait instead of UINT64_MAX: if the previous submission on this
+            // ring slot never signals (e.g. a submission on a distinct physical
+            // queue that the driver/GPU cannot complete), an infinite wait would
+            // hang the whole app with no diagnostics. Surface the stuck slot
+            // instead so a cross-queue stall is pinpointed rather than silent.
+            VkResult waitRes = vkWaitForFences(device, 1, &slotFence, VK_TRUE, 10'000'000'000ULL); // 10s
+            if (waitRes == VK_TIMEOUT) {
+                std::cerr << "[VulkanApp][WATCHDOG] async ring slot " << (unsigned)idx
+                          << " (fence " << (void*)slotFence << ") did not signal within 10s. "
+                          << "geometryTransferQueue routing is "
+                          << (geometryTransferQueue() != VK_NULL_HANDLE ? "ACTIVE" : "inactive")
+                          << " — possible cross-queue stall. Aborting to avoid infinite hang.\n";
+                abort();
+            }
+            if (waitRes != VK_SUCCESS) {
                 throw std::runtime_error("vkWaitForFences failed on async ring slot");
             }
             // The fence is now signaled (we waited) and therefore no longer
