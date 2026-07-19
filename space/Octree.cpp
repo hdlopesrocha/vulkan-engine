@@ -59,8 +59,10 @@ Octree::Octree() : Octree(glm::vec3(0.0f), 1.0f) {
 }
 
 int getNodeIndex(const glm::vec3 &vec, const BoundingCube &cube) {
-	glm::vec3 c = cube.getCenter();
-    return (vec.x >= c.x ? 4 : 0) + (vec.y >= c.y ? 2 : 0) + (vec.z >= c.z ? 1 : 0);
+    const float half = cube.getLengthX() * 0.5f;
+    return (vec.x >= cube.getMinX() + half ? 4 : 0)
+         + (vec.y >= cube.getMinY() + half ? 2 : 0)
+         + (vec.z >= cube.getMinZ() + half ? 1 : 0);
 }
 
 
@@ -133,30 +135,7 @@ float Octree::getSdfAt(const glm::vec3 &pos) {
     if(node) {
         return SDF::interpolate(node->sdf, pos, nodeCube);
     }
-    std::cerr << "Not interpolated" << std::endl;
     return INFINITY;
-}
-
-template <typename T, std::size_t N> 
-bool allDifferent(const T (&arr)[N]) {
-    for (std::size_t i = 0; i < N; ++i) {
-        for (std::size_t j = i + 1; j < N; ++j) {
-            if (arr[i] == arr[j]) return false;
-        }
-    }
-    return true;
-}
-
-template <typename T, typename... Args>
-bool allDifferent(const T& first, const Args&... args) {
-    std::array<T, sizeof...(args) + 1> arr { first, args... };
-
-    for (std::size_t i = 0; i < arr.size(); ++i) {
-        for (std::size_t j = i + 1; j < arr.size(); ++j) {
-            if (arr[i] == arr[j]) return false;
-        }
-    }
-    return true;
 }
 
 void Octree::iterateTriangles(
@@ -227,37 +206,44 @@ void Octree::iterateTriangles(
             // flips getNodeIndex, sending descent into the wrong (cross-chunk)
             // cell and leaving holes. Rebuilding from *this keeps every cube
             // bit-identical to a root descent, so the result matches HEAD.
-            std::vector<OctreeNode*> nodes;
-            std::vector<int> indices;
+            // Rebuild root-consistent cubes without any heap allocation: the
+            // parent chain is a single path from root, so we store it in fixed
+            // stack arrays and pick the deepest ancestor whose cube still
+            // contains pos. (Depth is bounded; MAX_CHAIN matches the
+            // collectBreaks recursion cap. If exceeded we simply fall through to
+            // the default root descent below — correct, just less optimal.)
+            static constexpr int MAX_CHAIN = 64;
+            OctreeNode *chainNodes[MAX_CHAIN];
+            int chainIndices[MAX_CHAIN];
+            int chainLen = 0;
             OctreeNode *n = hint.node;
             bool chainOk = true;
             while(n != NULL && n != root) {
                 auto it = context->parentOf.find(n);
                 if(it == context->parentOf.end()) { chainOk = false; break; }
-                nodes.push_back(n);
-                indices.push_back(it->second.second);
+                if(chainLen >= MAX_CHAIN) { chainOk = false; break; }
+                chainNodes[chainLen] = n;
+                chainIndices[chainLen] = it->second.second;
+                ++chainLen;
                 n = it->second.first;
             }
-            if(chainOk && n == root && !nodes.empty()) {
-                std::reverse(nodes.begin(), nodes.end());
-                std::reverse(indices.begin(), indices.end());
-                BoundingCube c = *this;
-                std::vector<BoundingCube> cubes(nodes.size());
-                for(size_t i = 0; i < nodes.size(); ++i) {
-                    c = c.getChild(indices[i]);
-                    cubes[i] = c;
+            if(chainOk && n == root && chainLen > 0) {
+                for(int i = 0; i < chainLen / 2; ++i) {
+                    std::swap(chainNodes[i], chainNodes[chainLen - 1 - i]);
+                    std::swap(chainIndices[i], chainIndices[chainLen - 1 - i]);
                 }
-                if(cubes.back().contains(pos)) {
-                    startNode = nodes.back();
-                    startCube = cubes.back();
-                } else {
-                    for(int i = (int)nodes.size() - 2; i >= 0; --i) {
-                        if(cubes[i].contains(pos)) {
-                            startNode = nodes[i];
-                            startCube = cubes[i];
-                            break;
-                        }
-                    }
+                BoundingCube c = *this;
+                int chosen = -1;
+                for(int i = 0; i < chainLen; ++i) {
+                    c = c.getChild(chainIndices[i]);
+                    if(c.contains(pos)) chosen = i;
+                    else break;
+                }
+                if(chosen >= 0) {
+                    BoundingCube cc = *this;
+                    for(int i = 0; i <= chosen; ++i) cc = cc.getChild(chainIndices[i]);
+                    startNode = chainNodes[chosen];
+                    startCube = cc;
                 }
             }
         }
@@ -642,7 +628,9 @@ void Octree::apply(
     ThreadContext localChunkContext = ThreadContext(*this);
     NodeOperationResult r = NodeOperationResult();
     shape(r, frame, args, &localChunkContext);
-    std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << std::endl; 
+#ifdef DEBUG
+    std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << std::endl;
+#endif
 }
 
 
@@ -902,7 +890,6 @@ void Octree::exportOctreeSerialization(OctreeSerialized * node) {
 void Octree::exportNodesSerialization(std::vector<OctreeNodeCubeSerialized> * nodes) {
 	std::cout << "exportNodesSerialization()" << std::endl;
     nodes->clear();
-    nodes->reserve(10000000);
     int leafNodes = 0;
     root->exportSerialization(*allocator, nodes, &leafNodes, *this, *this, 0u);
 	std::cout << "exportNodesSerialization Ok!" << std::endl;
