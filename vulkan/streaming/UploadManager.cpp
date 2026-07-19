@@ -223,9 +223,16 @@ void UploadManager::processUploads() {
             // frame in flight still reads it). The manager never touches the
             // chunk slot — the slot just uploaded is now the chunk's live data.
             if (s.onComplete) s.onComplete();
-            // Destroy the fallback binary semaphore only after all GPU work
-            // completes (matches the engine's deferDestroyUntilAllPending idiom).
-            if (!m_timelineSupported && s.signalSem != VK_NULL_HANDLE) {
+            // Destroy the binary signal semaphore the manager created for this
+            // job IF the app never took ownership of it via a frame-wait
+            // registration (prepareFrameWaits). That is exactly the case for
+            // jobs submitted AND completed inside flush(), which recycles slots
+            // but never registers waits — without this, staging reset() nulls
+            // the handle and it leaks at device teardown
+            // (VUID-vkDestroyDevice-device-05137). Registered semaphores are
+            // owned by the app's pending-destroy list and MUST NOT be destroyed
+            // here (double free). Deferred so any GPU work still completes first.
+            if (s.signalSem != VK_NULL_HANDLE && !s.waitRegistered) {
                 VkSemaphore ss = s.signalSem;
                 app_->deferDestroyUntilAllPending(
                     [ss, dev = device_]() { vkDestroySemaphore(dev, ss, nullptr); });
@@ -305,6 +312,16 @@ void UploadManager::destroy() {
             vkWaitForFences(device_, 1, &s.fence, VK_TRUE, UINT64_MAX);
             if (s.onComplete) s.onComplete();
             if (s.chunkSlot) chunkPool_.release(static_cast<ChunkGPUBuffers*>(s.chunkSlot));
+        }
+        // Resolve binary-signal-semaphore ownership before StagingBufferPool::
+        // destroy() (which unconditionally destroys any non-null signalSem):
+        //  - registered → owned by the app's pending-destroy list, destroyed in
+        //    VulkanApp::cleanup(); drop our handle so it is not double-freed.
+        //  - unregistered → the app never learned about it; destroy it here (the
+        //    fences above guarantee the GPU is done with it).
+        if (s.signalSem != VK_NULL_HANDLE) {
+            if (!s.waitRegistered) vkDestroySemaphore(device_, s.signalSem, nullptr);
+            s.signalSem = VK_NULL_HANDLE;
         }
     }
     staging_.destroy();

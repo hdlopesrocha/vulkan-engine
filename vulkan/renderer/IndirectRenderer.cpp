@@ -130,6 +130,44 @@ void IndirectRenderer::setIndexBufferForMesh(uint32_t meshId, Buffer ibuf) {
     indexBuffer = ibuf;
 }
 
+uint32_t IndirectRenderer::acquireGeomSlot() {
+    // Caller holds `mutex`. Lowest free index keeps the number of slots that
+    // ever get allocated minimal (only as many as are concurrently in flight).
+    for (uint32_t i = 0; i < MAX_GEOM_BUFFERS; i++) {
+        if (!geomSlotInUse[i]) {
+            geomSlotInUse[i] = true;
+            return i;
+        }
+    }
+    return UINT32_MAX;
+}
+
+void IndirectRenderer::markGeomSlotFree(uint32_t slot) {
+    std::lock_guard<std::shared_mutex> guard(mutex);
+    if (slot < MAX_GEOM_BUFFERS) geomSlotInUse[slot] = false;
+}
+
+void IndirectRenderer::recyclePreviousGeom(VulkanApp* app, uint32_t prevSlot,
+                                           Buffer prevVertex, Buffer prevIndex) {
+    // Gate recycling on the current frame's fence. Graphics-queue submission is
+    // FIFO, so when this frame's fence signals every earlier frame (the only
+    // ones that referenced the previous buffers) has completed. The callback is
+    // polled non-blocking in processPendingCommandBuffers — no vkWaitForFences,
+    // hence no fence-index wraparound deadlock.
+    VkFence f = app->getCurrentFrameFence();
+    if (prevSlot != UINT32_MAX) {
+        app->deferDestroyUntilFence(f, [this, prevSlot]() { markGeomSlotFree(prevSlot); });
+    } else if (prevVertex.buffer != VK_NULL_HANDLE || prevIndex.buffer != VK_NULL_HANDLE) {
+        // Previous buffers were a throwaway fallback allocation — free them.
+        app->deferDestroyUntilFence(f, [app, prevVertex, prevIndex]() {
+            if (prevVertex.buffer != VK_NULL_HANDLE)
+                app->resources.removeBufferVma(prevVertex.buffer, prevVertex.allocation);
+            if (prevIndex.buffer != VK_NULL_HANDLE)
+                app->resources.removeBufferVma(prevIndex.buffer, prevIndex.allocation);
+        });
+    }
+}
+
 IndirectRenderer::IndirectRenderer() {}
 IndirectRenderer::~IndirectRenderer() {}
 
@@ -140,6 +178,12 @@ void IndirectRenderer::cleanup() {
     meshes.clear();
     vertexBuffer = {};
     indexBuffer = {};
+    for (auto& b : vertexSlots) b = {};
+    for (auto& b : indexSlots) b = {};
+    vertexSlotCap.fill(0);
+    indexSlotCap.fill(0);
+    geomSlotInUse.fill(false);
+    currentGeomSlot = UINT32_MAX;
     indirectBuffer = {};
     for (auto& b : compactIndirectBuffers) b = {};
     boundsBuffer = {};
@@ -706,52 +750,70 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
 #endif
         printedBufferInfo = true;
     }
+    // Capture the geometry that was current BEFORE this rebuild so it can be
+    // recycled once its in-flight frames retire (see recyclePreviousGeom).
+    uint32_t prevSlot = currentGeomSlot;
+    Buffer prevVertex = vertexBuffer;
+    Buffer prevIndex = indexBuffer;
+    (void)oldVertexCapacity; (void)oldIndexCapacity;
+
     if (mergedVertices.empty() || mergedIndices.empty()) {
-        // Free existing buffers — schedule deferred destruction so in-flight
-        // GPU work completes before the memory is reclaimed.
-        if (vertexBuffer.buffer != VK_NULL_HANDLE || vertexBuffer.memory != VK_NULL_HANDLE) {
-            scheduleDestroyBuffer(vertexBuffer);
-            vertexBuffer = {};
-        }
-        if (indexBuffer.buffer != VK_NULL_HANDLE || indexBuffer.memory != VK_NULL_HANDLE) {
-            scheduleDestroyBuffer(indexBuffer);
-            indexBuffer = {};
-        }
+        // No geometry: recycle the previous slot/buffers and clear the mirror.
+        recyclePreviousGeom(app, prevSlot, prevVertex, prevIndex);
+        currentGeomSlot = UINT32_MAX;
+        vertexBuffer = {};
+        indexBuffer = {};
         vertexCapacity = 0;
         indexCapacity = 0;
     } else {
-        // Determine whether the existing GPU buffers still have enough room.
-        bool needNewVertexBuffer = (vertexBuffer.buffer == VK_NULL_HANDLE) || (vertexCapacity > oldVertexCapacity);
-        bool needNewIndexBuffer = (indexBuffer.buffer == VK_NULL_HANDLE) || (indexCapacity > oldIndexCapacity);
+        // Pick a free pool slot to receive the fresh full copy. The previous
+        // "current" slot is still in-use (recycled below via a frame-fence
+        // callback), so acquireGeomSlot never returns it.
+        uint32_t slot = acquireGeomSlot();
+        VkDeviceSize vertexBufferSize = vertexCapacity * sizeof(Vertex);
+        VkDeviceSize indexBufferSize = indexCapacity * sizeof(uint32_t);
 
-        if (needNewVertexBuffer || needNewIndexBuffer) {
-            // Capacity grew — destroy old buffers (deferred) and create new larger ones.
-            if (vertexBuffer.buffer != VK_NULL_HANDLE || vertexBuffer.memory != VK_NULL_HANDLE) {
-                scheduleDestroyBuffer(vertexBuffer);
-                vertexBuffer = {};
+        if (slot != UINT32_MAX) {
+            // Create the slot's buffers on first use, or grow them if capacity
+            // increased (never shrink). Growth defer-destroys the old undersized
+            // buffers; the common steady-state path reuses them in place.
+            if (vertexSlots[slot].buffer == VK_NULL_HANDLE || vertexSlotCap[slot] < vertexCapacity) {
+                if (vertexSlots[slot].buffer != VK_NULL_HANDLE) scheduleDestroyBuffer(vertexSlots[slot]);
+                vertexSlots[slot] = app->createBuffer(vertexBufferSize,
+                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                vertexSlotCap[slot] = vertexCapacity;
             }
-            if (indexBuffer.buffer != VK_NULL_HANDLE || indexBuffer.memory != VK_NULL_HANDLE) {
-                scheduleDestroyBuffer(indexBuffer);
-                indexBuffer = {};
+            if (indexSlots[slot].buffer == VK_NULL_HANDLE || indexSlotCap[slot] < indexCapacity) {
+                if (indexSlots[slot].buffer != VK_NULL_HANDLE) scheduleDestroyBuffer(indexSlots[slot]);
+                indexSlots[slot] = app->createBuffer(indexBufferSize,
+                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                indexSlotCap[slot] = indexCapacity;
             }
-
-            VkDeviceSize vertexBufferSize = vertexCapacity * sizeof(Vertex);
+            vertexBuffer = vertexSlots[slot];
+            indexBuffer = indexSlots[slot];
+        } else {
+            // Pool exhausted (rare burst): allocate throwaway buffers reclaimed
+            // once the frame that uses them retires. Bounded — never accumulates
+            // like deferDestroyUntilAllPending did.
             vertexBuffer = app->createBuffer(vertexBufferSize,
                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-            VkDeviceSize indexBufferSize = indexCapacity * sizeof(uint32_t);
             indexBuffer = app->createBuffer(indexBufferSize,
                 VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         }
-        // else: existing buffers already have sufficient capacity — reuse them
-        //       in-place, avoiding the memory spike of old+new allocations.
+        currentGeomSlot = slot;
 
-        // Upload current data via staging → device-local copy.
-        // runSingleTimeCommands waits for the fence, so any in-flight GPU
-        // reads of the existing buffer are guaranteed complete before the
-        // transfer writes — no WRITE_AFTER_READ hazard.
+        // Recycle the previous geometry now that the new slot is current.
+        recyclePreviousGeom(app, prevSlot, prevVertex, prevIndex);
+
+        // Upload current data via staging → device-local copy into the freshly
+        // selected slot. That slot is either a brand-new buffer or one whose
+        // last frame has retired (guaranteed by the fence-gated recycle above),
+        // so no in-flight frame is reading it — no WRITE_AFTER_READ hazard, and
+        // no need for a device-wide stall.
         bool doVertexUpload = !mergedVertices.empty();
         bool doIndexUpload = !mergedIndices.empty();
         VkDeviceSize vertexDataSize = mergedVertices.size() * sizeof(Vertex);
@@ -1223,7 +1285,13 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     barriers[0].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-    barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+    // Publish the compute write to the indirect-draw + vertex consumers AND to a
+    // subsequent cull dispatch: the next prepareCull (rotated buffer reuse, or a
+    // later shadow cascade) reads visibleCount via atomicAdd, which is a
+    // COMPUTE_SHADER storage read. Without COMPUTE_SHADER in the destination
+    // scope this cross-dispatch compute-write -> compute-read is unsynchronized
+    // (was previously masked by the removed deviceWaitIdle() in rebuildBrushScene).
+    barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     barriers[0].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
     barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1348,7 +1416,9 @@ void IndirectRenderer::prepareCullWithDescriptor(VkCommandBuffer cmd, const glm:
     barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     barriers[0].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-    barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+    // Also publish to COMPUTE_SHADER: a later cascade/face cull reuses/reads the
+    // count buffer via atomicAdd (storage read). See prepareCull for rationale.
+    barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     barriers[0].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
     barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;

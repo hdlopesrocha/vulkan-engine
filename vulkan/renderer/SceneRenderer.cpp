@@ -1204,6 +1204,14 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
         auto& brushMap = (pd.layer == LAYER_OPAQUE) ? brushSolidChunks : brushTransparentChunks;
         updateBrushMeshForNode(this, app, pd.layer, pd.nid, pd.nodeData, pd.geom, brushMap);
     }
+
+    // Single rebuild per layer after the whole batch is added. rebuild()
+    // double-buffers the merged vertex/index buffers into a fresh pool slot
+    // (recycling the previous slot once its in-flight frames retire), so it is
+    // safe while previous frames still read the old buffers — this is what lets
+    // rebuildBrushScene() drop the device-wide deviceWaitIdle() stall.
+    if (solidIR.isDirty()) solidIR.rebuild(app);
+    if (waterIR.isDirty()) waterIR.rebuild(app);
 }
 
 void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry, ThreadPool* poolOverride) {
@@ -1531,10 +1539,15 @@ static void updateBrushMeshForNode(SceneRenderer* sr, VulkanApp* app, Layer laye
     uint32_t meshId = renderer.addMesh(geom);
     Model3DVersion mv{meshId, nd.node->version};
     chunkMap[nid] = mv;
-    renderer.uploadMesh(app, meshId);
-    if (renderer.isDirty()) {
-        renderer.rebuild(app);
-    }
+    // No per-node uploadMesh()/rebuild() here. processPendingBrushMeshes()
+    // rebuilds ONCE per layer after the whole batch is added. rebuild() writes
+    // the merged vertex/index data into a fresh double-buffer pool slot (one no
+    // in-flight frame is reading), so the batch lands in a single full upload
+    // with no WRITE_AFTER_READ hazard — which is what lets rebuildBrushScene()
+    // drop the device-wide deviceWaitIdle() stall. Doing an incremental upload
+    // here would instead write into the LIVE shared buffer previous frames are
+    // still reading, and rebuild once per node.
+    (void)app;
 }
 
 SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* scene, VulkanApp* app) {

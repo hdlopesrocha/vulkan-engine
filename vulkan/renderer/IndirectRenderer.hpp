@@ -237,8 +237,39 @@ private:
     PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
 
     // GPU buffers
+    // Geometry (vertex/index) is double-buffered across a small fixed pool of
+    // slots. rebuild() uploads a fresh full copy into a slot that no in-flight
+    // frame is reading, then swaps the "current" slot for subsequent draws — so
+    // the brush flow no longer needs a device-wide deviceWaitIdle() to avoid a
+    // WRITE_AFTER_READ hazard. Slots are created once and reused (grown only
+    // when capacity increases — no per-rebuild alloc churn). A slot is recycled
+    // (marked free) via a frame-fence-gated, NON-blocking deferred callback
+    // (deferDestroyUntilFence), so there is no vkWaitForFences in the rebuild
+    // path and thus no fence-index wraparound deadlock. Pool size =
+    // MAX_FRAMES_IN_FLIGHT (3) + 3 headroom so a free slot is virtually always
+    // available under 1–2 rebuilds/frame; a temporary throwaway allocation is
+    // used as a bounded fallback if none is free.
+    static constexpr uint32_t MAX_GEOM_BUFFERS = 6;
+    std::array<Buffer, MAX_GEOM_BUFFERS> vertexSlots{};
+    std::array<Buffer, MAX_GEOM_BUFFERS> indexSlots{};
+    std::array<size_t, MAX_GEOM_BUFFERS> vertexSlotCap{};
+    std::array<size_t, MAX_GEOM_BUFFERS> indexSlotCap{};
+    std::array<bool, MAX_GEOM_BUFFERS> geomSlotInUse{};
+    uint32_t currentGeomSlot = UINT32_MAX;
+    // Mirrors of the current slot's buffers. All bind/draw/barrier and
+    // incremental-upload paths reference these; kept in sync on every slot swap.
     Buffer vertexBuffer;
     Buffer indexBuffer;
+    // Reserve a free geometry slot (marks it in-use). Caller must hold `mutex`.
+    // Returns UINT32_MAX when the pool is exhausted (caller uses fallback path).
+    uint32_t acquireGeomSlot();
+    // Mark a slot reusable. Locks `mutex` — invoked from the deferred-destroy
+    // processor, not from within rebuild().
+    void markGeomSlotFree(uint32_t slot);
+    // Recycle the geometry buffers that were current before a rebuild swap:
+    // pool slots are returned to the free list, throwaway fallback buffers are
+    // destroyed — both gated on the current frame fence. Caller must hold `mutex`.
+    void recyclePreviousGeom(VulkanApp* app, uint32_t prevSlot, Buffer prevVertex, Buffer prevIndex);
     Buffer indirectBuffer;
     
     // Capacity tracking (in elements, not bytes)

@@ -973,6 +973,29 @@ void VulkanApp::cleanup() {
             if (!deviceLost) p.second();
         }
         m_deferredDestroys.clear();
+
+        // Destroy any binary semaphores still outstanding at shutdown. These are
+        // async-transfer signal semaphores that a final drawFrame never consumed
+        // (m_extraWaitSemaphores) or whose retire-timeline value was never
+        // reached (m_semaphoresPendingDestroy). deviceWaitIdle() above guarantees
+        // the GPU is finished with them, so destroying now is safe and prevents
+        // the VUID-vkDestroyDevice-device-05137 leak.
+        if (!deviceLost && device != VK_NULL_HANDLE) {
+            for (auto &e : m_extraWaitSemaphores) {
+                if (e.first != VK_NULL_HANDLE) {
+                    resources.removeSemaphore(e.first);
+                    vkDestroySemaphore(device, e.first, nullptr);
+                }
+            }
+            for (auto &e : m_semaphoresPendingDestroy) {
+                if (e.first != VK_NULL_HANDLE) {
+                    resources.removeSemaphore(e.first);
+                    vkDestroySemaphore(device, e.first, nullptr);
+                }
+            }
+        }
+        m_extraWaitSemaphores.clear();
+        m_semaphoresPendingDestroy.clear();
     }
     // Destroy the frame timeline semaphore — kept alive above so that
     // processPendingCommandBuffers can safely call vkGetSemaphoreCounterValue.

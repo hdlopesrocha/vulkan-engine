@@ -1836,17 +1836,15 @@ void MyApp::preAllocateAsyncDescriptorPools() {
 void MyApp::rebuildBrushScene() {
     if (!brushScene || !sceneRenderer || !brush3dWidget) return;
 
-    // Wait for all GPU work to complete so in-flight frames don't read
-    // stale buffer data while we rebuild the brush scene's indirect buffers.
-    // NOTE: a literal removal of this stall is NOT safe — the brush flow's
-    // addMesh() uploads geometry into the shared vertex/index buffer
-    // asynchronously (IndirectRenderer::uploadMeshes, pendingTransfer path)
-    // while previous frames are still reading it. The in-cmd barrier there
-    // cannot synchronize across submits, so this device-wide stall is what
-    // currently keeps that WRITE_AFTER_READ hazard quiet. Removing it requires
-    // a proper fix (per-frame-fence wait or double-buffering the merge
-    // buffers), not just deleting this line.
-    deviceWaitIdle();
+    // No device-wide stall here. The brush flow no longer writes into the shared
+    // vertex/index buffers in place: it batches mesh adds and rebuilds once per
+    // layer, and IndirectRenderer::rebuild() double-buffers the merged buffers
+    // across a fixed pool — the batch lands in a fresh slot no in-flight frame is
+    // reading, and the previous slot is recycled only once its frames retire
+    // (frame-fence-gated, non-blocking). In-flight frames keep reading the old
+    // buffers safely, so there is no WRITE_AFTER_READ hazard and no need to idle
+    // the whole device every drag frame. See SceneRenderer::processPendingBrushMeshes
+    // / updateBrushMeshForNode and IndirectRenderer::rebuild().
 
     // Process only the currently-selected brush entry from the manager
     const BrushEntry* selectedEntry = brushManager.getSelectedEntry();
