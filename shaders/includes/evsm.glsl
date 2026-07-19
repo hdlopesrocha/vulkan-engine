@@ -1,5 +1,5 @@
-// EVSM sampling — Chebyshev inequality on dual-depth exponential moments.
-// The shadow map stores: R = exp(c*z), G = exp(2*c*z), B = exp(-c*z), A = exp(-2*c*z)
+// EVSM sampling — Chebyshev inequality on positive exponential moments (EVSM2).
+// The shadow map stores: R = exp(c*z), G = exp(2*c*z).
 // Bias is subtracted from the test depth (making it shallower) so that
 // fragments at the exact occluder depth satisfy t <= M1 → lit.
 
@@ -18,14 +18,12 @@ float ShadowEVSM(sampler2D smap, vec3 projCoords, float bias) {
     float fragDepth = clamp(projCoords.z, 0.0, 1.0) - bias;
 
     float posDepth = exp( EVSM_C * fragDepth);
-    float negDepth = exp(-EVSM_C * fragDepth);
 
-    vec4 moments = texture(smap, projCoords.xy);
+    vec2 moments = texture(smap, projCoords.xy).xy;
 
-    float posProb = chebyshevUpperBound(moments.xy, posDepth);
-    float negProb = chebyshevUpperBound(moments.zw, negDepth);
+    float posProb = chebyshevUpperBound(moments, posDepth);
 
-    float shadow = 1.0 - min(posProb, negProb);
+    float shadow = 1.0 - posProb;
 
     // Light Bleeding Reduction: eliminate the soft transition zone (halo)
     // around shadow boundaries. Values below lbr are pushed to 0 (fully lit).

@@ -14,7 +14,7 @@
 #include "../includes/locations.hpp"
 #include "../includes/vertex_layouts.hpp"
 
-static constexpr VkFormat EVSM_FORMAT = VK_FORMAT_R32G32B32A32_SFLOAT;
+static constexpr VkFormat EVSM_FORMAT = VK_FORMAT_R32G32_SFLOAT; // EVSM2: 2 moments (RG32F)
 
 ShadowRenderer::ShadowRenderer(uint32_t maxShadowMapSize)
     : shadowMapSizes{maxShadowMapSize, maxShadowMapSize / 2, maxShadowMapSize / 4} {}
@@ -67,7 +67,7 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
         auto& cas = cascades[c];
         std::string tag = "ShadowRenderer cascade " + std::to_string(c);
 
-        // --- EVSM color image (RGBA32F for moments) ---
+        // --- EVSM color image (RG32F for EVSM2 moments) ---
         RendererUtils::createImage2DWithVma(device, app, size, size,
             EVSM_FORMAT,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
@@ -106,7 +106,7 @@ VkImage ShadowRenderer::getDepthImage(uint32_t cascade) const {
 }
 
 void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
-    // Create an EVSM pipeline: outputs RGBA32F color moments + depth test
+    // Create an EVSM2 pipeline: outputs RG32F color moments + depth test
     ShaderStage vertexShader(
         app->getOrCreateShaderModule("shaders/main.vert.spv"),
         VK_SHADER_STAGE_VERTEX_BIT);

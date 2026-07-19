@@ -674,7 +674,7 @@ void VegetationRenderer::init(VulkanApp* app) {
         GraphicsPipelineConfig shadowCfg{};
         shadowCfg.cullMode = VK_CULL_MODE_NONE;
         shadowCfg.depthCompareOp = VK_COMPARE_OP_LESS;
-        shadowCfg.colorFormats = { VK_FORMAT_R32G32B32A32_SFLOAT };
+        shadowCfg.colorFormats = { VK_FORMAT_R32G32_SFLOAT };
         shadowCfg.depthBiasEnable = true;
         auto [shadowPipeline, shadowLayout] = app->createGraphicsPipeline(
             { shadowStages[0], shadowStages[1] },
@@ -1186,7 +1186,7 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         VkShaderModule shadowFragMod = app->getOrCreateShaderModule("shaders/impostors_shadow.frag.spv");
         depthStages[1].module = shadowFragMod;  // reuse depthStages array, swap frag
 
-        VkFormat evsmColorFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
+        VkFormat evsmColorFormat = VK_FORMAT_R32G32_SFLOAT;
         GraphicsPipelineConfig impShadowCfg{};
         impShadowCfg.cullMode = VK_CULL_MODE_NONE;
         impShadowCfg.depthCompareOp = VK_COMPARE_OP_LESS;

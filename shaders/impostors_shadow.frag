@@ -1,6 +1,6 @@
 #version 450
 
-// Impostor EVSM shadow pass: uses vertex position from vertex shader
+// Impostor EVSM2 shadow pass: uses vertex position from vertex shader
 // to write EVSM moments.
 
 #include "includes/locations.glsl"
@@ -14,7 +14,7 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
     vec4 viewPos;
 } ubo;
 
-layout(location = FRAG_OUT_COLOR) out vec4 outEVSM;
+layout(location = FRAG_OUT_COLOR) out vec2 outEVSM;
 
 layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 windDirAndStrength;

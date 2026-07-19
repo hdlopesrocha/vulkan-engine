@@ -5,7 +5,7 @@
 
 layout(set = 0, binding = 0) uniform sampler2D evsmTexture;
 
-layout(location = 0) out vec4 outColor;
+layout(location = 0) out vec2 outColor;
 
 layout(push_constant) uniform PC {
     float direction; // 0 = horizontal, 1 = vertical
@@ -29,10 +29,10 @@ void main() {
         step = vec2(0.0, 1.0 / texSize.y);
     }
 
-    vec4 result = vec4(0.0);
+    vec2 result = vec2(0.0);
     for (int i = -RADIUS; i <= RADIUS; ++i) {
         vec2 offset = float(i) * step;
-        result += KERNEL[i + RADIUS] * texture(evsmTexture, uv + offset);
+        result += KERNEL[i + RADIUS] * texture(evsmTexture, uv + offset).xy;
     }
 
     outColor = result;
