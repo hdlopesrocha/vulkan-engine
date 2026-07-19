@@ -1,0 +1,416 @@
+\documentclass[a4paper,12pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[table]{xcolor}
+\usepackage{geometry}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{titlesec}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath}
+
+\geometry{margin=2.5cm}
+
+\definecolor{criticalcolor}{HTML}{DC3545}
+\definecolor{highcolor}{HTML}{FD7E14}
+\definecolor{mediumcolor}{HTML}{FFC107}
+\definecolor{lowcolor}{HTML}{28A745}
+\definecolor{resolvedcolor}{HTML}{6C757D}
+\definecolor{newcolor}{HTML}{007BFF}
+\definecolor{scorecolor}{HTML}{17A2B8}
+
+\newcommand{\severitybox}[2]{%
+  \colorbox{#1}{\makebox[2.5cm][c]{\textcolor{white}{\textbf{#2}}}}%
+}
+
+\newcommand{\scorebox}[2]{%
+  \colorbox{#1}{\makebox[3.0cm][c]{\textcolor{white}{\textbf{#2}}}}%
+}
+
+\lstset{
+  basicstyle=\small\ttfamily,
+  breaklines=true,
+  frame=single,
+  numbers=none,
+  tabsize=2,
+  backgroundcolor=\color{gray!10},
+  extendedchars=true,
+  inputencoding=utf8,
+  literate={—}{---}1 {·}{$\cdot$}1 {≈}{$\approx$}1 {×}{$\times$}1 {→}{$\rightarrow$}1
+}
+
+\title{\textbf{Performance Report \#13}\\[4pt]
+\large Vulkan Engine — Deep Re-Audit \& New CPU/GPU
+Performance Analysis (Rendering-Pipeline Headroom)}
+\author{Henrique Rocha}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Reports \#10 and \#11 raised 13 issues (GPU shader tree + CPU$\leftrightarrow$GPU
+sync). A code re-audit confirms 10 are fully resolved, 1 is mitigated (S1 — the
+per-chunk serialization is gone but a single in-flight upload slot remains), and
+2 are still open (GS1, NL2, both minor ALU redundancies). With the synchronous
+stall surface removed, the engine is now genuinely pipelined; the remaining
+performance \emph{headroom} is no longer in host stalls but in the \emph{rendering
+pipeline itself}. This report therefore shifts focus: it documents a \emph{new}
+set of issues found by tracing the steady-state frame — the dominant one being
+that the full scene geometry is re-rendered six times per frame for cascaded
+EVSM shadows, plus a 128-bit shadow-moment format and a per-tessellated-vertex
+wave/Depth fetch in the water stage. Each new finding includes code evidence, a
+quantified rationale, and a recommendation. The application is re-scored at
+\textbf{8.4/10} with a clear path to \textbf{9.5/10} by addressing the shadow and
+water-stage costs. All recommendations remain compatible with \texttt{AGENTS.md}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Brief Status of Prior Findings (\#10 + \#11)}
+
+The synchronous-stall class of problem is solved. Summary only (full evidence in
+the previous revision):
+
+\begin{center}
+\begin{tabular}{cllc}
+\toprule
+\textbf{ID} & \textbf{Issue} & \textbf{Orig. severity} & \textbf{Status} \\
+\midrule
+C1  & veg. instance-gen serial workgroup    & High   & \severitybox{resolvedcolor}{RESOLVED} \\
+C2  & per-invocation plane normalization     & Medium & \severitybox{resolvedcolor}{RESOLVED} \\
+NL1 & perlin2d cos/sin hash                  & Medium & \severitybox{resolvedcolor}{RESOLVED} \\
+T1  & triplanar weights 3×/vertex           & Medium & \severitybox{resolvedcolor}{RESOLVED} \\
+GS1 & Fibonacci view table per primitive    & Medium & \severitybox{mediumcolor}{OPEN} \\
+NL2 & sky sin star hash                      & Low    & \severitybox{lowcolor}{OPEN} \\
+\midrule
+S1  & per-chunk upload fence serialization   & High   & \severitybox{resolvedcolor}{MITIGATED} \\
+S2  & per-frame readback + queue idle        & High   & \severitybox{resolvedcolor}{RESOLVED} \\
+S3  & staging buffer per chunk               & Medium & \severitybox{resolvedcolor}{RESOLVED} \\
+S4  & fence-destroy queue idle               & Medium & \severitybox{resolvedcolor}{RESOLVED} \\
+S5  & geometryQueue unused                   & Medium & \severitybox{resolvedcolor}{RESOLVED} \\
+S6  & blocking GPU veg. gen                  & Low    & \severitybox{resolvedcolor}{RESOLVED} \\
+S7  & water reset deviceWaitIdle             & Low    & \severitybox{resolvedcolor}{RESOLVED} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The key takeaway: the engine no longer blocks the host. The 8-submit,
+3-frames-in-flight model is intact and uploads overlap rendering. \emph{New}
+analysis below targets where the GPU now spends its time.
+
+\newpage
+
+\section{New Issue Register — Rendering-Pipeline Headroom}
+
+\subsection{GPU / Geometry Throughput}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[N1]}] \textbf{Full Scene Geometry Re-Rendered 6×/Frame for Cascaded EVSM Shadows}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/ShadowRenderer.cpp} \\
+    \textbf{Line:} & 551 (cascade loop), 538 (\texttt{vkCmdDrawIndexed} per mesh) \\
+    \textbf{Category:} & Vertex/geometry throughput / redundant shading \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{render()} iterates \texttt{SHADOW\_CASCADE\_COUNT = 3}
+  (\texttt{UniformObject.hpp:8}) cascades. For each cascade it performs a depth
+  pass and an EVSM color pass, each drawing the full shadow-casting geometry:
+
+\begin{lstlisting}
+// ShadowRenderer.cpp:551
+for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
+    renderCascade(app, commandBuffer, c, ...);   // depth + EVSM color
+    blurCascade(app, commandBuffer, c, ...);     // 2 full-screen blur passes
+}
+// renderCascade issues, per mesh:
+vkCmdDrawIndexed(commandBuffer, vbo.indexCount, 1, 0, 0, 0); // :538
+\end{lstlisting}
+
+  Cascade sizes are \texttt{\{2048, 1024, 512\}}
+  (\texttt{ShadowRenderer.cpp:20}), so the visible cost is dominated by cascade~0
+  (2048×2048) but the vertex/index/setup work is essentially the \emph{same mesh
+  list} across all three. Net: the scene's entire draw list is issued
+  \textbf{6 times per frame} (3 cascades × 2 passes), plus 6 separable blur
+  passes. This is by far the largest single consumer of GPU vertex and geometry
+  throughput in the frame and the primary reason frame GPU time scales with
+  scene size rather than with what is visible to the camera.
+
+  \textbf{Recommendation:}
+  Decouple shadow update rate from the render rate. The shadow map only needs to
+  change when the light direction or the camera (cascade-bounding) transform
+  changes meaningfully. Maintain a dirty flag: when neither moved beyond a
+  threshold, skip \texttt{renderCascade}/\texttt{blurCascade} and reuse the last
+  shadow textures (optionally with stabilized cascade splits to avoid swimming).
+  For static or slow-moving cameras this drops the 6 geometry passes to 0 on most
+  frames. A lighter variant: render only cascade~0 at full rate and update
+  cascades~1–2 every $N$ frames. Identical output when the light is static; a
+  sub-frame-latency shadow update when it moves.
+
+\item[\textbf{[N2]}] \textbf{Water Wave Displacement Paid at Tessellation-Eval Density with a Per-Vertex Scene-Depth Fetch}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/water.tese} \\
+    \textbf{Line:} & 102--118 (depth fetch), 119--152 (FBM-gradient) \\
+    \textbf{Category:} & Tessellation-eval ALU / dependent texture fetch \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The water surface displacement is computed in the tessellation-evaluation
+  stage, i.e. once per \emph{generated} vertex (the densest vertex multiplicity in
+  the pipeline). Two costs compound there:
+
+\begin{lstlisting}
+// water.tese:102 -- depth-dependent attenuation samples the SCENE depth
+// texture per generated vertex, inside the evaluation stage:
+float solidDepthRaw = texture(sceneDepthTex, screenUV).r;   // dependent TFetch
+...
+// water.tese:119 -- 4D Perlin FBM *gradient* (octaves of perlin4d):
+vec4 wave = waterWaveSample(xyz, animTime, noiseScale,
+                            noiseOctaves, noisePersistence,
+                            noiseLacunarity, bumpAmp, waveScale);
+\end{lstlisting}
+
+  A texture fetch in the tessellation-evaluation stage has poor cache coherence
+  (vertices are not screen-contiguous) and stalls the vertex pipeline; the
+  \texttt{noiseOctaves}-deep 4D Perlin FBM gradient is then paid at the same
+  highest vertex count. Both scale with tessellation factor, not with visible
+  pixels.
+
+  \textbf{Recommendation:}
+  (a) Move the depth-dependent attenuation out of the evaluation stage: compute
+  the shallow-water suppression in the water \texttt{.frag} shader (per pixel,
+  where the scene-depth texture is coherent) and feed a small per-vertex factor
+  only if needed. (b) Cap \texttt{noiseOctaves} (e.g. 3) and/or evaluate the low-
+  frequency displacement once per patch corner in \texttt{water.vert} and let the
+  tessellator interpolate it — acceptable because wave displacement is low-
+  spatial-frequency. This removes the per-generated-vertex texture fetch and
+  cuts the FBM cost to the control-point rate.
+
+\item[\textbf{[N3]}] \textbf{EVSM Moments Stored as 128-bit RGBA32F for Every Cascade}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/ShadowRenderer.cpp} \\
+    \textbf{Line:} & 17 (format), 70 (color image), 229 (blur temp) \\
+    \textbf{Category:} & Memory bandwidth / shadow resolution \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The EVSM color target is \texttt{VK\_FORMAT\_R32G32B32A32\_SFLOAT}
+  (RGBA32F):
+
+\begin{lstlisting}
+static constexpr VkFormat EVSM_FORMAT = VK_FORMAT_R32G32B32A32_SFLOAT; // :17
+// cascade color image (:70) and the separable-blur ping-pong temp (:229)
+// are both RGBA32F.
+\end{lstlisting}
+
+  Standard EVSM needs only \textbf{two} moments (EVSM2, R32G32), which is
+  algebraically sufficient for the positive/negative exponential warping used by
+  EVSM. Storing 4 channels at 128 bits/texel across
+  $2048^2 + 1024^2 + 512^2 \approx 5.5$ M texels means $\sim$88 MB of 128-bit
+  render+sample+blur bandwidth per frame is spent on shadow moments, half of it
+  redundant. The blur ping-pong temp doubles the write traffic.
+
+  \textbf{Recommendation:}
+  Switch \texttt{EVSM\_FORMAT} to \texttt{VK\_FORMAT\_R32G32\_SFLOAT}
+  (EVSM2) — the canonical, bandwidth-optimal EVSM variant. This halves all
+  shadow-moment bandwidth (render, blur read/write, and sampling in the lighting
+  shader) with no visible quality regression for typical scenes. The lighting
+  shader's moment reconstruction must be updated from 4- to 2-moment accordingly.
+
+\subsection{GPU / Fragment \& Minor}
+
+\item[\textbf{[N4]}] \textbf{Residual Shader ALU Redundancies (carried from \#10)}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{shaders/impostors.geom} (\textbf{GS1}), \texttt{shaders/sky.frag} (\textbf{NL2}) \\
+    \textbf{Category:} & Geometry/fragment ALU \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Still open from \#10: the 20-entry Fibonacci view-selection table is rebuilt
+  per emitted impostor primitive (\texttt{impostors.geom:67--95}), and the sky
+  star field still uses \texttt{fract(sin(dot(...)))} (\texttt{sky.frag:59}). Both
+  are pure ALU waste in hot-ish paths (impostor primitive emission scales with
+  vegetation billboard count; the sky hash is per sky pixel).
+
+  \textbf{Recommendation:}
+  Hoist the Fibonacci directions to a compile-time \texttt{const vec3 fibDirs[20]}
+  (or UBO) and replace the sky hash with the integer bit-mix already used in
+  \texttt{perlin.glsl}. Small, safe, and finishes the \#09 hash migration.
+
+\subsection{CPU / Per-Frame Uploads}
+
+\item[\textbf{[N5]}] \textbf{Shadow \& Static UBOs Fully Re-Uploaded Every Frame}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{vulkan/renderer/SceneRenderer.cpp} \\
+    \textbf{Line:} & 253 (per-cascade UniformObject), 346 (static UBO) \\
+    \textbf{Category:} & Avoidable host→device copy \\
+  \end{tabular}
+
+  \textbf{Description:}
+  Every frame the renderer \texttt{memcpy}s a full \texttt{UniformObject} for
+  each of the 3 cascades (line 253) and a full static UBO (line 346) into staging
+  and copies them to the GPU, regardless of whether the camera/light transform
+  changed:
+
+\begin{lstlisting}
+memcpy(uboStagingBuffers[frameIdx].map(stagingOff), &shadowUBO, sizeof(UniformObject)); // :253
+memcpy(uboStagingBuffers[frameIdx].map(restoreOff), &uboStatic, sizeof(UniformObject)); // :346
+\end{lstlisting}
+
+  These writes are small, but they are unconditionally issued every frame even
+  when the view-projection and light matrix are byte-identical to the previous
+  frame (e.g. a paused/idle scene).
+
+  \textbf{Recommendation:}
+  Track a dirty flag on the view-projection and light transform; only re-upload
+  the cascade/static UBOs when they actually change. Trivially avoids the copy
+  and its barrier on idle frames, and pairs naturally with the \textbf{[N1]}
+  shadow dirty flag.
+
+\end{enumerate}
+
+\newpage
+
+\section{Deep Analysis: Where the GPU Spends Its Time Now}
+
+With the host no longer stalling, the frame GPU budget is dominated by
+\emph{geometry re-issue}, not by shader ALU:
+
+\begin{center}
+\begin{tabular}{lp{7cm}c}
+\toprule
+\textbf{Phase} & \textbf{Work} & \textbf{Relative cost} \\
+\midrule
+Cascaded shadows (N1+N3) & 3 cascades × (depth + EVSM color) full-scene draws
+  + 2 blur passes each, RGBA32F & \textbf{Very high} \\
+Scene opaque + water (N2) & forward scene, tessellated water eval/disp & High \\
+Vegetation indirect        & GPU-culled indirect draws (healthy) & Medium \\
+Impostors (N4/GS1)         & geometry-shader billboards, per-primitive table & Medium \\
+Sky + post (N4/NL2)        & full-screen + sky frag & Low--Medium \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The decisive observation is that \textbf{[N1] alone accounts for more
+draw calls than the rest of the frame combined} (6 full-scene geometry passes vs.
+1 for the opaque scene). Because the shadow-casting mesh list is the same list
+re-issued per cascade, and because cascade~0 is full-resolution, the marginal
+cost of adding geometry to the scene is paid \emph{sixfold} every frame. Any
+optimization that reduces shadow re-issuance (update-rate decoupling, smaller
+cascade~0, EVSM2 bandwidth) compounds across the whole scene.
+
+The water stage (\textbf{[N2]}) is the second area of interest: it is the only
+place that issues a dependent texture fetch in a vertex/tessellation stage, which
+is the worst stage for texture-cache behavior. Moving that fetch to the fragment
+shader and lowering the FBM rate removes a stall-prone path.
+
+\section{Coupled View}
+
+These new issues are \emph{pure GPU-side headroom} — they do not stall the CPU.
+The pipeline remains correctly pipelined (S1 residual aside). This is a much
+healthier position than the pre-fix engine: the host is free to feed the GPU, and
+the only question is how much geometry/shading the GPU must repeat. The
+recommended changes are therefore throughput/quality trade-offs rather than
+correctness fixes, and can be applied incrementally and measured with a GPU
+timeline/profiler.
+
+\newpage
+
+\section{Application Scorecard (Re-Scored)}
+
+Re-scored on the current tree, with the new rendering-pipeline headroom factored
+in (the old sync issues are resolved, but the shadow/water costs are real):
+
+\begin{center}
+\begin{tabular}{lp{6.5cm}c}
+\toprule
+\textbf{Dimension} & \textbf{Basis} & \textbf{Score} \\
+\midrule
+Architecture \& Modernity & Dynamic rendering, Synchronization2, timeline
+  semaphores, descriptor indexing, 3-frame in-flight, StagingRingBuffer & 9 / 10 \\
+\midrule
+GPU Shader Efficiency & C1/C2/NL1/T1 fixed; N1/N2/N3 headroom; GS1/NL2 open & 8 / 10 \\
+\midrule
+CPU$\leftrightarrow$GPU Sync & S2/S3/S4/S5/S6/S7 fixed; S1 single-slot residual & 8 / 10 \\
+\midrule
+CPU Compute Pipeline & Parallel octree meshing, no host stalls & 9 / 10 \\
+\midrule
+Memory \& Allocation Hygiene & Ring staging, fence free-list, no per-chunk alloc & 9 / 10 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{Weighted Overall Score}
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Dimension} & \textbf{Weight} & \textbf{Contribution} \\
+\midrule
+Architecture \& Modernity & 0.15 & 1.35 \\
+GPU Shader Efficiency      & 0.25 & 2.00 \\
+CPU$\leftrightarrow$GPU Sync & 0.30 & 2.40 \\
+CPU Compute Pipeline      & 0.15 & 1.35 \\
+Memory \& Allocation Hygiene & 0.15 & 1.35 \\
+\midrule
+\textbf{Overall} & \textbf{1.00} & \textbf{8.45 / 10} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\scorebox{scorecolor}{OVERALL: 8.45 / 10}
+
+\subsection*{Interpretation}
+
+The application holds a strong \textbf{8.45/10 (A-)}. The synchronous-stall debt
+from \#10/\#11 is paid; the engine is genuinely pipelined. The remaining gap to a
+\textbf{9.5/10} is now exclusively in rendering-pipeline headroom, dominated by
+\textbf{[N1]} (6× full-scene shadow re-issue) and amplified by \textbf{[N3]}
+(128-bit shadow moments) and \textbf{[N2]} (per-vertex water depth fetch). These
+are throughput optimizations with clean, low-risk implementations, not stall
+fixes. Closing \textbf{[N1]}+\textbf{[N3]} would very likely lift the GPU Shader
+Efficiency score to 9–10 and the overall into the 9s.
+
+\newpage
+
+\section{Roadmap}
+
+\begin{center}
+\begin{tabular}{cll}
+\toprule
+\textbf{Priority} & \textbf{Item} & \textbf{Expected impact} \\
+\midrule
+P0 & \textbf{[N1]} shadow update-rate decoupling / dirty flag & Removes up to 6 geom passes/frame \\
+P1 & \textbf{[N3]} EVSM2 (R32G32) shadow-moment format        & Halves shadow bandwidth \\
+P1 & \textbf{[N2]} move water depth fetch to frag; cap FBM    & Removes tess-eval TFetch stall \\
+P2 & \textbf{[N4]} GS1 fib table + NL2 sky hash               & Finishes ALU cleanup \\
+P2 & \textbf{[N5]} dirty-flag UBO re-uploads                  & Avoids idle-frame copies \\
+P3 & \textbf{[S1]} upload slot ring                           & Fully async uploads \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent All items preserve the invariants mandated by \texttt{AGENTS.md}:
+Synchronization2, dynamic rendering, timeline semaphores, descriptor indexing,
+feature detection, and the documented RADV same-queue fallbacks. The roadmap
+prioritizes the two changes that compound across the entire scene (\textbf{[N1]},
+\textbf{[N3]}) before the localized ALU cleanups.
+
+\end{document}
