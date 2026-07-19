@@ -34,7 +34,7 @@ Octree& LocalScene::getOpaqueOctree() { return opaqueOctree; }
 const Octree& LocalScene::getOpaqueOctree() const { return opaqueOctree; }
 
 
-void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback) {
+void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback, ThreadPool* poolOverride) {
     long tessCount = 0;
     Octree* tree = layer == LAYER_OPAQUE ? &opaqueOctree : &transparentOctree;
     long trianglesCount = 0;
@@ -42,7 +42,11 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
     Tesselator tesselator(&trianglesCount);
     std::vector<OctreeNodeTriangleHandler*> handlers;
     handlers.emplace_back(&tesselator);
-    Processor processor(&tessCount, threadPool, &context, &handlers);
+    // Use the caller-supplied pool when present (e.g. brush editing runs on a
+    // dedicated pool so it never competes with solid/water streaming
+    // generation); otherwise fall back to the scene's shared pool.
+    ThreadPool& pool = poolOverride ? *poolOverride : threadPool;
+    Processor processor(&tessCount, pool, &context, &handlers);
     tree->iterateFlat(processor, OctreeNodeData(data.level, data.node, data.cube, &context));
 #if 0
     std::cout << "[requestModel3D] Node " << data.node 

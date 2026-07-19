@@ -16,6 +16,11 @@ enum Layer {
 };
 
 
+// Forward declaration: an optional thread pool may be supplied to
+// requestModel3D so a caller (e.g. brush editing) can tessellate on a
+// dedicated pool instead of the scene's shared generation pool.
+class ThreadPool;
+
 // Visible nodes are reported via a callback lambda taking a NodeID and its version
 using VisibleNodeCallback = std::function<void(std::vector<OctreeNodeData>&)>;
 using GeometryCallback = std::function<void(const Geometry&)>;
@@ -36,6 +41,6 @@ public:
     ~Scene() = default;
     virtual void action(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) = 0;
     virtual void loadScene(SceneLoaderCallback& callback, const OctreeChangeHandler &opaqueLayerChangeHandler, const OctreeChangeHandler &transparentLayerChangeHandler) = 0;
-    virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback) = 0;
+    virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryCallback& callback, ThreadPool* poolOverride = nullptr) = 0;
     virtual bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) = 0;
 };
