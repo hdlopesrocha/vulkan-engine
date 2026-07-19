@@ -14,6 +14,7 @@
 #include <array>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 // stb_image: implementation is compiled in one translation unit (VulkanApp.cpp). Do not include the header here to avoid implementation duplication. // use <stb/stb_image.h> in .cpp files that need it.
 
 #include <glm/glm.hpp>
@@ -30,8 +31,21 @@
 const uint32_t WIDTH = 1280;
 const uint32_t HEIGHT = 720;
 
+// Allow forcing validation layers on in release/prod builds via the
+// VK_VALIDATION environment variable. This is essential for hunting
+// down GPU hangs/deadlocks that only reproduce in optimized builds
+// (where validation is otherwise off). Sync validation is enabled
+// automatically whenever validation layers are on (see createInstance).
+inline bool validationLayersRequested() {
+    if (const char* v = std::getenv("VK_VALIDATION")) {
+        const char c = v[0];
+        if (c == '1' || c == 'y' || c == 'Y' || c == 't' || c == 'T') return true;
+    }
+    return false;
+}
+
 #ifdef NDEBUG
-const bool enableValidationLayers = false;
+const bool enableValidationLayers = validationLayersRequested();
 #else
 const bool enableValidationLayers = true;
 #endif
