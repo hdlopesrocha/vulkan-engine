@@ -61,11 +61,33 @@ void main() {
     }
 
     // ── Fibonacci sphere view selection ────────────────────────────────────
-    // Directions are computed from the golden-angle formula to match what
-    // ImpostorCapture uses on the CPU side.  viewDirs[i] = FROM center TO camera.
-    // We compare against toCamera = normalize(camPos - worldPos).
-    const float goldenAngle = 3.14159265358979323846 * (3.0 - 2.2360679774997896);
-    const int   NUM_VIEWS   = 20;
+    // Directions are precomputed from the golden-angle formula to match what
+    // ImpostorCapture uses on the CPU side.  fibDirs[i] = FROM center TO camera.
+    // Hoisted to a compile-time constant so the table is not rebuilt per emitted
+    // impostor primitive (which scales with billboard count).
+    const vec3 fibDirs[20] = vec3[20](
+        vec3(0.3122499, 0.95, 0),
+        vec3(-0.38843316, 0.85, 0.35583659),
+        vec3(0.057826681, 0.75, -0.65890521),
+        vec3(0.4623735, 0.65, 0.60308436),
+        vec3(-0.8223979, 0.55, -0.14547061),
+        vec3(0.75349757, 0.45, -0.47931348),
+        vec3(-0.24318425, 0.35, 0.90463331),
+        vec3(-0.44627131, 0.25, -0.85926825),
+        vec3(0.92869381, 0.15, 0.33915749),
+        vec3(-0.9231894, 0.05, 0.38107916),
+        vec3(0.42331586, -0.05, -0.9046014),
+        vec3(0.29589777, -0.15, 0.9433687),
+        vec3(-0.83773715, -0.25, -0.4854858),
+        vec3(0.91490074, -0.35, -0.20113836),
+        vec3(-0.513607, -0.45, 0.73055311),
+        vec3(-0.10732759, -0.55, -0.82823957),
+        vec3(0.58108293, -0.65, 0.48973731),
+        vec3(-0.660873, -0.75, 0.027329173),
+        vec3(0.37339906, -0.85, -0.37158194),
+        vec3(-0.014423274, -0.95, 0.31191661)
+    );
+    const int NUM_VIEWS = 20;
 
     vec3 toCamera = normalize(camPos - worldPos);
 
@@ -86,11 +108,7 @@ void main() {
     int   bestIdx = 0;
     float bestDot = -2.0;
     for (int i = 0; i < NUM_VIEWS; i++) {
-        float y     = 1.0 - (float(i) + 0.5) / float(NUM_VIEWS) * 2.0;
-        float r     = sqrt(max(0.0, 1.0 - y * y));
-        float theta = goldenAngle * float(i);
-        vec3  d     = vec3(cos(theta) * r, y, sin(theta) * r);
-        float dt    = dot(toCamera_canonical, d);
+        float dt = dot(toCamera_canonical, fibDirs[i]);
         if (dt > bestDot) { bestDot = dt; bestIdx = i; }
     }
 

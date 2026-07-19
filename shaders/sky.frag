@@ -6,6 +6,7 @@ layout(location = VARY_POSWORLD) in vec3 fragPosWorld;
 layout(location = VARY_NORMAL) in vec3 fragNormal;
 
 #include "includes/ubo.glsl"
+#include "includes/perlin.glsl"
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -55,8 +56,12 @@ void main() {
 
     // Optional simple star effect: use small bright speckles when near full night
     float starMask = (1.0 - dayFactor) * starIntensity;
-    // create a cheap pseudo-random noise from fragment position to place stars
-    float starSeed = fract(sin(dot(fragPosWorld.xy ,vec2(12.9898,78.233))) * 43758.5453);
+    // Cheap pseudo-random seed from fragment position via the PCG bit-mix
+    // (avoids the sin-based hash used elsewhere; matches perlin.glsl).
+    uvec2 ip = floatBitsToUint(fragPosWorld.xy);
+    uint starH = pcgHash(ip.x);
+    starH = pcgHash(starH ^ ip.y);
+    float starSeed = uintToUnitFloat(starH);
     float stars = smoothstep(0.995, 0.9995, starSeed) * starMask;
     // --- Sun flare/glow ---
     // Sun direction in world space (normalized)
