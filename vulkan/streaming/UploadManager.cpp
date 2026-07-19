@@ -275,6 +275,29 @@ void UploadManager::processUploads() {
     }
 }
 
+void UploadManager::flush() {
+    // Guarantees no queued/in-flight UploadJob still references a destination
+    // buffer the caller is about to destroy. Blocking is acceptable: this is
+    // only invoked on a full rebuild that reallocates the target buffers.
+    for (;;) {
+        // Recycle any finished slots (fires onComplete) and admit as many
+        // queued jobs as free staging slots allow.
+        processUploads();
+
+        bool queuedRemain = false;
+        for (auto& q : queues_) if (!q.empty()) { queuedRemain = true; break; }
+        bool busyRemain = false;
+        for (auto& s : staging_.slots()) if (s.busy) { busyRemain = true; break; }
+
+        if (!queuedRemain && !busyRemain) break;
+
+        // Block on the in-flight transfers so the next iteration can recycle
+        // their slots and admit the still-queued jobs.
+        for (auto& s : staging_.slots())
+            if (s.busy) vkWaitForFences(device_, 1, &s.fence, VK_TRUE, UINT64_MAX);
+    }
+}
+
 void UploadManager::destroy() {
     // Wait for in-flight transfers before tearing down staging resources.
     for (auto& s : staging_.slots()) {

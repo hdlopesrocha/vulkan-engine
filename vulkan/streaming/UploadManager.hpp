@@ -56,6 +56,14 @@ public:
     // queues drain — it never waits on the GPU.
     void processUploads();
 
+    // Blocking drain: submits every queued UploadJob and waits until all
+    // in-flight transfers retire (onComplete fired, slots recycled). After this
+    // returns no queued or in-flight job references any destination buffer, so
+    // the caller may safely destroy/recreate buffers that were upload targets.
+    // Intended for rare, already-heavy events (e.g. a full IndirectRenderer
+    // rebuild that grows and reallocates the merged vertex/index buffers).
+    void flush();
+
     // Latest timeline value the frame should wait on (timeline path). 0 if the
     // timeline path is unavailable (use binary semaphores instead).
     uint64_t frameTimelineValue() const { return m_timelineWaitValue; }

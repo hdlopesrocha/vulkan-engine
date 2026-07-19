@@ -625,6 +625,16 @@ void IndirectRenderer::publishMeshMeta(uint32_t meshId) {
 }
 
 void IndirectRenderer::rebuild(VulkanApp* app) {
+    // A rebuild may reallocate the merged vertex/index buffers below. Any
+    // UploadJob still queued or in flight in the UploadManager captured the
+    // CURRENT buffer handles at uploadMeshes() time; if we destroyed those
+    // buffers while such a job is pending, its vkCmdCopyBuffer would target a
+    // freed VkBuffer (VUID-vkCmdCopyBuffer-dstBuffer-parameter). Drain the
+    // manager first so no pending job references a soon-to-be-destroyed buffer.
+    // This MUST happen BEFORE acquiring `mutex`: flush() fires each job's
+    // onComplete → publishMeshMeta, which locks the same (non-recursive) mutex.
+    if (uploadMgr_) uploadMgr_->flush();
+
     std::lock_guard<std::shared_mutex> guard(mutex);
 
     // Publish any pending async upload before rebuilding.
