@@ -2,9 +2,11 @@
 #include "DescriptorAllocator.hpp"
 #include "DescriptorWriter.hpp"
 #include "../VulkanApp.hpp"
+#include "../streaming/UploadManager.hpp"
 #include "../../utils/FileReader.hpp"
 #include <cassert>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 
 namespace {
@@ -247,7 +249,7 @@ bool IndirectRenderer::ensureCapacity(size_t vertexCount, size_t indexCount, siz
     return !needsRebuild;
 }
 
-bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>& meshIds) {
+bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>& meshIds, float priority) {
     std::lock_guard<std::shared_mutex> guard(mutex);
     if (meshIds.empty()) return true;
 
@@ -372,6 +374,54 @@ bool IndirectRenderer::uploadMeshes(VulkanApp* app, const std::vector<uint32_t>&
     }
 
     if (reqs.empty()) return true;
+
+    // --- Async UploadManager path -------------------------------------------
+    // When an UploadManager is wired in, route the copies through it: the whole
+    // validated batch is packaged as a single UploadJob (vertex + index slices)
+    // and streamed via one of K concurrent staging slots. This removes the
+    // single in-flight pendingTransfer slot (and its vkWaitForFences stall in
+    // publishPendingTransfer) that serialized incremental uploads. Each mesh's
+    // indirect/bounds meta entry is published individually when the transfer
+    // retires (per-mesh, since manager transfers may complete out of order).
+    // If the batch would not fit in one staging slot we fall through to the
+    // legacy ring-backed path, which allocates a right-sized staging buffer.
+    if (uploadMgr_ && totalStaging <= uploadMgr_->slotSize()) {
+        streaming::UploadJob job;
+        job.category  = streamCategory_;
+        job.priority  = priority;
+        job.chunkSlot = nullptr;   // merged buffers are owned by this renderer
+        job.uploads.reserve(reqs.size() * 2);
+
+        std::vector<uint32_t> batchIds;
+        batchIds.reserve(reqs.size());
+        for (auto& r : reqs) {
+            if (r.doVertex) {
+                streaming::BufferUpload bu;
+                bu.dst       = vertexBuffer;
+                bu.dstOffset = r.vertexOffset;
+                bu.cpuData.resize(r.vertexSize);
+                std::memcpy(bu.cpuData.data(), &mergedVertices[meshes[r.meshId].baseVertex], r.vertexSize);
+                job.uploads.push_back(std::move(bu));
+            }
+            if (r.doIndex) {
+                streaming::BufferUpload bu;
+                bu.dst       = indexBuffer;
+                bu.dstOffset = r.indexOffset;
+                bu.cpuData.resize(r.indexSize);
+                std::memcpy(bu.cpuData.data(), &mergedIndices[meshes[r.meshId].firstIndex], r.indexSize);
+                job.uploads.push_back(std::move(bu));
+            }
+            batchIds.push_back(r.meshId);
+        }
+
+        job.onComplete = [this, batchIds]() {
+            std::lock_guard<std::shared_mutex> lock(mutex);
+            for (uint32_t id : batchIds) publishMeshMeta(id);
+        };
+
+        uploadMgr_->enqueue(std::move(job));
+        return true;
+    }
 
     // Suballocate the staging region from the app's persistent StagingRingBuffer
     // (persistently-mapped, avoids a per-chunk vkAllocateMemory + map + free).
@@ -542,6 +592,36 @@ void IndirectRenderer::doUploadMeshMetaBuffers(VulkanApp* app) {
         }
     }
     metaBuffersWrittenCount = indirectCommands.size();
+}
+
+// Unlocked — caller must hold mutex. Writes a single mesh's indirect command
+// and bounds at its CURRENT drawIndex offset. Both indirectCommands[drawIndex]
+// and meshes[id].drawIndex are read here under the lock, so they stay
+// consistent even if a rebuild() reordered draw indices between the upload
+// enqueue and its completion. The indirect/bounds buffers are append-only per
+// slot, so writing one mesh's entry never disturbs in-flight draws of others.
+void IndirectRenderer::publishMeshMeta(uint32_t meshId) {
+    if (indirectBuffer.buffer == VK_NULL_HANDLE) return;
+    auto it = meshes.find(meshId);
+    if (it == meshes.end() || !it->second.active) return;
+    MeshInfo& info = it->second;
+    size_t i = info.drawIndex;
+    if (i >= indirectCommands.size()) return;
+
+    VkDeviceSize cmdOffset = i * sizeof(VkDrawIndexedIndirectCommand);
+    const auto& cmd = indirectCommands[i];
+    void* data = indirectBuffer.map(cmdOffset);
+    memcpy(data, &cmd, sizeof(cmd));
+    indirectBuffer.unmap();
+    info.indirectOffset = cmdOffset;
+
+    if (boundsBuffer.buffer != VK_NULL_HANDLE) {
+        VkDeviceSize boundsOffset = i * 2 * sizeof(glm::vec4);
+        glm::vec4 bounds[2] = { info.boundsMin, info.boundsMax };
+        data = boundsBuffer.map(boundsOffset);
+        memcpy(data, bounds, sizeof(bounds));
+        boundsBuffer.unmap();
+    }
 }
 
 void IndirectRenderer::rebuild(VulkanApp* app) {

@@ -13,6 +13,9 @@
 
 #include <array>
 #include "CommandBufferState.hpp"
+#include "../streaming/StreamCommon.hpp"
+
+namespace streaming { class UploadManager; }
 
 // Manages a single large vertex/index/indirect buffer and provides a simple
 // CPU-side allocator for adding/removing meshes. Draws are performed via
@@ -29,7 +32,18 @@ public:
     // buffer / command buffer submission.  Coalescing amortizes submission
     // overhead and removes the per-chunk fence stall that serialized chunk
     // uploads when processed one-by-one (see perf_report).
-    bool uploadMeshes(VulkanApp* app, const std::vector<uint32_t>& meshIds);
+    bool uploadMeshes(VulkanApp* app, const std::vector<uint32_t>& meshIds, float priority = 0.0f);
+
+    // Route incremental per-mesh GPU copies through the shared async
+    // UploadManager (the real transfer engine) instead of the single-slot
+    // pendingTransfer path. When set, uploadMeshes()/uploadMesh() enqueue an
+    // UploadJob (no per-frame cap, K concurrent staging slots) and publish each
+    // mesh's indirect/bounds meta entry when its own transfer retires. Passing
+    // nullptr restores the legacy staging-ring path.
+    void setUploadManager(streaming::UploadManager* mgr, streaming::StreamCategory category) {
+        uploadMgr_ = mgr;
+        streamCategory_ = category;
+    }
     // Write all mesh indirect/model/bounds buffers for all active meshes
     void uploadMeshMetaBuffers(VulkanApp* app);
     struct MeshInfo {
@@ -181,6 +195,16 @@ private:
     void publishPendingTransfer(VulkanApp* app);
     // Unlocked variant — caller must hold mutex.
     void doUploadMeshMetaBuffers(VulkanApp* app);
+    // Publish ONE mesh's indirect command + bounds at its current drawIndex.
+    // Unlocked — caller must hold mutex. Used by the async UploadManager path
+    // where transfers may complete out of order, so the contiguous
+    // append-only watermark (doUploadMeshMetaBuffers) cannot be used.
+    void publishMeshMeta(uint32_t meshId);
+
+    // Async transfer engine (optional). When non-null, uploadMeshes routes
+    // through it instead of the single-slot pendingTransfer path.
+    streaming::UploadManager* uploadMgr_ = nullptr;
+    streaming::StreamCategory streamCategory_ = streaming::StreamCategory::Solid;
     uint32_t nextId = 1;
     std::unordered_map<uint32_t, MeshInfo> meshes; // nodeId -> MeshInfo
 
