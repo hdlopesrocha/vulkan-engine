@@ -1838,6 +1838,14 @@ void MyApp::rebuildBrushScene() {
 
     // Wait for all GPU work to complete so in-flight frames don't read
     // stale buffer data while we rebuild the brush scene's indirect buffers.
+    // NOTE: a literal removal of this stall is NOT safe — the brush flow's
+    // addMesh() uploads geometry into the shared vertex/index buffer
+    // asynchronously (IndirectRenderer::uploadMeshes, pendingTransfer path)
+    // while previous frames are still reading it. The in-cmd barrier there
+    // cannot synchronize across submits, so this device-wide stall is what
+    // currently keeps that WRITE_AFTER_READ hazard quiet. Removing it requires
+    // a proper fix (per-frame-fence wait or double-buffering the merge
+    // buffers), not just deleting this line.
     deviceWaitIdle();
 
     // Process only the currently-selected brush entry from the manager
