@@ -31,9 +31,11 @@ class Octree;
 #include <deque>
 #include <vector>
 #include "../../utils/Model3DVersion.hpp"
+#include "../../space/ThreadPool.hpp"
 #include "SkyRenderer.hpp"
 #include "SolidRenderer.hpp"
 #include "IndirectRenderer.hpp"
+#include "../streaming/UploadManager.hpp"   // TerrainStreamer: async streaming orchestration
 #include "ShadowRenderer.hpp"
 #include "WaterRenderer.hpp"
 #include "../../utils/UniqueOctreeChangeHandler.hpp"
@@ -175,7 +177,7 @@ public:
 
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
     // Process nodes for a single Layer (nodeMap maps NodeID->OctreeNodeData)
-    void processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry);
+    void processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry, ThreadPool* poolOverride = nullptr);
 
     // Runtime introspection helpers for UI/debug
     size_t getTransparentModelCount();
@@ -211,10 +213,22 @@ public:
     // Drain the pending mesh queue on the main (render) thread.
     // Call once per frame from update() before recording command buffers.
     void processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos);
+
+    // Brush meshes are drained from their OWN queue/drain (not the shared
+    // solid/water pendingMeshQueue) so brush generation + upload are scheduled
+    // independently of solid/water and are no longer gated behind them.
+    void processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPos);
+
     bool hasPendingMeshes() const {
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
         return !pendingMeshQueue.empty();
     }
+
+    // Async streaming orchestrator (parallel per-category pools, lock-free
+    // queues, drop-in staging upload manager). Currently scaffolded: its
+    // update()/frame-sync runs each frame; terrain/water/brush GPU copies still
+    // flow through IndirectRenderer until that path is migrated to use it.
+    streaming::TerrainStreamer streamer;
 
 private:
     void updateDebugSDFCubesForChunk(NodeID nid, const OctreeNodeData& nd, const Octree& tree);
@@ -234,6 +248,21 @@ private:
     // Thread-safe queue fed by the background loading thread
     mutable std::mutex pendingMeshMutex;
     std::deque<PendingMeshData> pendingMeshQueue;
+
+    // Separate queue for brush meshes so they are scheduled/drained independently
+    // of the solid/water stream (parallelism + no cross-gating).
+    mutable std::mutex brushPendingMutex;
+    std::deque<PendingMeshData> brushPendingQueue;
+
+    // Dedicated pool for brush tessellation so interactive editing never
+    // competes with solid/water streaming generation on the shared scene pool.
+    ThreadPool brushGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
+
+    // Dedicated generation pools for solid and water so both layers tessellate
+    // truly in parallel: neither waits for the other to finish, and neither
+    // competes for the shared scene pool.
+    ThreadPool solidGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
+    ThreadPool waterGenPool{std::max(2u, std::thread::hardware_concurrency() / 2)};
 public:
     CommandBufferState frameCmdState;
 };

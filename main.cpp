@@ -649,6 +649,19 @@ public:
         if (sceneRenderer && !isLoading)
             sceneRenderer->processPendingMeshes(this, camera.getPosition());
 
+        // Brush meshes drain from their OWN queue (decoupled from solid/water).
+        if (sceneRenderer && !isLoading)
+            sceneRenderer->processPendingBrushMeshes(this, camera.getPosition());
+
+        // Drive the async streaming subsystem each frame. prepareFrameWaits()
+        // registers upload completion semaphores with this frame's submit, and
+        // processUploads() submits as many queued jobs as staging allows — no
+        // fixed per-frame cap. (Terrain/water/brush copies currently still go
+        // through IndirectRenderer; this is the integration point for migrating
+        // them onto UploadManager.)
+        if (sceneRenderer)
+            sceneRenderer->streamer.update(this);
+
         // Drain the CPU vegetation-generation queue so chunkBuffers is
         // populated before preRenderPass records read barriers.  Must
         // happen here because barriers cannot be emitted inside dynamic
@@ -2033,10 +2046,14 @@ void MyApp::action() {
     mainScene->action(loader, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler);
     std::cout << "[MyApp::action] Octree construction complete\n";
 
-    // Tessellate chunks in a background thread
+    // Tessellate chunks in a background thread. Solid and water are handled on
+    // separate threads so both layers tessellate truly in parallel (water no
+    // longer waits for solid to finish).
     sceneProcessThread = std::thread([this]() {
-        sceneUniqueSolidHandler->handleEvents();
-        sceneUniqueLiquidHandler->handleEvents();
+        std::thread solidThread([this]() { sceneUniqueSolidHandler->handleEvents(); });
+        std::thread waterThread([this]() { sceneUniqueLiquidHandler->handleEvents(); });
+        solidThread.join();
+        waterThread.join();
         if (octreeExplorerWidget)
             octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
         std::cout << "[MyApp::action] Scene chunk tessellation complete\n";
@@ -2085,10 +2102,14 @@ void MyApp::generateMap() {
     mainScene->loadScene(loader, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler);
     std::cout << "[MyApp::generateMap] Octree construction complete\n";
 
-    // Tessellate chunks in a background thread
+    // Tessellate chunks in a background thread. Solid and water are handled on
+    // separate threads so both layers tessellate truly in parallel (water no
+    // longer waits for solid to finish).
     sceneProcessThread = std::thread([this]() {
-        sceneUniqueSolidHandler->handleEvents();
-        sceneUniqueLiquidHandler->handleEvents();
+        std::thread solidThread([this]() { sceneUniqueSolidHandler->handleEvents(); });
+        std::thread waterThread([this]() { sceneUniqueLiquidHandler->handleEvents(); });
+        solidThread.join();
+        waterThread.join();
         if (octreeExplorerWidget)
             octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
         std::cout << "[MyApp::generateMap] Scene chunk tessellation complete\n";
@@ -2122,9 +2143,13 @@ void MyApp::loadSceneFromFile(const std::string& path) {
     mainScene->load(path, *sceneUniqueSolidHandler, *sceneUniqueLiquidHandler, &settings);
     std::cout << "[MyApp::loadSceneFromFile] Octree loaded from '" << path << "'\n";
 
+    // Solid and water tessellate on separate threads so both layers progress
+    // truly in parallel (water no longer waits for solid to finish).
     sceneProcessThread = std::thread([this]() {
-        sceneUniqueSolidHandler->handleEvents();
-        sceneUniqueLiquidHandler->handleEvents();
+        std::thread solidThread([this]() { sceneUniqueSolidHandler->handleEvents(); });
+        std::thread waterThread([this]() { sceneUniqueLiquidHandler->handleEvents(); });
+        solidThread.join();
+        waterThread.join();
         if (octreeExplorerWidget)
             octreeExplorerWidget->octreeReady.store(true, std::memory_order_release);
         std::cout << "[MyApp::loadSceneFromFile] Scene tessellation complete\n";

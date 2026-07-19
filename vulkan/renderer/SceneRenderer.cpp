@@ -82,6 +82,14 @@ void collectLeafSDFCubes(OctreeNode* node, const BoundingCube& cube, OctreeAlloc
 }
 
 void SceneRenderer::cleanup(VulkanApp* app) {
+    // Tear down the async streaming engine FIRST, while the solid/water
+    // IndirectRenderers (and their indirect/bounds buffers) are still alive:
+    // UploadManager::destroy waits on in-flight transfers and fires each
+    // pending onComplete, which publishes meta into those renderers.
+    if (app) {
+        streamer.destroy();
+    }
+
     // Cleanup all sub-renderers to properly destroy GPU resources (app may be null)
     if (postProcessRenderer && app) {
         postProcessRenderer->cleanup(app);
@@ -520,6 +528,26 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         std::cerr << "[SceneRenderer::init] app is nullptr!" << std::endl;
         return;
     }
+
+    // Initialize the async streaming orchestrator. It is now the real transfer
+    // engine: solid/water incremental chunk uploads route through it (K
+    // concurrent staging slots, no per-frame cap) instead of the single-slot
+    // IndirectRenderer pendingTransfer path. slotSize = chunkVertexBytes +
+    // chunkIndexBytes; a chunk mesh larger than one slot falls back to the
+    // renderer's legacy ring-backed staging path automatically.
+    streamer.init(app,
+                  /*chunkVertexBytes*/ 1u << 20,
+                  /*chunkIndexBytes*/  1u << 20,
+                  /*stagingSlots*/     4,
+                  /*initialChunkSlots*/ 8,
+                  /*workersPerCategory*/ 2);
+
+    // Route solid/water IndirectRenderer incremental copies through the manager.
+    solidRenderer->getIndirectRenderer().setUploadManager(
+        &streamer.uploadManager(), streaming::StreamCategory::Solid);
+    waterRenderer->getIndirectRenderer().setUploadManager(
+        &streamer.uploadManager(), streaming::StreamCategory::Water);
+
     // skySettingsRef was initialized at construction and must be valid
     
 
@@ -1017,9 +1045,10 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 // queued since the last frame, and perform the actual Vulkan GPU uploads.
 // Must be called from the main (render) thread each frame.
 void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
-    // Cap uploads per frame so the render loop stays responsive.
-    // Remaining entries stay in the queue for subsequent frames.
-    static constexpr size_t kMaxPerFrame = 10;
+    // Drain the entire pending queue each frame. GPU transfers are async (via
+    // UploadManager) and coalesced into one command buffer per layer, so there
+    // is no per-frame upload cap: chunks appear as soon as their CPU
+    // tessellation completes.
     std::deque<PendingMeshData> batch;
     {
         std::lock_guard<std::mutex> lock(pendingMeshMutex);
@@ -1030,11 +1059,10 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
                 glm::vec3 db = cameraPos - b.nodeData.cube.getCenter();
                 return glm::dot(da, da) < glm::dot(db, db);
             });
-        size_t n = std::min(pendingMeshQueue.size(), kMaxPerFrame);
         batch.insert(batch.end(),
                      std::make_move_iterator(pendingMeshQueue.begin()),
-                     std::make_move_iterator(pendingMeshQueue.begin() + n));
-        pendingMeshQueue.erase(pendingMeshQueue.begin(), pendingMeshQueue.begin() + n);
+                     std::make_move_iterator(pendingMeshQueue.end()));
+        pendingMeshQueue.clear();
     }
     // Poll pending transfers so deferred meta-buffer writes (indirect commands
     // and bounds) are published once the async transfer fence signals.
@@ -1107,7 +1135,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
     }
 
     // Coalesce each layer's incremental uploads into a single GPU transfer.
-    // This batches up to kMaxPerFrame vertex/index copies into one command
+    // This batches all of the frame's vertex/index copies into one command
     // buffer per layer per frame instead of one round-trip per chunk, removing
     // the per-chunk fence stall on the render thread.
     if (!solidUploads.empty()) solidIR.uploadMeshes(app, solidUploads);
@@ -1136,14 +1164,56 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
     }
 }
 
-void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry) {
+// Forward declaration (defined later in this file, near the brush handlers).
+static void updateBrushMeshForNode(SceneRenderer* sr, VulkanApp* app, Layer layer, NodeID nid,
+                                    const OctreeNodeData &nd, const Geometry &geom,
+                                    std::unordered_map<NodeID, Model3DVersion>& chunkMap);
+
+void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPos) {
+    // Mirror of processPendingMeshes but for brush meshes only, drained from the
+    // separate brushPendingQueue. This decouples brush streaming from solid/water
+    // (no shared queue, no shared per-frame budget) so brush uploads are not
+    // gated behind terrain/water and run in parallel with them.
+    std::deque<PendingMeshData> batch;
+    {
+        std::lock_guard<std::mutex> lock(brushPendingMutex);
+        std::sort(brushPendingQueue.begin(), brushPendingQueue.end(),
+            [&cameraPos](const PendingMeshData& a, const PendingMeshData& b) {
+                glm::vec3 da = cameraPos - a.nodeData.cube.getCenter();
+                glm::vec3 db = cameraPos - b.nodeData.cube.getCenter();
+                return glm::dot(da, da) < glm::dot(db, db);
+            });
+        // No kMaxPerFrame cap: brush is scheduled independently, so its uploads
+        // are bounded only by GPU/CPU resources, not an artificial per-frame limit.
+        batch.insert(batch.end(),
+                     std::make_move_iterator(brushPendingQueue.begin()),
+                     std::make_move_iterator(brushPendingQueue.end()));
+        brushPendingQueue.clear();
+    }
+
+    // Poll pending transfers so deferred meta-buffer writes for brush meshes are
+    // published once the async transfer fence signals (same as processPendingMeshes).
+    IndirectRenderer& solidIR = solidRenderer->getIndirectRenderer();
+    IndirectRenderer& waterIR = waterRenderer->getIndirectRenderer();
+    solidIR.pollPendingTransfers(app);
+    waterIR.pollPendingTransfers(app);
+
+    if (batch.empty()) return;
+
+    for (auto& pd : batch) {
+        auto& brushMap = (pd.layer == LAYER_OPAQUE) ? brushSolidChunks : brushTransparentChunks;
+        updateBrushMeshForNode(this, app, pd.layer, pd.nid, pd.nodeData, pd.geom, brushMap);
+    }
+}
+
+void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry, ThreadPool* poolOverride) {
 
     // Make a local copy of the node data so the callback may safely outlive this stack frame
     OctreeNodeData nodeCopy = nodeData;
     // Capture nodeCopy by value so async callbacks receive a safe copy
     scene.requestModel3D(layer, nodeCopy, [this, layer, nid, nodeCopy, &onGeometry](const Geometry &geom) {
         onGeometry(layer, nid, nodeCopy, geom);
-    });
+    }, poolOverride);
     
 }
 
@@ -1162,7 +1232,8 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
             [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
                 std::lock_guard<std::mutex> lock(pendingMeshMutex);
                 pendingMeshQueue.push_back({layer, nid, nd, geom, nd.node->version});
-            }
+            },
+            &solidGenPool
         );
     
     };
@@ -1199,7 +1270,8 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
             [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
                 std::lock_guard<std::mutex> lock(pendingMeshMutex);
                 pendingMeshQueue.push_back({layer, nid, nd, geom, nd.node->version});
-            }
+            },
+            &waterGenPool
         );
     
     };
@@ -1471,8 +1543,12 @@ SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* s
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
             [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
-                updateBrushMeshForNode(this, app, layer, nid, nd, geom, this->brushSolidChunks);
-            }
+                // Route brush-solid results to the SEPARATE brush queue so they
+                // are drained independently of the solid/water stream.
+                std::lock_guard<std::mutex> lock(brushPendingMutex);
+                brushPendingQueue.push_back({layer, nid, nd, geom, nd.node->version});
+            },
+            &brushGenPool
         );
     };
 
@@ -1497,8 +1573,11 @@ LiquidSpaceChangeHandler SceneRenderer::makeBrushLiquidSpaceChangeHandler(Scene*
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
             [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
-                updateBrushMeshForNode(this, app, layer, nid, nd, geom, this->brushTransparentChunks);
-            }
+                // Route brush-liquid results to the SEPARATE brush queue.
+                std::lock_guard<std::mutex> lock(brushPendingMutex);
+                brushPendingQueue.push_back({layer, nid, nd, geom, nd.node->version});
+            },
+            &brushGenPool
         );
         
     };
