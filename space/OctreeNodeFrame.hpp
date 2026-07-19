@@ -17,6 +17,6 @@ struct OctreeNodeFrame {
     BoundingCube chunkCube;
     OctreeNodeFrame();
     OctreeNodeFrame(const OctreeNodeFrame &t);
-    OctreeNodeFrame(OctreeNode* node, OctreeNode* iteratedNode, BoundingCube cube, SpaceType type, uint level, float * sdf, int brushIndex, BoundingCube chunkCube);
+    OctreeNodeFrame(OctreeNode* node, OctreeNode* iteratedNode, const BoundingCube &cube, SpaceType type, uint level, float * sdf, int brushIndex, const BoundingCube &chunkCube);
 };
 

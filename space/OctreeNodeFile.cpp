@@ -14,7 +14,7 @@ OctreeNodeFile::OctreeNodeFile(Octree * tree, OctreeNode * node, std::string fil
 	this->tree = tree;
 }
 
-OctreeNode * OctreeNodeFile::loadRecursive(OctreeNode * node, int i, BoundingCube &cube, std::vector<OctreeNodeSerialized> * nodes) {
+OctreeNode * OctreeNodeFile::loadRecursive(OctreeNode * node, int i, const BoundingCube &cube, std::vector<OctreeNodeSerialized> * nodes) {
 	OctreeNodeSerialized serialized = nodes->at(i);
 	if(node == NULL) {
 		glm::vec3 position = SDF::getAveragePosition(serialized.sdf, cube);
@@ -46,7 +46,7 @@ OctreeNode * OctreeNodeFile::loadRecursive(OctreeNode * node, int i, BoundingCub
 }
 
 
-void OctreeNodeFile::load(std::string baseFolder, BoundingCube &cube) {
+void OctreeNodeFile::load(std::string baseFolder, const BoundingCube &cube) {
 	std::ifstream file = std::ifstream(filename, std::ios::binary);
     if (!file) {
         std::cerr << "Error opening file for reading: " << filename << std::endl;

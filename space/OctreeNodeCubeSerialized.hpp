@@ -20,5 +20,5 @@ struct alignas(16) OctreeNodeCubeSerialized {
     uint level;
 
     OctreeNodeCubeSerialized();
-    OctreeNodeCubeSerialized(float * sdf, BoundingCube cube, Vertex vertex, uint bits, uint level);
+    OctreeNodeCubeSerialized(float * sdf, const BoundingCube &cube, Vertex vertex, uint bits, uint level);
 };

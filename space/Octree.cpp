@@ -44,7 +44,7 @@ static void initialize() {
         initialized = true;
     }
 }
-Octree::Octree(BoundingCube minCube, float chunkSize) : BoundingCube(minCube), allocator(new OctreeAllocator()) {
+Octree::Octree(const BoundingCube &minCube, float chunkSize) : BoundingCube(minCube), allocator(new OctreeAllocator()) {
     this->chunkSize = chunkSize;
 	this->root = allocator->allocate()->init(glm::vec3(minCube.getCenter()));
     this->shapeCounter = std::make_shared<std::atomic<int>>(0);

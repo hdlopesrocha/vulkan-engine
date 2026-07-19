@@ -34,7 +34,7 @@ public:
     ThreadPool threadPool = ThreadPool(std::thread::hardware_concurrency());
     std::mutex mutex;
 
-    Octree(BoundingCube minCube, float chunkSize);
+    Octree(const BoundingCube &minCube, float chunkSize);
     Octree();
     ~Octree();
 

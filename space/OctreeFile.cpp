@@ -57,12 +57,12 @@ void OctreeFile::writeToStream(std::ostream& out) {
 	}
 }
 
-std::string getChunkName(BoundingCube cube) {
+std::string getChunkName(const BoundingCube &cube) {
 	glm::vec3 p = cube.getMin();
 	return std::to_string(cube.getLengthX()) + "_" + std::to_string(p.x) + "_" +  std::to_string(p.y) + "_" + std::to_string(p.z);
 }
 
-OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> * nodes, float chunkSize, std::string filename, BoundingCube cube, std::string baseFolder) {
+OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> * nodes, float chunkSize, std::string filename, const BoundingCube &cube, std::string baseFolder) {
 	OctreeNodeSerialized serialized = nodes->at(i);
 	glm::vec3 position = SDF::getAveragePosition(serialized.sdf, cube);
 	glm::vec3 normal = SDF::getNormalFromPosition(serialized.sdf, cube, position);
@@ -134,7 +134,7 @@ void OctreeFile::load(std::string baseFolder, float chunkSize) {
 }
 
 
-uint OctreeFile::saveRecursive(OctreeNode * node, std::vector<OctreeNodeSerialized> * nodes, float chunkSize, std::string filename, BoundingCube cube, std::string baseFolder) {
+uint OctreeFile::saveRecursive(OctreeNode * node, std::vector<OctreeNodeSerialized> * nodes, float chunkSize, std::string filename, const BoundingCube &cube, std::string baseFolder) {
 	if(node!=NULL) {
 		OctreeNodeSerialized n = OctreeNodeSerialized();
 		n.brushIndex = node->vertex.brushIndex;

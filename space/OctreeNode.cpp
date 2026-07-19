@@ -151,7 +151,7 @@ SpaceType OctreeNode::getType() const {
 	}
 }
 
-OctreeNode * OctreeNode::compress(OctreeAllocator &allocator, BoundingCube * cube, BoundingCube chunk) {
+OctreeNode * OctreeNode::compress(OctreeAllocator &allocator, BoundingCube * cube, const BoundingCube &chunk) {
 	int intersectingChildCount = 0;
 	int intersectingIndex = -1;
 
@@ -177,7 +177,7 @@ OctreeNode * OctreeNode::compress(OctreeAllocator &allocator, BoundingCube * cub
 }
 
 
-uint OctreeNode::exportSerialization(OctreeAllocator &allocator, std::vector<OctreeNodeCubeSerialized> * nodes, int * leafNodes, BoundingCube cube, BoundingCube chunk, uint level) {
+uint OctreeNode::exportSerialization(OctreeAllocator &allocator, std::vector<OctreeNodeCubeSerialized> * nodes, int * leafNodes, const BoundingCube &cube, const BoundingCube &chunk, uint level) {
 	if( this->getType() != SpaceType::Surface || !chunk.intersects(cube)) {
 		return 0; // Skip this node
 	}

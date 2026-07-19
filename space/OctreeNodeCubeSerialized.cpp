@@ -6,7 +6,7 @@ OctreeNodeCubeSerialized::OctreeNodeCubeSerialized()
     for(int i=0;i<8;++i) children[i]=UINT_MAX;
 }
 
-OctreeNodeCubeSerialized::OctreeNodeCubeSerialized(float * sdf, BoundingCube cube, Vertex vertex, uint bits, uint level)
+OctreeNodeCubeSerialized::OctreeNodeCubeSerialized(float * sdf, const BoundingCube &cube, Vertex vertex, uint bits, uint level)
     : position(vertex.position), normal(vertex.normal), texCoord(vertex.texCoord), brushIndex(vertex.brushIndex), min(cube.getCenter()), bits(bits), length(cube.getLength()), level(level)
 {
     for(int i=0;i<8;++i) children[i] = UINT_MAX;

@@ -40,5 +40,5 @@ public:
     // root-consistent cubes (see Octree::iterateTriangles). The parent link is
     // NOT stored inside the octree nodes.
     tsl::robin_map<OctreeNode*, std::pair<OctreeNode*, int>> parentOf;
-    ThreadContext(BoundingCube cube);
+    ThreadContext(const BoundingCube &cube);
 };

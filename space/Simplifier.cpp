@@ -12,7 +12,7 @@ Simplifier::Simplifier(float angle, float distance, bool texturing) {
 
 
 SimplificationResult Simplifier::simplify(
-        const BoundingCube cube,
+        const BoundingCube &cube,
         const float * sdf,
         NodeOperationResult * children,
         const BoundingCube& chunkCube)
