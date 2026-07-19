@@ -1,0 +1,484 @@
+\documentclass[a4paper,12pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[table]{xcolor}
+\usepackage{geometry}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{titlesec}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath}
+
+\geometry{margin=2.5cm}
+
+\definecolor{criticalcolor}{HTML}{DC3545}
+\definecolor{highcolor}{HTML}{FD7E14}
+\definecolor{mediumcolor}{HTML}{FFC107}
+\definecolor{lowcolor}{HTML}{28A745}
+\definecolor{resolvedcolor}{HTML}{6C757D}
+
+\newcommand{\severitybox}[2]{%
+  \colorbox{#1}{\makebox[2.5cm][c]{\textcolor{white}{\textbf{#2}}}}%
+}
+
+\lstset{
+  basicstyle=\small\ttfamily,
+  breaklines=true,
+  frame=single,
+  numbers=none,
+  tabsize=2,
+  backgroundcolor=\color{gray!10},
+  extendedchars=true,
+  inputencoding=utf8,
+  literate={—}{---}1 {·}{$\cdot$}1 {≈}{$\approx$}1 {×}{$\times$}1 {→}{$\rightarrow$}1
+}
+
+\title{\textbf{Performance Report \#12}\\[4pt]
+\large Vulkan Engine — Octree Build, Simplification \&
+Triangle-Extraction Hot Path (\texttt{space/Octree.cpp} + dependencies)}
+
+\author{Henrique Rocha}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+While Reports \#09--\#11 audited the GPU chunk-upload path, this report audits the
+\emph{CPU-side octree geometry pipeline} that feeds it: the recursive
+\texttt{Octree::shape} SDF evaluation/simplification pass (\texttt{space/Octree.cpp:626}),
+the parallel fan-out in \texttt{shapeChildren} (\texttt{Octree.cpp:667}), and the
+surface-net triangle extraction in \texttt{iterateTriangles} / \texttt{findCellAt}
+(\texttt{Octree.cpp:162}). The audit covers the supporting dependencies:
+\texttt{OctreeAllocator} + \texttt{Allocator<T>} (\texttt{space/Allocator.tpp}),
+\texttt{ChildBlock} (\texttt{space/ChildBlock.cpp}), \texttt{OctreeNode}
+(\texttt{space/OctreeNode.cpp}), \texttt{ThreadContext} (\texttt{space/ThreadContext.hpp}),
+\texttt{SDF} (\texttt{sdf/SDF.cpp}), \texttt{BoundingCube} /
+\texttt{AbstractBoundingBox} (\texttt{math/BoundingCube.cpp}), and
+\texttt{Simplifier} (\texttt{space/Simplifier.cpp}).
+Eight issues are reported (2 high, 4 medium, 2 low). None changes generated
+geometry or meshing output; every fix removes a CPU stall, a heap allocation in a
+hot loop, or an avoidable data copy. All recommendations respect \texttt{AGENTS.md}:
+the multithreading model, the allocator lifetime contract, and the current
+simplification/LOD behaviour are preserved.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Scope \& Methodology}
+
+The audit traced the three CPU phases that dominate per-edit octree rebuild time:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{SDF build / subdivision:} \texttt{Octree::apply}
+        (\texttt{space/Octree.cpp:626}) $\rightarrow$ \texttt{shape}
+        (\texttt{Octree.cpp:731}) recurses the tree, evaluating the shape SDF at
+        every node's 8 corners, branching into 8 children and (when the node is
+        large enough) fanning out across the \texttt{ThreadPool}
+        (\texttt{Octree.cpp:667}).
+  \item \textbf{LOD simplification:} \texttt{args.simplifier.simplify}
+        (\texttt{Octree.cpp:805}) re-interpolates each surface child's SDF against
+        the parent representation and decides whether the node can collapse
+        (\texttt{space/Simplifier.cpp:14}).
+  \item \textbf{Surface-net extraction:} \texttt{iterateTriangles}
+        (\texttt{Octree.cpp:162}) $\rightarrow$ \texttt{findCellAt}
+        (\texttt{Octree.cpp:212}) walks neighboring simplified cells, rebuilding
+        root-consistent cubes to emit watertight triangles.
+\end{enumerate}
+
+Every allocation, lock acquire, and on-stack \texttt{glm::vec3} construction
+reachable from these paths was accounted for, and the per-node call counts were
+estimated from the recursion structure (8 children/node, full descent to
+\texttt{minSize}). Findings are ordered by estimated impact on a full rebuild and
+on the interactive edit path.
+
+\subsection*{CPU Hotspot Overview}
+
+\begin{center}
+\begin{tabular}{lcl}
+\toprule
+\textbf{Site} & \textbf{File:Line} & \textbf{Waste type} \\
+\midrule
+Allocator global lock on every alloc/get      & \texttt{Allocator.tpp:34,74,113}     & lock contention + O(\#blocks) scans \\
+Heap vectors allocated per \texttt{findCellAt} & \texttt{Octree.cpp:230,245,259}       & heap churn in mesh extraction \\
+\texttt{shapeSdfCache} keyed by \texttt{vec3}  & \texttt{ThreadContext.hpp:30}          & expensive FP-keyed map lookups \\
+\texttt{sdf[8]} copied by value through frames & \texttt{Octree.cpp:688,748,815}        & repeated 32-byte stack copies \\
+\texttt{getCorner}/\texttt{getChild} vec3 temps & \texttt{AbstractBoundingBox.cpp:129}  & micro-allocs, millions of calls \\
+Per-child \texttt{std::future} + context heap   & \texttt{Octree.cpp:671,713}            & task launch overhead \\
+Blind \texttt{reserve(10000000)} / logging     & \texttt{Octree.cpp:905,645,136}        & wasted memory / stream churn \\
+Dead \texttt{allDifferent} + refetch of center  & \texttt{Octree.cpp:140,63}             & unused code / recompute \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\newpage
+
+\section{Issue Register}
+
+\subsection{High Severity}
+
+\begin{enumerate}[leftmargin=*]
+
+\item[\textbf{[O1]}] \textbf{Single Allocator Mutex Serializes the Entire Parallel \texttt{shape} Fan-Out}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{space/Allocator.tpp}, \texttt{space/OctreeAllocator.hpp} \\
+    \textbf{Line:} & \texttt{Allocator.tpp:34} (allocate), \texttt{:50} (deallocate),
+                      \texttt{:73} (getIndex), \texttt{:88} (getFromIndex),
+                      \texttt{:112} (getFromIndices) \\
+    \textbf{Category:} & Lock contention / lost parallelism \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{OctreeAllocator} owns one \texttt{Allocator<OctreeNode>} and one
+  \texttt{Allocator<ChildBlock>}, and every operation of each
+  \texttt{Allocator<T>} is guarded by a \emph{single} \texttt{std::shared\_mutex}
+  (\texttt{Allocator.tpp:28}). \texttt{shapeChildren}
+  (\texttt{Octree.cpp:667}) enqueues up to 8 children onto
+  \texttt{threadPool} (\texttt{Octree.cpp:713}) — which the \texttt{Octree}
+  constructed with \texttt{std::thread::hardware\_concurrency()} workers
+  (\texttt{Octree.hpp:34}) — but \emph{every} one of those worker tasks then calls
+  \texttt{allocator->allocate()}, \texttt{node->getChildren()},
+  \texttt{node->getBlock()}, \texttt{setChildren()}, etc. All of those take the
+  same global \texttt{allocator->mutex}. The net effect is that the threaded
+  subdivision, which is the entire point of the pool, is effectively serialized on
+  the allocator lock: workers spend their time queued behind one another on
+  \texttt{std::unique\_lock}/\texttt{std::shared\_lock} rather than evaluating SDFs.
+
+  Worse, even the \emph{read-only} descents serialize. \texttt{getNodeAt},
+  \texttt{getSdfAt}, and \texttt{findCellAt} all call
+  \texttt{node->getBlock()} $\rightarrow$ \texttt{allocator.getFromIndex()}
+  (\texttt{OctreeNode.cpp:36}), each acquiring a \texttt{shared\_lock}. So triangle
+  extraction cannot run lock-free while a build is in flight, and conversely a
+  build cannot usefully overlap with queries.
+
+  The locks are not the only cost. \texttt{getIndex} and \texttt{getFromIndex}
+  perform a \emph{linear scan over all allocated blocks}
+  (\texttt{Allocator.tpp:79} and \texttt{:93}), i.e. $O(\#blocks)$ per call.
+  \texttt{setChildren} (\texttt{OctreeNode.cpp:40}) calls \texttt{getIndex} once
+  per child (8×), and every node stored or retrieved pays this scan. For a large
+  tree the block count grows into the hundreds, so a single node touch is
+  $O(\#blocks)$ pointer arithmetic repeated across millions of nodes.
+
+  \textbf{Recommendation:}
+  Decouple allocation from addressing. Store a \emph{stable integer slot index}
+  directly in \texttt{OctreeNode} (it already stores \texttt{blockId}); reserve
+  each node's slot at allocation time and convert slot $\leftrightarrow$ pointer by
+  arithmetic on a per-block base pointer, eliminating \texttt{getIndex} entirely.
+  For the lock itself, either (a) give each worker thread its \emph{own} free-list
+  / bump arena (thread-local allocation, merged/freed at \texttt{reset()}), or
+  (b) use a lock-free free-list (\texttt{std::atomic<Node*>} intrusive stack) for
+  \texttt{allocate}/\texttt{deallocate} and keep the shared lock only for block
+  growth. Read paths (\texttt{getFromIndex}/\texttt{getFromIndices}) become plain
+  pointer arithmetic with no lock. This restores the parallelism the pool was
+  built for without changing node layout or lifetime.
+
+\item[\textbf{[O2]}] \textbf{\texttt{findCellAt} Heap-Allocates Three Vectors on Every Call During Mesh Extraction}
+  \hfill \severitybox{highcolor}{HIGH}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{space/Octree.cpp} \\
+    \textbf{Line:} & \texttt{Octree.cpp:230--249} (cube rebuild),
+                      \texttt{Octree.cpp:356} (\texttt{collectBreaks} lambda),
+                      \texttt{Octree.cpp:462,538} (per-edge vectors) \\
+    \textbf{Category:} & Heap allocation churn in hot loop \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{iterateTriangles} is the surface-net mesher: for every simplified
+  surface cell it walks each of 12 edges, and for each edge \texttt{collectBreaks}
+  (\texttt{Octree.cpp:356}) recursively subdivides the edge (depth up to 64,
+  \texttt{Octree.cpp:358}) and, at every midpoint, samples 4 quadrant neighbors via
+  \texttt{findCellAt} (\texttt{Octree.cpp:212}). Each \texttt{findCellAt}
+  invocation that takes the parent-chain fast path allocates three heap vectors:
+
+  \begin{lstlisting}
+std::vector<OctreeNode*> nodes;
+std::vector<int> indices;
+std::vector<BoundingCube> cubes(nodes.size());   // Octree.cpp:230,245,249
+  \end{lstlisting}
+
+  These are rebuilt \emph{every call}, and \texttt{findCellAt} is called
+  $O(\text{edges} \times \text{subdivisions} \times 4)$ times per surface cell.
+  For a dense edit this is tens of millions of vector allocations per frame of
+  meshing, each touching the global allocator and the system heap. The recursion
+  itself is wrapped in a \texttt{std::function} (\texttt{collectBreaks},
+  \texttt{Octree.cpp:356}) — a type-erased, heap-closure object invoked
+  recursively up to depth 64, so the call overhead is paid on every one of those
+  millions of calls. \texttt{emitSegment} additionally allocates a
+  \texttt{std::vector<EdgeCell> polygon} and the caller allocates
+  \texttt{std::vector<float> breaks} per edge.
+
+  \textbf{Recommendation:}
+  The parent chain replay only ever needs a small, bounded stack (tree depth is
+  fixed per chunk). Replace the three vectors with fixed-size
+  \texttt{std::array<OctreeNode*, MAX\_DEPTH>} / \texttt{std::array<int,
+  MAX\_DEPTH>} / \texttt{std::array<BoundingCube, MAX\_DEPTH>} (or a single
+  preallocated scratch buffer owned by the \texttt{ThreadContext}, since
+  \texttt{findCellAt} already receives \texttt{context}). Turn \texttt{collectBreaks}
+  into a plain recursive \texttt{static} function (pass the scratch buffers by
+  reference) instead of a capturing \texttt{std::function}, removing the
+  type-erasure overhead. \texttt{breaks}/\texttt{polygon} can likewise be
+  reused across edges via a \texttt{ThreadContext} scratch. Net effect: zero
+  heap traffic on the meshing critical path.
+
+\subsection{Medium Severity}
+
+\item[\textbf{[O3]}] \textbf{SDF Corner Cache Keyed by \texttt{glm::vec3} (24-Byte Floating-Point Key)}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{space/ThreadContext.hpp}, \texttt{space/Octree.cpp} \\
+    \textbf{Line:} & \texttt{ThreadContext.hpp:30} (\texttt{shapeSdfCache}),
+                      \texttt{Octree.cpp:600} (\texttt{evaluateSDF}) \\
+    \textbf{Category:} & Expensive map key / weak dedup \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{buildShapeSDF} (\texttt{Octree.cpp:610}) evaluates
+  \texttt{args.function->distance(p, args.model)} at all 8 corners of every node
+  (\texttt{Octree.cpp:615}), and this SDF evaluation (especially the Perlin /
+  Voronoi / fractal primitives in \texttt{sdf/SDF.cpp:423--497}) is the single
+  largest CPU cost of a rebuild. To amortize it, the corner distances are cached in
+  \texttt{threadContext->shapeSdfCache}, a \texttt{tsl::robin\_map<glm::vec3,
+  float>} keyed directly on the 24-byte corner position.
+
+  Two problems. (1) The key is a \emph{floating-point} \texttt{vec3}; two corners
+  that are mathematically identical but reached through different parent cells
+  (with the documented FP drift in \texttt{getChild}) compare unequal, so the same
+  physical point is re-evaluated and stored many times — the cache defeats itself
+  precisely where sharing is highest (shared cell corners). (2) A 24-byte key with
+  a custom \texttt{hash<glm::vec3>} makes every lookup/insert comparatively
+  expensive relative to the tiny (4-byte) value stored.
+
+  \textbf{Recommendation:}
+  Cache per-node instead of per-point: since the 8 corners of a node are a fixed
+  function of its cube, compute and store the 8 distances in a small fixed array on
+  the \texttt{OctreeNodeFrame} (or a side array indexed by node slot from O1) and
+  reuse them for all 8 children, which share those exact corner points. Where a
+  global point cache is still wanted, key it on a \emph{quantized} integer triple
+  (\texttt{ivec3} from \texttt{round(p / voxelSize)}) so identical points collide
+  deterministically. This both shrinks the key and fixes the dedup.
+
+\item[\textbf{[O4]}] \textbf{\texttt{float sdf[8]} Copied By Value Through the Entire \texttt{shape} Recursion}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{space/Octree.cpp}, \texttt{space/OctreeNodeFrame.hpp} \\
+    \textbf{Line:} & \texttt{Octree.cpp:688,741,748,770,815};
+                      \texttt{OctreeNodeFrame.hpp:15} \\
+    \textbf{Category:} & Repeated 32-byte stack copies \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{OctreeNodeFrame} stores \texttt{float sdf[8]} by value
+  (\texttt{OctreeNodeFrame.hpp:15}), and \texttt{shape} (\texttt{Octree.cpp:731})
+  creates several more 8-float arrays on every invocation: \texttt{childSDF[8]}
+  (\texttt{Octree.cpp:688}), \texttt{r.shapeSDF[8]} and \texttt{r.resultSDF[8]}
+  inside the 8 \texttt{NodeOperationResult children[8]} (\texttt{Octree.cpp:741}),
+  plus the \texttt{OctreeNodeFrame childFrame} copies the parent's SDF again
+  (\texttt{Octree.cpp:697}). Across an 8-way recursion to depth $D$ this is
+  $8^{D}$ frame constructions, each dragging multiple 32-byte arrays through the
+  stack and the thread stack (each threaded task gets its own deep copy at
+  \texttt{Octree.cpp:714}). The arrays are then shuffled with
+  \texttt{SDF::copySDF}/\texttt{getChildSDF} (\texttt{Octree.cpp:770,694}) — more
+  \texttt{memcpy} of 32 bytes per child.
+
+  \textbf{Recommendation:}
+  Keep the SDFs in a single side array indexed by node slot (the same slot proposed
+  in O1) and pass indices/references rather than copying arrays by value through
+  the recursion. At minimum, make \texttt{OctreeNodeFrame::sdf} and the
+  \texttt{NodeOperationResult} SDF members reference a shared buffer (or be
+  \texttt{std::array<float,8>} passed by \texttt{const\&}), so a child only copies
+  the 8 floats it actually needs via \texttt{getChildSDF} once. This removes the
+  dominant per-call memory traffic in the build loop.
+
+\item[\textbf{[O5]}] \textbf{\texttt{getCorner}/\texttt{getChild}/\texttt{getCenter} Construct Multiple \texttt{glm::vec3} Temporaries Per Call}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{math/AbstractBoundingBox.cpp}, \texttt{math/BoundingCube.cpp} \\
+    \textbf{Line:} & \texttt{AbstractBoundingBox.cpp:129} (\texttt{getCorner}),
+                      \texttt{:35} (\texttt{getCenter}),
+                      \texttt{BoundingCube.cpp:54} (\texttt{getChild}) \\
+    \textbf{Category:} & Micro-allocations, called millions of times \\
+  \end{tabular}
+
+  \textbf{Description:}
+  These accessors are the most-called functions in the whole pipeline — every
+  tree descent, every SDF corner evaluation, and every \texttt{getChildSDF} corner
+  sample goes through them. Each call materializes several \texttt{glm::vec3}
+  temporaries: \texttt{getCorner} does \texttt{getMin()} (a 12-byte copy) +
+  \texttt{getShift(i)} (a \texttt{vec3} constant) + \texttt{getLength()}
+  (\texttt{getLength()} returns \texttt{glm::vec3(length)} — another construct and
+  broadcast, \texttt{AbstractBoundingBox.hpp:34}). \texttt{getCenter()} adds
+  \texttt{getMax()} on top. \texttt{getNodeIndex} (\texttt{Octree.cpp:61})
+  recomputes \texttt{cube.getCenter()} on every descent step. With a full octree
+  descent touching millions of nodes, these invisible small copies dominate
+  instruction count and defeat vectorization of the descent loop.
+
+  \textbf{Recommendation:}
+  \begin{itemize}[leftmargin=*, itemsep=2pt]
+    \item Make \texttt{getLength()} return a scalar (it is a cube; the
+          \texttt{vec3} overload exists only for the \texttt{BoundingVolume}
+          interface) and have callers that need a scalar use \texttt{getLengthX()}.
+    \item Inline the corner math in the hot callers (\texttt{getChildSDF},
+          \texttt{getNodeIndex}, \texttt{findCellAt}) using
+          \texttt{min + shift[i] * length} with scalars, avoiding \texttt{vec3}
+          temporaries and the \texttt{vec3*vec3} multiply.
+    \item Cache the node center in \texttt{OctreeNode::vertex.position} (already
+          stored) so \texttt{getNodeIndex} can compare against a known center
+          instead of recomputing \texttt{getCenter()} each step.
+  \end{itemize}
+
+\item[\textbf{[O6]}] \textbf{Per-Child \texttt{std::future} + Heap-Allocated \texttt{ThreadContext} per Task}
+  \hfill \severitybox{mediumcolor}{MEDIUM}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{space/Octree.cpp}, \texttt{space/ThreadPool.hpp} \\
+    \textbf{Line:} & \texttt{Octree.cpp:671,713,724} (\texttt{shapeChildren});
+                      \texttt{ThreadContext.hpp:28} (maps) \\
+    \textbf{Category:} & Task launch overhead / memory \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{shapeChildren} enqueues each of the 8 children as a separate task and
+  stores its \texttt{std::future<void>} in a \texttt{std::vector} grown per call
+  (\texttt{Octree.cpp:671}), then busy-waits all of them with
+  \texttt{f.wait()} in a loop (\texttt{Octree.cpp:724}). Each task constructs a
+  fresh \texttt{ThreadContext} (\texttt{Octree.cpp:714}), which heap-allocates four
+  associative containers — \texttt{shapeSdfCache}, \texttt{nodeCache},
+  \texttt{invokedCubeCalls}, \texttt{parentOf} (\texttt{ThreadContext.hpp:30--42}).
+  So every threaded node spawns 8 futures and allocates 4 maps, repeated for every
+  internal node down to the thread threshold (\texttt{isThreadNode}, length
+  $>$ \texttt{minSize*16}, \texttt{Octree.cpp:663}). The \texttt{ThreadPool} itself
+  already uses a \texttt{SmallFunction} task queue (\texttt{ThreadPool.hpp:36}), so
+  the per-task \texttt{std::future} + 4-map \texttt{ThreadContext} is pure overhead
+  on top of an already-efficient pool.
+
+  \textbf{Recommendation:}
+  Reuse a \texttt{ThreadContext} per worker thread (thread-local / pooled) instead
+  of constructing one per task, clearing only the maps that must be fresh
+  (\texttt{parentOf}, \texttt{invokedCubeCalls}) at task start. Prefer
+  fire-and-forget \texttt{enqueueDetached} (\texttt{ThreadPool.hpp:27}) over
+  \texttt{std::future} when the result is joined immediately after, or use a
+  fixed-size child-task array with \texttt{std::latch}/\texttt{std::barrier}
+  instead of a growing \texttt{vector<future>} + per-future wait loop. This turns
+  an 8-allocation, 8-future fan-out into a zero-allocation one.
+
+\subsection{Low Severity}
+
+\item[\textbf{[O7]}] \textbf{Unconditional \texttt{reserve(10000000)} and Logging Inside Rebuild/Query Paths}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{space/Octree.cpp} \\
+    \textbf{Line:} & \texttt{Octree.cpp:905} (\texttt{exportNodesSerialization}),
+                      \texttt{:645} (\texttt{apply}), \texttt{:136} (\texttt{getSdfAt}),
+                      \texttt{:890--909} (\texttt{export*}) \\
+    \textbf{Category:} & Wasted memory / stream churn \\
+  \end{tabular}
+
+  \textbf{Description:}
+  \texttt{exportNodesSerialization} unconditionally calls
+  \texttt{nodes->reserve(10000000)} (\texttt{Octree.cpp:905}) — pre-committing
+  $10^7 \times \texttt{sizeof(OctreeNodeCubeSerialized)}$ bytes of address space for
+  every export, even for tiny trees. Separately, the rebuild and query paths emit
+  log lines on the steady state: \texttt{apply} prints a line every call
+  (\texttt{Octree.cpp:645}); \texttt{getSdfAt} prints \texttt{"Not interpolated"}
+  to \texttt{std::cerr} on a normal error return (\texttt{Octree.cpp:136}); and the
+  \texttt{export*} functions print several \texttt{std::cout} lines each. These go
+  through the (often synchronized) standard streams on the hot path and violate the
+  \texttt{AGENTS.md} ``do not spam logs every frame'' guideline.
+
+  \textbf{Recommendation:}
+  Replace the fixed reserve with a tiered growth or a \texttt{reserve} sized from
+  the known leaf/version count of the chunk. Demote the \texttt{std::cout}/
+  \texttt{std::cerr} calls to a debug-only logger gated behind the existing
+  \texttt{DEBUG} macro (or remove the \texttt{getSdfAt} error print, which fires
+  during ordinary queries). No behavioural change to exported data.
+
+\item[\textbf{[O8]}] \textbf{Dead Code and Redundant Recomputation}
+  \hfill \severitybox{lowcolor}{LOW}
+
+  \begin{tabular}{ll}
+    \textbf{File:} & \texttt{space/Octree.cpp} \\
+    \textbf{Line:} & \texttt{Octree.cpp:140--160} (\texttt{allDifferent}),
+                      \texttt{:63} (\texttt{getNodeIndex} re-derives center) \\
+    \textbf{Category:} & Dead code / micro-redundancy \\
+  \end{tabular}
+
+  \textbf{Description:}
+  The two \texttt{allDifferent} template overloads (\texttt{Octree.cpp:140,151})
+  are never called anywhere in the codebase (confirmed by a full-tree grep). They
+  also pull in \texttt{<array>} and template machinery that the translation unit
+  does not need. Separately, \texttt{getNodeIndex} (\texttt{Octree.cpp:61}) calls
+  \texttt{cube.getCenter()} on every descent step even though the center is a
+  fixed, often-already-known value (the node's stored vertex position, see O5).
+  The \texttt{fetch} path (\texttt{Octree.cpp:552}) also keys its
+  \texttt{nodeCache} on a \texttt{glm::vec4(pos, level)} float tuple, which (like
+  O3) suffers from FP drift between equivalent points and a 16-byte key for a small
+  payload.
+
+  \textbf{Recommendation:}
+  Delete the unused \texttt{allDifferent} templates. Cache the descent center as in
+  O5 so \texttt{getNodeIndex} is a plain component compare. If the
+  \texttt{nodeCache} is kept, key it on the quantized integer cell coordinate
+  (\texttt{ivec3} of \texttt{floor(p / length)} + level) so cache hits are stable
+  across FP-equal paths. Trivial, zero-risk cleanup.
+
+\end{enumerate}
+
+\newpage
+
+\section{Summary}
+
+\begin{center}
+\begin{tabular}{cll}
+\toprule
+\textbf{ID} & \textbf{Site} & \textbf{Severity} \\
+\midrule
+O1 & \texttt{Allocator<T>} single mutex + O(\#blocks) index scans serialize \texttt{shape} & High   \\
+O2 & \texttt{findCellAt} heap-allocates 3 vectors / call in mesh extraction      & High   \\
+O3 & \texttt{shapeSdfCache} keyed by 24-byte \texttt{vec3} (FP-drift defeats dedup) & Medium \\
+O4 & \texttt{float sdf[8]} copied by value through the whole \texttt{shape} tree & Medium \\
+O5 & \texttt{getCorner/getChild/getCenter} build many \texttt{vec3} temps        & Medium \\
+O6 & Per-child \texttt{std::future} + heap \texttt{ThreadContext} per task       & Medium \\
+O7 & Blind \texttt{reserve(10000000)} + logging inside rebuild/query paths       & Low    \\
+O8 & Dead \texttt{allDifferent} + re-derived center in \texttt{getNodeIndex}     & Low    \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All eight issues are pure CPU-side waste on the octree rebuild / meshing path: none
+changes generated geometry, LOD/simplification decisions, or any rendered feature.
+The two highest-impact items both attack the dominant costs of an interactive
+edit. \textbf{O1} is the root cause that the \texttt{ThreadPool} fan-out in
+\texttt{shapeChildren} yields almost no speedup today — every worker is serialized
+on the single \texttt{allocator->mutex} and pays an $O(\#blocks)$ scan per node
+touched; fixing it (slot-indexed nodes + thread-local/lock-free free-lists,
+proposed in O1) is what actually unlocks the parallelism the pool was built for.
+\textbf{O2} is the mirror problem on the read side: \texttt{iterateTriangles}
+heap-allocates three vectors on every \texttt{findCellAt} call, so surface-net
+extraction churns the allocator at exactly the moment it should be streaming
+triangles; a bounded stack / \texttt{ThreadContext} scratch (proposed in O2)
+removes that traffic entirely.
+
+The medium items compound O1/O2: the SDF corner cache (O3) and the by-value
+\texttt{sdf[8]} copies (O4) are the per-node memory cost of the build; the
+\texttt{vec3} temporaries in \texttt{BoundingCube} (O5) and the per-child
+future + \texttt{ThreadContext} allocation (O6) are the per-call overhead that,
+multiplied by millions of nodes, dominates instruction count. The two low items (O7,
+O8) are cheap, zero-risk cleanups (reserve sizing, logging gating, dead-code
+removal, center caching) that should land first as they touch the smallest surface
+area and de-risk the larger refactors. Every recommendation preserves the
+allocator lifetime contract, the multithreading model, and the
+simplification/LOD behaviour required by \texttt{AGENTS.md}.
+
+\end{document}
