@@ -252,15 +252,23 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
     }
     // Back-face depth targets are destroyed by SceneRenderer
 
-    // Reset descriptor pool to free descriptor sets. Only reset if device is idle
-    // to avoid invalidating descriptor sets that may be referenced by recording
-    // command buffers.
+    // Reset descriptor pool to free descriptor sets. The old sets may still be
+    // referenced by in-flight command buffers, so we must wait before resetting.
+    // The pool (maxSets=4) is re-populated with 3 fresh sets immediately after in
+    // createRenderTargets(), so the reset cannot be deferred past that point
+    // without exceeding capacity — a wait here is unavoidable. Scope it to the
+    // graphics queue (queueWaitIdle) instead of a whole-device idle: these
+    // descriptor sets are only consumed by graphics-queue water draws (the
+    // geometry/transfer queue only performs buffer copies, never binds these
+    // sets), so a graphics-queue idle covers every consumer while leaving
+    // compute and unrelated device work untouched. Per AGENTS.md, vkDeviceWaitIdle
+    // is reserved for shutdown / major rebuilds.
     if (waterDepthDescriptorPool != VK_NULL_HANDLE && app) {
-        VkResult r = app->deviceWaitIdle();
+        VkResult r = app->queueWaitIdle();
         if (r == VK_SUCCESS) {
             vkResetDescriptorPool(device, waterDepthDescriptorPool, 0);
         } else {
-            std::cerr << "[WaterRenderer] Skipping descriptor pool reset: device not idle (result=" << (int)r << ")" << std::endl;
+            std::cerr << "[WaterRenderer] Skipping descriptor pool reset: graphics queue not idle (result=" << (int)r << ")" << std::endl;
         }
     }
     cubemapWaterDepthDS = VK_NULL_HANDLE;
