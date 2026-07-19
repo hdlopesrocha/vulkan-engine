@@ -168,7 +168,7 @@ $(foreach ext,$(SHADER_EXTS),$(eval $(call SHADER_COMPILE_RULE,$(ext))))
 release:
 	@$(MAKE) --no-print-directory BUILD=release all
 
-.PHONY: run run-debug valgrind
+.PHONY: run run-debug valgrind callgrind
 run: all
 	@echo "Running app from $(OUT_DIR)/"
 	@cd $(OUT_DIR) && ./app
@@ -252,5 +252,13 @@ cloc:
 		echo "cloc not found on PATH. Install it (e.g. sudo apt install cloc) to get a detailed LOC report."; \
 	fi
 
-callgrind:
-	cd bin; valgrind --tool=callgrind --callgrind-out-file=file.out ./server;  kcachegrind file.out
+callgrind: debug
+	@echo "Running valgrind callgrind profiler on $(OUT_DIR)/app..."
+	@mkdir -p logs
+	@cd $(OUT_DIR) && valgrind --tool=callgrind --callgrind-out-file=../logs/callgrind.out ./app 2>&1 | tee ../logs/callgrind.log; echo "Exit code: $${PIPESTATUS[0]}"
+	@echo "Profile written to logs/callgrind.out"
+	@if command -v kcachegrind >/dev/null 2>&1; then \
+		kcachegrind logs/callgrind.out; \
+	else \
+		echo "kcachegrind not found on PATH. Install it (e.g. sudo apt install kcachegrind) to visualize logs/callgrind.out."; \
+	fi
