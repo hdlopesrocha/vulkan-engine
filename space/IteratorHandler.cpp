@@ -250,45 +250,6 @@ void IteratorHandler::iterateFlatIn(const Octree &tree, OctreeNodeData &params) 
     }
 }
 
-void IteratorHandler::iterateFlat(const Octree &tree, OctreeNodeData &params) {
-    if (params.node != NULL) return;
-    params.context = NULL;
-
-    stack.push(StackFrame(params, 0, false));
-
-    while (!stack.empty()) {
-        StackFrame &frame = stack.top();
-
-        if (!frame.secondVisit) {
-            // First visit: Apply `before()`
-
-            if (!(frame.node !=NULL && iterate(tree, frame))) {
-                stack.pop(); // Skip children, go back up
-                continue;
-            }
-
-            // Prepare to process children
-            getOrder(tree, frame, frame.internalOrder);
-            frame.secondVisit = true; // Mark this node for a second visit
-        }
-
-        // Process children in order
-        if (frame.childIndex < 8) {
-            uint8_t j = frame.internalOrder[frame.childIndex++];
-            OctreeNode * node = frame.node;
-            ChildBlock * block = node->getBlock(*tree.allocator);
-            OctreeNode* child = block->get(j, *tree.allocator);
-
-            if (child) {
-                OctreeNodeData data(frame.level+1, child, frame.cube.getChild(j), frame.context);
-                stack.push(StackFrame(data, 0, false));
-            }
-        } else {
-            stack.pop();
-        }
-    }
-}
-
 void IteratorHandler::iterateFlatOut(const Octree &tree, OctreeNodeData &params) {
     if (!params.node) return;
     params.context = NULL;

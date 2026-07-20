@@ -10,7 +10,6 @@ class ThreadPool;
 
 class IteratorHandler {
     std::stack<OctreeNodeData> flatData;
-    std::stack<StackFrame> stack;
     std::stack<StackFrameOut> stackOut;
 
 public:
@@ -21,7 +20,6 @@ public:
 
     void iterateFlatIn(const Octree &tree, OctreeNodeData &params);
     void iterateFlatOut(const Octree &tree, OctreeNodeData &params);
-    void iterateFlat(const Octree &tree, OctreeNodeData &params);
     void iterateBFS(const Octree &tree, OctreeNodeData &rootParams);
     void iterateParallelBFS(const Octree &tree, OctreeNodeData &rootParams, ThreadPool& pool);
 };
