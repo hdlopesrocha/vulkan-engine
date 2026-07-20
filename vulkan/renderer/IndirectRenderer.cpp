@@ -713,7 +713,15 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
     auto scheduleDestroyBuffer = [&](const Buffer &b) {
         if (b.buffer == VK_NULL_HANDLE) return;
         Buffer copy = b;
-        app->deferDestroyUntilAllPending([app, copy]() {
+        // Gate destruction on the current frame fence (FIFO: when it signals,
+        // every earlier in-flight frame that may still reference `b` has also
+        // completed). This is bounded to frames-in-flight. Using
+        // deferDestroyUntilAllPending(NULL fence) here would only run once ALL
+        // inFlightFences are signaled, which never happens during continuous
+        // rendering (a frame is always in flight) — so buffers recreated every
+        // rebuild() (compact/indirect/bounds) would leak. Matches
+        // recyclePreviousGeom's fence-gated recycling.
+        app->deferDestroyUntilFence(app->getCurrentFrameFence(), [app, copy]() {
             if (copy.buffer != VK_NULL_HANDLE) {
                 app->resources.removeBufferVma(copy.buffer, copy.allocation);
             }
