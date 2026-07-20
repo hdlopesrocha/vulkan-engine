@@ -95,6 +95,14 @@ void SettingsWidget::render() {
         ImGuiHelpers::SetTooltipIfHovered("Invert yaw/pitch directions for gamepad right-stick");
 
         ImGui::Separator();
+        ImGui::Text("Brush Animation");
+        ImGui::Separator();
+        if (ImGui::Checkbox("Animate Brush (circular orbit)", &settings.animateBrush)) {
+            // toggles time-driven motion of the selected brush entry
+        }
+        ImGuiHelpers::SetTooltipIfHovered("Move the selected brush entry along a circular trajectory over time.\nWhen disabled, the brush stays at the last animated position and can be edited manually.");
+
+        ImGui::Separator();
 
         ImGui::Text("Input Sensitivity");
         ImGui::Separator();

@@ -29,6 +29,11 @@ public:
     float moveSpeed = 2.5f;
     float angularSpeedDeg = 45.0f;
 
+    // Brush animation: drives the selected brush entry's position along a
+    // circular trajectory over time. When disabled, the brush stays where the
+    // animation left it and can be edited manually from that position.
+    bool animateBrush = true;
+
     // Debug
     int debugMode = 0;
 

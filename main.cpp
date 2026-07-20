@@ -147,6 +147,10 @@ public:
     // Application-owned per-layer water parameters (initialized in setup)
     std::vector<WaterParams> waterParams;
     float mainTime = 0.0f;
+    // Accumulated time driving the animated brush-space sphere trajectory
+    float brushAnimTime = 0.0f;
+    // Last frame delta, forwarded to postSubmit for the per-frame brush rebuild
+    float lastFrameDelta = 0.0f;
     ShadowParams shadowParams;
     // When user clicks "Apply Brush" from ImGui we defer the heavy rebuild
     // until after the current frame is submitted to avoid waiting on fences
@@ -619,6 +623,10 @@ public:
     void preAllocateAsyncDescriptorPools();
     // Rebuild the brush preview scene from Brush3dWidget entries
     void rebuildBrushScene();
+    // When brush animation is enabled, advance the trajectory time and move the
+    // selected brush entry along a circular orbit; the actual brush rebuild is
+    // performed by rebuildBrushScene() afterwards.
+    void updateBrushAnimation(float deltaTime);
     // Clear GPU meshes, reset octrees and regenerate via MainSceneLoader
     void generateMap();
     void action();
@@ -671,6 +679,7 @@ public:
         }
 
         mainTime += deltaTime;
+        lastFrameDelta = deltaTime;
         if (sceneRenderer && sceneRenderer->vegetationRenderer) {
             sceneRenderer->vegetationRenderer->setWindTime(mainTime);
             sceneRenderer->vegetationRenderer->setImpostorDistance(settings.impostorDistance);
@@ -2038,6 +2047,31 @@ void MyApp::rebuildBrushScene() {
     //           << ", brush transparent chunks: " << sceneRenderer->brushTransparentChunks.size() << std::endl;
 }
 
+// Advance the brush-animation clock and move the *selected* brush entry along a
+// circular trajectory layered on top of the existing triangle-strip ring
+// (MainSceneLoader). Only the entry's translate is changed — its shape, size,
+// texture, mode and layer are left intact, so the animation composes with the
+// user's brush definition. The entry retains the last animated position when
+// animation is disabled, allowing manual editing from there.
+void MyApp::updateBrushAnimation(float deltaTime) {
+    BrushEntry* entry = brushManager.getSelectedEntry();
+    if (!entry) return;
+
+    // Freeze the clock while disabled so re-enabling continues from the same
+    // orbit phase (the entry keeps its last animated translate).
+    brushAnimTime += deltaTime;
+
+    // Ring parameters (defined in MainSceneLoader): centered at origin, height
+    // 800, outer radius = worldScale (1500). The brush orbits that ring.
+    constexpr float ringHeight = 800.0f;
+    constexpr float ringRadius = 1500.0f;   // worldScale * unitOuter(1.0)
+    constexpr float orbitSpeed = 0.5f;      // radians / second
+
+    float angle = brushAnimTime * orbitSpeed;
+    entry->translate = glm::vec3(ringRadius * std::cos(angle), ringHeight,
+                                 ringRadius * std::sin(angle));
+}
+
 // Ensure pending texture generation requests are flushed after a frame is submitted
 // so array-layer transitions happen outside of active draw command buffers.
 
@@ -2407,7 +2441,14 @@ void MyApp::postSubmit() {
 
     // If a rebuild was requested from the UI (Apply Brush), perform it now
     // after the frame was submitted so GPU fences can be waited on safely.
-    if (brushRebuildPending) {
+    if (!isLoading && settings.animateBrush) {
+        // Animate the selected brush entry along a circular trajectory, then
+        // rebuild the brush scene from it. Runs in postSubmit (after submit)
+        // so the indirect-buffer fill (this frame) is fenced off from the
+        // indirect draw (next frame), avoiding a READ_AFTER_WRITE hazard.
+        updateBrushAnimation(lastFrameDelta);
+        rebuildBrushScene();
+    } else if (brushRebuildPending) {
         brushRebuildPending = false;
         rebuildBrushScene();
     }
