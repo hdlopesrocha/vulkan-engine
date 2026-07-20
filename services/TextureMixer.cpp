@@ -246,7 +246,16 @@ bool TextureMixer::waitForLayerGeneration(VulkanApp* app, uint32_t layer, uint64
 		}
 	}
 	if (fences.empty()) return false;
-	VkResult r = vkWaitForFences(app->getDevice(), static_cast<uint32_t>(fences.size()), fences.data(), VK_TRUE, timeoutNs);
+	// Poll each fence via VulkanApp::waitFence instead of vkWaitForFences: the
+	// validation layer's vkWaitForFences performs an internal state-tracking wait
+	// with a finite timeout that spuriously reports INTERNAL-ERROR-VkFence-state-timeout
+	// (most likely a validation bug) and aborts the app. Polling vkGetFenceStatus
+	// is spec-valid and validation-clean.
+	VkResult r = VK_SUCCESS;
+	for (VkFence f : fences) {
+		VkResult fr = VulkanApp::waitFence(app->getDevice(), f, timeoutNs);
+		if (fr != VK_SUCCESS) r = fr;
+	}
 	if (r == VK_SUCCESS) {
 		// process pending generations so state advances
 		if (app) app->processPendingCommandBuffers();

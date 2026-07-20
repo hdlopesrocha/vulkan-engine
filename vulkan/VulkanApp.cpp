@@ -844,19 +844,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     {
         const char* msg = (pCallbackData && pCallbackData->pMessage) ? pCallbackData->pMessage : "";
         if (strstr(msg, "BestPractices") != nullptr) return VK_FALSE;
-        // Shadow passes use the same pipeline as color passes; the fragment
-        // shader writes outColor but shadow rendering has no color attachment.
-        // The write is correctly discarded — this is expected behavior.
-        if (strstr(msg, "no VkRenderingInfo::pColorAttachments[0]") != nullptr) return VK_FALSE;
-        // The 360° cubemap is rendered in an async command buffer on the same
-        // queue and read by the main pass.  Barriers + semaphore ordering make
-        // this safe, but the validation layer flags it as SYNC-HAZARD-READ-AFTER-WRITE
-        // across command buffers (binding #11).  This is a known false positive.
-        if (strstr(msg, "SYNC-HAZARD-READ-AFTER-WRITE") != nullptr && strstr(msg, "binding #11") != nullptr) return VK_FALSE;
-        // Shader-OutputNotConsumed: vertex attribute declared in pipeline but
-        // not read by the shader. Harmless — the GPU ignores unread inputs.
-        if (strstr(msg, "Shader-OutputNotConsumed") != nullptr) return VK_FALSE;
-
+  
     }
 
     // Only print WARNING and ERROR — suppress INFO/VERBOSE noise
@@ -958,8 +946,8 @@ void VulkanApp::cleanup() {
     // Process any deferred-destruction callbacks immediately so resources
     // scheduled with deferDestroyUntilAllPending() are released while the
     // device is still valid.  Must happen BEFORE destroying frameTimeline
-    // because processPendingCommandBuffers queries the timeline semaphore
-    // value to determine whether all in-flight frames have completed.
+    // because the frame-signal semaphores are retired via deferDestroyUntilFence
+    // on the binary frame fence, which fires inside processPendingCommandBuffers().
     processPendingCommandBuffers();
 
     // Do not destroy objects that are tracked by VulkanResourceManager here.
@@ -976,8 +964,9 @@ void VulkanApp::cleanup() {
 
         // Destroy any binary semaphores still outstanding at shutdown. These are
         // async-transfer signal semaphores that a final drawFrame never consumed
-        // (m_extraWaitSemaphores) or whose retire-timeline value was never
-        // reached (m_semaphoresPendingDestroy). deviceWaitIdle() above guarantees
+        // (m_extraWaitSemaphores). The frame-signal semaphores are now released
+        // via deferDestroyUntilFence on the binary frame fence, which fires during
+        // processPendingCommandBuffers() above. deviceWaitIdle() earlier guarantees
         // the GPU is finished with them, so destroying now is safe and prevents
         // the VUID-vkDestroyDevice-device-05137 leak.
         if (!deviceLost && device != VK_NULL_HANDLE) {
@@ -987,18 +976,11 @@ void VulkanApp::cleanup() {
                     vkDestroySemaphore(device, e.first, nullptr);
                 }
             }
-            for (auto &e : m_semaphoresPendingDestroy) {
-                if (e.first != VK_NULL_HANDLE) {
-                    resources.removeSemaphore(e.first);
-                    vkDestroySemaphore(device, e.first, nullptr);
-                }
-            }
         }
         m_extraWaitSemaphores.clear();
-        m_semaphoresPendingDestroy.clear();
     }
-    // Destroy the frame timeline semaphore — kept alive above so that
-    // processPendingCommandBuffers can safely call vkGetSemaphoreCounterValue.
+    // Destroy the frame timeline semaphore — kept alive until after the deferred
+    // frame-fence destroys (which no longer query it) have run above.
     if (frameTimeline != VK_NULL_HANDLE) {
         resources.removeSemaphore(frameTimeline);
         vkDestroySemaphore(device, frameTimeline, nullptr);
@@ -1421,7 +1403,6 @@ void VulkanApp::createCommandPool() {
     // initialize async bookkeeping containers (m_submissionMutex guards all)
     m_pendingCommandBuffers.clear();
     m_extraWaitSemaphores.clear();
-    m_semaphoresPendingDestroy.clear();
 }
 
 // Pre-allocate async command pool ring so allocatePrimaryCommandBuffer can
@@ -1494,7 +1475,7 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
 
     // Wait for the previous submission using this ring slot to complete
     // before reusing the command buffer.
-    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    waitFence(device, fence);
     // The fence is now provably signaled (we waited) and therefore no longer
     // pending, so it is legal to reset and reuse it.  This avoids the old
     // recreate + defer-destroy path, which forced a full vkQueueWaitIdle(q) per
@@ -1552,7 +1533,7 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
 
     // Wait for completion of the submitted command buffer via the fence,
     // then apply pending layout updates.
-    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    waitFence(device, fence);
 
     // Apply any pending layout updates recorded while recording this
     // single-time command buffer (GPU work is complete — waited on fence).
@@ -1631,7 +1612,32 @@ void VulkanApp::submitAndWait(const VkSubmitInfo2* submits, uint32_t submitCount
     if (fence == VK_NULL_HANDLE) {
         vkQueueWaitIdle(graphicsQueue);
     } else {
-        vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+        waitFence(device, fence);
+    }
+}
+
+VkResult VulkanApp::waitFence(VkDevice device, VkFence fence, uint64_t timeoutNs) {
+    if (fence == VK_NULL_HANDLE) return VK_SUCCESS;
+    // Poll the fence status instead of vkWaitForFences. The validation layer's
+    // vkWaitForFences performs an internal state-tracking wait with a finite
+    // timeout that spuriously reports INTERNAL-ERROR-VkFence-state-timeout (this
+    // is most likely a validation bug) on slow or first submissions, aborting the
+    // app. vkGetFenceStatus is non-blocking and has no such internal wait; polling
+    // it waits for the same GPU completion in a spec-valid, validation-clean way.
+    const uint64_t pollNs = 100'000ULL; // 100 µs between polls
+    uint64_t waited = 0;
+    while (true) {
+        VkResult r = vkGetFenceStatus(device, fence);
+        if (r == VK_SUCCESS || r == VK_ERROR_DEVICE_LOST) return r;
+        if (r != VK_NOT_READY) return r; // unexpected error — surface it
+        if (timeoutNs != UINT64_MAX) {
+            if (waited >= timeoutNs) return VK_TIMEOUT;
+            uint64_t sleepNs = std::min(pollNs, timeoutNs - waited);
+            std::this_thread::sleep_for(std::chrono::nanoseconds(sleepNs));
+            waited += sleepNs;
+        } else {
+            std::this_thread::sleep_for(std::chrono::nanoseconds(pollNs));
+        }
     }
 }
 
@@ -1655,7 +1661,7 @@ void VulkanApp::waitForFrameFences() {
     }
     for (VkFence f : fences) {
         if (f != VK_NULL_HANDLE) {
-            vkWaitForFences(device, 1, &f, VK_TRUE, UINT64_MAX);
+            waitFence(device, f);
         }
     }
 }
@@ -2129,7 +2135,7 @@ void VulkanApp::waitForAllPendingCommandBuffers() {
     }
     if (!fences.empty()) {
         // Wait indefinitely until all tracked fences signal
-        vkWaitForFences(device, static_cast<uint32_t>(fences.size()), fences.data(), VK_TRUE, std::numeric_limits<uint64_t>::max());
+        for (VkFence f : fences) waitFence(device, f);
         // Clear out any completed entries
         processPendingCommandBuffers();
     }
@@ -2537,7 +2543,7 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
     }
 
     // Wait for the fence to signal completion (avoids calling vkQueueWaitIdle)
-    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    waitFence(device, fence);
     // The command buffer has completed execution; apply any pending layout
     // updates that were recorded into it.
     applyPendingLayoutUpdatesForCommandBuffer(commandBuffer);
@@ -2674,7 +2680,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             // queue that the driver/GPU cannot complete), an infinite wait would
             // hang the whole app with no diagnostics. Surface the stuck slot
             // instead so a cross-queue stall is pinpointed rather than silent.
-            VkResult waitRes = vkWaitForFences(device, 1, &slotFence, VK_TRUE, 10'000'000'000ULL); // 10s
+            VkResult waitRes = waitFence(device, slotFence, 10'000'000'000ULL); // 10s watchdog
             if (waitRes == VK_TIMEOUT) {
                 std::cerr << "[VulkanApp][WATCHDOG] async ring slot " << (unsigned)idx
                           << " (fence " << (void*)slotFence << ") did not signal within 10s. "
@@ -3632,7 +3638,6 @@ void VulkanApp::createSyncObjects() {
 
     // async submission bookkeeping
     m_pendingCommandBuffers.clear();
-    m_semaphoresPendingDestroy.clear();
     m_extraWaitSemaphores.clear();
 }
 
@@ -4906,7 +4911,7 @@ void VulkanApp::drawFrame() {
     // where the validation layer still considers a just-signaled fence "in use".
     VkFence prevFrameFence = inFlightFences[currentFrame];
     if (prevFrameFence != VK_NULL_HANDLE) {
-        VkResult waitForFenceResult = vkWaitForFences(device, 1, &prevFrameFence, VK_TRUE, UINT64_MAX);
+        VkResult waitForFenceResult = waitFence(device, prevFrameFence);
         if (waitForFenceResult == VK_ERROR_DEVICE_LOST) return;
         if (waitForFenceResult != VK_SUCCESS) {
             std::cerr << "vkWaitForFences (frame slot) failed: " << waitForFenceResult << std::endl;
@@ -4987,9 +4992,25 @@ void VulkanApp::drawFrame() {
             extraWait.deviceIndex = 0;
             waitSemaphoreInfos.push_back(extraWait);
         }
-        // Move them to m_semaphoresPendingDestroy so they can be destroyed after this frame's fence signals
+        // These semaphores are consumed as wait points by THIS submit
+        // (see the extraWait added above). When frameFence signals the GPU has
+        // finished the submit, so the semaphores are no longer referenced and
+        // safe to destroy. Defer the destruction on the binary fence rather
+        // than polling vkGetSemaphoreCounterValue(frameTimeline): the validation
+        // layer's timeline-semaphore state tracking (UNASSIGNED-VkSemaphore-state-timeout,
+        // see KhronosGroup/Vulkan-ValidationLayers#4968 / #8461) spuriously
+        // times out on that query, and the binary fence is the reliable,
+        // validation-clean signal on all drivers.
         if (!m_extraWaitSemaphores.empty()) {
-            for (auto &e : m_extraWaitSemaphores) m_semaphoresPendingDestroy.emplace_back(e.first, frameTimelineValue.load() + 1);
+            for (auto &e : m_extraWaitSemaphores) {
+                VkSemaphore s = e.first;
+                deferDestroyUntilFence(frameFence, [this, s]() {
+                    if (s != VK_NULL_HANDLE) {
+                        resources.removeSemaphore(s);
+                        vkDestroySemaphore(device, s, nullptr);
+                    }
+                });
+            }
             m_extraWaitSemaphores.clear();
         }
     }
@@ -5226,22 +5247,9 @@ void VulkanApp::drawFrame() {
         return;
     }
 
-    // Cleanup any semaphores whose frameTimeline value has been reached
-    {
-        uint64_t curVal = 0;
-        vkGetSemaphoreCounterValue(device, frameTimeline, &curVal);
-        for (auto it = m_semaphoresPendingDestroy.begin(); it != m_semaphoresPendingDestroy.end(); ) {
-            VkSemaphore s = it->first;
-            uint64_t waitVal = it->second;
-            if (curVal >= waitVal) {
-                resources.removeSemaphore(s);
-                vkDestroySemaphore(device, s, nullptr);
-                it = m_semaphoresPendingDestroy.erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
+    // Semaphore cleanup is now handled by the binary-fence deferred-destroy
+    // mechanism (see the m_extraWaitSemaphores handling above), so no
+    // vkGetSemaphoreCounterValue polling is required here.
 
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -5269,20 +5277,8 @@ void VulkanApp::drawFrame() {
         return;
     }
 
-    // Process pending command buffers and semaphores cleanup now that present is done
+    // Process pending command buffers and deferred-destroy callbacks now that present is done
     processPendingCommandBuffers();
-    {
-        uint64_t curVal = 0;
-        vkGetSemaphoreCounterValue(device, frameTimeline, &curVal);
-        for (auto it = m_semaphoresPendingDestroy.begin(); it != m_semaphoresPendingDestroy.end();) {
-            VkSemaphore s = it->first; uint64_t waitVal = it->second;
-            if (curVal >= waitVal) {
-                resources.removeSemaphore(s);
-                vkDestroySemaphore(device, s, nullptr);
-                it = m_semaphoresPendingDestroy.erase(it);
-            } else ++it;
-        }
-    }
     //std::cerr << "presented image " << imageIndex << "\n";
 
     // Hook for derived apps to run post-submit instrumentation (e.g., readback)

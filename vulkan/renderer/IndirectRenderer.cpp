@@ -46,7 +46,7 @@ void IndirectRenderer::publishPendingTransfer(VulkanApp* app) {
     // free the command buffer and destroy the fence once signaled.
     // If the fence is no longer tracked, the work is already done.
     if (app->resources.find((uintptr_t)pendingTransfer.fence).has_value()) {
-        vkWaitForFences(dev, 1, &pendingTransfer.fence, VK_TRUE, UINT64_MAX);
+        VulkanApp::waitFence(dev, pendingTransfer.fence);
     }
     // Meta-buffers (indirect/draw-count) are append-only: a new mesh's
     // entry is only written once.  Calling doUploadMeshMetaBuffers

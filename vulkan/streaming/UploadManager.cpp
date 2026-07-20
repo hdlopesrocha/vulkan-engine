@@ -70,11 +70,13 @@ std::mutex& UploadManager::pickMutex() {
 }
 
 bool UploadManager::isComplete(const StagingSlot& s) const {
-    if (m_timelineSupported) {
-        uint64_t cur = 0;
-        vkGetSemaphoreCounterValue(device_, m_timeline, &cur);
-        return cur >= s.timelineValue;
-    }
+    // Completion is tracked by the binary submit fence (s.fence), which is
+    // signaled at the end of the same vkQueueSubmit2 that also signals m_timeline.
+    // Use the fence directly instead of vkGetSemaphoreCounterValue(m_timeline):
+    // querying a timeline semaphore from the host triggers the validation layer's
+    // UNASSIGNED-VkSemaphore-state-timeout false positive
+    // (KhronosGroup/Vulkan-ValidationLayers#4968 / #8461), which aborts the app.
+    // The fence is the reliable, validation-clean completion signal.
     return vkGetFenceStatus(device_, s.fence) == VK_SUCCESS;
 }
 
@@ -301,7 +303,7 @@ void UploadManager::flush() {
         // Block on the in-flight transfers so the next iteration can recycle
         // their slots and admit the still-queued jobs.
         for (auto& s : staging_.slots())
-            if (s.busy) vkWaitForFences(device_, 1, &s.fence, VK_TRUE, UINT64_MAX);
+            if (s.busy) VulkanApp::waitFence(device_, s.fence);
     }
 }
 
@@ -309,7 +311,7 @@ void UploadManager::destroy() {
     // Wait for in-flight transfers before tearing down staging resources.
     for (auto& s : staging_.slots()) {
         if (s.busy) {
-            vkWaitForFences(device_, 1, &s.fence, VK_TRUE, UINT64_MAX);
+            VulkanApp::waitFence(device_, s.fence);
             if (s.onComplete) s.onComplete();
             if (s.chunkSlot) chunkPool_.release(static_cast<ChunkGPUBuffers*>(s.chunkSlot));
         }

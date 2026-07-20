@@ -318,6 +318,17 @@ public:
         VkResult deviceWaitIdle();
         // Wait for all per-frame in-flight fences to signal (blocks).
         void waitForFrameFences();
+        // Wait for a single fence to become signaled by polling vkGetFenceStatus.
+        // Preferred over vkWaitForFences: the validation layer's vkWaitForFences
+        // performs an internal state-tracking wait with a finite timeout that
+        // spuriously reports INTERNAL-ERROR-VkFence-state-timeout on slow / first
+        // submissions (same family as KhronosGroup/Vulkan-ValidationLayers#4968 /
+        // #8461), which aborts the app. vkGetFenceStatus is non-blocking and has no
+        // such internal wait, so polling it is spec-valid and validation-clean while
+        // still waiting for the same GPU completion. timeoutNs == UINT64_MAX polls
+        // indefinitely; any other value returns VK_TIMEOUT if not signaled in time
+        // (used by the async ring watchdog).
+        static VkResult waitFence(VkDevice device, VkFence fence, uint64_t timeoutNs = UINT64_MAX);
         void processPendingCommandBuffers();
         // Apply any pending layout updates recorded for a command buffer
         // (transfers per-CB pending updates into the authoritative map).
@@ -652,7 +663,6 @@ public:
         std::unordered_map<VkCommandBuffer, VkCommandPool> m_commandBufferPoolMap;
         std::unordered_map<VkCommandBuffer, std::string> m_cmdBacktraces;
         std::vector<std::pair<VkSemaphore, VkPipelineStageFlags2>> m_extraWaitSemaphores;
-        std::vector<std::pair<VkSemaphore,uint64_t>> m_semaphoresPendingDestroy;
         std::list<std::pair<VkFence, std::function<void()>>> m_deferredDestroys;
 
 };

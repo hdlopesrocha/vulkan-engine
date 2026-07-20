@@ -86,7 +86,7 @@ void VegetationRenderer::destroyCulling() {
         vkDestroyDescriptorPool(device, vegCullDescPool, nullptr);
     }
     if (consolidationFence != VK_NULL_HANDLE) {
-        vkWaitForFences(device, 1, &consolidationFence, VK_TRUE, UINT64_MAX);
+        VulkanApp::waitFence(device, consolidationFence);
     }
     pendingMeta.clear();
     pendingMetaSize = 0;
