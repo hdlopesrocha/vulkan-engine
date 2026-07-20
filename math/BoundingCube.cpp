@@ -52,13 +52,13 @@ void BoundingCube::setLength(float l) {
 }
 
 BoundingCube BoundingCube::getChild(int i) const {
-	float newLength = 0.5*getLengthX();
-    return BoundingCube(getMin() + newLength * AbstractBoundingBox::getShift(i), newLength);
+    float newLength = 0.5f * length;
+    return BoundingCube(min + newLength * glm::vec3(CUBE_CORNERS[i]), newLength);
 }
 
 glm::vec3 BoundingCube::getChildCenter(int i) const {
-	float newLength = 0.5f*getLengthX();
-    return getMin() + AbstractBoundingBox::getShift(i)*newLength + glm::vec3(0.5f*newLength);
+	float newLength = 0.5f*length;
+    return (min + 0.5f*newLength) + glm::vec3(CUBE_CORNERS[i])*newLength;
 }
 
 
