@@ -171,6 +171,14 @@ void Octree::iterateTriangles(
     int cachedChainLen = 0;
     bool cachedChainOk = false;
 
+    // Per-node cache for findCellAt. The 12 edges and their segments repeatedly
+    // query identical quadrant/face sample positions (the same edge midpoint is
+    // sampled by both collectBreaks and emitSegment, and adjacent edges share
+    // corners), so memoizing avoids repeated O(depth) descents. findCellAt is a
+    // pure function of pos (the octree/context are constant during this call),
+    // so cached results are reusable and bit-identical to a fresh lookup.
+    tsl::robin_map<glm::vec3, EdgeCell> cellCache;
+
     struct EdgeSpan {
         int axis = 0;
         int u = 1;
@@ -198,9 +206,14 @@ void Octree::iterateTriangles(
     };
 
     auto findCellAt = [this, context, &hint, &fromCube, &cachedChainNode, &cachedChainNodes,
-            &cachedChainIndices, &cachedChainLen, &cachedChainOk](const glm::vec3 &pos) {
+            &cachedChainIndices, &cachedChainLen, &cachedChainOk, &cellCache](const glm::vec3 &pos) {
+        auto cacheHit = cellCache.find(pos);
+        if(cacheHit != cellCache.end()) {
+            return cacheHit->second;
+        }
         EdgeCell result;
         if(root == NULL || !contains(pos)) {
+            cellCache[pos] = result;
             return result;
         }
 
@@ -292,6 +305,7 @@ void Octree::iterateTriangles(
         if(result.node != NULL) {
             hint = result;
         }
+        cellCache[pos] = result;
         return result;
     };
 
