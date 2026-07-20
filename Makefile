@@ -58,7 +58,7 @@ OUT = $(OUT_DIR)/app
 
 # Objects used for the standalone server (exclude the app's main.o and vulkan objects to avoid duplicate main
 # and linking against Vulkan)
-SERVER_OBJS := $(filter-out $(OBJ_DIR)/main.o $(OBJ_DIR)/vulkan/%.o $(OBJ_DIR)/widgets/%.o $(OBJ_DIR)/services/%.o $(OBJ_DIR)/events/KeyboardPublisher.o $(OBJ_DIR)/events/GamepadPublisher.o,$(OBJS))
+SERVER_OBJS := $(filter-out $(OBJ_DIR)/main.o $(OBJ_DIR)/vulkan/%.o $(OBJ_DIR)/widgets/%.o $(OBJ_DIR)/services/%.o $(OBJ_DIR)/events/KeyboardPublisher.o $(OBJ_DIR)/events/GamepadPublisher.o $(OBJ_DIR)/events/MousePublisher.o,$(OBJS))
 
 # Server-specific link flags: now include glfw and vulkan libs for ImGui backends
 SERVER_LIBS := $(LIBS)

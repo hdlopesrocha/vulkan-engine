@@ -30,7 +30,9 @@ private:
     float moveSpeed;         // units per second
     float angularSpeedDeg;   // degrees per second
 
-    // track toggled keys to detect key-down events for single-action keys
+    // edge-tracking for single-action keys
     bool f11Prev = false;
     bool escPrev = false;
+    bool k1Prev = false, k2Prev = false, k3Prev = false, k4Prev = false;
+    bool k5Prev = false, k6Prev = false, k7Prev = false, k8Prev = false;
 };

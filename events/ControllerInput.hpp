@@ -1,0 +1,84 @@
+#pragma once
+
+#include <glm/glm.hpp>
+#include "ControllerContext.hpp"
+#include "EventManager.hpp"
+#include "TranslateCameraEvent.hpp"
+#include "RotateCameraEvent.hpp"
+#include "../utils/Brush3dManager.hpp"
+#include "../utils/Brush3dEntry.hpp"
+
+// Aggregated input a publisher wants to apply this frame, expressed in a
+// controller-agnostic way. The publisher is responsible for mapping its raw
+// inputs (keys, sticks, mouse drag, scroll) into these deltas according to the
+// active control; this function only decides WHERE they go (camera vs brush)
+// based on the active page of the context. Reused by every controller.
+struct ControllerAction {
+    glm::vec3 translate = glm::vec3(0.0f); // world-space delta this frame
+    glm::vec3 rotateDeg = glm::vec3(0.0f); // yaw,pitch,roll in degrees this frame
+    glm::vec3 scaleDelta = glm::vec3(0.0f);// per-axis scale add this frame
+    int textureDelta = 0;                  // material index increment
+    int attributeDelta = 0;                // generic attribute increment
+};
+
+// Route the action to the camera or to the selected brush entry depending on
+// the context's active page. Returns true if the brush was modified (caller
+// should queue RebuildBrushEvent). Does nothing when the active page is a
+// non-propagating (UI) page.
+inline bool applyControllerAction(const ControllerContext &ctx, EventManager *em,
+                                  Brush3dManager *brush, const ControllerAction &a) {
+    if (ctx.isNoPropagate()) return false;
+    if (!em) return false;
+
+    if (ctx.activeCategory() == PageCategory::CAMERA) {
+        if (glm::length2(a.translate) > 1e-12f)
+            em->publish(std::make_shared<TranslateCameraEvent>(a.translate));
+        if (glm::length2(a.rotateDeg) > 1e-12f)
+            em->publish(std::make_shared<RotateCameraEvent>(a.rotateDeg.x, a.rotateDeg.y, a.rotateDeg.z));
+        return false;
+    }
+
+    // BRUSH category
+    if (!brush) return false;
+    BrushEntry *be = brush->getSelectedEntry();
+    if (!be) return false;
+
+    const PageControl ctrl = ctx.activeControl();
+    bool changed = false;
+    switch (ctrl) {
+        case PageControl::TRANSLATE:
+            if (glm::length2(a.translate) > 1e-12f) { be->translate += a.translate; changed = true; }
+            break;
+        case PageControl::ROTATE:
+            if (glm::length2(a.rotateDeg) > 1e-12f) {
+                be->yaw += a.rotateDeg.x;
+                be->pitch += a.rotateDeg.y;
+                be->roll += a.rotateDeg.z;
+                changed = true;
+            }
+            break;
+        case PageControl::SCALE:
+            if (glm::length2(a.scaleDelta) > 1e-12f) {
+                be->scale = glm::max(be->scale + a.scaleDelta, glm::vec3(0.001f));
+                changed = true;
+            }
+            break;
+        case PageControl::TEXTURE:
+            if (a.textureDelta != 0) {
+                be->materialIndex = std::max(0, be->materialIndex + a.textureDelta);
+                changed = true;
+            }
+            break;
+        case PageControl::ATTRIBUTE:
+            if (a.attributeDelta != 0) {
+                be->sdfType = (be->sdfType + a.attributeDelta) % 8;
+                if (be->sdfType < 0) be->sdfType += 8;
+                changed = true;
+            }
+            break;
+        case PageControl::UI:
+        default:
+            break;
+    }
+    return changed;
+}

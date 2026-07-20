@@ -1,17 +1,17 @@
 #pragma once
 
 #include "Widget.hpp"
-#include "../events/ControllerParameters.hpp"
+#include "../events/ControllerManager.hpp"
 #include <imgui.h>
 
 class Brush3dManager;
 
 class ControllerParametersWidget : public Widget {
 public:
-    ControllerParametersWidget(ControllerParameters* params, Brush3dManager* brushManager);
+    ControllerParametersWidget(ControllerManager* cm, Brush3dManager* brushManager);
     void render() override;
 
 private:
-    ControllerParameters* params;
+    ControllerManager* cm;
     Brush3dManager* brushManager;
 };

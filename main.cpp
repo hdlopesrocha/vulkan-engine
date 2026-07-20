@@ -59,6 +59,7 @@
 #include "events/KeyboardPublisher.hpp"
 #include "events/GamepadPublisher.hpp"
 #include "events/NunchukPublisher.hpp"
+#include "events/MousePublisher.hpp"
 #include "events/CloseWindowEvent.hpp"
 #include "events/ToggleFullscreenEvent.hpp"
 #include "events/RebuildBrushEvent.hpp"
@@ -169,6 +170,7 @@ public:
     KeyboardPublisher keyboardPublisher;
     GamepadPublisher gamepadPublisher;
     NunchukPublisher nunchukPublisher;
+    MousePublisher mousePublisher;
     bool sceneLoading = false;
 
     // Handlers kept alive as members so the tessellation background thread
@@ -538,8 +540,8 @@ public:
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
-        controllerParametersWidget = std::make_shared<ControllerParametersWidget>(controllerManager.getParameters(), &brushManager);
-        gamepadWidget = std::make_shared<GamepadWidget>(controllerManager.getParameters(), &nunchukPublisher);
+        controllerParametersWidget = std::make_shared<ControllerParametersWidget>(&controllerManager, &brushManager);
+        gamepadWidget = std::make_shared<GamepadWidget>(&controllerManager, &nunchukPublisher);
         // Auto-connect to a Wiimote (with or without Nunchuk) on startup.
         nunchukPublisher.connect();
         lightWidget = std::make_shared<LightWidget>(&light);
@@ -570,6 +572,14 @@ public:
         // Subscribe event handlers
         eventManager.subscribe(&camera);  // Camera handles translate/rotate events
         eventManager.subscribe(this);     // MyApp handles close/fullscreen events
+
+        // Each controller owns an independent page tree; subscribe them so
+        // PageNavigationEvents (e.g. keyboard switching the mouse pages) reach
+        // the right context.
+        controllerManager.subscribeContexts(eventManager);
+
+        // Mouse input needs the GLFW window to poll cursor / chain scroll.
+        mousePublisher.attachWindow(getWindow());
         
         // Set up camera projection matrix
         float aspectRatio = static_cast<float>(getWidth()) / static_cast<float>(getHeight());
@@ -645,6 +655,10 @@ public:
         gamepadPublisher.update(&eventManager, camera, deltaTime, &controllerManager, &brushManager, false);
         // Poll nunchuk state (if a Wiimote with nunchuk extension is connected)
         nunchukPublisher.update();
+        // Poll mouse input and publish camera events based on the mouse page.
+        // Tell the publisher when ImGui is capturing the mouse so it yields.
+        mousePublisher.update(&eventManager, camera, deltaTime, &controllerManager,
+                             &brushManager, ImGui::GetIO().WantCaptureMouse);
         eventManager.processQueued();
 
         shadowParams.update(camera.getPosition(), light, camera.getViewProjectionMatrix(), settings.nearPlane, settings.farPlane);
@@ -1455,9 +1469,9 @@ public:
                 if (ImGui::IsItemHovered() || ImGui::IsWindowHovered()) ImGui::SetTooltip("Gamepad %s", gamepadConnected ? "connected" : "not connected");
 
                 // Draw controller page indicator (small 3-letter icon) below the gamepad status
-                ControllerParameters* cp = controllerManager.getParameters();
-                if (cp) {
+                {
                     ImGui::Separator();
+                    const ControllerContext& gctx = controllerManager.gamepadContext;
                     ImDrawList* dl2 = ImGui::GetWindowDrawList();
                     ImVec2 pos = ImGui::GetCursorScreenPos();
                     // Reserve space and draw a small colored circle then the label (same style as GamepadWidget)
@@ -1467,17 +1481,15 @@ public:
                     ImVec2 center2 = ImVec2(pos.x + 10.0f, pos.y + pageIconHeight * 0.5f);
                     ImVec4 col = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
                     const char* label = "?";
-                    switch (cp->currentPage) {
-                        case ControllerParameters::CAMERA: label = "CAM"; col = ImVec4(0.2f,0.5f,0.9f,1.0f); break;
-                        case ControllerParameters::BRUSH_POSITION: label = "POS"; col = ImVec4(0.2f,0.9f,0.3f,1.0f); break;
-                        case ControllerParameters::BRUSH_SCALE: label = "SCL"; col = ImVec4(0.95f,0.6f,0.1f,1.0f); break;
-                        case ControllerParameters::BRUSH_ROTATION: label = "ROT"; col = ImVec4(0.7f,0.3f,0.9f,1.0f); break;
-                        case ControllerParameters::BRUSH_PROPERTIES: label = "PRP"; col = ImVec4(0.6f,0.6f,0.6f,1.0f); break;
+                    switch (gctx.activeCategory()) {
+                        case PageCategory::CAMERA: label = "CAM"; col = ImVec4(0.2f,0.5f,0.9f,1.0f); break;
+                        case PageCategory::BRUSH:  label = "BRU"; col = ImVec4(0.2f,0.9f,0.3f,1.0f); break;
                     }
                     dl2->AddCircleFilled(center2, 8.0f, ImGui::ColorConvertFloat4ToU32(col));
                     float textY = pos.y + (pageIconHeight - ImGui::GetFontSize()) * 0.5f;
                     dl2->AddText(ImVec2(pos.x + 22.0f, textY), ImGui::ColorConvertFloat4ToU32(ImVec4(1,1,1,1)), label);
-                    if (ImGui::IsItemHovered() || ImGui::IsWindowHovered()) ImGui::SetTooltip("%s", ControllerParameters::pageTypeName(cp->currentPage));
+                    if (ImGui::IsItemHovered() || ImGui::IsWindowHovered())
+                        ImGui::SetTooltip("%s > %s", gctx.activePageName().c_str(), gctx.activeSubpageName().c_str());
                 }
 
                 ImGui::End();

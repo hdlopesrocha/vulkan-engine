@@ -3,21 +3,21 @@
 #include <vector>
 #include <cmath>
 #include <cstdio>
-#include "../events/ControllerParameters.hpp"
+#include "../events/ControllerManager.hpp"
+#include "../events/ControllerContext.hpp"
 #include "../events/NunchukPublisher.hpp"
 #include <wiiuse.h>
 #include <imgui.h>
 #include "components/ImGuiHelpers.hpp"
 
-static void drawPageIcon(ControllerParameters::pageType p) {
+static void drawPageIcon(const ControllerContext& ctx) {
     const char* label = "?";
     ImVec4 col = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
-    switch (p) {
-        case ControllerParameters::CAMERA: label = "CAM"; col = ImVec4(0.2f,0.5f,0.9f,1.0f); break;
-        case ControllerParameters::BRUSH_POSITION: label = "POS"; col = ImVec4(0.2f,0.9f,0.3f,1.0f); break;
-        case ControllerParameters::BRUSH_SCALE: label = "SCL"; col = ImVec4(0.95f,0.6f,0.1f,1.0f); break;
-        case ControllerParameters::BRUSH_ROTATION: label = "ROT"; col = ImVec4(0.7f,0.3f,0.9f,1.0f); break;
-        case ControllerParameters::BRUSH_PROPERTIES: label = "PRP"; col = ImVec4(0.6f,0.6f,0.6f,1.0f); break;
+    switch (ctx.activeCategory()) {
+        case PageCategory::CAMERA:
+            label = "CAM"; col = ImVec4(0.2f, 0.5f, 0.9f, 1.0f); break;
+        case PageCategory::BRUSH:
+            label = "BRU"; col = ImVec4(0.2f, 0.9f, 0.3f, 1.0f); break;
     }
 
     // Reserve space and draw a small colored circle then the label
@@ -50,8 +50,8 @@ static const char* buttonName(int b) {
     }
 }
 
-GamepadWidget::GamepadWidget(ControllerParameters* params, NunchukPublisher* nunchuk)
-    : Widget("Gamepad", u8"\uf11b"), ctrlParams(params), nunchukPublisher(nunchuk) {}
+GamepadWidget::GamepadWidget(ControllerManager* cm, NunchukPublisher* nunchuk)
+    : Widget("Gamepad", u8"\uf11b"), ctrlManager(cm), nunchukPublisher(nunchuk) {}
 
 void GamepadWidget::render() {
     ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);
@@ -131,9 +131,11 @@ void GamepadWidget::render() {
         }
 
     // Show controller page indicator after the gamepad state (axes/buttons)
-    if (ctrlParams) {
+    if (ctrlManager) {
         ImGui::Separator();
-        drawPageIcon(ctrlParams->currentPage);
+        drawPageIcon(ctrlManager->gamepadContext);
+        ImGui::Text("Page: %s > %s", ctrlManager->gamepadContext.activePageName().c_str(),
+                    ctrlManager->gamepadContext.activeSubpageName().c_str());
     }
 
     // ── Wiimote section ──

@@ -8,6 +8,8 @@
 #include "RebuildBrushEvent.hpp"
 
 #include "ControllerManager.hpp"
+#include "ControllerContext.hpp"
+#include "ControllerInput.hpp"
 
 #include "../utils/Brush3dManager.hpp"
 #include "../utils/Brush3dEntry.hpp"
@@ -19,10 +21,8 @@
 GamepadPublisher::GamepadPublisher(float moveSpeed_, float angularSpeedDeg_)
     : moveSpeed(moveSpeed_), angularSpeedDeg(angularSpeedDeg_) {}
 
-void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTime, ControllerManager* controllerManager, Brush3dManager* brushManager, bool flipRotation) {
-    if (!em) return;
-
-    bool brushChanged = false;
+void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTime, ControllerManager* cm, Brush3dManager* brushManager, bool flipRotation) {
+    if (!em || !cm) return;
 
     // Ensure we have a valid gamepad to poll. If the configured joystickId
     // isn't a gamepad, scan for the first available gamepad and use it.
@@ -38,121 +38,97 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     GLFWgamepadstate state;
     if (!glfwGetGamepadState(joystickId, &state)) return;
 
-    // Read left stick (axes in [-1,1])
-    float lx = state.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
-    float ly = state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
-
-    // Apply deadzone
-    if (std::abs(lx) < deadzone) lx = 0.0f;
-    if (std::abs(ly) < deadzone) ly = 0.0f;
+    ControllerContext& gctx = cm->gamepadContext;
+    const ControllerParameters& cp = *cm->getParameters();
 
     // Button-down toggles: START -> toggle fullscreen, BACK -> close window
     bool startNow = (state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS);
-    if (startNow && !startPrev) {
-        em->publish(std::make_shared<ToggleFullscreenEvent>());
-    }
+    if (startNow && !startPrev) em->publish(std::make_shared<ToggleFullscreenEvent>());
     startPrev = startNow;
 
     bool backNow = (state.buttons[GLFW_GAMEPAD_BUTTON_BACK] == GLFW_PRESS);
-    if (backNow && !backPrev) {
-        em->publish(std::make_shared<CloseWindowEvent>());
-    }
+    if (backNow && !backPrev) em->publish(std::make_shared<CloseWindowEvent>());
     backPrev = backNow;
 
-    // Use Camera's configured speeds so gamepad feels like keyboard movement
+    // Use Camera's configured speeds so gamepad feels like keyboard movement.
     float velocity = cam.speed * deltaTime;
     float angDeg = glm::degrees(cam.angularSpeedRad) * deltaTime;
     float rotSign = flipRotation ? -1.0f : 1.0f;
 
-    ControllerParameters* cp = nullptr;
-    if (controllerManager) cp = controllerManager->getParameters();
+    // ---- Page navigation (DPAD) via events ----
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_UP] == GLFW_PRESS)
+        em->publish(std::make_shared<PageNavigationEvent>(ControllerId::GAMEPAD, PageNavigationEvent::Action::PREV_PAGE));
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_DOWN] == GLFW_PRESS)
+        em->publish(std::make_shared<PageNavigationEvent>(ControllerId::GAMEPAD, PageNavigationEvent::Action::NEXT_PAGE));
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_LEFT] == GLFW_PRESS)
+        em->publish(std::make_shared<PageNavigationEvent>(ControllerId::GAMEPAD, PageNavigationEvent::Action::PREV_SUBPAGE));
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_RIGHT] == GLFW_PRESS)
+        em->publish(std::make_shared<PageNavigationEvent>(ControllerId::GAMEPAD, PageNavigationEvent::Action::NEXT_SUBPAGE));
 
-    // DPAD map: allow direct page selection via DPAD
-    if (cp) {
-        if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_UP] == GLFW_PRESS) cp->currentPage = ControllerParameters::CAMERA;
-        if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_RIGHT] == GLFW_PRESS) cp->currentPage = ControllerParameters::BRUSH_POSITION;
-        if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_DOWN] == GLFW_PRESS) cp->currentPage = ControllerParameters::BRUSH_SCALE;
-        if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_LEFT] == GLFW_PRESS) cp->currentPage = ControllerParameters::BRUSH_ROTATION;
-    }
-
-    glm::vec3 right = cam.getRight();
-    glm::vec3 up = cam.getUp();
-    glm::vec3 forward = cam.getForward();
-
-    // Left stick X -> sideways (right is positive)
-    if (lx != 0.0f) {
-        if (cp && cp->currentPage != ControllerParameters::CAMERA) {
-            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) { be->translate += right * (lx * (cp->cameraMoveSpeed * deltaTime)); brushChanged = true; } }
-        } else {
-            em->publish(std::make_shared<TranslateCameraEvent>(right * (lx * velocity)));
-        }
-    }
-    // Left stick Y -> up/down (up when stick up). GLFW axis: up is -1, down is +1 so invert to make up positive
-    if (ly != 0.0f) {
-        if (cp && cp->currentPage != ControllerParameters::CAMERA) {
-            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) { be->translate += up * ((-ly) * (cp->cameraMoveSpeed * deltaTime)); brushChanged = true; } }
-        } else {
-            em->publish(std::make_shared<TranslateCameraEvent>(up * ((-ly) * velocity)));
-        }
-    }
-
-    // --- Bumpers: now used for roll rotation (swap with triggers) ---
-    if (state.buttons[GLFW_GAMEPAD_BUTTON_LEFT_BUMPER] == GLFW_PRESS) {
-        if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
-            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) { be->roll -= rotSign * angDeg; brushChanged = true; } }
-        } else {
-            // roll left
-            float rollDeg = rotSign * (-angDeg);
-            em->publish(std::make_shared<RotateCameraEvent>(forward, rollDeg));
-        }
-    }
-    if (state.buttons[GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER] == GLFW_PRESS) {
-        if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
-            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) { be->roll += rotSign * angDeg; brushChanged = true; } }
-        } else {
-            // roll right
-            float rollDeg = rotSign * (angDeg);
-            em->publish(std::make_shared<RotateCameraEvent>(forward, rollDeg));
-        }
-    }
-
-    // --- Rotation using right stick (yaw/pitch) ---
+    // Read sticks.
+    float lx = state.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
+    float ly = state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
+    if (std::abs(lx) < deadzone) lx = 0.0f;
+    if (std::abs(ly) < deadzone) ly = 0.0f;
     float rx = state.axes[GLFW_GAMEPAD_AXIS_RIGHT_X];
     float ry = state.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y];
     if (std::abs(rx) < deadzone) rx = 0.0f;
     if (std::abs(ry) < deadzone) ry = 0.0f;
 
-    // angular movement in degrees for this frame
-    // Flip the right-stick mapping: invert both axes so the analog feels reversed
-    float yawDeg = rotSign * (-rx * angDeg);
-    // invert vertical axis so pushing the stick up results in positive pitch change
-    float pitchDeg = rotSign * (-ry * angDeg);
-    if (yawDeg != 0.0f || pitchDeg != 0.0f) {
-        if (cp && cp->currentPage == ControllerParameters::BRUSH_ROTATION) {
-            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) { be->yaw += yawDeg; be->pitch += pitchDeg; brushChanged = true; } }
-        } else {
-            em->publish(std::make_shared<RotateCameraEvent>(yawDeg, pitchDeg, 0.0f));
-        }
-    }
+    glm::vec3 right = cam.getRight();
+    glm::vec3 up = cam.getUp();
+    glm::vec3 forward = cam.getForward();
 
-    // --- Forward/back translation using analog triggers (swap with bumpers) ---
-    // GLFW trigger axes typically range from -1 (released) to 1 (pressed) on many controllers.
+    // Triggers -> forward/back translation (right trigger forward, left back).
     float ltrig = state.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER];
     float rtrig = state.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER];
-    // map to 0..1
     float lval = (ltrig + 1.0f) * 0.5f;
     float rval = (rtrig + 1.0f) * 0.5f;
-    // net forward amount: right trigger -> forward, left trigger -> backward
-    float net = (rval - lval); // in [-1,1]
-    if (std::abs(net) > 1e-4f) {
-        if (cp && cp->currentPage != ControllerParameters::CAMERA) {
-            if (brushManager) { BrushEntry* be = brushManager->getSelectedEntry(); if (be) { be->translate += forward * (net * (cp->cameraMoveSpeed * deltaTime)); brushChanged = true; } }
-        } else {
-            em->publish(std::make_shared<TranslateCameraEvent>(forward * (net * velocity)));
+    float net = (rval - lval); // -1..1
+
+    // Bumpers -> roll rotation.
+    bool rollL = state.buttons[GLFW_GAMEPAD_BUTTON_LEFT_BUMPER] == GLFW_PRESS;
+    bool rollR = state.buttons[GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER] == GLFW_PRESS;
+
+    // ---- Map raw stick/trigger input into an action based on active page ----
+    ControllerAction action;
+    const PageCategory cat = gctx.activeCategory();
+    const PageControl ctrl = gctx.activeControl();
+
+    if (cat == PageCategory::CAMERA) {
+        // Camera: translation (stick/triggers) and rotation (right stick/bumpers)
+        // are always active, matching the original single-camera-page behaviour.
+        if (lx != 0.0f) action.translate += right * (lx * velocity);
+        if (ly != 0.0f) action.translate += up * (-ly * velocity); // up stick = up
+        if (net != 0.0f) action.translate += forward * (net * velocity);
+        action.rotateDeg.x += rotSign * (-rx * angDeg);
+        action.rotateDeg.y += rotSign * (-ry * angDeg);
+        if (rollL) action.rotateDeg.z += rotSign * (-angDeg);
+        if (rollR) action.rotateDeg.z += rotSign * ( angDeg);
+    } else { // BRUSH
+        float mSpeed = cp.cameraMoveSpeed * deltaTime;
+        float aSpeed = cp.cameraAngularSpeedDeg * deltaTime;
+        if (ctrl == PageControl::TRANSLATE) {
+            if (lx != 0.0f) action.translate += right * (lx * mSpeed);
+            if (ly != 0.0f) action.translate += up * (-ly * mSpeed);
+            if (net != 0.0f) action.translate += forward * (net * mSpeed);
+        } else if (ctrl == PageControl::ROTATE) {
+            action.rotateDeg.y += rotSign * (-rx * aSpeed);
+            action.rotateDeg.x += rotSign * (-ry * aSpeed);
+            if (rollL) action.rotateDeg.z += rotSign * (-aSpeed);
+            if (rollR) action.rotateDeg.z += rotSign * ( aSpeed);
+        } else if (ctrl == PageControl::SCALE) {
+            if (lx != 0.0f) action.scaleDelta.x += lx * 0.5f * deltaTime;
+            if (ly != 0.0f) action.scaleDelta.y += -ly * 0.5f * deltaTime;
+        } else if (ctrl == PageControl::TEXTURE) {
+            if (lx > 0.0f) action.textureDelta += 1;
+            if (lx < 0.0f) action.textureDelta -= 1;
+        } else if (ctrl == PageControl::ATTRIBUTE) {
+            if (lx > 0.0f) action.attributeDelta += 1;
+            if (lx < 0.0f) action.attributeDelta -= 1;
         }
     }
 
-    if (brushChanged) {
-        em->queue(std::make_shared<RebuildBrushEvent>());
-    }
+    bool brushChanged = applyControllerAction(gctx, em, brushManager, action);
+    if (brushChanged) em->queue(std::make_shared<RebuildBrushEvent>());
 }
