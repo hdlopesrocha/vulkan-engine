@@ -823,7 +823,13 @@ public:
         const bool vegetationEnabled = settings.vegetationEnabled;
 
         // ── Cubemap render on main CB (after shadow pass, reads fresh shadow maps) ──
-        if (waterEnabled && sceneRenderer && sceneRenderer->solid360Renderer) {
+        // Render the cubemap when water is enabled (it is sampled for reflections) or
+        // when the Solid360 preview is active (so it does not show stale water after the
+        // water toggle is turned off). The water-into-cubemap pass itself is still gated
+        // by `waterEnabled` inside renderSolid360.
+        const bool solid360PreviewActive = renderTargetsWidget && renderTargetsWidget->isVisible() && renderTargetsWidget->isSolid360Preview();
+        const bool renderCubemap = (waterEnabled || solid360PreviewActive) && sceneRenderer && sceneRenderer->solid360Renderer;
+        if (renderCubemap) {
             ensureCubemapResources();
 
             // Force dummy cubemap into cube360GfxDs binding #11 every frame
@@ -848,6 +854,7 @@ public:
                 this->sceneRenderer->solidRenderer.get(),
                 cube360GfxDs,
                 cube360UBO, ubo360,
+                settings.renderSolid, waterEnabled,
                 cube360ComputeDs,
                 cube360Compact.buffer,
                 cube360Visible.buffer,
@@ -941,7 +948,9 @@ public:
             }
 
             // Solid geometry depth
-            sceneRenderer->solidRenderer->drawDepth(commandBuffer, this, getMainDescriptorSet());
+            if (settings.renderSolid) {
+                sceneRenderer->solidRenderer->drawDepth(commandBuffer, this, getMainDescriptorSet());
+            }
 
             // Vegetation depth (impostors render depth+color in Instance 2)
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -1025,7 +1034,9 @@ public:
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
 
             // Solid geometry color (LESS_OR_EQUAL, no depth write)
-            sceneRenderer->solidRenderer->drawColor(commandBuffer, this, getMainDescriptorSet());
+            if (settings.renderSolid) {
+                sceneRenderer->solidRenderer->drawColor(commandBuffer, this, getMainDescriptorSet());
+            }
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
@@ -1085,7 +1096,7 @@ public:
                 }
             }
 
-            if (settings.wireframeMode && sceneRenderer) {
+            if (settings.renderSolid && settings.wireframeMode && sceneRenderer) {
                 sceneRenderer->drawSolidWireframeOverlay(this, commandBuffer, frameIdx, getMainDescriptorSet(), settings.wireframeMode);
             }
 

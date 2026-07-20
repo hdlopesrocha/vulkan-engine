@@ -307,6 +307,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                                      SolidRenderer* solidRenderer,
                                      VkDescriptorSet mainDescriptorSet,
                                      Buffer& uniformBuffer, const UniformObject& ubo,
+                                     bool renderSolid, bool renderWater,
                                      VkDescriptorSet computeDs,
                                      VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer,
                                      VkDescriptorSet waterComputeDs,
@@ -403,12 +404,12 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
         }
 
         // Per-face frustum cull — must run OUTSIDE dynamic rendering
-        if (computeDs != VK_NULL_HANDLE && compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
+        if (renderSolid && computeDs != VK_NULL_HANDLE && compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
             auto &ind = solidRenderer->getIndirectRenderer();
             ind.prepareCullWithDescriptor(cmd, faceVP, computeDs, compactIndirectBuffer, visibleCountBuffer);
         }
         // Per-face water cull with dedicated buffers (no race with main pass)
-        if (waterRenderer && waterComputeDs != VK_NULL_HANDLE && waterCompactIndirectBuffer != VK_NULL_HANDLE && waterVisibleCountBuffer != VK_NULL_HANDLE) {
+        if (renderWater && waterRenderer && waterComputeDs != VK_NULL_HANDLE && waterCompactIndirectBuffer != VK_NULL_HANDLE && waterVisibleCountBuffer != VK_NULL_HANDLE) {
             waterRenderer->getIndirectRenderer().prepareCullWithDescriptor(cmd, faceVP, waterComputeDs, waterCompactIndirectBuffer, waterVisibleCountBuffer);
         }
 
@@ -441,7 +442,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             VkRect2D scissor{{0, 0}, {CUBE360_FACE_SIZE, CUBE360_FACE_SIZE}};
             vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-            if (solidRenderer && depthOnlyPipeline != VK_NULL_HANDLE) {
+            if (renderSolid && solidRenderer && depthOnlyPipeline != VK_NULL_HANDLE) {
                 if (cmdState) cmdState->bindGraphicsPipeline(cmd, depthOnlyPipeline);
                 else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthOnlyPipeline);
                 if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, depthOnlyPipelineLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
@@ -514,7 +515,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
             }
 
             // Solid geometry with LESS_OR_EQUAL, depth write (redundant but harmless)
-            if (solidRenderer) {
+            if (renderSolid && solidRenderer) {
                 VkPipeline gfxPipe = solidRenderer->getGraphicsPipeline();
                 VkPipelineLayout gfxLayout = solidRenderer->getGraphicsPipelineLayout();
                 if (gfxPipe != VK_NULL_HANDLE && gfxLayout != VK_NULL_HANDLE) {
@@ -535,8 +536,9 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
 
         // Render water into the cubemap face (with reflection/refraction disabled via skipEnvMap flag in UBO).
         // Depth stays in ATTACHMENT_OPTIMAL; renderWaterIntoCubemap uses the dummy depth for shader sampling
-        // so no layout transition is needed.
-        if (waterRenderer && waterRenderer->getCubemapWaterPipeline() != VK_NULL_HANDLE) {
+        // so no layout transition is needed. Only when water rendering is enabled (settings.waterEnabled);
+        // otherwise the cubemap reflects solids only and the preview will not show stale water.
+        if (renderWater && waterRenderer && waterRenderer->getCubemapWaterPipeline() != VK_NULL_HANDLE) {
             waterRenderer->renderWaterIntoCubemap(cmd,
                 cube360FaceViews[face], cube360DepthViews[face],
                 mainDescriptorSet, app->getMaterialDescriptorSet(),

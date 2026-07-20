@@ -28,6 +28,7 @@ public:
                         SolidRenderer* solidRenderer,
                         VkDescriptorSet mainDescriptorSet,
                         Buffer& uniformBuffer, const UniformObject& ubo,
+                        bool renderSolid, bool renderWater,
                         VkDescriptorSet computeDs = VK_NULL_HANDLE,
                         VkBuffer compactIndirectBuffer = VK_NULL_HANDLE,
                         VkBuffer visibleCountBuffer = VK_NULL_HANDLE,

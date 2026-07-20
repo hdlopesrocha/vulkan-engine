@@ -882,6 +882,17 @@ void RenderTargetsWidget::cleanup() {
     }
 }
 
+bool RenderTargetsWidget::isSolid360Preview() const {
+    switch (selectedPreview) {
+        case PreviewTarget::Solid360Cube:
+        case PreviewTarget::Solid360DepthCube:
+        case PreviewTarget::Solid360Equirect:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void RenderTargetsWidget::invalidateImGuiDescriptors() {
     // After ImGui is re-initialized (new DSL), all AddTexture DS created with the old DSL
     // must be freed and cleared. They will be re-created on the next render() call.

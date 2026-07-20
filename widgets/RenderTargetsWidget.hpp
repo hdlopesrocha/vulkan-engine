@@ -173,6 +173,9 @@ public:
     // (created with the old DSL) and resets them to VK_NULL_HANDLE so they are re-created
     // with the new DSL on the next frame.
     void invalidateImGuiDescriptors();
+    // True when the currently selected preview is one of the Solid360 cubemap
+    // targets (so the cubemap must be kept up to date even when water is disabled).
+    bool isSolid360Preview() const;
     // Run a small fullscreen pass that samples a depth image and writes a
     // normalized RGBA preview into `dstView`. `dstDescriptor` will be
     // created via ImGui_ImplVulkan_AddTexture if needed. `mode` selects
