@@ -12,6 +12,7 @@ layout(location = ATTR_BRUSH_INDEX) in int inBrushIndex;
 
 layout(location = VARY_LOCALPOS) out vec3 fragPos;
 layout(location = VARY_NORMAL) out vec3 fragNormal;
+layout(location = VARY_SHARPNORMAL) out vec3 fragBaseNormal;  // undisplaced base normal (for per-fragment detail)
 layout(location = VARY_UV) out vec2 fragTexCoord;
 layout(location = VARY_POSCLIP) out vec4 fragPosClip;  // clip-space position for depth lookup
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;  // world-space position for shadow cascades
@@ -38,6 +39,7 @@ void main() {
     fragPos = inPosition;
     fragPosWorld = inPosition;
     fragNormal = inNormal;
+    fragBaseNormal = inNormal;
     fragTexCoord = inTexCoord;
     fragPosLightSpace = ubo.lightSpaceMatrix * vec4(inPosition, 1.0);
     

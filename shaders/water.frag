@@ -7,6 +7,7 @@
 
 layout(location = VARY_LOCALPOS) in vec3 fragPos;
 layout(location = VARY_NORMAL) in vec3 fragNormal;
+layout(location = VARY_SHARPNORMAL) in vec3 fragBaseNormal;  // undisplaced base normal
 layout(location = VARY_UV) in vec2 fragTexCoord;
 layout(location = VARY_POSCLIP) in vec4 fragPosClip;  // clip-space position for scene sampling
 layout(location = VARY_DEBUG) in vec3 fragDebug;   // debug visual (displacement)
@@ -148,24 +149,27 @@ void main() {
         bAmp *= smoothstep(0.0, waveDepthTransition, earlyDepthDiff);
     }
 
-    vec3 N  = normalize(fragNormal);
-    vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 T  = normalize(cross(up, N));
-    vec3 B  = cross(N, T);
+    // Build the surface frame from the UNDISPLACED base normal so the
+    // per-fragment analytic gradient fully defines the shading normal. This
+    // keeps the fine ripple detail regardless of tessellation: when tessellation
+    // is enabled the geometry is displaced (silhouette/refraction look right)
+    // but the normals are still evaluated per fragment at full resolution,
+    // instead of being limited to the interpolated per-vertex normal.
+    vec3 flatN = normalize(fragBaseNormal);
+    vec3 up = abs(flatN.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T  = normalize(cross(up, flatN));
+    vec3 B  = cross(flatN, T);
 
     vec3 normal;
-    if (ubo.passParams.y > 0.5) {
-        normal = N;
-    } else {
-        // When tessellation is inactive, approximate the bumped normal from
-        // the procedural displacement on the flat base mesh.  The analytic
-        // gradient from a single noise evaluation replaces 5 finite-difference
-        // samples (the epsFrag scale is no longer needed).
+    {
+        // Analytic height-field normal from a single noise evaluation (the
+        // gradient replaces 5 finite-difference samples). Evaluated per fragment
+        // so tessellated water retains the same ripple detail as flat water.
         vec4 wave = waterWaveSample(fragPos.xyz, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bAmp, 1.0);
         float dhdT = dot(wave.yzw, T);
         float dhdB = dot(wave.yzw, B);
 
-        normal = normalize(N - dhdT * T - dhdB * B);
+        normal = normalize(flatN - dhdT * T - dhdB * B);
     }
 
     

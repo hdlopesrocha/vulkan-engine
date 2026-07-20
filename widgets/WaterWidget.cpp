@@ -150,6 +150,6 @@ void WaterWidget::render() {
         }
 
         ImGui::Separator();
-        // Push updated params to GPU for the current layer
+        // Push updated params to GPU for the current layer.
         renderer->updateGPUParamsForLayer(static_cast<uint32_t>(currentLayer), layerParams);
     }

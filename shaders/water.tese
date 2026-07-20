@@ -9,12 +9,14 @@ layout(triangles, equal_spacing, cw) in;
 
 layout(location = VARY_LOCALPOS) in vec3 inPos[];
 layout(location = VARY_NORMAL) in vec3 inNormal[];
+layout(location = VARY_SHARPNORMAL) in vec3 inBaseNormal[];
 layout(location = VARY_UV) in vec2 inTexCoord[];
 layout(location = VARY_BRUSHPATCH) in ivec3 tc_fragBrushIndex[];
 layout(location = VARY_TEXWEIGHTS) in vec3 tc_fragTexWeights[];
 
 layout(location = VARY_LOCALPOS) out vec3 fragPos;
 layout(location = VARY_NORMAL) out vec3 fragNormal;
+layout(location = VARY_SHARPNORMAL) out vec3 fragBaseNormal;  // undisplaced base normal for per-fragment detail
 layout(location = VARY_UV) out vec2 fragTexCoord;
 layout(location = VARY_POSCLIP) out vec4 fragPosClip;  // clip-space position for depth lookup
 layout(location = VARY_DEBUG) out vec3 fragDebug;   // debug visual (displacement)
@@ -148,8 +150,17 @@ void main() {
     vec3 bumpedN = normalize(normal - dhdT * T - dhdB * B);
     if (dot(bumpedN, normal) < 0.0) bumpedN = -bumpedN;
 
-    pos += waveDisplacement * bumpedN;
+    // Displace along the FLAT base normal, not the perturbed one. The analytic
+    // normal `bumpedN = N - dHdT*T - dHdB*B` is the exact surface normal only for
+    // a height field defined as `base + N * h`. Displacing along the tilted
+    // `bumpedN` instead would build a different surface whose true normal no
+    // longer matches `bumpedN`, so lighting would disagree with the geometry
+    // (visible especially on steep/large waves). Keeping the displacement axis
+    // fixed at `normal` makes the rasterized surface and the shading normal
+    // consistent.
+    pos += waveDisplacement * normal;
     fragNormal = bumpedN;
+    fragBaseNormal = normal;   // undisplaced (flat) interpolated base normal
 
     // Debug: encode displacement as color (normalized)
     float maxExpected = bumpAmp * waveScale * 1.5; // heuristic normalization factor

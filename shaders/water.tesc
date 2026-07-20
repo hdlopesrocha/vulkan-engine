@@ -10,11 +10,13 @@ layout(vertices = 3) out;
 
 layout(location = VARY_LOCALPOS) in vec3 inPos[];
 layout(location = VARY_NORMAL) in vec3 inNormal[];
+layout(location = VARY_SHARPNORMAL) in vec3 inBaseNormal[];
 layout(location = VARY_UV) in vec2 inTexCoord[];
 layout(location = VARY_BRUSHPATCH) flat in int pc_inBrushIndex[];
 
 layout(location = VARY_LOCALPOS) out vec3 outPos[];
 layout(location = VARY_NORMAL) out vec3 outNormal[];
+layout(location = VARY_SHARPNORMAL) out vec3 outBaseNormal[];
 layout(location = VARY_UV) out vec2 outTexCoord[];
 layout(location = VARY_BRUSHPATCH) flat out ivec3 tc_fragBrushIndex[];
 layout(location = VARY_TEXWEIGHTS) out vec3 tc_fragTexWeights[];
@@ -26,6 +28,7 @@ layout(location = VARY_TEXWEIGHTS) out vec3 tc_fragTexWeights[];
 void main() {
     outPos[gl_InvocationID] = inPos[gl_InvocationID];
     outNormal[gl_InvocationID] = inNormal[gl_InvocationID];
+    outBaseNormal[gl_InvocationID] = inBaseNormal[gl_InvocationID];
     outTexCoord[gl_InvocationID] = inTexCoord[gl_InvocationID];
 
     int i0 = pc_inBrushIndex[0];
