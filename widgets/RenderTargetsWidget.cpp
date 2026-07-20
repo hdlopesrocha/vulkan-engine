@@ -310,16 +310,11 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
     di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkWriteDescriptorSet w{};
     w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    // Always allocate a temporary descriptor set for this pass to avoid
-    // updating a descriptor set that may be currently bound by another
-    // command buffer (including one in RECORDING state). The temporary
-    // set will be freed after the synchronous submit below.
-    VkDescriptorSet dsToUse = VK_NULL_HANDLE;
-    try {
-        dsToUse = app->createDescriptorSet(linearizeDescriptorSetLayout);
-    } catch (...) {
-        throw std::runtime_error("RenderTargetsWidget: failed to allocate linearize descriptor set (no fallback allowed)");
-    }
+    // Reuse the persistent linearize descriptor set (allocated once at init).
+    // This pass submits synchronously and waits for completion before
+    // returning, so no other command buffer can be reading this set while we
+    // update and bind it — no per-call temporary allocation is needed.
+    VkDescriptorSet dsToUse = linearizeDescriptorSet;
     w.dstSet = dsToUse;
     w.dstBinding = 0;
     w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -522,14 +517,6 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
         // Free the command buffer on failure
         app->freeCommandBuffer(cmd);
         return false;
-    }
-
-    // Free the temporary descriptor set immediately — GPU work is complete.
-    if (dsToUse != linearizeDescriptorSet && dsToUse != VK_NULL_HANDLE) {
-        VkDevice dev = app->getDevice();
-        VkDescriptorPool pool = app->getDescriptorPool();
-        vkFreeDescriptorSets(dev, pool, 1, &dsToUse);
-        app->resources.removeDescriptorSet(dsToUse);
     }
 
     // Free the command buffer now that synchronous submit completed
