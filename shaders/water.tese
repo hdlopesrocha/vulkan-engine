@@ -17,6 +17,7 @@ layout(location = VARY_TEXWEIGHTS) in vec3 tc_fragTexWeights[];
 layout(location = VARY_LOCALPOS) out vec3 fragPos;
 layout(location = VARY_NORMAL) out vec3 fragNormal;
 layout(location = VARY_SHARPNORMAL) out vec3 fragBaseNormal;  // undisplaced base normal for per-fragment detail
+layout(location = VARY_BASEPOS) out vec4 fragBasePos;        // xyz = undisplaced base position, w = final bump amplitude
 layout(location = VARY_UV) out vec2 fragTexCoord;
 layout(location = VARY_POSCLIP) out vec4 fragPosClip;  // clip-space position for depth lookup
 layout(location = VARY_DEBUG) out vec3 fragDebug;   // debug visual (displacement)
@@ -28,6 +29,8 @@ layout(location = VARY_BRUSHPATCH) flat out int fragBrushIndex;
 
 // Scene depth texture for depth-dependent wave attenuation (set 2)
 layout(set = 2, binding = 1) uniform sampler2D sceneDepthTex;
+// Water back-face depth texture for volume-based bump modulation (set 2)
+layout(set = 2, binding = 3) uniform sampler2D waterBackDepthTex;
 
 #include "includes/perlin.glsl"
 #include "includes/water_noise.glsl"
@@ -100,22 +103,59 @@ void main() {
 
     float bumpAmp = wp.waveParams.z; // bump amplitude provided via Water widget
 
-    // --- Depth-based wave attenuation ---
-    // Project the undisplaced water vertex to screen space and sample the solid
-    // depth buffer.  Where the water surface is close to solid geometry (shallow),
-    // waves are suppressed.  waveDepthTransition controls the ramp distance.
-    float waveDepthTransition = wp.shallowColor.w;
-    if (waveDepthTransition > 0.0) {
+    // --- Screen-space UV of the undisplaced base vertex ---
+    // Shared by the shallow-wave attenuation and the volume-based bump
+    // modulation, and forwarded to the fragment stage (fragBasePos) so the
+    // per-fragment analytic normal samples the SAME height field the displaced
+    // geometry was built from.
+    vec2 screenUV = vec2(0.0);
+    float baseClipDepth = 0.0;
+    bool haveScreen = false;
+    {
         vec4 preClip = ubo.viewProjection * vec4(pos, 1.0);
         if (preClip.w > 0.001) {
-            vec2 screenUV = clamp(preClip.xy / preClip.w * 0.5 + 0.5, 0.001, 0.999);
-            float solidDepthRaw = texture(sceneDepthTex, screenUV).r;
-            float waterDepthRaw = preClip.z / preClip.w;
-            float solidDepthLin = linearizeDepth(solidDepthRaw);
-            float waterDepthLin = linearizeDepth(waterDepthRaw);
-            float depthDiff = max(solidDepthLin - waterDepthLin, 0.0);
-            bumpAmp *= smoothstep(0.0, waveDepthTransition, depthDiff);
+            screenUV = clamp(preClip.xy / preClip.w * 0.5 + 0.5, 0.001, 0.999);
+            baseClipDepth = preClip.z / preClip.w;
+            haveScreen = true;
         }
+    }
+
+    // --- Depth-based wave attenuation (shallow: suppress waves) ---
+    // Where the water surface is close to solid geometry (shallow), waves are
+    // suppressed.  waveDepthTransition controls the ramp distance.
+    float waveDepthTransition = wp.shallowColor.w;
+    if (waveDepthTransition > 0.0 && haveScreen) {
+        float solidDepthRaw = texture(sceneDepthTex, screenUV).r;
+        float solidDepthLin = linearizeDepth(solidDepthRaw);
+        float waterDepthLin = linearizeDepth(baseClipDepth);
+        float depthDiff = max(solidDepthLin - waterDepthLin, 0.0);
+        bumpAmp *= smoothstep(0.0, waveDepthTransition, depthDiff);
+    }
+
+    // --- Volume-based bump amplitude (deep water: amplify waves) ---
+    // Reconstruct water thickness the same way the fragment stage does, so the
+    // amplitude that drives the displaced geometry matches the one used for the
+    // per-fragment shading normal.
+    float volumeBumpRate = wp.reserved2.z;
+    if (volumeBumpRate > 0.0 && haveScreen) {
+        float backFaceDepthRaw = texture(waterBackDepthTex, screenUV).r;
+        float sceneDepthRaw = texture(sceneDepthTex, screenUV).r;
+
+        mat4 invVP = ubo.invViewProjection;
+        vec4 backFaceWorldH = invVP * vec4(screenUV * 2.0 - 1.0, backFaceDepthRaw, 1.0);
+        vec3 backFaceWorld = backFaceWorldH.xyz / backFaceWorldH.w;
+        vec4 sceneWorldH = invVP * vec4(screenUV * 2.0 - 1.0, sceneDepthRaw, 1.0);
+        vec3 sceneWorldPos = sceneWorldH.xyz / sceneWorldH.w;
+
+        vec3 worldFrontPos = pos;
+        vec3 worldRayDir = normalize(worldFrontPos - ubo.viewPos.xyz);
+        float backFaceThickness = max(dot(backFaceWorld - worldFrontPos, worldRayDir), 0.0);
+        float sceneThickness    = max(dot(sceneWorldPos - worldFrontPos, worldRayDir), 0.0);
+        const float kMinVolumeThickness = 0.05;
+        bool hasValidBackFace = (backFaceDepthRaw < 0.9999) && (backFaceThickness > kMinVolumeThickness);
+        float waterThickness = hasValidBackFace ? min(backFaceThickness, sceneThickness) : sceneThickness;
+
+        bumpAmp *= (1.0 - exp(-waterThickness * volumeBumpRate));
     }
 
     // Calculate wave displacement and its analytic spatial gradient using 4D
@@ -161,6 +201,7 @@ void main() {
     pos += waveDisplacement * normal;
     fragNormal = bumpedN;
     fragBaseNormal = normal;   // undisplaced (flat) interpolated base normal
+    fragBasePos = vec4(pos - waveDisplacement * normal, bumpAmp);  // base pos + final amplitude
 
     // Debug: encode displacement as color (normalized)
     float maxExpected = bumpAmp * waveScale * 1.5; // heuristic normalization factor

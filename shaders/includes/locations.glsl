@@ -38,5 +38,6 @@
 #define VARY_LOCALPOS 20
 #define VARY_SDF 21
 #define VARY_SHARPNORMAL 6
+#define VARY_BASEPOS 21   // water: undisplaced base world position + TES bump amplitude (xyz=pos, w=amp)
 
 #endif // LOCATIONS_GLSL

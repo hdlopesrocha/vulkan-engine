@@ -2303,9 +2303,16 @@ VkFence VulkanApp::submitCommandBufferAsync(VkCommandBuffer commandBuffer, VkSem
         *outSemaphore = semaphore;
         // register the semaphore so drawFrame will wait on it and later clean it up
         // Use a conservative union of likely consumer stages when the
-        // producing queue is the graphics/compute family.
+        // producing queue is the graphics/compute family. Include the
+        // tessellation stages: offscreen passes (e.g. water back-face depth)
+        // are sampled in the tessellation evaluation shader of the main pass.
         std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
-        VkPipelineStageFlags2 waitStage = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        VkPipelineStageFlags2 waitStage = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
+            | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         m_extraWaitSemaphores.emplace_back(semaphore, waitStage);
     }
 
@@ -3011,8 +3018,13 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         } else if ((effectiveOld == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || effectiveOld == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             barrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
             barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            // Depth pre-passes (e.g. water back-face) write at EARLY_FRAGMENT_TESTS,
+            // so the source must include EARLY (not just LATE). The sampled image can
+            // be read in the tessellation evaluation shader too, so the destination
+            // covers all graphics/compute shader stages (matching the COLOR ->
+            // SHADER_READ case used elsewhere).
+            sourceStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            destinationStage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         } else if (effectiveOld == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
             barrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
             if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
@@ -3264,8 +3276,13 @@ void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkIma
         } else if ((effectiveOld == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || effectiveOld == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             barrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
             barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-            destinationStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            // Depth pre-passes (e.g. water back-face) write at EARLY_FRAGMENT_TESTS,
+            // so the source must include EARLY (not just LATE). The sampled image can
+            // be read in the tessellation evaluation shader too, so the destination
+            // covers all graphics/compute shader stages (matching the COLOR ->
+            // SHADER_READ case used elsewhere).
+            sourceStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            destinationStage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         } else if (effectiveOld == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
             // Transition from shader-read back to a depth attachment layout (write or read-only).
             barrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;

@@ -391,10 +391,11 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     sceneBindings[2].pImmutableSamplers = nullptr;
 
     // Water back-face depth (binding 3) — for water volume thickness
+    // Also sampled by the tessellation evaluation shader (VUID 07988).
     sceneBindings[3].binding = 3;
     sceneBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     sceneBindings[3].descriptorCount = 1;
-    sceneBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sceneBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
     sceneBindings[3].pImmutableSamplers = nullptr;
 
     // Optional cubemap sampler (binding 4) — used by water shader when solid 360 is available
@@ -886,15 +887,21 @@ void WaterRenderer::prepareRender(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
 
 
     // Memory barrier: ensure COLOR_ATTACHMENT_OUTPUT + depth writes from the
-    // solid pass are visible to FRAGMENT_SHADER reads in the water pass.
+    // solid/back-face passes are visible to shader reads in the water pass.
     // The solid render pass already images to SHADER_READ_ONLY_OPTIMAL via
     // explicit endPass barriers, but we need an execution + memory dependency
-    // between the two command sequences on the same command buffer.
+    // between the two command sequences on the same command buffer. The
+    // tessellation evaluation shader also samples the back-face depth (set 2
+    // binding 3) for volume bump modulation, so it must be included in the
+    // destination stage mask alongside the fragment shader.
     VkMemoryBarrier2 memBarrier{};
     memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-    memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    // The back-face pass writes its depth image at EARLY_FRAGMENT_TESTS stage
+    // (depth-only pre-pass), so the source mask must include EARLY_FRAGMENT_TESTS
+    // (not just LATE) to establish the dependency for that write.
+    memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
     memBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     memBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
     VkDependencyInfo depInfo{};
     depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;

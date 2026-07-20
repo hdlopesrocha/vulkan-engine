@@ -1292,8 +1292,15 @@ public:
 
                 this->profileBackface = std::chrono::duration<float, std::milli>(
                     std::chrono::high_resolution_clock::now() - tBackface).count();
-                // Submit and schedule cleanup of temporary resources after fence signals
-                VkFence f = app->submitCommandBufferAsync(cmd, &semBackFace);
+                // Submit and schedule cleanup of temporary resources after fence signals.
+                // Use submitCommandBufferAsyncToQueue on the graphics queue so the
+                // completion semaphore (semBackFace) is registered in
+                // m_extraWaitSemaphores and drawFrame waits on it before the main
+                // command buffer reads the back-face depth (e.g. in the water
+                // tessellation evaluation shader). A plain submitCommandBufferAsync
+                // would signal the semaphore but never register it, leaving the
+                // cross-command-buffer write->read dependency unsynchronized.
+                VkFence f = app->submitCommandBufferAsyncToQueue(cmd, app->getGraphicsQueue(), &semBackFace);
                 { std::lock_guard<std::mutex> lk(asyncFenceMutex); pendingAsyncFences.push_back(f); }
                 app->deferDestroyUntilFence(f, [app, taskCompact, taskVisible, asyncPool, asyncWaterDs]() mutable {
                     app->destroyBuffer(taskCompact);

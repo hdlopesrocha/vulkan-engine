@@ -8,6 +8,7 @@
 layout(location = VARY_LOCALPOS) in vec3 fragPos;
 layout(location = VARY_NORMAL) in vec3 fragNormal;
 layout(location = VARY_SHARPNORMAL) in vec3 fragBaseNormal;  // undisplaced base normal
+layout(location = VARY_BASEPOS) in vec4 fragBasePos;          // xyz = undisplaced base position, w = TES bump amplitude
 layout(location = VARY_UV) in vec2 fragTexCoord;
 layout(location = VARY_POSCLIP) in vec4 fragPosClip;  // clip-space position for scene sampling
 layout(location = VARY_DEBUG) in vec3 fragDebug;   // debug visual (displacement)
@@ -76,7 +77,6 @@ void main() {
     float blurRadius      = wp.reserved1.w;
     int   blurSamples     = max(int(wp.reserved2.x), 1);
     float volumeBlurRate  = wp.reserved2.y;
-    float volumeBumpRate  = wp.reserved2.z;
 
     // Apply noise time speed
     float animTime = time * noiseTimeSpeed;
@@ -132,22 +132,11 @@ void main() {
 
     // Depth-based modulation factors (exponential ramp)
         float volumeBlurFactor = (volumeBlurRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBlurRate)) : 1.0;
-        float volumeBumpFactor = (volumeBumpRate > 0.0) ? (1.0 - exp(-waterThickness * volumeBumpRate)) : 1.0;
         blurRadius *= volumeBlurFactor;
     
     
     // Common bump parameters.
     float eps = 0.5;
-    float bAmp = wp.waveParams.z * volumeBumpFactor;
-
-    // Depth-based wave attenuation (must match the TES depth ramp so
-    // the procedural normal is consistent with the displaced geometry).
-    float waveDepthTransition = wp.shallowColor.w;
-    if (waveDepthTransition > 0.0) {
-        float earlyWaterDepth = gl_FragCoord.z;
-        float earlyDepthDiff = max(sceneDepthEarly - linearizeDepth(earlyWaterDepth), 0.0);
-        bAmp *= smoothstep(0.0, waveDepthTransition, earlyDepthDiff);
-    }
 
     // Build the surface frame from the UNDISPLACED base normal so the
     // per-fragment analytic gradient fully defines the shading normal. This
@@ -163,9 +152,16 @@ void main() {
     vec3 normal;
     {
         // Analytic height-field normal from a single noise evaluation (the
-        // gradient replaces 5 finite-difference samples). Evaluated per fragment
-        // so tessellated water retains the same ripple detail as flat water.
-        vec4 wave = waterWaveSample(fragPos.xyz, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bAmp, 1.0);
+        // gradient replaces 5 finite-difference samples).  Uses the UNDISPLACED
+        // base position (fragBasePos.xyz) and the FINAL bump amplitude
+        // (fragBasePos.w) straight from the TES so the per-fragment normal is
+        // evaluated on the exact same height field the displaced geometry was
+        // built from — same noise, same amplitude, same depth/volume
+        // attenuation.  This keeps shading normals perfectly consistent with the
+        // tessellated surface.
+        vec3  basePos = fragBasePos.xyz;
+        float bumpAmp = fragBasePos.w;
+        vec4 wave = waterWaveSample(basePos, animTime, noiseScale, noiseOctaves, noisePersistence, noiseLacunarity, bumpAmp, 1.0);
         float dhdT = dot(wave.yzw, T);
         float dhdB = dot(wave.yzw, B);
 
