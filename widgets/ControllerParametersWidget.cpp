@@ -76,15 +76,11 @@ void ControllerParametersWidget::render() {
         if (!be) { ImGui::Text("No brush selected"); return; }
         const PageControl ctrl = kb.activeControl();
         switch (ctrl) {
-            case PageControl::TRANSLATE:
+            case PageControl::TRANSLATE: // Transform subpage: translate+rotate+scale
                 ImGui::DragFloat3("Position", glm::value_ptr(be->translate), 0.1f);
-                break;
-            case PageControl::ROTATE:
                 ImGui::DragFloat("Yaw", &be->yaw, 1.0f, -360.0f, 360.0f);
                 ImGui::DragFloat("Pitch", &be->pitch, 1.0f, -360.0f, 360.0f);
                 ImGui::DragFloat("Roll", &be->roll, 1.0f, -360.0f, 360.0f);
-                break;
-            case PageControl::SCALE:
                 ImGui::DragFloat3("Scale", glm::value_ptr(be->scale), 0.01f, 0.0f, 1024.0f);
                 break;
             case PageControl::TEXTURE:

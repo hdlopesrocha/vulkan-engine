@@ -43,42 +43,32 @@ inline bool applyControllerAction(const ControllerContext &ctx, EventManager *em
     BrushEntry *be = brush->getSelectedEntry();
     if (!be) return false;
 
-    const PageControl ctrl = ctx.activeControl();
+    // Translate, rotate and scale are applied from whatever deltas are present,
+    // independent of the active subpage, so the Brush > Transform subpage
+    // combines all three operations at once.
     bool changed = false;
-    switch (ctrl) {
-        case PageControl::TRANSLATE:
-            if (glm::length2(a.translate) > 1e-12f) { be->translate += a.translate; changed = true; }
-            break;
-        case PageControl::ROTATE:
-            if (glm::length2(a.rotateDeg) > 1e-12f) {
-                be->yaw += a.rotateDeg.x;
-                be->pitch += a.rotateDeg.y;
-                be->roll += a.rotateDeg.z;
-                changed = true;
-            }
-            break;
-        case PageControl::SCALE:
-            if (glm::length2(a.scaleDelta) > 1e-12f) {
-                be->scale = glm::max(be->scale + a.scaleDelta, glm::vec3(0.001f));
-                changed = true;
-            }
-            break;
-        case PageControl::TEXTURE:
-            if (a.textureDelta != 0) {
-                be->materialIndex = std::max(0, be->materialIndex + a.textureDelta);
-                changed = true;
-            }
-            break;
-        case PageControl::ATTRIBUTE:
-            if (a.attributeDelta != 0) {
-                be->sdfType = (be->sdfType + a.attributeDelta) % 8;
-                if (be->sdfType < 0) be->sdfType += 8;
-                changed = true;
-            }
-            break;
-        case PageControl::UI:
-        default:
-            break;
+    if (glm::length2(a.translate) > 1e-12f) { be->translate += a.translate; changed = true; }
+    if (glm::length2(a.rotateDeg) > 1e-12f) {
+        be->yaw += a.rotateDeg.x;
+        be->pitch += a.rotateDeg.y;
+        be->roll += a.rotateDeg.z;
+        changed = true;
+    }
+    if (glm::length2(a.scaleDelta) > 1e-12f) {
+        be->scale = glm::max(be->scale + a.scaleDelta, glm::vec3(0.001f));
+        changed = true;
+    }
+
+    // Texture / Attribute remain on their dedicated subpages.
+    const PageControl ctrl = ctx.activeControl();
+    if (ctrl == PageControl::TEXTURE && a.textureDelta != 0) {
+        be->materialIndex = std::max(0, be->materialIndex + a.textureDelta);
+        changed = true;
+    }
+    if (ctrl == PageControl::ATTRIBUTE && a.attributeDelta != 0) {
+        be->sdfType = (be->sdfType + a.attributeDelta) % 8;
+        if (be->sdfType < 0) be->sdfType += 8;
+        changed = true;
     }
     return changed;
 }

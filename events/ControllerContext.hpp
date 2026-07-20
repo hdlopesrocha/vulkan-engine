@@ -91,21 +91,19 @@ public:
         camera->name = "Camera";
         camera->category = PageCategory::CAMERA;
         camera->control = PageControl::TRANSLATE;
-        camera->addChild("Translate", PageControl::TRANSLATE);
-        camera->addChild("Rotate", PageControl::ROTATE);
+        // A single Transform subpage combines translate + rotate.
+        camera->addChild("Transform", PageControl::TRANSLATE);
         // Non-propagating page: raw mouse / input is handed to ImGui / UI.
         camera->addChild("UI", PageControl::UI, /*propagate=*/false);
         root_->children.push_back(camera);
 
-        // Brush category (SDF brush). Mouse manipulation is intentionally not
-        // implemented yet, but the pages exist so the tree is reusable.
+        // Brush category (SDF brush). Translate, rotate and scale are combined
+        // into a single Transform subpage; texture/attribute are separate.
         auto brush = std::make_shared<ControllerPage>();
         brush->name = "Brush";
         brush->category = PageCategory::BRUSH;
         brush->control = PageControl::TRANSLATE;
-        brush->addChild("Translate", PageControl::TRANSLATE);
-        brush->addChild("Rotate", PageControl::ROTATE);
-        brush->addChild("Scale", PageControl::SCALE);
+        brush->addChild("Transform", PageControl::TRANSLATE);
         brush->addChild("Texture", PageControl::TEXTURE);
         brush->addChild("Attributes", PageControl::ATTRIBUTE);
         root_->children.push_back(brush);

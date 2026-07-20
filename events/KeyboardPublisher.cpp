@@ -61,9 +61,10 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
 
     if (cat == PageCategory::CAMERA) {
         // Camera: WASD/QE translate and H/F/G/T/R/Y rotate are always active,
-        // matching the original single-camera-page behaviour. Brush rotation is
-        // likewise always active; the active Brush subpage only gates the
-        // translate/scale/texture/attribute controls, and the mouse controller.
+        // matching the original single-camera-page behaviour. On the Brush page,
+        // translate (WASD/QE), rotate (H/F/G/T/R/Y) and scale (J/U, K/I, L/O) are
+        // all always active so they work together; the Brush subpage only gates
+        // the texture/attribute controls, and the mouse controller.
         if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) action.translate += forward * velocity;
         if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) action.translate -= forward * velocity;
         if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) action.translate += right * velocity;
@@ -97,24 +98,23 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
         if (glfwGetKey(window, GLFW_KEY_L) == GLFW_PRESS) action.scaleDelta.z += 0.5f * deltaTime;
         if (glfwGetKey(window, GLFW_KEY_O) == GLFW_PRESS) action.scaleDelta.z -= 0.5f * deltaTime;
 
-        if (ctrl == PageControl::TRANSLATE) {
-            if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) action.translate += forward * mSpeed;
-            if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) action.translate -= forward * mSpeed;
-            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) action.translate += right * mSpeed;
-            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) action.translate -= right * mSpeed;
-            if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) action.translate += up * mSpeed;
-            if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) action.translate -= up * mSpeed;
-        } else if (ctrl == PageControl::SCALE) {
-            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) action.scaleDelta.x += 0.5f * deltaTime;
-            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) action.scaleDelta.x -= 0.5f * deltaTime;
-            if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) action.scaleDelta.y += 0.5f * deltaTime;
-            if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) action.scaleDelta.y -= 0.5f * deltaTime;
-        } else if (ctrl == PageControl::TEXTURE) {
-            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) action.textureDelta += 1;
-            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) action.textureDelta -= 1;
+        // Translation (WASD/QE) is always active on the brush, so translate,
+        // rotate and scale all work together on the same Brush page.
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) action.translate += forward * mSpeed;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) action.translate -= forward * mSpeed;
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) action.translate += right * mSpeed;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) action.translate -= right * mSpeed;
+        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) action.translate += up * mSpeed;
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) action.translate -= up * mSpeed;
+
+        // Texture / Attribute subpages keep their own keys so they don't clash
+        // with the always-active WASD/QE translate or H/F/G/T/R/Y rotate.
+        if (ctrl == PageControl::TEXTURE) {
+            if (glfwGetKey(window, GLFW_KEY_LEFT_BRACKET) == GLFW_PRESS) action.textureDelta -= 1;
+            if (glfwGetKey(window, GLFW_KEY_RIGHT_BRACKET) == GLFW_PRESS) action.textureDelta += 1;
         } else if (ctrl == PageControl::ATTRIBUTE) {
-            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) action.attributeDelta += 1;
-            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) action.attributeDelta -= 1;
+            if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS) action.attributeDelta -= 1;
+            if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS) action.attributeDelta += 1;
         }
     }
 

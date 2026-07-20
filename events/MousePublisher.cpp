@@ -57,32 +57,22 @@ void MousePublisher::update(EventManager* em, const Camera& cam, float deltaTime
     glm::vec3 right = cam.getRight();
 
     const PageCategory cat = mctx.activeCategory();
-    const PageControl ctrl = mctx.activeControl();
 
     if (cat == PageCategory::CAMERA) {
         float panSens = cam.speed * 0.0005f;       // world units per pixel
         float scrollDist = scrollAccum * cam.speed * 0.1f; // world units per notch
 
-        if (ctrl == PageControl::ROTATE) {
-            // Left drag rotates the camera.
-            if (lmb) {
-                action.rotateDeg.x += static_cast<float>(-dx * rotateSens);
-                action.rotateDeg.y += static_cast<float>(-dy * rotateSens);
-            }
-            // Scroll wheel translates along the camera forward direction.
-            if (scrollAccum != 0.0f) action.translate += forward * scrollDist;
-            // Right drag pans sideways / up.
-            if (rmb) {
-                action.translate += right * static_cast<float>(dx * panSens);
-                action.translate += up * static_cast<float>(-dy * panSens);
-            }
-        } else if (ctrl == PageControl::TRANSLATE) {
-            // Left drag pans; scroll dollies along forward.
-            if (lmb) {
-                action.translate += right * static_cast<float>(dx * panSens);
-                action.translate += up * static_cast<float>(-dy * panSens);
-            }
-            if (scrollAccum != 0.0f) action.translate += forward * scrollDist;
+        // Combined Transform subpage: left-drag rotates, scroll dollies along
+        // forward, right-drag pans sideways / up. (The UI subpage is handled by
+        // the non-propagating early return above.)
+        if (lmb) {
+            action.rotateDeg.x += static_cast<float>(-dx * rotateSens);
+            action.rotateDeg.y += static_cast<float>(-dy * rotateSens);
+        }
+        if (scrollAccum != 0.0f) action.translate += forward * scrollDist;
+        if (rmb) {
+            action.translate += right * static_cast<float>(dx * panSens);
+            action.translate += up * static_cast<float>(-dy * panSens);
         }
     }
     // BRUSH manipulation with the mouse is intentionally not implemented yet.

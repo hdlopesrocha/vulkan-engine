@@ -12,12 +12,12 @@ public:
         gamepadContext.buildDefaultTree();
         wiimoteContext.buildDefaultTree();
 
-        // Mouse defaults to the Camera > Rotate page so left-drag rotates the
-        // camera out of the box. Mouse-camera events are suppressed while ImGui
-        // is capturing the mouse (see MousePublisher), so ImGui windows keep
-        // working perfectly. The non-propagating UI subpage is still reachable
-        // via keys 7/8 for total passthrough.
-        mouseContext.selectControl(PageControl::ROTATE);
+        // Mouse defaults to the Camera > Transform page so left-drag rotates
+        // the camera out of the box. Mouse-camera events are suppressed while
+        // ImGui is capturing the mouse (see MousePublisher), so ImGui windows
+        // keep working perfectly. The non-propagating UI subpage is still
+        // reachable via keys 7/8 for total passthrough.
+        mouseContext.selectControl(PageControl::TRANSLATE);
     }
 
     // Owned speed/tunable parameters (shared across controllers).

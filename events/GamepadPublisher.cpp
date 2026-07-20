@@ -108,19 +108,19 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
     } else { // BRUSH
         float mSpeed = cp.cameraMoveSpeed * deltaTime;
         float aSpeed = cp.cameraAngularSpeedDeg * deltaTime;
-        if (ctrl == PageControl::TRANSLATE) {
-            if (lx != 0.0f) action.translate += right * (lx * mSpeed);
-            if (ly != 0.0f) action.translate += up * (-ly * mSpeed);
-            if (net != 0.0f) action.translate += forward * (net * mSpeed);
-        } else if (ctrl == PageControl::ROTATE) {
-            action.rotateDeg.y += rotSign * (-rx * aSpeed);
-            action.rotateDeg.x += rotSign * (-ry * aSpeed);
-            if (rollL) action.rotateDeg.z += rotSign * (-aSpeed);
-            if (rollR) action.rotateDeg.z += rotSign * ( aSpeed);
-        } else if (ctrl == PageControl::SCALE) {
-            if (lx != 0.0f) action.scaleDelta.x += lx * 0.5f * deltaTime;
-            if (ly != 0.0f) action.scaleDelta.y += -ly * 0.5f * deltaTime;
-        } else if (ctrl == PageControl::TEXTURE) {
+        // Transform subpage: combine translate (stick/triggers), rotate
+        // (right stick + bumpers) and scale (stick) into one action.
+        if (lx != 0.0f) action.translate += right * (lx * mSpeed);
+        if (ly != 0.0f) action.translate += up * (-ly * mSpeed);
+        if (net != 0.0f) action.translate += forward * (net * mSpeed);
+        action.rotateDeg.x += rotSign * (-rx * aSpeed);
+        action.rotateDeg.y += rotSign * (-ry * aSpeed);
+        if (rollL) action.rotateDeg.z += rotSign * (-aSpeed);
+        if (rollR) action.rotateDeg.z += rotSign * ( aSpeed);
+        if (lx != 0.0f) action.scaleDelta.x += lx * 0.5f * deltaTime;
+        if (ly != 0.0f) action.scaleDelta.y += -ly * 0.5f * deltaTime;
+        // Texture / Attribute stay on their dedicated subpages.
+        if (ctrl == PageControl::TEXTURE) {
             if (lx > 0.0f) action.textureDelta += 1;
             if (lx < 0.0f) action.textureDelta -= 1;
         } else if (ctrl == PageControl::ATTRIBUTE) {
