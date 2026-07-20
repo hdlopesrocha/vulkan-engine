@@ -34,6 +34,16 @@ public:
     BoundingCube getChild(int i) const;
     glm::vec3 getChildCenter(int i) const;
 
+    // Non-virtual child-index lookup (avoids 4 virtual getMin*/getLengthX calls).
+    // Value-preserving wrt the free getNodeIndex(): BoundingCube stores min/length
+    // directly and getLengthX()/getMin*() merely return them.
+    inline int getChildIndex(const glm::vec3 &vec) const {
+        const float half = length * 0.5f;
+        return (vec.x >= min.x + half ? 4 : 0)
+             + (vec.y >= min.y + half ? 2 : 0)
+             + (vec.z >= min.z + half ? 1 : 0);
+    }
+
     bool overlaps1D(float aMin, float aMax, float bMin, float bMax) const;
     bool overlapsX(const BoundingCube &o) const;
     bool overlapsY(const BoundingCube &o) const;

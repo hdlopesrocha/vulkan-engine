@@ -59,10 +59,7 @@ Octree::Octree() : Octree(glm::vec3(0.0f), 1.0f) {
 }
 
 int getNodeIndex(const glm::vec3 &vec, const BoundingCube &cube) {
-    const float half = cube.getLengthX() * 0.5f;
-    return (vec.x >= cube.getMinX() + half ? 4 : 0)
-         + (vec.y >= cube.getMinY() + half ? 2 : 0)
-         + (vec.z >= cube.getMinZ() + half ? 1 : 0);
+    return cube.getChildIndex(vec);
 }
 
 
@@ -162,6 +159,18 @@ void Octree::iterateTriangles(
     // traversal (IteratorHandler), so they are NOT stored inside the nodes.
     EdgeCell hint;
 
+    // Cache for the parent-chain rebuild below. The chain (and therefore its
+    // reversed node/index arrays) depends ONLY on hint.node, never on the
+    // queried position, so we rebuild it at most once per distinct anchor and
+    // reuse it across findCellAt calls. This avoids O(depth) repeated
+    // parentOf hash-map lookups on every findCellAt invocation.
+    static constexpr int MAX_CHAIN = 64;
+    OctreeNode *cachedChainNode = NULL;
+    OctreeNode *cachedChainNodes[MAX_CHAIN] = {};
+    int cachedChainIndices[MAX_CHAIN] = {};
+    int cachedChainLen = 0;
+    bool cachedChainOk = false;
+
     struct EdgeSpan {
         int axis = 0;
         int u = 1;
@@ -188,7 +197,8 @@ void Octree::iterateTriangles(
         }
     };
 
-    auto findCellAt = [this, context, &hint, &fromCube](const glm::vec3 &pos) {
+    auto findCellAt = [this, context, &hint, &fromCube, &cachedChainNode, &cachedChainNodes,
+            &cachedChainIndices, &cachedChainLen, &cachedChainOk](const glm::vec3 &pos) {
         EdgeCell result;
         if(root == NULL || !contains(pos)) {
             return result;
@@ -212,37 +222,43 @@ void Octree::iterateTriangles(
             // contains pos. (Depth is bounded; MAX_CHAIN matches the
             // collectBreaks recursion cap. If exceeded we simply fall through to
             // the default root descent below — correct, just less optimal.)
-            static constexpr int MAX_CHAIN = 64;
-            OctreeNode *chainNodes[MAX_CHAIN];
-            int chainIndices[MAX_CHAIN];
-            int chainLen = 0;
-            OctreeNode *n = hint.node;
-            bool chainOk = true;
-            while(n != NULL && n != root) {
-                auto it = context->parentOf.find(n);
-                if(it == context->parentOf.end()) { chainOk = false; break; }
-                if(chainLen >= MAX_CHAIN) { chainOk = false; break; }
-                chainNodes[chainLen] = n;
-                chainIndices[chainLen] = it->second.second;
-                ++chainLen;
-                n = it->second.first;
-            }
-            if(chainOk && n == root && chainLen > 0) {
-                for(int i = 0; i < chainLen / 2; ++i) {
-                    std::swap(chainNodes[i], chainNodes[chainLen - 1 - i]);
-                    std::swap(chainIndices[i], chainIndices[chainLen - 1 - i]);
+            // The chain is cached in cachedChain* and only rebuilt when the
+            // anchor (hint.node) changes; it is independent of pos.
+            if(hint.node != cachedChainNode) {
+                cachedChainNode = hint.node;
+                cachedChainLen = 0;
+                cachedChainOk = true;
+                OctreeNode *n = hint.node;
+                while(n != NULL && n != root) {
+                    auto it = context->parentOf.find(n);
+                    if(it == context->parentOf.end()) { cachedChainOk = false; break; }
+                    if(cachedChainLen >= MAX_CHAIN) { cachedChainOk = false; break; }
+                    cachedChainNodes[cachedChainLen] = n;
+                    cachedChainIndices[cachedChainLen] = it->second.second;
+                    ++cachedChainLen;
+                    n = it->second.first;
                 }
+                if(!(cachedChainOk && n == root && cachedChainLen > 0)) {
+                    cachedChainOk = false;
+                } else {
+                    for(int i = 0; i < cachedChainLen / 2; ++i) {
+                        std::swap(cachedChainNodes[i], cachedChainNodes[cachedChainLen - 1 - i]);
+                        std::swap(cachedChainIndices[i], cachedChainIndices[cachedChainLen - 1 - i]);
+                    }
+                }
+            }
+            if(cachedChainOk) {
                 BoundingCube c = *this;
                 int chosen = -1;
-                for(int i = 0; i < chainLen; ++i) {
-                    c = c.getChild(chainIndices[i]);
+                for(int i = 0; i < cachedChainLen; ++i) {
+                    c = c.getChild(cachedChainIndices[i]);
                     if(c.contains(pos)) chosen = i;
                     else break;
                 }
                 if(chosen >= 0) {
                     BoundingCube cc = *this;
-                    for(int i = 0; i <= chosen; ++i) cc = cc.getChild(chainIndices[i]);
-                    startNode = chainNodes[chosen];
+                    for(int i = 0; i <= chosen; ++i) cc = cc.getChild(cachedChainIndices[i]);
+                    startNode = cachedChainNodes[chosen];
                     startCube = cc;
                 }
             }
@@ -339,6 +355,32 @@ void Octree::iterateTriangles(
         }), values.end());
     };
 
+    // Fixed-buffer variant of addBreak/sortUnique to avoid a heap allocation in
+    // the per-recursion localBreaks (its size is bounded; see collectBreaks).
+    auto addToBuffer = [](float *buf, int &count, int cap, float value, float start, float end, float eps) {
+        if(value <= start + eps || value >= end - eps) {
+            return false;
+        }
+        for(int k = 0; k < count; ++k) {
+            if(std::fabs(buf[k] - value) <= eps) {
+                return false;
+            }
+        }
+        if(count < cap) {
+            buf[count++] = value;
+            return true;
+        }
+        return false;
+    };
+
+    auto sortUniqueBuf = [](float *buf, int &count, float eps) {
+        std::sort(buf, buf + count);
+        float *newEnd = std::unique(buf, buf + count, [eps](float a, float b) {
+            return std::fabs(a - b) <= eps;
+        });
+        count = int(newEnd - buf);
+    };
+
     std::function<void(const EdgeSpan&, float, float, std::vector<float>&, int)> collectBreaks;
     collectBreaks = [&](const EdgeSpan &edge, float start, float end, std::vector<float> &breaks, int depth) {
         if(depth > 64 || end - start <= edge.eps * 2.0f) {
@@ -346,7 +388,13 @@ void Octree::iterateTriangles(
         }
 
         float mid = start + (end - start) * 0.5f;
-        std::vector<float> localBreaks = {start, end};
+        // Bounded stack buffer: at most the 4 quadrant cells contribute their cube
+        // min/max faces on the axis (<=8 interior values) plus start/end (<=10
+        // total), so 32 has wide margin and avoids a per-recursion heap alloc.
+        float localBreaks[32];
+        int localCount = 0;
+        localBreaks[localCount++] = start;
+        localBreaks[localCount++] = end;
 
         for(int q = 0; q < 4; ++q) {
             EdgeCell cell = findCellAt(edgeSamplePoint(edge, mid, q));
@@ -354,20 +402,20 @@ void Octree::iterateTriangles(
                 continue;
             }
 
-            addBreak(localBreaks, cell.cube.getMin()[edge.axis], start, end, edge.eps);
-            addBreak(localBreaks, cell.cube.getMax()[edge.axis], start, end, edge.eps);
+            addToBuffer(localBreaks, localCount, 32, cell.cube.getMin()[edge.axis], start, end, edge.eps);
+            addToBuffer(localBreaks, localCount, 32, cell.cube.getMax()[edge.axis], start, end, edge.eps);
         }
 
-        sortUnique(localBreaks, edge.eps);
-        if(localBreaks.size() <= 2) {
+        sortUniqueBuf(localBreaks, localCount, edge.eps);
+        if(localCount <= 2) {
             return;
         }
 
-        for(size_t i = 1; i + 1 < localBreaks.size(); ++i) {
+        for(int i = 1; i + 1 < localCount; ++i) {
             addBreak(breaks, localBreaks[i], start, end, edge.eps);
         }
 
-        for(size_t i = 1; i < localBreaks.size(); ++i) {
+        for(int i = 1; i < localCount; ++i) {
             collectBreaks(edge, localBreaks[i - 1], localBreaks[i], breaks, depth + 1);
         }
     };
@@ -445,29 +493,31 @@ void Octree::iterateTriangles(
             return;
         }
 
-        std::vector<EdgeCell> polygon;
-        polygon.reserve(4);
+        // Bounded stack buffer: built from the 4 quadrant cells (deduped), so it
+        // never exceeds 4 elements — avoids a per-segment heap allocation.
+        EdgeCell plist[4];
+        int pcount = 0;
         for(int q = 0; q < 4; ++q) {
-            bool duplicate = !polygon.empty()
-                && (polygon.back().node == cells[q].node
-                    || samePosition(polygon.back().node->vertex.position, cells[q].node->vertex.position, edge.eps));
-            if(!duplicate) {
-                polygon.push_back(cells[q]);
+            bool duplicate = (pcount > 0)
+                && (plist[pcount - 1].node == cells[q].node
+                    || samePosition(plist[pcount - 1].node->vertex.position, cells[q].node->vertex.position, edge.eps));
+            if(!duplicate && pcount < 4) {
+                plist[pcount++] = cells[q];
             }
         }
 
-        if(polygon.size() > 1) {
-            const EdgeCell &first = polygon.front();
-            const EdgeCell &last = polygon.back();
+        if(pcount > 1) {
+            const EdgeCell &first = plist[0];
+            const EdgeCell &last = plist[pcount - 1];
             if(first.node == last.node || samePosition(first.node->vertex.position, last.node->vertex.position, edge.eps)) {
-                polygon.pop_back();
+                --pcount;
             }
         }
 
-        for(size_t i = 0; i < polygon.size(); ++i) {
-            for(size_t j = i + 1; j < polygon.size(); ++j) {
-                if(polygon[i].node == polygon[j].node
-                    || samePosition(polygon[i].node->vertex.position, polygon[j].node->vertex.position, edge.eps)) {
+        for(int i = 0; i < pcount; ++i) {
+            for(int j = i + 1; j < pcount; ++j) {
+                if(plist[i].node == plist[j].node
+                    || samePosition(plist[i].node->vertex.position, plist[j].node->vertex.position, edge.eps)) {
                     return;
                 }
             }
@@ -475,10 +525,16 @@ void Octree::iterateTriangles(
 
         // Rotate polygon so `from` (owner/finest cell) is at index 0 for reliable UV.
         {
-            auto it = std::find_if(polygon.begin(), polygon.end(),
-                                   [from](const EdgeCell &ec) { return ec.node == from; });
-            if(it != polygon.begin() && it != polygon.end()) {
-                std::rotate(polygon.begin(), it, polygon.end());
+            int it = -1;
+            for(int k = 0; k < pcount; ++k) {
+                if(plist[k].node == from) { it = k; break; }
+            }
+            if(it > 0 && it < pcount) {
+                EdgeCell tmp[4];
+                int t = 0;
+                for(int k = it; k < pcount; ++k) tmp[t++] = plist[k];
+                for(int k = 0; k < it; ++k) tmp[t++] = plist[k];
+                for(int k = 0; k < pcount; ++k) plist[k] = tmp[k];
             }
         }
 
@@ -486,20 +542,20 @@ void Octree::iterateTriangles(
         // independent of vertex normals, which are unreliable for coarse LOD cells.
         // d0 < 0: solid at the lower-axis end → surface faces the positive axis → emit as-is.
         // d0 > 0: empty at the lower-axis end → surface faces the negative axis → reverse.
-        // Reversal keeps polygon[0] (= `from`) as the pivot so Tesselator UV is consistent.
+        // Reversal keeps plist[0] (= `from`) as the pivot so Tesselator UV is consistent.
         const bool solidAtStart = (d0 < 0.0f);
-        if(polygon.size() == 3) {
+        if(pcount == 3) {
             if(solidAtStart)
-                emitTriangle(&polygon[0].node->vertex, &polygon[1].node->vertex, &polygon[2].node->vertex, edge.eps);
+                emitTriangle(&plist[0].node->vertex, &plist[1].node->vertex, &plist[2].node->vertex, edge.eps);
             else
-                emitTriangle(&polygon[0].node->vertex, &polygon[2].node->vertex, &polygon[1].node->vertex, edge.eps);
-        } else if(polygon.size() == 4) {
+                emitTriangle(&plist[0].node->vertex, &plist[2].node->vertex, &plist[1].node->vertex, edge.eps);
+        } else if(pcount == 4) {
             if(solidAtStart) {
-                emitTriangle(&polygon[0].node->vertex, &polygon[1].node->vertex, &polygon[2].node->vertex, edge.eps);
-                emitTriangle(&polygon[0].node->vertex, &polygon[2].node->vertex, &polygon[3].node->vertex, edge.eps);
+                emitTriangle(&plist[0].node->vertex, &plist[1].node->vertex, &plist[2].node->vertex, edge.eps);
+                emitTriangle(&plist[0].node->vertex, &plist[2].node->vertex, &plist[3].node->vertex, edge.eps);
             } else {
-                emitTriangle(&polygon[0].node->vertex, &polygon[3].node->vertex, &polygon[2].node->vertex, edge.eps);
-                emitTriangle(&polygon[0].node->vertex, &polygon[2].node->vertex, &polygon[1].node->vertex, edge.eps);
+                emitTriangle(&plist[0].node->vertex, &plist[3].node->vertex, &plist[2].node->vertex, edge.eps);
+                emitTriangle(&plist[0].node->vertex, &plist[2].node->vertex, &plist[1].node->vertex, edge.eps);
             }
         }
     };
@@ -521,7 +577,10 @@ void Octree::iterateTriangles(
             continue;
         }
 
-        std::vector<float> breaks = {edge.start, edge.end};
+        std::vector<float> breaks;
+        breaks.reserve(64);
+        breaks.push_back(edge.start);
+        breaks.push_back(edge.end);
         collectBreaks(edge, edge.start, edge.end, breaks, 0);
         sortUnique(breaks, edge.eps);
 
