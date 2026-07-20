@@ -5,7 +5,7 @@
 // Represents one SDF brush entry with all parameters needed to populate the scene
 struct BrushEntry {
     // SDF primitive: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder
-    int sdfType = 3;
+    int sdfType = 1;   // 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder
     // Operation: 0=ADD, 1=REMOVE
     int brushMode = 0;
     // Target layer: 0=OPAQUE, 1=TRANSPARENT

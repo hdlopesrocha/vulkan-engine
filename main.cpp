@@ -468,7 +468,7 @@ public:
         brushScene = new LocalScene();
         brushManager.getEntries().clear();
         brushManager.getEntries().resize(3);
-        brushManager.getEntries()[0].sdfType = 0;
+        brushManager.getEntries()[0].sdfType = 1;
         brushManager.getEntries()[0].materialIndex = 0;
         brushManager.getEntries()[0].translate = glm::vec3(0.0f, 1024.0f, 0.0f);
         brushManager.getEntries()[0].scale = glm::vec3(256.0f);
