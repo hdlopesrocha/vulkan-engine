@@ -4843,6 +4843,31 @@ void VulkanApp::drawFrame() {
         }
     }
 
+    // Process any completed async generation submissions and free their command buffers/fences/semaphores
+    // and run deferred-destroy callbacks. Must run BEFORE the frame-slot fence wait below so that the
+    // fence check in processPendingCommandBuffers() sees ALL fences in their signaled state and does not
+    // skip the current frame slot — this eliminates the stale-timeline semaphore race.
+    processPendingCommandBuffers();
+
+    // Frame-in-flight throttling: wait for the PREVIOUS fence submitted for this
+    // slot BEFORE vkAcquireNextImageKHR. This is the reliable signal on all drivers
+    // (unlike the timeline counter, which can report stale values). We never reset
+    // the fence — it is destroyed once signaled (see the submit below) — so we avoid
+    // VUID-vkResetFences-pFences-01123. Crucially, this wait must precede the acquire:
+    // the acquire semaphore for this slot (imageAvailableSemaphores[semaphoreIndex]) is
+    // only freed once the previous slot submission that waits on it completes. Waiting
+    // here guarantees the semaphore has no pending operations, satisfying
+    // VUID-vkAcquireNextImageKHR-semaphore-01779.
+    VkFence prevFrameFence = inFlightFences[currentFrame];
+    if (prevFrameFence != VK_NULL_HANDLE) {
+        VkResult waitForFenceResult = waitFence(device, prevFrameFence);
+        if (waitForFenceResult == VK_ERROR_DEVICE_LOST) return;
+        if (waitForFenceResult != VK_SUCCESS) {
+            std::cerr << "vkWaitForFences (frame slot) failed: " << waitForFenceResult << std::endl;
+            return;
+        }
+    }
+
     // Acquire next image using per-image semaphore
     VkResult r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphores[semaphoreIndex], VK_NULL_HANDLE, &imageIndex);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -4895,28 +4920,6 @@ void VulkanApp::drawFrame() {
         std::lock_guard<std::mutex> lk(imageLayoutMutex);
         uint64_t key = ((uint64_t)(uintptr_t)swapchainImages[imageIndex] << 32) | (uint64_t)0;
         imageLayerLayouts[key] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    }
-
-    // Process any completed async generation submissions and free their command buffers/fences/semaphores
-    // and run deferred-destruction callbacks.  Must run BEFORE selecting the current frame's fence so
-    // that the fence check in processPendingCommandBuffers() sees ALL fences in their signaled state
-    // and does not skip the current frame slot — this eliminates the stale-timelessmaphore race.
-    processPendingCommandBuffers();
-
-    // Frame-in-flight throttling: wait for the PREVIOUS fence submitted for this
-    // slot before reusing the slot. This is a plain binary vkWaitForFences, which
-    // is the reliable signal on all drivers (unlike the timeline counter, which
-    // can report stale values). We never reset the fence — it is destroyed once
-    // signaled (see the submit below) — so we avoid VUID-vkResetFences-pFences-01123
-    // where the validation layer still considers a just-signaled fence "in use".
-    VkFence prevFrameFence = inFlightFences[currentFrame];
-    if (prevFrameFence != VK_NULL_HANDLE) {
-        VkResult waitForFenceResult = waitFence(device, prevFrameFence);
-        if (waitForFenceResult == VK_ERROR_DEVICE_LOST) return;
-        if (waitForFenceResult != VK_SUCCESS) {
-            std::cerr << "vkWaitForFences (frame slot) failed: " << waitForFenceResult << std::endl;
-            return;
-        }
     }
 
     // Create a fresh fence for this frame submission. It is destroyed (never
@@ -5530,15 +5533,29 @@ void VulkanApp::createInstance() {
         createInfo.ppEnabledLayerNames = validationLayers.data();
 
         // Enable synchronization validation to catch sync errors.
-        // GPU-assisted validation is disabled because it forces hardware
-        // features (bufferDeviceAddress, scalarBlockLayout, etc.) that
-        // integrated GPUs like RADV RENOIR don't support.
-        VkValidationFeatureEnableEXT enabledValidationFeatures[] = {
+        // GPU-assisted validation is enabled on demand (env VULKAN_GPU_ASSISTED=1):
+        // it instruments shaders to pin down GPU hangs / device-lost faults with a
+        // precise draw/descriptor report instead of an opaque VK_ERROR_DEVICE_LOST.
+        // It requires bufferDeviceAddress (enabled in createLogicalDevice for the
+        // same env flag), which modern GPUs like the Radeon 680M (RDNA2) support
+        // but older integrated parts (RADV RENOIR) do not — hence the opt-in.
+        const char* gpuAssistedEnv = std::getenv("VULKAN_GPU_ASSISTED");
+        bool gpuAssisted = gpuAssistedEnv && gpuAssistedEnv[0] != '\0' && gpuAssistedEnv[0] != '0';
+        std::vector<VkValidationFeatureEnableEXT> enabledValidationFeaturesVec = {
             VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT,
         };
+        if (gpuAssisted) {
+            enabledValidationFeaturesVec.push_back(VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT);
+            enabledValidationFeaturesVec.push_back(VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_RESERVE_BINDING_SLOT_EXT);
+        }
+        VkValidationFeatureEnableEXT enabledValidationFeatures[4];
+        uint32_t enabledValidationFeatureCount = 0;
+        for (VkValidationFeatureEnableEXT f : enabledValidationFeaturesVec) {
+            if (enabledValidationFeatureCount < 4) enabledValidationFeatures[enabledValidationFeatureCount++] = f;
+        }
         VkValidationFeaturesEXT validationFeatures{};
         validationFeatures.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
-        validationFeatures.enabledValidationFeatureCount = static_cast<uint32_t>(sizeof(enabledValidationFeatures)/sizeof(enabledValidationFeatures[0]));
+        validationFeatures.enabledValidationFeatureCount = enabledValidationFeatureCount;
         validationFeatures.pEnabledValidationFeatures = enabledValidationFeatures;
         createInfo.pNext = &validationFeatures;
     } else {
@@ -5798,6 +5815,14 @@ void VulkanApp::createLogicalDevice() {
     vulkan12Features.drawIndirectCount = VK_TRUE;
     vulkan12Features.descriptorIndexing = VK_TRUE;
     vulkan12Features.timelineSemaphore = VK_TRUE;
+    // GPU-assisted validation (VULKAN_GPU_ASSISTED=1) instruments shaders and needs
+    // bufferDeviceAddress. Modern GPUs (Radeon 680M / RDNA2) support it; only older
+    // integrated parts lack it. Gate on the same env flag used for the instance layer.
+    {
+        const char* gpuAssistedEnv = std::getenv("VULKAN_GPU_ASSISTED");
+        bool gpuAssisted = gpuAssistedEnv && gpuAssistedEnv[0] != '\0' && gpuAssistedEnv[0] != '0';
+        if (gpuAssisted) vulkan12Features.bufferDeviceAddress = VK_TRUE;
+    }
     vulkan12Features.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
     vulkan12Features.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
     vulkan12Features.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
