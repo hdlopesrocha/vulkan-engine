@@ -93,12 +93,19 @@ public:
     // The caller must ensure the attachments are in COLOR_ATTACHMENT_OPTIMAL /
     // DEPTH_STENCIL_ATTACHMENT_OPTIMAL layout before calling, and transition them
     // back after. descriptorSet0 must contain at least bindings 0, 5, 7, 10.
+    // `frameIndex` selects the per-frame cubemap descriptor set so it is never
+    // updated while a previous frame's command buffer is still pending (no UAB needed).
     void renderWaterIntoCubemap(VkCommandBuffer cmd,
                                 VkImageView colorView, VkImageView depthView,
                                 VkDescriptorSet descriptorSet0,
                                 VkDescriptorSet materialDs,
                                 uint32_t faceSize,
-                                VkBuffer waterCompactBuffer, VkBuffer waterVisibleCountBuffer);
+                                VkBuffer waterCompactBuffer, VkBuffer waterVisibleCountBuffer,
+                                uint32_t frameIndex);
+
+    VkDescriptorSet getCubemapWaterDepthDescriptorSet(uint32_t frameIndex) const {
+        return (frameIndex < FRAMES) ? cubemapWaterDepthDS[frameIndex] : VK_NULL_HANDLE;
+    }
 
     // Prepare render state (UBO upload, descriptor update, pre-barrier).
     // Call this before beginWaterGeometryPass when manually recording commands.
@@ -111,7 +118,7 @@ public:
     void postRenderBarrier(VkCommandBuffer cmd, uint32_t frameIndex);
     
     // Get water depth descriptor set (for binding scene depth texture)
-    VkDescriptorSet getWaterDepthDescriptorSet(uint32_t frameIndex) const { return waterDepthDescriptorSets[frameIndex]; }
+    VkDescriptorSet getWaterDepthDescriptorSet(uint32_t frameIndex) const { return (frameIndex < FRAMES) ? waterDepthDescriptorSets[frameIndex] : VK_NULL_HANDLE; }
     
     // Get water params buffer
     Buffer& getWaterParamsBuffer() { return waterParamsBuffer; }
@@ -128,9 +135,27 @@ public:
     VkImageView getSceneDepthImageView(uint32_t frameIndex) const { return sceneDepthImageViews[frameIndex]; }
     
     // Update the scene textures binding (color + depth + sky) for refraction and edge foam.
+    // Writes into `ds` (the caller chooses the per-command-buffer set so the set is
+    // never shared between the async back-face task and the main command buffer).
     // `backFaceDepthView` and `cube360View` may be VK_NULL_HANDLE if those targets
     // are not present; SceneRenderer should pass them when available.
-    void updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView = VK_NULL_HANDLE, VkImageView backFaceDepthView = VK_NULL_HANDLE, VkImageView cube360View = VK_NULL_HANDLE);
+    void updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView = VK_NULL_HANDLE, VkImageView backFaceDepthView = VK_NULL_HANDLE, VkImageView cube360View = VK_NULL_HANDLE);
+
+    // Allocate a fresh per-frame scene-texture descriptor set, free the previous
+    // one, and update it with the given views. Returns the new set (or
+    // VK_NULL_HANDLE on failure). The previous set is freed only after its command
+    // buffer has completed (the caller must invoke this from preRenderPass, which
+    // runs after the per-slot in-flight fence wait), so the set is never reused
+    // while pending and never needs UPDATE_AFTER_BIND.
+    VkDescriptorSet prepareSceneTexturesForFrame(VulkanApp* app, uint32_t frameIndex,
+                                                 VkImageView colorImageView, VkImageView depthImageView,
+                                                 VkImageView skyImageView = VK_NULL_HANDLE,
+                                                 VkImageView backFaceDepthView = VK_NULL_HANDLE,
+                                                 VkImageView cube360View = VK_NULL_HANDLE);
+
+    // Dedicated pool + accessors for per-task descriptor sets used by the async
+    // back-face task, so it never shares the per-frame set with the main CB.
+    VkDescriptorPool getAsyncWaterDepthPool() const { return asyncWaterDepthPool; }
 
     // Clear per-frame render targets (color/depth) into default values.
     // Call this each frame when water rendering is disabled to avoid sampling
@@ -195,10 +220,19 @@ private:
     TrackedHandle<VkDescriptorSetLayout> waterDepthDescriptorSetLayout;
     TrackedHandle<VkDescriptorPool> waterDepthDescriptorPool;
     // Per-frame descriptor sets for scene textures (3 frames in flight)
-    std::array<TrackedHandle<VkDescriptorSet>, FRAMES> waterDepthDescriptorSets;
+    // One scene-texture descriptor set per in-flight slot. Each slot's set is
+    // freed and reallocated in prepareSceneTexturesForFrame() while the per-slot
+    // in-flight fence guarantees the previous command buffer using that slot has
+    // completed. This avoids both VUID-03047 (update/destroy while pending) and
+    // the GPU-assisted false "length 0" seen with UPDATE_AFTER_BIND.
+    std::array<VkDescriptorSet, FRAMES> waterDepthDescriptorSets{VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    // Dedicated pool for per-task async back-face descriptor sets (never shared
+    // with the main command buffer, so it can be updated without UPDATE_AFTER_BIND).
+    TrackedHandle<VkDescriptorPool> asyncWaterDepthPool;
 
-    // Cubemap water pass resources
-    TrackedHandle<VkDescriptorSet> cubemapWaterDepthDS;
+    // Cubemap water pass resources (per-frame to avoid updating a set that a
+    // previous frame's command buffer still has pending)
+    std::array<TrackedHandle<VkDescriptorSet>, FRAMES> cubemapWaterDepthDS{};
     VkImage cubemapDummyDepthImage = VK_NULL_HANDLE;
     VmaAllocation cubemapDummyDepthAllocation = VK_NULL_HANDLE;
     VkDeviceMemory cubemapDummyDepthMemory = VK_NULL_HANDLE;

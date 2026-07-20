@@ -209,18 +209,13 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         transitionImageLayout(waterGeomDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, waterGeomDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
     }
 
-    if (waterDepthDescriptorSetLayout != VK_NULL_HANDLE && linearSampler != VK_NULL_HANDLE) {
-        DescriptorAllocator descAlloc{device, app};
-        descAlloc.allocateSets(waterDepthDescriptorPool, waterDepthDescriptorSetLayout,
-                               3, reinterpret_cast<VkDescriptorSet*>(waterDepthDescriptorSets.data()),
-                               "WaterRenderer: waterDepthDescriptorSet");
+    // NOTE: the per-frame scene-texture descriptor set (activeWaterDepthDS) is no
+    // longer pre-allocated here. It is allocated fresh each frame in
+    // prepareSceneTexturesForFrame() and the previous one is freed after its
+    // command buffer completes (see destroyRenderTargets / per-slot fence wait),
+    // so the set is never updated while a pending command buffer references it
+    // and never needs UPDATE_AFTER_BIND (which trips GPU-assisted validation).
 
-        // Descriptor sets allocated. Do not update bindings here with VK_NULL_HANDLE
-        // for optional resources; the higher-level caller (SceneRenderer) is
-        // responsible for providing valid `sky`, `backFaceDepth` and cubemap
-        // views via `updateSceneTexturesBinding` before rendering.
-    }
-    
     std::cout << "[WaterRenderer] Created render targets (2 sets) " << width << "x" << height << std::endl;
 }
 
@@ -254,15 +249,12 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
 
     // Reset descriptor pool to free descriptor sets. The old sets may still be
     // referenced by in-flight command buffers, so we must wait before resetting.
-    // The pool (maxSets=4) is re-populated with 3 fresh sets immediately after in
-    // createRenderTargets(), so the reset cannot be deferred past that point
-    // without exceeding capacity — a wait here is unavoidable. Scope it to the
-    // graphics queue (queueWaitIdle) instead of a whole-device idle: these
-    // descriptor sets are only consumed by graphics-queue water draws (the
-    // geometry/transfer queue only performs buffer copies, never binds these
-    // sets), so a graphics-queue idle covers every consumer while leaving
-    // compute and unrelated device work untouched. Per AGENTS.md, vkDeviceWaitIdle
-    // is reserved for shutdown / major rebuilds.
+    // Scope it to the graphics queue (queueWaitIdle) instead of a whole-device
+    // idle: these descriptor sets are only consumed by graphics-queue water draws
+    // (the geometry/transfer queue only performs buffer copies, never binds these
+    // sets), so a graphics-queue idle covers every consumer while leaving compute
+    // and unrelated device work untouched. Per AGENTS.md, vkDeviceWaitIdle is
+    // reserved for shutdown / major rebuilds.
     if (waterDepthDescriptorPool != VK_NULL_HANDLE && app) {
         VkResult r = app->queueWaitIdle();
         if (r == VK_SUCCESS) {
@@ -271,7 +263,10 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
             std::cerr << "[WaterRenderer] Skipping descriptor pool reset: graphics queue not idle (result=" << (int)r << ")" << std::endl;
         }
     }
-    cubemapWaterDepthDS = VK_NULL_HANDLE;
+    // The per-slot scene-texture sets live in waterDepthDescriptorPool, so the
+    // reset above frees them; just drop the dangling handles.
+    for (uint32_t i = 0; i < FRAMES; ++i) waterDepthDescriptorSets[i] = VK_NULL_HANDLE;
+    for (uint32_t i = 0; i < FRAMES; ++i) cubemapWaterDepthDS[i] = VK_NULL_HANDLE;
 }
 
 void WaterRenderer::clearRenderTargets(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex) {
@@ -413,28 +408,38 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     // Removed binding for Scene position/world-position texture (g-buffer)
 
     VkDescriptorBindingFlags bindingFlags[5] = {
-        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
+        0, 0, 0, 0, 0
     };
 
     DescriptorAllocator descAlloc{device, app};
     waterDepthDescriptorSetLayout = descAlloc.createLayout(
         sceneBindings.data(), static_cast<uint32_t>(sceneBindings.size()),
-        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+        0,
         bindingFlags,
         "WaterRenderer: waterDepthDescriptorSetLayout");
 
-    VkDescriptorPoolSize wrPoolSize = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 20};
+    // Pool for the per-frame main scene-texture set. Sets are allocated fresh each
+    // frame and the previous one is freed after its command buffer completes, so
+    // no UPDATE_AFTER_BIND is needed (and it would trip GPU-assisted validation).
+    // Capacity covers the 3 cubemap sets plus the 3 main sets (one per slot,
+    // reallocated each cycle) with headroom: 6 sets × 5 descriptors = 30, use 50.
+    VkDescriptorPoolSize wrPoolSize = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 50};
     waterDepthDescriptorPool = descAlloc.createPool(
-        &wrPoolSize, 1, 4,
-        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+        &wrPoolSize, 1, 10,
+        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
         "WaterRenderer: waterDepthDescriptorPool");
-    
-    // Descriptor sets are allocated and updated per-frame in createRenderTargets()
-    // after scene images are created
+
+    // Separate pool for per-task async back-face descriptor sets. The async task
+    // allocates one set, updates it, draws, and frees it after its fence — so it
+    // never shares the per-frame set with the main command buffer.
+    VkDescriptorPoolSize asyncPoolSize = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 80};
+    asyncWaterDepthPool = descAlloc.createPool(
+        &asyncPoolSize, 1, 16,
+        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        "WaterRenderer: asyncWaterDepthPool");
+
+    // Descriptor sets are allocated and updated per-frame in
+    // prepareSceneTexturesForFrame() after scene images are created
     
     // Create a custom pipeline layout for water that includes:
     // Set 0: Material SSBO (from app->getMaterialDescriptorSetLayout())
@@ -726,8 +731,8 @@ void WaterRenderer::endWaterGeometryPass(VkCommandBuffer cmd) {
 
 // Back-face pass is owned and executed by SceneRenderer via its WaterBackFaceRenderer.
 
-void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView, VkImageView backFaceDepthView, VkImageView cube360View) {
-    if (waterDepthDescriptorSets[frameIndex] == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
+void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkDescriptorSet ds, VkImageView colorImageView, VkImageView depthImageView, uint32_t frameIndex, VkImageView skyImageView, VkImageView backFaceDepthView, VkImageView cube360View) {
+    if (ds == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
         return;
     }
 
@@ -794,7 +799,6 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
     // Scene position (binding 5) — g-buffer world position. If not available, fall back to scene color view.
     // Removed image info for Scene position/world-position texture (g-buffer)
 
-    VkDescriptorSet ds = waterDepthDescriptorSets[frameIndex];
     DescriptorWriter writer(app->getDevice());
     for (uint32_t i = 0; i < 5; ++i) {
         writer.writeImage(ds, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -802,6 +806,39 @@ void WaterRenderer::updateSceneTexturesBinding(VulkanApp* app, VkImageView color
                           imageInfos[i].imageLayout);
     }
     writer.flush();
+}
+
+VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint32_t frameIndex,
+                                                            VkImageView colorImageView, VkImageView depthImageView,
+                                                            VkImageView skyImageView, VkImageView backFaceDepthView,
+                                                            VkImageView cube360View) {
+    if (app == nullptr || waterDepthDescriptorPool == VK_NULL_HANDLE ||
+        waterDepthDescriptorSetLayout == VK_NULL_HANDLE || linearSampler == VK_NULL_HANDLE) {
+        return VK_NULL_HANDLE;
+    }
+    if (frameIndex >= FRAMES) return VK_NULL_HANDLE;
+
+    // Free this slot's previous set. Safe because waterPass (the caller) runs
+    // only after drawFrame has waited on the per-slot in-flight fence for
+    // `frameIndex`, which guarantees the slot's previous command buffer — the
+    // only consumer of this slot's set — has completed. Reallocating the set
+    // each cycle means it is never updated while a pending command buffer
+    // references it, and no UPDATE_AFTER_BIND is required.
+    if (waterDepthDescriptorSets[frameIndex] != VK_NULL_HANDLE) {
+        vkFreeDescriptorSets(app->getDevice(), waterDepthDescriptorPool, 1, &waterDepthDescriptorSets[frameIndex]);
+        waterDepthDescriptorSets[frameIndex] = VK_NULL_HANDLE;
+    }
+
+    DescriptorAllocator descAlloc{app->getDevice(), app};
+    VkDescriptorSet ds = VK_NULL_HANDLE;
+    descAlloc.allocateSets(waterDepthDescriptorPool, waterDepthDescriptorSetLayout, 1, &ds,
+                           "WaterRenderer: waterDepthDescriptorSet");
+    if (ds == VK_NULL_HANDLE) return VK_NULL_HANDLE;
+
+    waterDepthDescriptorSets[frameIndex] = ds;
+    updateSceneTexturesBinding(app, ds, colorImageView, depthImageView, frameIndex,
+                               skyImageView, backFaceDepthView, cube360View);
+    return ds;
 }
 
 void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams) {
@@ -915,7 +952,7 @@ void WaterRenderer::render(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIn
         else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
             waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
     }
-    VkDescriptorSet sceneDs = waterDepthDescriptorSets[frameIndex];
+    VkDescriptorSet sceneDs = getWaterDepthDescriptorSet(frameIndex);
     if (sceneDs != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
             waterGeometryPipelineLayout, 2, 1, &sceneDs, 0, nullptr);
@@ -1119,17 +1156,48 @@ void WaterRenderer::ensureCubemapResources(VulkanApp* app, VkFormat colorFormat)
         }
     }
 
-    // --- Allocate set 2 descriptor for cubemap water pass ---
-    if (cubemapWaterDepthDS == VK_NULL_HANDLE && waterDepthDescriptorPool != VK_NULL_HANDLE) {
-        VkDescriptorSetAllocateInfo ai{};
-        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        ai.descriptorPool = waterDepthDescriptorPool;
-        ai.descriptorSetCount = 1; ai.pSetLayouts = &waterDepthDescriptorSetLayout;
-        if (vkAllocateDescriptorSets(device, &ai, &cubemapWaterDepthDS) != VK_SUCCESS) {
-            std::cerr << "[WaterRenderer] Warning: Failed to allocate cubemap water depth descriptor set" << std::endl;
-            cubemapWaterDepthDS = VK_NULL_HANDLE;
-        } else {
-            std::cerr << "[RAW ALLOC] WaterRenderer cubemap: descSet=" << (void*)cubemapWaterDepthDS << " pool=" << (void*)ai.descriptorPool << std::endl;
+    // --- Allocate per-frame set 2 descriptors for cubemap water pass ---
+    // One per frame-in-flight. These sets are written ONCE here with immutable
+    // dummy views and never updated again: renderWaterIntoCubemap is called once
+    // per cubemap face (6×/frame) and re-binding the same set is fine, but
+    // *updating* it a second time while it is already bound in the command
+    // buffer is a VUID-03047 violation. The cubemap pass does not actually
+    // sample scene textures (it uses dummies), so the bindings never change.
+    if (cubemapWaterDepthDS[0] == VK_NULL_HANDLE && waterDepthDescriptorPool != VK_NULL_HANDLE) {
+        for (uint32_t i = 0; i < FRAMES; ++i) {
+            VkDescriptorSetAllocateInfo ai{};
+            ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            ai.descriptorPool = waterDepthDescriptorPool;
+            ai.descriptorSetCount = 1; ai.pSetLayouts = &waterDepthDescriptorSetLayout;
+            if (vkAllocateDescriptorSets(device, &ai, &cubemapWaterDepthDS[i]) != VK_SUCCESS) {
+                std::cerr << "[WaterRenderer] Warning: Failed to allocate cubemap water depth descriptor set " << i << std::endl;
+                cubemapWaterDepthDS[i] = VK_NULL_HANDLE;
+                continue;
+            }
+            // Write the immutable dummy bindings once at allocation time.
+            VkDescriptorImageInfo dDepth{};
+            dDepth.sampler = linearSampler;
+            dDepth.imageView = cubemapDummyDepthView;
+            dDepth.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkDescriptorImageInfo dColor{};
+            dColor.sampler = linearSampler;
+            dColor.imageView = cubemapDummyDepthView;
+            dColor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkDescriptorImageInfo dBack{};
+            dBack.sampler = (nearestSampler != VK_NULL_HANDLE) ? nearestSampler : linearSampler;
+            dBack.imageView = cubemapDummyDepthView;
+            dBack.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkDescriptorImageInfo dCube{};
+            dCube.sampler = linearSampler;
+            dCube.imageView = cubemapDummyCubeView;
+            dCube.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            DescriptorWriter w(device);
+            w.writeImage(cubemapWaterDepthDS[i], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, dColor.sampler, dColor.imageView, dColor.imageLayout);
+            w.writeImage(cubemapWaterDepthDS[i], 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, dDepth.sampler, dDepth.imageView, dDepth.imageLayout);
+            w.writeImage(cubemapWaterDepthDS[i], 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, dColor.sampler, dColor.imageView, dColor.imageLayout);
+            w.writeImage(cubemapWaterDepthDS[i], 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, dBack.sampler, dBack.imageView, dBack.imageLayout);
+            w.writeImage(cubemapWaterDepthDS[i], 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, dCube.sampler, dCube.imageView, dCube.imageLayout);
+            w.flush();
         }
     }
 }
@@ -1139,9 +1207,11 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
                                             VkDescriptorSet descriptorSet0,
                                             VkDescriptorSet materialDs,
                                             uint32_t faceSize,
-                                            VkBuffer waterCompactBuffer, VkBuffer waterVisibleCountBuffer) {
-    if (!appPtr || cubemapWaterPipeline == VK_NULL_HANDLE || cubemapWaterDepthDS == VK_NULL_HANDLE) return;
-    VkDevice device = appPtr->getDevice();
+                                            VkBuffer waterCompactBuffer, VkBuffer waterVisibleCountBuffer,
+                                            uint32_t frameIndex) {
+    if (!appPtr || cubemapWaterPipeline == VK_NULL_HANDLE) return;
+    if (frameIndex >= FRAMES || cubemapWaterDepthDS[frameIndex] == VK_NULL_HANDLE) return;
+    VkDescriptorSet cubeDs = cubemapWaterDepthDS[frameIndex];
 
     // Begin dynamic rendering (caller handles layout transitions)
     VkRenderingAttachmentInfo colorAtt{};
@@ -1173,40 +1243,10 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
     VkRect2D sc{ {}, {faceSize, faceSize} };
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
-    // Update set 2 descriptor: bind dummy depth as scene depth (depth stays in
-    // ATTACHMENT_OPTIMAL during the water pass), dummy for backface/cube/color
-    VkDescriptorImageInfo depthInfo{};
-    depthInfo.sampler = linearSampler;
-    depthInfo.imageView = cubemapDummyDepthView;
-    depthInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkDescriptorImageInfo dummyColorInfo{};
-    dummyColorInfo.sampler = linearSampler;
-    dummyColorInfo.imageView = cubemapDummyDepthView; // never sampled with reflection off
-    dummyColorInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkDescriptorImageInfo dummyDepthInfo{};
-    dummyDepthInfo.sampler = nearestSampler;
-    dummyDepthInfo.imageView = cubemapDummyDepthView;
-    dummyDepthInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkDescriptorImageInfo dummyCubeInfo{};
-    dummyCubeInfo.sampler = linearSampler;
-    dummyCubeInfo.imageView = cubemapDummyCubeView;
-    dummyCubeInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    DescriptorWriter writer(device);
-    writer.writeImage(cubemapWaterDepthDS, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                      dummyColorInfo.sampler, dummyColorInfo.imageView, dummyColorInfo.imageLayout);
-    writer.writeImage(cubemapWaterDepthDS, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                      depthInfo.sampler, depthInfo.imageView, depthInfo.imageLayout);
-    writer.writeImage(cubemapWaterDepthDS, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                      dummyColorInfo.sampler, dummyColorInfo.imageView, dummyColorInfo.imageLayout);
-    writer.writeImage(cubemapWaterDepthDS, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                      dummyDepthInfo.sampler, dummyDepthInfo.imageView, dummyDepthInfo.imageLayout);
-    writer.writeImage(cubemapWaterDepthDS, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                      dummyCubeInfo.sampler, dummyCubeInfo.imageView, dummyCubeInfo.imageLayout);
-    writer.flush();
+    // The cubemap set (cubeDs) is allocated and its immutable dummy bindings are
+    // written ONCE in ensureCubemapResources — it is never updated here, since
+    // renderWaterIntoCubemap runs once per face and updating an already-bound set
+    // would trip VUID-03047.
 
     // Bind pipeline and descriptor sets
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, cubemapWaterPipeline);
@@ -1222,9 +1262,9 @@ void WaterRenderer::renderWaterIntoCubemap(VkCommandBuffer cmd,
             waterGeometryPipelineLayout, 1, 1, &materialDs, 0, nullptr);
     }
     if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd,
-        waterGeometryPipelineLayout, 2, 1, &cubemapWaterDepthDS, 0, nullptr);
+        waterGeometryPipelineLayout, 2, 1, &cubeDs, 0, nullptr);
     else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-        waterGeometryPipelineLayout, 2, 1, &cubemapWaterDepthDS, 0, nullptr);
+        waterGeometryPipelineLayout, 2, 1, &cubeDs, 0, nullptr);
 
     // Draw water patches using per-face cull results (dedicated buffers, no race with main pass).
     waterIndirectRenderer.drawPreparedWithBuffers(cmd, waterCompactBuffer, waterVisibleCountBuffer);

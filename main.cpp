@@ -874,7 +874,8 @@ public:
                 cube360Visible.buffer,
                 cube360WaterComputeDs,
                 cube360WaterCompact.buffer,
-                cube360WaterVisible.buffer);
+                cube360WaterVisible.buffer,
+                frameIdx);
             this->profileSolid360 = std::chrono::duration<float, std::milli>(
                 std::chrono::high_resolution_clock::now() - tCubemap).count();
         }
@@ -1163,21 +1164,6 @@ public:
                 setImageLayoutTracked(solidDepthImg, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
         }
 
-        // Update the water scene descriptor set BEFORE launching async tasks.
-        // The backFace async task binds waterDepthDescriptorSets[frameIdx] in its submitted
-        // command buffer. If we update it AFTER the submission, the validation layer fires
-        // VUID-vkUpdateDescriptorSets-None-03047 (updating a descriptor set in use by a
-        // pending command buffer). By updating here we guarantee the descriptor set is
-        // fully updated before any command buffer referencing it is submitted.
-        if (waterEnabled && sceneRenderer && sceneRenderer->waterRenderer) {
-            VkImageView wSceneColor = sceneRenderer->solidRenderer->getColorView(frameIdx);
-            VkImageView wSceneDepth = sceneRenderer->solidRenderer->getDepthView(frameIdx);
-            VkImageView wSky  = (sceneRenderer->skyRenderer)     ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
-            VkImageView wBack = (sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
-            VkImageView wCube = (sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
-            sceneRenderer->waterRenderer->updateSceneTexturesBinding(this, wSceneColor, wSceneDepth, frameIdx, wSky, wBack, wCube);
-        }
-
         // If water is disabled, clear its offscreen targets here (outside any active
         // dynamic rendering instance) so the post-process compositor won't sample
         // stale content.
@@ -1265,6 +1251,34 @@ public:
                     ind.prepareCullWithDescriptor(cmd, viewProj, computeDs, taskCompact.buffer, taskVisible.buffer);
                 }
 
+                // Allocate a dedicated descriptor set for THIS task so the async back-face
+                // pass never shares the per-frame set with the main command buffer (which
+                // would require UPDATE_AFTER_BIND and trip GPU-assisted validation's
+                // descriptor-count check). The set is updated here, on this command buffer,
+                // and freed once the task's fence signals.
+                VkDescriptorSet asyncWaterDs = VK_NULL_HANDLE;
+                VkDescriptorPool asyncPool = this->sceneRenderer->waterRenderer->getAsyncWaterDepthPool();
+                {
+                    VkImageView bfBack = (this->sceneRenderer->backFaceRenderer) ? this->sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
+                    VkImageView bfCube = (this->sceneRenderer->solid360Renderer) ? this->sceneRenderer->solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
+                    if (asyncPool != VK_NULL_HANDLE && bfBack != VK_NULL_HANDLE && bfCube != VK_NULL_HANDLE) {
+                        VkDescriptorSetAllocateInfo ai{};
+                        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                        ai.descriptorPool = asyncPool;
+                        ai.descriptorSetCount = 1;
+                        VkDescriptorSetLayout wdsLayout = this->sceneRenderer->waterRenderer->getWaterDepthDescriptorSetLayout();
+                        ai.pSetLayouts = &wdsLayout;
+                        if (vkAllocateDescriptorSets(device, &ai, &asyncWaterDs) == VK_SUCCESS) {
+                            VkImageView bfColor = this->sceneRenderer->solidRenderer->getColorView(frameIdx);
+                            VkImageView bfDepth = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
+                            VkImageView bfSky   = (this->sceneRenderer->skyRenderer) ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
+                            this->sceneRenderer->waterRenderer->updateSceneTexturesBinding(this, asyncWaterDs, bfColor, bfDepth, frameIdx, bfSky, bfBack, bfCube);
+                        } else {
+                            asyncWaterDs = VK_NULL_HANDLE;
+                        }
+                    }
+                }
+
                 // Render back-face pass using the per-task compact/visible buffers so draws consume the cull results
                 auto tBackface = std::chrono::high_resolution_clock::now();
                 this->sceneRenderer->backFaceRenderer->renderBackFacePass(app, cmd, frameIdx,
@@ -1272,7 +1286,7 @@ public:
                                             this->sceneRenderer->waterRenderer->getWaterGeometryPipelineLayout(),
                                             app->getMainDescriptorSet(),
                                             app->getMaterialDescriptorSet(),
-                                            this->sceneRenderer->waterRenderer->getWaterDepthDescriptorSet(frameIdx),
+                                            asyncWaterDs,
                                             (computeDs != VK_NULL_HANDLE) ? taskCompact.buffer : VK_NULL_HANDLE,
                                             (computeDs != VK_NULL_HANDLE) ? taskVisible.buffer : VK_NULL_HANDLE);
 
@@ -1281,9 +1295,12 @@ public:
                 // Submit and schedule cleanup of temporary resources after fence signals
                 VkFence f = app->submitCommandBufferAsync(cmd, &semBackFace);
                 { std::lock_guard<std::mutex> lk(asyncFenceMutex); pendingAsyncFences.push_back(f); }
-                app->deferDestroyUntilFence(f, [app, taskCompact, taskVisible]() mutable {
+                app->deferDestroyUntilFence(f, [app, taskCompact, taskVisible, asyncPool, asyncWaterDs]() mutable {
                     app->destroyBuffer(taskCompact);
                     app->destroyBuffer(taskVisible);
+                    if (asyncWaterDs != VK_NULL_HANDLE && asyncPool != VK_NULL_HANDLE) {
+                        vkFreeDescriptorSets(app->getDevice(), asyncPool, 1, &asyncWaterDs);
+                    }
                 });
             });
         }

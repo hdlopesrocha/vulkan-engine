@@ -34,7 +34,8 @@ public:
                         VkBuffer visibleCountBuffer = VK_NULL_HANDLE,
                         VkDescriptorSet waterComputeDs = VK_NULL_HANDLE,
                         VkBuffer waterCompactIndirectBuffer = VK_NULL_HANDLE,
-                        VkBuffer waterVisibleCountBuffer = VK_NULL_HANDLE);
+                        VkBuffer waterVisibleCountBuffer = VK_NULL_HANDLE,
+                        uint32_t frameIndex = 0);
 
     // Return the cubemap view for reflection sampling
     VkImageView getSolid360View() const { return cube360CubeView; }

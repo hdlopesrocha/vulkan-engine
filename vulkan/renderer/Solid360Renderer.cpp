@@ -311,7 +311,8 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                                      VkDescriptorSet computeDs,
                                      VkBuffer compactIndirectBuffer, VkBuffer visibleCountBuffer,
                                      VkDescriptorSet waterComputeDs,
-                                     VkBuffer waterCompactIndirectBuffer, VkBuffer waterVisibleCountBuffer) {
+                                     VkBuffer waterCompactIndirectBuffer, VkBuffer waterVisibleCountBuffer,
+                                     uint32_t frameIndex) {
     if (!app || cmd == VK_NULL_HANDLE) return;
     if (cube360FaceViews[0] == VK_NULL_HANDLE) return;
 
@@ -543,7 +544,8 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                 cube360FaceViews[face], cube360DepthViews[face],
                 mainDescriptorSet, app->getMaterialDescriptorSet(),
                 CUBE360_FACE_SIZE,
-                waterCompactIndirectBuffer, waterVisibleCountBuffer);
+                waterCompactIndirectBuffer, waterVisibleCountBuffer,
+                frameIndex);
         }
 
         // Barrier: ensure previous face's draw finishes reading compact/visible

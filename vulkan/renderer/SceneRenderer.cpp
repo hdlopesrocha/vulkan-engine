@@ -415,6 +415,20 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
     VkImageView sceneDepthView = solidRenderer->getDepthView(frameIdx);
     VkImage sceneDepthImage = solidRenderer->getDepthImage(frameIdx);
 
+    // (Re)allocate and update this slot's scene-texture descriptor set (set 2,
+    // binding 1 = sceneDepthTex) here on the main command buffer, immediately
+    // before any draw that binds it. The async back-face task uses its OWN
+    // per-task set, so this slot's set is only ever referenced by the main
+    // command buffer and is freed/reallocated once its in-flight fence signals
+    // (no VUID-03047, and GPU-assisted validation sees it populated — no
+    // UPDATE_AFTER_BIND needed).
+    {
+        VkImageView wBack = (backFaceRenderer) ? backFaceRenderer->getBackFaceDepthView(frameIdx) : VK_NULL_HANDLE;
+        VkImageView wCube = (solid360Renderer) ? solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
+        waterRenderer->prepareSceneTexturesForFrame(app, frameIdx, sceneColorView, sceneDepthView,
+                                                    skyView, wBack, wCube);
+    }
+
     const char* _wg_dis = std::getenv("VULKAN_DISABLE_WATERGEOM");
     bool _wg_env_skip = (_wg_dis && _wg_dis[0] != '\0');
     if (_wg_env_skip) std::cerr << "[SceneRenderer] VULKAN_DISABLE_WATERGEOM set; skipping water geometry operations" << std::endl;
