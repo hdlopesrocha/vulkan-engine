@@ -2597,7 +2597,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             }
         }
 
-        if (effectiveOld > 7 && effectiveOld < 1000000000u) {
+        if (effectiveOld > 7) {
             std::cerr << "[VulkanApp] WARNING: invalid effectiveOld " << effectiveOld
                       << " for image " << (void*)image << ", clamping to UNDEFINED" << std::endl;
             effectiveOld = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -2873,7 +2873,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         }
 
         // Guard against corrupted effectiveOld (from caller or tracked map)
-        if (effectiveOld > 7 && effectiveOld < 1000000000u) {
+        if (effectiveOld > 7) {
             std::cerr << "[VulkanApp] WARNING: invalid effectiveOld " << effectiveOld
                       << " for image " << (void*)image << ", clamping to UNDEFINED" << std::endl;
             effectiveOld = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -3239,7 +3239,7 @@ void VulkanApp::transitionImageLayoutLayer(VkImage image, VkFormat format, VkIma
             }
         }
 
-        if (effectiveOld > 7 && effectiveOld < 1000000000u) {
+        if (effectiveOld > 7) {
             std::cerr << "[VulkanApp] WARNING: invalid effectiveOld " << effectiveOld
                       << " for image " << (void*)image << ", clamping to UNDEFINED" << std::endl;
             effectiveOld = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -5355,6 +5355,12 @@ void VulkanApp::cleanupSwapchain() {
     }
     swapchainImages.clear();
     imagesInFlight.clear();
+
+    // Clear tracked image-layer layouts: swapchain images were destroyed, and
+    // new ones created at different (or recycled) addresses would pick up stale
+    // layouts (e.g. VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) that this helper cannot
+    // handle, causing an "Unsupported image layout transition" error.
+    imageLayerLayouts.clear();
 }
 
 void VulkanApp::recreateSwapchain() {
