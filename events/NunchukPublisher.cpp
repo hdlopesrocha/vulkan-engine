@@ -1,10 +1,20 @@
 #include "NunchukPublisher.hpp"
+#include "EventManager.hpp"
+#include "ControllerManager.hpp"
+#include "ControllerContext.hpp"
+#include "ControllerInput.hpp"
+#include "../math/Camera.hpp"
+#include "../utils/Brush3dManager.hpp"
+#include "../utils/Brush3dEntry.hpp"
+#include "RebuildBrushEvent.hpp"
 
 #include <wiiuse.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <glm/glm.hpp>
 
 static const int WIIMOTE_TIMEOUT_SEC = 5;
 
@@ -205,6 +215,158 @@ void NunchukPublisher::readStateLocked() {
         state.nunchukGforceY = nc.gforce.y;
         state.nunchukGforceZ = nc.gforce.z;
     }
+}
+
+void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float deltaTime,
+                                     ControllerManager* cm, Brush3dManager* brushManager) {
+    if (!em || !cm) return;
+
+    WiimoteState s = getState();
+    if (!s.connected || !s.expansionConnected) return;
+    if (s.expansionType != EXP_NUNCHUK && s.expansionType != EXP_MOTION_PLUS_NUNCHUK) return;
+
+    ControllerContext& wctx = cm->wiimoteContext;
+    const ControllerParameters& cp = *cm->getParameters();
+
+    // ---- Initialize tracking state on first frame ----
+    if (firstControlFrame) {
+        startYaw = s.nunchukYaw;
+        startPitch = s.nunchukPitch;
+        startRoll = s.nunchukRoll;
+        startAccelY = s.nunchukAccelY;
+        prevNunchukAccelX = s.nunchukAccelX;
+        prevNunchukAccelY = s.nunchukAccelY;
+        prevNunchukAccelZ = s.nunchukAccelZ;
+        firstControlFrame = false;
+        prevButtons = s.buttons;
+        prevC = s.buttonC;
+        return;
+    }
+
+    // ---- Wiimote D-PAD page navigation (edge-triggered) ----
+    uint16_t pressed = s.buttons & ~prevButtons;
+    if (pressed & WIIMOTE_BUTTON_UP)
+        em->publish(std::make_shared<PageNavigationEvent>(ControllerId::WIIMOTE, PageNavigationEvent::Action::PREV_PAGE));
+    if (pressed & WIIMOTE_BUTTON_DOWN)
+        em->publish(std::make_shared<PageNavigationEvent>(ControllerId::WIIMOTE, PageNavigationEvent::Action::NEXT_PAGE));
+    if (pressed & WIIMOTE_BUTTON_LEFT)
+        em->publish(std::make_shared<PageNavigationEvent>(ControllerId::WIIMOTE, PageNavigationEvent::Action::PREV_SUBPAGE));
+    if (pressed & WIIMOTE_BUTTON_RIGHT)
+        em->publish(std::make_shared<PageNavigationEvent>(ControllerId::WIIMOTE, PageNavigationEvent::Action::NEXT_SUBPAGE));
+    prevButtons = s.buttons;
+
+    // Camera axes (all controls are camera-relative)
+    glm::vec3 right = cam.getRight();
+    glm::vec3 up = cam.getUp();
+    glm::vec3 forward = cam.getForward();
+
+    float camVelocity = cam.speed * deltaTime;
+    float brushVelocity = cp.cameraMoveSpeed * deltaTime;
+    float camAngDeg = glm::degrees(cam.angularSpeedRad) * deltaTime;
+    float brushAngDeg = cp.cameraAngularSpeedDeg * deltaTime;
+
+    ControllerAction action;
+
+    // ---- Nunchuk Z + Joystick: drag-and-drop translation ----
+    // Works independently of C — click Z to grab, move stick to drag, release to drop.
+    if (s.buttonZ) {
+        float jx = s.joystickX;
+        float jy = s.joystickY;
+        const float jdz = 0.15f;
+        if (std::abs(jx) < jdz) jx = 0.0f;
+        if (std::abs(jy) < jdz) jy = 0.0f;
+        if (jx != 0.0f || jy != 0.0f) {
+            const PageCategory cat = wctx.activeCategory();
+            float vel = (cat == PageCategory::CAMERA) ? camVelocity : brushVelocity;
+            if (jx != 0.0f) action.translate += right * (jx * vel);
+            if (jy != 0.0f) action.translate += up * (-jy * vel);
+        }
+    }
+
+    // ---- Nunchuk C button: capture start orientation on press ----
+    // All accelerometer and YPR controls are gated by C.
+    if (s.buttonC && !prevC) {
+        startYaw = s.nunchukYaw;
+        startPitch = s.nunchukPitch;
+        startRoll = s.nunchukRoll;
+        startAccelY = s.nunchukAccelY;
+    }
+    prevC = s.buttonC;
+
+    // ---- Raw accelerometer deltas (frame-to-frame movement detection) ----
+    int dxa = s.nunchukAccelX - prevNunchukAccelX;
+    int dya = s.nunchukAccelY - prevNunchukAccelY;
+    int dza = s.nunchukAccelZ - prevNunchukAccelZ;
+    prevNunchukAccelX = s.nunchukAccelX;
+    prevNunchukAccelY = s.nunchukAccelY;
+    prevNunchukAccelZ = s.nunchukAccelZ;
+
+    auto wrap180 = [](float v) -> float {
+        while (v > 180.0f) v -= 360.0f;
+        while (v < -180.0f) v += 360.0f;
+        return v;
+    };
+
+    // Sensitivity: raw accel values are 0-255, typical movement deltas are 2-50.
+    const float accelSensitivity = 0.002f;
+    const float inv90 = 1.0f / 90.0f;
+
+    // ---- C-gated controls: translation, rotation, scale ----
+    if (s.buttonC) {
+        const PageCategory cat = wctx.activeCategory();
+        const PageControl ctrl = wctx.activeControl();
+
+        if (cat == PageCategory::CAMERA) {
+            // YPR → camera rotation (axis-angle in camera-local frame)
+            float yawOff = wrap180(s.nunchukYaw - startYaw);
+            float pitchOff = wrap180(s.nunchukPitch - startPitch);
+            float rollOff = wrap180(s.nunchukRoll - startRoll);
+            const float rdz = 2.0f;
+            if (std::abs(yawOff) > rdz)
+                em->publish(std::make_shared<RotateCameraEvent>(cam.getUp(), yawOff * inv90 * camAngDeg));
+            if (std::abs(pitchOff) > rdz)
+                em->publish(std::make_shared<RotateCameraEvent>(cam.getRight(), -pitchOff * inv90 * camAngDeg));
+            if (std::abs(rollOff) > rdz)
+                em->publish(std::make_shared<RotateCameraEvent>(cam.getForward(), rollOff * inv90 * camAngDeg));
+
+            // Accelerometer deltas → camera translation (camera-relative axes)
+            const float accelTransMult = 32.0f;
+            if (std::abs(dxa) > 2) action.translate += right * (dxa * accelSensitivity * camVelocity * accelTransMult);
+            if (std::abs(dya) > 2) action.translate += up * (-dya * accelSensitivity * camVelocity * accelTransMult);
+            if (std::abs(dza) > 2) action.translate += forward * (dza * accelSensitivity * camVelocity * accelTransMult);
+
+        } else if (ctrl == PageControl::SCALE) {
+            // Accelerometer Y delta from C-press capture → brush scale
+            int scaleOff = s.nunchukAccelY - startAccelY;
+            if (std::abs(scaleOff) > 2) {
+                float scale = scaleOff * accelSensitivity * brushVelocity * 2.0f;
+                action.scaleDelta = glm::vec3(scale);
+            }
+
+        } else {
+            // YPR → brush rotation
+            float yawOff = wrap180(s.nunchukYaw - startYaw);
+            float pitchOff = wrap180(s.nunchukPitch - startPitch);
+            float rollOff = wrap180(s.nunchukRoll - startRoll);
+            const float rdz = 2.0f;
+            if (std::abs(yawOff) < rdz) yawOff = 0.0f;
+            if (std::abs(pitchOff) < rdz) pitchOff = 0.0f;
+            if (std::abs(rollOff) < rdz) rollOff = 0.0f;
+            action.rotateDeg.x += yawOff * inv90 * brushAngDeg;
+            action.rotateDeg.y += -pitchOff * inv90 * brushAngDeg;
+            action.rotateDeg.z += rollOff * inv90 * brushAngDeg;
+
+            // Accelerometer deltas → brush translation (camera-relative axes)
+            const float accelTransMult = 32.0f;
+            if (std::abs(dxa) > 2) action.translate += right * (dxa * accelSensitivity * brushVelocity * accelTransMult);
+            if (std::abs(dya) > 2) action.translate += up * (-dya * accelSensitivity * brushVelocity * accelTransMult);
+            if (std::abs(dza) > 2) action.translate += forward * (dza * accelSensitivity * brushVelocity * accelTransMult);
+        }
+    }
+
+    // ---- Apply the action ----
+    bool brushChanged = applyControllerAction(wctx, em, brushManager, action);
+    if (brushChanged) em->queue(std::make_shared<RebuildBrushEvent>());
 }
 
 WiimoteState NunchukPublisher::getState() const {

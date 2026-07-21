@@ -21,6 +21,12 @@ struct ControllerAction {
     int attributeDelta = 0;                // generic attribute increment
 };
 
+namespace {
+    inline bool nonzero(const glm::vec3 &v) {
+        return glm::abs(v.x) > 1e-12f || glm::abs(v.y) > 1e-12f || glm::abs(v.z) > 1e-12f;
+    }
+}
+
 // Route the action to the camera or to the selected brush entry depending on
 // the context's active page. Returns true if the brush was modified (caller
 // should queue RebuildBrushEvent). Does nothing when the active page is a
@@ -31,9 +37,9 @@ inline bool applyControllerAction(const ControllerContext &ctx, EventManager *em
     if (!em) return false;
 
     if (ctx.activeCategory() == PageCategory::CAMERA) {
-        if (glm::length2(a.translate) > 1e-12f)
+        if (nonzero(a.translate))
             em->publish(std::make_shared<TranslateCameraEvent>(a.translate));
-        if (glm::length2(a.rotateDeg) > 1e-12f)
+        if (nonzero(a.rotateDeg))
             em->publish(std::make_shared<RotateCameraEvent>(a.rotateDeg.x, a.rotateDeg.y, a.rotateDeg.z));
         return false;
     }
@@ -47,14 +53,14 @@ inline bool applyControllerAction(const ControllerContext &ctx, EventManager *em
     // independent of the active subpage, so the Brush > Transform subpage
     // combines all three operations at once.
     bool changed = false;
-    if (glm::length2(a.translate) > 1e-12f) { be->translate += a.translate; changed = true; }
-    if (glm::length2(a.rotateDeg) > 1e-12f) {
+    if (nonzero(a.translate)) { be->translate += a.translate; changed = true; }
+    if (nonzero(a.rotateDeg)) {
         be->yaw += a.rotateDeg.x;
         be->pitch += a.rotateDeg.y;
         be->roll += a.rotateDeg.z;
         changed = true;
     }
-    if (glm::length2(a.scaleDelta) > 1e-12f) {
+    if (nonzero(a.scaleDelta)) {
         be->scale = glm::max(be->scale + a.scaleDelta, glm::vec3(0.001f));
         changed = true;
     }

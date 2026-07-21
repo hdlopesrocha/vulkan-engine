@@ -655,6 +655,10 @@ public:
         gamepadPublisher.update(&eventManager, camera, deltaTime, &controllerManager, &brushManager, false);
         // Poll nunchuk state (if a Wiimote with nunchuk extension is connected)
         nunchukPublisher.update();
+        // Map Wiimote / Nunchuk inputs to controller actions (page navigation,
+        // accelerometer translation, YPR rotation, joystick drag-and-drop).
+        nunchukPublisher.applyControls(&eventManager, camera, deltaTime,
+                                       &controllerManager, &brushManager);
         // Poll mouse input and publish camera events based on the mouse page.
         // Tell the publisher when ImGui is capturing the mouse so it yields.
         mousePublisher.update(&eventManager, camera, deltaTime, &controllerManager,
