@@ -28,6 +28,8 @@ public:
     using IterateBorderHandler = std::function<void(const BoundingCube &childCube, const float sdf[8], uint level)>;
     OctreeAllocator * allocator;
     int threadsCreated;
+    int prunedEmptyNodes;
+    int prunedSolidNodes;
     std::shared_ptr<std::atomic<int>> shapeCounter;
     std::atomic<int> inFlightShapeOps{0};
     tsl::robin_map<glm::vec3, ThreadContext> chunks;

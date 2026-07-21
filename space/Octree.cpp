@@ -48,6 +48,8 @@ Octree::Octree(const BoundingCube &minCube, float chunkSize) : BoundingCube(minC
     this->chunkSize = chunkSize;
 	this->root = allocator->allocate()->init(glm::vec3(minCube.getCenter()));
     this->shapeCounter = std::make_shared<std::atomic<int>>(0);
+    this->prunedEmptyNodes = 0;
+    this->prunedSolidNodes = 0;
 	initialize();
 }
 
@@ -55,6 +57,8 @@ Octree::Octree() : Octree(glm::vec3(0.0f), 1.0f) {
     this->chunkSize = 1.0f;
     this->root = NULL;
     this->shapeCounter = std::make_shared<std::atomic<int>>(0);
+    this->prunedEmptyNodes = 0;
+    this->prunedSolidNodes = 0;
     initialize();
 }
 
@@ -694,6 +698,8 @@ void Octree::apply(
         const OctreeChangeHandler &changeHandler
     ) {
     threadsCreated = 0;
+    prunedEmptyNodes = 0;
+    prunedSolidNodes = 0;
     *shapeCounter = 0;
     ShapeArgs args = ShapeArgs(operation, function, painter, model, translate, scale, simplifier, changeHandler, minSize);	
   	expand(args);
@@ -702,7 +708,7 @@ void Octree::apply(
     NodeOperationResult r = NodeOperationResult();
     shape(r, frame, args, &localChunkContext);
 #ifdef DEBUG
-    std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << std::endl;
+    std::cout << "\t\tOctree::apply Ok! threads=" << threadsCreated << ", works=" << *shapeCounter << ", prunedEmpty=" << prunedEmptyNodes << ", prunedSolid=" << prunedSolidNodes << std::endl;
 #endif
 }
 
@@ -819,35 +825,54 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
     }
     else {
         const float halfDiagonal = length * 0.866025403784439f;
-        process = r.shapeSdfCenter <= halfDiagonal;
+        bool processed = false;
 
-        if(process) {
-            const ContainmentType check = args.function->check(frame.cube, args.model, args.minSize);
-            process = check != ContainmentType::Disjoint;
-        }
-        if(process) {    
-            shapeChildren(frame, args, threadContext, children, fromPool);
-            bool childResultSolid = true;
-            bool childResultEmpty = true;
-            bool childShapeSolid = true;
-            bool childShapeEmpty = true;
-            for(uint i = 0; i < 8; ++i) {
-                NodeOperationResult &child = children[i];
-                childResultEmpty &= child.resultType == SpaceType::Empty;
-                childResultSolid &= child.resultType == SpaceType::Solid;
-                childShapeEmpty &= child.shapeType == SpaceType::Empty;
-                childShapeSolid &= child.shapeType == SpaceType::Solid;
-                r.shapeSDF[i] = child.shapeSDF[i];
-                r.resultSDF[i] = child.resultSDF[i];
+        // If the node is already solid and the result SDF at the center is
+        // solid with distance exceeding half-diagonal, the entire cube is
+        // guaranteed to remain solid — skip children entirely.
+        if(frame.type == SpaceType::Solid) {
+            const float existingSdfCenter = SDF::interpolate(frame.sdf, center, frame.cube);
+            const float resultSdfCenter = args.operation(existingSdfCenter, r.shapeSdfCenter);
+            if(resultSdfCenter < -halfDiagonal) {
+                buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
+                r.shapeType = SDF::eval(r.shapeSDF);
+                r.resultType = SpaceType::Solid;
+                ++prunedSolidNodes;
+                processed = true;
             }
-            r.shapeType = childToParent(childShapeSolid, childShapeEmpty);
-            r.resultType = childToParent(childResultSolid, childResultEmpty);
-        } else {
-            r.shapeType = SDF::eval(r.shapeSDF);
-            r.resultType = frame.type;
-            SDF::copySDF(frame.sdf, r.resultSDF);
         }
-        
+
+        if(!processed) {
+            process = r.shapeSdfCenter <= halfDiagonal;
+
+            if(process) {
+                const ContainmentType check = args.function->check(frame.cube, args.model, args.minSize);
+                process = check != ContainmentType::Disjoint;
+            }
+            if(process) {    
+                shapeChildren(frame, args, threadContext, children, fromPool);
+                bool childResultSolid = true;
+                bool childResultEmpty = true;
+                bool childShapeSolid = true;
+                bool childShapeEmpty = true;
+                for(uint i = 0; i < 8; ++i) {
+                    NodeOperationResult &child = children[i];
+                    childResultEmpty &= child.resultType == SpaceType::Empty;
+                    childResultSolid &= child.resultType == SpaceType::Solid;
+                    childShapeEmpty &= child.shapeType == SpaceType::Empty;
+                    childShapeSolid &= child.shapeType == SpaceType::Solid;
+                    r.shapeSDF[i] = child.shapeSDF[i];
+                    r.resultSDF[i] = child.resultSDF[i];
+                }
+                r.shapeType = childToParent(childShapeSolid, childShapeEmpty);
+                r.resultType = childToParent(childResultSolid, childResultEmpty);
+            } else {
+                r.shapeType = SDF::eval(r.shapeSDF);
+                r.resultType = frame.type;
+                if(frame.type == SpaceType::Empty) ++prunedEmptyNodes;
+                SDF::copySDF(frame.sdf, r.resultSDF);
+            }
+        }
     }
     bool interpolatedSurface = (frame.node == NULL)
                                 && SDF::eval(frame.sdf) == SpaceType::Surface 
