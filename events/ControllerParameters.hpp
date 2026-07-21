@@ -13,4 +13,5 @@ public:
     float cameraMoveSpeed = 8.0f;
     float cameraAngularSpeedDeg = 90.0f;
     float nunchukTransSpeed = 256.0f;
+    float nunchukRotSpeed = 90.0f;
 };

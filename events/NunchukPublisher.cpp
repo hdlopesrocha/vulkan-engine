@@ -257,8 +257,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     glm::vec3 up = cam.getUp();
     glm::vec3 forward = cam.getForward();
 
-    float camAngDeg = glm::degrees(cam.angularSpeedRad) * deltaTime;
-    float brushAngDeg = cp.cameraAngularSpeedDeg * deltaTime;
+    float nunchukAngDeg = cp.nunchukRotSpeed * deltaTime;
 
     ControllerAction action;
 
@@ -306,11 +305,11 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             float rollOff = wrap180(s.nunchukRoll - startRoll);
             const float rdz = 2.0f;
             if (std::abs(yawOff) > rdz)
-                em->publish(std::make_shared<RotateCameraEvent>(cam.getUp(), yawOff * inv90 * camAngDeg));
+                em->publish(std::make_shared<RotateCameraEvent>(cam.getUp(), yawOff * inv90 * nunchukAngDeg));
             if (std::abs(pitchOff) > rdz)
-                em->publish(std::make_shared<RotateCameraEvent>(cam.getRight(), -pitchOff * inv90 * camAngDeg));
+                em->publish(std::make_shared<RotateCameraEvent>(cam.getRight(), -pitchOff * inv90 * nunchukAngDeg));
             if (std::abs(rollOff) > rdz)
-                em->publish(std::make_shared<RotateCameraEvent>(cam.getUp(), -rollOff * inv90 * camAngDeg));
+                em->publish(std::make_shared<RotateCameraEvent>(cam.getUp(), -rollOff * inv90 * nunchukAngDeg));
 
         } else if (ctrl == PageControl::SCALE) {
             // Accelerometer Y offset from C-press capture → brush scale
@@ -329,9 +328,9 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             if (std::abs(yawOff) < rdz) yawOff = 0.0f;
             if (std::abs(pitchOff) < rdz) pitchOff = 0.0f;
             if (std::abs(rollOff) < rdz) rollOff = 0.0f;
-            action.rotateDeg.x += yawOff * inv90 * brushAngDeg;
-            action.rotateDeg.y += -pitchOff * inv90 * brushAngDeg;
-            action.rotateDeg.z += rollOff * inv90 * brushAngDeg;
+            action.rotateDeg.x += yawOff * inv90 * nunchukAngDeg;
+            action.rotateDeg.y += -pitchOff * inv90 * nunchukAngDeg;
+            action.rotateDeg.z += rollOff * inv90 * nunchukAngDeg;
         }
     }
 
