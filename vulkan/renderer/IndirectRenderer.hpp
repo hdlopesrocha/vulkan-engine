@@ -49,6 +49,7 @@ public:
     struct MeshInfo {
         uint32_t id = UINT32_MAX;
         uint32_t baseVertex = 0;
+        uint32_t vertexCount = 0;
         uint32_t firstIndex = 0;
         uint32_t indexCount = 0;
         glm::vec4 boundsMin = glm::vec4(0.0f); // object-space AABB min (xyz)

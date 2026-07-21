@@ -207,6 +207,7 @@ uint32_t IndirectRenderer::updateMesh(const Geometry& mesh, uint32_t customId) {
     MeshInfo m{};
     m.id = customId;
     m.baseVertex = static_cast<uint32_t>(mergedVertices.size());
+    m.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
     m.firstIndex = static_cast<uint32_t>(mergedIndices.size());
     m.indexCount = static_cast<uint32_t>(mesh.indices.size());
     m.drawIndex = static_cast<uint32_t>(indirectCommands.size());
@@ -727,6 +728,44 @@ void IndirectRenderer::rebuild(VulkanApp* app) {
             }
         });
     };
+
+    // Compact merged vertex/index data to reclaim space from removed meshes.
+    // Without this, every brush-animation frame appends new geometry while stale
+    // data from prior frames accumulates indefinitely (GPU memory leak).
+    if (activeMeshCount < meshes.size()) {
+        std::vector<Vertex> compactVerts;
+        std::vector<uint32_t> compactIndices;
+        size_t totalVerts = 0, totalIndices = 0;
+        for (const auto& kv : meshes) {
+            if (!kv.second.active) continue;
+            totalVerts += kv.second.vertexCount;
+            totalIndices += kv.second.indexCount;
+        }
+        compactVerts.reserve(totalVerts);
+        compactIndices.reserve(totalIndices);
+
+        for (auto& kv : meshes) {
+            MeshInfo& info = kv.second;
+            if (!info.active) continue;
+
+            uint32_t oldBaseVertex = info.baseVertex;
+            uint32_t oldFirstIndex = info.firstIndex;
+            uint32_t vCount = info.vertexCount;
+            uint32_t iCount = info.indexCount;
+
+            info.baseVertex = static_cast<uint32_t>(compactVerts.size());
+            info.firstIndex = static_cast<uint32_t>(compactIndices.size());
+
+            auto vertStart = mergedVertices.begin() + oldBaseVertex;
+            compactVerts.insert(compactVerts.end(), vertStart, vertStart + vCount);
+
+            auto idxStart = mergedIndices.begin() + oldFirstIndex;
+            compactIndices.insert(compactIndices.end(), idxStart, idxStart + iCount);
+        }
+
+        mergedVertices = std::move(compactVerts);
+        mergedIndices = std::move(compactIndices);
+    }
 
     // Calculate required capacity with 25% headroom for incremental adds
     size_t neededVertexCap = mergedVertices.size() + mergedVertices.size() / 4 + 1024;
