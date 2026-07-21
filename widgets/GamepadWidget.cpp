@@ -242,6 +242,9 @@ void GamepadWidget::render() {
         ImGui::Text("Accel: X=%d  Y=%d  Z=%d", nc.nunchukAccelX, nc.nunchukAccelY, nc.nunchukAccelZ);
         ImGui::Text("Orient: roll=%.1f  pitch=%.1f  yaw=%.1f", nc.nunchukRoll, nc.nunchukPitch, nc.nunchukYaw);
         ImGui::Text("G-Force: x=%.2f  y=%.2f  z=%.2f", nc.nunchukGforceX, nc.nunchukGforceY, nc.nunchukGforceZ);
+        if (ctrlManager) {
+            ImGui::DragFloat("Trans Speed", &ctrlManager->parameters.nunchukTransSpeed, 1.0f, 0.0f, 2000.0f, "%.1f");
+        }
     } else if (nc.expansionType == EXP_NONE) {
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No expansion (Wiimote only)");
     }

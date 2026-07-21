@@ -270,9 +270,9 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         if (std::abs(jx) < jdz) jx = 0.0f;
         if (std::abs(jy) < jdz) jy = 0.0f;
         if (jx != 0.0f || jy != 0.0f) {
-            float vel = 8.0f * deltaTime;
-            if (jx != 0.0f) action.translate += right * (jx * vel * 32.0f);
-            if (jy != 0.0f) action.translate += forward * (jy * vel * 32.0f);
+            float vel = cp.nunchukTransSpeed * deltaTime;
+            if (jx != 0.0f) action.translate += right * (jx * vel);
+            if (jy != 0.0f) action.translate += forward * (jy * vel);
         }
     }
 
