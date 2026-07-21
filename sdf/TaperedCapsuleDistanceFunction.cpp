@@ -8,7 +8,9 @@ TaperedCapsuleDistanceFunction::TaperedCapsuleDistanceFunction(glm::vec3 a, glm:
 float TaperedCapsuleDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
     glm::vec3 pos = p - model.translate;
     pos = glm::inverse(model.quaternion) * pos;
-    return SDF::taperedCapsule(pos / model.scale, a, b, r1, r2);
+    float d = SDF::taperedCapsule(pos / model.scale, a, b, r1, r2);
+    float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
+    return d * minScale;
 }
 
 glm::vec3 TaperedCapsuleDistanceFunction::getCenter(const Transformation &model) const {

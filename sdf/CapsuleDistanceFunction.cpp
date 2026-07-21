@@ -4,9 +4,11 @@ CapsuleDistanceFunction::CapsuleDistanceFunction(glm::vec3 a, glm::vec3 b, float
     : SignedDistanceFunction(SdfType::CAPSULE), a(a), b(b), radius(r) {}
 
 float CapsuleDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
-    glm::vec3 pos = p - model.translate; // Move point into model space
+    glm::vec3 pos = p - model.translate;
     pos = glm::inverse(model.quaternion) * pos;
-    return SDF::capsule(pos/model.scale, a, b, radius);
+    float d = SDF::capsule(pos / model.scale, a, b, radius);
+    float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
+    return d * minScale;
 }
 
 glm::vec3 CapsuleDistanceFunction::getCenter(const Transformation &model) const {

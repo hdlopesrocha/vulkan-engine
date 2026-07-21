@@ -807,6 +807,10 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
     };
 
     buildShapeSDF(args, frame, r.shapeSDF, threadContext);
+
+    const glm::vec3 center = frame.cube.getCenter();
+    r.shapeSdfCenter = evaluateSDF(args, &threadContext->shapeSdfCache, center);
+
     bool process = true;
     if(r.isLeaf) {
         buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
@@ -814,8 +818,13 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         r.resultType = SDF::eval(r.resultSDF);
     }
     else {
-        const ContainmentType check = args.function->check(frame.cube, args.model, args.minSize);
-        process = check != ContainmentType::Disjoint;  
+        const float halfDiagonal = length * 0.866025403784439f;
+        process = r.shapeSdfCenter <= halfDiagonal;
+
+        if(process) {
+            const ContainmentType check = args.function->check(frame.cube, args.model, args.minSize);
+            process = check != ContainmentType::Disjoint;
+        }
         if(process) {    
             shapeChildren(frame, args, threadContext, children, fromPool);
             bool childResultSolid = true;
