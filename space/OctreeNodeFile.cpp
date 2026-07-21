@@ -17,7 +17,7 @@ OctreeNodeFile::OctreeNodeFile(Octree * tree, OctreeNode * node, std::string fil
 OctreeNode * OctreeNodeFile::loadRecursive(OctreeNode * node, int i, const BoundingCube &cube, std::vector<OctreeNodeSerialized> * nodes) {
 	OctreeNodeSerialized serialized = nodes->at(i);
 	if(node == NULL) {
-		glm::vec3 position = SDF::getAveragePosition(serialized.sdf, cube);
+		glm::vec3 position = SDF::getPosition(serialized.sdf, cube);
 		glm::vec3 normal = SDF::getNormalFromPosition(serialized.sdf, cube, position);
 		Vertex vertex(position, normal, glm::vec2(0), serialized.brushIndex);
 		node = tree->allocator->allocate()->init(vertex);

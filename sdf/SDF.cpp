@@ -5,11 +5,11 @@
 #include <stb/stb_perlin.h>
 
 glm::vec3 SDF::getPosition(float sdf[8], const BoundingCube &cube) {
-    // Early exit if there's no surface inside this cube
     SpaceType eval = SDF::eval(sdf);
     if(eval != SpaceType::Surface) {
-        return cube.getCenter();  // or some fallback value
+        return cube.getCenter();
     }
+
     glm::vec3 normals[8];
     for (int i = 0; i < 8; ++i) {
         normals[i] = SDF::getNormalFromPosition(sdf, cube, cube.getCorner(i));
@@ -17,14 +17,16 @@ glm::vec3 SDF::getPosition(float sdf[8], const BoundingCube &cube) {
 
     glm::mat3 ATA(0.0f);
     glm::vec3 ATb(0.0f);
+    glm::vec3 massPoint(0.0f);
+    int count = 0;
 
     for (int i = 0; i < 12; ++i) {
         glm::ivec2 edge = SDF_EDGES[i];
         float d0 = sdf[edge[0]];
         float d1 = sdf[edge[1]];
 
-		bool sign0 = d0 < 0.0f;
-		bool sign1 = d1 < 0.0f;
+        bool sign0 = d0 < 0.0f;
+        bool sign1 = d1 < 0.0f;
 
         if (sign0 != sign1) {
             glm::vec3 p0 = cube.getCorner(edge[0]);
@@ -32,19 +34,45 @@ glm::vec3 SDF::getPosition(float sdf[8], const BoundingCube &cube) {
             float denom = d0 - d1;
             float t = (denom != 0.0f) ? glm::clamp(d0 / denom, 0.0f, 1.0f) : 0.5f;
             glm::vec3 p = glm::mix(p0, p1, t);
-            glm::vec3 n = glm::normalize(glm::mix(normals[edge[0]], normals[edge[1]], t));
+            glm::vec3 nm = glm::mix(normals[edge[0]], normals[edge[1]], t);
+            float nl = glm::length(nm);
+            if (nl < 1e-6f) {
+                continue;
+            }
+            glm::vec3 n = nm / nl;
 
-            float d = glm::dot(n, p);
             ATA += glm::outerProduct(n, n);
-            ATb += n * d;
+            ATb += n * glm::dot(n, p);
+
+            massPoint += p;
+            count++;
         }
     }
 
-    if (glm::determinant(ATA) > 1e-5f) {
-        return Math::solveLinearSystem(ATA, ATb);
-    } else {
-        return getAveragePosition(sdf, cube); // e.g., average of surface crossings
+    if (count == 0) {
+        return cube.getCenter();
     }
+
+    massPoint /= (float)count;
+
+    // Regularize toward the mass point to prevent spikes when
+    // the QEF is underconstrained (few edge crossings or near-parallel normals)
+    ATA[0][0] += 1e-2f;
+    ATA[1][1] += 1e-2f;
+    ATA[2][2] += 1e-2f;
+    ATb += massPoint * 1e-2f;
+
+    glm::vec3 result = Math::solveLinearSystem(ATA, ATb);
+
+    if (glm::any(glm::isnan(result)) || glm::any(glm::isinf(result))) {
+        return massPoint;
+    }
+
+    glm::vec3 min = cube.getMin();
+    glm::vec3 max = cube.getMax();
+    result = glm::clamp(result, min, max);
+
+    return result;
 }
 
 glm::vec3 SDF::getAveragePosition(float sdf[8], const BoundingCube &cube) {
@@ -94,26 +122,33 @@ glm::vec3 SDF::getNormal(float sdf[8], const BoundingCube& cube) {
     const float dx = cube.getLengthX(); // or half size if your sdf spacing is half
     const float inv2dx = 1.0f / (2.0f * dx);
 
-    // Gradient approximation via central differences:
+    // Gradient via central differences (CUBE_CORNERS convention: bit2=x, bit1=y, bit0=z)
     float gx = (sdf[4] + sdf[5] + sdf[6] + sdf[7] - sdf[0] - sdf[1] - sdf[2] - sdf[3]) * 0.25f;
     float gy = (sdf[2] + sdf[3] + sdf[6] + sdf[7] - sdf[0] - sdf[1] - sdf[4] - sdf[5]) * 0.25f;
     float gz = (sdf[1] + sdf[3] + sdf[5] + sdf[7] - sdf[0] - sdf[2] - sdf[4] - sdf[6]) * 0.25f;
 
-    glm::vec3 normal(gx, gy, gz);
-    return glm::normalize(normal * inv2dx);
+    glm::vec3 normal = glm::vec3(gx, gy, gz) * inv2dx;
+    float nl = glm::length(normal);
+    if (nl < 1e-6f) {
+        return glm::vec3(0.0f, 1.0f, 0.0f);
+    }
+    return normal / nl;
 }
 
 glm::vec3 SDF::getNormalFromPosition(float sdf[8], const BoundingCube& cube, const glm::vec3& position) {
     glm::vec3 local = (position - cube.getMin()) / cube.getLength(); // Convert to [0,1]^3 within cube
 
     // Trilinear interpolation gradient
+    // CUBE_CORNERS convention: bit2=x, bit1=y, bit0=z
+    // dx: ∂f/∂x — x-differences (bit2) weighted by (y,z)
     float dx = (
-        (1 - local.x) * (1 - local.y) * (sdf[4] - sdf[0]) +
-        local.x * (1 - local.y) * (sdf[5] - sdf[1]) +
-        (1 - local.x) * local.y * (sdf[6] - sdf[2]) +
-        local.x * local.y * (sdf[7] - sdf[3])
+        (1 - local.y) * (1 - local.z) * (sdf[4] - sdf[0]) +
+        (1 - local.y) * local.z * (sdf[5] - sdf[1]) +
+        local.y * (1 - local.z) * (sdf[6] - sdf[2]) +
+        local.y * local.z * (sdf[7] - sdf[3])
     );
 
+    // dy: ∂f/∂y — y-differences (bit1) weighted by (x,z)
     float dy = (
         (1 - local.x) * (1 - local.z) * (sdf[2] - sdf[0]) +
         local.x * (1 - local.z) * (sdf[3] - sdf[1]) +
@@ -121,14 +156,20 @@ glm::vec3 SDF::getNormalFromPosition(float sdf[8], const BoundingCube& cube, con
         local.x * local.z * (sdf[7] - sdf[5])
     );
 
+    // dz: ∂f/∂z — z-differences (bit0) weighted by (x,y)
     float dz = (
-        (1 - local.y) * (1 - local.z) * (sdf[1] - sdf[0]) +
-        local.y * (1 - local.z) * (sdf[3] - sdf[2]) +
-        (1 - local.y) * local.z * (sdf[5] - sdf[4]) +
-        local.y * local.z * (sdf[7] - sdf[6])
+        (1 - local.x) * (1 - local.y) * (sdf[1] - sdf[0]) +
+        (1 - local.x) * local.y * (sdf[3] - sdf[2]) +
+        local.x * (1 - local.y) * (sdf[5] - sdf[4]) +
+        local.x * local.y * (sdf[7] - sdf[6])
     );
 
-    return glm::normalize(glm::vec3(dx, dy, dz) / cube.getLength());
+    glm::vec3 normal = glm::vec3(dx, dy, dz) / cube.getLength();
+    float nl = glm::length(normal);
+    if (nl < 1e-6f) {
+        return glm::vec3(0.0f, 1.0f, 0.0f);
+    }
+    return normal / nl;
 }
 
 

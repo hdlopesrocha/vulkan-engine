@@ -862,7 +862,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             }
 
             if(r.node!= NULL) {
-                r.node->vertex.position = SDF::getAveragePosition(r.resultSDF, frame.cube);
+                r.node->vertex.position = SDF::getPosition(r.resultSDF, frame.cube);
                 r.node->vertex.normal = SDF::getNormalFromPosition(r.resultSDF, frame.cube, r.node->vertex.position);
                 // Simplification & Painting
                 if(r.isLeaf) {
