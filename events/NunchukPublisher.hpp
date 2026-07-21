@@ -58,9 +58,6 @@ private:
     float startPitch = 0.0f;
     float startRoll = 0.0f;
     int startAccelY = 0;
-    int prevNunchukAccelX = 0;
-    int prevNunchukAccelY = 0;
-    int prevNunchukAccelZ = 0;
     bool firstControlFrame = true;
     bool prevC = false;
 

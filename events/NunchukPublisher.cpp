@@ -234,9 +234,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         startPitch = s.nunchukPitch;
         startRoll = s.nunchukRoll;
         startAccelY = s.nunchukAccelY;
-        prevNunchukAccelX = s.nunchukAccelX;
-        prevNunchukAccelY = s.nunchukAccelY;
-        prevNunchukAccelZ = s.nunchukAccelZ;
         firstControlFrame = false;
         prevButtons = s.buttons;
         prevC = s.buttonC;
@@ -260,26 +257,22 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     glm::vec3 up = cam.getUp();
     glm::vec3 forward = cam.getForward();
 
-    float camVelocity = cam.speed * deltaTime;
-    float brushVelocity = cp.cameraMoveSpeed * deltaTime;
     float camAngDeg = glm::degrees(cam.angularSpeedRad) * deltaTime;
     float brushAngDeg = cp.cameraAngularSpeedDeg * deltaTime;
 
     ControllerAction action;
 
-    // ---- Nunchuk Z + Joystick: drag-and-drop translation ----
-    // Works independently of C — click Z to grab, move stick to drag, release to drop.
-    if (s.buttonZ) {
+    // ---- Nunchuk Joystick: translation (both pages) ----
+    {
         float jx = s.joystickX;
         float jy = s.joystickY;
         const float jdz = 0.15f;
         if (std::abs(jx) < jdz) jx = 0.0f;
         if (std::abs(jy) < jdz) jy = 0.0f;
         if (jx != 0.0f || jy != 0.0f) {
-            const PageCategory cat = wctx.activeCategory();
-            float vel = (cat == PageCategory::CAMERA) ? camVelocity : brushVelocity;
-            if (jx != 0.0f) action.translate += right * (jx * vel);
-            if (jy != 0.0f) action.translate += up * (-jy * vel);
+            float vel = 8.0f * deltaTime;
+            if (jx != 0.0f) action.translate += right * (jx * vel * 32.0f);
+            if (jy != 0.0f) action.translate += forward * (jy * vel * 32.0f);
         }
     }
 
@@ -293,22 +286,12 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     }
     prevC = s.buttonC;
 
-    // ---- Raw accelerometer deltas (frame-to-frame movement detection) ----
-    int dxa = s.nunchukAccelX - prevNunchukAccelX;
-    int dya = s.nunchukAccelY - prevNunchukAccelY;
-    int dza = s.nunchukAccelZ - prevNunchukAccelZ;
-    prevNunchukAccelX = s.nunchukAccelX;
-    prevNunchukAccelY = s.nunchukAccelY;
-    prevNunchukAccelZ = s.nunchukAccelZ;
-
     auto wrap180 = [](float v) -> float {
         while (v > 180.0f) v -= 360.0f;
         while (v < -180.0f) v += 360.0f;
         return v;
     };
 
-    // Sensitivity: raw accel values are 0-255, typical movement deltas are 2-50.
-    const float accelSensitivity = 0.002f;
     const float inv90 = 1.0f / 90.0f;
 
     // ---- C-gated controls: translation, rotation, scale ----
@@ -327,19 +310,13 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             if (std::abs(pitchOff) > rdz)
                 em->publish(std::make_shared<RotateCameraEvent>(cam.getRight(), -pitchOff * inv90 * camAngDeg));
             if (std::abs(rollOff) > rdz)
-                em->publish(std::make_shared<RotateCameraEvent>(cam.getForward(), rollOff * inv90 * camAngDeg));
-
-            // Accelerometer deltas → camera translation (camera-relative axes)
-            const float accelTransMult = 32.0f;
-            if (std::abs(dxa) > 2) action.translate += right * (dxa * accelSensitivity * camVelocity * accelTransMult);
-            if (std::abs(dya) > 2) action.translate += up * (-dya * accelSensitivity * camVelocity * accelTransMult);
-            if (std::abs(dza) > 2) action.translate += forward * (dza * accelSensitivity * camVelocity * accelTransMult);
+                em->publish(std::make_shared<RotateCameraEvent>(cam.getUp(), -rollOff * inv90 * camAngDeg));
 
         } else if (ctrl == PageControl::SCALE) {
-            // Accelerometer Y delta from C-press capture → brush scale
+            // Accelerometer Y offset from C-press capture → brush scale
             int scaleOff = s.nunchukAccelY - startAccelY;
             if (std::abs(scaleOff) > 2) {
-                float scale = scaleOff * accelSensitivity * brushVelocity * 2.0f;
+                float scale = scaleOff * 0.001f;
                 action.scaleDelta = glm::vec3(scale);
             }
 
@@ -355,12 +332,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             action.rotateDeg.x += yawOff * inv90 * brushAngDeg;
             action.rotateDeg.y += -pitchOff * inv90 * brushAngDeg;
             action.rotateDeg.z += rollOff * inv90 * brushAngDeg;
-
-            // Accelerometer deltas → brush translation (camera-relative axes)
-            const float accelTransMult = 32.0f;
-            if (std::abs(dxa) > 2) action.translate += right * (dxa * accelSensitivity * brushVelocity * accelTransMult);
-            if (std::abs(dya) > 2) action.translate += up * (-dya * accelSensitivity * brushVelocity * accelTransMult);
-            if (std::abs(dza) > 2) action.translate += forward * (dza * accelSensitivity * brushVelocity * accelTransMult);
         }
     }
 
