@@ -1,6 +1,7 @@
 #include "WaterBackFaceRenderer.hpp"
 #include "RendererUtils.hpp"
 #include "../../utils/FileReader.hpp"
+#include "DescriptorWriter.hpp"
 #include <stdexcept>
 #include <iostream>
 #include <cstdlib>
@@ -14,8 +15,90 @@ void WaterBackFaceRenderer::init(VulkanApp* app) {
     appPtr = app;
 }
 
-void WaterBackFaceRenderer::cleanup(VulkanApp* app) {
+void WaterBackFaceRenderer::createDummyDepthView(VulkanApp* app) {
+    if (!app) { return; }
+    if (dummyDepthView != VK_NULL_HANDLE) { return; }
+
+    if (nearestSampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo si{};
+        si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter = VK_FILTER_NEAREST;
+        si.minFilter = VK_FILTER_NEAREST;
+        si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.maxAnisotropy = 1.0f;
+        si.minLod = 0.0f;
+        si.maxLod = 1.0f;
+        si.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+        if (vkCreateSampler(app->getDevice(), &si, nullptr, &nearestSampler) == VK_SUCCESS) {
+            app->resources.addSampler(nearestSampler, "WaterBackFaceRenderer: nearestSampler");
+        }
+    }
+
+    RendererUtils::createImage2DWithVma(app->getDevice(), app, 1, 1, VK_FORMAT_D32_SFLOAT,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_DEPTH_BIT,
+        "WaterBackFaceRenderer: dummyDepthImage",
+        dummyDepthImage, dummyDepthAllocation, dummyDepthMemory, dummyDepthView);
+
+    if (dummyDepthView == VK_NULL_HANDLE) {
+        std::cerr << "[WaterBackFaceRenderer] Failed to create dummy depth image" << std::endl;
+        return;
+    }
+
+    // Transition to DEPTH_STENCIL_ATTACHMENT → SHADER_READ_ONLY and clear to 1.0
+    VkCommandBuffer cmd = app->allocatePrimaryCommandBuffer();
+    VkCommandBufferBeginInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &bi);
+
+    // UNDEFINED → TRANSFER_DST
+    app->recordTransitionImageLayoutLayer(cmd, dummyDepthImage, VK_FORMAT_D32_SFLOAT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
+
+    VkClearDepthStencilValue clearVal{};
+    clearVal.depth = 1.0f;
+    VkImageSubresourceRange range{};
+    range.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    range.levelCount = 1;
+    range.layerCount = 1;
+    vkCmdClearDepthStencilImage(cmd, dummyDepthImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                &clearVal, 1, &range);
+
+    // TRANSFER_DST → SHADER_READ_ONLY
+    app->recordTransitionImageLayoutLayer(cmd, dummyDepthImage, VK_FORMAT_D32_SFLOAT,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+    app->setImageLayoutTracked(dummyDepthImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+
+    vkEndCommandBuffer(cmd);
+    app->submitCommandBufferAndWait(cmd);
+    app->freeCommandBuffer(cmd);
+}
+
+void WaterBackFaceRenderer::destroyDummyDepthView(VulkanApp* app) {
     (void)app;
+    dummyDepthView = VK_NULL_HANDLE;
+    dummyDepthImage = VK_NULL_HANDLE;
+    dummyDepthAllocation = VK_NULL_HANDLE;
+    dummyDepthMemory = VK_NULL_HANDLE;
+}
+
+void WaterBackFaceRenderer::patchBinding3(VkDescriptorSet ds, VkImageView newView) {
+    if (!appPtr || ds == VK_NULL_HANDLE || newView == VK_NULL_HANDLE || nearestSampler == VK_NULL_HANDLE) {
+        return;
+    }
+    DescriptorWriter(appPtr->getDevice())
+        .writeImage(ds, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    nearestSampler, newView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        .flush();
+}
+
+void WaterBackFaceRenderer::cleanup(VulkanApp* app) {
+    destroyDummyDepthView(app);
+    nearestSampler = VK_NULL_HANDLE;
     appPtr = nullptr;
 }
 
@@ -154,7 +237,9 @@ void WaterBackFaceRenderer::createPipelines(VulkanApp* app, VkPipelineLayout pip
 
 void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
     if (!app) return;
+    appPtr = app;
     if (renderWidth == width && renderHeight == height && backFaceDepthImages[0] != VK_NULL_HANDLE) return;
+    createDummyDepthView(app);
     destroyRenderTargets(app);
     renderWidth = width;
     renderHeight = height;

@@ -25,14 +25,23 @@ public:
                             VkDescriptorSet mainDs, VkDescriptorSet materialDs, VkDescriptorSet sceneDs,
                             VkBuffer compactIndirectBuffer = VK_NULL_HANDLE,
                             VkBuffer visibleCountBuffer = VK_NULL_HANDLE);
-    // Map the application frame index into the internal double-buffered arrays.
-    // This allows callers to pass the swapchain frame index directly; the
-    // implementation will use modulo mapping into the two back-face buffers.
     VkImage getBackFaceDepthImage(uint32_t frameIndex) const { return backFaceDepthImages[frameIndex % backFaceDepthImages.size()]; }
     VkImageView getBackFaceDepthView(uint32_t frameIndex) const { return backFaceDepthImageViews[frameIndex % backFaceDepthImageViews.size()]; }
-    // Accessor for tracked per-frame layout (used by widgets to emit correct barriers)
     VkImageLayout getBackFaceDepthLayout(uint32_t frameIndex) const { return backFaceDepthImageLayouts[frameIndex % backFaceDepthImageLayouts.size()]; }
     void setBackFaceDepthLayout(uint32_t frameIndex, VkImageLayout layout) { if (frameIndex < backFaceDepthImageLayouts.size()) backFaceDepthImageLayouts[frameIndex] = layout; }
+
+    // Dummy 1x1 depth image to avoid SYNC-HAZARD when binding #3 of set 2
+    // (the back-face depth sampler) points to the same image that the back-face
+    // pass writes as depth attachment. The back-face pass temporarily replaces
+    // binding #3 with this dummy so the tessellation evaluation shader does not
+    // read-from while the depth attachment writes-to the same image.
+    void createDummyDepthView(VulkanApp* app);
+    void destroyDummyDepthView(VulkanApp* app);
+    VkImageView getDummyDepthView() const { return dummyDepthView; }
+
+    // Patch binding #3 of a descriptor set (set 2) to point to `newView`.
+    // Used to swap between the dummy and the real back-face depth.
+    void patchBinding3(VkDescriptorSet ds, VkImageView newView);
 
 private:
     TrackedHandle<VkPipeline> backFacePipeline;
@@ -44,6 +53,11 @@ private:
     std::array<VkImageLayout, FRAMES> backFaceDepthImageLayouts = {};
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
+    VkImage dummyDepthImage = VK_NULL_HANDLE;
+    VmaAllocation dummyDepthAllocation = VK_NULL_HANDLE;
+    VkDeviceMemory dummyDepthMemory = VK_NULL_HANDLE;
+    VkImageView dummyDepthView = VK_NULL_HANDLE;
+    TrackedHandle<VkSampler> nearestSampler;
     VulkanApp* appPtr = nullptr;
 public:
     CommandBufferState* cmdState = nullptr;

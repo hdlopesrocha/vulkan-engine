@@ -449,12 +449,31 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
             bool _bf_env_skip = (_bf_dis && _bf_dis[0] != '\0');
             if (_bf_env_skip) std::cerr << "[SceneRenderer] VULKAN_DISABLE_BACKFACE set; skipping back-face pass" << std::endl;
             if (backFaceRenderer && !skipBackFace && !_bf_env_skip) {
-                backFaceRenderer->renderBackFacePass(app, commandBuffer, frameIdx,
-                                                    waterRenderer->getIndirectRenderer(),
-                                                    waterRenderer->getWaterGeometryPipelineLayout(),
-                                                    app->getMainDescriptorSet(),
-                                                    app->getMaterialDescriptorSet(),
-                                                    waterRenderer->getWaterDepthDescriptorSet(frameIdx));
+                VkDescriptorSet bfSceneDs = VK_NULL_HANDLE;
+                VkDescriptorPool asyncPool = waterRenderer->getAsyncWaterDepthPool();
+                VkDevice device = app->getDevice();
+                if (asyncPool != VK_NULL_HANDLE) {
+                    VkDescriptorSetLayout wdsLayout = waterRenderer->getWaterDepthDescriptorSetLayout();
+                    VkDescriptorSetAllocateInfo ai{};
+                    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                    ai.descriptorPool = asyncPool;
+                    ai.descriptorSetCount = 1;
+                    ai.pSetLayouts = &wdsLayout;
+                    if (vkAllocateDescriptorSets(device, &ai, &bfSceneDs) == VK_SUCCESS) {
+                        VkImageView dummyDepth = backFaceRenderer->getDummyDepthView();
+                        VkImageView bfCube = (solid360Renderer) ? solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
+                        waterRenderer->updateSceneTexturesBinding(app, bfSceneDs,
+                            sceneColorView, sceneDepthView, frameIdx, skyView, dummyDepth, bfCube);
+                    }
+                }
+                if (bfSceneDs != VK_NULL_HANDLE) {
+                    backFaceRenderer->renderBackFacePass(app, commandBuffer, frameIdx,
+                                                        waterRenderer->getIndirectRenderer(),
+                                                        waterRenderer->getWaterGeometryPipelineLayout(),
+                                                        app->getMainDescriptorSet(),
+                                                        app->getMaterialDescriptorSet(),
+                                                        bfSceneDs);
+                }
             }
             waterRenderer->beginWaterGeometryPass(commandBuffer, frameIdx);
 
@@ -518,12 +537,36 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
         bool _bf_env_skip2 = (_bf_dis2 && _bf_dis2[0] != '\0');
         if (_bf_env_skip2) std::cerr << "[SceneRenderer] VULKAN_DISABLE_BACKFACE set; skipping back-face pass" << std::endl;
         if (backFaceRenderer && !skipBackFace && !_bf_env_skip2) {
-            backFaceRenderer->renderBackFacePass(app, commandBuffer, frameIdx,
-                                                waterRenderer->getIndirectRenderer(),
-                                                waterRenderer->getWaterGeometryPipelineLayout(),
-                                                app->getMainDescriptorSet(),
-                                                app->getMaterialDescriptorSet(),
-                                                waterRenderer->getWaterDepthDescriptorSet(frameIdx));
+            // Allocate a temporary descriptor set from the async pool so we never
+            // modify the per-frame set during command-buffer recording. This set
+            // uses the dummy depth on binding #3 to avoid SYNC-HAZARD (the back-face
+            // pass writes to backFaceDepthImage as depth attachment while the TES
+            // reads the same binding — no barrier possible inside the render pass).
+            VkDescriptorSet bfSceneDs = VK_NULL_HANDLE;
+            VkDescriptorPool asyncPool = waterRenderer->getAsyncWaterDepthPool();
+            VkDevice device = app->getDevice();
+            if (asyncPool != VK_NULL_HANDLE) {
+                VkDescriptorSetLayout wdsLayout = waterRenderer->getWaterDepthDescriptorSetLayout();
+                VkDescriptorSetAllocateInfo ai{};
+                ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                ai.descriptorPool = asyncPool;
+                ai.descriptorSetCount = 1;
+                ai.pSetLayouts = &wdsLayout;
+                if (vkAllocateDescriptorSets(device, &ai, &bfSceneDs) == VK_SUCCESS) {
+                    VkImageView dummyDepth = backFaceRenderer->getDummyDepthView();
+                    VkImageView bfCube = (solid360Renderer) ? solid360Renderer->getSolid360View() : VK_NULL_HANDLE;
+                    waterRenderer->updateSceneTexturesBinding(app, bfSceneDs,
+                        sceneColorView, sceneDepthView, frameIdx, skyView, dummyDepth, bfCube);
+                }
+            }
+            if (bfSceneDs != VK_NULL_HANDLE) {
+                backFaceRenderer->renderBackFacePass(app, commandBuffer, frameIdx,
+                                                    waterRenderer->getIndirectRenderer(),
+                                                    waterRenderer->getWaterGeometryPipelineLayout(),
+                                                    app->getMainDescriptorSet(),
+                                                    app->getMaterialDescriptorSet(),
+                                                    bfSceneDs);
+            }
         }
         if (!_wg_env_skip) {
             waterRenderer->render(app, commandBuffer, frameIdx, sceneColorView, sceneDepthView, skyView);

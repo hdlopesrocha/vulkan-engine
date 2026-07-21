@@ -1279,6 +1279,16 @@ public:
                     }
                 }
 
+                // Patch binding #3 to the dummy depth to avoid the back-face
+                // pass reading-from the same image it writes-to as depth
+                // attachment (SYNC-HAZARD READ_AFTER_WRITE).
+                if (asyncWaterDs != VK_NULL_HANDLE) {
+                    WaterBackFaceRenderer* bfr = this->sceneRenderer->backFaceRenderer.get();
+                    if (bfr && bfr->getDummyDepthView() != VK_NULL_HANDLE) {
+                        bfr->patchBinding3(asyncWaterDs, bfr->getDummyDepthView());
+                    }
+                }
+
                 // Render back-face pass using the per-task compact/visible buffers so draws consume the cull results
                 auto tBackface = std::chrono::high_resolution_clock::now();
                 this->sceneRenderer->backFaceRenderer->renderBackFacePass(app, cmd, frameIdx,

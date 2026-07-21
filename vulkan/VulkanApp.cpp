@@ -2470,11 +2470,13 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         *outSemaphore = semaphore;
 
         std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
-        VkPipelineStageFlags2 waitStage =
-            VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
-            VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
-            VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT;
+        VkPipelineStageFlags2 waitStage = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
+            | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+            | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         m_extraWaitSemaphores.emplace_back(semaphore, waitStage);
     }
 
