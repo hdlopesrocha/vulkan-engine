@@ -827,18 +827,89 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         const float halfDiagonal = length * 0.866025403784439f;
         bool processed = false;
 
-        // If the node is already solid and the result SDF at the center is
-        // solid with distance exceeding half-diagonal, the entire cube is
-        // guaranteed to remain solid — skip children entirely.
-        if(frame.type == SpaceType::Solid) {
-            const float existingSdfCenter = SDF::interpolate(frame.sdf, center, frame.cube);
-            const float resultSdfCenter = args.operation(existingSdfCenter, r.shapeSdfCenter);
-            if(resultSdfCenter < -halfDiagonal) {
+        // No existing SDF data (all INFINITY) — result is purely the shape.
+        // Union/Xor: need the Lipschitz center check for safety.
+        // Others (Intersection/Subtraction/Paint): result is INFINITY = Empty.
+        if(!processed && isNodeLeaf) {
+            bool allInfinity = true;
+            for(int i = 0; i < 8; ++i)
+                if(frame.sdf[i] != INFINITY) { allInfinity = false; break; }
+            if(allInfinity) {
+                if(args.operation == &SDF::opUnion || args.operation == &SDF::opXor) {
+                    if(r.shapeSdfCenter < -halfDiagonal) {
+                        SDF::copySDF(r.shapeSDF, r.resultSDF);
+                        r.shapeType = SpaceType::Solid;
+                        r.resultType = SpaceType::Solid;
+                        r.isSimplified = true;
+                        ++prunedSolidNodes;
+                        processed = true;
+                    } else if(r.shapeSdfCenter > halfDiagonal) {
+                        SDF::copySDF(r.shapeSDF, r.resultSDF);
+                        r.shapeType = SpaceType::Empty;
+                        r.resultType = SpaceType::Empty;
+                        r.isSimplified = true;
+                        ++prunedEmptyNodes;
+                        processed = true;
+                    }
+                } else {
+                    // Intersection/Subtraction/Paint: INFINITY op anything = INFINITY = Empty
+                    r.shapeType = SDF::eval(r.shapeSDF);
+                    r.resultType = SpaceType::Empty;
+                    r.isSimplified = true;
+                    ++prunedEmptyNodes;
+                    processed = true;
+                }
+            }
+        }
+
+        // Union/Paint with existing Solid → always Solid everywhere
+        if(!processed && frame.type == SpaceType::Solid &&
+           (args.operation == &SDF::opUnion || args.operation == &SDF::opPaint)) {
+            bool allFinite = true;
+            for(int i = 0; i < 8; ++i)
+                if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
+            if(allFinite) {
                 buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
                 r.shapeType = SDF::eval(r.shapeSDF);
                 r.resultType = SpaceType::Solid;
                 ++prunedSolidNodes;
                 processed = true;
+            }
+        }
+
+        // Intersection/Subtraction/Paint with existing Empty → always Empty everywhere
+        if(!processed && frame.type == SpaceType::Empty &&
+           (args.operation == &SDF::opIntersection ||
+            args.operation == &SDF::opSubtraction ||
+            args.operation == &SDF::opPaint)) {
+            bool allFinite = true;
+            for(int i = 0; i < 8; ++i)
+                if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
+            if(allFinite) {
+                buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
+                r.shapeType = SDF::eval(r.shapeSDF);
+                r.resultType = SpaceType::Empty;
+                ++prunedEmptyNodes;
+                processed = true;
+            }
+        }
+
+        // For remaining operations (or types): check if the shape center is far enough
+        // that the entire cube is definitely Solid/Empty.
+        if(!processed && frame.type == SpaceType::Solid) {
+            bool allFinite = true;
+            for(int i = 0; i < 8; ++i)
+                if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
+            if(allFinite) {
+                const float existingSdfCenter = SDF::interpolate(frame.sdf, center, frame.cube);
+                const float resultSdfCenter = args.operation(existingSdfCenter, r.shapeSdfCenter);
+                if(resultSdfCenter < -halfDiagonal) {
+                    buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
+                    r.shapeType = SDF::eval(r.shapeSDF);
+                    r.resultType = SpaceType::Solid;
+                    ++prunedSolidNodes;
+                    processed = true;
+                }
             }
         }
 
