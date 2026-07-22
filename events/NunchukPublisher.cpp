@@ -443,21 +443,21 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             rollInput  = (std::abs(rollOff) > rdz)  ? rollOff  : 0.0f;
         }
 
-        // gyro_rate_dps * deltaTime → degrees per frame (1:1 real‑world mapping)
-        float scale = deltaTime * cp.wiimoteRotSpeed / 90.0f;
-
         if (wctx.activeCategory() == PageCategory::CAMERA) {
-            float y =  yawInput * scale;
-            float p = -pitchInput * scale;
-            float r = -rollInput * scale;
+            // Camera uses its own angular speed setting for sensitivity
+            float camScale = glm::degrees(cam.angularSpeedRad) * deltaTime / 90.0f;
+            float y =  yawInput * camScale;
+            float p = -pitchInput * camScale;
+            float r = -rollInput * camScale;
             if (y != 0.0f || p != 0.0f || r != 0.0f)
                 em->publish(std::make_shared<RotateCameraEvent>(y, p, r));
         } else if (brushManager) {
             BrushEntry* be = brushManager->getSelectedEntry();
             if (be) {
-                float dy = yawInput   * scale;
-                float dp = pitchInput * scale;
-                float dr = rollInput  * scale;
+                float brushScale = deltaTime * cp.wiimoteRotSpeed / 90.0f;
+                float dy = yawInput   * brushScale;
+                float dp = pitchInput * brushScale;
+                float dr = rollInput  * brushScale;
                 if (dy != 0.0f || dp != 0.0f || dr != 0.0f) {
                     glm::quat q = be->rot;
                     glm::quat camOrient = cam.getOrientation();
