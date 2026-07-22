@@ -14,8 +14,8 @@ class LiquidSpaceChangeHandler : public OctreeChangeHandler {
 
 	public:
 	LiquidSpaceChangeHandler(
-		const NodeDataCallback& onNodeUpdatedCallback,
-    	const NodeDataCallback& onNodeDeletedCallback
+		const NodeDataCallback& onNodeUpdatedCallback_,
+    	const NodeDataCallback& onNodeDeletedCallback_
 	);
 
 	void onNodeAdded(const OctreeNodeData& data) const override;

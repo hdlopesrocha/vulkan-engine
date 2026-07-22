@@ -4,9 +4,9 @@
 #include <sstream>
 #include <iostream>
 
-SettingsFile::SettingsFile(Settings* settings, std::string filename) {
-    this->settings = settings;
-    this->filename = filename;
+SettingsFile::SettingsFile(Settings* settings_, std::string filename_) {
+    this->settings = settings_;
+    this->filename = filename_;
 }
 
 void SettingsFile::load(std::string baseFolder) {

@@ -9,7 +9,7 @@
 class UniqueOctreeChangeHandler : public OctreeChangeHandler {
 public:
     const OctreeChangeHandler &handler;
-    UniqueOctreeChangeHandler(const OctreeChangeHandler &handler);
+    UniqueOctreeChangeHandler(const OctreeChangeHandler &handler_);
 
     const OctreeNodeData* getAdded(NodeID id) const;
     const OctreeNodeData* getDeleted(NodeID id) const;

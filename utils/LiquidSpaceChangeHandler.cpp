@@ -5,11 +5,11 @@ static NodeDataCallback emptyNodeDataCallback;
 
 
 LiquidSpaceChangeHandler::LiquidSpaceChangeHandler(
-		const NodeDataCallback& onNodeUpdatedCallback,
-    	const NodeDataCallback& onNodeDeletedCallback
+		const NodeDataCallback& onNodeUpdatedCallback_,
+    	const NodeDataCallback& onNodeDeletedCallback_
 	)
-    : onNodeUpdatedCallback(onNodeUpdatedCallback),
-      onNodeDeletedCallback(onNodeDeletedCallback) {
+    : onNodeUpdatedCallback(onNodeUpdatedCallback_),
+      onNodeDeletedCallback(onNodeDeletedCallback_) {
 }
 
 void LiquidSpaceChangeHandler::onNodeAdded(const OctreeNodeData& nodeData) const {

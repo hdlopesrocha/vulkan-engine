@@ -1,7 +1,7 @@
 #include "UniqueOctreeChangeHandler.hpp"
 
-UniqueOctreeChangeHandler::UniqueOctreeChangeHandler(const OctreeChangeHandler &handler)
-:handler(handler) {}
+UniqueOctreeChangeHandler::UniqueOctreeChangeHandler(const OctreeChangeHandler &handler_)
+:handler(handler_) {}
 
 
 void UniqueOctreeChangeHandler::onNodeAdded(const OctreeNodeData& data) const {

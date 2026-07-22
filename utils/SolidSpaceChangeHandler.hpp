@@ -14,8 +14,8 @@ class SolidSpaceChangeHandler : public OctreeChangeHandler {
 	const NodeDataCallback& onNodeDeletedCallback;
 	public:
 	SolidSpaceChangeHandler(
-		const NodeDataCallback& onNodeUpdatedCallback,
-    	const NodeDataCallback& onNodeDeletedCallback
+		const NodeDataCallback& onNodeUpdatedCallback_,
+    	const NodeDataCallback& onNodeDeletedCallback_
 	);
 
 	void onNodeAdded(const OctreeNodeData& data) const override;

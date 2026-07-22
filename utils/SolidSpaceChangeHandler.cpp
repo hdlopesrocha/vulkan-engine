@@ -2,11 +2,11 @@
 
 
 SolidSpaceChangeHandler::SolidSpaceChangeHandler(
-		const NodeDataCallback& onNodeUpdatedCallback,
-    	const NodeDataCallback& onNodeDeletedCallback
+		const NodeDataCallback& onNodeUpdatedCallback_,
+    	const NodeDataCallback& onNodeDeletedCallback_
 	)
-    : onNodeUpdatedCallback(onNodeUpdatedCallback),
-      onNodeDeletedCallback(onNodeDeletedCallback) {
+    : onNodeUpdatedCallback(onNodeUpdatedCallback_),
+      onNodeDeletedCallback(onNodeDeletedCallback_) {
 }
 
 void SolidSpaceChangeHandler::onNodeAdded(const OctreeNodeData& nodeData) const {
