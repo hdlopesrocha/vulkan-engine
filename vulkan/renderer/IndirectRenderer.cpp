@@ -1212,6 +1212,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
                                   | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
                                   | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
         readBarriers[0].srcAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT
+                                  | VK_ACCESS_2_SHADER_READ_BIT
                                   | VK_ACCESS_2_SHADER_WRITE_BIT
                                   | VK_ACCESS_2_TRANSFER_WRITE_BIT;
         readBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
