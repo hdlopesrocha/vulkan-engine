@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 static const int WIIMOTE_TIMEOUT_SEC = 5;
 
@@ -453,7 +454,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             if (y != 0.0f || p != 0.0f || r != 0.0f)
                 em->publish(std::make_shared<RotateCameraEvent>(y, p, r));
         } else if (brushManager) {
-            // B + Wiimote YPR → brush rotation
+            // B + Wiimote → brush rotation (camera-relative)
             BrushEntry* be = brushManager->getSelectedEntry();
             if (be) {
                 float rotSpeed = cp.wiimoteRotSpeed * deltaTime;
@@ -461,9 +462,13 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 float dp = pitchInput * inv90 * rotSpeed;
                 float dr = rollInput  * inv90 * rotSpeed;
                 if (dy != 0.0f || dp != 0.0f || dr != 0.0f) {
-                    be->yaw   += dy;
-                    be->pitch -= dp;
-                    be->roll  += dr;
+                    // Camera-relative incremental quaternion rotation,
+                    // matching Camera::rotateEuler order.
+                    glm::quat q = be->rot;
+                    q = glm::normalize(glm::angleAxis(dy, cam.getUp()) * q);
+                    q = glm::normalize(glm::angleAxis(-dp, cam.getRight()) * q);
+                    q = glm::normalize(glm::angleAxis(-dr, cam.getForward()) * q);
+                    be->rot = q;
                     em->queue(std::make_shared<RebuildBrushEvent>());
                 }
             }

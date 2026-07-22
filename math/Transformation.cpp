@@ -13,6 +13,11 @@ Transformation::Transformation(glm::vec3 scale_, glm::vec3 translate_, float yaw
 {
 }
 
+Transformation::Transformation(glm::vec3 scale_, glm::vec3 translate_, const glm::quat& quat_)
+    : scale(scale_), translate(translate_), quaternion(quat_)
+{
+}
+
 glm::quat Transformation::getRotation(float yaw, float pitch, float roll)
 {
     // Build quaternions per axis (angles are in degrees in the interface)

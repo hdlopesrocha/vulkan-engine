@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 // Represents one SDF brush entry with all parameters needed to populate the scene
 struct BrushEntry {
@@ -16,6 +17,7 @@ struct BrushEntry {
     glm::vec3 scale = glm::vec3(512.0f);
     glm::vec3 translate = glm::vec3(0.0f, 1024.0f, 0.0f);
     float yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
+    glm::quat rot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
     // Octree min size
     float minSize = 30.0f;
     // Optional SDF effect

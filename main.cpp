@@ -1957,7 +1957,7 @@ void MyApp::rebuildBrushScene() {
             ? static_cast<const OctreeChangeHandler&>(uniqueBrushSolidHandler)
             : static_cast<const OctreeChangeHandler&>(uniqueBrushLiquidHandler);
 
-        Transformation model(entry.scale, entry.translate, entry.yaw, entry.pitch, entry.roll);
+        Transformation model(entry.scale, entry.translate, entry.rot);
         SimpleBrush brush(entry.materialIndex);
 
         // Create the base SDF primitive (stack-allocated, octree copies during add)
