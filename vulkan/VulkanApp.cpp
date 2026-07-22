@@ -1472,7 +1472,28 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
         throw std::runtime_error("failed to begin command buffer in runSingleTimeCommands");
     }
 
-    fn(cmd);
+    try {
+        fn(cmd);
+    } catch (...) {
+        vkEndCommandBuffer(cmd);
+        VkCommandBufferSubmitInfo cmdBufInfo{};
+        cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        cmdBufInfo.commandBuffer = cmd;
+        VkSubmitInfo2 submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+        submitInfo.commandBufferInfoCount = 1;
+        submitInfo.pCommandBufferInfos = &cmdBufInfo;
+        {
+            std::lock_guard<std::mutex> lock(graphicsSubmitMutex);
+            VkResult sr = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
+            if (sr == VK_ERROR_DEVICE_LOST) {
+                deviceLost.store(true);
+                throw;
+            }
+        }
+        waitFence(device, fence);
+        throw;
+    }
 
     if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         throw std::runtime_error("failed to end command buffer in runSingleTimeCommands");
@@ -3008,6 +3029,11 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
             sourceStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
             destinationStage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        } else if (effectiveOld == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_GENERAL) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         } else if (effectiveOld == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             barrier.srcAccessMask = 0;
             barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
@@ -5306,14 +5332,18 @@ void VulkanApp::cleanupSwapchain() {
         else vkDestroySwapchainKHR(device, swapchain, nullptr);
         swapchain = VK_NULL_HANDLE;
     }
+
+    // Clear tracked image-layer layouts: swapchain and depth images are
+    // destroyed here, and new ones created at different (or recycled) addresses
+    // would pick up stale layouts (e.g. VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) that
+    // this helper cannot handle, causing an "Unsupported image layout
+    // transition" error. Persistent images (texture arrays, render targets)
+    // will get their tracked layouts re-established naturally by their first
+    // transition barrier, which now correctly handles UNDEFINED old layouts.
+    imageLayerLayouts.clear();
+
     swapchainImages.clear();
     imagesInFlight.clear();
-
-    // Clear tracked image-layer layouts: swapchain images were destroyed, and
-    // new ones created at different (or recycled) addresses would pick up stale
-    // layouts (e.g. VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) that this helper cannot
-    // handle, causing an "Unsupported image layout transition" error.
-    imageLayerLayouts.clear();
 }
 
 void VulkanApp::recreateSwapchain() {
