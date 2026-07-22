@@ -61,7 +61,6 @@ void GamepadWidget::render() {
     // Build a list of joysticks with their presence/gamepad status
     std::vector<std::string> labels;
     labels.reserve(GLFW_JOYSTICK_LAST - GLFW_JOYSTICK_1 + 1);
-    int defaultIndex = 0;
     for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST; ++jid) {
         const char* name = glfwGetJoystickName(jid);
         bool present = glfwJoystickPresent(jid);
@@ -71,7 +70,7 @@ void GamepadWidget::render() {
                       present ? (name ? name : "(unknown)") : "(absent)",
                       isGp ? "(gamepad)" : "");
         labels.emplace_back(buf);
-        if (jid == selectedJoystick) defaultIndex = jid - GLFW_JOYSTICK_1;
+        if (jid == selectedJoystick) {}
     }
 
     // Prepare array of c_str for ImGui combo

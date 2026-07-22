@@ -45,7 +45,9 @@ void TextureMixerWidget::render() {
         ImGui::SameLine(); if (ImGui::Button("Prev") && currentMixerIndex > 0) --currentMixerIndex;
         ImGui::SameLine(); if (ImGui::Button("Next") && currentMixerIndex + 1 < count) ++currentMixerIndex;
         ImGui::SameLine(); int idxInput = static_cast<int>(currentMixerIndex); if (ImGui::InputInt("##mixer_idx", &idxInput)) {
-            if (idxInput < 0) idxInput = 0; if (static_cast<size_t>(idxInput) >= count) idxInput = static_cast<int>(count - 1); currentMixerIndex = static_cast<size_t>(idxInput);
+            if (idxInput < 0) { idxInput = 0; }
+            if (static_cast<size_t>(idxInput) >= count) { idxInput = static_cast<int>(count - 1); }
+            currentMixerIndex = static_cast<size_t>(idxInput);
         }
         ImGui::PopID();
 

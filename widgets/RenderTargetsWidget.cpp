@@ -674,7 +674,6 @@ void RenderTargetsWidget::destroyLinearTargets() {
     auto destroyFramebuffer = [&](VkFramebuffer &fb) {
         if (fb == VK_NULL_HANDLE) return;
         VkFramebuffer tmp = fb;
-        VkDevice device = a->getDevice();
         a->deferDestroyUntilAllPending([tmp, a]() {
             if (a->resources.removeFramebuffer(tmp)) vkDestroyFramebuffer(a->getDevice(), tmp, nullptr);
         });
@@ -810,15 +809,15 @@ void RenderTargetsWidget::cleanup() {
     // Destroy linearization pipeline, pipeline layout, descriptor set/layout,
     // framebuffers and renderpass created by this widget.
     // Always defer to ensure in-flight graphics frames complete.
-    auto destroyIf = [&](auto &handle, auto removeFn, auto destroyFn) {
-        if (handle == VK_NULL_HANDLE) return;
-        auto tmp = handle;
-        VkDevice device = a ? a->getDevice() : VK_NULL_HANDLE;
-        if (a) a->deferDestroyUntilAllPending([device, tmp, a, removeFn, destroyFn]() mutable {
-            if ((a->resources.*removeFn)(tmp)) destroyFn(device, tmp);
-        });
-        handle = VK_NULL_HANDLE;
-    };
+    // auto destroyIf = [&](auto &handle, auto removeFn, auto destroyFn) {
+    //     if (handle == VK_NULL_HANDLE) return;
+    //     auto tmp = handle;
+    //     VkDevice device = a ? a->getDevice() : VK_NULL_HANDLE;
+    //     if (a) a->deferDestroyUntilAllPending([device, tmp, a, removeFn, destroyFn]() mutable {
+    //         if ((a->resources.*removeFn)(tmp)) destroyFn(device, tmp);
+    //     });
+    //     handle = VK_NULL_HANDLE;
+    // };
 
     // Framebuffers removed - using dynamic rendering
 
@@ -915,12 +914,12 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
 
     // Debug: print resource counts before cleanup (helps track leaks)
     if (app) {
-        auto &rm = app->resources;
-        size_t imgCount = rm.getImageMap().size();
-        size_t ivCount = rm.getImageViewMap().size();
-        size_t bufCount = rm.getBufferMap().size();
-        size_t memCount = rm.getDeviceMemoryMap().size();
-        size_t descSetCount = rm.getDescriptorSetMap().size();
+        // Debug resource counts kept for reference
+        // size_t imgCount = rm.getImageMap().size();
+        // size_t ivCount = rm.getImageViewMap().size();
+        // size_t bufCount = rm.getBufferMap().size();
+        // size_t memCount = rm.getDeviceMemoryMap().size();
+        // size_t descSetCount = rm.getDescriptorSetMap().size();
         // std::cerr << "[RenderTargetsWidget] updateDescriptors START frame=" << currentFrame << " resources pre-cleanup images=" << imgCount << " imageViews=" << ivCount << " buffers=" << bufCount << " memories=" << memCount << " descSets=" << descSetCount << std::endl;
     }
 
@@ -990,7 +989,6 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
             VkImageView depthView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360DepthView(f) : VK_NULL_HANDLE;
             if (depthView != VK_NULL_HANDLE) {
-                VkSampler depthSampler = widgetSampler;
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
                 // Linearize the depth for this cubemap face into its own per-face linear target
@@ -1030,8 +1028,6 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     // is preferred because it avoids CPU readback while producing a proper
     // linearized grayscale depth preview for perspective projections.
     if (app && cachedWidth > 0 && cachedHeight > 0) {
-        VkDevice device = app->getDevice();
-
         // Size-dependent linearize targets (images/views/framebuffers) are
         // created in `init(app, width, height)` so they are not recreated
         // every frame. Ensure `setFrameInfo()` calls `init()` when the size
@@ -1044,8 +1040,6 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         // pipeline and descriptor set are created once in init()
 
         // Prepare a sampler for sampling depth textures (use non-compare widget sampler)
-        VkSampler depthSampler = widgetSampler;
-
         // Run the pass for scene depth (use perspective linearization)
         if (solidRenderer && linearizePipeline != VK_NULL_HANDLE && linearSceneDepthView != VK_NULL_HANDLE) {
             // Sample the previously-produced frame's depth (one-frame latency)
@@ -1222,12 +1216,12 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     // Periodic debug: print resource counts after update (throttled)
     static int dbgCounter = 0;
     if (app && (++dbgCounter % 120) == 0) {
-        auto &rm = app->resources;
-        size_t imgCount = rm.getImageMap().size();
-        size_t ivCount = rm.getImageViewMap().size();
-        size_t bufCount = rm.getBufferMap().size();
-        size_t memCount = rm.getDeviceMemoryMap().size();
-        size_t descSetCount = rm.getDescriptorSetMap().size();
+        // Debug resource counts kept for reference
+        // size_t imgCount = rm.getImageMap().size();
+        // size_t ivCount = rm.getImageViewMap().size();
+        // size_t bufCount = rm.getBufferMap().size();
+        // size_t memCount = rm.getDeviceMemoryMap().size();
+        // size_t descSetCount = rm.getDescriptorSetMap().size();
         // std::cerr << "[RenderTargetsWidget] updateDescriptors END frame=" << currentFrame << " resources post-update images=" << imgCount << " imageViews=" << ivCount << " buffers=" << bufCount << " memories=" << memCount << " descSets=" << descSetCount << std::endl;
     }
 }
@@ -1343,8 +1337,6 @@ void RenderTargetsWidget::render() {
         // Render only the selected preview using a single preview descriptor
         VkDescriptorSet ds = previewDescriptor;
         ImVec2 imgSize = previewSize;
-        bool available = (ds != VK_NULL_HANDLE);
-
         ImGuiHelpers::ImageOrUnavailable((ImTextureID)ds, imgSize, "Preview unavailable");
     ImGui::Separator();
 
