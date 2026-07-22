@@ -428,9 +428,16 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         float yawInput, pitchInput, rollInput;
 
         if (s.hasMotionPlus) {
-            float gy = std::isfinite(s.gyroYawRate)   ? glm::clamp(s.gyroYawRate, -720.0f, 720.0f)   : 0.0f;
-            float gp = std::isfinite(s.gyroPitchRate) ? glm::clamp(s.gyroPitchRate, -720.0f, 720.0f) : 0.0f;
-            float gr = std::isfinite(s.gyroRollRate)  ? glm::clamp(s.gyroRollRate, -720.0f, 720.0f)  : 0.0f;
+            // Gyro bias: update leaky integrator when B NOT pressed,
+            // subtract bias when B IS pressed (eliminates resting drift)
+            if (!bDown) {
+                gyroBiasYaw   += (s.gyroYawRate   - gyroBiasYaw)   * 0.02f;
+                gyroBiasPitch += (s.gyroPitchRate - gyroBiasPitch) * 0.02f;
+                gyroBiasRoll  += (s.gyroRollRate  - gyroBiasRoll)  * 0.02f;
+            }
+            float gy = std::isfinite(s.gyroYawRate)   ? glm::clamp(s.gyroYawRate   - gyroBiasYaw,   -720.0f, 720.0f)   : 0.0f;
+            float gp = std::isfinite(s.gyroPitchRate) ? glm::clamp(s.gyroPitchRate - gyroBiasPitch, -720.0f, 720.0f) : 0.0f;
+            float gr = std::isfinite(s.gyroRollRate)  ? glm::clamp(s.gyroRollRate  - gyroBiasRoll,  -720.0f, 720.0f)  : 0.0f;
             yawInput   = (std::abs(gy) > rdz) ? gy : 0.0f;
             pitchInput = (std::abs(gp) > rdz) ? gp : 0.0f;
             rollInput  = (std::abs(gr) > rdz) ? gr : 0.0f;

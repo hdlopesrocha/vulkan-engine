@@ -65,6 +65,11 @@ private:
     // Whether wiiuse_set_motion_plus() has been called for the current connection.
     bool motionPlusEnabled = false;
 
+    // Gyro bias tracking (leaky integrator, updated when B is not pressed)
+    float gyroBiasYaw = 0.0f;
+    float gyroBiasPitch = 0.0f;
+    float gyroBiasRoll = 0.0f;
+
     void autoConnectLoop();
     void readState();
     void readStateLocked();
