@@ -39,12 +39,12 @@ struct ControllerPage {
     bool propagate = true;
     std::vector<std::shared_ptr<ControllerPage>> children;
 
-    std::shared_ptr<ControllerPage> addChild(const std::string &name, PageControl ctrl, bool propagate = true) {
+    std::shared_ptr<ControllerPage> addChild(const std::string &name_, PageControl ctrl, bool propagate_ = true) {
         auto c = std::make_shared<ControllerPage>();
-        c->name = name;
+        c->name = name_;
         c->control = ctrl;
         c->category = category; // subpage inherits the parent category
-        c->propagate = propagate;
+        c->propagate = propagate_;
         children.push_back(c);
         return c;
     }
