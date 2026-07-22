@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <glm/glm.hpp>
@@ -103,11 +104,25 @@ void NunchukPublisher::autoConnectLoop() {
 
         fprintf(stdout, "[Wiimote] Connected (auto-connect active)\n");
         connected = true;
+        motionPlusEnabled = false;
 
         // Stay connected: poll until disconnect/unplug.
         while (!stopThread.load() && WIIMOTE_IS_CONNECTED(wiimotes[0])) {
             // wiiuse_poll blocks until an event or returns 0 quickly.
             int ev = wiiuse_poll(wiimotes, wiimoteCount);
+
+            // Activate MotionPlus once the expansion handshake is complete.
+            wiimote_t* wm = wiimotes[0];
+            if (!motionPlusEnabled && wm
+                && WIIMOTE_IS_SET(wm, WIIMOTE_STATE_MPLUS_PRESENT)
+                && !WIIMOTE_IS_SET(wm, WIIMOTE_STATE_EXP_HANDSHAKE))
+            {
+                int mpStatus = (wm->exp.type != EXP_NONE) ? 2 : 1;
+                wiiuse_set_motion_plus(wm, mpStatus);
+                motionPlusEnabled = true;
+                fprintf(stdout, "[Wiimote] MotionPlus activated (status=%d)\n", mpStatus);
+            }
+
             if (ev > 0) {
                 readState();
             } else {
@@ -195,12 +210,45 @@ void NunchukPublisher::readStateLocked() {
     state.expansionType = wm->exp.type;
     state.expansionConnected = WIIUSE_USING_EXP(wm) != 0;
 
-    if (wm->exp.type == EXP_NUNCHUK || wm->exp.type == EXP_MOTION_PLUS_NUNCHUK) {
+    // MotionPlus gyroscope rates
+    state.hasMotionPlus = (wm->exp.type == EXP_MOTION_PLUS || wm->exp.type == EXP_MOTION_PLUS_NUNCHUK);
+    if (state.hasMotionPlus) {
+        state.gyroYawRate   = wm->exp.mp.angle_rate_gyro.yaw;
+        state.gyroPitchRate = wm->exp.mp.angle_rate_gyro.pitch;
+        state.gyroRollRate  = wm->exp.mp.angle_rate_gyro.roll;
+    }
+
+    // Don't read nunchuk state while M+ handshake is in progress
+    // (wm->exp.type is still EXP_NUNCHUK but Wiimote already sends M+-interleaved data)
+    bool mplusHShake = motionPlusEnabled &&
+        WIIMOTE_IS_SET(wm, WIIMOTE_STATE_EXP_HANDSHAKE);
+
+    if ((wm->exp.type == EXP_NUNCHUK || wm->exp.type == EXP_MOTION_PLUS_NUNCHUK) && !mplusHShake) {
         const nunchuk_t& nc = wm->exp.nunchuk;
-        state.joystickX = nc.js.x;
-        state.joystickY = nc.js.y;
-        state.joystickAngle = nc.js.ang;
-        state.joystickMag = nc.js.mag;
+
+        // motion_plus_event() calls calc_joystick_state() → normalized [-1,1].
+        // During M+ activation transition the nunchuk handle may have written
+        // raw ADC while processing M+ frames → detect and re-normalize.
+        float jx = nc.js.x;
+        float jy = nc.js.y;
+        float ang = nc.js.ang;
+        float mag = nc.js.mag;
+        if (jx > 1.0f || jx < -1.0f || jy > 1.0f || jy < -1.0f) {
+            float cx = (nc.js.center.x > 0) ? nc.js.center.x : 128.0f;
+            float cy = (nc.js.center.y > 0) ? nc.js.center.y : 128.0f;
+            float rx = (nc.js.max.x > nc.js.min.x) ? (nc.js.max.x - nc.js.min.x) / 2.0f : 128.0f;
+            float ry = (nc.js.max.y > nc.js.min.y) ? (nc.js.max.y - nc.js.min.y) / 2.0f : 128.0f;
+            jx = (jx - cx) / rx;
+            jy = (jy - cy) / ry;
+            if (jx < -1.0f) jx = -1.0f; else if (jx > 1.0f) jx = 1.0f;
+            if (jy < -1.0f) jy = -1.0f; else if (jy > 1.0f) jy = 1.0f;
+            ang = std::atan2(jy, jx);
+            mag = std::sqrt(jx * jx + jy * jy);
+        }
+        state.joystickX = jx;
+        state.joystickY = jy;
+        state.joystickAngle = ang;
+        state.joystickMag = mag;
 
         state.buttonC = (nc.btns & NUNCHUK_BUTTON_C) != 0;
         state.buttonZ = (nc.btns & NUNCHUK_BUTTON_Z) != 0;
@@ -215,6 +263,22 @@ void NunchukPublisher::readStateLocked() {
         state.nunchukGforceX = nc.gforce.x;
         state.nunchukGforceY = nc.gforce.y;
         state.nunchukGforceZ = nc.gforce.z;
+    } else {
+        state.joystickX = 0.0f;
+        state.joystickY = 0.0f;
+        state.joystickAngle = 0.0f;
+        state.joystickMag = 0.0f;
+        state.buttonC = false;
+        state.buttonZ = false;
+        state.nunchukAccelX = 0.0f;
+        state.nunchukAccelY = 0.0f;
+        state.nunchukAccelZ = 0.0f;
+        state.nunchukRoll = 0.0f;
+        state.nunchukPitch = 0.0f;
+        state.nunchukYaw = 0.0f;
+        state.nunchukGforceX = 0.0f;
+        state.nunchukGforceY = 0.0f;
+        state.nunchukGforceZ = 0.0f;
     }
 }
 
@@ -224,6 +288,21 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
 
     WiimoteState s = getState();
     if (!s.connected) return;
+
+    // DEBUG: print state every 2s
+    {
+        static auto lastPrint = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        if (now - lastPrint > std::chrono::seconds(2)) {
+            lastPrint = now;
+            fprintf(stderr, "[Wiimote] type=%d jx=%.3f jy=%.3f btns=0x%04x exp=%d "
+                    "C=%d Z=%d gyroY=%.1f gyroP=%.1f gyroR=%.1f\n",
+                    s.expansionType, s.joystickX, s.joystickY, s.buttons,
+                    s.expansionConnected,
+                    s.buttonC, s.buttonZ,
+                    s.gyroYawRate, s.gyroPitchRate, s.gyroRollRate);
+        }
+    }
 
     ControllerContext& wctx = cm->wiimoteContext;
     const ControllerParameters& cp = *cm->getParameters();
@@ -274,7 +353,12 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     if (hasNunchuk) {
         float jx = s.joystickX;
         float jy = s.joystickY;
-        const float jdz = 0.15f;
+        // Guard against garbage from uninitialized / transition states
+        if (!std::isfinite(jx)) jx = 0.0f;
+        if (!std::isfinite(jy)) jy = 0.0f;
+        jx = glm::clamp(jx, -1.0f, 1.0f);
+        jy = glm::clamp(jy, -1.0f, 1.0f);
+        const float jdz = 0.30f;
         if (std::abs(jx) < jdz) jx = 0.0f;
         if (std::abs(jy) < jdz) jy = 0.0f;
         if (jx != 0.0f || jy != 0.0f) {
@@ -339,17 +423,33 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     prevB = bDown;
 
     if (bDown) {
-        float yawOff = wrap180(s.yaw - startYaw);
-        float pitchOff = wrap180(s.pitch - startPitch);
-        float rollOff = wrap180(s.roll - startRoll);
         const float rdz = 2.0f;
         float angDeg = glm::degrees(cam.angularSpeedRad) * deltaTime;
 
+        // Determine rotation input: gyro rates (MotionPlus) or YPR offsets
+        float yawInput, pitchInput, rollInput;
+
+        if (s.hasMotionPlus) {
+            float gy = std::isfinite(s.gyroYawRate)   ? glm::clamp(s.gyroYawRate, -720.0f, 720.0f)   : 0.0f;
+            float gp = std::isfinite(s.gyroPitchRate) ? glm::clamp(s.gyroPitchRate, -720.0f, 720.0f) : 0.0f;
+            float gr = std::isfinite(s.gyroRollRate)  ? glm::clamp(s.gyroRollRate, -720.0f, 720.0f)  : 0.0f;
+            yawInput   = (std::abs(gy) > rdz) ? gy : 0.0f;
+            pitchInput = (std::abs(gp) > rdz) ? gp : 0.0f;
+            rollInput  = (std::abs(gr) > rdz) ? gr : 0.0f;
+        } else {
+            float yawOff   = wrap180(s.yaw - startYaw);
+            float pitchOff = wrap180(s.pitch - startPitch);
+            float rollOff  = wrap180(s.roll - startRoll);
+            yawInput   = (std::abs(yawOff) > rdz)   ? yawOff   : 0.0f;
+            pitchInput = (std::abs(pitchOff) > rdz) ? pitchOff : 0.0f;
+            rollInput  = (std::abs(rollOff) > rdz)  ? rollOff  : 0.0f;
+        }
+
         if (wctx.activeCategory() == PageCategory::CAMERA) {
             // B + Wiimote YPR → camera rotation (yaw around world Y)
-            float y = (std::abs(yawOff) > rdz)   ? yawOff   * inv90 * angDeg : 0.0f;
-            float p = (std::abs(pitchOff) > rdz) ? -pitchOff * inv90 * angDeg : 0.0f;
-            float r = (std::abs(rollOff) > rdz)  ? -rollOff  * inv90 * angDeg : 0.0f;
+            float y = yawInput   * inv90 * angDeg;
+            float p = -pitchInput * inv90 * angDeg;
+            float r = -rollInput  * inv90 * angDeg;
             if (y != 0.0f || p != 0.0f || r != 0.0f)
                 em->publish(std::make_shared<RotateCameraEvent>(y, p, r));
         } else if (brushManager) {
@@ -357,9 +457,9 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             BrushEntry* be = brushManager->getSelectedEntry();
             if (be) {
                 float rotSpeed = cp.wiimoteRotSpeed * deltaTime;
-                float dy = (std::abs(yawOff) > rdz)   ? yawOff   * inv90 * rotSpeed : 0.0f;
-                float dp = (std::abs(pitchOff) > rdz) ? pitchOff * inv90 * rotSpeed : 0.0f;
-                float dr = (std::abs(rollOff) > rdz)  ? rollOff  * inv90 * rotSpeed : 0.0f;
+                float dy = yawInput   * inv90 * rotSpeed;
+                float dp = pitchInput * inv90 * rotSpeed;
+                float dr = rollInput  * inv90 * rotSpeed;
                 if (dy != 0.0f || dp != 0.0f || dr != 0.0f) {
                     be->yaw   += dy;
                     be->pitch -= dp;

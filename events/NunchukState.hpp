@@ -53,4 +53,10 @@ struct WiimoteState {
     float nunchukYaw = 0.0f;
     // Gravity force vector (g)
     float nunchukGforceX = 0.0f, nunchukGforceY = 0.0f, nunchukGforceZ = 0.0f;
+
+    // ── MotionPlus gyroscope ──
+    bool hasMotionPlus = false;
+    float gyroYawRate = 0.0f;   // degrees/second
+    float gyroPitchRate = 0.0f; // degrees/second
+    float gyroRollRate = 0.0f;  // degrees/second
 };

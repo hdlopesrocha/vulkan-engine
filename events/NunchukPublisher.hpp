@@ -62,6 +62,9 @@ private:
     bool prevZ = false;
     bool prevB = false;
 
+    // Whether wiiuse_set_motion_plus() has been called for the current connection.
+    bool motionPlusEnabled = false;
+
     void autoConnectLoop();
     void readState();
     void readStateLocked();
