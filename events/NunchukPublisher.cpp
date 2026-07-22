@@ -361,11 +361,20 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         if (std::abs(jx) < jdz) jx = 0.0f;
         if (std::abs(jy) < jdz) jy = 0.0f;
         if (jx != 0.0f || jy != 0.0f) {
-            glm::vec3 delta(0.0f);
             float vel = cam.speed * deltaTime;
-            if (jx != 0.0f) delta += right * (jx * vel);
-            if (jy != 0.0f) delta += forward * (jy * vel);
-            em->publish(std::make_shared<TranslateCameraEvent>(delta));
+            if (wctx.activeCategory() == PageCategory::CAMERA) {
+                glm::vec3 delta(0.0f);
+                if (jx != 0.0f) delta += right * (jx * vel);
+                if (jy != 0.0f) delta += forward * (jy * vel);
+                em->publish(std::make_shared<TranslateCameraEvent>(delta));
+            } else if (brushManager) {
+                BrushEntry* be = brushManager->getSelectedEntry();
+                if (be) {
+                    if (jx != 0.0f) be->translate += right * (jx * vel);
+                    if (jy != 0.0f) be->translate += forward * (jy * vel);
+                    em->queue(std::make_shared<RebuildBrushEvent>());
+                }
+            }
         }
     }
 
