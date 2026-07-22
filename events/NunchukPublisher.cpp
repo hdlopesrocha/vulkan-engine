@@ -460,12 +460,12 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 float dr = rollInput  * scale;
                 if (dy != 0.0f || dp != 0.0f || dr != 0.0f) {
                     glm::quat q = be->rot;
-                    q = glm::normalize(glm::angleAxis(dy, glm::vec3(0.0f, 1.0f, 0.0f)) * q);
-                    glm::vec3 localRight = q * glm::vec3(1.0f, 0.0f, 0.0f);
-                    q = glm::normalize(glm::angleAxis(-dp, localRight) * q);
-                    glm::vec3 localForward = q * glm::vec3(0.0f, 0.0f, -1.0f);
-                    q = glm::normalize(glm::angleAxis(-dr, localForward) * q);
-                    be->rot = q;
+                    glm::quat camOrient = cam.getOrientation();
+                    glm::quat rCam = glm::angleAxis(glm::radians(dy),  glm::vec3(0.0f, 1.0f, 0.0f))
+                                   * glm::angleAxis(glm::radians(-dp), glm::vec3(1.0f, 0.0f, 0.0f))
+                                   * glm::angleAxis(glm::radians(-dr), glm::vec3(0.0f, 0.0f, -1.0f));
+                    glm::quat rWorld = camOrient * rCam * glm::conjugate(camOrient);
+                    be->rot = glm::normalize(rWorld * q);
                     em->queue(std::make_shared<RebuildBrushEvent>());
                 }
             }
