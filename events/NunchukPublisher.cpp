@@ -333,6 +333,31 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         em->publish(std::make_shared<PageNavigationEvent>(ControllerId::WIIMOTE, PageNavigationEvent::Action::PREV_SUBPAGE));
     if (pressed & WIIMOTE_BUTTON_RIGHT)
         em->publish(std::make_shared<PageNavigationEvent>(ControllerId::WIIMOTE, PageNavigationEvent::Action::NEXT_SUBPAGE));
+
+    // Wiimote +/- → cycle brush SDF primitive type (only on Brush page)
+    if (brushManager) {
+        if (pressed & WIIMOTE_BUTTON_PLUS) {
+            if (wctx.activeCategory() == PageCategory::BRUSH) {
+                BrushEntry* be = brushManager->getSelectedEntry();
+                if (be) {
+                    be->sdfType = (be->sdfType + 1) % 10;
+                    fprintf(stderr, "[Wiimote] Brush SDF type -> %d\n", be->sdfType);
+                    em->queue(std::make_shared<RebuildBrushEvent>());
+                }
+            }
+        }
+        if (pressed & WIIMOTE_BUTTON_MINUS) {
+            if (wctx.activeCategory() == PageCategory::BRUSH) {
+                BrushEntry* be = brushManager->getSelectedEntry();
+                if (be) {
+                    be->sdfType = (be->sdfType - 1 + 10) % 10;
+                    fprintf(stderr, "[Wiimote] Brush SDF type -> %d\n", be->sdfType);
+                    em->queue(std::make_shared<RebuildBrushEvent>());
+                }
+            }
+        }
+    }
+
     prevButtons = s.buttons;
 
     // Camera axes (all controls are camera-relative)
