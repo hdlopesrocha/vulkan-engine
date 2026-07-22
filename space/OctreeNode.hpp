@@ -20,7 +20,7 @@ public:
     OctreeNode();
     OctreeNode(Vertex vertex);
     ~OctreeNode();
-    OctreeNode * init(Vertex vertex);
+    OctreeNode * init(Vertex vert);
     ChildBlock * clear(OctreeAllocator &allocator, ChildBlock * block);
     ChildBlock * getBlock(OctreeAllocator &allocator) const;
     ChildBlock * allocate(OctreeAllocator &allocator);

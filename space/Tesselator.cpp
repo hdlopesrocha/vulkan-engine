@@ -4,7 +4,7 @@
 #include <cmath>
 
 
-Tesselator::Tesselator(long * count): OctreeNodeTriangleHandler(count), geometry() {
+Tesselator::Tesselator(long * count_): OctreeNodeTriangleHandler(count_), geometry() {
 
 }
 

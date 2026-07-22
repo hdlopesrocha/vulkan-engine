@@ -4,10 +4,10 @@
 #include "../sdf/SDF.hpp"
 
 
-Simplifier::Simplifier(float angle, float distance, bool texturing) {
-	this->angle = angle;
-	this->distance = distance;
-	this->texturing = texturing;
+Simplifier::Simplifier(float angle_, float distance_, bool texturing_) {
+	this->angle = angle_;
+	this->distance = distance_;
+	this->texturing = texturing_;
 }	
 
 

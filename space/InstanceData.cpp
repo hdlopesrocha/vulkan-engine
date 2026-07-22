@@ -6,8 +6,8 @@ InstanceData::InstanceData()
 {
 }
 
-InstanceData::InstanceData(uint animation, const glm::mat4 &matrix, float shift)
-    : matrix(matrix), shift(shift), animation(animation)
+InstanceData::InstanceData(uint animation_, const glm::mat4 &matrix_, float shift_)
+    : matrix(matrix_), shift(shift_), animation(animation_)
 {
 }
 

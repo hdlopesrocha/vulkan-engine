@@ -9,9 +9,9 @@
 
 
 
-OctreeFile::OctreeFile(Octree * tree, std::string filename) {
-	this->tree = tree;
-	this->filename = filename;
+OctreeFile::OctreeFile(Octree * tree_, std::string filename_) {
+	this->tree = tree_;
+	this->filename = filename_;
 }
 
 void OctreeFile::readFromStream(std::istream& in) {
@@ -62,7 +62,7 @@ std::string getChunkName(const BoundingCube &cube) {
 	return std::to_string(cube.getLengthX()) + "_" + std::to_string(p.x) + "_" +  std::to_string(p.y) + "_" + std::to_string(p.z);
 }
 
-OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> * nodes, float chunkSize, std::string filename, const BoundingCube &cube, std::string baseFolder) {
+OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> * nodes, float chunkSize, std::string filename_, const BoundingCube &cube, std::string baseFolder) {
 	OctreeNodeSerialized serialized = nodes->at(i);
 	glm::vec3 position = SDF::getPosition(serialized.sdf, cube);
 	glm::vec3 normal = SDF::getNormalFromPosition(serialized.sdf, cube, position);
@@ -84,12 +84,12 @@ OctreeNode * OctreeFile::loadRecursive(int i, std::vector<OctreeNodeSerialized> 
 			int index = serialized.children[j];
 			if(index != 0) {
 				BoundingCube c = cube.getChild(j);
-				block->set(j , loadRecursive(index, nodes, chunkSize, filename, c,baseFolder), *tree->allocator);
+				block->set(j , loadRecursive(index, nodes, chunkSize, filename_, c,baseFolder), *tree->allocator);
 			}
 		}
 	} else {
 		std::string chunkName = getChunkName(cube);
-		OctreeNodeFile * file = new OctreeNodeFile(tree, node, baseFolder + "/" + filename+ "_" + chunkName + ".bin");
+			OctreeNodeFile * file = new OctreeNodeFile(tree, node, baseFolder + "/" + filename_+ "_" + chunkName + ".bin");
 		//NodeInfo info(INFO_TYPE_FILE, file, NULL, true);
 		//node->info.push_back(info);
 		file->load(baseFolder, cube);
@@ -134,7 +134,7 @@ void OctreeFile::load(std::string baseFolder, float chunkSize) {
 }
 
 
-uint OctreeFile::saveRecursive(OctreeNode * node, std::vector<OctreeNodeSerialized> * nodes, float chunkSize, std::string filename, const BoundingCube &cube, std::string baseFolder) {
+uint OctreeFile::saveRecursive(OctreeNode * node, std::vector<OctreeNodeSerialized> * nodes, float chunkSize, std::string filename_, const BoundingCube &cube, std::string baseFolder) {
 	if(node!=NULL) {
 		OctreeNodeSerialized n = OctreeNodeSerialized();
 		n.brushIndex = node->vertex.brushIndex;
@@ -154,7 +154,7 @@ uint OctreeFile::saveRecursive(OctreeNode * node, std::vector<OctreeNodeSerializ
 			}
 		} else {
 			std::string chunkName = getChunkName(cube);
-			OctreeNodeFile file(tree, node, baseFolder + "/" + filename + "_" + chunkName + ".bin");
+			OctreeNodeFile file(tree, node, baseFolder + "/" + filename_ + "_" + chunkName + ".bin");
 			file.save(baseFolder);
 		}
 		return index;

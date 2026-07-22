@@ -1,6 +1,6 @@
 
 #include "OctreeNodeTriangleHandler.hpp"
 
-OctreeNodeTriangleHandler::OctreeNodeTriangleHandler(long * count){
-    this->count = count;
+OctreeNodeTriangleHandler::OctreeNodeTriangleHandler(long * count_){
+    this->count = count_;
 }

@@ -1,7 +1,7 @@
 #include "ForwardingHandler.hpp"
 
-ForwardingHandler::ForwardingHandler(long *count, std::vector<OctreeNodeTriangleHandler*> *h)
-    : OctreeNodeTriangleHandler(count), handlersVec(h) {
+ForwardingHandler::ForwardingHandler(long *count_, std::vector<OctreeNodeTriangleHandler*> *h)
+    : OctreeNodeTriangleHandler(count_), handlersVec(h) {
 }
 
 void ForwardingHandler::handle(Vertex &v0, Vertex &v1, Vertex &v2) {

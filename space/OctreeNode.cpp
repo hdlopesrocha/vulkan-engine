@@ -15,18 +15,18 @@ OctreeNode::OctreeNode() {
 	init(glm::vec3());
 }
 
-OctreeNode::OctreeNode(Vertex vertex) {
+OctreeNode::OctreeNode(Vertex vertex_) {
 	version = 0u;
-	init(vertex);
+	init(vertex_);
 }
 
-OctreeNode * OctreeNode::init(Vertex vertex) {
+OctreeNode * OctreeNode::init(Vertex vert) {
 	memcpy(this->sdf, INFINITY_ARRAY, sizeof(float)*8);
 	this->bits = 0x0;
 	this->setSimplified(false);
 	this->setChunk(false);
 	this->setType(SpaceType::Surface);
-	this->vertex = vertex;
+	this->vertex = vert;
 	this->blockId = UINT_MAX;
 	this->version = 0u;	
 	return this;
@@ -38,13 +38,13 @@ ChildBlock * OctreeNode::getBlock(OctreeAllocator &allocator) const {
 
 
 void OctreeNode::setChildren(OctreeAllocator &allocator, OctreeNode * childrenPtr[8]) {
-	uint blockId = this->blockId;
+	uint localBlockId = this->blockId;
 	ChildBlock * block = NULL;
-	if(blockId == UINT_MAX) {
+	if(localBlockId == UINT_MAX) {
 		block = allocator.childAllocator.allocate()->init();
 		this->blockId = allocator.childAllocator.getIndex(block);
 	} else {
-		block = allocator.childAllocator.getFromIndex(blockId);
+		block = allocator.childAllocator.getFromIndex(localBlockId);
 	}
 
     uint childNodes[8] = {UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX};
@@ -57,13 +57,13 @@ void OctreeNode::setChildren(OctreeAllocator &allocator, OctreeNode * childrenPt
 }
 
 void OctreeNode::setChildren(OctreeAllocator &allocator, uint children[8]) {
-	uint blockId = this->blockId;
+	uint localBlockId = this->blockId;
 	ChildBlock * block = NULL;
-	if(blockId == UINT_MAX) {
+	if(localBlockId == UINT_MAX) {
 		block = allocator.childAllocator.allocate()->init();
 		this->blockId = allocator.childAllocator.getIndex(block);
 	} else {
-		block = allocator.childAllocator.getFromIndex(blockId);
+		block = allocator.childAllocator.getFromIndex(localBlockId);
 	}
 	memcpy(block->children, children, sizeof(uint)*8);
 }

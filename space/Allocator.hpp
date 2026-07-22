@@ -30,7 +30,7 @@ private:
     void allocateBlock();
 
 public:
-    Allocator(size_t blockSize);
+    Allocator(size_t blockSize_);
 
     ~Allocator();
 

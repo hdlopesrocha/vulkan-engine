@@ -60,8 +60,8 @@ public:
             OctreeNodeTriangleHandler &func,
             ThreadContext * context) const;
 
-    bool isChunkNode(float length) const;
-    bool isThreadNode(float length, float minSize, int threadSize) const;
+    bool isChunkNode(float nodeLength) const;
+    bool isThreadNode(float nodeLength, float minSize, int threadSize) const;
     void exportOctreeSerialization(OctreeSerialized * octree);
     void exportNodesSerialization(std::vector<OctreeNodeCubeSerialized> * nodes);
     void exportToJson(const std::string &filename) const;

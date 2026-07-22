@@ -2,8 +2,8 @@
 #include <cstring>
 #include <cmath>
 
-OctreeNodeData::OctreeNodeData(uint level, OctreeNode * node, const BoundingCube &cube, void * context)
-    : level(level), node(node), cube(cube), context(context)
+OctreeNodeData::OctreeNodeData(uint level_, OctreeNode * node_, const BoundingCube &cube_, void * context_)
+    : level(level_), node(node_), cube(cube_), context(context_)
 {
 }
 

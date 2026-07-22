@@ -5,7 +5,7 @@
 #include "ForwardingHandler.hpp"
 
 
-Processor::Processor(long * count, ThreadPool &threadPool, ThreadContext * context, std::vector<OctreeNodeTriangleHandler*> * handlers): threadPool(threadPool), context(context), count(count), fh(count, handlers) {
+Processor::Processor(long * count_, ThreadPool &threadPool_, ThreadContext * context_, std::vector<OctreeNodeTriangleHandler*> * handlers): threadPool(threadPool_), context(context_), count(count_), fh(count_, handlers) {
 
 }
 

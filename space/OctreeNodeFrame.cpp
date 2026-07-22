@@ -15,8 +15,8 @@ OctreeNodeFrame::OctreeNodeFrame(const OctreeNodeFrame &t)
     std::memcpy(this->sdf, t.sdf, sizeof(this->sdf));
 }
 
-OctreeNodeFrame::OctreeNodeFrame(OctreeNode* node, OctreeNode* iteratedNode, const BoundingCube &cube, SpaceType type, uint level, float * sdf, int brushIndex, const BoundingCube &chunkCube)
-    : node(node), iteratedNode(iteratedNode), cube(cube), type(type), level(level), brushIndex(brushIndex), chunkCube(chunkCube)
+OctreeNodeFrame::OctreeNodeFrame(OctreeNode* node_, OctreeNode* iteratedNode_, const BoundingCube &cube_, SpaceType type_, uint level_, float * sdf_, int brushIndex_, const BoundingCube &chunkCube_)
+    : node(node_), iteratedNode(iteratedNode_), cube(cube_), type(type_), level(level_), brushIndex(brushIndex_), chunkCube(chunkCube_)
 {
-    if (sdf) std::memcpy(this->sdf, sdf, sizeof(this->sdf)); else for(int i=0;i<8;++i) this->sdf[i]=INFINITY;
+    if (sdf_) std::memcpy(this->sdf, sdf_, sizeof(this->sdf)); else for(int i=0;i<8;++i) this->sdf[i]=INFINITY;
 }

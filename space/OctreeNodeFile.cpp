@@ -8,21 +8,21 @@
 
 
 
-OctreeNodeFile::OctreeNodeFile(Octree * tree, OctreeNode * node, std::string filename) {
-	this->node = node;
-	this->filename = filename;
-	this->tree = tree;
+OctreeNodeFile::OctreeNodeFile(Octree * tree_, OctreeNode * node_, std::string filename_) {
+	this->node = node_;
+	this->filename = filename_;
+	this->tree = tree_;
 }
 
-OctreeNode * OctreeNodeFile::loadRecursive(OctreeNode * node, int i, const BoundingCube &cube, std::vector<OctreeNodeSerialized> * nodes) {
+OctreeNode * OctreeNodeFile::loadRecursive(OctreeNode * workingNode, int i, const BoundingCube &cube, std::vector<OctreeNodeSerialized> * nodes) {
 	OctreeNodeSerialized serialized = nodes->at(i);
-	if(node == NULL) {
+	if(workingNode == NULL) {
 		glm::vec3 position = SDF::getPosition(serialized.sdf, cube);
 		glm::vec3 normal = SDF::getNormalFromPosition(serialized.sdf, cube, position);
 		Vertex vertex(position, normal, glm::vec2(0), serialized.brushIndex);
-		node = tree->allocator->allocate()->init(vertex);
-		node->setSDF(serialized.sdf);
-		node->bits = serialized.bits;
+		workingNode = tree->allocator->allocate()->init(vertex);
+		workingNode->setSDF(serialized.sdf);
+		workingNode->bits = serialized.bits;
 	}
 
 	
@@ -33,7 +33,7 @@ OctreeNode * OctreeNodeFile::loadRecursive(OctreeNode * node, int i, const Bound
 			break;
 		}
 	}
-	ChildBlock * block = isLeaf ? NULL : node->allocate(*tree->allocator)->init();
+	ChildBlock * block = isLeaf ? NULL : workingNode->allocate(*tree->allocator)->init();
 	for(int j=0 ; j <8 ; ++j){
 		int index = serialized.children[j];
 		if(index != 0) {
@@ -42,7 +42,7 @@ OctreeNode * OctreeNodeFile::loadRecursive(OctreeNode * node, int i, const Bound
 		}
 	}
 
-	return node;
+	return workingNode;
 }
 
 
@@ -68,17 +68,17 @@ void OctreeNodeFile::load(std::string baseFolder, const BoundingCube &cube) {
 }
 
 
-uint OctreeNodeFile::saveRecursive(OctreeNode * node, std::vector<OctreeNodeSerialized> * nodes) {
-	if(node!=NULL) {
+uint OctreeNodeFile::saveRecursive(OctreeNode * inNode, std::vector<OctreeNodeSerialized> * nodes) {
+	if(inNode != NULL) {
 		OctreeNodeSerialized n = OctreeNodeSerialized();
-		n.brushIndex = node->vertex.brushIndex;
-		n.bits = node->bits;
-		SDF::copySDF(node->sdf, n.sdf);
+		n.brushIndex = inNode->vertex.brushIndex;
+		n.bits = inNode->bits;
+		SDF::copySDF(inNode->sdf, n.sdf);
 
 		uint index = nodes->size(); 
 		nodes->push_back(n);
 		OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-		node->getChildren(*tree->allocator, children);
+		inNode->getChildren(*tree->allocator, children);
 		for(int i=0; i < 8; ++i) {
             (*nodes)[index].children[i] = saveRecursive(children[i], nodes);
 		}

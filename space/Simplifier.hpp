@@ -10,7 +10,7 @@ struct NodeOperationResult;
 struct SimplificationResult {
     bool isSimplified;
     int brushIndex;
-    SimplificationResult(bool isSimplified, int brushIndex) : isSimplified(isSimplified), brushIndex(brushIndex) {
+    SimplificationResult(bool simplified, int brushIdx) : isSimplified(simplified), brushIndex(brushIdx) {
         
     }
 };

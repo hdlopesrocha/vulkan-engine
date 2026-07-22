@@ -44,8 +44,8 @@ static void initialize() {
         initialized = true;
     }
 }
-Octree::Octree(const BoundingCube &minCube, float chunkSize) : BoundingCube(minCube), allocator(new OctreeAllocator()) {
-    this->chunkSize = chunkSize;
+Octree::Octree(const BoundingCube &minCube, float chunkSize_) : BoundingCube(minCube), allocator(new OctreeAllocator()) {
+    this->chunkSize = chunkSize_;
 	this->root = allocator->allocate()->init(glm::vec3(minCube.getCenter()));
     this->shapeCounter = std::make_shared<std::atomic<int>>(0);
     this->prunedEmptyNodes = 0;
@@ -671,12 +671,12 @@ float Octree::evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float
 }
 
 void Octree::buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], ThreadContext * threadContext) const {
-    const glm::vec3 min = frame.cube.getMin();
-    const glm::vec3 length = frame.cube.getLength();
+    const glm::vec3 cubeMin = frame.cube.getMin();
+    const glm::vec3 cubeLength = frame.cube.getLength();
     tsl::robin_map<glm::vec3, float> * shapeSdfCache = &threadContext->shapeSdfCache;
 
     for (uint i = 0; i < 8; ++i) {
-        shapeSDF[i] = evaluateSDF(args, shapeSdfCache, min + length * Octree::getShift(i));
+        shapeSDF[i] = evaluateSDF(args, shapeSdfCache, cubeMin + cubeLength * Octree::getShift(i));
     }
 }
 
@@ -723,12 +723,12 @@ SpaceType childToParent(bool childSolid, bool childEmpty) {
     }
 }
 
-bool Octree::isChunkNode(float length) const {
-    return chunkSize*0.5f < length && length <= chunkSize;
+bool Octree::isChunkNode(float nodeLength) const {
+    return chunkSize*0.5f < nodeLength && nodeLength <= chunkSize;
 }
 
-bool Octree::isThreadNode(float length, float minSize, int threadSize) const {
-    return minSize*threadSize < length;
+bool Octree::isThreadNode(float nodeLength, float minSize, int threadSize) const {
+    return minSize*threadSize < nodeLength;
 }
 
 void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, ThreadContext * threadContext, NodeOperationResult childResult[8], bool fromPool) {
@@ -797,11 +797,11 @@ void Octree::shapeChildren(const OctreeNodeFrame &frame, const ShapeArgs &args, 
 
 void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext, bool fromPool) {    
     r.node = frame.node;
-    const float length = frame.cube.getLengthX();
-    const bool isShapeLeaf = length <= args.minSize;
+    const float nodeLength = frame.cube.getLengthX();
+    const bool isShapeLeaf = nodeLength <= args.minSize;
     const bool isNodeLeaf = r.node == NULL || r.node->isLeaf();
     r.brushIndex = r.node ? r.node->vertex.brushIndex : frame.brushIndex;
-    r.isChunk = isChunkNode(length);
+    r.isChunk = isChunkNode(nodeLength);
     r.isLeaf = isShapeLeaf && isNodeLeaf;
     r.isSimplified = r.isLeaf;
 
@@ -824,7 +824,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         r.resultType = SDF::eval(r.resultSDF);
     }
     else {
-        const float halfDiagonal = length * 0.866025403784439f;
+        const float halfDiagonal = nodeLength * 0.866025403784439f;
         bool processed = false;
 
         // No existing SDF data (all INFINITY) — result is purely the shape.
@@ -1113,10 +1113,10 @@ void Octree::exportToJson(const std::string &filename) const {
         file << "\"texCoord\":[" << v.texCoord.x << "," << v.texCoord.y << "],";
         file << "\"brushIndex\":" << v.brushIndex << ",";
         file << "\"bits\":" << (int)node->bits << ",";
-        glm::vec3 min = cube.getMin();
-        glm::vec3 len = cube.getLength();
-        file << "\"min\":[" << min.x << "," << min.y << "," << min.z << "],";
-        file << "\"length\":[" << len.x << "," << len.y << "," << len.z << "],";
+        glm::vec3 cubeMin = cube.getMin();
+        glm::vec3 cubeLen = cube.getLength();
+        file << "\"min\":[" << cubeMin.x << "," << cubeMin.y << "," << cubeMin.z << "],";
+        file << "\"length\":[" << cubeLen.x << "," << cubeLen.y << "," << cubeLen.z << "],";
 
         ChildBlock * block = node->getBlock(*allocator);
         if (block == NULL) {

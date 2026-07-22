@@ -1,7 +1,7 @@
 #include "ShapeArgs.hpp"
 #include "OctreeChangeHandler.hpp"
 
-ShapeArgs::ShapeArgs(float (*operation)(float, float), WrappedSignedDistanceFunction * function, const TexturePainter &painter, const Transformation model, glm::vec4 translate, glm::vec4 scale, Simplifier &simplifier, const OctreeChangeHandler &changeHandler, float minSize)
-    : operation(operation), function(function), painter(painter), model(model), translate(translate), scale(scale), simplifier(simplifier), changeHandler(changeHandler), minSize(minSize)
+ShapeArgs::ShapeArgs(float (*operation_)(float, float), WrappedSignedDistanceFunction * function_, const TexturePainter &painter_, const Transformation model_, glm::vec4 translate_, glm::vec4 scale_, Simplifier &simplifier_, const OctreeChangeHandler &changeHandler_, float minSize_)
+    : operation(operation_), function(function_), painter(painter_), model(model_), translate(translate_), scale(scale_), simplifier(simplifier_), changeHandler(changeHandler_), minSize(minSize_)
 {
 }

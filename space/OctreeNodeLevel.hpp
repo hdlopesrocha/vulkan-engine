@@ -9,5 +9,5 @@ public:
     OctreeNode* node;
     uint level;
     OctreeNodeLevel() : node(NULL), level(0) {}
-    OctreeNodeLevel(OctreeNode* node, uint level) : node(node), level(level) {}
+    OctreeNodeLevel(OctreeNode* n, uint lvl) : node(n), level(lvl) {}
 };

@@ -4,7 +4,7 @@
 
 struct StackFrameOut : public OctreeNodeData {
     bool visited;
-    StackFrameOut(const OctreeNodeData &data, bool visited) : OctreeNodeData(data) {
-        this->visited = visited;
+    StackFrameOut(const OctreeNodeData &data, bool visited_) : OctreeNodeData(data) {
+        this->visited = visited_;
     }
 };

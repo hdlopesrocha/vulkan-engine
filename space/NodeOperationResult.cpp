@@ -13,13 +13,13 @@ NodeOperationResult::NodeOperationResult()
 
 }
 
-NodeOperationResult::NodeOperationResult(OctreeNode * node, SpaceType shapeType, const float * shapeSDF, SpaceType resultType, const float * resultSDF, bool isSimplified, bool isLeaf, bool isChunk, int brushIndex)
-    : node(node), shapeType(shapeType), resultType(resultType), 
-    isSimplified(isSimplified), isLeaf(isLeaf), 
-    isChunk(isChunk), brushIndex(brushIndex)
+NodeOperationResult::NodeOperationResult(OctreeNode * node_, SpaceType shapeType_, const float * shapeSDF_, SpaceType resultType_, const float * resultSDF_, bool isSimplified_, bool isLeaf_, bool isChunk_, int brushIndex_)
+    : node(node_), shapeType(shapeType_), resultType(resultType_), 
+    isSimplified(isSimplified_), isLeaf(isLeaf_), 
+    isChunk(isChunk_), brushIndex(brushIndex_)
 {
-    if (resultSDF) 
-        std::memcpy(this->resultSDF, resultSDF, sizeof(this->resultSDF)); else for(int i=0;i<8;++i) this->resultSDF[i]=INFINITY;
-    if (shapeSDF) 
-        std::memcpy(this->shapeSDF, shapeSDF, sizeof(this->shapeSDF)); else for(int i=0;i<8;++i) this->shapeSDF[i]=INFINITY;
+    if (resultSDF_) 
+        std::memcpy(this->resultSDF, resultSDF_, sizeof(this->resultSDF)); else for(int i=0;i<8;++i) this->resultSDF[i]=INFINITY;
+    if (shapeSDF_) 
+        std::memcpy(this->shapeSDF, shapeSDF_, sizeof(this->shapeSDF)); else for(int i=0;i<8;++i) this->shapeSDF[i]=INFINITY;
 }
