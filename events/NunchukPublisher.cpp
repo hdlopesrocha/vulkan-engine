@@ -346,8 +346,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         return v;
     };
 
-    const float inv90 = 1.0f / 90.0f;
-
     // ========================================================================
     // NUNCHUK JOYSTICK → camera translation (forward/back + left/right)
     // ========================================================================
@@ -425,7 +423,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
 
     if (bDown) {
         const float rdz = 2.0f;
-        float angDeg = glm::degrees(cam.angularSpeedRad) * deltaTime;
 
         // Determine rotation input: gyro rates (MotionPlus) or YPR offsets
         float yawInput, pitchInput, rollInput;
@@ -446,24 +443,22 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             rollInput  = (std::abs(rollOff) > rdz)  ? rollOff  : 0.0f;
         }
 
+        // gyro_rate_dps * deltaTime → degrees per frame (1:1 real‑world mapping)
+        float scale = deltaTime * cp.wiimoteRotSpeed / 90.0f;
+
         if (wctx.activeCategory() == PageCategory::CAMERA) {
-            // B + Wiimote YPR → camera rotation (yaw around world Y)
-            float y = yawInput   * inv90 * angDeg;
-            float p = -pitchInput * inv90 * angDeg;
-            float r = -rollInput  * inv90 * angDeg;
+            float y =  yawInput * scale;
+            float p = -pitchInput * scale;
+            float r = -rollInput * scale;
             if (y != 0.0f || p != 0.0f || r != 0.0f)
                 em->publish(std::make_shared<RotateCameraEvent>(y, p, r));
         } else if (brushManager) {
-            // B + Wiimote → brush rotation (camera-relative)
             BrushEntry* be = brushManager->getSelectedEntry();
             if (be) {
-                float rotSpeed = cp.wiimoteRotSpeed * deltaTime;
-                float dy = yawInput   * inv90 * rotSpeed;
-                float dp = pitchInput * inv90 * rotSpeed;
-                float dr = rollInput  * inv90 * rotSpeed;
+                float dy = yawInput   * scale;
+                float dp = pitchInput * scale;
+                float dr = rollInput  * scale;
                 if (dy != 0.0f || dp != 0.0f || dr != 0.0f) {
-                    // Camera-relative incremental quaternion rotation,
-                    // matching Camera::rotateEuler order.
                     glm::quat q = be->rot;
                     q = glm::normalize(glm::angleAxis(dy, cam.getUp()) * q);
                     q = glm::normalize(glm::angleAxis(-dp, cam.getRight()) * q);
