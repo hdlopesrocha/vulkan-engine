@@ -1157,9 +1157,6 @@ void Octree::exportToBson(const std::string &filename) const {
         buf.push_back((uint8_t)((v >> 16) & 0xff));
         buf.push_back((uint8_t)((v >> 24) & 0xff));
     };
-    auto appendInt64 = [](std::vector<uint8_t> &buf, int64_t v) {
-        for (int i = 0; i < 8; ++i) buf.push_back((uint8_t)((v >> (8*i)) & 0xff));
-    };
     auto appendDouble = [&](std::vector<uint8_t> &buf, double d) {
         uint64_t u = 0;
         std::memcpy(&u, &d, sizeof(double));

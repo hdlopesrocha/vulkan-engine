@@ -946,8 +946,6 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 	// Require a TextureArrayManager for array-based generation
 	if (!textureArrayManager) throw std::runtime_error("TextureMixer requires a TextureArrayManager for array-based generation");
 
-	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-
 	// If a TextureArrayManager is present and a valid target layer was specified,
 	// ensure we will use array-layer views for storage writes and prepare
 	// per-layer barriers (we only touch the requested layer to avoid races)
@@ -1126,7 +1124,6 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 	}
 
     // record pipeline/descriptor binds and dispatch
-    VkDescriptorSet setToFree = VK_NULL_HANDLE; // descriptor set created in lambda that may need cleanup
 	printf("[TextureMixer] vkCmdBindPipeline: computePipeline=%p\n", (void*)computePipeline);
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &tempDesc, 0, nullptr);

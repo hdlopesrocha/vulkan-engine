@@ -258,7 +258,7 @@ public:
         }
 
         uint32_t editableLayer = (loadedTextureLayers < layerCount) ? loadedTextureLayers : 0u;
-        uint32_t availableLayers = std::max(layerCount, std::max(loadedTextureLayers, 1u));
+        (void)std::max(layerCount, std::max(loadedTextureLayers, 1u));
 
 
 
@@ -1227,12 +1227,10 @@ public:
                     app->resources.addDescriptorSet(s.set, label);
                     return s;
                 };
-                VkDescriptorPool taskPool = VK_NULL_HANDLE;
                 VkDescriptorSet computeDs = VK_NULL_HANDLE;
                 {
                     VkDescriptorSetLayout bfLayout = ind.getComputeDescriptorSetLayout();
                     auto& slot = lazyComputeSlot(cachedBackfaceCompute, ringBackfaceCompute, bfLayout, "Lazy cachedBackfaceCompute");
-                    taskPool = slot.pool;
                     computeDs = slot.set;
                 }
 

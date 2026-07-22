@@ -8,6 +8,6 @@ Brush3d::Brush3d() {
 }
 
 void Brush3d::reset(Camera * camera) {
-	glm::vec3 cameraDirection = camera->getForward();
-    // TODO: Reset brush position based on camera direction
+	// TODO: Reset brush position based on camera direction
+    (void)camera;
 }

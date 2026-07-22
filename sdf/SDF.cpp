@@ -248,7 +248,6 @@ static float distToTriangle(const glm::vec3 &p, const glm::vec3 &a, const glm::v
     n /= nLen;
     float planeDist = glm::dot(p - a, n);
     glm::vec3 proj = p - planeDist * n;
-    glm::vec3 bc = c - b, ca = a - c;
     glm::vec3 v0 = glm::cross(b - a, proj - a);
     glm::vec3 v1 = glm::cross(c - b, proj - b);
     glm::vec3 v2 = glm::cross(a - c, proj - c);

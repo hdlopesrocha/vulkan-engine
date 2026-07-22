@@ -187,7 +187,7 @@ void IteratorHandler::iterateFlatIn(const Octree &tree, OctreeNodeData &params) 
         // and leaving holes in the mesh.
         OctreeNode *n = tree.root;
         BoundingCube c = static_cast<const BoundingCube&>(tree);
-        for (int l = 0; l < params.level && n != NULL; ++l) {
+        for (uint l = 0; l < params.level && n != NULL; ++l) {
             ChildBlock *block = n->getBlock(*tree.allocator);
             if (block == NULL) break;
             const glm::vec3 center = params.cube.getCenter();
