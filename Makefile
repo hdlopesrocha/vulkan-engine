@@ -169,11 +169,11 @@ release:
 	@$(MAKE) --no-print-directory BUILD=release all
 
 .PHONY: run run-debug valgrind callgrind
-run: all
+run:
 	@echo "Running app from $(OUT_DIR)/"
 	@cd $(OUT_DIR) && ./app
 
-run-debug: debug
+run-debug:
 	@echo "Running debug build from $(OUT_DIR)/"
 	@cd $(OUT_DIR) && ./app
 
