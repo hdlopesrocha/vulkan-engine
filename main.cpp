@@ -1208,7 +1208,7 @@ public:
                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-                VkDevice device = app->getDevice();
+                VkDevice dev = app->getDevice();
                 auto lazyComputeSlot = [&](PoolSetPair* ring, uint32_t& idx, VkDescriptorSetLayout layout, const char* label) -> PoolSetPair& {
                     auto& s = ring[idx++ % ASYNC_RING_SIZE];
                     if (s.pool != VK_NULL_HANDLE) return s;
@@ -1218,12 +1218,12 @@ public:
                     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
                     pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
                     pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-                    vkCreateDescriptorPool(device, &pci, nullptr, &s.pool);
+                    vkCreateDescriptorPool(dev, &pci, nullptr, &s.pool);
                     app->resources.addDescriptorPool(s.pool, label);
                     VkDescriptorSetAllocateInfo ai{};
                     ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
                     ai.descriptorPool = s.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &layout;
-                    vkAllocateDescriptorSets(device, &ai, &s.set);
+                    vkAllocateDescriptorSets(dev, &ai, &s.set);
                     app->resources.addDescriptorSet(s.set, label);
                     return s;
                 };
@@ -1238,7 +1238,7 @@ public:
 
                 // Update descriptor set with buffers: inCmds, outCmds, bounds, visibleCount
                 if (computeDs != VK_NULL_HANDLE) {
-                    DescriptorWriter(device)
+                    DescriptorWriter(dev)
                         .writeBuffer(computeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                      ind.getIndirectBuffer().buffer, 0, VK_WHOLE_SIZE)
                         .writeBuffer(computeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1272,7 +1272,7 @@ public:
                         ai.descriptorSetCount = 1;
                         VkDescriptorSetLayout wdsLayout = this->sceneRenderer->waterRenderer->getWaterDepthDescriptorSetLayout();
                         ai.pSetLayouts = &wdsLayout;
-                        if (vkAllocateDescriptorSets(device, &ai, &asyncWaterDs) == VK_SUCCESS) {
+                        if (vkAllocateDescriptorSets(dev, &ai, &asyncWaterDs) == VK_SUCCESS) {
                             VkImageView bfColor = this->sceneRenderer->solidRenderer->getColorView(frameIdx);
                             VkImageView bfDepth = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
                             VkImageView bfSky   = (this->sceneRenderer->skyRenderer) ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
@@ -1858,7 +1858,7 @@ void MyApp::setupVegetationTextures() {
 
 // Implementation: pre-allocate descriptor pool+set rings for async tasks
 void MyApp::preAllocateAsyncDescriptorPools() {
-    VkDevice device = getDevice();
+    VkDevice dev = getDevice();
 
     auto allocateComputeRing = [&](PoolSetPair* ring, VkDescriptorSetLayout dsLayout, const char* label) {
         if (dsLayout == VK_NULL_HANDLE) return;
@@ -1871,7 +1871,7 @@ void MyApp::preAllocateAsyncDescriptorPools() {
         poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
         for (uint32_t i = 0; i < ASYNC_RING_SIZE; ++i) {
             VkDescriptorPool pool;
-            if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
+            if (vkCreateDescriptorPool(dev, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
                 std::cerr << "[Async] Failed to pre-allocate " << label << " pool " << i << "\n";
                 ring[i] = {};
                 continue;
@@ -1883,9 +1883,9 @@ void MyApp::preAllocateAsyncDescriptorPools() {
             ainfo.descriptorPool = pool;
             ainfo.descriptorSetCount = 1;
             ainfo.pSetLayouts = &dsLayout;
-            if (vkAllocateDescriptorSets(device, &ainfo, &set) != VK_SUCCESS) {
+            if (vkAllocateDescriptorSets(dev, &ainfo, &set) != VK_SUCCESS) {
                 resources.removeDescriptorPool(pool);
-                vkDestroyDescriptorPool(device, pool, nullptr);
+                vkDestroyDescriptorPool(dev, pool, nullptr);
                 std::cerr << "[Async] Failed to pre-allocate " << label << " set " << i << "\n";
                 ring[i] = {};
                 continue;
@@ -2257,7 +2257,7 @@ void MyApp::loadSceneFromFile(const std::string& path) {
     });
 }
 void MyApp::ensureCubemapResources() {
-    VkDevice device = getDevice();
+    VkDevice dev = getDevice();
 
     // Always write dummy cubemap to cube360GfxDs binding #11,
     // even if the DS was already allocated (e.g. before this fix was compiled).
@@ -2265,7 +2265,7 @@ void MyApp::ensureCubemapResources() {
         VkImageView dummyView = sceneRenderer->solid360Renderer->getDummyCubeView();
         VkSampler cubeSamp = sceneRenderer->solid360Renderer->getSolid360Sampler();
         if (dummyView != VK_NULL_HANDLE && cubeSamp != VK_NULL_HANDLE) {
-            DescriptorWriter(device)
+            DescriptorWriter(dev)
                 .writeImage(cube360GfxDs, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             cubeSamp, dummyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                 .flush();
@@ -2284,7 +2284,7 @@ void MyApp::ensureCubemapResources() {
                                 VkBufferUsageFlags usage, const char* label) {
         if (buf.buffer != VK_NULL_HANDLE) {
             VkMemoryRequirements reqs;
-            vkGetBufferMemoryRequirements(device, buf.buffer, &reqs);
+            vkGetBufferMemoryRequirements(dev, buf.buffer, &reqs);
             if (reqs.size >= needed) return; // already large enough
             // The old buffer may still be referenced by command buffers that are
             // currently in flight (the cube360 culling pass runs every frame).
@@ -2336,7 +2336,7 @@ void MyApp::ensureCubemapResources() {
         poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
 
         VkDescriptorPool gfxPool;
-        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &gfxPool) != VK_SUCCESS)
+        if (vkCreateDescriptorPool(dev, &poolInfo, nullptr, &gfxPool) != VK_SUCCESS)
             throw std::runtime_error("Failed to create cubemap GFX descriptor pool");
         resources.addDescriptorPool(gfxPool, "cubemap gfx pool");
 
@@ -2346,13 +2346,13 @@ void MyApp::ensureCubemapResources() {
         ainfo.descriptorPool = gfxPool;
         ainfo.descriptorSetCount = 1;
         ainfo.pSetLayouts = &gfxLayout;
-        if (vkAllocateDescriptorSets(device, &ainfo, &cube360GfxDs) != VK_SUCCESS)
+        if (vkAllocateDescriptorSets(dev, &ainfo, &cube360GfxDs) != VK_SUCCESS)
             throw std::runtime_error("Failed to allocate cubemap GFX descriptor set");
         resources.addDescriptorSet(cube360GfxDs, "cubemap gfx DS");
 
         // Write descriptor set bindings using DescriptorWriter
         {
-            DescriptorWriter gfxWriter(device);
+            DescriptorWriter gfxWriter(dev);
             gfxWriter.writeBuffer(cube360GfxDs, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                   cube360UBO.buffer, 0, sizeof(UniformObject));
 
@@ -2406,7 +2406,7 @@ void MyApp::ensureCubemapResources() {
     // capture would sample stale/deleted image views, producing wrong reflections.
     if (cube360GfxDs != VK_NULL_HANDLE && cube360TexVersion != textureArrayManager.getVersion()) {
         cube360TexVersion = textureArrayManager.getVersion();
-        DescriptorWriter texWriter(device);
+        DescriptorWriter texWriter(dev);
         auto addImg = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
             if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
             texWriter.writeImage(cube360GfxDs, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -2437,17 +2437,17 @@ void MyApp::ensureCubemapResources() {
             pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
             pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
             VkDescriptorPool pool;
-            if (vkCreateDescriptorPool(device, &pci, nullptr, &pool) == VK_SUCCESS) {
+            if (vkCreateDescriptorPool(dev, &pci, nullptr, &pool) == VK_SUCCESS) {
                 resources.addDescriptorPool(pool, "cubemap compute pool");
                 VkDescriptorSetAllocateInfo ai{};
                 ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
                 ai.descriptorPool = pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &dsLayout;
-                if (vkAllocateDescriptorSets(device, &ai, &cube360ComputeDs) == VK_SUCCESS)
+                if (vkAllocateDescriptorSets(dev, &ai, &cube360ComputeDs) == VK_SUCCESS)
                     resources.addDescriptorSet(cube360ComputeDs, "cubemap compute DS");
             }
         }
         if (cube360ComputeDs != VK_NULL_HANDLE) {
-            DescriptorWriter(device)
+            DescriptorWriter(dev)
                 .writeBuffer(cube360ComputeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                              solidInd.getIndirectBuffer().buffer, 0, VK_WHOLE_SIZE)
                 .writeBuffer(cube360ComputeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -2470,17 +2470,17 @@ void MyApp::ensureCubemapResources() {
             pci.poolSizeCount = 1; pci.pPoolSizes = &ps; pci.maxSets = 1;
             pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
             VkDescriptorPool pool;
-            if (vkCreateDescriptorPool(device, &pci, nullptr, &pool) == VK_SUCCESS) {
+            if (vkCreateDescriptorPool(dev, &pci, nullptr, &pool) == VK_SUCCESS) {
                 resources.addDescriptorPool(pool, "cubemap water compute pool");
                 VkDescriptorSetAllocateInfo ai{};
                 ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
                 ai.descriptorPool = pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &wDsLayout;
-                if (vkAllocateDescriptorSets(device, &ai, &cube360WaterComputeDs) == VK_SUCCESS)
+                if (vkAllocateDescriptorSets(dev, &ai, &cube360WaterComputeDs) == VK_SUCCESS)
                     resources.addDescriptorSet(cube360WaterComputeDs, "cubemap water compute DS");
             }
         }
         if (cube360WaterComputeDs != VK_NULL_HANDLE) {
-            DescriptorWriter(device)
+            DescriptorWriter(dev)
                 .writeBuffer(cube360WaterComputeDs, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                              waterInd.getIndirectBuffer().buffer, 0, VK_WHOLE_SIZE)
                 .writeBuffer(cube360WaterComputeDs, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
