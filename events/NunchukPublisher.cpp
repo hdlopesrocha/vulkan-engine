@@ -289,19 +289,28 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     // ========================================================================
     // NUNCHUK C / Z → camera/brush vertical translation
     // C = translate UP (camera-relative), Z = translate DOWN
-    // Down applies to camera (Camera page) or brush (Brush page).
+    // Both apply to camera (Camera page) or brush (Brush page).
     // ========================================================================
     if (hasNunchuk) {
         float vel = cam.speed * deltaTime;
+        glm::vec3 upDelta = up * vel;
         glm::vec3 downDelta = up * (-vel);
 
-        // C → translate camera UP (camera-relative)
+        // C → UP (camera on Camera page, brush on Brush page)
         if (s.buttonC) {
-            em->publish(std::make_shared<TranslateCameraEvent>(up * vel));
+            if (wctx.activeCategory() == PageCategory::CAMERA) {
+                em->publish(std::make_shared<TranslateCameraEvent>(upDelta));
+            } else if (brushManager) {
+                BrushEntry* be = brushManager->getSelectedEntry();
+                if (be) {
+                    be->translate += upDelta;
+                    em->queue(std::make_shared<RebuildBrushEvent>());
+                }
+            }
         }
         prevC = s.buttonC;
 
-        // Z → translate DOWN (camera on Camera page, brush on Brush page)
+        // Z → DOWN (camera on Camera page, brush on Brush page)
         if (s.buttonZ) {
             if (wctx.activeCategory() == PageCategory::CAMERA) {
                 em->publish(std::make_shared<TranslateCameraEvent>(downDelta));
