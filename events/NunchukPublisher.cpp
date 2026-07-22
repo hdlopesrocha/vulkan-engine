@@ -2,7 +2,8 @@
 #include "EventManager.hpp"
 #include "ControllerManager.hpp"
 #include "ControllerContext.hpp"
-#include "ControllerInput.hpp"
+#include "TranslateCameraEvent.hpp"
+#include "RotateCameraEvent.hpp"
 #include "../math/Camera.hpp"
 #include "../utils/Brush3dManager.hpp"
 #include "../utils/Brush3dEntry.hpp"
@@ -15,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 #include <glm/glm.hpp>
+#include <glm/gtc/constants.hpp>
 
 static const int WIIMOTE_TIMEOUT_SEC = 5;
 
@@ -222,10 +224,8 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     if (!em || !cm) return;
 
     WiimoteState s = getState();
-    if (!s.connected || !s.expansionConnected) return;
-    if (s.expansionType != EXP_NUNCHUK && s.expansionType != EXP_MOTION_PLUS_NUNCHUK) return;
+    if (!s.connected) return;
 
-    ControllerContext& wctx = cm->wiimoteContext;
     const ControllerParameters& cp = *cm->getParameters();
 
     // ---- Initialize tracking state on first frame ----
@@ -234,9 +234,16 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         startPitch = s.nunchukPitch;
         startRoll = s.nunchukRoll;
         startAccelY = s.nunchukAccelY;
+        wiimoteStartYaw = s.yaw;
+        wiimoteStartPitch = s.pitch;
+        wiimoteStartRoll = s.roll;
+        wiimoteStartAccelX = s.accelX;
+        wiimoteStartAccelY = s.accelY;
+        wiimoteStartAccelZ = s.accelZ;
         firstControlFrame = false;
         prevButtons = s.buttons;
         prevC = s.buttonC;
+        prevB = (s.buttons & WIIMOTE_BUTTON_B) != 0;
         return;
     }
 
@@ -257,34 +264,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     glm::vec3 up = cam.getUp();
     glm::vec3 forward = cam.getForward();
 
-    float nunchukAngDeg = cp.nunchukRotSpeed * deltaTime;
-
-    ControllerAction action;
-
-    // ---- Nunchuk Joystick: translation (both pages) ----
-    {
-        float jx = s.joystickX;
-        float jy = s.joystickY;
-        const float jdz = 0.15f;
-        if (std::abs(jx) < jdz) jx = 0.0f;
-        if (std::abs(jy) < jdz) jy = 0.0f;
-        if (jx != 0.0f || jy != 0.0f) {
-            float vel = cp.nunchukTransSpeed * deltaTime;
-            if (jx != 0.0f) action.translate += right * (jx * vel);
-            if (jy != 0.0f) action.translate += forward * (jy * vel);
-        }
-    }
-
-    // ---- Nunchuk C button: capture start orientation on press ----
-    // All accelerometer and YPR controls are gated by C.
-    if (s.buttonC && !prevC) {
-        startYaw = s.nunchukYaw;
-        startPitch = s.nunchukPitch;
-        startRoll = s.nunchukRoll;
-        startAccelY = s.nunchukAccelY;
-    }
-    prevC = s.buttonC;
-
     auto wrap180 = [](float v) -> float {
         while (v > 180.0f) v -= 360.0f;
         while (v < -180.0f) v += 360.0f;
@@ -293,50 +272,116 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
 
     const float inv90 = 1.0f / 90.0f;
 
-    // ---- C-gated controls: translation, rotation, scale ----
-    if (s.buttonC) {
-        const PageCategory cat = wctx.activeCategory();
-        const PageControl ctrl = wctx.activeControl();
+    // ========================================================================
+    // NUNCHUK → CAMERA (when nunchuk is connected)
+    // Joystick translates; C + YPR rotates.
+    // ========================================================================
+    if (s.expansionConnected &&
+        (s.expansionType == EXP_NUNCHUK || s.expansionType == EXP_MOTION_PLUS_NUNCHUK)) {
 
-        if (cat == PageCategory::CAMERA) {
-            // YPR → camera rotation (axis-angle in camera-local frame)
-            float yawOff = wrap180(s.nunchukYaw - startYaw);
-            float pitchOff = wrap180(s.nunchukPitch - startPitch);
-            float rollOff = wrap180(s.nunchukRoll - startRoll);
-            const float rdz = 2.0f;
-            if (std::abs(yawOff) > rdz)
-                em->publish(std::make_shared<RotateCameraEvent>(cam.getUp(), yawOff * inv90 * nunchukAngDeg));
-            if (std::abs(pitchOff) > rdz)
-                em->publish(std::make_shared<RotateCameraEvent>(cam.getRight(), -pitchOff * inv90 * nunchukAngDeg));
-            if (std::abs(rollOff) > rdz)
-                em->publish(std::make_shared<RotateCameraEvent>(cam.getUp(), -rollOff * inv90 * nunchukAngDeg));
-
-        } else if (ctrl == PageControl::SCALE) {
-            // Accelerometer Y offset from C-press capture → brush scale
-            int scaleOff = s.nunchukAccelY - startAccelY;
-            if (std::abs(scaleOff) > 2) {
-                float scale = scaleOff * 0.001f;
-                action.scaleDelta = glm::vec3(scale);
+        // ---- Nunchuk Joystick → camera translation ----
+        {
+            float jx = s.joystickX;
+            float jy = s.joystickY;
+            const float jdz = 0.15f;
+            if (std::abs(jx) < jdz) jx = 0.0f;
+            if (std::abs(jy) < jdz) jy = 0.0f;
+            if (jx != 0.0f || jy != 0.0f) {
+                glm::vec3 delta(0.0f);
+                float vel = cam.speed * deltaTime;
+                if (jx != 0.0f) delta += right * (jx * vel);
+                if (jy != 0.0f) delta += forward * (jy * vel);
+                em->publish(std::make_shared<TranslateCameraEvent>(delta));
             }
+        }
 
-        } else {
-            // YPR → brush rotation
+        // ---- Nunchuk C button: capture start orientation on press ----
+        if (s.buttonC && !prevC) {
+            startYaw = s.nunchukYaw;
+            startPitch = s.nunchukPitch;
+            startRoll = s.nunchukRoll;
+            startAccelY = s.nunchukAccelY;
+        }
+        prevC = s.buttonC;
+
+        // ---- C held: YPR → camera rotation ----
+        // Mapping: nunchuk roll → camera yaw (world Y), nunchuk yaw →
+        // camera pitch (camera right), nunchuk pitch → camera roll
+        // (camera forward) — this matches the natural grip of the nunchuk.
+        if (s.buttonC) {
             float yawOff = wrap180(s.nunchukYaw - startYaw);
             float pitchOff = wrap180(s.nunchukPitch - startPitch);
             float rollOff = wrap180(s.nunchukRoll - startRoll);
             const float rdz = 2.0f;
-            if (std::abs(yawOff) < rdz) yawOff = 0.0f;
-            if (std::abs(pitchOff) < rdz) pitchOff = 0.0f;
-            if (std::abs(rollOff) < rdz) rollOff = 0.0f;
-            action.rotateDeg.x += yawOff * inv90 * nunchukAngDeg;
-            action.rotateDeg.y += -pitchOff * inv90 * nunchukAngDeg;
-            action.rotateDeg.z += rollOff * inv90 * nunchukAngDeg;
+            float angDeg = glm::degrees(cam.angularSpeedRad) * deltaTime;
+            float y = (std::abs(rollOff) > rdz)  ? rollOff  * inv90 * angDeg : 0.0f;
+            float p = (std::abs(yawOff) > rdz)   ? -yawOff  * inv90 * angDeg : 0.0f;
+            float r = (std::abs(pitchOff) > rdz) ? -pitchOff * inv90 * angDeg : 0.0f;
+            if (y != 0.0f || p != 0.0f || r != 0.0f)
+                em->publish(std::make_shared<RotateCameraEvent>(y, p, r));
         }
+    } else {
+        // Nunchuk not connected — ensure C tracking resets cleanly
+        prevC = false;
     }
 
-    // ---- Apply the action ----
-    bool brushChanged = applyControllerAction(wctx, em, brushManager, action);
-    if (brushChanged) em->queue(std::make_shared<RebuildBrushEvent>());
+    // ========================================================================
+    // WIIMOTE → BRUSH (when B is pressed, works with or without nunchuk)
+    // Accelerometer offsets → translation; YPR deltas → rotation.
+    // ========================================================================
+    bool bDown = (s.buttons & WIIMOTE_BUTTON_B) != 0;
+
+    // Edge detection for B: capture initial orientation + accel
+    if (bDown && !prevB) {
+        wiimoteStartYaw = s.yaw;
+        wiimoteStartPitch = s.pitch;
+        wiimoteStartRoll = s.roll;
+        wiimoteStartAccelX = s.accelX;
+        wiimoteStartAccelY = s.accelY;
+        wiimoteStartAccelZ = s.accelZ;
+    }
+    prevB = bDown;
+
+    if (bDown && brushManager) {
+        BrushEntry* be = brushManager->getSelectedEntry();
+        if (be) {
+            bool changed = false;
+
+            // Accelerometer offsets → brush translation (camera-relative)
+            {
+                int offX = s.accelX - wiimoteStartAccelX;
+                int offY = s.accelY - wiimoteStartAccelY;
+                int offZ = s.accelZ - wiimoteStartAccelZ;
+                const int adz = 3;
+                if (std::abs(offX) > adz || std::abs(offY) > adz || std::abs(offZ) > adz) {
+                    float vel = cp.wiimoteTransSpeed * deltaTime;
+                    float scale = vel * 0.001f;
+                    glm::vec3 trans(0.0f);
+                    if (std::abs(offX) > adz) trans += right * (offX * scale);
+                    if (std::abs(offY) > adz) trans += up     * (-offY * scale);
+                    if (std::abs(offZ) > adz) trans += forward * (offZ * scale);
+                    be->translate += trans;
+                    changed = true;
+                }
+            }
+
+            // YPR offsets → brush rotation
+            {
+                float yawOff = wrap180(s.yaw - wiimoteStartYaw);
+                float pitchOff = wrap180(s.pitch - wiimoteStartPitch);
+                float rollOff = wrap180(s.roll - wiimoteStartRoll);
+                const float rdz = 2.0f;
+                if (std::abs(yawOff) > rdz || std::abs(pitchOff) > rdz || std::abs(rollOff) > rdz) {
+                    float rotSpeed = cp.wiimoteRotSpeed * deltaTime;
+                    if (std::abs(yawOff) > rdz)   { be->yaw   += yawOff   * inv90 * rotSpeed; changed = true; }
+                    if (std::abs(pitchOff) > rdz) { be->pitch -= pitchOff * inv90 * rotSpeed; changed = true; }
+                    if (std::abs(rollOff) > rdz)  { be->roll  += rollOff  * inv90 * rotSpeed; changed = true; }
+                }
+            }
+
+            if (changed) em->queue(std::make_shared<RebuildBrushEvent>());
+        }
+    }
 }
 
 WiimoteState NunchukPublisher::getState() const {

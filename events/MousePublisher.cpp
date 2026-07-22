@@ -20,7 +20,7 @@ void MousePublisher::scrollCallback(GLFWwindow* w, double xoffset, double yoffse
 }
 
 void MousePublisher::attachWindow(GLFWwindow* window) {
-    window = window;
+    this->window = window;
     s_instance = this;
     // Chain the existing scroll callback (ImGui installs one via glfwSetScrollCallback).
     prevScrollFun = glfwSetScrollCallback(window, scrollCallback);
