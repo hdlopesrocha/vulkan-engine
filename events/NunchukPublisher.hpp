@@ -57,18 +57,14 @@ private:
     float startYaw = 0.0f;
     float startPitch = 0.0f;
     float startRoll = 0.0f;
-    int startAccelY = 0;
     bool firstControlFrame = true;
     bool prevC = false;
 
-    // Wiimote-only (B button) brush control tracking
+    // Wiimote B-button brush rotation tracking
     bool prevB = false;
     float wiimoteStartYaw = 0.0f;
     float wiimoteStartPitch = 0.0f;
     float wiimoteStartRoll = 0.0f;
-    int wiimoteStartAccelX = 0;
-    int wiimoteStartAccelY = 0;
-    int wiimoteStartAccelZ = 0;
 
     void autoConnectLoop();
     void readState();

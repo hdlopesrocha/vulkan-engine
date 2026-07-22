@@ -16,7 +16,6 @@
 #include <cstdio>
 #include <cstring>
 #include <glm/glm.hpp>
-#include <glm/gtc/constants.hpp>
 
 static const int WIIMOTE_TIMEOUT_SEC = 5;
 
@@ -226,24 +225,21 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     WiimoteState s = getState();
     if (!s.connected) return;
 
+    ControllerContext& wctx = cm->wiimoteContext;
     const ControllerParameters& cp = *cm->getParameters();
 
     // ---- Initialize tracking state on first frame ----
     if (firstControlFrame) {
-        startYaw = s.nunchukYaw;
-        startPitch = s.nunchukPitch;
-        startRoll = s.nunchukRoll;
-        startAccelY = s.nunchukAccelY;
         wiimoteStartYaw = s.yaw;
         wiimoteStartPitch = s.pitch;
         wiimoteStartRoll = s.roll;
-        wiimoteStartAccelX = s.accelX;
-        wiimoteStartAccelY = s.accelY;
-        wiimoteStartAccelZ = s.accelZ;
         firstControlFrame = false;
         prevButtons = s.buttons;
         prevC = s.buttonC;
         prevB = (s.buttons & WIIMOTE_BUTTON_B) != 0;
+        startYaw = s.yaw;
+        startPitch = s.pitch;
+        startRoll = s.roll;
         return;
     }
 
@@ -261,7 +257,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
 
     // Camera axes (all controls are camera-relative)
     glm::vec3 right = cam.getRight();
-    glm::vec3 up = cam.getUp();
     glm::vec3 forward = cam.getForward();
 
     auto wrap180 = [](float v) -> float {
@@ -273,113 +268,92 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     const float inv90 = 1.0f / 90.0f;
 
     // ========================================================================
-    // NUNCHUK → CAMERA (when nunchuk is connected)
-    // Joystick translates; C + YPR rotates.
+    // NUNCHUK → CAMERA TRANSLATION (always, when nunchuk is connected)
+    // Left hand moves, right hand aims — joystick controls movement.
     // ========================================================================
     if (s.expansionConnected &&
         (s.expansionType == EXP_NUNCHUK || s.expansionType == EXP_MOTION_PLUS_NUNCHUK)) {
-
-        // ---- Nunchuk Joystick → camera translation ----
-        {
-            float jx = s.joystickX;
-            float jy = s.joystickY;
-            const float jdz = 0.15f;
-            if (std::abs(jx) < jdz) jx = 0.0f;
-            if (std::abs(jy) < jdz) jy = 0.0f;
-            if (jx != 0.0f || jy != 0.0f) {
-                glm::vec3 delta(0.0f);
-                float vel = cam.speed * deltaTime;
-                if (jx != 0.0f) delta += right * (jx * vel);
-                if (jy != 0.0f) delta += forward * (jy * vel);
-                em->publish(std::make_shared<TranslateCameraEvent>(delta));
-            }
+        float jx = s.joystickX;
+        float jy = s.joystickY;
+        const float jdz = 0.15f;
+        if (std::abs(jx) < jdz) jx = 0.0f;
+        if (std::abs(jy) < jdz) jy = 0.0f;
+        if (jx != 0.0f || jy != 0.0f) {
+            glm::vec3 delta(0.0f);
+            float vel = cam.speed * deltaTime;
+            if (jx != 0.0f) delta += right * (jx * vel);
+            if (jy != 0.0f) delta += forward * (jy * vel);
+            em->publish(std::make_shared<TranslateCameraEvent>(delta));
         }
-
-        // ---- Nunchuk C button: capture start orientation on press ----
-        if (s.buttonC && !prevC) {
-            startYaw = s.nunchukYaw;
-            startPitch = s.nunchukPitch;
-            startRoll = s.nunchukRoll;
-            startAccelY = s.nunchukAccelY;
-        }
-        prevC = s.buttonC;
-
-        // ---- C held: YPR → camera rotation ----
-        // Mapping: nunchuk roll → camera yaw (world Y), nunchuk yaw →
-        // camera pitch (camera right), nunchuk pitch → camera roll
-        // (camera forward) — this matches the natural grip of the nunchuk.
-        if (s.buttonC) {
-            float yawOff = wrap180(s.nunchukYaw - startYaw);
-            float pitchOff = wrap180(s.nunchukPitch - startPitch);
-            float rollOff = wrap180(s.nunchukRoll - startRoll);
-            const float rdz = 2.0f;
-            float angDeg = glm::degrees(cam.angularSpeedRad) * deltaTime;
-            float y = (std::abs(rollOff) > rdz)  ? rollOff  * inv90 * angDeg : 0.0f;
-            float p = (std::abs(yawOff) > rdz)   ? -yawOff  * inv90 * angDeg : 0.0f;
-            float r = (std::abs(pitchOff) > rdz) ? -pitchOff * inv90 * angDeg : 0.0f;
-            if (y != 0.0f || p != 0.0f || r != 0.0f)
-                em->publish(std::make_shared<RotateCameraEvent>(y, p, r));
-        }
-    } else {
-        // Nunchuk not connected — ensure C tracking resets cleanly
-        prevC = false;
     }
 
     // ========================================================================
-    // WIIMOTE → BRUSH (when B is pressed, works with or without nunchuk)
-    // Accelerometer offsets → translation; YPR deltas → rotation.
+    // WIIMOTE (MotionPlus) → ROTATION via C button
+    // Uses Wiimote YPR (with gyro from MotionPlus = proper yaw).
+    // Page context decides: CAMERA page → camera, BRUSH page → brush.
+    // ========================================================================
+    if (s.buttonC && !prevC) {
+        startYaw = s.yaw;
+        startPitch = s.pitch;
+        startRoll = s.roll;
+    }
+    prevC = s.buttonC;
+
+    if (s.buttonC) {
+        float yawOff = wrap180(s.yaw - startYaw);
+        float pitchOff = wrap180(s.pitch - startPitch);
+        float rollOff = wrap180(s.roll - startRoll);
+        const float rdz = 2.0f;
+        float angDeg = glm::degrees(cam.angularSpeedRad) * deltaTime;
+
+        if (wctx.activeCategory() == PageCategory::CAMERA) {
+            // Wiimote YPR → camera rotation (yaw around world Y via Euler event)
+            float y = (std::abs(yawOff) > rdz)   ? yawOff   * inv90 * angDeg : 0.0f;
+            float p = (std::abs(pitchOff) > rdz) ? -pitchOff * inv90 * angDeg : 0.0f;
+            float r = (std::abs(rollOff) > rdz)  ? -rollOff  * inv90 * angDeg : 0.0f;
+            if (y != 0.0f || p != 0.0f || r != 0.0f)
+                em->publish(std::make_shared<RotateCameraEvent>(y, p, r));
+        } else if (brushManager) {
+            // Wiimote YPR → brush rotation
+            BrushEntry* be = brushManager->getSelectedEntry();
+            if (be) {
+                bool changed = false;
+                float rotSpeed = cp.wiimoteRotSpeed * deltaTime;
+                if (std::abs(yawOff) > rdz)   { be->yaw   += yawOff   * inv90 * rotSpeed; changed = true; }
+                if (std::abs(pitchOff) > rdz) { be->pitch -= pitchOff * inv90 * rotSpeed; changed = true; }
+                if (std::abs(rollOff) > rdz)  { be->roll  += rollOff  * inv90 * rotSpeed; changed = true; }
+                if (changed) em->queue(std::make_shared<RebuildBrushEvent>());
+            }
+        }
+    }
+
+    // ========================================================================
+    // WIIMOTE → BRUSH ROTATION (when B is pressed)
+    // B + Wiimote YPR (MotionPlus gyro) → brush rotation.
     // ========================================================================
     bool bDown = (s.buttons & WIIMOTE_BUTTON_B) != 0;
 
-    // Edge detection for B: capture initial orientation + accel
     if (bDown && !prevB) {
         wiimoteStartYaw = s.yaw;
         wiimoteStartPitch = s.pitch;
         wiimoteStartRoll = s.roll;
-        wiimoteStartAccelX = s.accelX;
-        wiimoteStartAccelY = s.accelY;
-        wiimoteStartAccelZ = s.accelZ;
     }
     prevB = bDown;
 
     if (bDown && brushManager) {
         BrushEntry* be = brushManager->getSelectedEntry();
         if (be) {
-            bool changed = false;
-
-            // Accelerometer offsets → brush translation (camera-relative)
-            {
-                int offX = s.accelX - wiimoteStartAccelX;
-                int offY = s.accelY - wiimoteStartAccelY;
-                int offZ = s.accelZ - wiimoteStartAccelZ;
-                const int adz = 3;
-                if (std::abs(offX) > adz || std::abs(offY) > adz || std::abs(offZ) > adz) {
-                    float vel = cp.wiimoteTransSpeed * deltaTime;
-                    float scale = vel * 0.001f;
-                    glm::vec3 trans(0.0f);
-                    if (std::abs(offX) > adz) trans += right * (offX * scale);
-                    if (std::abs(offY) > adz) trans += up     * (-offY * scale);
-                    if (std::abs(offZ) > adz) trans += forward * (offZ * scale);
-                    be->translate += trans;
-                    changed = true;
-                }
+            float yawOff = wrap180(s.yaw - wiimoteStartYaw);
+            float pitchOff = wrap180(s.pitch - wiimoteStartPitch);
+            float rollOff = wrap180(s.roll - wiimoteStartRoll);
+            const float rdz = 2.0f;
+            if (std::abs(yawOff) > rdz || std::abs(pitchOff) > rdz || std::abs(rollOff) > rdz) {
+                float rotSpeed = cp.wiimoteRotSpeed * deltaTime;
+                be->yaw   += (std::abs(yawOff) > rdz)   ? yawOff   * inv90 * rotSpeed : 0.0f;
+                be->pitch -= (std::abs(pitchOff) > rdz) ? pitchOff * inv90 * rotSpeed : 0.0f;
+                be->roll  += (std::abs(rollOff) > rdz)  ? rollOff  * inv90 * rotSpeed : 0.0f;
+                em->queue(std::make_shared<RebuildBrushEvent>());
             }
-
-            // YPR offsets → brush rotation
-            {
-                float yawOff = wrap180(s.yaw - wiimoteStartYaw);
-                float pitchOff = wrap180(s.pitch - wiimoteStartPitch);
-                float rollOff = wrap180(s.roll - wiimoteStartRoll);
-                const float rdz = 2.0f;
-                if (std::abs(yawOff) > rdz || std::abs(pitchOff) > rdz || std::abs(rollOff) > rdz) {
-                    float rotSpeed = cp.wiimoteRotSpeed * deltaTime;
-                    if (std::abs(yawOff) > rdz)   { be->yaw   += yawOff   * inv90 * rotSpeed; changed = true; }
-                    if (std::abs(pitchOff) > rdz) { be->pitch -= pitchOff * inv90 * rotSpeed; changed = true; }
-                    if (std::abs(rollOff) > rdz)  { be->roll  += rollOff  * inv90 * rotSpeed; changed = true; }
-                }
-            }
-
-            if (changed) em->queue(std::make_shared<RebuildBrushEvent>());
         }
     }
 }
