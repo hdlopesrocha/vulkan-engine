@@ -54,9 +54,9 @@ TextureMixer* TextureMixer::getGlobalInstance() { return g_texture_mixer_instanc
 void TextureMixer::init(VulkanApp* app) {
 }
 
-void TextureMixer::init(VulkanApp* app, TextureArrayManager* textureArrayManager) {
-	this->textureArrayManager = textureArrayManager;
-	this->width = textureArrayManager->width;
+void TextureMixer::init(VulkanApp* app, TextureArrayManager* texArrMgr) {
+	this->textureArrayManager = texArrMgr;
+	this->width = texArrMgr->width;
 	this->height = textureArrayManager->height;
 	// Register global instance so other systems can query/wait on layer generations
 	g_texture_mixer_instance = this;
@@ -1077,12 +1077,12 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 	// happens during texture generation.
 	{
 		uint32_t totalLayers = textureArrayManager->layerAmount;
-		auto addNonTargetBarriers = [&](VkImage img, uint32_t mipLevels, int map) {
+		auto addNonTargetBarriers = [&](VkImage img, uint32_t mipLevels, int layerIdx) {
 			// Range before target layer [0, targetLayer)
 			if (targetLayer > 0) {
 				VkImageMemoryBarrier b = mkBarrierLayer(img, 0, targetLayer, mipLevels);
 				// Use authoritative per-layer tracked layout when available
-				b.oldLayout = textureArrayManager->getLayerLayout(map, 0);
+				b.oldLayout = textureArrayManager->getLayerLayout(layerIdx, 0);
 				b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 				b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
 				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -1092,7 +1092,7 @@ void TextureMixer::generatePerlinNoise(VulkanApp* app, MixerParameters &params, 
 			if (targetLayer + 1 < totalLayers) {
 				VkImageMemoryBarrier b = mkBarrierLayer(img, targetLayer + 1, totalLayers - targetLayer - 1, mipLevels);
 				// Use tracked layout for the first layer in the range as a best-effort
-				b.oldLayout = textureArrayManager->getLayerLayout(map, targetLayer + 1);
+				b.oldLayout = textureArrayManager->getLayerLayout(layerIdx, targetLayer + 1);
 				b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 				b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
 				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
