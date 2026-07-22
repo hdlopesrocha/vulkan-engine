@@ -45,7 +45,7 @@ public:
     uint currentLayer = 0;
     // Back-pointer to `VulkanApp` (used for ImGui descriptor creation and legacy convenience methods).
     // Kept for backward compatibility with UI code that calls `getImTexture()` without an app.
-    VulkanApp* app = nullptr;
+    VulkanApp* appPtr = nullptr;
 
     // Per-layer 2D views and ImGui texture IDs (created on demand for UI display)
     std::vector<VkImageView> albedoLayerViews;

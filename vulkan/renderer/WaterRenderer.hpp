@@ -24,7 +24,7 @@ public:
     WaterRenderer();
     ~WaterRenderer();
 
-    void init(VulkanApp* app, Buffer& waterParamsBuffer, const std::vector<WaterParams>& waterParams, uint32_t layerCount);
+    void init(VulkanApp* app, Buffer& waterParamsBuffer_, const std::vector<WaterParams>& waterParams, uint32_t layerCount);
     void cleanup(VulkanApp* app);
 
     // Create offscreen render targets for water rendering

@@ -1540,9 +1540,9 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
         }
         // Print first few indirect commands
         for (size_t i = 0; i < std::min(size_t(3), indirectCommands.size()); ++i) {
-            const auto& cmd = indirectCommands[i];
+            const auto& indirectCmd = indirectCommands[i];
             //printf("  IndirectCmd[%zu]: indexCount=%u, instanceCount=%u, firstIndex=%u, vertexOffset=%d, firstInstance=%u\n",
-            //    i, cmd.indexCount, cmd.instanceCount, cmd.firstIndex, cmd.vertexOffset, cmd.firstInstance);
+            //    i, indirectCmd.indexCount, indirectCmd.instanceCount, indirectCmd.firstIndex, indirectCmd.vertexOffset, indirectCmd.firstInstance);
         }
         // Check if using indirect count
         if (cmdDrawIndexedIndirectCount) {

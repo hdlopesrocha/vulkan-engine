@@ -819,18 +819,18 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // rarely change (texture arrays, materials, shadow maps, sky, water params).
     // Per-frame descriptor sets will copy these via VkCopyDescriptorSet.
     {
-        VkDescriptorSet staticDs = app->getStaticDescriptorSet();
-        if (staticDs != VK_NULL_HANDLE) {
+        VkDescriptorSet staticSet = app->getStaticDescriptorSet();
+        if (staticSet != VK_NULL_HANDLE) {
             DescriptorWriter staticWriter(app->getDevice());
             // Replay accumulated image/buffer writes into the static set
             for (auto &w : writes) {
                 if (w.dstBinding == 0) continue; // binding 0 is per-frame
                 if (w.pImageInfo) {
-                    staticWriter.writeImage(staticDs, w.dstBinding, w.descriptorType,
+                    staticWriter.writeImage(staticSet, w.dstBinding, w.descriptorType,
                                             w.pImageInfo[0].sampler, w.pImageInfo[0].imageView,
                                             w.pImageInfo[0].imageLayout, w.descriptorCount);
                 } else if (w.pBufferInfo) {
-                    staticWriter.writeBuffer(staticDs, w.dstBinding, w.descriptorType,
+                    staticWriter.writeBuffer(staticSet, w.dstBinding, w.descriptorType,
                                              w.pBufferInfo[0].buffer, w.pBufferInfo[0].offset,
                                              w.pBufferInfo[0].range, w.descriptorCount);
                 }
@@ -843,7 +843,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // For each frame, copy bindings 1-13 from the static set and write binding 0
     // (per-frame UBO) separately using DescriptorWriter.
     {
-        VkDescriptorSet staticDs = app->getStaticDescriptorSet();
+        VkDescriptorSet staticSet = app->getStaticDescriptorSet();
         for (size_t fi = 0; fi < mainUniformBuffers.size(); ++fi) {
             VkDescriptorSet dstSet = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
 
@@ -854,7 +854,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             auto addCopy = [&](uint32_t binding, uint32_t count = 1) {
                 VkCopyDescriptorSet c{};
                 c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
-                c.srcSet = staticDs; c.srcBinding = binding; c.srcArrayElement = 0;
+                c.srcSet = staticSet; c.srcBinding = binding; c.srcArrayElement = 0;
                 c.dstSet = dstSet; c.dstBinding = binding; c.dstArrayElement = 0;
                 c.descriptorCount = count;
                 copies.push_back(c);
@@ -863,7 +863,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
                 if (w.dstBinding == 0) continue;
                 addCopy(w.dstBinding, w.descriptorCount);
             }
-            addCopy(6); // Sky UBO — written to staticDs by skyRenderer->init
+            addCopy(6); // Sky UBO — written to staticSet by skyRenderer->init
 
             if (!copies.empty()) {
                 vkUpdateDescriptorSets(app->getDevice(), 0, nullptr,
@@ -1294,9 +1294,9 @@ SolidSpaceChangeHandler SceneRenderer::makeSolidSpaceChangeHandler(Scene* scene,
         }
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
-            [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+            [this](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const Geometry& geom) {
                 std::lock_guard<std::mutex> lock(pendingMeshMutex);
-                pendingMeshQueue.push_back({layer, nid, nd, geom, nd.node->version});
+                pendingMeshQueue.push_back({layer, nid_, nd_, geom, nd_.node->version});
             },
             &solidGenPool
         );
@@ -1332,9 +1332,9 @@ LiquidSpaceChangeHandler SceneRenderer::makeLiquidSpaceChangeHandler(Scene* scen
         }
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
-            [this](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+            [this](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const Geometry& geom) {
                 std::lock_guard<std::mutex> lock(pendingMeshMutex);
-                pendingMeshQueue.push_back({layer, nid, nd, geom, nd.node->version});
+                pendingMeshQueue.push_back({layer, nid_, nd_, geom, nd_.node->version});
             },
             &waterGenPool
         );
@@ -1612,11 +1612,11 @@ SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* s
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_OPAQUE, nid, nodeCopy,
-            [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+            [this, app](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const Geometry& geom) {
                 // Route brush-solid results to the SEPARATE brush queue so they
                 // are drained independently of the solid/water stream.
                 std::lock_guard<std::mutex> lock(brushPendingMutex);
-                brushPendingQueue.push_back({layer, nid, nd, geom, nd.node->version});
+                brushPendingQueue.push_back({layer, nid_, nd_, geom, nd_.node->version});
             },
             &brushGenPool
         );
@@ -1642,10 +1642,10 @@ LiquidSpaceChangeHandler SceneRenderer::makeBrushLiquidSpaceChangeHandler(Scene*
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
         OctreeNodeData nodeCopy = nd;
         this->processNodeLayer(*scene, LAYER_TRANSPARENT, nid, nodeCopy,
-            [this, app](Layer layer, NodeID nid, const OctreeNodeData& nd, const Geometry& geom) {
+            [this, app](Layer layer, NodeID nid_, const OctreeNodeData& nd_, const Geometry& geom) {
                 // Route brush-liquid results to the SEPARATE brush queue.
                 std::lock_guard<std::mutex> lock(brushPendingMutex);
-                brushPendingQueue.push_back({layer, nid, nd, geom, nd.node->version});
+                brushPendingQueue.push_back({layer, nid_, nd_, geom, nd_.node->version});
             },
             &brushGenPool
         );

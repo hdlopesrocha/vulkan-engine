@@ -179,7 +179,7 @@ void TextureArrayManager::destroy(VulkanApp* app) {
 	albedoLayerViews.clear(); normalLayerViews.clear(); bumpLayerViews.clear(); roughnessLayerViews.clear(); aoLayerViews.clear();
 	albedoImTextures.clear(); normalImTextures.clear(); bumpImTextures.clear(); roughnessImTextures.clear(); aoImTextures.clear();
 	// clear stored app pointer (no longer valid after destroy)
-	this->app = nullptr;
+	this->appPtr = nullptr;
 	// bump version to indicate array resources were destroyed
 	++this->version;
 	// notify listeners that arrays were destroyed
@@ -190,7 +190,7 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	if (!app) throw std::runtime_error("TextureArrayManager::allocate: app is null");
 
 	// Store back-pointer for legacy UI convenience (ImGui descriptors)
-	this->app = app;
+	this->appPtr = app;
 
 	layerAmount = layers;
 	width = w;
@@ -723,7 +723,7 @@ void TextureArrayManager::setLayerInitialized(uint32_t layer, bool v) {
 
 ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
 	if (layer >= layerAmount) return 0;
-	VulkanApp* a = this->app;
+	VulkanApp* a = this->appPtr;
 	if (!a) return 0;
 	VkDevice device = a->getDevice();
 
@@ -786,7 +786,7 @@ ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {
 
 ImTextureID TextureArrayManager::getImTextureAlpha(size_t layer, int map) {
     if (layer >= layerAmount) return 0;
-    VulkanApp* a = this->app;
+    VulkanApp* a = this->appPtr;
     if (!a) return 0;
     VkDevice device = a->getDevice();
 

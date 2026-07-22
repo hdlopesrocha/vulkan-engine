@@ -572,11 +572,11 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                 b[bc].size = VK_WHOLE_SIZE; ++bc;
             }
             if (bc > 0) {
-                VkDependencyInfo dep{};
-                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                dep.bufferMemoryBarrierCount = bc;
-                dep.pBufferMemoryBarriers = b;
-                vkCmdPipelineBarrier2(cmd, &dep);
+                VkDependencyInfo dep_{};
+                dep_.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep_.bufferMemoryBarrierCount = bc;
+                dep_.pBufferMemoryBarriers = b;
+                vkCmdPipelineBarrier2(cmd, &dep_);
             }
         }
 

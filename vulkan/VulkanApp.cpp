@@ -301,8 +301,6 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
         return 0;
     }
 
-    VkDevice device = getDevice();
-
     // Descriptor set layout: three storage buffers (vertices, indices, output instances)
     VkDescriptorSetLayoutBinding bindings[3] = {};
     bindings[0].binding = 0;
@@ -338,14 +336,14 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     pushRange.offset = 0;
     pushRange.size = sizeof(uint32_t) * 6;
 
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipelineLayout pl = VK_NULL_HANDLE;
     VkPipelineLayoutCreateInfo plInfo{};
     plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     plInfo.setLayoutCount = 1;
     plInfo.pSetLayouts = &descLayout;
     plInfo.pushConstantRangeCount = 1;
     plInfo.pPushConstantRanges = &pushRange;
-    if (vkCreatePipelineLayout(device, &plInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+    if (vkCreatePipelineLayout(device, &plInfo, nullptr, &pl) != VK_SUCCESS) {
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
         std::cerr << "[VulkanApp] Failed to create vegetation compute pipeline layout" << std::endl;
         return 0;
@@ -363,12 +361,12 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     VkComputePipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipelineInfo.stage = stageInfo;
-    pipelineInfo.layout = pipelineLayout;
+    pipelineInfo.layout = pl;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (vkCreateComputePipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
         std::cerr << "[VulkanApp] Failed to create vegetation compute pipeline" << std::endl;
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyPipelineLayout(device, pl, nullptr);
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
         return 0;
     }
@@ -388,7 +386,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool) != VK_SUCCESS) {
         std::cerr << "[VulkanApp] Failed to create descriptor pool for vegetation compute" << std::endl;
         vkDestroyPipeline(device, pipeline, nullptr);
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyPipelineLayout(device, pl, nullptr);
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
         return 0;
     }
@@ -404,7 +402,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
         resources.removeDescriptorPool(descPool);
         vkDestroyDescriptorPool(device, descPool, nullptr);
         vkDestroyPipeline(device, pipeline, nullptr);
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyPipelineLayout(device, pl, nullptr);
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
         return 0;
     }
@@ -440,7 +438,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     // Record and submit a single-time command buffer for compute dispatch
     runSingleTimeCommands([&](VkCommandBuffer cmd) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &descSet, 0, nullptr);
 
         // Push constants: instancesPerTriangle, vertexCount, indexCount, seed, baseTri, billboardCount
         uint32_t push[6];
@@ -465,7 +463,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
                 uint32_t workgroups = (remaining + 63u) / 64u;
                 uint32_t thisGroups = workgroups > maxGroupsX ? maxGroupsX : workgroups;
                 push[4] = baseTri;
-                vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
+                vkCmdPushConstants(cmd, pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
                 vkCmdDispatch(cmd, thisGroups, 1, 1);
                 uint32_t threadsDone = thisGroups * 64u;
                 baseTri += threadsDone;
@@ -498,7 +496,7 @@ uint32_t VulkanApp::generateVegetationInstancesCompute(
     resources.removeDescriptorPool(descPool);
     vkDestroyDescriptorPool(device, descPool, nullptr);
     vkDestroyPipeline(device, pipeline, nullptr);
-    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+    vkDestroyPipelineLayout(device, pl, nullptr);
     vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
 
     return expectedInstances;
@@ -520,8 +518,6 @@ uint32_t VulkanApp::generateVegetationInstancesComputeAsync(
         std::cerr << "[VulkanApp] generateVegetationInstancesComputeAsync: outputBufferSize too small (" << outputBufferSize << " < " << expectedBytes << ")" << std::endl;
         return 0;
     }
-
-    VkDevice device = getDevice();
 
     // Ensure cached compute pipeline is ready (lazy init, thread-safe)
     if (!ensureVegetationComputePipeline()) {
@@ -918,11 +914,11 @@ void VulkanApp::mainLoop() {
 
 void VulkanApp::cleanup() {
     printf("[VulkanApp] cleanup start - device=%p\n", (void*)device);
-    bool deviceLost = false;
+    bool isDeviceLost = false;
     if (device != VK_NULL_HANDLE) {
         VkResult waitRes = deviceWaitIdle();
         if (waitRes == VK_ERROR_DEVICE_LOST) {
-            deviceLost = true;
+            isDeviceLost = true;
             fprintf(stderr, "[VulkanApp] cleanup: device lost detected during vkDeviceWaitIdle, "
                             "continuing with degraded cleanup (skipping Vulkan destroy calls)\n");
         }
@@ -958,7 +954,7 @@ void VulkanApp::cleanup() {
     {
         std::lock_guard<std::recursive_mutex> dd(m_submissionMutex);
         for (auto &p : m_deferredDestroys) {
-            if (!deviceLost) p.second();
+            if (!isDeviceLost) p.second();
         }
         m_deferredDestroys.clear();
 
@@ -969,7 +965,7 @@ void VulkanApp::cleanup() {
         // processPendingCommandBuffers() above. deviceWaitIdle() earlier guarantees
         // the GPU is finished with them, so destroying now is safe and prevents
         // the VUID-vkDestroyDevice-device-05137 leak.
-        if (!deviceLost && device != VK_NULL_HANDLE) {
+        if (!isDeviceLost && device != VK_NULL_HANDLE) {
             for (auto &e : m_extraWaitSemaphores) {
                 if (e.first != VK_NULL_HANDLE) {
                     resources.removeSemaphore(e.first);
@@ -3581,19 +3577,19 @@ std::vector<VkCommandBuffer> VulkanApp::createCommandBuffers() {
 void VulkanApp::createSyncObjects() {
     // Create semaphores per frame-in-flight to avoid reuse before presentation completes.
     // Fences are per frame-in-flight for CPU-GPU synchronization.
-    const uint32_t MAX_FRAMES_IN_FLIGHT = VulkanApp::MAX_FRAMES_IN_FLIGHT;
+    const uint32_t maxFrames = VulkanApp::MAX_FRAMES_IN_FLIGHT;
     const uint32_t numImages = static_cast<uint32_t>(swapchainImages.size());
 
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
     // imageAvailableSemaphores: one per CPU frame-in-flight slot, used to wait on acquire
-    imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+    imageAvailableSemaphores.resize(maxFrames);
     // renderFinishedSemaphores: one per swapchain image to avoid re-signaling a semaphore
     // that is still in use by the presentation engine (VUID-vkQueueSubmit2-pSignalSemaphores-00067).
     renderFinishedSemaphores.resize(numImages);
 
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+    for (uint32_t i = 0; i < maxFrames; i++) {
         if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS) {
             throw std::runtime_error("failed to create imageAvailableSemaphore for frame " + std::to_string(i));
         }
@@ -3614,7 +3610,7 @@ void VulkanApp::createSyncObjects() {
     // semaphore signal). The frame-in-flight limit is enforced by waiting on the
     // previous fence of the same slot (reliable binary vkWaitForFences) plus the
     // timeline semaphore governor below.
-    inFlightFences.assign(MAX_FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
+    inFlightFences.assign(maxFrames, VK_NULL_HANDLE);
 
     // Create the frame timeline semaphore (replaces per-frame binary fences for frame pacing).
     // Enables finer CPU↔GPU overlap by allowing intermediate signal points per frame.
@@ -4486,12 +4482,12 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
         pipelineLayoutInfo.pPushConstantRanges = nullptr;
     }
 
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+    VkPipelineLayout pl = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pl) != VK_SUCCESS) {
         throw std::runtime_error("failed to create pipeline layout!");
     }
     // Track pipeline layout for cleanup
-    resources.addPipelineLayout(pipelineLayout, "VulkanApp: pipelineLayout");
+    resources.addPipelineLayout(pl, "VulkanApp: pipelineLayout");
 
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -4536,7 +4532,7 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     pipelineInfo.pMultisampleState = &multisampling;
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDepthStencilState = &depthStencil;
-    pipelineInfo.layout = pipelineLayout;
+    pipelineInfo.layout = pl;
     pipelineInfo.subpass = 0;
     if (hasTessellation) pipelineInfo.pTessellationState = &tessState;
 
@@ -4550,7 +4546,7 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     resources.addPipeline(graphicsPipeline, "VulkanApp: graphicsPipeline");
     std::cout << "graphics pipeline created\n";
     registeredPipelines.push_back(graphicsPipeline);
-    return {graphicsPipeline, pipelineLayout};
+    return {graphicsPipeline, pl};
 }
 
 std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
@@ -4823,7 +4819,7 @@ Buffer VulkanApp::createDeviceLocalBufferExclusive(const void* data, VkDeviceSiz
 }
 
 void VulkanApp::drawFrame() {
-    const uint32_t MAX_FRAMES_IN_FLIGHT = static_cast<uint32_t>(inFlightFences.size());
+    const uint32_t maxFrames = static_cast<uint32_t>(inFlightFences.size());
     const uint32_t numImages = static_cast<uint32_t>(swapchainImages.size());
     uint32_t imageIndex;
 
@@ -4837,8 +4833,8 @@ void VulkanApp::drawFrame() {
     // added later (e.g., after shadow pass) to reduce stalls on queue bubbles.
     {
         uint64_t counter = frameTimelineValue.load();
-        uint64_t targetValue = (counter >= MAX_FRAMES_IN_FLIGHT)
-            ? (counter - MAX_FRAMES_IN_FLIGHT + 1)
+        uint64_t targetValue = (counter >= maxFrames)
+            ? (counter - maxFrames + 1)
             : 0;
         if (targetValue > 0) {
             VkSemaphoreWaitInfo waitInfo{};
@@ -5643,14 +5639,14 @@ void VulkanApp::createSurface() {
     }
 }
 
-QueueFamilyIndices VulkanApp::findQueueFamilies(VkPhysicalDevice device) {
+QueueFamilyIndices VulkanApp::findQueueFamilies(VkPhysicalDevice physDevice) {
     QueueFamilyIndices indices;
 
     uint32_t queueFamilyCount = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+    vkGetPhysicalDeviceQueueFamilyProperties(physDevice, &queueFamilyCount, nullptr);
 
     std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+    vkGetPhysicalDeviceQueueFamilyProperties(physDevice, &queueFamilyCount, queueFamilies.data());
 
     // Prefer a dedicated transfer-only queue family if available (has TRANSFER bit but not GRAPHICS)
     for (uint32_t j = 0; j < queueFamilies.size(); ++j) {
@@ -5677,7 +5673,7 @@ QueueFamilyIndices VulkanApp::findQueueFamilies(VkPhysicalDevice device) {
         const auto& queueFamily = queueFamilies[i];
         if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
             VkBool32 presentSupport = false;
-            vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+            vkGetPhysicalDeviceSurfaceSupportKHR(physDevice, i, surface, &presentSupport);
 
             if (presentSupport) {
                 indices.graphicsFamily = i;
@@ -5694,7 +5690,7 @@ QueueFamilyIndices VulkanApp::findQueueFamilies(VkPhysicalDevice device) {
             indices.graphicsFamily = i;
         }
         VkBool32 presentSupport = false;
-        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+        vkGetPhysicalDeviceSurfaceSupportKHR(physDevice, i, surface, &presentSupport);
         if (presentSupport && !indices.presentFamily.has_value()) {
             indices.presentFamily = i;
         }
@@ -5725,8 +5721,8 @@ void VulkanApp::pickPhysicalDevice() {
     }
 }
 
-bool VulkanApp::isDeviceSuitable(VkPhysicalDevice device) {
-    QueueFamilyIndices indices = findQueueFamilies(device);
+bool VulkanApp::isDeviceSuitable(VkPhysicalDevice physDevice) {
+    QueueFamilyIndices indices = findQueueFamilies(physDevice);
     return indices.isComplete();
 }
 

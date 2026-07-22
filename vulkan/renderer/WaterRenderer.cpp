@@ -25,8 +25,8 @@ WaterRenderer::WaterRenderer() {}
 
 WaterRenderer::~WaterRenderer() {}
 
-void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer, const std::vector<WaterParams>& waterParams, uint32_t layerCount) {
-    this->waterParamsBuffer = waterParamsBuffer;
+void WaterRenderer::init(VulkanApp* app, Buffer& waterParamsBuffer_, const std::vector<WaterParams>& waterParams, uint32_t layerCount) {
+    this->waterParamsBuffer = waterParamsBuffer_;
     this->appPtr = app;
     waterParamsCount = layerCount;
     waterIndirectRenderer.init();
@@ -221,7 +221,6 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
 
 void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
     VkDevice device = app->getDevice();
-    VulkanApp* appPtr = app;
     // Clear per-frame image handles; actual Vulkan destruction
     // will be performed by the VulkanResourceManager.
     for (int i = 0; i < FRAMES; ++i) {
