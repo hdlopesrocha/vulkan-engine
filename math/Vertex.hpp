@@ -36,8 +36,8 @@ public:
     int brushIndex;
     int _pad0;
 
-    Vertex(glm::vec3 pos, glm::vec3 normal, glm::vec2 texCoord, int brushIndex)
-        : position(pos), color(glm::vec3(1.0f)), texCoord(texCoord), normal(normal), brushIndex(brushIndex), _pad0(0) {
+    Vertex(glm::vec3 pos, glm::vec3 norm, glm::vec2 tex, int brushIdx)
+        : position(pos), color(glm::vec3(1.0f)), texCoord(tex), normal(norm), brushIndex(brushIdx), _pad0(0) {
     }
 
     // Compatibility constructor to allow aggregate-style initialization used across the codebase

@@ -7,7 +7,7 @@ public:
     glm::vec3 center;
     float radius;
     BoundingSphere();
-    BoundingSphere(glm::vec3 center, float radius);
+    BoundingSphere(glm::vec3 center_, float radius_);
     bool contains(const glm::vec3 &point) const;
     ContainmentType test(const AbstractBoundingBox& cube) const;
     bool intersects(const AbstractBoundingBox& cube) const;

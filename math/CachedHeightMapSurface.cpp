@@ -2,9 +2,9 @@
 #include "HeightFunction.hpp"
 #include "Math.hpp"
 
-CachedHeightMapSurface::CachedHeightMapSurface(const HeightFunction &function, BoundingBox box, float delta) {
-    this->box = box;
-    glm::vec3 len = box.getLength();
+CachedHeightMapSurface::CachedHeightMapSurface(const HeightFunction &function, BoundingBox box_, float delta) {
+    this->box = box_;
+    glm::vec3 len = box_.getLength();
     
     
     this->width = len.x/delta;
@@ -13,8 +13,8 @@ CachedHeightMapSurface::CachedHeightMapSurface(const HeightFunction &function, B
 
     for(int i=0; i<width; ++i) {
         for(int j=0; j<height; ++j) {
-            float x = i * delta + box.getMinX();
-            float z = j * delta + box.getMinZ();
+            float x = i * delta + box_.getMinX();
+            float z = j * delta + box_.getMinZ();
             this->data[i][j] = function.getHeightAt(x, z);
         }	
     }

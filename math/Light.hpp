@@ -9,7 +9,7 @@
 
 class Light {
 public:
-    Light(const glm::vec3 &dir, const glm::vec3 &col = glm::vec3(1.0f, 1.0f, 1.0f), float intensity = 1.0f);
+    Light(const glm::vec3 &dir, const glm::vec3 &col = glm::vec3(1.0f, 1.0f, 1.0f), float intensity_ = 1.0f);
 
     // Getters
     glm::vec3 getDirection() const { return glm::normalize(direction); }

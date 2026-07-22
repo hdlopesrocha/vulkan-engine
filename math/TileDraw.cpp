@@ -1,10 +1,10 @@
 #include "TileDraw.hpp"
 
 
-TileDraw::TileDraw(uint index, glm::vec2 size, glm::vec2 offset, glm::vec2 pivot, float angle){
-    this->index = index;
-    this->size = size;
-    this->offset = offset;
-    this->pivot = pivot;
-    this->angle = angle;
+TileDraw::TileDraw(uint index_, glm::vec2 size_, glm::vec2 offset_, glm::vec2 pivot_, float angle_){
+    this->index = index_;
+    this->size = size_;
+    this->offset = offset_;
+    this->pivot = pivot_;
+    this->angle = angle_;
 }

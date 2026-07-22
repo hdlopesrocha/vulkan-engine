@@ -3,8 +3,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 
-Light::Light(const glm::vec3 &dir, const glm::vec3 &col, float intensity)
-    : direction(glm::normalize(dir)), color(col), intensity(intensity) {}
+Light::Light(const glm::vec3 &dir, const glm::vec3 &col, float intensity_)
+    : direction(glm::normalize(dir)), color(col), intensity(intensity_) {}
 
 void Light::setDirection(const glm::vec3 &dir) {
     direction = glm::normalize(dir);

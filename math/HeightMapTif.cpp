@@ -75,9 +75,9 @@ void processBand(GDALRasterBand* band, int bandIdx, std::vector<int16_t> &result
 }
 
 
-HeightMapTif::HeightMapTif(const std::string &filename, BoundingBox box, int sizePerTile, float verticalScale, float verticalShift){
-    this->box = box;
-    this->sizePerTile = sizePerTile;
+HeightMapTif::HeightMapTif(const std::string &filename, BoundingBox box_, int sizePerTile_, float verticalScale, float verticalShift){
+    this->box = box_;
+    this->sizePerTile = sizePerTile_;
     // **Open the dataset**
     GDALDataset* dataset = static_cast<GDALDataset*>(GDALOpen(filename.c_str(), GA_ReadOnly));
     if (!dataset) {

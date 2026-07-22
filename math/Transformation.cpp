@@ -8,8 +8,8 @@ Transformation::Transformation()
 {
 }
 
-Transformation::Transformation(glm::vec3 scale, glm::vec3 translate, float yaw, float pitch, float roll)
-    : scale(scale), translate(translate), quaternion(getRotation(yaw, pitch, roll))
+Transformation::Transformation(glm::vec3 scale_, glm::vec3 translate_, float yaw, float pitch, float roll)
+    : scale(scale_), translate(translate_), quaternion(getRotation(yaw, pitch, roll))
 {
 }
 

@@ -2,16 +2,16 @@
 #include "Geometry.hpp"
 
 template <typename T>
-InstanceGeometry<T>::InstanceGeometry(Geometry * geometry) {
-    this->geometry = geometry;
-    geometry->setCenter();
+InstanceGeometry<T>::InstanceGeometry(Geometry * geom) {
+    this->geometry = geom;
+    geom->setCenter();
 }
 
 template <typename T>
-InstanceGeometry<T>::InstanceGeometry(Geometry * geometry, std::vector<T> &instances) {
-    this->geometry = geometry;
-    this->instances = instances;
-    geometry->setCenter();
+InstanceGeometry<T>::InstanceGeometry(Geometry * geom, std::vector<T> &insts) {
+    this->geometry = geom;
+    this->instances = insts;
+    geom->setCenter();
 }
 
 template <typename T>

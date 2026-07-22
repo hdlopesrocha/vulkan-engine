@@ -5,10 +5,10 @@
 
 
 
-PerlinSurface::PerlinSurface(float amplitude, float frequency, float offset) {
-    this->amplitude = amplitude;
-    this->frequency = frequency;
-    this->offset = offset;
+PerlinSurface::PerlinSurface(float amplitude_, float frequency_, float offset_) {
+    this->amplitude = amplitude_;
+    this->frequency = frequency_;
+    this->offset = offset_;
 }
 
 float PerlinSurface::getHeightAt(float x, float z) const {

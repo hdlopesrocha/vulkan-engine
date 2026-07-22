@@ -2,8 +2,8 @@
 #include "AbstractBoundingBox.hpp"
 #include "Math.hpp"
 
-Plane::Plane(glm::vec3 normal, glm::vec3 point) {
-    this->normal = normal;
+Plane::Plane(glm::vec3 normal_, glm::vec3 point) {
+    this->normal = normal_;
     this->d = -(normal.x*point.x + normal.y*point.y + normal.z*point.z);
 }
 

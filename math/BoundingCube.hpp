@@ -11,7 +11,7 @@ protected:
     float length;
 public:
     BoundingCube();
-    BoundingCube(glm::vec3 min, float length);
+    BoundingCube(glm::vec3 min_, float length_);
     BoundingCube(const BoundingCube &other);
     void setLength(float l);
     void setMinX(float v);

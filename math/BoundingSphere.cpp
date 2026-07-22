@@ -3,9 +3,9 @@
 #include "AbstractBoundingBox.hpp"
 #include "Math.hpp"
 
-BoundingSphere::BoundingSphere(glm::vec3 center, float radius) {
-	this->center = center;
-	this->radius = radius;
+BoundingSphere::BoundingSphere(glm::vec3 center_, float radius_) {
+	this->center = center_;
+	this->radius = radius_;
 }
 
 BoundingSphere::BoundingSphere() {

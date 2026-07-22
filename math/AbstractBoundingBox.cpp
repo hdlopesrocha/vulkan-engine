@@ -5,7 +5,7 @@
 
 
 
-AbstractBoundingBox::AbstractBoundingBox(glm::vec3 min) : min(min) {
+AbstractBoundingBox::AbstractBoundingBox(glm::vec3 min_) : min(min_) {
 }
 
 AbstractBoundingBox::AbstractBoundingBox() :min(glm::vec3(0,0,0)){

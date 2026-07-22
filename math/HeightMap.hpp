@@ -9,7 +9,7 @@ private:
     float step;
     const HeightFunction &func;
 public:
-    HeightMap(const HeightFunction &func, BoundingBox box, float step);
+    HeightMap(const HeightFunction &func_, BoundingBox box, float step_);
     float distance(const glm::vec3 p) const;
 };
 

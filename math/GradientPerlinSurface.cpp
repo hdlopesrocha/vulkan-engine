@@ -3,7 +3,7 @@
 #include "Math.hpp"
 
 
-GradientPerlinSurface::GradientPerlinSurface(float amplitude, float frequency, float offset) : PerlinSurface(amplitude, frequency, offset){
+GradientPerlinSurface::GradientPerlinSurface(float amplitude_, float frequency_, float offset_) : PerlinSurface(amplitude_, frequency_, offset_){
 
 }
 long callsToGradientPerlinSurfaceGetHeight = 0;

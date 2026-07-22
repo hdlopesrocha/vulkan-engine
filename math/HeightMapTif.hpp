@@ -12,7 +12,7 @@ public:
     int width;
     int height;
     int sizePerTile;
-    HeightMapTif(const std::string & filename, BoundingBox box, int sizePerTile, float verticalScale, float verticalShift);
+    HeightMapTif(const std::string & filename, BoundingBox box_, int sizePerTile_, float verticalScale, float verticalShift);
     float getHeightAt(float x, float z) const override;
 };
 

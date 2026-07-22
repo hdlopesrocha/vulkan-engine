@@ -7,7 +7,7 @@ public:
     float frequency;
     float offset;
 
-    PerlinSurface(float amplitude, float frequency, float offset);
+    PerlinSurface(float amplitude_, float frequency_, float offset_);
     float getHeightAt(float x, float z) const override;
 };
 

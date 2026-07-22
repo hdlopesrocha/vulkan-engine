@@ -11,7 +11,7 @@ public:
     int width;
     int height;
 
-    CachedHeightMapSurface(const HeightFunction &function, BoundingBox box, float delta);
+    CachedHeightMapSurface(const HeightFunction &function, BoundingBox box_, float delta);
     float getData(int x, int z) const;
     float getHeightAt(float x, float z) const override;
     glm::vec2 getHeightRangeBetween(const BoundingCube &cube, int range) const;

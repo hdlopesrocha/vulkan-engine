@@ -7,8 +7,8 @@ BoundingCube::BoundingCube() : AbstractBoundingBox(glm::vec3(0)) {
 	this->length = 0;
 }
 
-BoundingCube::BoundingCube(glm::vec3 min, float length) : AbstractBoundingBox(min) {
-	this->length = length;
+BoundingCube::BoundingCube(glm::vec3 min_, float length_) : AbstractBoundingBox(min_) {
+	this->length = length_;
 }
 
 BoundingCube::BoundingCube(const BoundingCube &other) : AbstractBoundingBox(other.getMin()) {

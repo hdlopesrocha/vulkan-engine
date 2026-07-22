@@ -3,7 +3,7 @@
 
 class GradientPerlinSurface : public PerlinSurface {
 public:
-    GradientPerlinSurface(float amplitude, float frequency, float offset);
+    GradientPerlinSurface(float amplitude_, float frequency_, float offset_);
     float getHeightAt(float x, float z) const override;
 };
 

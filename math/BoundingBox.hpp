@@ -7,7 +7,7 @@ public:
 private:
     glm::vec3 max;
 public:
-    BoundingBox(glm::vec3 min, glm::vec3 max);
+    BoundingBox(glm::vec3 min_, glm::vec3 max_);
     BoundingBox();
     void setMax(glm::vec3 v);
     void setMaxX(float v);

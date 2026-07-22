@@ -8,7 +8,7 @@ public:
     glm::vec2 pivot;
     float angle;
     uint index;
-    TileDraw(uint index,glm::vec2 size, glm::vec2 offset, glm::vec2 pivot, float angle);
+    TileDraw(uint index_, glm::vec2 size_, glm::vec2 offset_, glm::vec2 pivot_, float angle_);
 };
 
  
