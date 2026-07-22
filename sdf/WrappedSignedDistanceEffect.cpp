@@ -1,12 +1,12 @@
 #include "WrappedSignedDistanceEffect.hpp"
 
-WrappedSignedDistanceEffect::WrappedSignedDistanceEffect(WrappedSignedDistanceFunction * function)
-: WrappedSignedDistanceFunction(function) {}
+WrappedSignedDistanceEffect::WrappedSignedDistanceEffect(WrappedSignedDistanceFunction * function_)
+: WrappedSignedDistanceFunction(function_) {}
 
 WrappedSignedDistanceEffect::~WrappedSignedDistanceEffect() = default;
 
-void WrappedSignedDistanceEffect::setFunction(WrappedSignedDistanceFunction * function) {
-    this->function = function;
+void WrappedSignedDistanceEffect::setFunction(WrappedSignedDistanceFunction * function_) {
+    this->function = function_;
 }
 
 ContainmentType WrappedSignedDistanceEffect::check(const BoundingCube &cube, const Transformation &model, float bias) const {

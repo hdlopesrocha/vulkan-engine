@@ -1,7 +1,7 @@
 #include "CapsuleDistanceFunction.hpp"
 
-CapsuleDistanceFunction::CapsuleDistanceFunction(glm::vec3 a, glm::vec3 b, float r)
-    : SignedDistanceFunction(SdfType::CAPSULE), a(a), b(b), radius(r) {}
+CapsuleDistanceFunction::CapsuleDistanceFunction(glm::vec3 a_, glm::vec3 b_, float r)
+    : SignedDistanceFunction(SdfType::CAPSULE), a(a_), b(b_), radius(r) {}
 
 float CapsuleDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
     glm::vec3 pos = p - model.translate;

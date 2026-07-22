@@ -7,7 +7,7 @@
 class TorusDistanceFunction : public SignedDistanceFunction {
 public:
     glm::vec2 radius;
-    TorusDistanceFunction(glm::vec2 radius);
+    TorusDistanceFunction(glm::vec2 radius_);
     virtual ~TorusDistanceFunction() = default;
     float distance(const glm::vec3 &p, const Transformation &model) override;
 };

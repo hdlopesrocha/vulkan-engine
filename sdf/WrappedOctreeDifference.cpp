@@ -1,6 +1,6 @@
 #include "WrappedOctreeDifference.hpp"
 
-WrappedOctreeDifference::WrappedOctreeDifference(OctreeDifferenceFunction * function) : WrappedSignedDistanceFunction(function) {
+WrappedOctreeDifference::WrappedOctreeDifference(OctreeDifferenceFunction * function_) : WrappedSignedDistanceFunction(function_) {
 
 }
 

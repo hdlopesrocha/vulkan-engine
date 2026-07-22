@@ -1,8 +1,8 @@
 #include "WrappedPerlinDistortDistanceEffect.hpp"
 
 
-WrappedPerlinDistortDistanceEffect::WrappedPerlinDistortDistanceEffect(WrappedSignedDistanceFunction * function, float amplitude, float frequency, glm::vec3 offset, float brightness, float contrast) : WrappedSignedDistanceEffect(NULL), amplitude(amplitude), frequency(frequency), offset(offset), brightness(brightness), contrast(contrast) {
-    this->setFunction(function);
+WrappedPerlinDistortDistanceEffect::WrappedPerlinDistortDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float frequency_, glm::vec3 offset_, float brightness_, float contrast_) : WrappedSignedDistanceEffect(NULL), amplitude(amplitude_), frequency(frequency_), offset(offset_), brightness(brightness_), contrast(contrast_) {
+    this->setFunction(function_);
 }
 
 WrappedPerlinDistortDistanceEffect::~WrappedPerlinDistortDistanceEffect() {

@@ -1,7 +1,7 @@
 #include "WrappedPyramid.hpp"
 
 
-WrappedPyramid::WrappedPyramid(PyramidDistanceFunction * function) : WrappedSignedDistanceFunction(function) {
+WrappedPyramid::WrappedPyramid(PyramidDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
 
 }
 

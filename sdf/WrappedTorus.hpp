@@ -5,7 +5,7 @@
 
 class WrappedTorus : public WrappedSignedDistanceFunction {
     public:
-    WrappedTorus(TorusDistanceFunction * function);
+    WrappedTorus(TorusDistanceFunction * function_);
     ~WrappedTorus();
     BoundingSphere getSphere(const Transformation &model, float bias) const;
     ContainmentType check(const BoundingCube &cube, const Transformation &model, float bias) const override;

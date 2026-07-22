@@ -2,9 +2,9 @@
 #include <glm/glm.hpp>
 #include <algorithm>
 
-WrappedTriangleStrip::WrappedTriangleStrip(TriangleStripDistanceFunction* function,
+WrappedTriangleStrip::WrappedTriangleStrip(TriangleStripDistanceFunction* function_,
                                            const glm::vec3& sphereCenter, float sphereRadius)
-    : WrappedSignedDistanceFunction(function)
+    : WrappedSignedDistanceFunction(function_)
     , m_sphereCenter(sphereCenter)
     , m_sphereRadius(sphereRadius)
 {

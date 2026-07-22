@@ -1,7 +1,7 @@
 #include "WrappedCylinder.hpp"
 
 
-WrappedCylinder::WrappedCylinder(CylinderDistanceFunction * function) : WrappedSignedDistanceFunction(function) {
+WrappedCylinder::WrappedCylinder(CylinderDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
 
 }
 

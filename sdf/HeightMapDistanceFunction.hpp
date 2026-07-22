@@ -7,7 +7,7 @@ class HeightMap;
 class HeightMapDistanceFunction : public SignedDistanceFunction {
 public:
     HeightMap * map;
-    HeightMapDistanceFunction(HeightMap * map);
+    HeightMapDistanceFunction(HeightMap * map_);
     virtual ~HeightMapDistanceFunction() = default;
     float distance(const glm::vec3 &p, const Transformation &model) override;
     glm::vec3 getCenter(const Transformation &model) const override;

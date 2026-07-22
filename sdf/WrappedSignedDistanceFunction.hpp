@@ -23,7 +23,7 @@ class WrappedSignedDistanceFunction : public SignedDistanceFunction {
     public:
     bool cacheEnabled = false;
 
-    WrappedSignedDistanceFunction(SignedDistanceFunction * function);
+    WrappedSignedDistanceFunction(SignedDistanceFunction * function_);
     virtual ~WrappedSignedDistanceFunction();
 
     virtual void accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const = 0;

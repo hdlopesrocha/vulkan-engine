@@ -2,9 +2,9 @@
 #include <glm/glm.hpp>
 #include <algorithm>
 
-WrappedRoad::WrappedRoad(RoadDistanceFunction* function,
+WrappedRoad::WrappedRoad(RoadDistanceFunction* function_,
                          const glm::vec3& sphereCenter, float sphereRadius)
-    : WrappedSignedDistanceFunction(function)
+    : WrappedSignedDistanceFunction(function_)
     , m_sphereCenter(sphereCenter)
     , m_sphereRadius(sphereRadius)
 {

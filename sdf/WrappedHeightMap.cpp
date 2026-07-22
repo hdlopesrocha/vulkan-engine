@@ -1,7 +1,7 @@
 #include "WrappedHeightMap.hpp"
 #include "../math/HeightMap.hpp"
 
-WrappedHeightMap::WrappedHeightMap(HeightMapDistanceFunction * function) : WrappedSignedDistanceFunction(function) {
+WrappedHeightMap::WrappedHeightMap(HeightMapDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
 
 }
 

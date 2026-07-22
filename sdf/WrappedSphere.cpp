@@ -1,6 +1,6 @@
 #include "WrappedSphere.hpp"
 
-WrappedSphere::WrappedSphere(SphereDistanceFunction * function) : WrappedSignedDistanceFunction(function) {
+WrappedSphere::WrappedSphere(SphereDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
 
 }
 

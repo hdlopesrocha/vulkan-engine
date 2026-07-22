@@ -11,7 +11,7 @@ class WrappedPerlinDistortDistanceEffect : public WrappedSignedDistanceEffect {
     glm::vec3 offset;
     float brightness;
     float contrast;
-    WrappedPerlinDistortDistanceEffect(WrappedSignedDistanceFunction * function, float amplitude, float frequency, glm::vec3 offset, float brightness, float contrast);
+    WrappedPerlinDistortDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float frequency_, glm::vec3 offset_, float brightness_, float contrast_);
     ~WrappedPerlinDistortDistanceEffect();
     BoundingSphere getSphere(const Transformation &model, float bias) const;
     const char* getLabel() const override;

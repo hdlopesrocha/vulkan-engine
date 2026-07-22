@@ -14,7 +14,7 @@ class WrappedVoronoiCarveDistanceEffect : public WrappedSignedDistanceEffect {
     glm::vec3 offset;
     float brightness;
     float contrast;
-    WrappedVoronoiCarveDistanceEffect(WrappedSignedDistanceFunction * function, float amplitude, float cellSize, glm::vec3 offset, float brightness, float contrast);
+    WrappedVoronoiCarveDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float cellSize_, glm::vec3 offset_, float brightness_, float contrast_);
     ~WrappedVoronoiCarveDistanceEffect();
     BoundingSphere getSphere(const Transformation &model, float bias) const;
     const char* getLabel() const override;

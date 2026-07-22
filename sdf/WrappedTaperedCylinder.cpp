@@ -1,7 +1,7 @@
 #include "WrappedTaperedCylinder.hpp"
 
-WrappedTaperedCylinder::WrappedTaperedCylinder(TaperedCylinderDistanceFunction * function)
-    : WrappedSignedDistanceFunction(function) {
+WrappedTaperedCylinder::WrappedTaperedCylinder(TaperedCylinderDistanceFunction * function_)
+    : WrappedSignedDistanceFunction(function_) {
 }
 
 WrappedTaperedCylinder::~WrappedTaperedCylinder() {

@@ -1,6 +1,6 @@
 #include "TorusDistanceFunction.hpp"
 
-TorusDistanceFunction::TorusDistanceFunction(glm::vec2 radius) : SignedDistanceFunction(SdfType::TORUS), radius(radius) {}
+TorusDistanceFunction::TorusDistanceFunction(glm::vec2 radius_) : SignedDistanceFunction(SdfType::TORUS), radius(radius_) {}
 
 float TorusDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
      glm::vec3 pos = p - getCenter(model);

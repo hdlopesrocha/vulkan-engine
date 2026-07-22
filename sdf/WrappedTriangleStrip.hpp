@@ -5,7 +5,7 @@
 
 class WrappedTriangleStrip : public WrappedSignedDistanceFunction {
 public:
-    WrappedTriangleStrip(TriangleStripDistanceFunction* function,
+    WrappedTriangleStrip(TriangleStripDistanceFunction* function_,
                          const glm::vec3& sphereCenter, float sphereRadius);
     ~WrappedTriangleStrip();
     float distance(const glm::vec3 &p, const Transformation &model) override;

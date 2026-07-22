@@ -1,6 +1,6 @@
 #include "WrappedCapsule.hpp"
 
-WrappedCapsule::WrappedCapsule(CapsuleDistanceFunction * function) : WrappedSignedDistanceFunction(function) {
+WrappedCapsule::WrappedCapsule(CapsuleDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
 
 }
 

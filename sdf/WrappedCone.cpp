@@ -1,6 +1,6 @@
 #include "WrappedCone.hpp"
 
-WrappedCone::WrappedCone(ConeDistanceFunction * function) : WrappedSignedDistanceFunction(function) {
+WrappedCone::WrappedCone(ConeDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
 
 }
 

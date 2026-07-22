@@ -1,7 +1,7 @@
 #include "WrappedOctahedron.hpp"
 
 
-WrappedOctahedron::WrappedOctahedron(OctahedronDistanceFunction * function) : WrappedSignedDistanceFunction(function) {
+WrappedOctahedron::WrappedOctahedron(OctahedronDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
 
 }
 

@@ -1,8 +1,8 @@
 #include "TaperedCylinderDistanceFunction.hpp"
 #include "SDF.hpp"
 
-TaperedCylinderDistanceFunction::TaperedCylinderDistanceFunction(float r1, float r2)
-    : SignedDistanceFunction(SdfType::TAPERED_CYLINDER), r1(r1), r2(r2) {
+TaperedCylinderDistanceFunction::TaperedCylinderDistanceFunction(float r1_, float r2_)
+    : SignedDistanceFunction(SdfType::TAPERED_CYLINDER), r1(r1_), r2(r2_) {
 }
 
 float TaperedCylinderDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {

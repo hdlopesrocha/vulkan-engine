@@ -4,7 +4,7 @@
 
 class WrappedOctreeDifference : public WrappedSignedDistanceFunction {
     public:
-    WrappedOctreeDifference(OctreeDifferenceFunction * function);
+    WrappedOctreeDifference(OctreeDifferenceFunction * function_);
 
     ~WrappedOctreeDifference();
 

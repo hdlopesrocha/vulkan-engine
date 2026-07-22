@@ -5,7 +5,7 @@
 
 class WrappedTaperedCylinder : public WrappedSignedDistanceFunction {
 public:
-    WrappedTaperedCylinder(TaperedCylinderDistanceFunction * function);
+    WrappedTaperedCylinder(TaperedCylinderDistanceFunction * function_);
     ~WrappedTaperedCylinder();
     BoundingSphere getSphere(const Transformation &model, float bias) const;
     ContainmentType check(const BoundingCube &cube, const Transformation &model, float bias) const override;

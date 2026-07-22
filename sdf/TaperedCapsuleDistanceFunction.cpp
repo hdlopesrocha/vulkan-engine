@@ -1,8 +1,8 @@
 #include "TaperedCapsuleDistanceFunction.hpp"
 #include "SDF.hpp"
 
-TaperedCapsuleDistanceFunction::TaperedCapsuleDistanceFunction(glm::vec3 a, glm::vec3 b, float r1, float r2)
-    : SignedDistanceFunction(SdfType::TAPERED_CAPSULE), a(a), b(b), r1(r1), r2(r2) {
+TaperedCapsuleDistanceFunction::TaperedCapsuleDistanceFunction(glm::vec3 a_, glm::vec3 b_, float r1_, float r2_)
+    : SignedDistanceFunction(SdfType::TAPERED_CAPSULE), a(a_), b(b_), r1(r1_), r2(r2_) {
 }
 
 float TaperedCapsuleDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {

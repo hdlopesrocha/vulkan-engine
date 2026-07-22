@@ -9,7 +9,7 @@ public:
     glm::vec3 a;
     glm::vec3 b;
     float radius;
-    CapsuleDistanceFunction(glm::vec3 a, glm::vec3 b, float r);
+    CapsuleDistanceFunction(glm::vec3 a_, glm::vec3 b_, float r);
     virtual ~CapsuleDistanceFunction() = default;
     float distance(const glm::vec3 &p, const Transformation &model) override;
     glm::vec3 getCenter(const Transformation &model) const override;

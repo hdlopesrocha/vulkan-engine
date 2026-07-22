@@ -1,6 +1,6 @@
 #include "WrappedPerlinCarveDistanceEffect.hpp"
 
-WrappedPerlinCarveDistanceEffect::WrappedPerlinCarveDistanceEffect(WrappedSignedDistanceFunction * function, float amplitude, float frequency, float threshold, glm::vec3 offset, float brightness, float contrast) : WrappedSignedDistanceEffect(function), amplitude(amplitude), frequency(frequency), threshold(threshold), offset(offset), brightness(brightness), contrast(contrast) {
+WrappedPerlinCarveDistanceEffect::WrappedPerlinCarveDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float frequency_, float threshold_, glm::vec3 offset_, float brightness_, float contrast_) : WrappedSignedDistanceEffect(function_), amplitude(amplitude_), frequency(frequency_), threshold(threshold_), offset(offset_), brightness(brightness_), contrast(contrast_) {
 
 }
 

@@ -1,7 +1,7 @@
 #include "WrappedSineDistortDistanceEffect.hpp"
 
-WrappedSineDistortDistanceEffect::WrappedSineDistortDistanceEffect(WrappedSignedDistanceFunction * function, float amplitude, float frequency, glm::vec3 offset) : WrappedSignedDistanceEffect(NULL), amplitude(amplitude), frequency(frequency), offset(offset) {
-    this->setFunction(function);
+WrappedSineDistortDistanceEffect::WrappedSineDistortDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float frequency_, glm::vec3 offset_) : WrappedSignedDistanceEffect(NULL), amplitude(amplitude_), frequency(frequency_), offset(offset_) {
+    this->setFunction(function_);
 }
 
 WrappedSineDistortDistanceEffect::~WrappedSineDistortDistanceEffect() {

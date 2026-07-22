@@ -1,7 +1,7 @@
 #include "WrappedTaperedCapsule.hpp"
 
-WrappedTaperedCapsule::WrappedTaperedCapsule(TaperedCapsuleDistanceFunction * function)
-    : WrappedSignedDistanceFunction(function) {
+WrappedTaperedCapsule::WrappedTaperedCapsule(TaperedCapsuleDistanceFunction * function_)
+    : WrappedSignedDistanceFunction(function_) {
 }
 
 WrappedTaperedCapsule::~WrappedTaperedCapsule() {

@@ -5,7 +5,7 @@
 
 class WrappedPyramid : public WrappedSignedDistanceFunction {
     public:
-    WrappedPyramid(PyramidDistanceFunction * function);
+    WrappedPyramid(PyramidDistanceFunction * function_);
     ~WrappedPyramid();
     float boundingSphereRadius(float width, float depth, float height) const;
     BoundingSphere getSphere(const Transformation &model, float bias) const;

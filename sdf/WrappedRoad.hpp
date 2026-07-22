@@ -5,7 +5,7 @@
 
 class WrappedRoad : public WrappedSignedDistanceFunction {
 public:
-    WrappedRoad(RoadDistanceFunction* function,
+    WrappedRoad(RoadDistanceFunction* function_,
                 const glm::vec3& sphereCenter, float sphereRadius);
     ~WrappedRoad();
     float distance(const glm::vec3 &p, const Transformation &model) override;

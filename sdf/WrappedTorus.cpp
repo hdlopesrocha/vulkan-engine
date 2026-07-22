@@ -1,6 +1,6 @@
 #include "WrappedTorus.hpp"
 
-WrappedTorus::WrappedTorus(TorusDistanceFunction * function) : WrappedSignedDistanceFunction(function) {
+WrappedTorus::WrappedTorus(TorusDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
 
 }
 

@@ -1,6 +1,6 @@
 #include "WrappedBox.hpp"
 
-WrappedBox::WrappedBox(BoxDistanceFunction * function) : WrappedSignedDistanceFunction(function) {
+WrappedBox::WrappedBox(BoxDistanceFunction * function_) : WrappedSignedDistanceFunction(function_) {
 
 }
 

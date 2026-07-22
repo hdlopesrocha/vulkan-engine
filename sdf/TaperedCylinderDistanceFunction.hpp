@@ -4,7 +4,7 @@
 
 class TaperedCylinderDistanceFunction : public SignedDistanceFunction {
 public:
-    TaperedCylinderDistanceFunction(float r1 = 0.25f, float r2 = 0.5f);
+    TaperedCylinderDistanceFunction(float r1_ = 0.25f, float r2_ = 0.5f);
     virtual ~TaperedCylinderDistanceFunction() = default;
     float distance(const glm::vec3 &p, const Transformation &model) override;
 
