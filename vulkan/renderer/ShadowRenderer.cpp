@@ -32,7 +32,6 @@ void ShadowRenderer::init(VulkanApp* app) {
 }
 
 void ShadowRenderer::cleanup(VulkanApp* app) {
-    VkDevice device = app->getDevice();
 
     for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
         if (cascades[i].imguiDescSet != VK_NULL_HANDLE) {

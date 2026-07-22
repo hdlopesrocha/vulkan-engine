@@ -1447,14 +1447,9 @@ void VegetationRenderer::generateChunkInstances(NodeID chunkId,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     VkBuffer instanceBuffer = instanceBuf.buffer;
-    VkDeviceMemory instanceMemory = instanceBuf.memory;
-
     Buffer indirect = app->createBuffer(sizeof(VkDrawIndexedIndirectCommand),
         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VkBuffer indirectBuffer = indirect.buffer;
-    VkDeviceMemory indirectMemory = indirect.memory;
-
     VkDrawIndexedIndirectCommand drawCmd{};
     drawCmd.indexCount = 36;
     drawCmd.instanceCount = instanceCount;

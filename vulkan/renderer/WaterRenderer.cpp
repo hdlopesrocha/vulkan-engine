@@ -98,17 +98,17 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     };
     
     // Reset layout tracking (use file-scope static variables)
-    for (int i = 0; i < FRAMES; ++i) {
+    for (uint32_t i = 0; i < FRAMES; ++i) {
         sceneColorImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
         sceneDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
-    for (int i = 0; i < FRAMES; ++i) {
+    for (uint32_t i = 0; i < FRAMES; ++i) {
         waterDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
         waterGeomDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     // Create per-frame scene offscreen render targets (2 sets for 2 frames in flight)
-    for (int frameIdx = 0; frameIdx < FRAMES; ++frameIdx) {
+    for (uint32_t frameIdx = 0; frameIdx < FRAMES; ++frameIdx) {
         createImage(app->getSwapchainImageFormat(),
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
@@ -137,7 +137,7 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
         }
     }
 
-    for (int frameIdx = 0; frameIdx < FRAMES; ++frameIdx) {
+    for (uint32_t frameIdx = 0; frameIdx < FRAMES; ++frameIdx) {
         createImage(VK_FORMAT_R32G32B32A32_SFLOAT,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
@@ -200,11 +200,11 @@ void WaterRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     };
 
     // Transition scene color images
-    for (int frameIdx = 0; frameIdx < FRAMES; ++frameIdx) {
+    for (uint32_t frameIdx = 0; frameIdx < FRAMES; ++frameIdx) {
         transitionImageLayout(sceneColorImages[frameIdx], app->getSwapchainImageFormat(), sceneColorImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
         transitionImageLayout(sceneDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, sceneDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
     }
-    for (int frameIdx = 0; frameIdx < FRAMES; ++frameIdx) {
+    for (uint32_t frameIdx = 0; frameIdx < FRAMES; ++frameIdx) {
         transitionImageLayout(waterDepthImages[frameIdx], VK_FORMAT_R32G32B32A32_SFLOAT, waterDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
         transitionImageLayout(waterGeomDepthImages[frameIdx], VK_FORMAT_D32_SFLOAT, waterGeomDepthImageLayouts[frameIdx], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
     }
@@ -223,7 +223,7 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
     VkDevice device = app->getDevice();
     // Clear per-frame image handles; actual Vulkan destruction
     // will be performed by the VulkanResourceManager.
-    for (int i = 0; i < FRAMES; ++i) {
+    for (uint32_t i = 0; i < FRAMES; ++i) {
         sceneColorImages[i] = VK_NULL_HANDLE;
         sceneColorAllocations[i] = VK_NULL_HANDLE;
         sceneColorMemories[i] = VK_NULL_HANDLE;
@@ -233,7 +233,7 @@ void WaterRenderer::destroyRenderTargets(VulkanApp* app) {
         sceneDepthMemories[i] = VK_NULL_HANDLE;
         sceneDepthImageViews[i] = VK_NULL_HANDLE;
     }
-    for (int i = 0; i < FRAMES; ++i) {
+    for (uint32_t i = 0; i < FRAMES; ++i) {
         waterDepthImages[i] = VK_NULL_HANDLE;
         waterDepthAllocations[i] = VK_NULL_HANDLE;
         waterDepthMemories[i] = VK_NULL_HANDLE;
@@ -842,7 +842,6 @@ VkDescriptorSet WaterRenderer::prepareSceneTexturesForFrame(VulkanApp* app, uint
 }
 
 void WaterRenderer::initializeWaterParamsBuffer(const std::vector<WaterParams>& waterParams) {
-    VkDevice device = appPtr->getDevice();
     if (waterParamsBuffer.buffer == VK_NULL_HANDLE) return;
 
     auto makeGpu = [&](const WaterParams& p) {

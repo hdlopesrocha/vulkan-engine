@@ -28,21 +28,8 @@ namespace {
 #define VK_KHR_MAINTENANCE5_EXTENSION_NAME "VK_KHR_maintenance5"
 #endif
 
-static const char* layoutName(VkImageLayout l) {
-    switch (l) {
-        case VK_IMAGE_LAYOUT_UNDEFINED: return "UNDEFINED";
-        case VK_IMAGE_LAYOUT_GENERAL: return "GENERAL";
-        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: return "COLOR_ATTACHMENT_OPTIMAL";
-        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL: return "DEPTH_STENCIL_ATTACHMENT_OPTIMAL";
-        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL: return "DEPTH_STENCIL_READ_ONLY_OPTIMAL";
-        case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: return "SHADER_READ_ONLY_OPTIMAL";
-        case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: return "TRANSFER_SRC_OPTIMAL";
-        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: return "TRANSFER_DST_OPTIMAL";
-        case VK_IMAGE_LAYOUT_PREINITIALIZED: return "PREINITIALIZED";
-        case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: return "PRESENT_SRC_KHR";
-        default: return "UNKNOWN";
-    }
-}
+
+
 
 static std::string buildTimestamp;
 
@@ -1467,8 +1454,6 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
     uint32_t idx = singleTimeCmdNext.fetch_add(1) % SINGLE_TIME_CMD_RING_SIZE;
     VkCommandBuffer cmd = singleTimeCmdBuffers[idx];
     VkFence fence = singleTimeCmdFences[idx];
-    VkCommandPool pool = singleTimeCmdPools[idx];
-
     // Wait for the previous submission using this ring slot to complete
     // before reusing the command buffer.
     waitFence(device, fence);
@@ -2044,27 +2029,12 @@ void VulkanApp::applyPendingLayoutUpdatesForCommandBuffer(VkCommandBuffer cmd) {
             }
         }
     }
-    {
-        uint64_t submitId = 0;
-        {
-            std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
-            auto it = m_cmdSubmitMap.find(cmd);
-            if (it != m_cmdSubmitMap.end()) submitId = it->second;
-        }
-    }
 }
 
 void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer) {
     // Obtain the submit id (if any) for diagnostics *before* taking
     // pendingLayoutMutex so we maintain a consistent lock ordering
     // with callers that hold graphicsSubmitMutex.
-    uint64_t submitId = 0;
-    {
-        std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
-        auto it = m_cmdSubmitMap.find(commandBuffer);
-        if (it != m_cmdSubmitMap.end()) submitId = it->second;
-    }
-
     // Build a map of latest-seen pending updates for affected subresources.
     // "Latest" means the last recorded update for each key, which reflects
     // the final layout the GPU image will be in after the command buffer
@@ -2105,10 +2075,6 @@ void VulkanApp::preApplyPendingLayoutsBeforeSubmit(VkCommandBuffer commandBuffer
     for (const auto &p : latest) {
         uint64_t key = p.first;
         VkImage image = (VkImage)(uintptr_t)(key >> 32);
-        uint32_t layer = (uint32_t)(key & 0xffffffff);
-        VkImageLayout prev = VK_IMAGE_LAYOUT_UNDEFINED;
-        auto it = imageLayerLayouts.find(key);
-        if (it != imageLayerLayouts.end()) prev = it->second;
         auto entry = resources.find((uintptr_t)image);
         std::string desc = entry ? entry->desc : std::string("(unknown)");
 #if 0
@@ -4402,14 +4368,6 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     inputAssembly.topology = topology;
     inputAssembly.primitiveRestartEnable = VK_FALSE;
 
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = (float) swapchainExtent.width;
-    viewport.height = (float) swapchainExtent.height;
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-
     VkRect2D scissor{};
     scissor.offset = {0,0};
     scissor.extent = swapchainExtent;
@@ -4820,7 +4778,6 @@ Buffer VulkanApp::createDeviceLocalBufferExclusive(const void* data, VkDeviceSiz
 
 void VulkanApp::drawFrame() {
     const uint32_t maxFrames = static_cast<uint32_t>(inFlightFences.size());
-    const uint32_t numImages = static_cast<uint32_t>(swapchainImages.size());
     uint32_t imageIndex;
 
     // Use the current CPU frame index as the semaphore index so the

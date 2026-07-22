@@ -17,7 +17,8 @@ void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount) {
             float srgb = p[c] / 255.0f;
             float lin = (srgb <= 0.04045f) ? (srgb / 12.92f) : std::pow((srgb + 0.055f) / 1.055f, 2.4f);
             int v = static_cast<int>(std::round(lin * 255.0f));
-            if (v < 0) v = 0; if (v > 255) v = 255;
+            if (v < 0) v = 0;
+            if (v > 255) v = 255;
             p[c] = static_cast<unsigned char>(v);
         }
         // alpha channel left as-is
@@ -326,7 +327,6 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 	if (layerAmount == 0) throw std::runtime_error("TextureArrayManager::load: layerAmount == 0");
 	if (currentLayer >= layerAmount) throw std::runtime_error("TextureArrayManager::load: currentLayer >= layerAmount");
 
-	VkDevice device = a->getDevice();
 	std::cout << "[TextureArrayManager] Loading textures into layer " << currentLayer << ": "
 			  << (albedoFile ? albedoFile : "(none)") << ", "
 			  << (normalFile ? normalFile : "(none)") << ", "
@@ -482,8 +482,6 @@ uint TextureArrayManager::create(VulkanApp* a) {
 	if (!a) throw std::runtime_error("TextureArrayManager::create: app is null");
 	if (layerAmount == 0) throw std::runtime_error("TextureArrayManager::create: layerAmount == 0");
 	if (currentLayer >= layerAmount) throw std::runtime_error("TextureArrayManager::create: currentLayer >= layerAmount");
-
-	VkDevice device = a->getDevice();
 
 	VkDeviceSize imageSize = static_cast<VkDeviceSize>(width) * height * 4;
 

@@ -219,7 +219,6 @@ void ImpostorCapture::capture(VulkanApp* app,
     // Single centred instance at the origin with the correct billboard type.
     {
         const glm::vec4 inst(0.0f, 0.0f, 0.0f, float(billboardType));
-        void* mapped;
         std::memcpy(captureInstMapped, &inst, sizeof(inst));
     }
 
@@ -751,7 +750,6 @@ void ImpostorCapture::createUBO(VulkanApp* app) {
 }
 
 void ImpostorCapture::createCaptureBuffers(VulkanApp* app) {
-    VkDevice device = app->getDevice();
 
     // 24 corner vertices for the 6-plane billboard mesh (same layout as vegetation).
     const glm::vec3 baseTangents[6] = {

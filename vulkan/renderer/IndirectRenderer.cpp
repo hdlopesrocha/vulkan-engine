@@ -9,35 +9,6 @@
 #include <cstring>
 #include <iostream>
 
-namespace {
-// Record a buffer memory barrier to make transfer-written vertex/index data
-// available. Buffers are CONCURRENT (accessible by both queues) so
-// VK_QUEUE_FAMILY_IGNORED is correct. Timeline semaphore handles cross-queue
-// execution ordering.
-void recordTransferWriteRelease(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size) {
-    // Make transfer writes available and visible to vertex/index reads.
-    // All transfers use the graphics queue with pipeline barriers.
-    VkBufferMemoryBarrier2 barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.buffer = buffer;
-    barrier.offset = offset;
-    barrier.size = size;
-
-    VkDependencyInfo depInfo{};
-    depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    depInfo.bufferMemoryBarrierCount = 1;
-    depInfo.pBufferMemoryBarriers = &barrier;
-
-    vkCmdPipelineBarrier2(cmd, &depInfo);
-}
-} // anonymous namespace
-
 void IndirectRenderer::publishPendingTransfer(VulkanApp* app) {
     if (pendingTransfer.fence == VK_NULL_HANDLE) return;
     VkDevice dev = app->getDevice();
@@ -1540,9 +1511,8 @@ void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
         }
         // Print first few indirect commands
         for (size_t i = 0; i < std::min(size_t(3), indirectCommands.size()); ++i) {
-            const auto& indirectCmd = indirectCommands[i];
             //printf("  IndirectCmd[%zu]: indexCount=%u, instanceCount=%u, firstIndex=%u, vertexOffset=%d, firstInstance=%u\n",
-            //    i, indirectCmd.indexCount, indirectCmd.instanceCount, indirectCmd.firstIndex, indirectCmd.vertexOffset, indirectCmd.firstInstance);
+            //    i, indirectCommands[i].indexCount, indirectCommands[i].instanceCount, indirectCommands[i].firstIndex, indirectCommands[i].vertexOffset, indirectCommands[i].firstInstance);
         }
         // Check if using indirect count
         if (cmdDrawIndexedIndirectCount) {

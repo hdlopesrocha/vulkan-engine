@@ -413,8 +413,6 @@ void SceneRenderer::waterPass(VulkanApp* app, VkCommandBuffer &commandBuffer, ui
     // command buffer so the solid pass outputs are available for sampling.
     VkImageView sceneColorView = solidRenderer->getColorView(frameIdx);
     VkImageView sceneDepthView = solidRenderer->getDepthView(frameIdx);
-    VkImage sceneDepthImage = solidRenderer->getDepthImage(frameIdx);
-
     // (Re)allocate and update this slot's scene-texture descriptor set (set 2,
     // binding 1 = sceneDepthTex) here on the main command buffer, immediately
     // before any draw that binds it. The async back-face task uses its OWN

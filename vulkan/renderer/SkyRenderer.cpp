@@ -90,8 +90,6 @@ void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet d
     // update sky uniform centered at camera
     // Use the live UBO passed in so we preserve fields like debugParams
     UniformObject skyUbo = ubo;
-    glm::vec3 camPos = glm::vec3(ubo.viewPos);
-    glm::mat4 model = glm::translate(glm::mat4(1.0f), camPos) * glm::scale(glm::mat4(1.0f), glm::vec3(50.0f));
     skyUbo.viewProjection = viewProjection;
     skyUbo.passParams = glm::vec4(0.0f);
     app->updateUniformBuffer(uniformBuffer, &skyUbo, sizeof(UniformObject));
