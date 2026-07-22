@@ -8,7 +8,7 @@
 
 class CameraWidget : public Widget {
 public:
-    CameraWidget(Camera* camera);
+    CameraWidget(Camera* cam);
     
     void render() override;
 

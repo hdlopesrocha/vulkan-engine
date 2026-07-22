@@ -18,16 +18,16 @@
 #include "components/ImGuiHelpers.hpp"
 
 
-RenderTargetsWidget::RenderTargetsWidget(VulkanApp* app, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
-                                                                                 ShadowRenderer* shadow, ShadowParams* shadowParams, Settings* settings)
-        : Widget("Render Targets", u8"\uf5b0"), app(app), sceneRenderer(scene), solidRenderer(solid), skyRenderer(sky),
-            shadowMapper(shadow), shadowParams(shadowParams), settings(settings) {
+RenderTargetsWidget::RenderTargetsWidget(VulkanApp* app_, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
+                                                                                 ShadowRenderer* shadow, ShadowParams* shadowParams_, Settings* settings_)
+        : Widget("Render Targets", u8"\uf5b0"), app(app_), sceneRenderer(scene), solidRenderer(solid), skyRenderer(sky),
+            shadowMapper(shadow), shadowParams(shadowParams_), settings(settings_) {
     // Initialize static GPU resources used by this widget (run once)
-    init(app, 512, 512);
+    init(app_, 512, 512);
 }
 
-void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
-    if (!app) return;
+void RenderTargetsWidget::init(VulkanApp* app_, int width, int height) {
+    if (!app_) return;
     VkDevice device = app->getDevice();
 
     // Require application-provided sampler for widget previews; do not create fallbacks
@@ -293,13 +293,13 @@ void RenderTargetsWidget::init(VulkanApp* app, int width, int height) {
     }
 }
 
-bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkImageView srcView, VkSampler srcSampler, VkSampler previewSampler,
+bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, VkImageView srcView, VkSampler srcSampler, VkSampler previewSampler,
                                           VkImageView dstView,
                                           VkDescriptorSet &dstDescriptor, bool &dstDescriptorOwned,
                                           uint32_t width, uint32_t height,
                                           float zNear, float zFar, float mode,
                                           uint32_t srcBaseArrayLayer) {
-    if (!app || srcView == VK_NULL_HANDLE || dstView == VK_NULL_HANDLE) return false;
+    if (!app_ || srcView == VK_NULL_HANDLE || dstView == VK_NULL_HANDLE) return false;
     if (linearizePipeline == VK_NULL_HANDLE || linearizeDescriptorSet == VK_NULL_HANDLE || linearizePipelineLayout == VK_NULL_HANDLE) return false;
 
     // std::cerr << "[RenderTargetsWidget] runLinearizePass: src=" << (void*)srcView << " dst=" << (void*)dstView << " fb=" << (void*)dstFb << " size=" << width << "x" << height << " mode=" << mode << std::endl;
@@ -557,9 +557,9 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app, VkImage srcImage, VkI
             }
         }
         if (shadowMapper) {
-            for (uint32_t sc = 0; sc < SHADOW_CASCADE_COUNT; ++sc) {
-                if (srcImage == shadowMapper->getDepthImage(sc)) {
-                    shadowMapper->setDepthLayout(sc, finalTrackedLayout);
+            for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
+                if (srcImage == shadowMapper->getDepthImage(c)) {
+                    shadowMapper->setDepthLayout(c, finalTrackedLayout);
                     break;
                 }
             }

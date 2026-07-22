@@ -1,7 +1,7 @@
 #include "CameraWidget.hpp"
 #include "components/ImGuiHelpers.hpp"
 
-CameraWidget::CameraWidget(Camera* camera) : Widget("Camera", u8"\uf030"), camera(camera) {}
+CameraWidget::CameraWidget(Camera* cam) : Widget("Camera", u8"\uf030"), camera(cam) {}
 
 void CameraWidget::render() {
 	ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen);

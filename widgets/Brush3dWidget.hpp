@@ -22,7 +22,7 @@ class Brush3dWidget : public Widget {
 public:
 
     // Construct with a reference to a shared Brush3dManager (owned by caller)
-    Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, Brush3dManager& manager, EventManager* eventManager);
+    Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, Brush3dManager& mgr, EventManager* eventMgr);
 
     void render() override;
 

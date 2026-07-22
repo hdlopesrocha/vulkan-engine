@@ -5,9 +5,9 @@
 // Base class for all UI widgets
 class Widget {
 public:
-    Widget(const std::string& title, const std::string& icon = {});
+    Widget(const std::string& title_, const std::string& icon_ = {});
     // Accept UTF-8 char8_t string literals (u8"...") on C++20 compilers
-    Widget(const std::string& title, const char8_t* icon);
+    Widget(const std::string& title_, const char8_t* icon_);
     virtual ~Widget();
     
     // Render the widget (must be implemented by derived classes)

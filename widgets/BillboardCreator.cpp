@@ -10,8 +10,8 @@
 #include "components/ImGuiHelpers.hpp"
 
 BillboardCreator::BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr,
-                                   std::shared_ptr<BillboardService> billboardService)
-    : Widget("Billboard Creator", u8"\uf03a"), billboardService(std::move(billboardService)),
+                                   std::shared_ptr<BillboardService> billboardService_)
+    : Widget("Billboard Creator", u8"\uf03a"), billboardService(std::move(billboardService_)),
       billboardManager(billboardMgr), atlasManager(atlasMgr), textureManager(textureMgr) {
 }
 

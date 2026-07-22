@@ -1,10 +1,10 @@
 #include "Widget.hpp"
 
-Widget::Widget(const std::string& title, const std::string& icon)
-	: title(title), icon(icon), isOpen(false) {}
+Widget::Widget(const std::string& title_, const std::string& icon_)
+	: title(title_), icon(icon_), isOpen(false) {}
 // Accept char8_t (u8"...") literals by converting to char*
-Widget::Widget(const std::string& title, const char8_t* icon)
-    : title(title), icon(reinterpret_cast<const char*>(icon)), isOpen(false) {}
+Widget::Widget(const std::string& title_, const char8_t* icon_)
+    : title(title_), icon(reinterpret_cast<const char*>(icon_)), isOpen(false) {}
 Widget::~Widget() = default;
 
 bool Widget::isVisible() const { return isOpen; }

@@ -255,8 +255,8 @@ void TextureViewer::render() {
 
 TextureViewer::TextureViewer() : Widget("Textures", u8"\uf03e") {}
 
-void TextureViewer::init(TextureArrayManager* arrayManager, std::vector<MaterialProperties>* materials) {
-    this->arrayManager = arrayManager;
-    this->materials = materials;
+void TextureViewer::init(TextureArrayManager* arrayManager_, std::vector<MaterialProperties>* materials_) {
+    this->arrayManager = arrayManager_;
+    this->materials = materials_;
 }
 

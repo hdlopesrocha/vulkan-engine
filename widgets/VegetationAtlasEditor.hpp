@@ -11,7 +11,7 @@
 
 class VegetationAtlasEditor : public Widget {
 public:
-    VegetationAtlasEditor(TextureArrayManager* vegTextureArrayManager, AtlasManager* atlasManager);
+    VegetationAtlasEditor(TextureArrayManager* vegTextureArrayManager, AtlasManager* atlasManager_);
     ~VegetationAtlasEditor();
     
     // We will request ImGui texture IDs from the TextureManager at render time.

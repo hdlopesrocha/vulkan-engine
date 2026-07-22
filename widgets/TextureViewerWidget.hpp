@@ -10,7 +10,7 @@
 class TextureViewer : public Widget {
 public:
     TextureViewer();
-    void init(TextureArrayManager* arrayManager, std::vector<MaterialProperties>* materials);
+    void init(TextureArrayManager* arrayManager_, std::vector<MaterialProperties>* materials_);
     void setTextureMixer(class TextureMixer* mixer) { textureMixer = mixer; }
     void render() override;
     void setOnMaterialChanged(std::function<void(size_t)> cb) { onMaterialChanged = cb; }

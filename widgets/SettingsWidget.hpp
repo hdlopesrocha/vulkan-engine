@@ -8,7 +8,7 @@
 
 class SettingsWidget : public Widget {
 public:
-    explicit SettingsWidget(Settings& settings, ShadowParams* shadowParams = nullptr);
+    explicit SettingsWidget(Settings& settings, ShadowParams* shadowParams_ = nullptr);
     
     void render() override;
     

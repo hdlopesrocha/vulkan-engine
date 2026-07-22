@@ -17,12 +17,12 @@ const char* Brush3dWidget::effectTypeNames[] = {
     "Perlin Distort", "Perlin Carve", "Sine Distort", "Voronoi Carve"
 };
 
-Brush3dWidget::Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, Brush3dManager& manager, EventManager* eventManager)
+Brush3dWidget::Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers, Brush3dManager& mgr, EventManager* eventMgr)
     : Widget("Brush 3D", u8"\uf1fc"),
-            manager(manager),
+            manager(mgr),
             textureArrayManager(texMgr),
             loadedTextureLayers(loadedLayers),
-            eventManager(eventManager)
+            eventManager(eventMgr)
 {
 }
 

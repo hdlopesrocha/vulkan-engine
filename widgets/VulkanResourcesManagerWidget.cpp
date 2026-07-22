@@ -6,8 +6,8 @@
 #include <iomanip>
 #include "components/ImGuiHelpers.hpp"
 
-VulkanResourcesManagerWidget::VulkanResourcesManagerWidget(VulkanResourceManager* mgr)
-    : Widget("Vulkan Resources", u8"\uf0e8"), mgr(mgr) {}
+VulkanResourcesManagerWidget::VulkanResourcesManagerWidget(VulkanResourceManager* mgr_)
+    : Widget("Vulkan Resources", u8"\uf0e8"), mgr(mgr_) {}
 
 void VulkanResourcesManagerWidget::updateWithApp(VulkanApp* app) {
     if (!app) { hasAppCache = false; return; }

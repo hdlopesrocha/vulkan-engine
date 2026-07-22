@@ -5,7 +5,7 @@
 
 class WindWidget : public Widget {
 public:
-    explicit WindWidget(VegetationRenderer* vegetationRenderer);
+    explicit WindWidget(VegetationRenderer* vegetationRenderer_);
     void render() override;
 
 private:

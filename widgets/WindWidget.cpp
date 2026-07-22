@@ -3,8 +3,8 @@
 #include <imgui.h>
 #include "components/ImGuiHelpers.hpp"
 
-WindWidget::WindWidget(VegetationRenderer* vegetationRenderer)
-    : Widget("Vegetation Wind", u8"\uf72e"), vegetationRenderer(vegetationRenderer) {
+WindWidget::WindWidget(VegetationRenderer* vegetationRenderer_)
+    : Widget("Vegetation Wind", u8"\uf72e"), vegetationRenderer(vegetationRenderer_) {
     isOpen = false;
 }
 

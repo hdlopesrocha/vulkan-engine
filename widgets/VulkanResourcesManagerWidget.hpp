@@ -8,7 +8,7 @@ class VulkanApp;
 
 class VulkanResourcesManagerWidget : public Widget {
 public:
-    VulkanResourcesManagerWidget(VulkanResourceManager* mgr);
+    VulkanResourcesManagerWidget(VulkanResourceManager* mgr_);
     // Per-frame refresh (does NOT store VulkanApp* persistently)
     void updateWithApp(class VulkanApp* app);
     void render() override;

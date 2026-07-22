@@ -7,7 +7,7 @@
 
 class TextureMixerWidget : public Widget {
 public:
-    TextureMixerWidget(std::shared_ptr<TextureMixer> textures, std::vector<MixerParameters>& mixerParams, const char* title = "Texture Mixer");
+    TextureMixerWidget(std::shared_ptr<TextureMixer> textures, std::vector<MixerParameters>& mixerParams, const char* title_ = "Texture Mixer");
     void render() override;
 
 private:

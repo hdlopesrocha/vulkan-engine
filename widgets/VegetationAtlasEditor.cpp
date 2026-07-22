@@ -2,8 +2,8 @@
 #include "VegetationAtlasEditor.hpp"
 #include "components/ImGuiHelpers.hpp"
 
-VegetationAtlasEditor::VegetationAtlasEditor(TextureArrayManager* vegTextureArrayManager, AtlasManager* atlasManager)
-    : Widget("Vegetation Atlas Editor", u8"\uf06c"), vegetationTextureManager(vegTextureArrayManager), atlasManager(atlasManager) {
+VegetationAtlasEditor::VegetationAtlasEditor(TextureArrayManager* vegTextureArrayManager, AtlasManager* atlasManager_)
+    : Widget("Vegetation Atlas Editor", u8"\uf06c"), vegetationTextureManager(vegTextureArrayManager), atlasManager(atlasManager_) {
     isOpen = false; // Start closed to avoid crashes on startup
 }
 

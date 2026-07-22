@@ -155,13 +155,13 @@ private:
     // Rely on renderer-provided tracked layouts (e.g. Solid360Renderer).
 
 public:
-    RenderTargetsWidget(VulkanApp* app, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
-                        ShadowRenderer* shadow = nullptr, ShadowParams* shadowParams = nullptr, Settings* settings = nullptr);
+    RenderTargetsWidget(VulkanApp* app_, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
+                        ShadowRenderer* shadow = nullptr, ShadowParams* shadowParams_ = nullptr, Settings* settings_ = nullptr);
     ~RenderTargetsWidget();
 
     // Initialize static GPU resources used by the widget (run once).
     // If width/height are provided, create size-dependent targets too.
-    void init(VulkanApp* app, int width = 0, int height = 0);
+    void init(VulkanApp* app_, int width = 0, int height = 0);
 
     void setFrameInfo(uint32_t frameIndex, int width, int height);
     // Destroy and recreate linear preview targets when size changes
@@ -180,7 +180,7 @@ public:
     // normalized RGBA preview into `dstView`. `dstDescriptor` will be
     // created via ImGui_ImplVulkan_AddTexture if needed. `mode` selects
     // linearization mode: 0.0 = perspective linearize, 1.0 = passthrough.
-    bool runLinearizePass(VulkanApp* app, VkImage srcImage, VkImageView srcView, VkSampler srcSampler, VkSampler previewSampler,
+    bool runLinearizePass(VulkanApp* app_, VkImage srcImage, VkImageView srcView, VkSampler srcSampler, VkSampler previewSampler,
                           VkImageView dstView,
                           VkDescriptorSet &dstDescriptor, bool &dstDescriptorOwned,
                           uint32_t width, uint32_t height,

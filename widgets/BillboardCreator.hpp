@@ -19,7 +19,7 @@
 class BillboardCreator : public Widget {
 public:
     BillboardCreator(BillboardManager* billboardMgr, AtlasManager* atlasMgr, TextureArrayManager* textureMgr,
-                     std::shared_ptr<BillboardService> billboardService);
+                     std::shared_ptr<BillboardService> billboardService_);
 
     void setVulkanApp(class VulkanApp* app);
     void initializeTextures();

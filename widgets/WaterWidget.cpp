@@ -2,8 +2,8 @@
 #include <imgui.h>
 #include "components/ImGuiHelpers.hpp"
 
-WaterWidget::WaterWidget(WaterRenderer* renderer, std::vector<WaterParams>* params)
-    : Widget("Water Settings", u8"\uf043"), renderer(renderer), params(params) {
+WaterWidget::WaterWidget(WaterRenderer* renderer_, std::vector<WaterParams>* params_)
+    : Widget("Water Settings", u8"\uf043"), renderer(renderer_), params(params_) {
     isOpen = false;
 }
 
