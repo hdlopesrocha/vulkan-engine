@@ -9,10 +9,10 @@ CC = g++
 # or shortcuts: make debug  or make release
 BUILD ?= release
 ifeq ($(BUILD),debug)
-	CFLAGS = -std=c++23 -O0 -g -DDEBUG -pthread -Wshadow -Ithird_party/imgui
+	CFLAGS = -std=c++23 -O0 -g -DDEBUG -pthread -Wall -Wshadow -Ithird_party/imgui
 	LDFLAGS =
 else
-	CFLAGS = -std=c++23 -O3 -march=native -DNDEBUG -pthread -DUSE_IMGUI -Wshadow -Ithird_party/imgui
+	CFLAGS = -std=c++23 -O3 -march=native -DNDEBUG -pthread -DUSE_IMGUI -Wall -Wshadow -Ithird_party/imgui
 endif
 
 # Use pkg-config for GLFW and Vulkan includes; also add common ImGui/stb include paths
