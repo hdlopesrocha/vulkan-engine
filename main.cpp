@@ -2488,7 +2488,7 @@ void MyApp::ensureCubemapResources() {
     // 4. Graphics descriptor set (mirrors main DS but uses cube360UBO)
     if (cube360GfxDs == VK_NULL_HANDLE) {
         VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 };
-        VkDescriptorPoolSize ps2{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9 };
+        VkDescriptorPoolSize ps2{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 11 };
         VkDescriptorPoolSize ps3{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 };
         VkDescriptorPoolSize poolSizes[] = {ps, ps2, ps3};
 
