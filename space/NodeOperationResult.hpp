@@ -13,7 +13,7 @@ struct NodeOperationResult {
     float resultSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
     float shapeSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
     float shapeSdfCenter = INFINITY;
-    bool isSimplified;
+    uint8_t isSimplified;
     bool isLeaf;
     bool isChunk;
     int brushIndex;
@@ -25,7 +25,7 @@ struct NodeOperationResult {
         const float * shapeSDF, 
         SpaceType resultType, 
         const float * resultSDF, 
-        bool isSimplified, 
+        uint8_t isSimplified, 
         bool isLeaf,
         bool isChunk,
         int brushIndex);

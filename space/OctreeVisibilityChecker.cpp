@@ -18,7 +18,7 @@ bool OctreeVisibilityChecker::iterate(const Octree &tree, OctreeNodeData &params
 		return false;
 	}
 
-	if(params.node->isChunk() || params.node->isSimplified()) {
+	if(params.node->isChunk() || params.node->getSimplification() == 1u) {
 		if(params.node->getType() == SpaceType::Surface) {
 			std::lock_guard<std::mutex> lock(mutex);
 			visibleNodes.push_back(params);

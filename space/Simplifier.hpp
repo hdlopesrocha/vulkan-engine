@@ -8,9 +8,9 @@ struct NodeOperationResult;
 // `isSimplified` indicates whether simplification succeeded.
 // `brushIndex` is the brush/material index to assign when simplified.
 struct SimplificationResult {
-    bool isSimplified;
+    uint8_t isSimplified;
     int brushIndex;
-    SimplificationResult(bool simplified, int brushIdx) : isSimplified(simplified), brushIndex(brushIdx) {
+    SimplificationResult(uint8_t simplified, int brushIdx) : isSimplified(simplified), brushIndex(brushIdx) {
         
     }
 };

@@ -17,7 +17,7 @@ SimplificationResult Simplifier::simplify(
         NodeOperationResult * children,
         const BoundingCube& chunkCube)
 {
-    SimplificationResult res(false, DISCARD_BRUSH_INDEX);
+    SimplificationResult res(0u, DISCARD_BRUSH_INDEX);
     int brushIndex = DISCARD_BRUSH_INDEX;
 
     // --- 1. Brush consistency and simplification-chain check (unchanged) ---

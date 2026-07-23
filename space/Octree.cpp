@@ -78,7 +78,7 @@ OctreeNodeLevel Octree::getNodeAt(const glm::vec3 &pos, int level, bool simplifi
 		return OctreeNodeLevel(NULL, 0);
 	}
     while (candidate != NULL && level-- > 0 ) {
-        if (simplification && node->isSimplified()) {
+        if (simplification && node->getSimplification() == 1u) {
             break;
         }
         int i = getNodeIndex(pos, cube);
@@ -101,7 +101,7 @@ OctreeNode* Octree::getNodeAt(const glm::vec3 &pos, bool simplification) const {
 		return NULL;
 	}
     while (candidate != NULL) {
-        if (simplification && node->isSimplified()) {
+        if (simplification && node->getSimplification() == 1u) {
             break;
         }
         int i = getNodeIndex(pos, cube);
@@ -153,7 +153,7 @@ void Octree::iterateTriangles(
         int level = 0;
 
         bool isSurface() const {
-            return node != NULL && node->getType() == SpaceType::Surface && node->isSimplified();
+            return node != NULL && node->getType() == SpaceType::Surface && node->getSimplification() == 1u;
         }
     };
 
@@ -284,7 +284,7 @@ void Octree::iterateTriangles(
         OctreeNode *node = startNode;
         BoundingCube cube = startCube;
 
-        while(node != NULL && !node->isSimplified() && !node->isLeaf()) {
+        while(node != NULL && node->getSimplification() == 0u && !node->isLeaf()) {
             ChildBlock *block = node->getBlock(*allocator);
             if(block == NULL) {
                 node = NULL;
@@ -578,7 +578,7 @@ void Octree::iterateTriangles(
         }
     };
 
-    if(from == NULL || from->getType() != SpaceType::Surface || !from->isSimplified()) {
+    if(from == NULL || from->getType() != SpaceType::Surface || from->getSimplification() == 0u) {
         return;
     }
 
@@ -990,7 +990,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                             }
                             childNode->setType(child.resultType);
                             childNode->setSDF(child.resultSDF);
-                            childNode->setSimplified(child.isSimplified);
+                            childNode->setSimplification(child.isSimplified);
                             childNode->setChunk(child.isChunk);
                             childNode->setBrush(child.brushIndex);                        
                         }
@@ -1008,7 +1008,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         if(r.node != NULL) {
             r.node->setType(r.resultType);
             r.node->setSDF(r.resultSDF);
-            r.node->setSimplified(r.isSimplified);
+            r.node->setSimplification(r.isSimplified);
             r.node->setChunk(r.isChunk);
             r.node->setBrush(r.brushIndex);
             if (r.isChunk) {

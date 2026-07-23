@@ -30,8 +30,8 @@ public:
 
     void setType(SpaceType type);
 
-    bool isSimplified() const;
-    void setSimplified(bool value);
+    uint8_t getSimplification() const;
+    void setSimplification(uint8_t value);
 
     bool isChunk() const ;
     void setChunk(bool value);

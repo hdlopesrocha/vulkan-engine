@@ -7,13 +7,13 @@
 
 NodeOperationResult::NodeOperationResult()
     : node(NULL), shapeType(SpaceType::Empty), 
-    resultType(SpaceType::Empty),  isSimplified(false), 
+    resultType(SpaceType::Empty),  isSimplified(0u), 
     isLeaf(false), isChunk(false), brushIndex(DISCARD_BRUSH_INDEX)
 {
 
 }
 
-NodeOperationResult::NodeOperationResult(OctreeNode * node_, SpaceType shapeType_, const float * shapeSDF_, SpaceType resultType_, const float * resultSDF_, bool isSimplified_, bool isLeaf_, bool isChunk_, int brushIndex_)
+NodeOperationResult::NodeOperationResult(OctreeNode * node_, SpaceType shapeType_, const float * shapeSDF_, SpaceType resultType_, const float * resultSDF_, uint8_t isSimplified_, bool isLeaf_, bool isChunk_, int brushIndex_)
     : node(node_), shapeType(shapeType_), resultType(resultType_), 
     isSimplified(isSimplified_), isLeaf(isLeaf_), 
     isChunk(isChunk_), brushIndex(brushIndex_)

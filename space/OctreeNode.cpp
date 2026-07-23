@@ -23,7 +23,7 @@ OctreeNode::OctreeNode(Vertex vertex_) {
 OctreeNode * OctreeNode::init(Vertex vert) {
 	memcpy(this->sdf, INFINITY_ARRAY, sizeof(float)*8);
 	this->bits = 0x0;
-	this->setSimplified(false);
+	this->setSimplification(0u);
 	this->setChunk(false);
 	this->setType(SpaceType::Surface);
 	this->vertex = vert;
@@ -119,20 +119,20 @@ void OctreeNode::setType(SpaceType type) {
 	this->bits = (this->bits & (mask ^ 0xff)) | value;
 }
 
-bool OctreeNode::isSimplified() const {
-	return this->bits & (0x1 << 2);
+uint8_t OctreeNode::getSimplification() const {
+	return (this->bits >> 2) & 0x1Fu;
 }
 
-void OctreeNode::setSimplified(bool value){
-	uint8_t mask = (0x1 << 2);
-	this->bits = (this->bits & ~mask) | (value ? mask : 0x0);
+void OctreeNode::setSimplification(uint8_t value){
+	uint8_t mask = 0x7Cu;
+	this->bits = (this->bits & ~mask) | ((value & 0x1Fu) << 2);
 }
 
 bool OctreeNode::isChunk() const {
-	return this->bits & (0x1 << 4);
+	return this->bits & (0x1 << 7);
 }
 void OctreeNode::setChunk(bool value) {
-	uint8_t mask = (0x1 << 4);
+	uint8_t mask = (0x1 << 7);
 	this->bits = (this->bits & ~mask) | (value ? mask : 0x0);
 }
 

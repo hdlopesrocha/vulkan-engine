@@ -55,7 +55,7 @@ void collectLeafSDFCubes(OctreeNode* node, const BoundingCube& cube, OctreeAlloc
                          std::vector<DebugSDFRenderer::CubeSDF>& out) {
     if (!node) return;
 
-    if (node->isSimplified()) {
+    if (node->getSimplification() == 1u) {
         DebugSDFRenderer::CubeSDF debugCube{};
         debugCube.cube = cube;
         for (size_t i = 0; i < debugCube.sdf.size(); ++i) {
