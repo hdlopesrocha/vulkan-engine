@@ -287,13 +287,19 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     }
     {
         // Brush color: alpha blending enabled (CONSTANT_ALPHA), no depth write
+        // Uses a dedicated fragment shader (brush.frag) with all shadow
+        // computation removed so the brush surface never shows shadows.
+        ShaderStage brushFrag = ShaderStage(
+            app->getOrCreateShaderModule("shaders/brush.frag.spv"),
+            VK_SHADER_STAGE_FRAGMENT_BIT
+        );
         GraphicsPipelineConfig brushCfg{};
         brushCfg.depthWriteEnable = false;
         brushCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
         brushCfg.colorFormats = { app->getSwapchainImageFormat() };
         brushCfg.blendEnable = true;
         auto [bp, bl] = app->createGraphicsPipeline(
-            { vertexShader.info, tescShader.info, teseShader.info, fragmentShader.info },
+            { vertexShader.info, tescShader.info, teseShader.info, brushFrag.info },
             std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
             vk_layouts::defaultAttributes(),
             setLayouts, nullptr,
@@ -301,6 +307,30 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         );
         brushDeferredColorPipeline = bp;
         brushDeferredColorPipelineLayout = bl;
+    }
+    {
+        // Brush overlay pipeline: opaque, no blending, same brush.frag shader.
+        // Used when rendering the brush into scene_color to prevent background
+        // shadows from showing through CONSTANT_ALPHA blending.
+        ShaderStage brushOpaqueFrag = ShaderStage(
+            app->getOrCreateShaderModule("shaders/brush.frag.spv"),
+            VK_SHADER_STAGE_FRAGMENT_BIT
+        );
+        GraphicsPipelineConfig brushOverlayCfg{};
+        brushOverlayCfg.depthWriteEnable = false;
+        brushOverlayCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        brushOverlayCfg.colorFormats = { app->getSwapchainImageFormat() };
+        brushOverlayCfg.blendEnable = false;
+        auto [bp, bl] = app->createGraphicsPipeline(
+            { vertexShader.info, tescShader.info, teseShader.info, brushOpaqueFrag.info },
+            std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
+            vk_layouts::defaultAttributes(),
+            setLayouts, nullptr,
+            brushOverlayCfg
+        );
+        brushOverlayPipeline = bp;
+        brushOverlayPipelineLayout = bl;
+        brushOpaqueFrag.info.module = VK_NULL_HANDLE;
     }
     deferredPipelinesCreated = true;
 
@@ -419,6 +449,28 @@ void SolidRenderer::drawColorExternal(VkCommandBuffer &cmd, VkDescriptorSet desc
     if (descSet != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
         else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
+    }
+    indirect.drawPrepared(cmd);
+}
+
+void SolidRenderer::drawBrushColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect) {
+    if (brushOverlayPipeline == VK_NULL_HANDLE) return;
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, brushOverlayPipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brushOverlayPipeline);
+    if (descSet != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, brushOverlayPipelineLayout, 0, 1, &descSet, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brushOverlayPipelineLayout, 0, 1, &descSet, 0, nullptr);
+    }
+    indirect.drawPrepared(cmd);
+}
+
+void SolidRenderer::drawBrushOverlay(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect) {
+    if (brushOverlayPipeline == VK_NULL_HANDLE) return;
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, brushOverlayPipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brushOverlayPipeline);
+    if (descSet != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, brushOverlayPipelineLayout, 0, 1, &descSet, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brushOverlayPipelineLayout, 0, 1, &descSet, 0, nullptr);
     }
     indirect.drawPrepared(cmd);
 }

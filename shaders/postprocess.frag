@@ -2,29 +2,33 @@
 
 #include "includes/locations.glsl"
 
-// Final compositing pass: Sky (equirectangular) + Solid + Water
-// Background pixels (depth == 1.0) are filled with sky sampled from equirect map.
+// Final compositing pass: Sky + Solid + Water + Brush
+// Background pixels are filled with sky.
 // Solid geometry pixels are used as-is.
 // Water is composited on top using water alpha.
+// Brush is composited on top with depth testing against both scene and water depth.
 
 layout(set = 0, binding = 0) uniform sampler2D sceneColorTex;
 layout(set = 0, binding = 1) uniform sampler2D sceneDepthTex;
-layout(set = 0, binding = 2) uniform sampler2D waterColorTex;  // Water geometry pass output (attachment 0)
+layout(set = 0, binding = 2) uniform sampler2D waterColorTex;
+layout(set = 0, binding = 3) uniform sampler2D brushColorTex;
+layout(set = 0, binding = 4) uniform sampler2D brushDepthTex;
 
 layout(set = 0, binding = 5) uniform WaterUBO {
     mat4 viewProjection;
     mat4 invViewProjection;
     vec4 viewPos;
-    vec4 screenSize;     // xy = width,height
+    vec4 screenSize;
+    float brushAlpha;
 } ubo;
 
 layout(set = 0, binding = 6) uniform sampler2D sceneSkyTex;
+layout(set = 0, binding = 7) uniform sampler2D waterGeomDepthTex;
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 const float PI = 3.14159265358979;
 
-// Convert a 3D direction to equirectangular UV [0,1]
 vec2 dirToEquirectUV(vec3 dir) {
     vec2 uv;
     uv.x = atan(dir.z, dir.x) / (2.0 * PI) + 0.5;
@@ -33,43 +37,54 @@ vec2 dirToEquirectUV(vec3 dir) {
 }
 
 void main() {
-    // Convert fragment position to UV
     vec2 uv = gl_FragCoord.xy / ubo.screenSize.xy;
 
-    // Sample scene (solid) color and depth
     vec4 sceneColor = texture(sceneColorTex, uv);
-    float depth = texture(sceneDepthTex, uv).r;
+    float sceneDepth = texture(sceneDepthTex, uv).r;
 
-    // Reconstruct world-space view direction for background sky sampling
-    // Use NDC coordinates with depth to get clip-space position, then inverse transform
     vec2 ndc = uv * 2.0 - 1.0;
-    vec4 clipPos = vec4(ndc, depth, 1.0);
+    vec4 clipPos = vec4(ndc, sceneDepth, 1.0);
     vec4 worldPos = ubo.invViewProjection * clipPos;
     worldPos /= worldPos.w;
     vec3 viewDir = normalize(worldPos.xyz - ubo.viewPos.xyz);
 
-    // Sample sky from equirectangular map using the view direction
     vec2 skyUV = dirToEquirectUV(viewDir);
     vec3 skyColor = texture(sceneSkyTex, skyUV).rgb;
 
-    // Composite layers:
-    // 1. Start with sky as the base background
-    // 2. Where solid geometry exists (depth < 1.0), use scene color
-    // 3. Composite water on top using water alpha
+    // 1. Sky background
     vec3 baseColor = skyColor;
-
-    // Blend in solid geometry where scene alpha > 0 (solid writes alpha=1, clear is alpha=0).
-    // Previous depth-based threshold (depth < 0.9999) incorrectly treated far
-    // solid fragments as sky because the non-linear depth buffer clusters
-    // values near 1.0 at large distances (e.g. at d=1000 with n=0.1/f=8092,
-    // depth ≈ 0.9999 already).
+    // 2. Solid geometry (alpha > 0)
     float isSolid = sceneColor.a;
     baseColor = mix(baseColor, sceneColor.rgb, isSolid);
-
-    // Composite water on top
+    // 3. Water on top
     vec4 waterColor = texture(waterColorTex, uv);
     float waterAlpha = waterColor.a;
-    vec3 finalColor = mix(baseColor, waterColor.rgb, waterAlpha);
+    vec3 afterWater = mix(baseColor, waterColor.rgb, waterAlpha);
+
+    vec3 finalColor = afterWater;
+
+    // 4. Brush overlay with depth test against scene + water
+    vec4 brushColor = texture(brushColorTex, uv);
+    if (brushColor.a > 0.0) {
+        float brushDepth = texture(brushDepthTex, uv).r;
+
+        // Scene solid depth is the reference obstacle depth
+        float obstacleDepth = sceneDepth;
+
+        // Where water geometry exists, use water surface depth as obstacle
+        // (water is always in front of the solid geometry behind it)
+        float waterGeomDepth = texture(waterGeomDepthTex, uv).r;
+        if (waterGeomDepth < 1.0) {
+            // Water geometry is present — use the closer of the two
+            obstacleDepth = min(obstacleDepth, waterGeomDepth);
+        }
+
+        // Brush is visible only where it is in front of the closest obstacle
+        if (brushDepth < obstacleDepth) {
+            // Blend brush over the current composite using the selected opacity
+            finalColor = mix(finalColor, brushColor.rgb, ubo.brushAlpha);
+        }
+    }
 
     outColor = vec4(finalColor, 1.0);
 }

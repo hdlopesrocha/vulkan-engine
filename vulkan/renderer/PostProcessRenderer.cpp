@@ -46,10 +46,10 @@ void PostProcessRenderer::createSampler(VulkanApp* app) {
 void PostProcessRenderer::createPipeline(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
-    // Descriptor set layout – 7 bindings (5 image samplers + 1 UBO + 1 sky sampler)
-    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
+    // Descriptor set layout – 8 bindings (6 image samplers + 1 UBO + 1 sky sampler)
+    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
 
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         bindings[i].binding = i;
         bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[i].descriptorCount = 1;
@@ -65,6 +65,11 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
     bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[6].descriptorCount = 1;
     bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[7].binding = 7;
+    bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[7].descriptorCount = 1;
+    bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     DescriptorAllocator descAlloc{device, app};
     descriptorSetLayout = descAlloc.createLayout(
@@ -111,7 +116,7 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
     VkDescriptorPoolSize poolSizesDesc[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6 * FRAMES_IN_FLIGHT},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7 * FRAMES_IN_FLIGHT},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * FRAMES_IN_FLIGHT}
     };
     descriptorPool = descAlloc.createPool(
@@ -128,7 +133,10 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
 
 void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                   VkImageView sceneColorView, VkImageView sceneDepthView,
-                                  VkImageView waterDepthView,
+                                  VkImageView waterColorView,
+                                  VkImageView brushColorView, VkImageView brushDepthView,
+                                  VkImageView waterGeomDepthView,
+                                  float brushAlpha,
                                   const glm::mat4& viewProj, const glm::mat4& invViewProj,
                                   const glm::vec3& viewPos,
                                   uint32_t frameIdx,
@@ -149,6 +157,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     ubo.invViewProjection = invViewProj;
     ubo.viewPos = glm::vec4(viewPos, 1.0f);
     ubo.screenSize = glm::vec4(renderWidth, renderHeight, 1.0f / renderWidth, 1.0f / renderHeight);
+    ubo.brushAlpha = brushAlpha;
 
     void* data;
     data = uniformBuffer.map(0);
@@ -156,13 +165,15 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     uniformBuffer.unmap(); // VMA persistent mapping
 
     // Prepare image infos and only write descriptors for valid image views
-    std::array<VkDescriptorImageInfo, 5> imageInfos{};
+    std::array<VkDescriptorImageInfo, 8> imageInfos{};
     imageInfos[0] = {linearSampler, sceneColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[1] = {linearSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    imageInfos[2] = {linearSampler, waterDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    // waterNormal and waterMask are no longer produced by WaterRenderer; leave as VK_NULL_HANDLE so writes are skipped
-    imageInfos[3] = {linearSampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    imageInfos[4] = {linearSampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    imageInfos[2] = {linearSampler, waterColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // Brush color and depth for deferred composition (depth-tested against scene+water)
+    imageInfos[3] = {linearSampler, brushColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    imageInfos[4] = {linearSampler, brushDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // Water geometry depth buffer for accurate brush-vs-water occlusion
+    imageInfos[7] = {linearSampler, waterGeomDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
     VkDescriptorBufferInfo bufferInfo{uniformBuffer.buffer, 0, sizeof(WaterUBO)};
 
@@ -200,6 +211,13 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
         writer.writeImage(currentDs, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                           skyImageInfo.sampler, skyImageInfo.imageView,
                           skyImageInfo.imageLayout);
+    }
+
+    // Water geometry depth (binding 7) — used for brush-vs-water occlusion
+    if (imageInfos[7].imageView != VK_NULL_HANDLE && imageInfos[7].sampler != VK_NULL_HANDLE) {
+        writer.writeImage(currentDs, 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          imageInfos[7].sampler, imageInfos[7].imageView,
+                          imageInfos[7].imageLayout);
     }
 
     writer.flush();

@@ -18,11 +18,16 @@ public:
     void init(VulkanApp* app);
     void cleanup(VulkanApp* app);
 
-    /// Composite scene + water into the swapchain framebuffer.
-    /// Water depth/normal/mask views come from WaterRenderer's offscreen targets.
+    /// Composite scene + water + brush into the swapchain framebuffer.
+    /// Brush color/depth views come from the early brush pass offscreen targets.
+    /// waterGeomDepthView is the raw water geometry depth buffer (D32).
+    /// brushAlpha controls the brush overlay opacity (0.0 = invisible, 1.0 = fully opaque).
     void render(VulkanApp* app, VkCommandBuffer cmd,
                 VkImageView sceneColorView, VkImageView sceneDepthView,
-                VkImageView waterDepthView,
+                VkImageView waterColorView,
+                VkImageView brushColorView, VkImageView brushDepthView,
+                VkImageView waterGeomDepthView,
+                float brushAlpha,
                 const glm::mat4& viewProj, const glm::mat4& invViewProj,
                 const glm::vec3& viewPos,
                 uint32_t frameIdx,
