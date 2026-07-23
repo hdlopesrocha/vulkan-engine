@@ -1104,20 +1104,6 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             }
         }
 
-        // Brush back-face depth linearize pass
-        if (sceneRenderer && sceneRenderer->brushBackFaceRenderer && linearizePipeline != VK_NULL_HANDLE && linearBrushBackFaceDepthView != VK_NULL_HANDLE) {
-            uint32_t producerFrame = (frameIndex + 1) % 2;
-            VkImageView src = sceneRenderer->brushBackFaceRenderer->getBackFaceDepthView(producerFrame);
-            if (src != VK_NULL_HANDLE) {
-                float nearP = 0.1f, farP = 1000.0f;
-                if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, sceneRenderer->brushBackFaceRenderer->getBackFaceDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearBrushBackFaceDepthView,
-                                 linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned,
-                                 static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
-            }
-        }
-
-        // Water front-face depth pass (linearize the water geometry depth buffer)
         // Water front-face depth pass (linearize the water geometry depth buffer)
         if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE && waterDepthLinearView != VK_NULL_HANDLE) {
             // The water geometry depth is written during the main render pass for
