@@ -947,8 +947,8 @@ public:
         {
             VkImage brushColorImg = sceneRenderer->getBrushColorImage(frameIdx);
             VkImage brushDepthImg = sceneRenderer->getBrushDepthImage(frameIdx);
-            VkImageLayout oldColLayout = sceneRenderer->brushColorLayouts[frameIdx % 2];
-            VkImageLayout oldDepLayout = sceneRenderer->brushDepthLayouts[frameIdx % 2];
+            VkImageLayout oldColLayout = sceneRenderer->brushColorLayouts[frameIdx];
+            VkImageLayout oldDepLayout = sceneRenderer->brushDepthLayouts[frameIdx];
 
             // Transition brush color + depth to attachment layouts
             if (brushColorImg != VK_NULL_HANDLE && oldColLayout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
@@ -956,7 +956,7 @@ public:
                     oldColLayout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     0, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
-                sceneRenderer->brushColorLayouts[frameIdx % 2] = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                sceneRenderer->brushColorLayouts[frameIdx] = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             }
             if (brushDepthImg != VK_NULL_HANDLE && oldDepLayout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
                 VkAccessFlags2 depthSrcAccess = 0;
@@ -976,7 +976,7 @@ public:
                     depthSrcAccess, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                     depthSrcStage, VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT);
-                sceneRenderer->brushDepthLayouts[frameIdx % 2] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                sceneRenderer->brushDepthLayouts[frameIdx] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             }
 
             // Instance B1: brush front depth (LESS, write, no color)
@@ -1050,20 +1050,20 @@ public:
             }
 
             // Transition brush targets to SHADER_READ_ONLY after use
-            if (brushColorImg != VK_NULL_HANDLE && sceneRenderer->brushColorLayouts[frameIdx % 2] == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+            if (brushColorImg != VK_NULL_HANDLE && sceneRenderer->brushColorLayouts[frameIdx] == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
                 RendererUtils::transitionImageLayout(commandBuffer, brushColorImg,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
-                sceneRenderer->brushColorLayouts[frameIdx % 2] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                sceneRenderer->brushColorLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
-            if (brushDepthImg != VK_NULL_HANDLE && sceneRenderer->brushDepthLayouts[frameIdx % 2] == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+            if (brushDepthImg != VK_NULL_HANDLE && sceneRenderer->brushDepthLayouts[frameIdx] == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
                 RendererUtils::transitionImageLayout(commandBuffer, brushDepthImg,
                     VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT);
-                sceneRenderer->brushDepthLayouts[frameIdx % 2] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                sceneRenderer->brushDepthLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
         }
 

@@ -169,7 +169,7 @@ void SceneRenderer::createBrushRenderTargets(VulkanApp* app, uint32_t width, uin
                                             "SceneRenderer: brush", image, allocation, dummyMem, view);
     };
     VkFormat colorFormat = app->getSwapchainImageFormat();
-    for (int i = 0; i < 2; ++i) {
+    for (uint32_t i = 0; i < SceneRenderer::BRUSH_FRAMES; ++i) {
         createImage(colorFormat,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
@@ -184,7 +184,7 @@ void SceneRenderer::createBrushRenderTargets(VulkanApp* app, uint32_t width, uin
 void SceneRenderer::destroyBrushRenderTargets(VulkanApp* app) {
     if (!app) return;
     VkDevice device = app->getDevice();
-    for (int i = 0; i < 2; ++i) {
+    for (uint32_t i = 0; i < SceneRenderer::BRUSH_FRAMES; ++i) {
         if (brushColorImageViews[i] != VK_NULL_HANDLE) {
             if (app->resources.removeImageView(brushColorImageViews[i]))
                 vkDestroyImageView(device, brushColorImageViews[i], nullptr);

@@ -44,8 +44,8 @@ public:
 
     // Access offscreen sky color view for sampling
     VkImageView getSkyView(uint32_t frameIndex) const {
-        if (frameIndex < skyColorImageViews.size() && skyColorImageViews[frameIndex] != VK_NULL_HANDLE)
-            return skyColorImageViews[frameIndex];
+        VkImageView v = skyColorImageViews[frameIndex % SKY_FRAMES];
+        if (v != VK_NULL_HANDLE) return v;
         for (size_t i = skyColorImageViews.size(); i-- > 0; )
             if (skyColorImageViews[i] != VK_NULL_HANDLE) return skyColorImageViews[i];
         return VK_NULL_HANDLE;
@@ -71,12 +71,13 @@ private:
     std::unique_ptr<SkySphere> skySphere;
     VertexBufferObject skyVBO;
 
-    // --- Offscreen equirectangular sky resources (2 frames, clamp index) ---
-    std::array<VkImage, 2> skyColorImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VmaAllocation, 2> skyColorAllocations = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkDeviceMemory, 2> skyColorMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageView, 2> skyColorImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageLayout, 2> skyColorLayouts = {VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
+    // --- Offscreen equirectangular sky resources matching MAX_FRAMES_IN_FLIGHT ---
+    static constexpr uint32_t SKY_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
+    std::array<VkImage, SKY_FRAMES> skyColorImages = {};
+    std::array<VmaAllocation, SKY_FRAMES> skyColorAllocations = {};
+    std::array<VkDeviceMemory, SKY_FRAMES> skyColorMemories = {};
+    std::array<VkImageView, SKY_FRAMES> skyColorImageViews = {};
+    std::array<VkImageLayout, SKY_FRAMES> skyColorLayouts = {};
 
     // Equirect pipeline (fullscreen triangle, no vertex input, no depth)
     TrackedHandle<VkPipeline> skyEquirectPipeline;

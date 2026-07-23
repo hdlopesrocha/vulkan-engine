@@ -228,7 +228,7 @@ void SkyRenderer::createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_
     }
 
     // --- Per-frame color images (no depth, no framebuffers needed for dynamic rendering) ---
-    for (int i = 0; i < 2; ++i) {
+    for (uint32_t i = 0; i < SkyRenderer::SKY_FRAMES; ++i) {
         createImage(colorFormat,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
@@ -243,7 +243,7 @@ void SkyRenderer::createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_
 void SkyRenderer::destroyOffscreenTargets(VulkanApp* app) {
     if (!app) return;
     VkDevice device = app->getDevice();
-    for (int i = 0; i < 2; ++i) {
+    for (uint32_t i = 0; i < SkyRenderer::SKY_FRAMES; ++i) {
         if (skyColorImageViews[i] != VK_NULL_HANDLE) {
             if (app->resources.removeImageView(skyColorImageViews[i]))
                 vkDestroyImageView(device, skyColorImageViews[i], nullptr);

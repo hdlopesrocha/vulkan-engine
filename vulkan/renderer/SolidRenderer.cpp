@@ -25,7 +25,7 @@ void SolidRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
                                             "SolidRenderer: image", image, allocation, memory, view);
     };
 
-    for (int i = 0; i < 2; ++i) {
+    for (uint32_t i = 0; i < SolidRenderer::SOLID_FRAMES; ++i) {
         createImage(app->getSwapchainImageFormat(), VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
                     solidColorImages[i], solidColorAllocations[i], solidColorMemories[i], solidColorImageViews[i]);
         createImage(VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
@@ -36,7 +36,7 @@ void SolidRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
     // Ensure created images have authoritative GPU/tracked layouts before
     // first use. Use VulkanApp helpers to perform transitions so the
     // app's layout-tracking map is updated consistently.
-    for (int i = 0; i < 2; ++i) {
+    for (uint32_t i = 0; i < SolidRenderer::SOLID_FRAMES; ++i) {
         // color image: transition UNDEFINED -> SHADER_READ_ONLY_OPTIMAL
         if (solidColorImages[i] != VK_NULL_HANDLE && app) {
             try {
@@ -67,7 +67,7 @@ void SolidRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uint32_t
 void SolidRenderer::destroyRenderTargets(VulkanApp* app) {
     if (!app) return;
     VkDevice device = app->getDevice();
-    for (int i = 0; i < 2; ++i) {
+    for (uint32_t i = 0; i < SolidRenderer::SOLID_FRAMES; ++i) {
         if (solidColorImageViews[i] != VK_NULL_HANDLE) {
             if (app->resources.removeImageView(solidColorImageViews[i]))
                 vkDestroyImageView(device, solidColorImageViews[i], nullptr);

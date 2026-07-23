@@ -35,10 +35,10 @@ public:
 
 
     // Offscreen solid pass outputs
-    VkImageView getColorView(uint32_t frameIndex) const { return (frameIndex < solidColorImageViews.size()) ? solidColorImageViews[frameIndex] : (solidColorImageViews.empty() ? VK_NULL_HANDLE : solidColorImageViews.back()); }
-    VkImage getColorImage(uint32_t frameIndex) const { return (frameIndex < solidColorImages.size()) ? solidColorImages[frameIndex] : (solidColorImages.empty() ? VK_NULL_HANDLE : solidColorImages.back()); }
-    VkImageView getDepthView(uint32_t frameIndex) const { return (frameIndex < solidDepthImageViews.size()) ? solidDepthImageViews[frameIndex] : (solidDepthImageViews.empty() ? VK_NULL_HANDLE : solidDepthImageViews.back()); }
-    VkImage getDepthImage(uint32_t frameIndex) const { return (frameIndex < solidDepthImages.size()) ? solidDepthImages[frameIndex] : (solidDepthImages.empty() ? VK_NULL_HANDLE : solidDepthImages.back()); }
+    VkImageView getColorView(uint32_t frameIndex) const { return solidColorImageViews[frameIndex % SOLID_FRAMES]; }
+    VkImage getColorImage(uint32_t frameIndex) const { return solidColorImages[frameIndex % SOLID_FRAMES]; }
+    VkImageView getDepthView(uint32_t frameIndex) const { return solidDepthImageViews[frameIndex % SOLID_FRAMES]; }
+    VkImage getDepthImage(uint32_t frameIndex) const { return solidDepthImages[frameIndex % SOLID_FRAMES]; }
 
 public:
     // Public accessor for nodeModelVersions (read-only)
@@ -94,16 +94,17 @@ private:
 
     std::unordered_map<NodeID, Model3DVersion> solidChunks;
 
-    // Offscreen framebuffer resources (2 frames in flight, clamp index for 3-frame safety)
-    std::array<VkImage, 2> solidColorImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VmaAllocation, 2> solidColorAllocations = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkDeviceMemory, 2> solidColorMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageView, 2> solidColorImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImage, 2> solidDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VmaAllocation, 2> solidDepthAllocations = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkDeviceMemory, 2> solidDepthMemories = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageView, 2> solidDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageLayout, 2> solidDepthImageLayouts = {};
+    // Offscreen framebuffer resources matching MAX_FRAMES_IN_FLIGHT
+    static constexpr uint32_t SOLID_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
+    std::array<VkImage, SOLID_FRAMES> solidColorImages = {};
+    std::array<VmaAllocation, SOLID_FRAMES> solidColorAllocations = {};
+    std::array<VkDeviceMemory, SOLID_FRAMES> solidColorMemories = {};
+    std::array<VkImageView, SOLID_FRAMES> solidColorImageViews = {};
+    std::array<VkImage, SOLID_FRAMES> solidDepthImages = {};
+    std::array<VmaAllocation, SOLID_FRAMES> solidDepthAllocations = {};
+    std::array<VkDeviceMemory, SOLID_FRAMES> solidDepthMemories = {};
+    std::array<VkImageView, SOLID_FRAMES> solidDepthImageViews = {};
+    std::array<VkImageLayout, SOLID_FRAMES> solidDepthImageLayouts = {};
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
     CommandBufferState* cmdState = nullptr;
