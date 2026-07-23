@@ -384,6 +384,28 @@ void SolidRenderer::drawColor(VkCommandBuffer &commandBuffer, VulkanApp* appArg,
     indirectRenderer.drawPrepared(commandBuffer);
 }
 
+void SolidRenderer::drawDepthExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect) {
+    if (deferredDepthPipeline == VK_NULL_HANDLE) return;
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, deferredDepthPipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipeline);
+    if (descSet != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredDepthPipelineLayout, 0, 1, &descSet, 0, nullptr);
+    }
+    indirect.drawPrepared(cmd);
+}
+
+void SolidRenderer::drawColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect) {
+    if (deferredColorPipeline == VK_NULL_HANDLE) return;
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, deferredColorPipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipeline);
+    if (descSet != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
+    }
+    indirect.drawPrepared(cmd);
+}
+
 void SolidRenderer::cleanup(VulkanApp* app) {
     if (app == nullptr) return;
     destroyRenderTargets(app);

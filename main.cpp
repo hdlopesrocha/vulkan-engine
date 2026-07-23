@@ -815,6 +815,8 @@ public:
             vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 2);
         sceneRenderer->solidRenderer->getIndirectRenderer().acquireBuffers(commandBuffer);
         sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, viewProj);
+        sceneRenderer->brushSolidIndirectRenderer.acquireBuffers(commandBuffer);
+        sceneRenderer->brushSolidIndirectRenderer.prepareCull(commandBuffer, viewProj);
         if (sceneRenderer->vegetationRenderer && settings.vegetationEnabled) {
             sceneRenderer->vegetationRenderer->prepareCull(commandBuffer, viewProj);
         }
@@ -937,6 +939,16 @@ public:
             }
         }
 
+        // ── Brush back-face depth pass (GREATER, farthest depth wins) ──
+        // Renders solid geometry back faces with VK_COMPARE_OP_GREATER so the
+        // depth buffer stores the farthest (not closest) depth at each pixel.
+        if (sceneRenderer->brushBackFaceRenderer) {
+            sceneRenderer->brushBackFaceRenderer->renderBackFacePass(
+                this, commandBuffer, frameIdx,
+                sceneRenderer->brushSolidIndirectRenderer,
+                getMainDescriptorSet());
+        }
+
         // ── Instance 1: Deferred depth pre-pass (no color attachment) ──
         // Solid + vegetation write depth; impostors use single-pass (depth+color in Instance 2).
         {
@@ -969,6 +981,13 @@ public:
             // Solid geometry depth
             if (settings.renderSolid) {
                 sceneRenderer->solidRenderer->drawDepth(commandBuffer, this, getMainDescriptorSet());
+            }
+
+            // Brush solid depth (drawn into the same deferred depth buffer)
+            if (settings.renderSolid) {
+                sceneRenderer->solidRenderer->drawDepthExternal(
+                    commandBuffer, getMainDescriptorSet(),
+                    sceneRenderer->brushSolidIndirectRenderer);
             }
 
             // Vegetation depth (impostors render depth+color in Instance 2)
@@ -1055,6 +1074,13 @@ public:
             // Solid geometry color (LESS_OR_EQUAL, no depth write)
             if (settings.renderSolid) {
                 sceneRenderer->solidRenderer->drawColor(commandBuffer, this, getMainDescriptorSet());
+            }
+
+            // Brush solid color
+            if (settings.renderSolid) {
+                sceneRenderer->solidRenderer->drawColorExternal(
+                    commandBuffer, getMainDescriptorSet(),
+                    sceneRenderer->brushSolidIndirectRenderer);
             }
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -1572,6 +1598,7 @@ public:
         // Per-frame cull buffers: each IndirectRenderer needs its own per-frame
         // compact/visibleCount buffer to avoid cross-frame overwrite races.
         sceneRenderer->solidRenderer->getIndirectRenderer().setCullFrame(frameIdx);
+        sceneRenderer->brushSolidIndirectRenderer.setCullFrame(frameIdx);
         sceneRenderer->waterRenderer->getIndirectRenderer().setCullFrame(frameIdx);
 
         glm::mat4 viewProj = camera.getViewProjectionMatrix();
@@ -1928,8 +1955,8 @@ void MyApp::rebuildBrushScene() {
 
     if (!selectedEntry) {
         // Nothing to add — just rebuild to commit the removals
-        sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
-        sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
+        sceneRenderer->brushSolidIndirectRenderer.setDirty(true);
+        sceneRenderer->brushSolidIndirectRenderer.rebuild(this);
         sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
         sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
         return;
@@ -2097,8 +2124,8 @@ void MyApp::rebuildBrushScene() {
     uniqueBrushLiquidHandler.handleEvents();
 
     // 6. Rebuild indirect buffers so new brush meshes appear
-    sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
-    sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
+    sceneRenderer->brushSolidIndirectRenderer.setDirty(true);
+    sceneRenderer->brushSolidIndirectRenderer.rebuild(this);
     sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
     sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
 

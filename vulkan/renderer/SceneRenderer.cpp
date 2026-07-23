@@ -101,9 +101,13 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (backFaceRenderer && app) {
         backFaceRenderer->cleanup(app);
     }
+    if (brushBackFaceRenderer && app) {
+        brushBackFaceRenderer->cleanup(app);
+    }
     if (solid360Renderer && app) {
         solid360Renderer->cleanup(app);
     }
+    brushSolidIndirectRenderer.cleanup();
     if (solidRenderer && app) {
         solidRenderer->cleanup(app);
     }
@@ -162,6 +166,7 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
         waterRenderer->createRenderTargets(app, width, height);
         // Recreate back-face and 360 reflection targets owned by SceneRenderer
         if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, width, height);
+        if (brushBackFaceRenderer) brushBackFaceRenderer->createRenderTargets(app, width, height);
         if (solid360Renderer) {
             solid360Renderer->destroySolid360Targets(app);
             solid360Renderer->createSolid360Targets(app, waterRenderer->getLinearSampler());
@@ -272,6 +277,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         // with the cascade's light-space matrix BEFORE beginShadowPass
         // (vkCmdPipelineBarrier not allowed inside dynamic rendering).
         solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, lsMatrix);
+        brushSolidIndirectRenderer.prepareCull(commandBuffer, lsMatrix);
 
         // Acquire vegetation instance/indirect buffers before
         // vkCmdBeginRendering (barriers illegal inside dynamic rendering).
@@ -306,6 +312,10 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         shadowIR.bindBuffers(commandBuffer);
         shadowIR.drawIndirectOnly(commandBuffer, shadowMapper->getShadowPipelineLayout(), 0);
 
+        // Brush solid shadow: same pipeline, separate IndirectRenderer
+        brushSolidIndirectRenderer.bindBuffers(commandBuffer);
+        brushSolidIndirectRenderer.drawIndirectOnly(commandBuffer, shadowMapper->getShadowPipelineLayout(), 0);
+
         // Vegetation shadow pass: drawn after solid so its 2-buffer vertex
         // bindings don't leak into the solid draw.
         if (vegetationEnabled && vegetationRenderer) {
@@ -323,6 +333,7 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
     // per-cascade prepareCull calls above) so drawPrepared in the main pass
     // uses the correct visible set.
     solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, uboStatic.viewProjection);
+    brushSolidIndirectRenderer.prepareCull(commandBuffer, uboStatic.viewProjection);
 
     // Restore the main UBO so subsequent passes see the original data.
     // Wait for all shadow cascade draws to finish reading the UBO first.
@@ -602,6 +613,9 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         &streamer.uploadManager(), streaming::StreamCategory::Solid);
     waterRenderer->getIndirectRenderer().setUploadManager(
         &streamer.uploadManager(), streaming::StreamCategory::Water);
+    // Initialize the separate brush solid IndirectRenderer (no streamer — brush
+    // meshes are small and infrequent; upload fits in the legacy ring path).
+    brushSolidIndirectRenderer.init();
 
     // skySettingsRef was initialized at construction and must be valid
     
@@ -762,6 +776,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Create scene-owned water sub-renderers. Back-face renderpass must exist
     // before water pipelines are created, so create it first.
     backFaceRenderer = std::make_unique<WaterBackFaceRenderer>();
+    brushBackFaceRenderer = std::make_unique<BrushBackFaceRenderer>();
     solid360Renderer = std::make_unique<Solid360Renderer>();
 
     // Initialize WaterRenderer (creates its pipeline layout and initializes the param SSBO)
@@ -773,6 +788,13 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Create back-face render targets early so their image views are
     // available before the first frame's water pass attempts to bind them.
     if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    // Create brush back-face renderer: uses solid shaders (no water dependency)
+    // and VK_COMPARE_OP_GREATER to capture the farthest back-face depth.
+    if (brushBackFaceRenderer) {
+        brushBackFaceRenderer->init(app);
+        brushBackFaceRenderer->createPipelines(app);
+        brushBackFaceRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+    }
     if (solid360Renderer) {
         solid360Renderer->init(app);
         solid360Renderer->setWaterRenderer(waterRenderer.get());
@@ -1248,9 +1270,9 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
 
     // Poll pending transfers so deferred meta-buffer writes for brush meshes are
     // published once the async transfer fence signals (same as processPendingMeshes).
-    IndirectRenderer& solidIR = solidRenderer->getIndirectRenderer();
+    IndirectRenderer& brushIR = brushSolidIndirectRenderer;
     IndirectRenderer& waterIR = waterRenderer->getIndirectRenderer();
-    solidIR.pollPendingTransfers(app);
+    brushIR.pollPendingTransfers(app);
     waterIR.pollPendingTransfers(app);
 
     if (batch.empty()) return;
@@ -1265,7 +1287,7 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
     // (recycling the previous slot once its in-flight frames retire), so it is
     // safe while previous frames still read the old buffers — this is what lets
     // rebuildBrushScene() drop the device-wide deviceWaitIdle() stall.
-    if (solidIR.isDirty()) solidIR.rebuild(app);
+    if (brushIR.isDirty()) brushIR.rebuild(app);
     if (waterIR.isDirty()) waterIR.rebuild(app);
 }
 
@@ -1581,7 +1603,7 @@ static void updateBrushMeshForNode(SceneRenderer* sr, VulkanApp* app, Layer laye
                                     std::unordered_map<NodeID, Model3DVersion>& chunkMap) {
     std::lock_guard<std::recursive_mutex> lock(sr->chunksMutex);
     IndirectRenderer &renderer = layer == LAYER_OPAQUE
-        ? sr->solidRenderer->getIndirectRenderer()
+        ? sr->brushSolidIndirectRenderer
         : sr->waterRenderer->getIndirectRenderer();
 
     auto it = chunkMap.find(nid);
@@ -1626,7 +1648,7 @@ SolidSpaceChangeHandler SceneRenderer::makeBrushSolidSpaceChangeHandler(Scene* s
         auto it = brushSolidChunks.find(nid);
         if (it != brushSolidChunks.end()) {
             if (it->second.meshId != UINT32_MAX) {
-                solidRenderer->getIndirectRenderer().removeMesh(it->second.meshId);
+                brushSolidIndirectRenderer.removeMesh(it->second.meshId);
             }
             brushSolidChunks.erase(it);
         }
@@ -1667,10 +1689,10 @@ LiquidSpaceChangeHandler SceneRenderer::makeBrushLiquidSpaceChangeHandler(Scene*
 
 void SceneRenderer::clearBrushMeshes() {
     std::lock_guard<std::recursive_mutex> lock(chunksMutex);
-    // Remove all brush opaque meshes from solid renderer
+    // Remove all brush opaque meshes from brush solid IndirectRenderer
     for (auto &entry : brushSolidChunks) {
         if (entry.second.meshId != UINT32_MAX) {
-            solidRenderer->getIndirectRenderer().removeMesh(entry.second.meshId);
+            brushSolidIndirectRenderer.removeMesh(entry.second.meshId);
         }
     }
     brushSolidChunks.clear();

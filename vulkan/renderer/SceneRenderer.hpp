@@ -8,6 +8,7 @@
 #include "DebugSDFRenderer.hpp"
 #include "WireframeRenderer.hpp"
 #include "WaterBackFaceRenderer.hpp"
+#include "BrushBackFaceRenderer.hpp"
 #include "Solid360Renderer.hpp"
 #pragma once
 
@@ -81,6 +82,7 @@ public:
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
     // Scene-owned sub-renderers for water (moved from WaterRenderer)
     std::unique_ptr<WaterBackFaceRenderer> backFaceRenderer;
+    std::unique_ptr<BrushBackFaceRenderer> brushBackFaceRenderer;
     std::unique_ptr<Solid360Renderer> solid360Renderer;
     std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;
     std::unique_ptr<DebugCubeRenderer> boundingBoxRenderer;
@@ -115,6 +117,9 @@ public:
     // Brush scene chunk tracking (separate from main scene)
     std::unordered_map<NodeID, Model3DVersion> brushSolidChunks;
     std::unordered_map<NodeID, Model3DVersion> brushTransparentChunks;
+    // Separate IndirectRenderer for brush solid meshes (so the brush backface
+    // buffer only renders brush geometry, not all scene solids).
+    IndirectRenderer brushSolidIndirectRenderer;
 
     // Debug cubes for nodes (populated by change handlers after geometry generation)
     std::unordered_map<NodeID, DebugCubeRenderer::CubeWithColor> nodeDebugCubes;

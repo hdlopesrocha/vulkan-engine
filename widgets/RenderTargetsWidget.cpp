@@ -237,6 +237,25 @@ void RenderTargetsWidget::init(VulkanApp* app_, int width, int height) {
             } else waterDepthLinearView = VK_NULL_HANDLE;
         }
 
+        if (linearBrushBackFaceDepthImage == VK_NULL_HANDLE) {
+            app->createImage(static_cast<uint32_t>(width), static_cast<uint32_t>(height), VK_FORMAT_R8G8B8A8_UNORM,
+                             VK_IMAGE_TILING_OPTIMAL, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linearBrushBackFaceDepthImage, linearBrushBackFaceDepthAllocation, linearBrushBackFaceDepthMemory, "RenderTargetsWidget: linearBrushBackFaceDepthImage");
+            VkImageViewCreateInfo biv{};
+            biv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            biv.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            biv.format = VK_FORMAT_R8G8B8A8_UNORM;
+            biv.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            biv.subresourceRange.baseMipLevel = 0;
+            biv.subresourceRange.levelCount = 1;
+            biv.subresourceRange.baseArrayLayer = 0;
+            biv.subresourceRange.layerCount = 1;
+            biv.image = linearBrushBackFaceDepthImage;
+            if (vkCreateImageView(device, &biv, nullptr, &linearBrushBackFaceDepthView) == VK_SUCCESS) {
+                app->resources.addImageView(linearBrushBackFaceDepthView, "RenderTargetsWidget: linearBrushBackFaceDepthView");
+            } else linearBrushBackFaceDepthView = VK_NULL_HANDLE;
+        }
+
         // Framebuffers are no longer needed - using dynamic rendering
 
         // Create per-face linearized targets for cubemap depth previews
@@ -413,6 +432,7 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
     VkImage dstImage = VK_NULL_HANDLE;
     if (dstView == linearSceneDepthView) { dstImage = linearSceneDepthImage; }
     else if (dstView == linearBackFaceDepthView) { dstImage = linearBackFaceDepthImage; }
+    else if (dstView == linearBrushBackFaceDepthView) { dstImage = linearBrushBackFaceDepthImage; }
     else if (dstView == waterDepthLinearView) { dstImage = waterDepthLinearImage; }
     if (dstImage == VK_NULL_HANDLE) {
         for (int i = 0; i < 6; ++i) {
@@ -608,6 +628,7 @@ RenderTargetsWidget::~RenderTargetsWidget() {
     for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
     for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDepthDescriptor[i], cube360FaceDepthDescriptorOwned[i]);
     removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
+    removeOwnedDesc(brushBackFaceDepthDescriptor, brushBackFaceDepthDescriptorOwned);
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
 }
 
@@ -644,6 +665,7 @@ void RenderTargetsWidget::destroyLinearTargets() {
 
     removeDescIfOwned(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
     removeDescIfOwned(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
+    removeDescIfOwned(linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned);
     removeDescIfOwned(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
         removeDescIfOwned(linearShadowDepthDescriptor[i], linearShadowDepthDescriptorOwned[i]);
@@ -683,6 +705,7 @@ void RenderTargetsWidget::destroyLinearTargets() {
     for (int i = 0; i < 6; ++i) destroyFramebuffer(linearCubeFaceFramebuffer[i]);
     destroyImageAndMemory(linearSceneDepthView, linearSceneDepthImage, linearSceneDepthAllocation, linearSceneDepthMemory);
     destroyImageAndMemory(linearBackFaceDepthView, linearBackFaceDepthImage, linearBackFaceDepthAllocation, linearBackFaceDepthMemory);
+    destroyImageAndMemory(linearBrushBackFaceDepthView, linearBrushBackFaceDepthImage, linearBrushBackFaceDepthAllocation, linearBrushBackFaceDepthMemory);
     destroyImageAndMemory(waterDepthLinearView, waterDepthLinearImage, waterDepthLinearAllocation, waterDepthLinearMemory);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
         destroyImageAndMemory(linearShadowDepthView[i], linearShadowDepthImage[i], linearShadowDepthAllocation[i], linearShadowDepthMemory[i]);
@@ -717,9 +740,11 @@ void RenderTargetsWidget::cleanup() {
     for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
     for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDepthDescriptor[i], cube360FaceDepthDescriptorOwned[i]);
     removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
+    removeOwnedDesc(brushBackFaceDepthDescriptor, brushBackFaceDepthDescriptorOwned);
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
     removeOwnedDesc(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
     removeOwnedDesc(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
+    removeOwnedDesc(linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned);
     cube360EquirectRenderer.cleanup(app);
     // Destroy persistent staging buffers (VulkanApp::createBuffer registers them with resource manager)
     // Unmap persistent staging buffers; if GPU work is pending, defer unmap until safe
@@ -789,6 +814,7 @@ void RenderTargetsWidget::cleanup() {
     // Destroy linear debug images / views
     destroyImageAndMemory(linearSceneDepthView, linearSceneDepthImage, linearSceneDepthAllocation, linearSceneDepthMemory);
     destroyImageAndMemory(linearBackFaceDepthView, linearBackFaceDepthImage, linearBackFaceDepthAllocation, linearBackFaceDepthMemory);
+    destroyImageAndMemory(linearBrushBackFaceDepthView, linearBrushBackFaceDepthImage, linearBrushBackFaceDepthAllocation, linearBrushBackFaceDepthMemory);
     destroyImageAndMemory(waterDepthLinearView, waterDepthLinearImage, waterDepthLinearAllocation, waterDepthLinearMemory);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
         destroyImageAndMemory(linearShadowDepthView[i], linearShadowDepthImage[i], linearShadowDepthAllocation[i], linearShadowDepthMemory[i]);
@@ -900,9 +926,11 @@ void RenderTargetsWidget::invalidateImGuiDescriptors() {
     for (int i = 0; i < 6; ++i) freeAndClear(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
     for (int i = 0; i < 6; ++i) freeAndClear(cube360FaceDepthDescriptor[i], cube360FaceDepthDescriptorOwned[i]);
     freeAndClear(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
+    freeAndClear(brushBackFaceDepthDescriptor, brushBackFaceDepthDescriptorOwned);
     freeAndClear(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
     freeAndClear(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
     freeAndClear(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
+    freeAndClear(linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
         freeAndClear(linearShadowDepthDescriptor[i], linearShadowDepthDescriptorOwned[i]);
     }
@@ -1076,6 +1104,19 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             }
         }
 
+        // Brush back-face depth linearize pass
+        if (sceneRenderer && sceneRenderer->brushBackFaceRenderer && linearizePipeline != VK_NULL_HANDLE && linearBrushBackFaceDepthView != VK_NULL_HANDLE) {
+            uint32_t producerFrame = (frameIndex + 1) % 2;
+            VkImageView src = sceneRenderer->brushBackFaceRenderer->getBackFaceDepthView(producerFrame);
+            if (src != VK_NULL_HANDLE) {
+                float nearP = 0.1f, farP = 1000.0f;
+                if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
+                runLinearizePass(app, sceneRenderer->brushBackFaceRenderer->getBackFaceDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearBrushBackFaceDepthView,
+                                 linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned,
+                                 static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
+            }
+        }
+
         // Water front-face depth pass (linearize the water geometry depth buffer)
         // Water front-face depth pass (linearize the water geometry depth buffer)
         if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE && waterDepthLinearView != VK_NULL_HANDLE) {
@@ -1159,6 +1200,14 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         linearBackFaceDepthDescriptorOwned = true;
     }
 
+    // Brush back-face depth: alias to brush back-face depth view
+    VkImageView bfView3 = (sceneRenderer && sceneRenderer->brushBackFaceRenderer) ? sceneRenderer->brushBackFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
+    if (linearBrushBackFaceDepthDescriptor == VK_NULL_HANDLE && bfView3 != VK_NULL_HANDLE) {
+        VkSampler depthSampler = widgetSampler;
+        linearBrushBackFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, bfView3, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        linearBrushBackFaceDepthDescriptorOwned = true;
+    }
+
     // Choose a single preview descriptor according to the current selection.
     previewDescriptor = VK_NULL_HANDLE;
     switch (selectedPreview) {
@@ -1198,6 +1247,9 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             break;
         case PreviewTarget::BackFaceDepth: 
             previewDescriptor = linearBackFaceDepthDescriptor; 
+            break;
+        case PreviewTarget::BrushBackFaceDepth:
+            previewDescriptor = linearBrushBackFaceDepthDescriptor;
             break;
         case PreviewTarget::ShadowCascade:
             if (shadowViewMode == RenderTargetsWidget::ShadowViewMode::Linearized) {
@@ -1277,6 +1329,7 @@ void RenderTargetsWidget::render() {
         "SolidDepth",
         "BackFaceColor",
         "BackFaceDepth",
+        "BrushBackFaceDepth",
         "WaterColor",
         "WaterDepth",
         "LinearSceneDepth",

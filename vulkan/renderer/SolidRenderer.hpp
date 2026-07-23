@@ -60,6 +60,10 @@ public:
     void drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet);
     // Deferred depth test: draw only color with LESS_OR_EQUAL compare, no depth write
     void drawColor(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet);
+    // Draw depth using an external IndirectRenderer (e.g. separate brush mesh buffer)
+    void drawDepthExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
+    // Draw color using an external IndirectRenderer
+    void drawColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
 
 private:
     

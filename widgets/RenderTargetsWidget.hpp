@@ -36,6 +36,7 @@ private:
     VkDescriptorSet solidDepthDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterColorDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet backFaceDepthDescriptor = VK_NULL_HANDLE;
+    VkDescriptorSet brushBackFaceDepthDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterDepthLinearDescriptor = VK_NULL_HANDLE;
 
     CubeToEquirectRenderer cube360EquirectRenderer;
@@ -51,6 +52,7 @@ private:
     bool solidDepthDescriptorOwned = false;
     bool waterColorDescriptorOwned = false;
     bool backFaceDepthDescriptorOwned = false;
+    bool brushBackFaceDepthDescriptorOwned = false;
     bool waterDepthLinearDescriptorOwned = false;
 
     // Converted linear depth debug images (device local) and views
@@ -72,6 +74,13 @@ private:
     VkImageView linearBackFaceDepthView = VK_NULL_HANDLE;
     VkDescriptorSet linearBackFaceDepthDescriptor = VK_NULL_HANDLE;
     bool linearBackFaceDepthDescriptorOwned = false;
+
+    VkImage linearBrushBackFaceDepthImage = VK_NULL_HANDLE;
+    VmaAllocation linearBrushBackFaceDepthAllocation = VK_NULL_HANDLE;
+    VkDeviceMemory linearBrushBackFaceDepthMemory = VK_NULL_HANDLE;
+    VkImageView linearBrushBackFaceDepthView = VK_NULL_HANDLE;
+    VkDescriptorSet linearBrushBackFaceDepthDescriptor = VK_NULL_HANDLE;
+    bool linearBrushBackFaceDepthDescriptorOwned = false;
 
     // Per-face linearized targets for cubemap depth previews
     VkImage linearCubeFaceDepthImage[6] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
@@ -135,6 +144,7 @@ private:
         SolidDepth,
         BackFaceColor,
         BackFaceDepth,
+        BrushBackFaceDepth,
         WaterColor,
         WaterDepth,
         LinearSceneDepth,
