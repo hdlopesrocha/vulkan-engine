@@ -22,12 +22,14 @@ public:
     /// Brush color/depth views come from the early brush pass offscreen targets.
     /// waterGeomDepthView is the raw water geometry depth buffer (D32).
     /// brushAlpha controls the brush overlay opacity (0.0 = invisible, 1.0 = fully opaque).
+    /// brushMode: 0=overlay, 2=PAINT (replace solid texture within brush volume).
     void render(VulkanApp* app, VkCommandBuffer cmd,
                 VkImageView sceneColorView, VkImageView sceneDepthView,
                 VkImageView waterColorView,
                 VkImageView brushColorView, VkImageView brushDepthView,
+                VkImageView brushBackFaceDepthView,
                 VkImageView waterGeomDepthView,
-                float brushAlpha,
+                float brushAlpha, float brushMode,
                 const glm::mat4& viewProj, const glm::mat4& invViewProj,
                 const glm::vec3& viewPos,
                 uint32_t frameIdx,

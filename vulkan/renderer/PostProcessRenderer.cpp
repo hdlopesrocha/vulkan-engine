@@ -46,8 +46,8 @@ void PostProcessRenderer::createSampler(VulkanApp* app) {
 void PostProcessRenderer::createPipeline(VulkanApp* app) {
     VkDevice device = app->getDevice();
 
-    // Descriptor set layout – 8 bindings (6 image samplers + 1 UBO + 1 sky sampler)
-    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
+    // Descriptor set layout – 9 bindings (8 image samplers + 1 UBO)
+    std::array<VkDescriptorSetLayoutBinding, 9> bindings{};
 
     for (int i = 0; i < 6; ++i) {
         bindings[i].binding = i;
@@ -70,6 +70,11 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
     bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[7].descriptorCount = 1;
     bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[8].binding = 8;
+    bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[8].descriptorCount = 1;
+    bindings[8].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     DescriptorAllocator descAlloc{device, app};
     descriptorSetLayout = descAlloc.createLayout(
@@ -116,7 +121,7 @@ void PostProcessRenderer::createDescriptorSets(VulkanApp* app) {
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
     VkDescriptorPoolSize poolSizesDesc[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7 * FRAMES_IN_FLIGHT},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 * FRAMES_IN_FLIGHT},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * FRAMES_IN_FLIGHT}
     };
     descriptorPool = descAlloc.createPool(
@@ -135,8 +140,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                   VkImageView sceneColorView, VkImageView sceneDepthView,
                                   VkImageView waterColorView,
                                   VkImageView brushColorView, VkImageView brushDepthView,
+                                  VkImageView brushBackFaceDepthView,
                                   VkImageView waterGeomDepthView,
-                                  float brushAlpha,
+                                  float brushAlpha, float brushMode,
                                   const glm::mat4& viewProj, const glm::mat4& invViewProj,
                                   const glm::vec3& viewPos,
                                   uint32_t frameIdx,
@@ -158,6 +164,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     ubo.viewPos = glm::vec4(viewPos, 1.0f);
     ubo.screenSize = glm::vec4(renderWidth, renderHeight, 1.0f / renderWidth, 1.0f / renderHeight);
     ubo.brushAlpha = brushAlpha;
+    ubo.brushMode = brushMode;
 
     void* data;
     data = uniformBuffer.map(0);
@@ -165,7 +172,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     uniformBuffer.unmap(); // VMA persistent mapping
 
     // Prepare image infos and only write descriptors for valid image views
-    std::array<VkDescriptorImageInfo, 8> imageInfos{};
+    std::array<VkDescriptorImageInfo, 9> imageInfos{};
     imageInfos[0] = {linearSampler, sceneColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[1] = {linearSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[2] = {linearSampler, waterColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -174,6 +181,8 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     imageInfos[4] = {linearSampler, brushDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     // Water geometry depth buffer for accurate brush-vs-water occlusion
     imageInfos[7] = {linearSampler, waterGeomDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // Brush back-face depth for PAINT mode volume test
+    imageInfos[8] = {linearSampler, brushBackFaceDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
     VkDescriptorBufferInfo bufferInfo{uniformBuffer.buffer, 0, sizeof(WaterUBO)};
 
@@ -218,6 +227,13 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
         writer.writeImage(currentDs, 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                           imageInfos[7].sampler, imageInfos[7].imageView,
                           imageInfos[7].imageLayout);
+    }
+
+    // Brush back-face depth (binding 8) — used for PAINT mode volume test
+    if (imageInfos[8].imageView != VK_NULL_HANDLE && imageInfos[8].sampler != VK_NULL_HANDLE) {
+        writer.writeImage(currentDs, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                          imageInfos[8].sampler, imageInfos[8].imageView,
+                          imageInfos[8].imageLayout);
     }
 
     writer.flush();

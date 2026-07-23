@@ -1724,13 +1724,21 @@ public:
             VkImageView skyViewPP = sceneRenderer->skyRenderer ? sceneRenderer->skyRenderer->getSkyView(frameIdx) : VK_NULL_HANDLE;
             VkImageView brushColorView = sceneRenderer->getBrushColorView(frameIdx);
             VkImageView brushDepthView = sceneRenderer->getBrushDepthView(frameIdx);
+            VkImageView brushBackFaceDepthView = VK_NULL_HANDLE;
+            if (sceneRenderer->brushBackFaceRenderer) {
+                brushBackFaceDepthView = sceneRenderer->brushBackFaceRenderer->getBackFaceDepthView(frameIdx);
+            }
             VkImageView waterGeomDepthView = VK_NULL_HANDLE;
             if (sceneRenderer->waterRenderer) {
                 waterGeomDepthView = sceneRenderer->waterRenderer->getWaterGeomDepthView(frameIdx);
             }
             float brushAlpha = 0.5f;
+            float brushMode = 0.0f;
             const BrushEntry* brushEntry = brushManager.getSelectedEntry();
-            if (brushEntry) brushAlpha = brushEntry->opacity;
+            if (brushEntry) {
+                brushAlpha = brushEntry->opacity;
+                brushMode = static_cast<float>(brushEntry->brushMode);
+            }
             sceneRenderer->postProcessRenderer->render(
                 this,
                 commandBuffer,
@@ -1739,8 +1747,10 @@ public:
                 sceneRenderer->waterRenderer->getWaterDepthView(frameIdx),
                 brushColorView,
                 brushDepthView,
+                brushBackFaceDepthView,
                 waterGeomDepthView,
                 brushAlpha,
+                brushMode,
                 viewProj,
                 invViewProj,
                 glm::vec3(uboStatic.viewPos),

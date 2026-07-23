@@ -20,10 +20,12 @@ layout(set = 0, binding = 5) uniform WaterUBO {
     vec4 viewPos;
     vec4 screenSize;
     float brushAlpha;
+    float brushMode;         // 0=overlay, 2=PAINT (replace solid texture)
 } ubo;
 
 layout(set = 0, binding = 6) uniform sampler2D sceneSkyTex;
 layout(set = 0, binding = 7) uniform sampler2D waterGeomDepthTex;
+layout(set = 0, binding = 8) uniform sampler2D brushBackFaceDepthTex;
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -63,26 +65,29 @@ void main() {
 
     vec3 finalColor = afterWater;
 
-    // 4. Brush overlay with depth test against scene + water
+    // 4. Brush compositing
     vec4 brushColor = texture(brushColorTex, uv);
     if (brushColor.a > 0.0) {
         float brushDepth = texture(brushDepthTex, uv).r;
 
-        // Scene solid depth is the reference obstacle depth
-        float obstacleDepth = sceneDepth;
+        if (ubo.brushMode > 1.5) {
+            // PAINT mode: replace solid texture where scene geometry lies inside brush volume
+            float brushBackDepth = texture(brushBackFaceDepthTex, uv).r;
+            if (sceneDepth >= brushDepth && sceneDepth <= brushBackDepth) {
+                finalColor = brushColor.rgb;
+            }
+        } else {
+            // Overlay mode: depth-test brush against scene + water
+            float obstacleDepth = sceneDepth;
 
-        // Where water geometry exists, use water surface depth as obstacle
-        // (water is always in front of the solid geometry behind it)
-        float waterGeomDepth = texture(waterGeomDepthTex, uv).r;
-        if (waterGeomDepth < 1.0) {
-            // Water geometry is present — use the closer of the two
-            obstacleDepth = min(obstacleDepth, waterGeomDepth);
-        }
+            float waterGeomDepth = texture(waterGeomDepthTex, uv).r;
+            if (waterGeomDepth < 1.0) {
+                obstacleDepth = min(obstacleDepth, waterGeomDepth);
+            }
 
-        // Brush is visible only where it is in front of the closest obstacle
-        if (brushDepth < obstacleDepth) {
-            // Blend brush over the current composite using the selected opacity
-            finalColor = mix(finalColor, brushColor.rgb, ubo.brushAlpha);
+            if (brushDepth < obstacleDepth) {
+                finalColor = mix(finalColor, brushColor.rgb, ubo.brushAlpha);
+            }
         }
     }
 
