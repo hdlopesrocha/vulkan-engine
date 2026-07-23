@@ -80,6 +80,23 @@ public:
     std::unique_ptr<SkyRenderer> skyRenderer;
     std::unique_ptr<SolidRenderer> solidRenderer;
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
+    // Brush offscreen render targets (color + front depth), 2 frames in flight
+    std::array<VkImage, 2> brushColorImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VmaAllocation, 2> brushColorAllocations = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkImageView, 2> brushColorImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkImageLayout, 2> brushColorLayouts = {VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
+    std::array<VkImage, 2> brushDepthImages = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VmaAllocation, 2> brushDepthAllocations = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkImageView, 2> brushDepthImageViews = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkImageLayout, 2> brushDepthLayouts = {VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
+    VkImageView getBrushColorView(uint32_t i) const { return brushColorImageViews[i % 2]; }
+    VkImage getBrushColorImage(uint32_t i) const { return brushColorImages[i % 2]; }
+    VkImageView getBrushDepthView(uint32_t i) const { return brushDepthImageViews[i % 2]; }
+    VkImage getBrushDepthImage(uint32_t i) const { return brushDepthImages[i % 2]; }
+
+    void createBrushRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
+    void destroyBrushRenderTargets(VulkanApp* app);
+
     // Scene-owned sub-renderers for water (moved from WaterRenderer)
     std::unique_ptr<WaterBackFaceRenderer> backFaceRenderer;
     std::unique_ptr<BrushBackFaceRenderer> brushBackFaceRenderer;

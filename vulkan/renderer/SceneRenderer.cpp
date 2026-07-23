@@ -1,5 +1,6 @@
 #include "SceneRenderer.hpp"
 #include "DescriptorWriter.hpp"
+#include "RendererUtils.hpp"
 
 
 #include <stdexcept>
@@ -107,6 +108,7 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (solid360Renderer && app) {
         solid360Renderer->cleanup(app);
     }
+    destroyBrushRenderTargets(app);
     brushSolidIndirectRenderer.cleanup();
     if (solidRenderer && app) {
         solidRenderer->cleanup(app);
@@ -157,11 +159,60 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     }
 }
 
+void SceneRenderer::createBrushRenderTargets(VulkanApp* app, uint32_t width, uint32_t height) {
+    if (!app) return;
+    VkDevice device = app->getDevice();
+    auto createImage = [&](VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+                           VkImage& image, VmaAllocation& allocation, VkImageView& view) {
+        VkDeviceMemory dummyMem = VK_NULL_HANDLE;
+        RendererUtils::createImage2DWithVma(device, app, width, height, format, usage, aspect,
+                                            "SceneRenderer: brush", image, allocation, dummyMem, view);
+    };
+    VkFormat colorFormat = app->getSwapchainImageFormat();
+    for (int i = 0; i < 2; ++i) {
+        createImage(colorFormat,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    brushColorImages[i], brushColorAllocations[i], brushColorImageViews[i]);
+        createImage(VK_FORMAT_D32_SFLOAT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT,
+                    brushDepthImages[i], brushDepthAllocations[i], brushDepthImageViews[i]);
+    }
+}
+
+void SceneRenderer::destroyBrushRenderTargets(VulkanApp* app) {
+    if (!app) return;
+    VkDevice device = app->getDevice();
+    for (int i = 0; i < 2; ++i) {
+        if (brushColorImageViews[i] != VK_NULL_HANDLE) {
+            vkDestroyImageView(device, brushColorImageViews[i], nullptr);
+            brushColorImageViews[i] = VK_NULL_HANDLE;
+        }
+        if (brushColorImages[i] != VK_NULL_HANDLE) {
+            vmaDestroyImage(app->getVmaAllocator(), brushColorImages[i], brushColorAllocations[i]);
+            brushColorImages[i] = VK_NULL_HANDLE;
+            brushColorAllocations[i] = VK_NULL_HANDLE;
+        }
+        if (brushDepthImageViews[i] != VK_NULL_HANDLE) {
+            vkDestroyImageView(device, brushDepthImageViews[i], nullptr);
+            brushDepthImageViews[i] = VK_NULL_HANDLE;
+        }
+        if (brushDepthImages[i] != VK_NULL_HANDLE) {
+            vmaDestroyImage(app->getVmaAllocator(), brushDepthImages[i], brushDepthAllocations[i]);
+            brushDepthImages[i] = VK_NULL_HANDLE;
+            brushDepthAllocations[i] = VK_NULL_HANDLE;
+        }
+    }
+}
+
 void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height) {
     // Recreate offscreen targets that depend on swapchain size
     if (solidRenderer) {
         solidRenderer->createRenderTargets(app, width, height);
     }
+    destroyBrushRenderTargets(app);
+    createBrushRenderTargets(app, width, height);
     if (waterRenderer) {
         waterRenderer->createRenderTargets(app, width, height);
         // Recreate back-face and 360 reflection targets owned by SceneRenderer
@@ -277,7 +328,6 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         // with the cascade's light-space matrix BEFORE beginShadowPass
         // (vkCmdPipelineBarrier not allowed inside dynamic rendering).
         solidRenderer->getIndirectRenderer().prepareCull(commandBuffer, lsMatrix);
-        brushSolidIndirectRenderer.prepareCull(commandBuffer, lsMatrix);
 
         // Acquire vegetation instance/indirect buffers before
         // vkCmdBeginRendering (barriers illegal inside dynamic rendering).
@@ -311,10 +361,6 @@ void SceneRenderer::shadowPass(VulkanApp* app, VkCommandBuffer &commandBuffer, V
         auto& shadowIR = solidRenderer->getIndirectRenderer();
         shadowIR.bindBuffers(commandBuffer);
         shadowIR.drawIndirectOnly(commandBuffer, shadowMapper->getShadowPipelineLayout(), 0);
-
-        // Brush solid shadow: same pipeline, separate IndirectRenderer
-        brushSolidIndirectRenderer.bindBuffers(commandBuffer);
-        brushSolidIndirectRenderer.drawIndirectOnly(commandBuffer, shadowMapper->getShadowPipelineLayout(), 0);
 
         // Vegetation shadow pass: drawn after solid so its 2-buffer vertex
         // bindings don't leak into the solid draw.
@@ -640,6 +686,7 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // Create offscreen sky targets (destroy old first to prevent handle leak)
     skyRenderer->destroyOffscreenTargets(app);
     skyRenderer->createOffscreenTargets(app, app->getWidth(), app->getHeight());
+    createBrushRenderTargets(app, app->getWidth(), app->getHeight());
     shadowMapper->init(app);
     vegetationRenderer->init(app);
 
