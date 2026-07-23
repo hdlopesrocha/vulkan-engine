@@ -4888,35 +4888,21 @@ void VulkanApp::drawFrame() {
         return;
     }
 
-    // If a previous frame is using this image, wait for its frameTimeline value.
-    // With MAX_FRAMES_IN_FLIGHT >= swapchain images, this is rare — only matters
-    // when the swapchain has more images than frames in flight.
+    // Track if a previous frame is using this image, for GPU-side timeline wait.
+    // The CPU throttling is handled by the frame-slot fence above. This GPU-side
+    // wait gives the validation layer a visible semaphore dependency chain from
+    // the previous frame's present through to this frame's write, preventing
+    // false SYNC-HAZARD-WRITE-AFTER-PRESENT detections.
+    uint64_t imageWaitValue = 0;
+    bool needImageWait = false;
     {
-        uint64_t nextVal = frameTimelineValue.load() + 1; // value we'll signal after submit
+        uint64_t nextVal = frameTimelineValue.load() + 1;
         if (imagesInFlight.size() > imageIndex &&
             imagesInFlight[imageIndex] != 0 &&
             imagesInFlight[imageIndex] != nextVal) {
-            uint64_t waitVal = imagesInFlight[imageIndex];
-            VkSemaphoreWaitInfo waitInfo{};
-            waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
-            waitInfo.semaphoreCount = 1;
-            waitInfo.pSemaphores = &frameTimeline;
-            waitInfo.pValues = &waitVal;
-            // Bounded wait: same stale-timeline hazard as the frame-throttle
-            // wait above — an infinite wait deadlocks on some drivers. Cap it
-            // and proceed on timeout (the binary in-flight fence already bounds
-            // outstanding frames to MAX_FRAMES_IN_FLIGHT).
-            VkResult res = vkWaitSemaphores(device, &waitInfo, 250'000'000ULL);
-            if (res == VK_ERROR_DEVICE_LOST) return;
-            if (res == VK_TIMEOUT) {
-                static bool warned = false;
-                if (!warned) { std::cerr << "[VulkanApp] WARNING: per-image frameTimeline vkWaitSemaphores timed out (stale timeline) — proceeding to avoid deadlock\n"; warned = true; }
-            } else if (res != VK_SUCCESS) {
-                std::cerr << "vkWaitSemaphores (image) failed: " << res << std::endl;
-                return;
-            }
+            imageWaitValue = imagesInFlight[imageIndex];
+            needImageWait = true;
         }
-        // Mark this image as now being used by the current frame's timeline value
         if (imagesInFlight.size() > imageIndex) imagesInFlight[imageIndex] = nextVal;
     }
 
@@ -4987,7 +4973,13 @@ void VulkanApp::drawFrame() {
     initialWait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
     initialWait.semaphore = imageAvailableSemaphores[semaphoreIndex];
     initialWait.value = 0;
-    initialWait.stageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+    // Include COLOR_ATTACHMENT_OUTPUT and EARLY_FRAGMENT_TESTS so the
+    // validation layer's syncval tracker sees that swapchain writes are
+    // explicitly gated by the acquire semaphore, suppressing false
+    // WRITE_AFTER_PRESENT detections.
+    initialWait.stageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT |
+                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
     initialWait.deviceIndex = 0;
     waitSemaphoreInfos.push_back(initialWait);
 
@@ -5024,6 +5016,21 @@ void VulkanApp::drawFrame() {
             }
             m_extraWaitSemaphores.clear();
         }
+    }
+
+    // GPU-side timeline wait: if a previous frame is still using this swapchain
+    // image, wait for its frameTimeline value before writing.  This provides a
+    // visible semaphore dependency chain to the validation layer, suppressing
+    // false SYNC-HAZARD-WRITE-AFTER-PRESENT detections across frames.
+    if (needImageWait) {
+        VkSemaphoreSubmitInfo imgWait{};
+        imgWait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        imgWait.semaphore = frameTimeline;
+        imgWait.value = imageWaitValue;
+        imgWait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
+        imgWait.deviceIndex = 0;
+        waitSemaphoreInfos.push_back(imgWait);
     }
 
     // Signal semaphore indexed by swapchain image (binary, for presentation engine)
@@ -5092,11 +5099,11 @@ void VulkanApp::drawFrame() {
     }
 
     // Transition swapchain image: UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
-    // Vestigial: the acquire semaphore already provides the execution
-    // dependency (TOP_OF_PIPE → COLOR_ATTACHMENT_OUTPUT).  This barrier is
-    // kept only to make the layout transition explicit for readability;
-    // the srcStageMask/srcAccessMask values are semantically irrelevant
-    // because the UNDEFINED layout has no prior content to make visible.
+    // The acquire semaphore provides the execution dependency (the semaphore
+    // signals once the presentation engine has released the image).  We list
+    // COLOR_ATTACHMENT_OUTPUT in the semaphore wait stage mask below so the
+    // validation layer's syncval tracker sees the dependency chain and does
+    // not flag a false WRITE_AFTER_PRESENT hazard.
     {
         VkImageMemoryBarrier2 colorBarrier{};
         colorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
