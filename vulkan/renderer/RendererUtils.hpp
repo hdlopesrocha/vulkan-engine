@@ -52,6 +52,7 @@ inline void createImage2DWithVma(
         throw std::runtime_error(std::string("Failed to create image with VMA: ") + name);
     outMemory = allocInfo.deviceMemory;
     app->resources.addImageVma(outImage, outAllocation, name);
+    std::cerr << "[RendererUtils::createImage2DWithVma] created image=" << (void*)outImage << " name=" << name << std::endl;
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
