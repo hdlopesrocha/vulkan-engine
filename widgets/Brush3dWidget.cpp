@@ -134,6 +134,11 @@ void Brush3dWidget::renderEntry(int index) {
         dirty = true;
     }
 
+    // Opacity
+    if (ImGui::SliderFloat("Opacity", &e.opacity, 0.0f, 1.0f)) {
+        dirty = true;
+    }
+
     // Capsule-specific parameters
     if (e.sdfType == 2) { // Capsule
         ImGui::Text("Capsule Parameters:");

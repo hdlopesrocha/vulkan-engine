@@ -64,6 +64,8 @@ public:
     void drawDepthExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
     // Draw color using an external IndirectRenderer
     void drawColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
+    // Draw brush color with alpha blending at the given opacity
+    void drawBrushColor(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect, float opacity);
 
 private:
     
@@ -78,6 +80,9 @@ private:
     TrackedHandle<VkPipelineLayout> deferredDepthPipelineLayout;
     TrackedHandle<VkPipeline> deferredColorPipeline;
     TrackedHandle<VkPipelineLayout> deferredColorPipelineLayout;
+    // Brush color pipeline (alpha blending enabled)
+    TrackedHandle<VkPipeline> brushDeferredColorPipeline;
+    TrackedHandle<VkPipelineLayout> brushDeferredColorPipelineLayout;
     bool deferredPipelinesCreated = false;
 
     std::unordered_map<NodeID, Model3DVersion> solidChunks;

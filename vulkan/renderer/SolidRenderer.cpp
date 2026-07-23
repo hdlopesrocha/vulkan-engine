@@ -285,6 +285,23 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         deferredColorPipeline = cp;
         deferredColorPipelineLayout = cl;
     }
+    {
+        // Brush color: alpha blending enabled (CONSTANT_ALPHA), no depth write
+        GraphicsPipelineConfig brushCfg{};
+        brushCfg.depthWriteEnable = false;
+        brushCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        brushCfg.colorFormats = { app->getSwapchainImageFormat() };
+        brushCfg.blendEnable = true;
+        auto [bp, bl] = app->createGraphicsPipeline(
+            { vertexShader.info, tescShader.info, teseShader.info, fragmentShader.info },
+            std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
+            vk_layouts::defaultAttributes(),
+            setLayouts, nullptr,
+            brushCfg
+        );
+        brushDeferredColorPipeline = bp;
+        brushDeferredColorPipelineLayout = bl;
+    }
     deferredPipelinesCreated = true;
 
     // Clear local shader module references; destruction handled by VulkanResourceManager
@@ -403,6 +420,19 @@ void SolidRenderer::drawColorExternal(VkCommandBuffer &cmd, VkDescriptorSet desc
         if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
         else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
     }
+    indirect.drawPrepared(cmd);
+}
+
+void SolidRenderer::drawBrushColor(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect, float opacity) {
+    if (brushDeferredColorPipeline == VK_NULL_HANDLE) return;
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, brushDeferredColorPipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brushDeferredColorPipeline);
+    if (descSet != VK_NULL_HANDLE) {
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, brushDeferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brushDeferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
+    }
+    float blendConstants[4] = {0.0f, 0.0f, 0.0f, opacity};
+    vkCmdSetBlendConstants(cmd, blendConstants);
     indirect.drawPrepared(cmd);
 }
 

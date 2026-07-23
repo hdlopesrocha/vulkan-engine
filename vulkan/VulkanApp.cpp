@@ -4377,7 +4377,8 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     bool noColorAttachment,
     bool depthBiasEnable,
     VkFrontFace frontFace,
-    bool depthTestEnable) {
+    bool depthTestEnable,
+    bool blendEnable) {
 
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages(stages);
     const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions = descriptions;
@@ -4405,10 +4406,10 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     viewportState.scissorCount = 1;
     viewportState.pScissors = &scissor;
 
-    VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS };
+    VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS };
     VkPipelineDynamicStateCreateInfo dynamicState{};
     dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = 3;
+    dynamicState.dynamicStateCount = blendEnable ? 4 : 3;
     dynamicState.pDynamicStates = dynamicStates;
 
     VkPipelineRasterizationStateCreateInfo rasterizer{};
@@ -4432,7 +4433,15 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
     } else {
         colorBlendAttachment.colorWriteMask = 0;
     }
-    colorBlendAttachment.blendEnable = VK_FALSE;
+    colorBlendAttachment.blendEnable = blendEnable ? VK_TRUE : VK_FALSE;
+    if (blendEnable) {
+        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA;
+        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    }
 
     // Determine effective color formats for dynamic rendering
     std::vector<VkFormat> effectiveColorFormats;
@@ -4547,7 +4556,8 @@ std::pair<VkPipeline, VkPipelineLayout> VulkanApp::createGraphicsPipeline(
         config.depthCompareOp, config.topology, config.depthClampEnable,
         config.colorFormats, config.depthFormat, config.noColorAttachment,
         config.depthBiasEnable, config.frontFace,
-        config.depthTestEnable);
+        config.depthTestEnable,
+        config.blendEnable);
 }
 
 uint32_t VulkanApp::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {

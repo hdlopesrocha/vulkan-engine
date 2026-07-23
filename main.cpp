@@ -1076,11 +1076,13 @@ public:
                 sceneRenderer->solidRenderer->drawColor(commandBuffer, this, getMainDescriptorSet());
             }
 
-            // Brush solid color
+            // Brush solid color (with opacity blending)
             if (settings.renderSolid) {
-                sceneRenderer->solidRenderer->drawColorExternal(
+                const BrushEntry* brushEntry = brushManager.getSelectedEntry();
+                float brushOpacity = brushEntry ? brushEntry->opacity : 0.5f;
+                sceneRenderer->solidRenderer->drawBrushColor(
                     commandBuffer, getMainDescriptorSet(),
-                    sceneRenderer->brushSolidIndirectRenderer);
+                    sceneRenderer->brushSolidIndirectRenderer, brushOpacity);
             }
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)

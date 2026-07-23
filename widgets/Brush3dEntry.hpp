@@ -40,4 +40,6 @@ struct BrushEntry {
     glm::vec2 taperedCylinderRadii = glm::vec2(0.25f, 0.5f);
     // Tapered capsule-specific (r1=radius at A, r2=radius at B)
     glm::vec2 taperedCapsuleRadii = glm::vec2(0.5f, 0.25f);
+    // Rendering opacity (0 = fully transparent, 1 = fully opaque)
+    float opacity = 0.5f;
 };

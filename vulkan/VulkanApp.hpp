@@ -37,6 +37,7 @@ struct GraphicsPipelineConfig {
     VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
     bool noColorAttachment = false;
     bool depthBiasEnable = false;
+    bool blendEnable = false;
 };
 
 class VulkanApp {
@@ -478,7 +479,8 @@ public:
         bool noColorAttachment = false,
         bool depthBiasEnable = false,
         VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE,
-        bool depthTestEnable = true);
+        bool depthTestEnable = true,
+        bool blendEnable = false);
 
     // Config-based overload — callers override only what differs from defaults
     std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
@@ -508,11 +510,13 @@ public:
         bool noColorAttachment = false,
         bool depthBiasEnable = false,
         VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE,
-        bool depthTestEnable = true) {
+        bool depthTestEnable = true,
+        bool blendEnable = false) {
         std::vector<VkVertexInputAttributeDescription> vec(attributeDescriptions);
         return createGraphicsPipeline(stages, bindingDescriptions, vec, setLayouts, pushConstantRange,
             polygonMode, cullMode, depthWrite, colorWrite, depthCompare, topology, depthClampEnable,
-            colorFormats, depthFormat, noColorAttachment, depthBiasEnable, frontFace, depthTestEnable);
+            colorFormats, depthFormat, noColorAttachment, depthBiasEnable, frontFace, depthTestEnable,
+            blendEnable);
     }
 
     // Config-based wrapper for initializer_list attribute descriptions
