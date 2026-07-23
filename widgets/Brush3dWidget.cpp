@@ -11,7 +11,7 @@
 const char* Brush3dWidget::sdfTypeNames[] = {
     "Sphere", "Box", "Capsule", "Octahedron", "Pyramid", "Torus", "Cone", "Cylinder", "Tapered Cylinder", "Tapered Capsule"
 };
-const char* Brush3dWidget::brushModeNames[] = { "Add", "Remove" };
+const char* Brush3dWidget::brushModeNames[] = { "Add", "Remove", "Paint" };
 const char* Brush3dWidget::layerNames[] = { "Opaque", "Transparent" };
 const char* Brush3dWidget::effectTypeNames[] = {
     "Perlin Distort", "Perlin Carve", "Sine Distort", "Voronoi Carve"

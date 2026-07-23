@@ -319,7 +319,8 @@ const char* toString(BrushMode v)
         case BrushMode::ADD:     return "Add";
         case BrushMode::REMOVE:  return "Remove";
         case BrushMode::REPLACE: return "Replace";
-        default:      return "Unknown";
+        case BrushMode::PAINT:   return "Paint";
+        default:                 return "Unknown";
     }
 }
 

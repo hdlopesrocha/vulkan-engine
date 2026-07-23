@@ -2123,6 +2123,9 @@ void MyApp::rebuildBrushScene() {
         // sdfType: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder
         // We use a lambda to avoid massive switch duplication for add vs del with optional effects
         auto applyEntry = [&](WrappedSignedDistanceFunction* wrappedFunc) {
+            // Brush preview always shows union; the specific operation (Add/Remove/Paint)
+            // is only used when applying the brush to the solid space.
+            float (*brushOp)(float, float) = SDF::opUnion;
             // Optionally wrap in an effect
             // effectType: 0=PerlinDistort, 1=PerlinCarve, 2=SineDistort, 3=VoronoiCarve
             if (entry.useEffect) {
@@ -2131,56 +2134,38 @@ void MyApp::rebuildBrushScene() {
                         WrappedPerlinDistortDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectFrequency,
                             glm::vec3(0), entry.effectBrightness, entry.effectContrast);
-                        if (entry.brushMode == 0)
-                            octree.apply(SDF::opUnion, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
-                        else
-                            octree.apply(SDF::opSubtraction, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     case 1: {
                         WrappedPerlinCarveDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
                             glm::vec3(0), entry.effectBrightness, entry.effectContrast);
-                        if (entry.brushMode == 0)
-                            octree.apply(SDF::opUnion, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
-                        else
-                            octree.apply(SDF::opSubtraction, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     case 2: {
                         WrappedSineDistortDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectFrequency, glm::vec3(0));
-                        if (entry.brushMode == 0)
-                            octree.apply(SDF::opUnion, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
-                        else
-                            octree.apply(SDF::opSubtraction, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     case 3: {
                         WrappedVoronoiCarveDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectCellSize,
                             glm::vec3(0), entry.effectBrightness, entry.effectContrast);
-                        if (entry.brushMode == 0)
-                            octree.apply(SDF::opUnion, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
-                        else
-                            octree.apply(SDF::opSubtraction, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     default: {
                         // Fallback: no effect
-                        if (entry.brushMode == 0)
-                            octree.apply(SDF::opUnion, wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
-                        else
-                            octree.apply(SDF::opSubtraction, wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                        octree.apply(brushOp, wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                 }
             } else {
                 // No effect — use the primitive directly
-                if (entry.brushMode == 0)
-                    octree.apply(SDF::opUnion, wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
-                else
-                    octree.apply(SDF::opSubtraction, wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                octree.apply(brushOp, wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
             }
         };
 
