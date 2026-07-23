@@ -945,23 +945,31 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
                                mainUniformBuffers[fi].buffer, 0, sizeof(UniformObject));
 
             // Write brush depth textures (bindings 14, 15) — per-frame images
+            // Always write (use fallback dummy if brush targets not yet available)
+            // to keep the descriptor initialized for the expanded layout.
             VkImageView brushFrontView = getBrushDepthView(static_cast<uint32_t>(fi));
             VkImageView brushBackView = VK_NULL_HANDLE;
+            if (brushBackFaceRenderer) {
+                brushBackView = brushBackFaceRenderer->getBackFaceDepthView(static_cast<uint32_t>(fi));
+            }
             VkSampler brushDepthSampler = VK_NULL_HANDLE;
             if (waterRenderer) {
                 brushDepthSampler = waterRenderer->getLinearSampler();
             }
-            if (brushBackFaceRenderer) {
-                brushBackView = brushBackFaceRenderer->getBackFaceDepthView(static_cast<uint32_t>(fi));
-            }
-            if (brushFrontView != VK_NULL_HANDLE && brushDepthSampler != VK_NULL_HANDLE) {
+            // Fallback: use shadow map sampler and dummy depth if brush views not yet valid
+            VkSampler fallbackSampler = shadowMapper ? shadowMapper->getShadowMapSampler() : VK_NULL_HANDLE;
+            VkImageView fallbackView = shadowMapper ? shadowMapper->getDummyDepthView() : VK_NULL_HANDLE;
+            VkSampler actualSampler = (brushDepthSampler != VK_NULL_HANDLE) ? brushDepthSampler : fallbackSampler;
+            VkImageView actualFront = (brushFrontView != VK_NULL_HANDLE) ? brushFrontView : fallbackView;
+            VkImageView actualBack = (brushBackView != VK_NULL_HANDLE) ? brushBackView : fallbackView;
+            if (actualSampler != VK_NULL_HANDLE && actualFront != VK_NULL_HANDLE) {
                 writer.writeImage(dstSet, 14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                  brushDepthSampler, brushFrontView,
+                                  actualSampler, actualFront,
                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             }
-            if (brushBackView != VK_NULL_HANDLE && brushDepthSampler != VK_NULL_HANDLE) {
+            if (actualSampler != VK_NULL_HANDLE && actualBack != VK_NULL_HANDLE) {
                 writer.writeImage(dstSet, 15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                  brushDepthSampler, brushBackView,
+                                  actualSampler, actualBack,
                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             }
 
