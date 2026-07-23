@@ -186,20 +186,22 @@ void SceneRenderer::destroyBrushRenderTargets(VulkanApp* app) {
     VkDevice device = app->getDevice();
     for (int i = 0; i < 2; ++i) {
         if (brushColorImageViews[i] != VK_NULL_HANDLE) {
-            vkDestroyImageView(device, brushColorImageViews[i], nullptr);
+            if (app->resources.removeImageView(brushColorImageViews[i]))
+                vkDestroyImageView(device, brushColorImageViews[i], nullptr);
             brushColorImageViews[i] = VK_NULL_HANDLE;
         }
         if (brushColorImages[i] != VK_NULL_HANDLE) {
-            vmaDestroyImage(app->getVmaAllocator(), brushColorImages[i], brushColorAllocations[i]);
+            app->destroyImageWithVma(brushColorImages[i], brushColorAllocations[i], VK_NULL_HANDLE);
             brushColorImages[i] = VK_NULL_HANDLE;
             brushColorAllocations[i] = VK_NULL_HANDLE;
         }
         if (brushDepthImageViews[i] != VK_NULL_HANDLE) {
-            vkDestroyImageView(device, brushDepthImageViews[i], nullptr);
+            if (app->resources.removeImageView(brushDepthImageViews[i]))
+                vkDestroyImageView(device, brushDepthImageViews[i], nullptr);
             brushDepthImageViews[i] = VK_NULL_HANDLE;
         }
         if (brushDepthImages[i] != VK_NULL_HANDLE) {
-            vmaDestroyImage(app->getVmaAllocator(), brushDepthImages[i], brushDepthAllocations[i]);
+            app->destroyImageWithVma(brushDepthImages[i], brushDepthAllocations[i], VK_NULL_HANDLE);
             brushDepthImages[i] = VK_NULL_HANDLE;
             brushDepthAllocations[i] = VK_NULL_HANDLE;
         }
