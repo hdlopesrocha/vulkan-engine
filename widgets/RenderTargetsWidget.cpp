@@ -1248,6 +1248,12 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         case PreviewTarget::BackFaceDepth: 
             previewDescriptor = linearBackFaceDepthDescriptor; 
             break;
+        case PreviewTarget::BrushColor:
+            previewDescriptor = solidColorDescriptor; // fallback — brush color not separately tracked
+            break;
+        case PreviewTarget::BrushDepth:
+            previewDescriptor = solidDepthDescriptor; // fallback — brush depth not separately tracked
+            break;
         case PreviewTarget::BrushBackFaceDepth:
             previewDescriptor = linearBrushBackFaceDepthDescriptor;
             break;
@@ -1329,6 +1335,8 @@ void RenderTargetsWidget::render() {
         "SolidDepth",
         "BackFaceColor",
         "BackFaceDepth",
+        "BrushColor",
+        "BrushDepth",
         "BrushBackFaceDepth",
         "WaterColor",
         "WaterDepth",

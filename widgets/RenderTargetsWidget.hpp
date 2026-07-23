@@ -144,6 +144,8 @@ private:
         SolidDepth,
         BackFaceColor,
         BackFaceDepth,
+        BrushColor,
+        BrushDepth,
         BrushBackFaceDepth,
         WaterColor,
         WaterDepth,
