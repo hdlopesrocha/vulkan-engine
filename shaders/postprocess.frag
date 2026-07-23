@@ -76,8 +76,10 @@ void main() {
             if (sceneDepth >= brushDepth && sceneDepth <= brushBackDepth) {
                 finalColor = brushColor.rgb;
             }
-        } else {
-            // Overlay mode: depth-test brush against scene + water
+        }
+
+        // Always render brush geometry overlay (depth-tested against scene + water)
+        {
             float obstacleDepth = sceneDepth;
 
             float waterGeomDepth = texture(waterGeomDepthTex, uv).r;
