@@ -15,6 +15,7 @@ layout(set = 0, binding = 0) uniform SolidParamsUBO {
     mat4 lightSpaceMatrix1; // cascade 1 (4x ortho0)
     mat4 lightSpaceMatrix2; // cascade 2 (16x ortho0)
     mat4 invViewProjection; // inverse of viewProjection (camera-constant)
+    vec4 brushParams;       // x=brushTextureIndex, y=brushMode (0=overlay, 2=PAINT)
 } ubo;
 
 // Packed material data uploaded once to GPU. Matches the CPU-side MaterialGPU (6 vec4s).

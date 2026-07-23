@@ -70,15 +70,7 @@ void main() {
     if (brushColor.a > 0.0) {
         float brushDepth = texture(brushDepthTex, uv).r;
 
-        if (ubo.brushMode > 1.5) {
-            // PAINT mode: replace solid texture where scene geometry lies inside brush volume
-            float brushBackDepth = texture(brushBackFaceDepthTex, uv).r;
-            if (sceneDepth >= brushDepth && sceneDepth <= brushBackDepth) {
-                finalColor = brushColor.rgb;
-            }
-        }
-
-        // Always render brush geometry overlay (depth-tested against scene + water)
+        // Brush geometry overlay: depth-test brush against scene + water, same for all modes
         {
             float obstacleDepth = sceneDepth;
 

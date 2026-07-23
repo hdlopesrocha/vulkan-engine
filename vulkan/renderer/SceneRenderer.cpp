@@ -943,6 +943,28 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             DescriptorWriter writer(app->getDevice());
             writer.writeBuffer(dstSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                mainUniformBuffers[fi].buffer, 0, sizeof(UniformObject));
+
+            // Write brush depth textures (bindings 14, 15) — per-frame images
+            VkImageView brushFrontView = getBrushDepthView(static_cast<uint32_t>(fi));
+            VkImageView brushBackView = VK_NULL_HANDLE;
+            VkSampler brushDepthSampler = VK_NULL_HANDLE;
+            if (waterRenderer) {
+                brushDepthSampler = waterRenderer->getLinearSampler();
+            }
+            if (brushBackFaceRenderer) {
+                brushBackView = brushBackFaceRenderer->getBackFaceDepthView(static_cast<uint32_t>(fi));
+            }
+            if (brushFrontView != VK_NULL_HANDLE && brushDepthSampler != VK_NULL_HANDLE) {
+                writer.writeImage(dstSet, 14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                  brushDepthSampler, brushFrontView,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            }
+            if (brushBackView != VK_NULL_HANDLE && brushDepthSampler != VK_NULL_HANDLE) {
+                writer.writeImage(dstSet, 15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                  brushDepthSampler, brushBackView,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            }
+
             writer.flush();
         }
     }

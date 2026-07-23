@@ -4003,11 +4003,28 @@ void VulkanApp::createDescriptorSetLayout() {
     aoSamplerBinding.pImmutableSamplers = nullptr;
     aoSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 14> bindings = {
+    // binding 14: brush front-face depth (for PAINT mode volume test in main.frag)
+    VkDescriptorSetLayoutBinding brushDepthBinding{};
+    brushDepthBinding.binding = 14;
+    brushDepthBinding.descriptorCount = 1;
+    brushDepthBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    brushDepthBinding.pImmutableSamplers = nullptr;
+    brushDepthBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // binding 15: brush back-face depth (for PAINT mode volume test in main.frag)
+    VkDescriptorSetLayoutBinding brushBackDepthBinding{};
+    brushBackDepthBinding.binding = 15;
+    brushBackDepthBinding.descriptorCount = 1;
+    brushBackDepthBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    brushBackDepthBinding.pImmutableSamplers = nullptr;
+    brushBackDepthBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 16> bindings = {
         uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
         shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
         waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding,
-        envMapBinding, roughnessSamplerBinding, aoSamplerBinding
+        envMapBinding, roughnessSamplerBinding, aoSamplerBinding,
+        brushDepthBinding, brushBackDepthBinding
     };
     // Fill the material binding at position 5
     bindings[5].binding = 5;
@@ -4020,7 +4037,7 @@ void VulkanApp::createDescriptorSetLayout() {
     // so that vkUpdateDescriptorSets can write binding 11 while a command buffer
     // referencing this descriptor set is still pending (the cubemap render path
     // swaps between a dummy cubemap and the real one every frame).
-    std::array<VkDescriptorBindingFlags, 14> bindingFlags{};
+    std::array<VkDescriptorBindingFlags, 16> bindingFlags{};
     bindingFlags.fill(0);
     bindingFlags[11] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
 

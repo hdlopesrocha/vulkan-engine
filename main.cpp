@@ -790,6 +790,18 @@ public:
         // shadowEffects.w = global shadow toggle (shader checks ubo.shadowEffects.w > 0.5)
         uboStatic.shadowEffects.w = settings.enableShadows ? 1.0f : 0.0f;
 
+        // Brush params: brushTextureIndex, brushMode
+        {
+            float brushTexIdx = 0.0f;
+            float brushMode = 0.0f;
+            const BrushEntry* brushEntry = brushManager.getSelectedEntry();
+            if (brushEntry) {
+                brushTexIdx = static_cast<float>(brushEntry->materialIndex);
+                brushMode = static_cast<float>(brushEntry->brushMode);
+            }
+            uboStatic.brushParams = glm::vec4(brushTexIdx, brushMode, 0.0f, 0.0f);
+        }
+
         // Reset command buffer state tracker and wire it to all sub-renderers.
         // NOTE: backFaceRenderer and waterRenderer's IndirectRenderer are deliberately
         // excluded — they are accessed by the async back-face task on a separate thread
