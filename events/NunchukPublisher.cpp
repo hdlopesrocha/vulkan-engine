@@ -390,6 +390,26 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     glm::vec3 up = cam.getUp();
     glm::vec3 forward = cam.getForward();
 
+    // Joystick acceleration: exponential ramp from 0 (at t=0s) → 1 (at t=1s) → grows after
+    float joystickAccel = 0.0f;
+    if (hasNunchuk) {
+        float ax = s.joystickX;
+        float ay = s.joystickY;
+        if (!std::isfinite(ax)) ax = 0.0f;
+        if (!std::isfinite(ay)) ay = 0.0f;
+        ax = glm::clamp(ax, -1.0f, 1.0f);
+        ay = glm::clamp(ay, -1.0f, 1.0f);
+        const float ajdz = 0.30f;
+        if (std::abs(ax) < ajdz) ax = 0.0f;
+        if (std::abs(ay) < ajdz) ay = 0.0f;
+        if (ax != 0.0f || ay != 0.0f) {
+            joystickTimer += deltaTime;
+            joystickAccel = (std::exp(joystickTimer) - 1.0f) / (std::exp(1.0f) - 1.0f);
+        } else {
+            joystickTimer = 0.0f;
+        }
+    }
+
     auto wrap180 = [](float v) -> float {
         while (v > 180.0f) v -= 360.0f;
         while (v < -180.0f) v += 360.0f;
@@ -411,7 +431,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         if (std::abs(jx) < jdz) jx = 0.0f;
         if (std::abs(jy) < jdz) jy = 0.0f;
         if (jx != 0.0f || jy != 0.0f) {
-            float vel = cam.speed * deltaTime;
+            float vel = cam.speed * deltaTime * joystickAccel;
             if (wctx.activeCategory() == PageCategory::CAMERA) {
                 glm::vec3 delta(0.0f);
                 if (jx != 0.0f) delta += right * (jx * vel);
@@ -598,7 +618,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                     if (std::abs(jx) < jdz) jx = 0.0f;
                     if (std::abs(jy) < jdz) jy = 0.0f;
                     if (jx != 0.0f || jy != 0.0f) {
-                        float vel = cam.speed * deltaTime;
+                        float vel = cam.speed * deltaTime * joystickAccel;
                         glm::vec3 delta(0.0f);
                         if (jx != 0.0f) delta += right * (jx * vel);
                         if (jy != 0.0f) delta += forward * (jy * vel);
