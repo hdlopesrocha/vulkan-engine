@@ -24,7 +24,6 @@ public:
     void setVulkanApp(class VulkanApp* app);
     void initializeTextures();
     void cleanup();
-    void invalidateImGuiDescriptors();
     void bakeAllBillboards();
     const EditableTexture* getComposedAlbedoTexture(size_t index) const;
 

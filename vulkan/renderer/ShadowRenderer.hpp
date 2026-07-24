@@ -2,6 +2,7 @@
 
 #include "../vulkan.hpp"
 #include "../TrackedHandle.hpp"
+#include <imgui.h>
 #include <array>
 #include "../ubo/UniformObject.hpp"
 #include "CommandBufferState.hpp"
@@ -20,7 +21,6 @@ public:
     // Getters for resources (per-cascade)
     VkImageView getShadowMapView(uint32_t cascade = 0) const { return cascades[cascade].colorView; }
     VkSampler getShadowMapSampler() const { return shadowMapSampler; }
-    VkDescriptorSet getImGuiDescriptorSet(uint32_t cascade = 0) const { return cascades[cascade].imguiDescSet; }
     uint32_t getShadowMapSize(uint32_t cascade = 0) const { return shadowMapSizes[cascade]; }
     uint32_t getMaxShadowMapSize() const { return shadowMapSizes[0]; }
     VkDescriptorSetLayout getShadowDescriptorSetLayout(VulkanApp* app) const;
@@ -32,9 +32,11 @@ public:
     VkImage getDepthImage(uint32_t cascade = 0) const;
     VkImageLayout getDepthLayout(uint32_t cascade = 0) const;
     void setDepthLayout(uint32_t cascade, VkImageLayout layout);
-    void freeImGuiDescriptors();
-    void recreateImGuiDescriptors();
     void setCmdState(CommandBufferState* state) { cmdState = state; }
+
+    // Return an ImGui texture ID for a cascade.  Lazily created/cached by
+    // ImTextureManager; safe to call every frame.
+    ImTextureID getImTextureID(VulkanApp* app, uint32_t cascade = 0) const;
 private:
     uint32_t shadowMapSizes[SHADOW_CASCADE_COUNT];
 
@@ -50,7 +52,6 @@ private:
         VmaAllocation depthAllocation = VK_NULL_HANDLE;
         VkDeviceMemory depthMemory = VK_NULL_HANDLE;
         VkImageView depthView = VK_NULL_HANDLE;
-        TrackedHandle<VkDescriptorSet> imguiDescSet;
     };
     CascadeResources cascades[SHADOW_CASCADE_COUNT];
 

@@ -5444,14 +5444,16 @@ void VulkanApp::recreateSwapchain() {
     // been observed to produce stale descriptor-set handles on some drivers).
     //
     // Order matters:
-    //   1. preImGuiShutdown  — frees our AddTexture descriptors (shadow + widgets)
+    //   1. invalidateAll   — clears the ImTextureManager cache (no free needed:
+    //                        pool destruction implicitly reclaims the descriptor sets)
     //   2. ImGui_ImplVulkan_Shutdown — frees the font descriptor internally via
     //      DestroyFontsTexture → RemoveTexture → vkFreeDescriptorSets
     //   3. Destroy old pool   — safe after all descriptors are freed
     //   4. Create new pool    — fresh, uncorrupted pool
     //   5. Init + CreateFontsTexture
-    //   6. onImGuiRecreated   — re-allocate shadow cascade descriptors from new pool
-    preImGuiShutdown();
+    //   6. (Nothing)        — ImTextureManager lazily recreates descriptors on the
+    //                         next getOrCreate() call with the new pool/layout.
+    imTextureManager.invalidateAll();
     ImGui_ImplVulkan_Shutdown();
     if (imguiDescriptorPool != VK_NULL_HANDLE) {
         std::cerr << "[VulkanApp::recreateSwapchain] Destroying old imguiDescriptorPool=" << (void*)imguiDescriptorPool << std::endl;
@@ -5524,10 +5526,8 @@ void VulkanApp::recreateSwapchain() {
         printf("[ImGui] ERROR: ImGui_ImplVulkan_Init (recreate) failed!\n");
     }
 
-    // Notify derived app to re-create any ImGui AddTexture DS that used the old DSL.
-    // The Shutdown() above destroyed the old DescriptorSetLayout; DS allocated with it
-    // must be freed and re-created with the new DSL to pass validation.
-    onImGuiRecreated();
+    // ImTextureManager lazily recreates descriptors on the next getOrCreate() call.
+    // No explicit recreate needed here.
 
     // Notify derived app to recreate size-dependent offscreen resources
     onSwapchainResized(static_cast<uint32_t>(width), static_cast<uint32_t>(height));

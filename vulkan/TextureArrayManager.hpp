@@ -17,8 +17,8 @@ void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount);
 
 #include <cstdint>
 #include "TextureImage.hpp"
+#include <imgui.h>
 #include <vector>
-#include <backends/imgui_impl_vulkan.h>
 
 struct TextureTriple { const char* albedo; const char* normal; const char* bump; const char* roughness = nullptr; const char* ao = nullptr; };
 
@@ -43,21 +43,18 @@ public:
     VkSampler roughnessSampler = VK_NULL_HANDLE;
     VkSampler aoSampler = VK_NULL_HANDLE;
     uint currentLayer = 0;
-    // Back-pointer to `VulkanApp` (used for ImGui descriptor creation and legacy convenience methods).
+    // Back-pointer to `VulkanApp` (used for ImGui texture descriptor creation and legacy convenience methods).
     // Kept for backward compatibility with UI code that calls `getImTexture()` without an app.
     VulkanApp* appPtr = nullptr;
 
-    // Per-layer 2D views and ImGui texture IDs (created on demand for UI display)
+    // Per-layer 2D views (created on demand for UI display).  ImGui texture
+    // descriptors are managed centrally by ImTextureManager — these vectors
+    // hold only the Vulkan image views.
     std::vector<VkImageView> albedoLayerViews;
     std::vector<VkImageView> normalLayerViews;
     std::vector<VkImageView> bumpLayerViews;
     std::vector<VkImageView> roughnessLayerViews;
     std::vector<VkImageView> aoLayerViews;
-    std::vector<ImTextureID> albedoImTextures;
-    std::vector<ImTextureID> normalImTextures;
-    std::vector<ImTextureID> bumpImTextures;
-    std::vector<ImTextureID> roughnessImTextures;
-    std::vector<ImTextureID> aoImTextures;
     // Track which layers have been initialized (contains valid data)
     std::vector<char> layerInitialized;
 
@@ -89,11 +86,9 @@ public:
     void updateLayerFromEditable(class VulkanApp* app, uint32_t layer, const class EditableTexture& tex);
     void updateLayerFromEditableMap(class VulkanApp* app, uint32_t layer, const class EditableTexture& tex, int map);
 
-    // Invalidate all cached ImGui texture descriptors (e.g. after swapchain recreation
-    // when the descriptor pool is destroyed). Next getImTexture() call re-creates them.
-    void invalidateImGuiDescriptors();
-
-    // Return an ImGui texture handle for a given array layer and map (0=albedo,1=normal,2=bump,3=roughness,4=ao)
+    // Return an ImGui texture handle for a given array layer and map
+    // (0=albedo,1=normal,2=bump,3=roughness,4=ao).  The descriptor is
+    // lazily created and cached by ImTextureManager.
     ImTextureID getImTexture(size_t layer, int map);
     // Variant that returns a descriptor sampling only the alpha channel of the
     // requested layer/map.  Used for visualizing noise or masks (swizzled view).

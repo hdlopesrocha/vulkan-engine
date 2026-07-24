@@ -19,14 +19,13 @@ public:
     void setVegetationRenderer(VegetationRenderer* renderer) { vegRenderer = renderer; }
     void captureAll(float scale);
     void rewire();
-    void invalidateImGuiDescriptors();
-    void recreateImGuiDescriptors();
 
     bool isReady() const { return capture.isReady(); }
 
-    VkDescriptorSet getImGuiDescSet(uint32_t billboardType, uint32_t viewIdx) const;
-    VkDescriptorSet getImGuiNormalDescSet(uint32_t billboardType, uint32_t viewIdx) const;
-    VkDescriptorSet getImGuiDepthDescSet(uint32_t billboardType, uint32_t viewIdx) const;
+    // ImGui texture helpers — lazily created by ImTextureManager.
+    ImTextureID getImTextureID(uint32_t billboardType, uint32_t viewIdx) const;
+    ImTextureID getImGuiNormalTextureID(uint32_t billboardType, uint32_t viewIdx) const;
+    ImTextureID getImGuiDepthTextureID(uint32_t billboardType, uint32_t viewIdx) const;
     const glm::vec3& getViewDir(uint32_t viewIdx) const { return capture.getViewDir(viewIdx); }
     uint32_t closestView(const glm::vec3& dir) const { return capture.closestView(dir); }
 

@@ -22,6 +22,7 @@
 #include "vulkan.hpp"
 #include "VulkanResourceManager.hpp"
 #include "VmaContext.hpp"
+#include "ImTextureManager.hpp"
 
 struct GraphicsPipelineConfig {
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
@@ -195,6 +196,9 @@ private:
     // Global material descriptor set (bound once and updated when materials change)
     VkDescriptorSet materialDescriptorSet = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    // Central manager for ImGui texture descriptors (lazy creation, single cache)
+    ImTextureManager imTextureManager;
+
     // Registered descriptor sets for runtime inspection (widgets can read these)
     std::vector<VkDescriptorSet> registeredDescriptorSets;
     // Registered graphics pipelines for runtime inspection

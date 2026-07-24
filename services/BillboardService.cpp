@@ -36,9 +36,6 @@ void BillboardService::cleanup() {
     printf("[BillboardService] cleanup done\n");
 }
 
-void BillboardService::invalidateImGuiDescriptors() {
-}
-
 void BillboardService::createBillboardArrayTextures() {
     if (!vulkanApp || !texturesInitialized) return;
 

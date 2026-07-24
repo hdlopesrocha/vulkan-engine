@@ -54,24 +54,14 @@ void ImpostorService::rewire() {
     }
 }
 
-void ImpostorService::invalidateImGuiDescriptors() {
-    capture.invalidateImGuiDescriptors();
+ImTextureID ImpostorService::getImTextureID(uint32_t billboardType, uint32_t viewIdx) const {
+    return capture.getImTextureID(vulkanApp, billboardType, viewIdx);
 }
 
-void ImpostorService::recreateImGuiDescriptors() {
-    if (vulkanApp && capture.isReady()) {
-        capture.recreateAllImGuiDescSets(vulkanApp);
-    }
+ImTextureID ImpostorService::getImGuiNormalTextureID(uint32_t billboardType, uint32_t viewIdx) const {
+    return capture.getImGuiNormalTextureID(vulkanApp, billboardType, viewIdx);
 }
 
-VkDescriptorSet ImpostorService::getImGuiDescSet(uint32_t billboardType, uint32_t viewIdx) const {
-    return capture.getImGuiDescSet(billboardType, viewIdx);
-}
-
-VkDescriptorSet ImpostorService::getImGuiNormalDescSet(uint32_t billboardType, uint32_t viewIdx) const {
-    return capture.getImGuiNormalDescSet(billboardType, viewIdx);
-}
-
-VkDescriptorSet ImpostorService::getImGuiDepthDescSet(uint32_t billboardType, uint32_t viewIdx) const {
-    return capture.getImGuiDepthDescSet(billboardType, viewIdx);
+ImTextureID ImpostorService::getImGuiDepthTextureID(uint32_t billboardType, uint32_t viewIdx) const {
+    return capture.getImGuiDepthTextureID(vulkanApp, billboardType, viewIdx);
 }

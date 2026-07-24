@@ -50,18 +50,6 @@ void BillboardCreator::cleanup() {
     printf("[BillboardCreator] cleanup done\n");
 }
 
-void BillboardCreator::invalidateImGuiDescriptors() {
-    printf("[BillboardCreator] invalidateImGuiDescriptors: texturesInitialized=%d\n", texturesInitialized ? 1 : 0);
-    if (billboardService) billboardService->invalidateImGuiDescriptors();
-    if (!texturesInitialized) return;
-    for (size_t i = 0; i < composedAlbedo.size(); ++i) {
-        composedAlbedo[i].invalidateImGuiDescriptor();
-        composedNormal[i].invalidateImGuiDescriptor();
-        composedOpacity[i].invalidateImGuiDescriptor();
-    }
-    printf("[BillboardCreator] invalidateImGuiDescriptors done\n");
-}
-
 size_t BillboardCreator::getComposeIndex() const {
     if (currentBillboardIndex < 0) return 0;
     size_t idx = static_cast<size_t>(currentBillboardIndex);
@@ -364,11 +352,11 @@ void BillboardCreator::renderBillboardPreview(Billboard* billboard) {
     // Get the composed texture to display
     ImTextureID composedTexID = 0;
     if (previewTextureView == 0) {
-        composedTexID = (ImTextureID)composedAlbedo[composeIndex].getImGuiDescriptorSet();
+        composedTexID = composedAlbedo[composeIndex].getImTextureID(vulkanApp);
     } else if (previewTextureView == 1) {
-        composedTexID = (ImTextureID)composedNormal[composeIndex].getImGuiDescriptorSet();
+        composedTexID = composedNormal[composeIndex].getImTextureID(vulkanApp);
     } else {
-        composedTexID = (ImTextureID)composedOpacity[composeIndex].getImGuiDescriptorSet();
+        composedTexID = composedOpacity[composeIndex].getImTextureID(vulkanApp);
     }
 
     if (composedTexID) {

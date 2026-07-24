@@ -1,7 +1,6 @@
 #include "EditableTexture.hpp"
 #include "VulkanApp.hpp"
 #include <stdexcept>
-#include <backends/imgui_impl_vulkan.h>
 
 void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt, const char* nm) {
 	width = w;
@@ -58,33 +57,17 @@ void EditableTexture::init(VulkanApp* app, uint32_t w, uint32_t h, VkFormat fmt,
 	// Register sampler
 	app->resources.addSampler(sampler, "EditableTexture: sampler");
 
-	createImGuiDescriptor();
+	// ImGui descriptor is created lazily by ImTextureManager on first use.
 }
 
 void EditableTexture::cleanup() {
-	if (imguiDescSet != VK_NULL_HANDLE) {
-		VulkanApp* a = getImGuiVulkanApp();
-		if (a) {
-			VkDescriptorSet tmp = (VkDescriptorSet)imguiDescSet;
-			a->deferDestroyUntilAllPending([tmp]() { ImGui_ImplVulkan_RemoveTexture(tmp); });
-		} else {
-			ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)imguiDescSet);
-		}
-		imguiDescSet = VK_NULL_HANDLE;
-	}
-	// Do not destroy Vulkan objects here; central manager handles destruction.
+	// ImGui descriptors are managed by ImTextureManager (shutdown deferred).
 	sampler = VK_NULL_HANDLE;
 	view = VK_NULL_HANDLE;
 	image = VK_NULL_HANDLE;
 	allocation = VK_NULL_HANDLE;
 	memory = VK_NULL_HANDLE;
 	cpuData.clear();
-}
-
-void EditableTexture::invalidateImGuiDescriptor() {
-    if (imguiDescSet == VK_NULL_HANDLE) return;
-    ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)imguiDescSet);
-    imguiDescSet = VK_NULL_HANDLE;
 }
 
 void EditableTexture::setPixel(uint32_t x, uint32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
@@ -143,10 +126,11 @@ void EditableTexture::updateGPU(VulkanApp* app) {
 	isDirty = false;
 }
 
-void EditableTexture::renderImGui() {
-	if (imguiDescSet == VK_NULL_HANDLE) createImGuiDescriptor();
-	if (imguiDescSet != VK_NULL_HANDLE) {
-		ImGui::Image((ImTextureID)imguiDescSet, ImVec2((float)width, (float)height));
+void EditableTexture::renderImGui(VulkanApp* app) {
+	if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE || !app) return;
+	ImTextureID tid = app->imTextureManager.getOrCreate(view, sampler);
+	if (tid) {
+		ImGui::Image(tid, ImVec2((float)width, (float)height));
 	}
 }
 
@@ -157,10 +141,12 @@ bool EditableTexture::getDirty() const { return isDirty; }
 uint32_t EditableTexture::getWidth() const { return width; }
 uint32_t EditableTexture::getHeight() const { return height; }
 uint32_t EditableTexture::getBytesPerPixel() const { return bytesPerPixel; }
-VkDescriptorSet EditableTexture::getImGuiDescriptorSet() {
-    if (imguiDescSet == VK_NULL_HANDLE) createImGuiDescriptor();
-    return imguiDescSet;
+
+ImTextureID EditableTexture::getImTextureID(VulkanApp* app) {
+	if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE || !app) return 0;
+	return app->imTextureManager.getOrCreate(view, sampler);
 }
+
 const uint8_t* EditableTexture::getPixelData() const { return cpuData.empty() ? nullptr : cpuData.data(); }
 
 TextureImage EditableTexture::getTextureImage() const {
@@ -170,16 +156,6 @@ TextureImage EditableTexture::getTextureImage() const {
 	ti.view = view;
 	ti.mipLevels = 1;
 	return ti;
-}
-
-void EditableTexture::createImGuiDescriptor() {
-	if (imguiDescSet != VK_NULL_HANDLE) return;
-	imguiDescSet = ImGui_ImplVulkan_AddTexture(sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	if (imguiDescSet == VK_NULL_HANDLE) {
-		printf("[EditableTexture] Failed to create ImGui descriptor for '%s'\n", name.c_str());
-	} else {
-		printf("[EditableTexture] Created ImGui descriptor %p for '%s'\n", (void*)imguiDescSet, name.c_str());
-	}
 }
 
 void EditableTexture::transitionImageLayout(VulkanApp* app, VkImageLayout oldLayout, VkImageLayout newLayout) {
