@@ -581,15 +581,18 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                         if (jx != 0.0f) delta += right * (jx * vel);
                         if (jy != 0.0f) delta += forward * (jy * vel);
                         be->snapTranslation += delta;
+                        be->translate += delta;
                         em->queue(std::make_shared<RebuildBrushEvent>());
                     }
                 }
                 if (s.buttonC) {
                     be->snapTranslation += up * (cam.speed * deltaTime);
+                    be->translate += up * (cam.speed * deltaTime);
                     em->queue(std::make_shared<RebuildBrushEvent>());
                 }
                 if (s.buttonZ) {
                     be->snapTranslation -= up * (cam.speed * deltaTime);
+                    be->translate -= up * (cam.speed * deltaTime);
                     em->queue(std::make_shared<RebuildBrushEvent>());
                 }
             }
