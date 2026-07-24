@@ -66,16 +66,16 @@ void ImpostorWidget::render() {
     const int   columns   = 5;
     for (uint32_t i = 0; i < ImpostorCapture::NUM_VIEWS; ++i) {
         if (i % columns != 0) ImGui::SameLine();
-        ImTextureID tid = 0;
+        VkDescriptorSet ds = VK_NULL_HANDLE;
         if (previewMode == 0)
-            tid = impostorService->getImTextureID(static_cast<uint32_t>(selectedBillboard), i);
+            ds = impostorService->getImGuiDescSet(static_cast<uint32_t>(selectedBillboard), i);
         else if (previewMode == 1)
-            tid = impostorService->getImGuiNormalTextureID(static_cast<uint32_t>(selectedBillboard), i);
+            ds = impostorService->getImGuiNormalDescSet(static_cast<uint32_t>(selectedBillboard), i);
         else
-            tid = impostorService->getImGuiDepthTextureID(static_cast<uint32_t>(selectedBillboard), i);
-        if (tid) {
+            ds = impostorService->getImGuiDepthDescSet(static_cast<uint32_t>(selectedBillboard), i);
+        if (ds != VK_NULL_HANDLE) {
             ImGui::PushID(static_cast<int>(i));
-            ImGui::Image(tid, ImVec2(thumbSize, thumbSize));
+            ImGui::Image((ImTextureID)ds, ImVec2(thumbSize, thumbSize));
             if (ImGui::IsItemHovered()) {
                 const glm::vec3& vd = impostorService->getViewDir(i);
                 ImGui::SetTooltip("View %u\ndir=(%.2f, %.2f, %.2f)", i, vd.x, vd.y, vd.z);
@@ -97,16 +97,16 @@ void ImpostorWidget::render() {
                                 cosP * std::cos(previewYaw));
     const uint32_t closestIdx = impostorService->closestView(glm::normalize(previewDir));
 
-    ImTextureID previewTid = 0;
+    VkDescriptorSet previewDs = VK_NULL_HANDLE;
     if (previewMode == 0)
-        previewTid = impostorService->getImTextureID(static_cast<uint32_t>(selectedBillboard), closestIdx);
+        previewDs = impostorService->getImGuiDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
     else if (previewMode == 1)
-        previewTid = impostorService->getImGuiNormalTextureID(static_cast<uint32_t>(selectedBillboard), closestIdx);
+        previewDs = impostorService->getImGuiNormalDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
     else
-        previewTid = impostorService->getImGuiDepthTextureID(static_cast<uint32_t>(selectedBillboard), closestIdx);
-    if (previewTid) {
+        previewDs = impostorService->getImGuiDepthDescSet(static_cast<uint32_t>(selectedBillboard), closestIdx);
+    if (previewDs != VK_NULL_HANDLE) {
         const float previewSize = 256.0f;
-        ImGui::Image(previewTid, ImVec2(previewSize, previewSize));
+        ImGui::Image((ImTextureID)previewDs, ImVec2(previewSize, previewSize));
 
         if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
             const ImVec2 delta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);

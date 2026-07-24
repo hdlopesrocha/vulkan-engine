@@ -3,7 +3,6 @@
 #include "../VmaContext.hpp"
 #include "../TrackedHandle.hpp"
 #include "../Buffer.hpp"
-#include <imgui.h>
 #include <glm/glm.hpp>
 #include <array>
 #include "CommandBufferState.hpp"
@@ -43,8 +42,7 @@ public:
     bool isReady() const { return capturedTypes > 0; }
 
     // ImGui-compatible descriptor set for view (billboardType, viewIdx).
-    // Lazily created/cached by ImTextureManager.
-    ImTextureID getImTextureID(VulkanApp* app, uint32_t billboardType, uint32_t viewIdx) const;
+    VkDescriptorSet getImGuiDescSet(uint32_t billboardType, uint32_t viewIdx) const;
 
     // World-space direction FROM the camera to the billboard center for view i.
     const glm::vec3& getViewDir(uint32_t viewIdx) const { return viewDirs[viewIdx]; }
@@ -66,10 +64,10 @@ public:
     VkSampler   getCaptureArraySampler() const { return sceneSampler; }
 
     // ImGui-compatible descriptor set for normal map view (billboardType, viewIdx).
-    ImTextureID getImGuiNormalTextureID(VulkanApp* app, uint32_t billboardType, uint32_t viewIdx) const;
+    VkDescriptorSet getImGuiNormalDescSet(uint32_t billboardType, uint32_t viewIdx) const;
 
     // ImGui-compatible descriptor set for depth view (billboardType, viewIdx).
-    ImTextureID getImGuiDepthTextureID(VulkanApp* app, uint32_t billboardType, uint32_t viewIdx) const;
+    VkDescriptorSet getImGuiDepthDescSet(uint32_t billboardType, uint32_t viewIdx) const;
 
 private:
     // Fibonacci sphere directions (unit vectors pointing FROM camera TO center).
@@ -150,9 +148,12 @@ private:
         float     impostorDistance; // always 0 during capture
     };
 
-    // ImGui display sampler — shared by all ImGui preview descriptors.
+    // ImGui display resources (TOTAL_LAYERS descriptor sets each for albedo and normals).
     TrackedHandle<VkSampler> imguiSampler;
     TrackedHandle<VkSampler> sceneSampler;
+    std::array<TrackedHandle<VkDescriptorSet>, TOTAL_LAYERS> imguiDescSets;
+    std::array<TrackedHandle<VkDescriptorSet>, TOTAL_LAYERS> imguiNormalDescSets;
+    std::array<TrackedHandle<VkDescriptorSet>, TOTAL_LAYERS> imguiDepthDescSets;
 
     // Per-layer capture inverse VP matrices for depth reprojection.
     std::array<glm::mat4, TOTAL_LAYERS> captureInvVP{};
@@ -179,7 +180,11 @@ private:
     void updateTexDescSet(VkDevice device,
                           VkImageView albedo, VkImageView normal,
                           VkImageView opacity, VkSampler sampler);
+    void createImGuiDescSetsForType(VulkanApp* app, uint32_t billboardType);
 public:
+    void destroyImGuiDescSets();
+    void invalidateImGuiDescriptors() { destroyImGuiDescSets(); }
+    void recreateAllImGuiDescSets(VulkanApp* app);
     CommandBufferState* cmdState = nullptr;
     void setCmdState(CommandBufferState* state) { cmdState = state; }
 };

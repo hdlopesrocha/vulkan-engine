@@ -76,7 +76,7 @@ void ImpostorCapture::init(VulkanApp* app) {
     createCaptureInvVPBuffer(app);
     createSceneSampler(app);
     allocateDescSets(app);
-    // ImGui sampler is created lazily in getImTextureID (see below).
+    imguiDescSets.fill(VK_NULL_HANDLE);
     capturedTypes = 0;
 
     // Pre-transition all 60 layers UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
@@ -101,6 +101,8 @@ void ImpostorCapture::init(VulkanApp* app) {
 void ImpostorCapture::cleanup(VulkanApp* app) {
     if (!app || !initDone) return;
     VkDevice device = app->getDevice();
+
+    destroyImGuiDescSets();
 
     if (imguiSampler != VK_NULL_HANDLE) {
         app->resources.removeSampler(imguiSampler);
@@ -203,9 +205,13 @@ void ImpostorCapture::capture(VulkanApp* app,
     // Layer range for this billboard type.
     const uint32_t layerBase = billboardType * NUM_VIEWS;
 
-    // ImGui descriptor sets are managed by ImTextureManager; clearing the old
-    // layer image content does not invalidate the cached descriptors since the
-    // (view, sampler) keys remain the same.
+    // Remove old descriptor sets for this type before overwriting images.
+    for (uint32_t v = 0; v < NUM_VIEWS; ++v) {
+        VkDescriptorSet ds = imguiDescSets[layerBase + v];
+        if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); imguiDescSets[layerBase + v] = VK_NULL_HANDLE; }
+        VkDescriptorSet dsN = imguiNormalDescSets[layerBase + v];
+        if (dsN != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(dsN); imguiNormalDescSets[layerBase + v] = VK_NULL_HANDLE; }
+    }
 
     // Update the texture descriptor set with current billboard arrays.
     updateTexDescSet(app->getDevice(), albedoView, normalView, opacityView, sampler);
@@ -362,8 +368,7 @@ void ImpostorCapture::capture(VulkanApp* app,
         }
     });
 
-    // ImGui descriptor set is created lazily by ImTextureManager on next
-    // getImTextureID() call.  No explicit creation needed here.
+    createImGuiDescSetsForType(app, billboardType);
     capturedTypes |= (1u << billboardType);
     fprintf(stderr,
             "[ImpostorCapture] Captured billboard type %u | %u views | scale=%.1f | layers %u-%u\n",
@@ -381,46 +386,19 @@ void ImpostorCapture::captureAll(VulkanApp* app,
             NUM_BILLBOARD_TYPES, NUM_VIEWS, TOTAL_LAYERS);
 }
 
-static VkSampler ensureImGuiSampler(VulkanApp* app, TrackedHandle<VkSampler>& sampler) {
-    if (sampler != VK_NULL_HANDLE) return sampler;
-    VkSamplerCreateInfo si{};
-    si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    si.magFilter    = VK_FILTER_LINEAR;
-    si.minFilter    = VK_FILTER_LINEAR;
-    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.anisotropyEnable = VK_FALSE;
-    si.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-    si.unnormalizedCoordinates = VK_FALSE;
-    si.compareEnable = VK_FALSE;
-    si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    sampler = app->createSampler(si, "ImpostorCapture: imguiSampler");
-    return sampler;
+VkDescriptorSet ImpostorCapture::getImGuiDescSet(uint32_t billboardType, uint32_t viewIdx) const {
+    if (billboardType >= NUM_BILLBOARD_TYPES || viewIdx >= NUM_VIEWS) return VK_NULL_HANDLE;
+    return imguiDescSets[billboardType * NUM_VIEWS + viewIdx];
 }
 
-ImTextureID ImpostorCapture::getImTextureID(VulkanApp* app, uint32_t billboardType, uint32_t viewIdx) const {
-    if (billboardType >= NUM_BILLBOARD_TYPES || viewIdx >= NUM_VIEWS || !app) return 0;
-    const uint32_t idx = billboardType * NUM_VIEWS + viewIdx;
-    if (captureLayerViews[idx] == VK_NULL_HANDLE) return 0;
-    VkSampler s = ensureImGuiSampler(app, const_cast<TrackedHandle<VkSampler>&>(imguiSampler));
-    return app->imTextureManager.getOrCreate(captureLayerViews[idx], s);
+VkDescriptorSet ImpostorCapture::getImGuiNormalDescSet(uint32_t billboardType, uint32_t viewIdx) const {
+    if (billboardType >= NUM_BILLBOARD_TYPES || viewIdx >= NUM_VIEWS) return VK_NULL_HANDLE;
+    return imguiNormalDescSets[billboardType * NUM_VIEWS + viewIdx];
 }
 
-ImTextureID ImpostorCapture::getImGuiNormalTextureID(VulkanApp* app, uint32_t billboardType, uint32_t viewIdx) const {
-    if (billboardType >= NUM_BILLBOARD_TYPES || viewIdx >= NUM_VIEWS || !app) return 0;
-    const uint32_t idx = billboardType * NUM_VIEWS + viewIdx;
-    if (captureNormalLayerViews[idx] == VK_NULL_HANDLE) return 0;
-    VkSampler s = ensureImGuiSampler(app, const_cast<TrackedHandle<VkSampler>&>(imguiSampler));
-    return app->imTextureManager.getOrCreate(captureNormalLayerViews[idx], s);
-}
-
-ImTextureID ImpostorCapture::getImGuiDepthTextureID(VulkanApp* app, uint32_t billboardType, uint32_t viewIdx) const {
-    if (billboardType >= NUM_BILLBOARD_TYPES || viewIdx >= NUM_VIEWS || !app) return 0;
-    const uint32_t idx = billboardType * NUM_VIEWS + viewIdx;
-    if (captureDepthLayerViews[idx] == VK_NULL_HANDLE) return 0;
-    VkSampler s = ensureImGuiSampler(app, const_cast<TrackedHandle<VkSampler>&>(imguiSampler));
-    return app->imTextureManager.getOrCreate(captureDepthLayerViews[idx], s);
+VkDescriptorSet ImpostorCapture::getImGuiDepthDescSet(uint32_t billboardType, uint32_t viewIdx) const {
+    if (billboardType >= NUM_BILLBOARD_TYPES || viewIdx >= NUM_VIEWS) return VK_NULL_HANDLE;
+    return imguiDepthDescSets[billboardType * NUM_VIEWS + viewIdx];
 }
 
 uint32_t ImpostorCapture::closestView(const glm::vec3& dir) const {
@@ -889,4 +867,51 @@ void ImpostorCapture::updateTexDescSet(VkDevice device,
     writer.flush();
 }
 
+void ImpostorCapture::createImGuiDescSetsForType(VulkanApp* app, uint32_t billboardType) {
+    if (imguiSampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo si{};
+        si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter    = VK_FILTER_LINEAR;
+        si.minFilter    = VK_FILTER_LINEAR;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.anisotropyEnable = VK_FALSE;
+        si.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        si.unnormalizedCoordinates = VK_FALSE;
+        si.compareEnable = VK_FALSE;
+        si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        imguiSampler = app->createSampler(si, "ImpostorCapture: imguiSampler");
+    }
+    const uint32_t layerBase = billboardType * NUM_VIEWS;
+    for (uint32_t v = 0; v < NUM_VIEWS; ++v) {
+        const uint32_t layerIdx = layerBase + v;
+        imguiDescSets[layerIdx] = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
+            imguiSampler, captureLayerViews[layerIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        imguiNormalDescSets[layerIdx] = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
+            imguiSampler, captureNormalLayerViews[layerIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (captureDepthLayerViews[layerIdx] != VK_NULL_HANDLE) {
+            imguiDepthDescSets[layerIdx] = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
+                imguiSampler, captureDepthLayerViews[layerIdx], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+    }
+}
 
+void ImpostorCapture::recreateAllImGuiDescSets(VulkanApp* app) {
+    destroyImGuiDescSets();
+    for (uint32_t bt = 0; bt < NUM_BILLBOARD_TYPES; ++bt) {
+        createImGuiDescSetsForType(app, bt);
+    }
+}
+
+void ImpostorCapture::destroyImGuiDescSets() {
+    for (auto& ds : imguiDescSets) {
+        if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); ds = VK_NULL_HANDLE; }
+    }
+    for (auto& ds : imguiNormalDescSets) {
+        if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); ds = VK_NULL_HANDLE; }
+    }
+    for (auto& ds : imguiDepthDescSets) {
+        if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); ds = VK_NULL_HANDLE; }
+    }
+}
