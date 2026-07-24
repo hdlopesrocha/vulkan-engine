@@ -14,6 +14,7 @@ public:
     void cleanup() override;
 
     void initializeTextures();
+    void invalidateImGuiDescriptors();
     void createBillboardArrayTextures();
 
     // Bake billboard composed textures into array textures
