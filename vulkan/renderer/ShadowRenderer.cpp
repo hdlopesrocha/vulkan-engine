@@ -7,6 +7,7 @@
 #include "../ShaderStage.hpp"
 #include "../../utils/FileReader.hpp"
 #include "../../math/Vertex.hpp"
+#include <backends/imgui_impl_vulkan.h>
 #include <stdexcept>
 #include <fstream>
 #include <limits>
@@ -31,7 +32,14 @@ void ShadowRenderer::init(VulkanApp* app) {
 }
 
 void ShadowRenderer::cleanup(VulkanApp* app) {
-    // ImGui descriptors are managed by ImTextureManager (shutdown deferred).
+
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
+        if (cascades[i].imguiDescSet != VK_NULL_HANDLE) {
+            VkDescriptorSet ds = cascades[i].imguiDescSet;
+            app->deferDestroyUntilAllPending([ds](){ ImGui_ImplVulkan_RemoveTexture(ds); });
+            cascades[i].imguiDescSet = VK_NULL_HANDLE;
+        }
+    }
 }
 
 void ShadowRenderer::createShadowMaps(VulkanApp* app) {
@@ -80,7 +88,9 @@ void ShadowRenderer::createShadowMaps(VulkanApp* app) {
 
         cascadeDepthLayouts[c] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-        // ImGui descriptor is created lazily by ImTextureManager.
+        // ImGui descriptor for shadow map visualisation
+        cas.imguiDescSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
+            shadowMapSampler, cas.colorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
     std::cerr << "[ShadowRenderer] Created " << SHADOW_CASCADE_COUNT
@@ -536,12 +546,26 @@ void ShadowRenderer::setDepthLayout(uint32_t cascade, VkImageLayout layout) {
     if (cascade < cascadeDepthLayouts.size()) cascadeDepthLayouts[cascade] = layout;
 }
 
-ImTextureID ShadowRenderer::getImTextureID(VulkanApp* app, uint32_t cascade) const {
-    if (cascade >= SHADOW_CASCADE_COUNT) return 0;
-    const auto& cas = cascades[cascade];
-    if (cas.colorView == VK_NULL_HANDLE || shadowMapSampler == VK_NULL_HANDLE || !app)
-        return 0;
-    return app->imTextureManager.getOrCreate(cas.colorView, shadowMapSampler);
+void ShadowRenderer::freeImGuiDescriptors() {
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
+        if (cascades[i].imguiDescSet != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(cascades[i].imguiDescSet);
+            cascades[i].imguiDescSet = VK_NULL_HANDLE;
+        }
+    }
+}
+
+void ShadowRenderer::recreateImGuiDescriptors() {
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
+        if (cascades[i].imguiDescSet != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(cascades[i].imguiDescSet);
+            cascades[i].imguiDescSet = VK_NULL_HANDLE;
+        }
+        if (cascades[i].colorView != VK_NULL_HANDLE && shadowMapSampler != VK_NULL_HANDLE) {
+            cascades[i].imguiDescSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
+                shadowMapSampler, cascades[i].colorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+    }
 }
 
 void ShadowRenderer::requestWireframeReadback() {
