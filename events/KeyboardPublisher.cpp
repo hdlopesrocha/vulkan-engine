@@ -9,6 +9,7 @@
 #include "CloseWindowEvent.hpp"
 #include "ToggleFullscreenEvent.hpp"
 #include "RebuildBrushEvent.hpp"
+#include "ApplyBrushToSceneEvent.hpp"
 #include "ControllerManager.hpp"
 #include "ControllerContext.hpp"
 #include "ControllerInput.hpp"
@@ -127,6 +128,11 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
     // Close window: ESC on key-down
     if (edgePressed(window, GLFW_KEY_ESCAPE, escPrev)) {
         em->publish(std::make_shared<CloseWindowEvent>());
+    }
+
+    // Apply brush to scene: SPACE on key-down (only on Brush page)
+    if (edgePressed(window, GLFW_KEY_SPACE, spacePrev) && cat == PageCategory::BRUSH) {
+        em->publish(std::make_shared<ApplyBrushToSceneEvent>());
     }
 
     if (brushChanged) {

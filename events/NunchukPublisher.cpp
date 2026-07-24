@@ -10,6 +10,7 @@
 #include "../utils/Brush3dManager.hpp"
 #include "../utils/Brush3dEntry.hpp"
 #include "RebuildBrushEvent.hpp"
+#include "ApplyBrushToSceneEvent.hpp"
 
 #include <wiiuse.h>
 
@@ -359,6 +360,11 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 }
             }
         }
+    }
+
+    // Wiimote B → apply brush to scene (only on Brush page)
+    if ((pressed & WIIMOTE_BUTTON_B) && wctx.activeCategory() == PageCategory::BRUSH) {
+        em->publish(std::make_shared<ApplyBrushToSceneEvent>());
     }
 
     // Wiimote 1 → snap reset / brush place

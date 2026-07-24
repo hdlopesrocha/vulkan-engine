@@ -63,6 +63,7 @@
 #include "events/CloseWindowEvent.hpp"
 #include "events/ToggleFullscreenEvent.hpp"
 #include "events/RebuildBrushEvent.hpp"
+#include "events/ApplyBrushToSceneEvent.hpp"
 #include "vulkan/TextureArrayManager.hpp"
 #include "vulkan/MaterialManager.hpp"
 #include "vulkan/renderer/DescriptorWriter.hpp"
@@ -158,6 +159,7 @@ public:
     // while the frame is being recorded (causes deadlock). Set by UI,
     // consumed in `postSubmit()`.
     bool brushRebuildPending = false;
+    bool brushApplyToScenePending = false;
     bool generateMapPending = false;
     bool loadScenePending = false;
     std::string pendingLoadPath;
@@ -633,6 +635,8 @@ public:
     void preAllocateAsyncDescriptorPools();
     // Rebuild the brush preview scene from Brush3dWidget entries
     void rebuildBrushScene();
+    // Apply the selected brush SDF to the main scene's octree on the selected layer
+    void applyBrushToScene();
     // When brush animation is enabled, advance the trajectory time and move the
     // selected brush entry along a circular orbit; the actual brush rebuild is
     // performed by rebuildBrushScene() afterwards.
@@ -1879,6 +1883,10 @@ public:
             brushRebuildPending = true;
             return;
         }
+        if (auto applyEvent = std::dynamic_pointer_cast<ApplyBrushToSceneEvent>(event)) {
+            brushApplyToScenePending = true;
+            return;
+        }
     }
     // Ensure persistent cubemap rendering resources are allocated
     void ensureCubemapResources();
@@ -2269,6 +2277,108 @@ void MyApp::rebuildBrushScene() {
 
     // std::cerr << "[MyApp::rebuildBrushScene] Done — brush opaque chunks: " << sceneRenderer->brushSolidChunks.size()
     //           << ", brush transparent chunks: " << sceneRenderer->brushTransparentChunks.size() << std::endl;
+}
+
+void MyApp::applyBrushToScene() {
+    if (!mainScene || !sceneRenderer) return;
+
+    const BrushEntry* selectedEntry = brushManager.getSelectedEntry();
+    if (!selectedEntry) return;
+
+    const auto& entry = *selectedEntry;
+
+    // Select brush operation based on brushMode
+    float (*brushOp)(float, float);
+    switch (entry.brushMode) {
+        case 1:  brushOp = SDF::opSubtraction; break;
+        case 2:  brushOp = SDF::opPaint;       break;
+        default: brushOp = SDF::opUnion;       break;
+    }
+
+    // Select target octree and handler based on targetLayer
+    Octree& octree = (entry.targetLayer == 0)
+        ? mainScene->getOpaqueOctree()
+        : mainScene->transparentOctree;
+
+    const OctreeChangeHandler& handler = (entry.targetLayer == 0)
+        ? static_cast<const OctreeChangeHandler&>(*sceneUniqueSolidHandler)
+        : static_cast<const OctreeChangeHandler&>(*sceneUniqueLiquidHandler);
+
+    Transformation model(entry.scale, entry.translate, entry.rot);
+    SimpleBrush brush(entry.materialIndex);
+
+    Simplifier simplifier(0.95f, 0.2f, true);
+    glm::vec4 translate(0.0f);
+    glm::vec4 scale(1.0f);
+
+    auto applyEntry = [&](WrappedSignedDistanceFunction* wrappedFunc) {
+        if (entry.useEffect) {
+            switch (entry.effectType) {
+                case 0: {
+                    WrappedPerlinDistortDistanceEffect effect(wrappedFunc,
+                        entry.effectAmplitude, entry.effectFrequency,
+                        glm::vec3(0), entry.effectBrightness, entry.effectContrast);
+                    octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                    break;
+                }
+                case 1: {
+                    WrappedPerlinCarveDistanceEffect effect(wrappedFunc,
+                        entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
+                        glm::vec3(0), entry.effectBrightness, entry.effectContrast);
+                    octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                    break;
+                }
+                case 2: {
+                    WrappedSineDistortDistanceEffect effect(wrappedFunc,
+                        entry.effectAmplitude, entry.effectFrequency, glm::vec3(0));
+                    octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                    break;
+                }
+                case 3: {
+                    WrappedVoronoiCarveDistanceEffect effect(wrappedFunc,
+                        entry.effectAmplitude, entry.effectCellSize,
+                        glm::vec3(0), entry.effectBrightness, entry.effectContrast);
+                    octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                    break;
+                }
+                default:
+                    octree.apply(brushOp, wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
+                    break;
+            }
+        } else {
+            octree.apply(brushOp, wrappedFunc, model, translate, scale, brush, entry.minSize, simplifier, handler);
+        }
+    };
+
+    switch (entry.sdfType) {
+        case 0: { SphereDistanceFunction fn; WrappedSphere wrapped(&fn); applyEntry(&wrapped); break; }
+        case 1: { BoxDistanceFunction fn; WrappedBox wrapped(&fn); applyEntry(&wrapped); break; }
+        case 2: { CapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.capsuleRadius); WrappedCapsule wrapped(&fn); applyEntry(&wrapped); break; }
+        case 3: { OctahedronDistanceFunction fn; WrappedOctahedron wrapped(&fn); applyEntry(&wrapped); break; }
+        case 4: { PyramidDistanceFunction fn; WrappedPyramid wrapped(&fn); applyEntry(&wrapped); break; }
+        case 5: { TorusDistanceFunction fn(entry.torusRadii); WrappedTorus wrapped(&fn); applyEntry(&wrapped); break; }
+        case 6: { ConeDistanceFunction fn; WrappedCone wrapped(&fn); applyEntry(&wrapped); break; }
+        case 7: { CylinderDistanceFunction fn; WrappedCylinder wrapped(&fn); applyEntry(&wrapped); break; }
+        case 8: { TaperedCylinderDistanceFunction fn(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y); WrappedTaperedCylinder wrapped(&fn); applyEntry(&wrapped); break; }
+        case 9: { TaperedCapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y); WrappedTaperedCapsule wrapped(&fn); applyEntry(&wrapped); break; }
+        default:
+            std::cerr << "[applyBrushToScene] Unknown sdfType " << entry.sdfType << ", skipping" << std::endl;
+            break;
+    }
+
+    // Flush queued change events to trigger mesh creation
+    sceneUniqueSolidHandler->handleEvents();
+    sceneUniqueLiquidHandler->handleEvents();
+
+    // Mark indirect buffers dirty so the mesh changes are visible
+    sceneRenderer->solidRenderer->getIndirectRenderer().setDirty(true);
+    sceneRenderer->solidRenderer->getIndirectRenderer().rebuild(this);
+    sceneRenderer->waterRenderer->getIndirectRenderer().setDirty(true);
+    sceneRenderer->waterRenderer->getIndirectRenderer().rebuild(this);
+
+    std::cerr << "[applyBrushToScene] Applied brush sdfType=" << entry.sdfType
+              << " layer=" << (entry.targetLayer == 0 ? "opaque" : "transparent")
+              << " mode=" << entry.brushMode << std::endl;
 }
 
 // Advance the brush-animation clock and move the *selected* brush entry along a
@@ -2679,6 +2789,11 @@ void MyApp::postSubmit() {
     } else if (brushRebuildPending) {
         brushRebuildPending = false;
         rebuildBrushScene();
+    }
+
+    if (brushApplyToScenePending) {
+        brushApplyToScenePending = false;
+        applyBrushToScene();
     }
 
     if (generateMapPending) {
