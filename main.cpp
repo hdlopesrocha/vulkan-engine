@@ -2243,6 +2243,10 @@ void MyApp::updateBrushAnimation(float deltaTime) {
     // orbit phase (the entry keeps its last animated translate).
     brushAnimTime += deltaTime;
 
+    // Don't override brush position while AIM subpage is active
+    const ControllerPage* subpage = controllerManager.wiimoteContext.activeSubpage();
+    if (subpage && subpage->control == PageControl::AIM) return;
+
     // Ring parameters (defined in MainSceneLoader): centered at origin, height
     // 800, outer radius = worldScale (1500). The brush orbits that ring.
     constexpr float ringHeight = 800.0f;
