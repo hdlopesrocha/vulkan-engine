@@ -66,6 +66,66 @@ int getNodeIndex(const glm::vec3 &vec, const BoundingCube &cube) {
     return cube.getChildIndex(vec);
 }
 
+bool Octree::intersect(const Ray& ray, glm::vec3& outPos) const {
+    float tNear, tFar;
+    if (!ray.intersects(*this, &tNear, &tFar))
+        return false;
+
+    struct Entry { OctreeNode* node; BoundingCube cube; float tNear; };
+    std::vector<Entry> stack;
+    stack.push_back({root, *this, tNear});
+
+    float bestT = tFar;
+    bool found = false;
+
+    while (!stack.empty()) {
+        Entry e = stack.back();
+        stack.pop_back();
+
+        if (e.tNear >= bestT) continue;
+
+        if (e.node->isLeaf()) {
+            if (e.node->getType() == SpaceType::Surface) {
+                float tn, tf;
+                if (ray.intersects(e.cube, &tn, &tf) && tn < bestT) {
+                    bestT = tn;
+                    found = true;
+                }
+            }
+            continue;
+        }
+
+        ChildBlock* block = e.node->getBlock(*allocator);
+        if (!block) continue;
+
+        struct ChildE { int idx; float tNear; };
+        std::vector<ChildE> children;
+        for (int i = 0; i < 8; ++i) {
+            OctreeNode* child = block->get(i, *allocator);
+            if (!child) continue;
+            BoundingCube childCube = e.cube.getChild(i);
+            float tn, tf;
+            if (ray.intersects(childCube, &tn, &tf) && tf >= 0.0f && tn < bestT) {
+                children.push_back({i, tn});
+            }
+        }
+
+        std::sort(children.begin(), children.end(),
+                  [](const ChildE& a, const ChildE& b) { return a.tNear < b.tNear; });
+        for (int i = static_cast<int>(children.size()) - 1; i >= 0; --i) {
+            int idx = children[i].idx;
+            OctreeNode* child = block->get(idx, *allocator);
+            stack.push_back({child, e.cube.getChild(idx), children[i].tNear});
+        }
+    }
+
+    if (found) {
+        outPos = ray.pointAt(bestT);
+        return true;
+    }
+    return false;
+}
+
 
 
 

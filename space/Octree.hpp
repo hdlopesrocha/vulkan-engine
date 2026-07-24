@@ -13,6 +13,7 @@
 #include "../sdf/WrappedSignedDistanceFunction.hpp"
 #include <functional>
 #include "../math/BoundingCube.hpp"
+#include "../math/Ray.hpp"
 #include <string>
 
 class IteratorHandler;
@@ -49,6 +50,7 @@ public:
         void iterateFlat(IteratorHandler &handler, OctreeNodeData data);
 
     void iterateParallel(IteratorHandler &handler);
+    bool intersect(const Ray& ray, glm::vec3& outPos) const;
     OctreeNodeLevel getNodeAt(const glm::vec3 &pos, int level, bool simplification) const;
     OctreeNode* getNodeAt(const glm::vec3 &pos, bool simplification) const;
     float getSdfAt(const glm::vec3 &pos);

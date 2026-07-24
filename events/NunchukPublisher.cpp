@@ -7,8 +7,6 @@
 #include "../math/Camera.hpp"
 #include "../math/Ray.hpp"
 #include "../space/Octree.hpp"
-#include "../space/OctreeNode.hpp"
-#include "../space/ChildBlock.hpp"
 #include "../utils/Brush3dManager.hpp"
 #include "../utils/Brush3dEntry.hpp"
 #include "RebuildBrushEvent.hpp"
@@ -286,8 +284,6 @@ void NunchukPublisher::readStateLocked() {
         state.nunchukGforceZ = 0.0f;
     }
 }
-
-static bool rayIntersectOctree(const Octree& tree, const Ray& ray, glm::vec3& outPos);
 
 void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float deltaTime,
                                      ControllerManager* cm, Brush3dManager* brushManager,
@@ -643,7 +639,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 Ray ray(cam.getPosition(), V_world);
 
                 glm::vec3 hitPos;
-                if (rayIntersectOctree(*octree, ray, hitPos)) {
+                if (octree->intersect(ray, hitPos)) {
                     be->translate = hitPos + be->snapTranslation;
                     em->queue(std::make_shared<RebuildBrushEvent>());
                 }
@@ -653,75 +649,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
 }
 
 
-// ── Ray-vs-Octree traversal (leaf-level only) ──────────────────────────────
-//
-// Walks the octree depth-first, descending all the way to leaf nodes.  When a
-// leaf is of type Surface the hit is recorded; the closest hit (by tNear) is
-// returned.  Children are visited in order of increasing tNear so the first
-// surface leaf found is the closest.
-static bool rayIntersectOctree(const Octree& tree, const Ray& ray, glm::vec3& outPos) {
-    float tNear, tFar;
-    if (!ray.intersects(tree, &tNear, &tFar))
-        return false;
 
-    struct Entry { OctreeNode* node; BoundingCube cube; float tNear; };
-    std::vector<Entry> stack;
-    stack.push_back({tree.root, static_cast<const BoundingCube&>(tree), tNear});
-
-    float bestT = tFar;
-    bool found = false;
-
-    while (!stack.empty()) {
-        Entry e = stack.back();
-        stack.pop_back();
-
-        // Prune: this node starts farther than the best hit we already have
-        if (e.tNear >= bestT) continue;
-
-        // True leaf (no children) — check type
-        if (e.node->isLeaf()) {
-            if (e.node->getType() == SpaceType::Surface) {
-                float tn, tf;
-                if (ray.intersects(e.cube, &tn, &tf) && tn < bestT) {
-                    bestT = tn;
-                    found = true;
-                }
-            }
-            continue;
-        }
-
-        // Non-leaf with children — descend
-        ChildBlock* block = e.node->getBlock(*tree.allocator);
-        if (!block) continue;
-
-        // Collect intersecting children sorted by distance
-        struct ChildE { int idx; float tNear; };
-        std::vector<ChildE> children;
-        for (int i = 0; i < 8; ++i) {
-            OctreeNode* child = block->get(i, *tree.allocator);
-            if (!child) continue;
-            BoundingCube childCube = e.cube.getChild(i);
-            float tn, tf;
-            if (ray.intersects(childCube, &tn, &tf) && tf >= 0.0f && tn < bestT) {
-                children.push_back({i, tn});
-            }
-        }
-
-        std::sort(children.begin(), children.end(),
-                  [](const ChildE& a, const ChildE& b) { return a.tNear < b.tNear; });
-        for (int i = static_cast<int>(children.size()) - 1; i >= 0; --i) {
-            int idx = children[i].idx;
-            OctreeNode* child = block->get(idx, *tree.allocator);
-            stack.push_back({child, e.cube.getChild(idx), children[i].tNear});
-        }
-    }
-
-    if (found) {
-        outPos = ray.pointAt(bestT);
-        return true;
-    }
-    return false;
-}
 
 WiimoteState NunchukPublisher::getState() const {
     std::lock_guard<std::mutex> lock(mutex);
