@@ -4003,28 +4003,11 @@ void VulkanApp::createDescriptorSetLayout() {
     aoSamplerBinding.pImmutableSamplers = nullptr;
     aoSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // binding 14: brush front-face depth (for PAINT mode volume test in main.frag)
-    VkDescriptorSetLayoutBinding brushDepthBinding{};
-    brushDepthBinding.binding = 14;
-    brushDepthBinding.descriptorCount = 1;
-    brushDepthBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    brushDepthBinding.pImmutableSamplers = nullptr;
-    brushDepthBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 15: brush back-face depth (for PAINT mode volume test in main.frag)
-    VkDescriptorSetLayoutBinding brushBackDepthBinding{};
-    brushBackDepthBinding.binding = 15;
-    brushBackDepthBinding.descriptorCount = 1;
-    brushBackDepthBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    brushBackDepthBinding.pImmutableSamplers = nullptr;
-    brushBackDepthBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    std::array<VkDescriptorSetLayoutBinding, 16> bindings = {
+    std::array<VkDescriptorSetLayoutBinding, 14> bindings = {
         uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
         shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
         waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding,
-        envMapBinding, roughnessSamplerBinding, aoSamplerBinding,
-        brushDepthBinding, brushBackDepthBinding
+        envMapBinding, roughnessSamplerBinding, aoSamplerBinding
     };
     // Fill the material binding at position 5
     bindings[5].binding = 5;
@@ -4037,7 +4020,7 @@ void VulkanApp::createDescriptorSetLayout() {
     // so that vkUpdateDescriptorSets can write binding 11 while a command buffer
     // referencing this descriptor set is still pending (the cubemap render path
     // swaps between a dummy cubemap and the real one every frame).
-    std::array<VkDescriptorBindingFlags, 16> bindingFlags{};
+    std::array<VkDescriptorBindingFlags, 14> bindingFlags{};
     bindingFlags.fill(0);
     bindingFlags[11] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
 
@@ -4087,6 +4070,34 @@ void VulkanApp::createDescriptorSetLayout() {
 
     // Register material descriptor set layout
     resources.addDescriptorSetLayout(materialDescriptorSetLayout, "VulkanApp::createDescriptorSetLayout materialDescriptorSetLayout");
+
+    // ── Brush depth descriptor set layout (set=1, binding 0/1) ──
+    // Separate from the main set so the shadow pass (which uses set=0 only)
+    // doesn't need to reference these bindings. Only pipelines using main.frag
+    // (graphicsPipeline, depthPrePassPipeline, deferredColorPipeline) include
+    // this layout.
+    std::array<VkDescriptorSetLayoutBinding, 2> brushDepthBindings{};
+    brushDepthBindings[0].binding = 0;
+    brushDepthBindings[0].descriptorCount = 1;
+    brushDepthBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    brushDepthBindings[0].pImmutableSamplers = nullptr;
+    brushDepthBindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    brushDepthBindings[1].binding = 1;
+    brushDepthBindings[1].descriptorCount = 1;
+    brushDepthBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    brushDepthBindings[1].pImmutableSamplers = nullptr;
+    brushDepthBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo brushDepthLayoutInfo{};
+    brushDepthLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    brushDepthLayoutInfo.bindingCount = static_cast<uint32_t>(brushDepthBindings.size());
+    brushDepthLayoutInfo.pBindings = brushDepthBindings.data();
+
+    if (vkCreateDescriptorSetLayout(device, &brushDepthLayoutInfo, nullptr, &brushDepthDescriptorSetLayout) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create brush depth descriptor set layout!");
+    }
+    resources.addDescriptorSetLayout(brushDepthDescriptorSetLayout, "VulkanApp::createDescriptorSetLayout brushDepthDescriptorSetLayout");
 
     // If we later add a normal map sampler (binding 2), extend bindings dynamically when required by the app.
 }
@@ -5929,7 +5940,7 @@ void VulkanApp::createLogicalDevice() {
 
     // Create main descriptor pool immediately after device creation
     // (choose reasonable default counts for UBOs and samplers)
-    createDescriptorPool(32, 32);
+    createDescriptorPool(32, 128);
 
     // retrieve queue handles. If we requested multiple queues from the
     // graphics family, obtain them; otherwise fall back to the main

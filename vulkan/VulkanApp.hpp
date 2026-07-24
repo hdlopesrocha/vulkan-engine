@@ -190,6 +190,8 @@ private:
     VkDescriptorSet staticDescriptorSet = VK_NULL_HANDLE;
     // Dedicated descriptor set layout for global materials (binding 5)
     VkDescriptorSetLayout materialDescriptorSetLayout = VK_NULL_HANDLE;
+    // Descriptor set layout for brush depth textures (set=1, binding 0/1)
+    VkDescriptorSetLayout brushDepthDescriptorSetLayout = VK_NULL_HANDLE;
     // Global material descriptor set (bound once and updated when materials change)
     VkDescriptorSet materialDescriptorSet = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
@@ -430,6 +432,7 @@ public:
         VkDescriptorSet getMaterialDescriptorSet() const { return materialDescriptorSet; }
         VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
         VkDescriptorSet getStaticDescriptorSet() const { return staticDescriptorSet; }
+        VkDescriptorSetLayout getBrushDepthDescriptorSetLayout() const { return brushDepthDescriptorSetLayout; }
 
         // App-owned graphics pipeline accessor
         void setAppGraphicsPipeline(VkPipeline p) { 

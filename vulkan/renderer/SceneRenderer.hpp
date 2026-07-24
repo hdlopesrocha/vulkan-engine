@@ -94,6 +94,11 @@ public:
     VkImage getBrushColorImage(uint32_t i) const { return brushColorImages[i % BRUSH_FRAMES]; }
     VkImageView getBrushDepthView(uint32_t i) const { return brushDepthImageViews[i % BRUSH_FRAMES]; }
     VkImage getBrushDepthImage(uint32_t i) const { return brushDepthImages[i % BRUSH_FRAMES]; }
+    // Per-frame descriptor sets for brush depth textures (set=1)
+    std::array<VkDescriptorSet, BRUSH_FRAMES> brushDepthDescriptorSets = {};
+    VkDescriptorSet getBrushDepthDescriptorSet(uint32_t frameIndex) const {
+        return brushDepthDescriptorSets[frameIndex % BRUSH_FRAMES];
+    }
 
     void createBrushRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
     void destroyBrushRenderTargets(VulkanApp* app);
@@ -221,6 +226,11 @@ public:
 
     // Resize offscreen resources when the swapchain changes
     void onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height);
+
+    // Rewrite brush depth texture descriptors (bindings 14, 15) for all per-frame
+    // main descriptor sets. Must be called after brush render targets are
+    // recreated (on resize or after rebuildBrushScene).
+    void writeBrushDepthDescriptors(VulkanApp* app);
 
     // ── Parallel scene loading ─────────────────────────────────────────────────
     // CPU mesh-generation results are pushed here from the background loading

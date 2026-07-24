@@ -16,6 +16,9 @@ layout(location = VARY_SHARPNORMAL) in vec3 fragSharpNormal; // face normal comp
 
 #include "includes/textures.glsl"
 
+layout(set = 1, binding = 0) uniform sampler2D brushDepthTex;
+layout(set = 1, binding = 1) uniform sampler2D brushBackFaceDepthTex;
+
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
 #include "includes/common.glsl"

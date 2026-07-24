@@ -233,6 +233,42 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
         skyRenderer->destroyOffscreenTargets(app);
         skyRenderer->createOffscreenTargets(app, width, height);
     }
+    // Rewrite brush depth descriptors after recreating brush targets
+    writeBrushDepthDescriptors(app);
+}
+
+void SceneRenderer::writeBrushDepthDescriptors(VulkanApp* app) {
+    VkSampler brushDepthSampler = VK_NULL_HANDLE;
+    if (waterRenderer) {
+        brushDepthSampler = waterRenderer->getLinearSampler();
+    }
+    if (brushDepthSampler == VK_NULL_HANDLE && shadowMapper) {
+        brushDepthSampler = shadowMapper->getShadowMapSampler();
+    }
+
+    for (size_t fi = 0; fi < brushDepthDescriptorSets.size(); ++fi) {
+        VkDescriptorSet dstSet = brushDepthDescriptorSets[fi];
+        if (dstSet == VK_NULL_HANDLE) continue;
+        VkImageView brushFrontView = getBrushDepthView(static_cast<uint32_t>(fi));
+        VkImageView brushBackView = VK_NULL_HANDLE;
+        if (brushBackFaceRenderer) {
+            brushBackView = brushBackFaceRenderer->getBackFaceDepthView(static_cast<uint32_t>(fi));
+        }
+        if (brushDepthSampler == VK_NULL_HANDLE) continue;
+
+        DescriptorWriter writer(app->getDevice());
+        if (brushFrontView != VK_NULL_HANDLE) {
+            writer.writeImage(dstSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              brushDepthSampler, brushFrontView,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+        if (brushBackView != VK_NULL_HANDLE) {
+            writer.writeImage(dstSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              brushDepthSampler, brushBackView,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+        writer.flush();
+    }
 }
 
 SceneRenderer::SceneRenderer() :
@@ -944,38 +980,15 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
             writer.writeBuffer(dstSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                mainUniformBuffers[fi].buffer, 0, sizeof(UniformObject));
 
-            // Write brush depth textures (bindings 14, 15) — per-frame images
-            // Always write (use fallback dummy if brush targets not yet available)
-            // to keep the descriptor initialized for the expanded layout.
-            VkImageView brushFrontView = getBrushDepthView(static_cast<uint32_t>(fi));
-            VkImageView brushBackView = VK_NULL_HANDLE;
-            if (brushBackFaceRenderer) {
-                brushBackView = brushBackFaceRenderer->getBackFaceDepthView(static_cast<uint32_t>(fi));
-            }
-            VkSampler brushDepthSampler = VK_NULL_HANDLE;
-            if (waterRenderer) {
-                brushDepthSampler = waterRenderer->getLinearSampler();
-            }
-            // Fallback: use shadow map sampler and dummy depth if brush views not yet valid
-            VkSampler fallbackSampler = shadowMapper ? shadowMapper->getShadowMapSampler() : VK_NULL_HANDLE;
-            VkImageView fallbackView = shadowMapper ? shadowMapper->getDummyDepthView() : VK_NULL_HANDLE;
-            VkSampler actualSampler = (brushDepthSampler != VK_NULL_HANDLE) ? brushDepthSampler : fallbackSampler;
-            VkImageView actualFront = (brushFrontView != VK_NULL_HANDLE) ? brushFrontView : fallbackView;
-            VkImageView actualBack = (brushBackView != VK_NULL_HANDLE) ? brushBackView : fallbackView;
-            if (actualSampler != VK_NULL_HANDLE && actualFront != VK_NULL_HANDLE) {
-                writer.writeImage(dstSet, 14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                  actualSampler, actualFront,
-                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            }
-            if (actualSampler != VK_NULL_HANDLE && actualBack != VK_NULL_HANDLE) {
-                writer.writeImage(dstSet, 15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                  actualSampler, actualBack,
-                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            }
-
             writer.flush();
         }
     }
+
+    // ── Allocate and write per-frame brush depth descriptor sets (set=1) ──
+    for (size_t fi = 0; fi < brushDepthDescriptorSets.size(); ++fi) {
+        brushDepthDescriptorSets[fi] = app->createDescriptorSet(app->getBrushDepthDescriptorSetLayout());
+    }
+    writeBrushDepthDescriptors(app);
 
     // ── Allocate shadow-specific descriptor sets per-frame (mirror main sets but use a dummy depth view)
     shadowDescriptorSets.clear();
@@ -1191,6 +1204,9 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
             sw.flush();
         }
     }
+
+    // Also rewrite brush depth descriptors for all per-frame main sets
+    writeBrushDepthDescriptors(app);
 
     std::cerr << "[SceneRenderer] updateTextureDescriptorSet: updated static descriptor set and propagated to per-frame sets" << std::endl;
 }
