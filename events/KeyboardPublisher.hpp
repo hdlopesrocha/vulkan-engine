@@ -30,6 +30,9 @@ private:
     float moveSpeed;         // units per second
     float angularSpeedDeg;   // degrees per second
 
+    // Acceleration timer for translate keys (same exponential ramp as wiimote)
+    float translateTimer = 0.0f;
+
     // edge-tracking for single-action keys
     bool f11Prev = false;
     bool escPrev = false;

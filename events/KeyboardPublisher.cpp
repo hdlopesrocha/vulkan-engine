@@ -4,6 +4,7 @@
 
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <cmath>
 #include "TranslateCameraEvent.hpp"
 #include "RotateCameraEvent.hpp"
 #include "CloseWindowEvent.hpp"
@@ -39,6 +40,21 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
     float angDeg = glm::degrees(cam.angularSpeedRad) * deltaTime;
     float rotSign = flipRotation ? -1.0f : 1.0f;
 
+    // Translate acceleration: exponential ramp matching the wiimote nunchuk.
+    // Ramp runs while any translate key (WASD/QE) is held, resets when idle.
+    bool anyTranslate = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS
+                     || glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS
+                     || glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS
+                     || glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS
+                     || glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS
+                     || glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS;
+    if (anyTranslate) {
+        translateTimer += deltaTime;
+    } else {
+        translateTimer = 0.0f;
+    }
+    float translateAccel = (std::exp(translateTimer) - 1.0f) / (std::exp(1.0f) - 1.0f);
+
     // ---- Page navigation (edge-triggered) ----
     // Keyboard's own pages: F1/F2 page, F3/F4 subpage.
     if (edgePressed(window, GLFW_KEY_F1, k1Prev)) em->publish(std::make_shared<PageNavigationEvent>(ControllerId::KEYBOARD, PageNavigationEvent::Action::PREV_PAGE));
@@ -61,17 +77,18 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
     const PageControl ctrl = kctx.activeControl();
 
     if (cat == PageCategory::CAMERA) {
+        float vel = velocity * translateAccel;
         // Camera: WASD/QE translate and H/F/G/T/R/Y rotate are always active,
         // matching the original single-camera-page behaviour. On the Brush page,
         // translate (WASD/QE), rotate (H/F/G/T/R/Y) and scale (J/U, K/I, L/O) are
         // all always active so they work together; the Brush subpage only gates
         // the texture/attribute controls, and the mouse controller.
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) action.translate += forward * velocity;
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) action.translate -= forward * velocity;
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) action.translate += right * velocity;
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) action.translate -= right * velocity;
-        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) action.translate += up * velocity;
-        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) action.translate -= up * velocity;
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) action.translate += forward * vel;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) action.translate -= forward * vel;
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) action.translate += right * vel;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) action.translate -= right * vel;
+        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) action.translate += up * vel;
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) action.translate -= up * vel;
         if (glfwGetKey(window, GLFW_KEY_H) == GLFW_PRESS) action.rotateDeg.x += rotSign * -angDeg;
         if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS) action.rotateDeg.x += rotSign *  angDeg;
         if (glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS) action.rotateDeg.y += rotSign * -angDeg;
@@ -101,12 +118,13 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
 
         // Translation (WASD/QE) is always active on the brush, so translate,
         // rotate and scale all work together on the same Brush page.
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) action.translate += forward * mSpeed;
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) action.translate -= forward * mSpeed;
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) action.translate += right * mSpeed;
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) action.translate -= right * mSpeed;
-        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) action.translate += up * mSpeed;
-        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) action.translate -= up * mSpeed;
+        float msp = mSpeed * translateAccel;
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) action.translate += forward * msp;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) action.translate -= forward * msp;
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) action.translate += right * msp;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) action.translate -= right * msp;
+        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) action.translate += up * msp;
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) action.translate -= up * msp;
 
         // Texture / Attribute subpages keep their own keys so they don't clash
         // with the always-active WASD/QE translate or H/F/G/T/R/Y rotate.
