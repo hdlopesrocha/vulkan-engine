@@ -361,6 +361,28 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         }
     }
 
+    // Wiimote 1 → snap reset / brush place
+    if (pressed & WIIMOTE_BUTTON_ONE) {
+        if (brushManager) {
+            BrushEntry* be = brushManager->getSelectedEntry();
+            if (be) {
+                const ControllerPage* sub = wctx.activeSubpage();
+                if (sub && sub->control == PageControl::AIM) {
+                    // Aim subpage: reset snap offset
+                    be->snapTranslation = glm::vec3(0.0f);
+                    fprintf(stderr, "[Wiimote] snapTranslation reset\n");
+                } else if (wctx.activeCategory() == PageCategory::BRUSH) {
+                    // Brush page: place brush at camera + forward * 4 * scaleLen
+                    float scaleLen = glm::length(be->scale);
+                    be->translate = cam.getPosition() + cam.getForward() * (4.0f * scaleLen);
+                    fprintf(stderr, "[Wiimote] brush placed at %.1f %.1f %.1f\n",
+                            be->translate.x, be->translate.y, be->translate.z);
+                }
+                em->queue(std::make_shared<RebuildBrushEvent>());
+            }
+        }
+    }
+
     prevButtons = s.buttons;
 
     // Camera axes (all controls are camera-relative)
