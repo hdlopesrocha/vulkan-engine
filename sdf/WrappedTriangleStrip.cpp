@@ -34,9 +34,6 @@ bool WrappedTriangleStrip::isContained(const BoundingCube &cube, const Transform
     return cube.contains(sphere);
 }
 
-float WrappedTriangleStrip::getLength(const Transformation &model, float bias) const {
-    return m_sphereRadius * 2.0f + bias;
-}
 
 void WrappedTriangleStrip::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
     getSphere(model, bias).accept(visitor);

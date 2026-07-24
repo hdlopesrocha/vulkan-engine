@@ -24,11 +24,6 @@ bool WrappedHeightMap::isContained(const BoundingCube &cube, const Transformatio
     return cube.contains(box);
 };
 
-float WrappedHeightMap::getLength(const Transformation &model, float bias) const {
-    HeightMapDistanceFunction * f = (HeightMapDistanceFunction*) function;
-    return glm::distance(f->map->getMin(), f->map->getMax()) + bias;
-};
-
 void WrappedHeightMap::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
     getBox(bias).accept(visitor);
 }

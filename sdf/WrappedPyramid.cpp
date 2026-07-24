@@ -27,9 +27,6 @@ bool WrappedPyramid::isContained(const BoundingCube &cube, const Transformation 
     BoundingSphere sphere = getSphere(model, bias);
     return cube.contains(sphere);
 };
-float WrappedPyramid::getLength(const Transformation &model, float bias) const {
-    return glm::length(model.scale) + bias;
-};
 
 void WrappedPyramid::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
     getSphere(model, bias).accept(visitor);

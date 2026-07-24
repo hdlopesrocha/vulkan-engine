@@ -27,10 +27,6 @@ glm::vec3 WrappedOctreeDifference::getCenter(const Transformation &model) const 
     OctreeDifferenceFunction * f = (OctreeDifferenceFunction*) function;
     return f->box.getCenter();
 };
-float WrappedOctreeDifference::getLength(const Transformation &model, float bias) const {
-    BoundingBox box = getBox(bias);
-    return glm::length(box.getLength()) + bias;
-};
 
 void WrappedOctreeDifference::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
     getBox(bias).accept(visitor);

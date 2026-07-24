@@ -23,10 +23,6 @@ bool WrappedTorus::isContained(const BoundingCube &cube, const Transformation &m
     return cube.contains(sphere);
 };
 
-float WrappedTorus::getLength(const Transformation &model, float bias) const {
-    return glm::length(model.scale) + bias;
-};
-
 void WrappedTorus::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
     getSphere(model, bias).accept(visitor);
 }

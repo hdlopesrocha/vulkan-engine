@@ -28,7 +28,6 @@ class WrappedSignedDistanceFunction : public SignedDistanceFunction {
 
     virtual void accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const = 0;
     virtual ContainmentType check(const BoundingCube &cube, const Transformation &model, float bias) const = 0;
-    virtual float getLength(const Transformation &model, float bias) const = 0;
     virtual bool isContained(const BoundingCube &cube, const Transformation &model, float bias) const = 0;
     virtual const char* getLabel() const = 0;
 

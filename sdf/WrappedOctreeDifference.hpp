@@ -15,7 +15,6 @@ class WrappedOctreeDifference : public WrappedSignedDistanceFunction {
     bool isContained(const BoundingCube &cube, const Transformation &model, float bias) const override;
 
     glm::vec3 getCenter(const Transformation &model) const override;
-	float getLength(const Transformation &model, float bias) const override;
 
     void accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const override;
 

@@ -24,10 +24,6 @@ bool WrappedCylinder::isContained(const BoundingCube &cube, const Transformation
     return cube.contains(sphere);
 };
 
-float WrappedCylinder::getLength(const Transformation &model, float bias) const {
-    return glm::length(model.scale) + bias;
-};
-
 void WrappedCylinder::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
     getSphere(model, bias).accept(visitor);
 }

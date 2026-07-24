@@ -34,11 +34,6 @@ bool WrappedRoad::isContained(const BoundingCube &cube, const Transformation &mo
     return cube.contains(sphere);
 }
 
-float WrappedRoad::getLength(const Transformation &model, float bias) const {
-    RoadDistanceFunction* f = (RoadDistanceFunction*)function;
-    return (f->getTMax() - f->getTMin()) * f->getSpline()->totalLength() + bias;
-}
-
 void WrappedRoad::accept(BoundingVolumeVisitor &visitor, const Transformation &model, float bias) const {
     getSphere(model, bias).accept(visitor);
 }
