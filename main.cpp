@@ -1785,11 +1785,17 @@ public:
     // Join tessellation thread before tearing down Vulkan resources.
     if (sceneProcessThread.joinable()) sceneProcessThread.join();
 
-        // Shut down the central ImTextureManager (deferred RemoveTexture for
-        // all cached descriptors) while the ImGui backend is still alive.
-        imTextureManager.shutdown(this);
+
+        // Free all ImGui descriptor sets owned by the widget while ImGui is still
+        // alive. clean() is called before cleanupImGui(), so this is safe.
+        // Without this, ~RenderTargetsWidget() (called from ~MyApp() after Vulkan
+        // teardown) would try to free descriptors from a destroyed pool.
+        if (renderTargetsWidget) {
+            renderTargetsWidget->invalidateImGuiDescriptors();
+        }
 
         if (impostorService) {
+            impostorService->invalidateImGuiDescriptors();
             impostorService->cleanup();
         }
 
@@ -1819,6 +1825,42 @@ public:
     void onSwapchainResized(uint32_t width, uint32_t height) override {
         if (sceneRenderer) {
             sceneRenderer->onSwapchainResized(this, width, height);
+        }
+    }
+
+    void preImGuiShutdown() override {
+        // Free all ImGui descriptor sets BEFORE Shutdown while the old backend data
+        // is still alive. This avoids freeing DS allocated with the old descriptor
+        // set layout through the new backend data after a Shutdown/Init cycle.
+        if (sceneRenderer && sceneRenderer->shadowMapper) {
+            sceneRenderer->shadowMapper->freeImGuiDescriptors();
+        }
+        if (renderTargetsWidget) {
+            renderTargetsWidget->invalidateImGuiDescriptors();
+        }
+        if (billboardCreator) {
+            billboardCreator->invalidateImGuiDescriptors();
+        }
+        textureArrayManager.invalidateImGuiDescriptors();
+        if (impostorService) {
+            impostorService->invalidateImGuiDescriptors();
+        }
+    }
+
+    void onImGuiRecreated() override {
+        // Re-create ImGui AddTexture DS for shadow cascades — the old ones used the
+        // previous DescriptorSetLayout which was destroyed by ImGui_ImplVulkan_Shutdown.
+        // Old handles were freed by preImGuiShutdown() so recreateImGuiDescriptors
+        // will skip the free and go straight to allocation.
+        if (sceneRenderer && sceneRenderer->shadowMapper) {
+            sceneRenderer->shadowMapper->recreateImGuiDescriptors();
+        }
+        // Widget handles were nulled by preImGuiShutdown(); this is a no-op.
+        if (renderTargetsWidget) {
+            renderTargetsWidget->invalidateImGuiDescriptors();
+        }
+        if (impostorService) {
+            impostorService->recreateImGuiDescriptors();
         }
     }
 

@@ -314,6 +314,7 @@ void RenderTargetsWidget::init(VulkanApp* app_, int width, int height) {
 
 bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, VkImageView srcView, VkSampler srcSampler, VkSampler previewSampler,
                                           VkImageView dstView,
+                                          VkDescriptorSet &dstDescriptor, bool &dstDescriptorOwned,
                                           uint32_t width, uint32_t height,
                                           float zNear, float zFar, float mode,
                                           uint32_t srcBaseArrayLayer) {
@@ -585,15 +586,50 @@ bool RenderTargetsWidget::runLinearizePass(VulkanApp* app_, VkImage srcImage, Vk
         }
     }
 
-    // ImGui descriptor is created lazily by ImTextureManager; no longer
-    // managed here.
+    if (dstView != VK_NULL_HANDLE) {
+        if (dstDescriptorOwned) {
+            ImGui_ImplVulkan_RemoveTexture(dstDescriptor);
+            dstDescriptorOwned = false;
+        }
+        dstDescriptor = ImGui_ImplVulkan_AddTexture(previewSampler, dstView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        dstDescriptorOwned = true;
+    }
 
     return true;
 }
 
 
 RenderTargetsWidget::~RenderTargetsWidget() {
-    // ImGui descriptors are managed by ImTextureManager — no cleanup needed here.
+    // Remove only descriptors that this widget created. Some descriptor sets
+    // (e.g. those returned by other renderers) must not be removed here.
+    auto removeOwnedDesc = [&](VkDescriptorSet &ds, bool &owned) {
+        if (ds == VK_NULL_HANDLE) return;
+        if (!owned) { ds = VK_NULL_HANDLE; return; }
+        // Defer removal until the in-flight fence for the current frame to
+        // avoid destroying descriptor sets that may be bound by command
+        // buffers still being recorded or submitted.
+        if (app) {
+            VkDescriptorSet tmp = ds;
+            // Defer until all pending GPU work completes to avoid destroying
+            // descriptor sets that may be bound by other command buffers.
+            app->deferDestroyUntilAllPending([tmp]() { ImGui_ImplVulkan_RemoveTexture(tmp); });
+        } else {
+            ImGui_ImplVulkan_RemoveTexture(ds);
+        }
+        ds = VK_NULL_HANDLE;
+        owned = false;
+    };
+    removeOwnedDesc(skyDescriptor, skyDescriptorOwned);
+    removeOwnedDesc(solidColorDescriptor, solidColorDescriptorOwned);
+    removeOwnedDesc(solidDepthDescriptor, solidDepthDescriptorOwned);
+    removeOwnedDesc(waterColorDescriptor, waterColorDescriptorOwned);
+    removeOwnedDesc(solid360Descriptor, solid360DescriptorOwned);
+    removeOwnedDesc(cube360EquirectDescriptor, cube360EquirectDescriptorOwned);
+    for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
+    for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDepthDescriptor[i], cube360FaceDepthDescriptorOwned[i]);
+    removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
+    removeOwnedDesc(brushBackFaceDepthDescriptor, brushBackFaceDepthDescriptorOwned);
+    removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
 }
 
 void RenderTargetsWidget::setFrameInfo(uint32_t frameIndex, int width, int height) {
@@ -614,8 +650,26 @@ void RenderTargetsWidget::destroyLinearTargets() {
     VulkanApp* a = app;
     if (!a) return;
 
-    // ImGui descriptors are managed by ImTextureManager — invalidated during
-    // swapchain recreation.  Only destroy Vulkan image resources here.
+    // Remove ImGui descriptors owned by this widget and destroy associated
+    // images, views, framebuffers and pipeline. Always defer via
+    // deferDestroyUntilAllPending to ensure in-flight graphics frames
+    // complete before freeing resources.
+    auto removeDescIfOwned = [&](VkDescriptorSet &ds, bool &owned) {
+        if (ds == VK_NULL_HANDLE) return;
+        if (!owned) { ds = VK_NULL_HANDLE; return; }
+        VkDescriptorSet tmp = ds;
+        a->deferDestroyUntilAllPending([tmp]() { ImGui_ImplVulkan_RemoveTexture(tmp); });
+        ds = VK_NULL_HANDLE;
+        owned = false;
+    };
+
+    removeDescIfOwned(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
+    removeDescIfOwned(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
+    removeDescIfOwned(linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned);
+    removeDescIfOwned(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
+        removeDescIfOwned(linearShadowDepthDescriptor[i], linearShadowDepthDescriptorOwned[i]);
+    }
 
     // Destroy images, views, memories and framebuffers created for linearization.
     // Always defer via deferDestroyUntilAllPending to ensure in-flight graphics
@@ -669,7 +723,28 @@ void RenderTargetsWidget::destroyLinearTargets() {
 }
 
 void RenderTargetsWidget::cleanup() {
-    // ImGui descriptors are managed by ImTextureManager — no cleanup needed here.
+    auto removeOwnedDesc = [&](VkDescriptorSet &ds, bool &owned) {
+        if (ds == VK_NULL_HANDLE) return;
+        if (!owned) { ds = VK_NULL_HANDLE; return; }
+        VkDescriptorSet tmp = ds;
+        if (app) app->deferDestroyUntilAllPending([tmp](){ ImGui_ImplVulkan_RemoveTexture(tmp); });
+        ds = VK_NULL_HANDLE;
+        owned = false;
+    };
+    removeOwnedDesc(skyDescriptor, skyDescriptorOwned);
+    removeOwnedDesc(solidColorDescriptor, solidColorDescriptorOwned);
+    removeOwnedDesc(waterColorDescriptor, waterColorDescriptorOwned);
+    removeOwnedDesc(solidDepthDescriptor, solidDepthDescriptorOwned);
+    removeOwnedDesc(solid360Descriptor, solid360DescriptorOwned);
+    removeOwnedDesc(cube360EquirectDescriptor, cube360EquirectDescriptorOwned);
+    for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
+    for (int i = 0; i < 6; ++i) removeOwnedDesc(cube360FaceDepthDescriptor[i], cube360FaceDepthDescriptorOwned[i]);
+    removeOwnedDesc(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
+    removeOwnedDesc(brushBackFaceDepthDescriptor, brushBackFaceDepthDescriptorOwned);
+    removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
+    removeOwnedDesc(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
+    removeOwnedDesc(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
+    removeOwnedDesc(linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned);
     cube360EquirectRenderer.cleanup(app);
     // Destroy persistent staging buffers (VulkanApp::createBuffer registers them with resource manager)
     // Unmap persistent staging buffers; if GPU work is pending, defer unmap until safe
@@ -684,6 +759,14 @@ void RenderTargetsWidget::cleanup() {
     // Drop local buffer handles; actual destruction managed by VulkanResourceManager
     stagingReadBuffer = {};
     stagingUploadBuffer = {};
+    // Shadow cascade linear descriptors (use removeDesc to defer when necessary)
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
+        removeOwnedDesc(linearShadowDepthDescriptor[i], linearShadowDepthDescriptorOwned[i]);
+    }
+    // Note: `previewDescriptor` may reference descriptor sets owned by other
+    // renderers (e.g. shadowMapper->getImGuiDescriptorSet). We must not call
+    // ImGui_ImplVulkan_RemoveTexture() on descriptor sets we don't own. The
+    // owned per-cascade descriptors are removed above in the loop.
 
     // Destroy any images / image views and persistent staging buffers that
     // this widget created. Always defer via deferDestroyUntilAllPending to
@@ -822,56 +905,228 @@ bool RenderTargetsWidget::isSolid360Preview() const {
     }
 }
 
-// ImGui descriptors are managed centrally by ImTextureManager.
-// No per-widget invalidation needed.
+void RenderTargetsWidget::invalidateImGuiDescriptors() {
+    // After ImGui is re-initialized (new DSL), all AddTexture DS created with the old DSL
+    // must be freed and cleared. They will be re-created on the next render() call.
+    auto freeAndClear = [](VkDescriptorSet& ds, bool& owned) {
+        if (ds == VK_NULL_HANDLE) return;
+        if (owned) {
+            ImGui_ImplVulkan_RemoveTexture(ds);
+        }
+        ds = VK_NULL_HANDLE;
+        owned = false;
+    };
+
+    freeAndClear(skyDescriptor, skyDescriptorOwned);
+    freeAndClear(solidColorDescriptor, solidColorDescriptorOwned);
+    freeAndClear(solidDepthDescriptor, solidDepthDescriptorOwned);
+    freeAndClear(waterColorDescriptor, waterColorDescriptorOwned);
+    freeAndClear(solid360Descriptor, solid360DescriptorOwned);
+    freeAndClear(cube360EquirectDescriptor, cube360EquirectDescriptorOwned);
+    for (int i = 0; i < 6; ++i) freeAndClear(cube360FaceDescriptor[i], cube360FaceDescriptorOwned[i]);
+    for (int i = 0; i < 6; ++i) freeAndClear(cube360FaceDepthDescriptor[i], cube360FaceDepthDescriptorOwned[i]);
+    freeAndClear(backFaceDepthDescriptor, backFaceDepthDescriptorOwned);
+    freeAndClear(brushBackFaceDepthDescriptor, brushBackFaceDepthDescriptorOwned);
+    freeAndClear(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
+    freeAndClear(linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned);
+    freeAndClear(linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned);
+    freeAndClear(linearBrushBackFaceDepthDescriptor, linearBrushBackFaceDepthDescriptorOwned);
+    for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
+        freeAndClear(linearShadowDepthDescriptor[i], linearShadowDepthDescriptorOwned[i]);
+    }
+    previewDescriptor = VK_NULL_HANDLE;
+}
 
 void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     if (!sceneRenderer || !sceneRenderer->waterRenderer) return;
 
-    // ImGui texture descriptors are lazily created by ImTextureManager.
-    // For per-frame previews, the manager caches by (view, sampler) — since
-    // render target views cycle through a small set (frames in flight), the
-    // cache naturally bounds itself.  No explicit release is needed.
+    // Debug: print resource counts before cleanup (helps track leaks)
+    if (app) {
+        // Debug resource counts kept for reference
+        // size_t imgCount = rm.getImageMap().size();
+        // size_t ivCount = rm.getImageViewMap().size();
+        // size_t bufCount = rm.getBufferMap().size();
+        // size_t memCount = rm.getDeviceMemoryMap().size();
+        // size_t descSetCount = rm.getDescriptorSetMap().size();
+        // std::cerr << "[RenderTargetsWidget] updateDescriptors START frame=" << currentFrame << " resources pre-cleanup images=" << imgCount << " imageViews=" << ivCount << " buffers=" << bufCount << " memories=" << memCount << " descSets=" << descSetCount << std::endl;
+    }
 
-    // Run linearize passes for depth previews (do this first so the
-    // linearized views are available for getOrCreate below).
+    // Keep existing descriptor sets alive across frames. Create ImGui texture
+    // descriptors only when the corresponding descriptor is null to avoid
+    // allocating a new descriptor every frame (which was causing the growth
+    // seen in the logs).
+
+
+
+    switch (selectedPreview) {
+        case PreviewTarget::Sky: {
+            if (skyDescriptorOwned) {
+                ImGui_ImplVulkan_RemoveTexture(skyDescriptor);
+                skyDescriptorOwned = false;
+            }
+            skyDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, skyRenderer->getSkyView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            skyDescriptorOwned = true;
+        } break;
+
+        case PreviewTarget::SolidColor: {
+            if (solidColorDescriptorOwned) {
+                ImGui_ImplVulkan_RemoveTexture(solidColorDescriptor);
+                solidColorDescriptorOwned = false;
+            }
+            solidColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, solidRenderer->getColorView(frameIndex), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            solidColorDescriptorOwned = true;
+        } break;
+
+        case PreviewTarget::SolidDepth: {
+            if (solidDepthDescriptorOwned) {
+                ImGui_ImplVulkan_RemoveTexture(solidDepthDescriptor);
+                solidDepthDescriptorOwned = false;
+            }
+            VkSampler depthSampler = widgetSampler;
+            // Sample the previously-produced frame's depth (one-frame latency)
+            // to avoid binding the current-frame attachment before it's rendered.
+            uint32_t producerFrame = (frameIndex + 1) % 2;
+            solidDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler,  solidRenderer->getDepthView(producerFrame), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            solidDepthDescriptorOwned = true;
+        } break;
+
+        case PreviewTarget::Solid360Equirect: {
+            cube360EquirectRenderer.render(app, widgetSampler, sceneRenderer->solid360Renderer->getSolid360View());
+            if (cube360EquirectDescriptorOwned) {
+                ImGui_ImplVulkan_RemoveTexture(cube360EquirectDescriptor);
+                cube360EquirectDescriptorOwned = false;
+            }
+            cube360EquirectDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, cube360EquirectRenderer.getEquirectView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            cube360EquirectDescriptorOwned = true;
+        } break;
+
+        case PreviewTarget::Solid360Cube: {
+            uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
+            VkImageView faceView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360FaceView(f) : VK_NULL_HANDLE;
+            if (faceView != VK_NULL_HANDLE) {
+                if (cube360FaceDescriptorOwned[f]) {
+                    ImGui_ImplVulkan_RemoveTexture(cube360FaceDescriptor[f]);
+                    cube360FaceDescriptorOwned[f] = false;
+                }
+                cube360FaceDescriptor[f] = ImGui_ImplVulkan_AddTexture(widgetSampler, faceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                cube360FaceDescriptorOwned[f] = true;
+            }
+        } break;
+
+        case PreviewTarget::Solid360DepthCube: {
+            uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
+            VkImageView depthView = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360DepthView(f) : VK_NULL_HANDLE;
+            if (depthView != VK_NULL_HANDLE) {
+                float nearP = 0.1f, farP = 1000.0f;
+                if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
+                // Linearize the depth for this cubemap face into its own per-face linear target
+                runLinearizePass(app, sceneRenderer->solid360Renderer->getCube360DepthImage(), depthView, widgetSampler, widgetSampler,
+                                 linearCubeFaceDepthView[f],
+                                 cube360FaceDepthDescriptor[f], cube360FaceDepthDescriptorOwned[f],
+                                 static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f, f);
+            }
+        } break;
+
+        case PreviewTarget::WaterColor: {
+            VkImageView waterView = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getWaterDepthView(frameIndex) : VK_NULL_HANDLE;
+            if (waterView != VK_NULL_HANDLE) {
+                if (waterColorDescriptorOwned) {
+                    ImGui_ImplVulkan_RemoveTexture(waterColorDescriptor);
+                    waterColorDescriptorOwned = false;
+                }
+                waterColorDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                waterColorDescriptorOwned = true;
+            }
+        } break;
+
+        default:
+            break;
+    }
+
+
+    // Water linear depth preview: instead of using the alpha-swizzle view
+    // (which is a hack), run the GPU linearize pass on the actual water
+    // geometry depth image (D32_SFLOAT) and expose the resulting color view
+    // to ImGui. We reuse the `linearSceneDepthView` target for this simple
+    // preview to avoid duplicating target creation.
+
+    // CPU readback removed: previews use renderer-provided GPU image views.
+    // Full GPU linearization pass: when possible render depth -> R8 target
+    // via a small fullscreen pass and expose that R8 image to ImGui. This
+    // is preferred because it avoids CPU readback while producing a proper
+    // linearized grayscale depth preview for perspective projections.
     if (app && cachedWidth > 0 && cachedHeight > 0) {
+        // Size-dependent linearize targets (images/views/framebuffers) are
+        // created in `init(app, width, height)` so they are not recreated
+        // every frame. Ensure `setFrameInfo()` calls `init()` when the size
+        // changes so these targets are available here.
+
+        // linearize descriptor set layout created once in init()
+
+        // linearize pipeline layout created once in init()
+
+        // pipeline and descriptor set are created once in init()
+
+        // Prepare a sampler for sampling depth textures (use non-compare widget sampler)
+        // Run the pass for scene depth (use perspective linearization)
         if (solidRenderer && linearizePipeline != VK_NULL_HANDLE && linearSceneDepthView != VK_NULL_HANDLE) {
+            // Sample the previously-produced frame's depth (one-frame latency)
+            // to avoid sampling an attachment that will be written later in
+            // the same frame while ImGui is being built.
             uint32_t producerFrame = (frameIndex + 1) % 2;
             VkImageView src = solidRenderer->getDepthView(producerFrame);
-            if (src != VK_NULL_HANDLE) {
+                // std::cerr << "[RenderTargetsWidget] Scene linearize check: pipeline=" << (void*)linearizePipeline << " descSet=" << (void*)linearizeDescriptorSet << " fb=" << (void*)linearSceneFramebuffer << " view=" << (void*)linearSceneDepthView << " src=" << (void*)src << " producerFrame=" << (unsigned)producerFrame << std::endl;
+                if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, solidRenderer->getDepthImage(producerFrame), src, widgetSampler, widgetSampler,
-                                 linearSceneDepthView,
+                runLinearizePass(app, solidRenderer->getDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearSceneDepthView,
+                                 linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
+                // std::cerr << "[RenderTargetsWidget] Scene linearize: pass completed" << std::endl;
             }
         }
 
+        // Back-face depth pass
+        // Back-face depth pass (use perspective linearization)
         if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE) {
+            // Use previous producer frame for the back-face source to avoid
+            // sampling images that may still be in-flight.
             uint32_t producerFrame = (frameIndex + 1) % 2;
             VkImageView src = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(producerFrame) : VK_NULL_HANDLE;
-            if (src != VK_NULL_HANDLE) {
+                // std::cerr << "[RenderTargetsWidget] Backface linearize check: pipeline=" << (void*)linearizePipeline << " descSet=" << (void*)linearizeDescriptorSet << " fb=" << (void*)linearBackFaceFramebuffer << " view=" << (void*)linearBackFaceDepthView << " src=" << (void*)src << " producerFrame=" << (unsigned)producerFrame << std::endl;
+                if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, sceneRenderer->backFaceRenderer->getBackFaceDepthImage(producerFrame), src, widgetSampler, widgetSampler,
-                                 linearBackFaceDepthView,
+                runLinearizePass(app, sceneRenderer->backFaceRenderer->getBackFaceDepthImage(producerFrame), src, widgetSampler, widgetSampler, linearBackFaceDepthView,
+                                 linearBackFaceDepthDescriptor, linearBackFaceDepthDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
+                // std::cerr << "[RenderTargetsWidget] Backface linearize: pass completed" << std::endl;
             }
         }
 
+        // Water front-face depth pass (linearize the water geometry depth buffer)
         if (sceneRenderer && sceneRenderer->waterRenderer && linearizePipeline != VK_NULL_HANDLE && waterDepthLinearView != VK_NULL_HANDLE) {
+            // The water geometry depth is written during the main render pass for
+            // the current CPU frame. The widget runs its linearize pass while
+            // building ImGui (before the main render pass is submitted), so
+            // sampling the *current* frame's depth can read undefined/attachment
+            // layout contents. Use the previous producer frame's depth view so
+            // we sample a completed image (one-frame latency) and avoid hazards.
             uint32_t producerFrame = (frameIndex + 1) % 2;
             VkImageView src = sceneRenderer->waterRenderer->getWaterGeomDepthView(producerFrame);
+                // std::cerr << "[RenderTargetsWidget] Water linearize check: pipeline=" << (void*)linearizePipeline << " descSet=" << (void*)linearizeDescriptorSet << " fb=" << (void*)linearSceneFramebuffer << " view=" << (void*)linearSceneDepthView << " src=" << (void*)src << " producerFrame=" << (unsigned)producerFrame << std::endl;
             if (src != VK_NULL_HANDLE) {
                 float nearP = 0.1f, farP = 1000.0f;
                 if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
-                runLinearizePass(app, sceneRenderer->waterRenderer->getWaterGeomDepthImage(producerFrame), src, widgetSampler, widgetSampler,
-                                 waterDepthLinearView,
+                runLinearizePass(app, sceneRenderer->waterRenderer->getWaterGeomDepthImage(producerFrame), src, widgetSampler, widgetSampler, waterDepthLinearView,
+                                 waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned,
                                  static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 1.0f);
+                // std::cerr << "[RenderTargetsWidget] Water linearize: pass completed" << std::endl;
             }
         }
-
+        // Shadow cascade linearization: create per-cascade RGBA targets and
+        // run the same linearize pass used for scene/backface/water so all
+        // depth previews are produced consistently.
         if (shadowMapper && linearizePipeline != VK_NULL_HANDLE) {
             uint32_t shadowSize = shadowMapper->getShadowMapSize();
             for (int c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
@@ -879,88 +1134,139 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
                 if (src != VK_NULL_HANDLE && linearShadowDepthView[c] != VK_NULL_HANDLE) {
                     float nearP = 0.0f, farP = 1.0f;
                     runLinearizePass(app, shadowMapper->getDepthImage(c), src, widgetSampler, widgetSampler, linearShadowDepthView[c],
-                                     shadowSize, shadowSize, nearP, farP, 1.0f);
+                                     linearShadowDepthDescriptor[c], linearShadowDepthDescriptorOwned[c], shadowSize, shadowSize, nearP, farP, 1.0f);
+                    // std::cerr << "[RenderTargetsWidget] Shadow linearize: cascade=" << c << " done" << std::endl;
                 }
             }
         }
     }
+    // Water back-face depth (volume thickness pre-pass — D32_SFLOAT)
+    if (shadowMapper) {
+        VkImageView bfView = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
+        if (bfView != VK_NULL_HANDLE && backFaceDepthDescriptor == VK_NULL_HANDLE) {
+            backFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(
+                widgetSampler, bfView,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            backFaceDepthDescriptorOwned = true;
+        }
+    }
 
-    if (!app) { previewTextureID = 0; return; }
+    // Alias linear-depth previews to renderer-provided depth image views so
+    // the widget displays depth entirely via GPU sampling (no CPU readback).
+    // Scene linear depth: if we didn't create a GPU-linearized image above,
+    // alias to the solid renderer depth view so we still show something.
+    if (linearSceneDepthDescriptor == VK_NULL_HANDLE && solidRenderer) {
+        // Try to produce a GPU-linearized RGBA preview first. If linearization
+        // fails or is unavailable, fall back to aliasing the raw depth view.
+        uint32_t producerFrame = (frameIndex + 1) % 2;
+        VkImageView sceneDepthView = solidRenderer->getDepthView(producerFrame);
+        VkImage sceneDepthImage = solidRenderer->getDepthImage(producerFrame);
+        if (sceneDepthView != VK_NULL_HANDLE) {
+            bool linearized = false;
+            // Only attempt linearize if we have the pipeline and target framebuffer
+            if (linearizePipeline != VK_NULL_HANDLE && linearSceneDepthView != VK_NULL_HANDLE && sceneDepthImage != VK_NULL_HANDLE) {
+                float nearP = 0.1f, farP = 1000.0f;
+                if (settings) { nearP = settings->nearPlane; farP = settings->farPlane; }
+                // runLinearizePass will set `linearSceneDepthDescriptor` on success
+                linearized = runLinearizePass(app, sceneDepthImage, sceneDepthView, widgetSampler, widgetSampler,
+                                              linearSceneDepthView,
+                                              linearSceneDepthDescriptor, linearSceneDepthDescriptorOwned,
+                                              static_cast<uint32_t>(cachedWidth), static_cast<uint32_t>(cachedHeight), nearP, farP, 0.0f);
+            }
+            if (!linearized) {
+                throw std::runtime_error("RenderTargetsWidget: GPU linearize pass failed (no fallback allowed)");
+            }
+        }
+    }
+    // Back-face depth (water): alias to water back-face depth view
+    VkImageView bfView2 = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
+    if (linearBackFaceDepthDescriptor == VK_NULL_HANDLE && bfView2 != VK_NULL_HANDLE) {
+        VkSampler depthSampler = widgetSampler;
+        linearBackFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, bfView2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        linearBackFaceDepthDescriptorOwned = true;
+    }
 
-    // Choose a single preview texture ID according to the current selection.
-    auto& mgr = app->imTextureManager;
-    previewTextureID = 0;
+    // Brush back-face depth: alias to brush back-face depth view
+    VkImageView bfView3 = (sceneRenderer && sceneRenderer->brushBackFaceRenderer) ? sceneRenderer->brushBackFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
+    if (linearBrushBackFaceDepthDescriptor == VK_NULL_HANDLE && bfView3 != VK_NULL_HANDLE) {
+        VkSampler depthSampler = widgetSampler;
+        linearBrushBackFaceDepthDescriptor = ImGui_ImplVulkan_AddTexture(depthSampler, bfView3, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        linearBrushBackFaceDepthDescriptorOwned = true;
+    }
+
+    // Choose a single preview descriptor according to the current selection.
+    previewDescriptor = VK_NULL_HANDLE;
     switch (selectedPreview) {
-        case PreviewTarget::Sky: {
-            VkImageView v = skyRenderer ? skyRenderer->getSkyView(frameIndex) : VK_NULL_HANDLE;
-            if (v) previewTextureID = mgr.getOrCreate(v, widgetSampler);
-        } break;
-        case PreviewTarget::Solid360Cube: {
-            uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
-            VkImageView v = (sceneRenderer && sceneRenderer->solid360Renderer) ? sceneRenderer->solid360Renderer->getCube360FaceView(f) : VK_NULL_HANDLE;
-            if (v) previewTextureID = mgr.getOrCreate(v, widgetSampler);
-        } break;
-        case PreviewTarget::Solid360DepthCube: {
-            uint32_t f = static_cast<uint32_t>(this->selectedCubeFaceIndex);
-            VkImageView v = linearCubeFaceDepthView[f];
-            if (v) previewTextureID = mgr.getOrCreate(v, widgetSampler);
-        } break;
-        case PreviewTarget::Solid360Equirect: {
-            cube360EquirectRenderer.render(app, widgetSampler, sceneRenderer->solid360Renderer->getSolid360View());
-            VkImageView v = cube360EquirectRenderer.getEquirectView();
-            if (v) previewTextureID = mgr.getOrCreate(v, widgetSampler);
-        } break;
-        case PreviewTarget::SolidColor: {
-            VkImageView v = solidRenderer ? solidRenderer->getColorView(frameIndex) : VK_NULL_HANDLE;
-            if (v) previewTextureID = mgr.getOrCreate(v, widgetSampler);
-        } break;
-        case PreviewTarget::SolidDepth: {
-            uint32_t producerFrame = (frameIndex + 1) % 2;
-            VkImageView v = solidRenderer ? solidRenderer->getDepthView(producerFrame) : VK_NULL_HANDLE;
-            if (v) previewTextureID = mgr.getOrCreate(v, widgetSampler);
-        } break;
-        case PreviewTarget::WaterColor: {
-            VkImageView v = (sceneRenderer && sceneRenderer->waterRenderer) ? sceneRenderer->waterRenderer->getWaterDepthView(frameIndex) : VK_NULL_HANDLE;
-            if (v) previewTextureID = mgr.getOrCreate(v, widgetSampler);
-        } break;
-        case PreviewTarget::WaterDepth: {
-            if (waterDepthLinearView) previewTextureID = mgr.getOrCreate(waterDepthLinearView, widgetSampler);
-        } break;
-        case PreviewTarget::BackFaceColor: {
-            VkImageView v = (sceneRenderer && sceneRenderer->backFaceRenderer) ? sceneRenderer->backFaceRenderer->getBackFaceDepthView(frameIndex) : VK_NULL_HANDLE;
-            if (v) previewTextureID = mgr.getOrCreate(v, widgetSampler);
-        } break;
-        case PreviewTarget::BackFaceDepth:
-            if (linearBackFaceDepthView) previewTextureID = mgr.getOrCreate(linearBackFaceDepthView, widgetSampler);
+        case PreviewTarget::Sky: 
+            previewDescriptor = skyDescriptor; 
             break;
-        case PreviewTarget::BrushColor: {
-            VkImageView v = solidRenderer ? solidRenderer->getColorView(frameIndex) : VK_NULL_HANDLE;
-            if (v) previewTextureID = mgr.getOrCreate(v, widgetSampler);
-        } break;
-        case PreviewTarget::BrushDepth: {
-            uint32_t producerFrame = (frameIndex + 1) % 2;
-            VkImageView v = solidRenderer ? solidRenderer->getDepthView(producerFrame) : VK_NULL_HANDLE;
-            if (v) previewTextureID = mgr.getOrCreate(v, widgetSampler);
-        } break;
+        case PreviewTarget::Solid360Cube: 
+            previewDescriptor = cube360FaceDescriptor[this->selectedCubeFaceIndex]; 
+            break;
+        case PreviewTarget::Solid360DepthCube:
+            previewDescriptor = cube360FaceDepthDescriptor[this->selectedCubeFaceIndex];
+            break;
+        case PreviewTarget::Solid360Equirect: 
+            previewDescriptor = cube360EquirectDescriptor; 
+            break;            
+        case PreviewTarget::SolidColor: 
+            previewDescriptor = solidColorDescriptor; 
+            break;
+        // Prefer the GPU-linearized scene depth if available, otherwise fall back to raw depth view
+        case PreviewTarget::SolidDepth:
+            if (linearSceneDepthDescriptor != VK_NULL_HANDLE) previewDescriptor = linearSceneDepthDescriptor;
+            else previewDescriptor = solidDepthDescriptor;
+            break;
+        case PreviewTarget::WaterColor: 
+            previewDescriptor = waterColorDescriptor; 
+            break;
+        case PreviewTarget::WaterDepth: 
+            previewDescriptor = waterDepthLinearDescriptor; 
+            break;
+        // Prefer the GPU-linearized back-face depth if available, otherwise fall back to raw back-face depth view
+        case PreviewTarget::BackFaceColor:
+            if (linearBackFaceDepthDescriptor != VK_NULL_HANDLE) previewDescriptor = linearBackFaceDepthDescriptor;
+            else previewDescriptor = backFaceDepthDescriptor;
+            break;
+        case PreviewTarget::LinearSceneDepth: 
+            previewDescriptor = linearSceneDepthDescriptor; 
+            break;
+        case PreviewTarget::BackFaceDepth: 
+            previewDescriptor = linearBackFaceDepthDescriptor; 
+            break;
+        case PreviewTarget::BrushColor:
+            previewDescriptor = solidColorDescriptor; // fallback — brush color not separately tracked
+            break;
+        case PreviewTarget::BrushDepth:
+            previewDescriptor = solidDepthDescriptor; // fallback — brush depth not separately tracked
+            break;
         case PreviewTarget::BrushBackFaceDepth:
-            if (linearBrushBackFaceDepthView) previewTextureID = mgr.getOrCreate(linearBrushBackFaceDepthView, widgetSampler);
-            break;
-        case PreviewTarget::LinearSceneDepth:
-            if (linearSceneDepthView) previewTextureID = mgr.getOrCreate(linearSceneDepthView, widgetSampler);
+            previewDescriptor = linearBrushBackFaceDepthDescriptor;
             break;
         case PreviewTarget::ShadowCascade:
             if (shadowViewMode == RenderTargetsWidget::ShadowViewMode::Linearized) {
-                if (linearShadowDepthView[selectedShadowCascade])
-                    previewTextureID = mgr.getOrCreate(linearShadowDepthView[selectedShadowCascade], widgetSampler);
-                else if (shadowMapper)
-                    previewTextureID = shadowMapper->getImTextureID(app, selectedShadowCascade);
+                if (linearShadowDepthDescriptor[selectedShadowCascade] != VK_NULL_HANDLE)
+                    previewDescriptor = linearShadowDepthDescriptor[selectedShadowCascade];
+                else if (shadowMapper) previewDescriptor = shadowMapper->getImGuiDescriptorSet(selectedShadowCascade);
             } else {
-                if (shadowMapper)
-                    previewTextureID = shadowMapper->getImTextureID(app, selectedShadowCascade);
+                if (shadowMapper) previewDescriptor = shadowMapper->getImGuiDescriptorSet(selectedShadowCascade);
             }
             break;
-        default:
+        default: 
+            previewDescriptor = VK_NULL_HANDLE; 
             break;
+    }
+
+    // Periodic debug: print resource counts after update (throttled)
+    static int dbgCounter = 0;
+    if (app && (++dbgCounter % 120) == 0) {
+        // Debug resource counts kept for reference
+        // size_t imgCount = rm.getImageMap().size();
+        // size_t ivCount = rm.getImageViewMap().size();
+        // size_t bufCount = rm.getBufferMap().size();
+        // size_t memCount = rm.getDeviceMemoryMap().size();
+        // size_t descSetCount = rm.getDescriptorSetMap().size();
+        // std::cerr << "[RenderTargetsWidget] updateDescriptors END frame=" << currentFrame << " resources post-update images=" << imgCount << " imageViews=" << ivCount << " buffers=" << bufCount << " memories=" << memCount << " descSets=" << descSetCount << std::endl;
     }
 }
 
@@ -1075,29 +1381,25 @@ void RenderTargetsWidget::render() {
         //           << " showAllCascades=" << showAllCascades
         //           << " selectedCubeFace=" << selectedCubeFaceIndex << std::endl;
 
-        // Render only the selected preview using a single preview texture ID
+        // Render only the selected preview using a single preview descriptor
+        VkDescriptorSet ds = previewDescriptor;
         ImVec2 imgSize = previewSize;
-        ImGuiHelpers::ImageOrUnavailable(previewTextureID, imgSize, "Preview unavailable");
+        ImGuiHelpers::ImageOrUnavailable((ImTextureID)ds, imgSize, "Preview unavailable");
     ImGui::Separator();
 
 
 
     // Optionally show all cascades (in selected shadow view mode)
     // Only show the full cascade grid when the shadow cascade preview is selected.
-    if (selectedPreview == PreviewTarget::ShadowCascade && showAllCascades && shadowMapper && app) {
+    if (selectedPreview == PreviewTarget::ShadowCascade && showAllCascades && shadowMapper) {
         float shadowSize = PREVIEW_WIDTH;
         for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
             ImGui::Text("Shadow Cascade %d", i);
-            ImTextureID tid = 0;
             if (shadowViewMode == RenderTargetsWidget::ShadowViewMode::Linearized) {
-                if (linearShadowDepthView[i])
-                    tid = app->imTextureManager.getOrCreate(linearShadowDepthView[i], widgetSampler);
-                else
-                    tid = shadowMapper->getImTextureID(app, i);
+                ImGuiHelpers::ImageOrUnavailable((ImTextureID)linearShadowDepthDescriptor[i], ImVec2(shadowSize, shadowSize));
             } else {
-                tid = shadowMapper->getImTextureID(app, i);
+                ImGuiHelpers::ImageOrUnavailable((ImTextureID)shadowMapper->getImGuiDescriptorSet(i), ImVec2(shadowSize, shadowSize));
             }
-            ImGuiHelpers::ImageOrUnavailable(tid, ImVec2(shadowSize, shadowSize));
             ImGui::Separator();
         }
     }
