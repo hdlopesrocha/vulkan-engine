@@ -368,11 +368,9 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             if (be) {
                 const ControllerPage* sub = wctx.activeSubpage();
                 if (sub && sub->control == PageControl::AIM) {
-                    // Aim subpage: reset snap offset
                     be->snapTranslation = glm::vec3(0.0f);
                     fprintf(stderr, "[Wiimote] snapTranslation reset\n");
                 } else if (wctx.activeCategory() == PageCategory::BRUSH) {
-                    // Brush page: place brush at camera + forward * 4 * scaleLen
                     float scaleLen = glm::length(be->scale);
                     be->translate = cam.getPosition() + cam.getForward() * (4.0f * scaleLen);
                     fprintf(stderr, "[Wiimote] brush placed at %.1f %.1f %.1f\n",
@@ -390,7 +388,8 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     glm::vec3 up = cam.getUp();
     glm::vec3 forward = cam.getForward();
 
-    // Joystick acceleration: exponential ramp from 0 (at t=0s) → 1 (at t=1s) → grows after
+    // Joystick + C/Z acceleration: exponential ramp from 0 (at t=0s) → 1 (at t=1s) → grows after.
+    // Timer runs while the joystick is deflected OR C/Z is held.
     float joystickAccel = 0.0f;
     if (hasNunchuk) {
         float ax = s.joystickX;
@@ -402,7 +401,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         const float ajdz = 0.30f;
         if (std::abs(ax) < ajdz) ax = 0.0f;
         if (std::abs(ay) < ajdz) ay = 0.0f;
-        if (ax != 0.0f || ay != 0.0f) {
+        if (ax != 0.0f || ay != 0.0f || s.buttonC || s.buttonZ) {
             joystickTimer += deltaTime;
             joystickAccel = (std::exp(joystickTimer) - 1.0f) / (std::exp(1.0f) - 1.0f);
         } else {
@@ -463,7 +462,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         const ControllerPage* aimCheck = wctx.activeSubpage();
         bool aimActive = aimCheck && aimCheck->control == PageControl::AIM;
 
-        float vel = cam.speed * deltaTime;
+        float vel = cam.speed * deltaTime * joystickAccel;
         glm::vec3 upDelta = up * vel;
         glm::vec3 downDelta = up * (-vel);
 
@@ -628,13 +627,13 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                     }
                 }
                 if (s.buttonC) {
-                    be->snapTranslation += up * (cam.speed * deltaTime);
-                    be->translate += up * (cam.speed * deltaTime);
+                    be->snapTranslation += up * (cam.speed * deltaTime * joystickAccel);
+                    be->translate += up * (cam.speed * deltaTime * joystickAccel);
                     em->queue(std::make_shared<RebuildBrushEvent>());
                 }
                 if (s.buttonZ) {
-                    be->snapTranslation -= up * (cam.speed * deltaTime);
-                    be->translate -= up * (cam.speed * deltaTime);
+                    be->snapTranslation -= up * (cam.speed * deltaTime * joystickAccel);
+                    be->translate -= up * (cam.speed * deltaTime * joystickAccel);
                     em->queue(std::make_shared<RebuildBrushEvent>());
                 }
             }
