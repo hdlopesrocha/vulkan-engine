@@ -964,10 +964,16 @@ public:
 
             // Transition brush color + depth to attachment layouts
             if (brushColorImg != VK_NULL_HANDLE && oldColLayout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+                VkAccessFlags2 colSrcAccess = 0;
+                VkPipelineStageFlags2 colSrcStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+                if (oldColLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+                    colSrcAccess = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                    colSrcStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                }
                 RendererUtils::transitionImageLayout(commandBuffer, brushColorImg,
                     oldColLayout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    0, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
+                    colSrcAccess, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    colSrcStage, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
                 sceneRenderer->brushColorLayouts[frameIdx] = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             }
             if (brushDepthImg != VK_NULL_HANDLE && oldDepLayout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
@@ -978,7 +984,7 @@ public:
                     depthSrcStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
                 } else if (oldDepLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
                     depthSrcAccess = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-                    depthSrcStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                    depthSrcStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
                 } else {
                     depthSrcAccess = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
                     depthSrcStage = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
