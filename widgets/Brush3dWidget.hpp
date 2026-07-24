@@ -8,8 +8,8 @@
 #include <vector>
 #include <functional>
 
-#include "Brush3dEntry.hpp"
-#include "Brush3dManager.hpp"
+#include "../utils/Brush3dEntry.hpp"
+#include "../utils/Brush3dManager.hpp"
 
 class TextureArrayManager;
 class SceneRenderer;

@@ -5,8 +5,8 @@
 
 // Represents one SDF brush entry with all parameters needed to populate the scene
 struct BrushEntry {
-    // SDF primitive: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder
-    int sdfType = 1;   // 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder
+    // SDF primitive: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder,8=TaperedCylinder,9=TaperedCapsule
+    int sdfType = 3;
     // Operation: 0=ADD, 1=REMOVE
     int brushMode = 0;
     // Target layer: 0=OPAQUE, 1=TRANSPARENT
@@ -28,8 +28,8 @@ struct BrushEntry {
     int effectType = 0;
     float effectAmplitude = 48.0f;
     float effectFrequency = 0.003f;
-    float effectThreshold = 0.1f;   // PerlinCarve
-    float effectCellSize = 64.0f;   // Voronoi
+    float effectThreshold = 0.1f;
+    float effectCellSize = 64.0f;
     float effectBrightness = 0.0f;
     float effectContrast = 1.0f;
     // Capsule-specific
@@ -38,4 +38,10 @@ struct BrushEntry {
     float capsuleRadius = 0.5f;
     // Torus-specific
     glm::vec2 torusRadii = glm::vec2(0.5f, 0.25f);
+    // Tapered cylinder-specific (r1=bottom, r2=top)
+    glm::vec2 taperedCylinderRadii = glm::vec2(0.25f, 0.5f);
+    // Tapered capsule-specific (r1=radius at A, r2=radius at B)
+    glm::vec2 taperedCapsuleRadii = glm::vec2(0.5f, 0.25f);
+    // Rendering opacity (0 = fully transparent, 1 = fully opaque)
+    float opacity = 0.5f;
 };
