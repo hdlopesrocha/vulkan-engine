@@ -89,6 +89,10 @@ public:
     void updateLayerFromEditable(class VulkanApp* app, uint32_t layer, const class EditableTexture& tex);
     void updateLayerFromEditableMap(class VulkanApp* app, uint32_t layer, const class EditableTexture& tex, int map);
 
+    // Invalidate all cached ImGui texture descriptors (e.g. after swapchain recreation
+    // when the descriptor pool is destroyed). Next getImTexture() call re-creates them.
+    void invalidateImGuiDescriptors();
+
     // Return an ImGui texture handle for a given array layer and map (0=albedo,1=normal,2=bump,3=roughness,4=ao)
     ImTextureID getImTexture(size_t layer, int map);
     // Variant that returns a descriptor sampling only the alpha channel of the

@@ -54,6 +54,16 @@ void ImpostorService::rewire() {
     }
 }
 
+void ImpostorService::invalidateImGuiDescriptors() {
+    capture.invalidateImGuiDescriptors();
+}
+
+void ImpostorService::recreateImGuiDescriptors() {
+    if (vulkanApp && capture.isReady()) {
+        capture.recreateAllImGuiDescSets(vulkanApp);
+    }
+}
+
 VkDescriptorSet ImpostorService::getImGuiDescSet(uint32_t billboardType, uint32_t viewIdx) const {
     return capture.getImGuiDescSet(billboardType, viewIdx);
 }

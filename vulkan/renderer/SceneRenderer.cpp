@@ -233,6 +233,10 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
         skyRenderer->destroyOffscreenTargets(app);
         skyRenderer->createOffscreenTargets(app, width, height);
     }
+    // Brush images have been destroyed and recreated; reset tracked layouts so
+    // the first barrier after resize uses VK_IMAGE_LAYOUT_UNDEFINED as oldLayout.
+    brushColorLayouts.fill(VK_IMAGE_LAYOUT_UNDEFINED);
+    brushDepthLayouts.fill(VK_IMAGE_LAYOUT_UNDEFINED);
     // Rewrite brush depth descriptors after recreating brush targets
     writeBrushDepthDescriptors(app);
 }

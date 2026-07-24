@@ -1794,6 +1794,7 @@ public:
         }
 
         if (impostorService) {
+            impostorService->invalidateImGuiDescriptors();
             impostorService->cleanup();
         }
 
@@ -1839,6 +1840,10 @@ public:
         if (billboardCreator) {
             billboardCreator->invalidateImGuiDescriptors();
         }
+        textureArrayManager.invalidateImGuiDescriptors();
+        if (impostorService) {
+            impostorService->invalidateImGuiDescriptors();
+        }
     }
 
     void onImGuiRecreated() override {
@@ -1852,6 +1857,9 @@ public:
         // Widget handles were nulled by preImGuiShutdown(); this is a no-op.
         if (renderTargetsWidget) {
             renderTargetsWidget->invalidateImGuiDescriptors();
+        }
+        if (impostorService) {
+            impostorService->recreateImGuiDescriptors();
         }
     }
 

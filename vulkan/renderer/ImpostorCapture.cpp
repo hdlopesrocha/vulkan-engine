@@ -897,6 +897,13 @@ void ImpostorCapture::createImGuiDescSetsForType(VulkanApp* app, uint32_t billbo
     }
 }
 
+void ImpostorCapture::recreateAllImGuiDescSets(VulkanApp* app) {
+    destroyImGuiDescSets();
+    for (uint32_t bt = 0; bt < NUM_BILLBOARD_TYPES; ++bt) {
+        createImGuiDescSetsForType(app, bt);
+    }
+}
+
 void ImpostorCapture::destroyImGuiDescSets() {
     for (auto& ds : imguiDescSets) {
         if (ds != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(ds); ds = VK_NULL_HANDLE; }

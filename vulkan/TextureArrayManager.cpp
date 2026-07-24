@@ -709,6 +709,15 @@ void TextureArrayManager::updateLayerFromEditableMap(VulkanApp* a, uint32_t laye
 		}
 	}
 
+void TextureArrayManager::invalidateImGuiDescriptors() {
+    auto clear = [](auto& vec) { std::fill(vec.begin(), vec.end(), ImTextureID(0)); };
+    clear(albedoImTextures);
+    clear(normalImTextures);
+    clear(bumpImTextures);
+    clear(roughnessImTextures);
+    clear(aoImTextures);
+}
+
 bool TextureArrayManager::isLayerInitialized(uint32_t layer) const {
 	if (layer >= layerInitialized.size()) return false;
 	return layerInitialized[layer] != 0;

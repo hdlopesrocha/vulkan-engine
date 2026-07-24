@@ -19,6 +19,8 @@ public:
     void setVegetationRenderer(VegetationRenderer* renderer) { vegRenderer = renderer; }
     void captureAll(float scale);
     void rewire();
+    void invalidateImGuiDescriptors();
+    void recreateImGuiDescriptors();
 
     bool isReady() const { return capture.isReady(); }
 

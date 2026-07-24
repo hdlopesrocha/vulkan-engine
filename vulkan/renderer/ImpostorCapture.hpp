@@ -181,8 +181,10 @@ private:
                           VkImageView albedo, VkImageView normal,
                           VkImageView opacity, VkSampler sampler);
     void createImGuiDescSetsForType(VulkanApp* app, uint32_t billboardType);
-    void destroyImGuiDescSets();
 public:
+    void destroyImGuiDescSets();
+    void invalidateImGuiDescriptors() { destroyImGuiDescSets(); }
+    void recreateAllImGuiDescSets(VulkanApp* app);
     CommandBufferState* cmdState = nullptr;
     void setCmdState(CommandBufferState* state) { cmdState = state; }
 };
