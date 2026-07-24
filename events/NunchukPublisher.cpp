@@ -319,7 +319,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         prevButtons = s.buttons;
         prevC = s.buttonC;
         prevZ = s.buttonZ;
-        prevB = (s.buttons & WIIMOTE_BUTTON_B) != 0;
+        prevA = (s.buttons & WIIMOTE_BUTTON_A) != 0;
         return;
     }
 
@@ -443,28 +443,28 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     }
 
     // ========================================================================
-    // WIIMOTE (MotionPlus) → ROTATION via B button
-    // B + Wiimote YPR → camera/brush rotation based on active page.
+    // WIIMOTE (MotionPlus) → ROTATION via A button
+    // A + Wiimote YPR → camera/brush rotation based on active page.
     // ========================================================================
-    bool bDown = (s.buttons & WIIMOTE_BUTTON_B) != 0;
+    bool aDown = (s.buttons & WIIMOTE_BUTTON_A) != 0;
 
-    if (bDown && !prevB) {
+    if (aDown && !prevA) {
         startYaw = s.yaw;
         startPitch = s.pitch;
         startRoll = s.roll;
     }
-    prevB = bDown;
+    prevA = aDown;
 
-    if (bDown) {
+    if (aDown) {
         const float rdz = 2.0f;
 
         // Determine rotation input: gyro rates (MotionPlus) or YPR offsets
         float yawInput, pitchInput, rollInput;
 
         if (s.hasMotionPlus) {
-            // Gyro bias: update leaky integrator when B NOT pressed,
-            // subtract bias when B IS pressed (eliminates resting drift)
-            if (!bDown) {
+            // Gyro bias: update leaky integrator when A NOT pressed,
+            // subtract bias when A IS pressed (eliminates resting drift)
+            if (!aDown) {
                 gyroBiasYaw   += (s.gyroYawRate   - gyroBiasYaw)   * 0.02f;
                 gyroBiasPitch += (s.gyroPitchRate - gyroBiasPitch) * 0.02f;
                 gyroBiasRoll  += (s.gyroRollRate  - gyroBiasRoll)  * 0.02f;

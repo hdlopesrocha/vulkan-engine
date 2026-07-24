@@ -4238,7 +4238,6 @@ VkDescriptorSet VulkanApp::createDescriptorSet(VkDescriptorSetLayout layout) {
     if ((uint64_t)descriptorSet == 0x6c100000006c1ULL) {
         std::cerr << "[VulkanApp::createDescriptorSet] *** CRITICAL: allocated suspicious handle 0x6c100000006c1 ***" << std::endl;
     }
-    std::cout << "[VulkanApp::createDescriptorSet] allocated descriptorSet=" << (void*)descriptorSet << " layout=" << (void*)layout << std::endl;
     return descriptorSet;
 }
 
@@ -4247,13 +4246,6 @@ VkResult VulkanApp::allocateDescriptorSetsThreadSafe(const VkDescriptorSetAlloca
     VkResult res = vkAllocateDescriptorSets(device, pAllocInfo, pDescriptorSets);
     if (res != VK_SUCCESS) {
         std::cerr << "[VulkanApp::allocateDescriptorSetsThreadSafe] vkAllocateDescriptorSets failed: " << res << std::endl;
-    } else {
-        for (uint32_t i = 0; i < pAllocInfo->descriptorSetCount; ++i) {
-            std::cerr << "[RAW ALLOC] allocateDescriptorSetsThreadSafe: descSet=" << (void*)pDescriptorSets[i] << " pool=" << (void*)pAllocInfo->descriptorPool << " count=" << pAllocInfo->descriptorSetCount << std::endl;
-            if ((uint64_t)pDescriptorSets[i] == 0x6c100000006c1ULL) {
-                std::cerr << "[VulkanApp::allocateDescriptorSetsThreadSafe] *** ALLOCATED BAD HANDLE 0x6c100000006c1 ***" << std::endl;
-            }
-        }
     }
     return res;
 }

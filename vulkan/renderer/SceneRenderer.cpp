@@ -985,18 +985,22 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         }
     }
 
-    // ── Allocate and write per-frame brush depth descriptor sets (set=1) ──
+    // ── Allocate (once) and write per-frame brush depth descriptor sets (set=1) ──
     for (size_t fi = 0; fi < brushDepthDescriptorSets.size(); ++fi) {
-        brushDepthDescriptorSets[fi] = app->createDescriptorSet(app->getBrushDepthDescriptorSetLayout());
+        if (brushDepthDescriptorSets[fi] == VK_NULL_HANDLE) {
+            brushDepthDescriptorSets[fi] = app->createDescriptorSet(app->getBrushDepthDescriptorSetLayout());
+        }
     }
     writeBrushDepthDescriptors(app);
 
-    // ── Allocate shadow-specific descriptor sets per-frame (mirror main sets but use a dummy depth view)
-    shadowDescriptorSets.clear();
+    // ── Allocate (once) and write shadow-specific descriptor sets per-frame ──
     shadowDescriptorSets.resize(mainUniformBuffers.size());
     for (size_t fi = 0; fi < shadowDescriptorSets.size(); ++fi) {
-        VkDescriptorSet ds = app->createDescriptorSet(app->getDescriptorSetLayout());
-        shadowDescriptorSets[fi] = ds;
+        VkDescriptorSet ds = shadowDescriptorSets[fi];
+        if (ds == VK_NULL_HANDLE) {
+            ds = app->createDescriptorSet(app->getDescriptorSetLayout());
+            shadowDescriptorSets[fi] = ds;
+        }
 
         DescriptorWriter wr(app->getDevice());
         wr.writeBuffer(ds, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
