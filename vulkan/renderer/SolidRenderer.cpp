@@ -287,11 +287,15 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         deferredColorPipelineLayout = cl;
     }
     {
+        // Brush pipeline does not need set=1 (brush depth textures)
+        std::vector<VkDescriptorSetLayout> brushSetLayouts;
+        if (app->getDescriptorSetLayout() != VK_NULL_HANDLE) brushSetLayouts.push_back(app->getDescriptorSetLayout());
+
         // Brush color: alpha blending enabled (CONSTANT_ALPHA), no depth write
-        // Uses a dedicated fragment shader (brush.frag) with all shadow
-        // computation removed so the brush surface never shows shadows.
+        // Uses main.frag compiled with -DBRUSH_PASS (no PAINT mode, no shadows,
+        // no set=1 brush depth declarations) via main_brush.frag.spv.
         ShaderStage brushFrag = ShaderStage(
-            app->getOrCreateShaderModule("shaders/brush.frag.spv"),
+            app->getOrCreateShaderModule("shaders/main_brush.frag.spv"),
             VK_SHADER_STAGE_FRAGMENT_BIT
         );
         GraphicsPipelineConfig brushCfg{};
@@ -303,18 +307,20 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             { vertexShader.info, tescShader.info, teseShader.info, brushFrag.info },
             std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
             vk_layouts::defaultAttributes(),
-            setLayouts, nullptr,
+            brushSetLayouts, nullptr,
             brushCfg
         );
         brushDeferredColorPipeline = bp;
         brushDeferredColorPipelineLayout = bl;
     }
     {
-        // Brush overlay pipeline: opaque, no blending, same brush.frag shader.
+        // Brush overlay pipeline: opaque, no blending, same main_brush.frag shader.
         // Used when rendering the brush into scene_color to prevent background
         // shadows from showing through CONSTANT_ALPHA blending.
+        std::vector<VkDescriptorSetLayout> brushSetLayouts2;
+        if (app->getDescriptorSetLayout() != VK_NULL_HANDLE) brushSetLayouts2.push_back(app->getDescriptorSetLayout());
         ShaderStage brushOpaqueFrag = ShaderStage(
-            app->getOrCreateShaderModule("shaders/brush.frag.spv"),
+            app->getOrCreateShaderModule("shaders/main_brush.frag.spv"),
             VK_SHADER_STAGE_FRAGMENT_BIT
         );
         GraphicsPipelineConfig brushOverlayCfg{};
@@ -326,7 +332,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
             { vertexShader.info, tescShader.info, teseShader.info, brushOpaqueFrag.info },
             std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
             vk_layouts::defaultAttributes(),
-            setLayouts, nullptr,
+            brushSetLayouts2, nullptr,
             brushOverlayCfg
         );
         brushOverlayPipeline = bp;

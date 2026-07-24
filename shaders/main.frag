@@ -16,8 +16,10 @@ layout(location = VARY_SHARPNORMAL) in vec3 fragSharpNormal; // face normal comp
 
 #include "includes/textures.glsl"
 
+#ifndef BRUSH_PASS
 layout(set = 1, binding = 0) uniform sampler2D brushDepthTex;
 layout(set = 1, binding = 1) uniform sampler2D brushBackFaceDepthTex;
+#endif
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -44,9 +46,9 @@ void main() {
         return;
     }
 
-    // PAINT mode: override texture indices with brush texture index
-    // when the fragment lies inside the brush volume.
+    // Texture indices, optionally overridden by PAINT mode
     ivec3 texIndices = fragTexIndices;
+#ifndef BRUSH_PASS
     if (ubo.brushParams.y > 1.5) {
         vec2 brushUV = gl_FragCoord.xy / vec2(textureSize(brushDepthTex, 0));
         float brushFront = texture(brushDepthTex, brushUV).r;
@@ -57,6 +59,7 @@ void main() {
             texIndices = ivec3(brushTexIndex);
         }
     }
+#endif
 
     // Use the three tex indices and barycentric weights provided by the TES for blending
     vec3 w = fragTexWeights;
@@ -185,10 +188,11 @@ void main() {
     vec3 toLight = -normalize(ubo.lightDir.xyz);
     float NdotL = max(dot(worldNormal, toLight), 0.0);
 
-    // Shadow calculation
+    // Shadow calculation (skipped for brush pass to avoid self-shadowing)
     vec4 adjustedPosLightSpace = fragPosLightSpace;
     float shadow = 0.0;
-    if (ubo.shadowEffects.w > 0.5) {
+    bool isBrushPass = ubo.brushParams.z > 0.5;
+    if (!isBrushPass && ubo.shadowEffects.w > 0.5) {
         if (NdotL > 0.01) {
             float bias = max(0.002 * (1.0 - NdotL), 0.0005);
             shadow = ShadowCalculation(adjustedPosLightSpace, fragPosWorld, bias);

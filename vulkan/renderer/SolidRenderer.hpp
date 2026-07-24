@@ -64,7 +64,7 @@ public:
     void drawDepthExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
     // Draw color using an external IndirectRenderer
     void drawColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect, VkDescriptorSet brushDepthSet = VK_NULL_HANDLE);
-    // Draw brush color (brush.frag, no shadows) using an external IndirectRenderer
+    // Draw brush color (main_brush.frag, no shadows) using an external IndirectRenderer
     void drawBrushColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
     // Draw brush color with alpha blending at the given opacity
     void drawBrushColor(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect, float opacity);

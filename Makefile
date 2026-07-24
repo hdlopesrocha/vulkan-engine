@@ -76,7 +76,18 @@ OUT_SPVS = \
 	$(patsubst shaders/%.geom, $(OUT_DIR)/shaders/%.geom.spv, $(wildcard shaders/*.geom)) \
 	$(patsubst shaders/%.comp, $(OUT_DIR)/shaders/%.comp.spv, $(wildcard shaders/*.comp)) \
 	$(patsubst shaders/%.tesc, $(OUT_DIR)/shaders/%.tesc.spv, $(wildcard shaders/*.tesc)) \
-	$(patsubst shaders/%.tese, $(OUT_DIR)/shaders/%.tese.spv, $(wildcard shaders/*.tese))
+	$(patsubst shaders/%.tese, $(OUT_DIR)/shaders/%.tese.spv, $(wildcard shaders/*.tese)) \
+	$(OUT_DIR)/shaders/main_brush.frag.spv
+
+# Compile main.frag with -DBRUSH_PASS for brush rendering (no PAINT mode, no set=1)
+$(OUT_DIR)/shaders/main_brush.frag.spv: shaders/main.frag $(SHADER_INCLUDES)
+	@echo "Compiling shader: $< -> $@ (BRUSH_PASS)"
+	@mkdir -p $(dir $@)
+	@if command -v glslc >/dev/null 2>&1; then \
+		glslc --target-env=vulkan1.3 -Ishaders/includes -DBRUSH_PASS $< -o $@; \
+	else \
+		glslangValidator -Ishaders/includes -V --target-env vulkan1.3 --D BRUSH_PASS $< -o $@; \
+	fi
 
 
 # Recursively create all object directories needed for all sources
