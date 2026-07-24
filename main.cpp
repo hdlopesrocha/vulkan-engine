@@ -799,7 +799,8 @@ public:
                 brushTexIdx = static_cast<float>(brushEntry->materialIndex);
                 brushMode = static_cast<float>(brushEntry->brushMode);
             }
-            uboStatic.brushParams = glm::vec4(brushTexIdx, brushMode, 0.0f, 0.0f);
+            float brushTime = static_cast<float>(glfwGetTime());
+            uboStatic.brushParams = glm::vec4(brushTexIdx, brushMode, 0.0f, brushTime);
         }
 
         // Reset command buffer state tracker and wire it to all sub-renderers.

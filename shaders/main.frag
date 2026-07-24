@@ -46,17 +46,30 @@ void main() {
         return;
     }
 
-    // Texture indices, optionally overridden by PAINT mode
+    // Texture indices, optionally overridden by PAINT/REMOVE mode
     ivec3 texIndices = fragTexIndices;
+    bool brushRedPhase = false;
 #ifndef BRUSH_PASS
-    if (ubo.brushParams.y > 1.5) {
+    bool isPaintMode = ubo.brushParams.y > 1.5;
+    bool isRemoveMode = ubo.brushParams.y > 0.5 && ubo.brushParams.y < 1.5;
+    if (isPaintMode || isRemoveMode) {
         vec2 brushUV = gl_FragCoord.xy / vec2(textureSize(brushDepthTex, 0));
         float brushFront = texture(brushDepthTex, brushUV).r;
         float brushBack = texture(brushBackFaceDepthTex, brushUV).r;
         float fragDepth = gl_FragCoord.z;
         if (fragDepth >= brushFront && fragDepth <= brushBack) {
             int brushTexIndex = int(ubo.brushParams.x + 0.5);
-            texIndices = ivec3(brushTexIndex);
+            if (isPaintMode) {
+                texIndices = ivec3(brushTexIndex);
+            } else {
+                // REMOVE mode: alternate between red tint and brush texture at 1Hz
+                float cycle = fract(ubo.brushParams.w);
+                if (cycle < 0.5) {
+                    brushRedPhase = true;
+                } else {
+                    texIndices = ivec3(brushTexIndex);
+                }
+            }
         }
     }
 #endif
@@ -536,6 +549,11 @@ void main() {
     // Blend between lit color and environment reflection.
     // reflectionStrength=0 → lit color only, =1 → pure mirror.
     vec3 finalColor = mix(ambient + diffuse + specular, envReflection, blendedRefStrength);
+
+    // REMOVE mode red phase: tint the surface red to indicate removal area
+    if (brushRedPhase) {
+        finalColor = vec3(finalColor.r, 0.0, 0.0);
+    }
     
     // DEBUG: Visualize lighting components
     // Uncomment to debug:
