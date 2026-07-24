@@ -1,4 +1,5 @@
-.PHONY: debug release run run-debug clean
+.DEFAULT_GOAL := all
+.PHONY: debug release run run-debug clean all imgui shaders server
 MAKE_JOBS ?= 8
 
 # Minimal Makefile: assumes ImGui is installed system-wide and enables it

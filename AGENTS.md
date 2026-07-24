@@ -19,7 +19,7 @@ The codebase is written in modern C++ (C++20 or newer) and prioritizes:
 
 | Command | Action |
 |---------|--------|
-| `make` / `make all` | Release build (app + server + shaders, ImGui enabled, `-O3 -march=native`) |
+| `make` / `make -j8 all` | Release build (app + server + shaders, ImGui enabled, `-O3 -march=native`) |
 | `make debug` | Debug build (`-O0 -g -DDEBUG`, no ImGui) |
 | `make run` | Release build + run `bin/app` (CWD is `bin/`, never close the app or use timeouts, the program is always closed by the user) |
 | `make run-debug` | Debug build + run | (Never close the app or use timeouts, the program is always closed by the user)

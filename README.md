@@ -24,8 +24,7 @@ A real-time 3D terrain and scene rendering engine built with modern Vulkan (targ
 make debug
 
 # Release build (O3 optimizations, ImGui enabled)
-make
-make all
+make -j8 all
 ```
 
 Compiled shaders are placed in `bin/shaders/`, the application binary in `bin/app`.
