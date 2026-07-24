@@ -28,7 +28,9 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 #include "includes/tbn.glsl"
 #include "includes/triplanar.glsl"
 
+#ifndef BRUSH_PASS
 #include "includes/shadows.glsl"
+#endif
 
 // Global toggles
 bool roughnessEnabled = ubo.debugParams.y > 0.5;
@@ -195,10 +197,10 @@ void main() {
     float NdotL = max(dot(worldNormal, toLight), 0.0);
 
     // Shadow calculation (skipped for brush pass to avoid self-shadowing)
-    vec4 adjustedPosLightSpace = fragPosLightSpace;
     float shadow = 0.0;
-    bool isBrushPass = ubo.brushParams.z > 0.5;
-    if (!isBrushPass && ubo.shadowEffects.w > 0.5) {
+#ifndef BRUSH_PASS
+    vec4 adjustedPosLightSpace = fragPosLightSpace;
+    if (ubo.shadowEffects.w > 0.5) {
         if (NdotL > 0.01) {
             float bias = max(0.002 * (1.0 - NdotL), 0.0005);
             shadow = ShadowCalculation(adjustedPosLightSpace, fragPosWorld, bias);
@@ -206,6 +208,7 @@ void main() {
             shadow = 1.0;
         }
     }
+#endif
     float totalShadow = shadow;
 
     // Blend material parameters (ambient/specular) by barycentric weights
