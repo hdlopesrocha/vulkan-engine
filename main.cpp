@@ -854,50 +854,6 @@ public:
         const bool waterEnabled = settings.waterEnabled;
         const bool vegetationEnabled = settings.vegetationEnabled;
 
-        // ── Cubemap render on main CB (after shadow pass, reads fresh shadow maps) ──
-        // Render the cubemap when water is enabled (it is sampled for reflections) or
-        // when the Solid360 preview is active (so it does not show stale water after the
-        // water toggle is turned off). The water-into-cubemap pass itself is still gated
-        // by `waterEnabled` inside renderSolid360.
-        const bool solid360PreviewActive = renderTargetsWidget && renderTargetsWidget->isVisible() && renderTargetsWidget->isSolid360Preview();
-        const bool renderCubemap = (waterEnabled || solid360PreviewActive) && sceneRenderer && sceneRenderer->solid360Renderer;
-        if (renderCubemap) {
-            ensureCubemapResources();
-
-            // Force dummy cubemap into cube360GfxDs binding #11 every frame
-            if (cube360GfxDs != VK_NULL_HANDLE && sceneRenderer->solid360Renderer) {
-                VkImageView dummyView = sceneRenderer->solid360Renderer->getDummyCubeView();
-                VkSampler cubeSamp = sceneRenderer->solid360Renderer->getSolid360Sampler();
-                if (dummyView != VK_NULL_HANDLE && cubeSamp != VK_NULL_HANDLE) {
-                    DescriptorWriter(getDevice())
-                        .writeImage(cube360GfxDs, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                    cubeSamp, dummyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-                        .flush();
-                }
-            }
-
-            UniformObject ubo360 = uboStatic;
-            ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
-
-            auto tCubemap = std::chrono::high_resolution_clock::now();
-            this->sceneRenderer->solid360Renderer->renderSolid360(
-                this, commandBuffer,
-                this->sceneRenderer->skyRenderer.get(), this->sceneRenderer->getSkySettings().mode,
-                this->sceneRenderer->solidRenderer.get(),
-                cube360GfxDs,
-                cube360UBO, ubo360,
-                settings.renderSolid, waterEnabled,
-                cube360ComputeDs,
-                cube360Compact.buffer,
-                cube360Visible.buffer,
-                cube360WaterComputeDs,
-                cube360WaterCompact.buffer,
-                cube360WaterVisible.buffer,
-                frameIdx);
-            this->profileSolid360 = std::chrono::duration<float, std::milli>(
-                std::chrono::high_resolution_clock::now() - tCubemap).count();
-        }
-
         // Render sky + solids/vegetation into the solid offscreen framebuffer (one per frame)
 
         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -918,21 +874,6 @@ public:
             // vkCmdBeginRendering (barriers illegal inside dynamic rendering).
             if (vegetationEnabled && sceneRenderer->vegetationRenderer) {
                 sceneRenderer->vegetationRenderer->recordReadBarriers(commandBuffer);
-            }
-
-            // Ensure the 360° cubemap writes (from the renderSolid360 call above
-            // on the same CB) are visible to the solid shader's environment-map
-            // sampler.
-            if (sceneRenderer && sceneRenderer->solid360Renderer) {
-                VkImage cubeImg = sceneRenderer->solid360Renderer->getCube360ColorImage();
-                if (cubeImg != VK_NULL_HANDLE) {
-                    RendererUtils::transitionImageLayout(
-                        commandBuffer, cubeImg,
-                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                        VK_IMAGE_ASPECT_COLOR_BIT, 0, 6);
-                }
             }
 
         // Transition depth to DEPTH_STENCIL_ATTACHMENT_OPTIMAL for Instance 1 below.
@@ -1083,6 +1024,47 @@ public:
                     VK_IMAGE_ASPECT_DEPTH_BIT);
                 sceneRenderer->brushDepthLayouts[frameIdx] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
+        }
+
+        // ── Cubemap render on main CB (after brush pass, reads brush depth textures) ──
+        const bool solid360PreviewActive = renderTargetsWidget && renderTargetsWidget->isVisible() && renderTargetsWidget->isSolid360Preview();
+        const bool renderCubemap = (waterEnabled || solid360PreviewActive) && sceneRenderer && sceneRenderer->solid360Renderer;
+        if (renderCubemap) {
+            ensureCubemapResources();
+
+            // Force dummy cubemap into cube360GfxDs binding #11 every frame
+            if (cube360GfxDs != VK_NULL_HANDLE && sceneRenderer->solid360Renderer) {
+                VkImageView dummyView = sceneRenderer->solid360Renderer->getDummyCubeView();
+                VkSampler cubeSamp = sceneRenderer->solid360Renderer->getSolid360Sampler();
+                if (dummyView != VK_NULL_HANDLE && cubeSamp != VK_NULL_HANDLE) {
+                    DescriptorWriter(getDevice())
+                        .writeImage(cube360GfxDs, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                    cubeSamp, dummyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                        .flush();
+                }
+            }
+
+            UniformObject ubo360 = uboStatic;
+            ubo360.materialFlags.x = 1.0f; // skipEnvMap flag
+
+            auto tCubemap = std::chrono::high_resolution_clock::now();
+            this->sceneRenderer->solid360Renderer->renderSolid360(
+                this, commandBuffer,
+                this->sceneRenderer->skyRenderer.get(), this->sceneRenderer->getSkySettings().mode,
+                this->sceneRenderer->solidRenderer.get(),
+                cube360GfxDs,
+                this->sceneRenderer->getBrushDepthDescriptorSet(frameIdx),
+                cube360UBO, ubo360,
+                settings.renderSolid, waterEnabled,
+                cube360ComputeDs,
+                cube360Compact.buffer,
+                cube360Visible.buffer,
+                cube360WaterComputeDs,
+                cube360WaterCompact.buffer,
+                cube360WaterVisible.buffer,
+                frameIdx);
+            this->profileSolid360 = std::chrono::duration<float, std::milli>(
+                std::chrono::high_resolution_clock::now() - tCubemap).count();
         }
 
         // ── Instance 1: Deferred depth pre-pass (no color attachment) ──
