@@ -77,7 +77,7 @@ class MyApp : public VulkanApp, public IEventHandler {
 public:
     Settings settings;
     SceneRenderer * sceneRenderer = nullptr;
-    LocalScene * mainScene;
+    LocalScene * mainScene = nullptr;
     LocalScene * brushScene = nullptr;
     std::shared_ptr<Brush3dWidget> brush3dWidget;
     // Shared brush entries edited by Brush3dWidget (owned by MyApp)
@@ -658,7 +658,8 @@ public:
         // Map Wiimote / Nunchuk inputs to controller actions (page navigation,
         // accelerometer translation, YPR rotation, joystick drag-and-drop).
         nunchukPublisher.applyControls(&eventManager, camera, deltaTime,
-                                       &controllerManager, &brushManager);
+                                       &controllerManager, &brushManager,
+                                       mainScene ? &mainScene->getOpaqueOctree() : nullptr);
         // Poll mouse input and publish camera events based on the mouse page.
         // Tell the publisher when ImGui is capturing the mouse so it yields.
         mousePublisher.update(&eventManager, camera, deltaTime, &controllerManager,

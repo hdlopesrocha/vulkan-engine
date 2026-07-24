@@ -24,6 +24,7 @@ enum class PageControl {
     SCALE,       // change size
     TEXTURE,     // change material / texture
     ATTRIBUTE,   // change SDF-specific attributes
+    AIM,         // wiimote M+ orient -> ray octree intersection -> snap brush pos
     UI           // non-propagating passthrough (ImGui / UI)
 };
 
@@ -106,6 +107,7 @@ public:
         brush->addChild("Transform", PageControl::TRANSLATE);
         brush->addChild("Texture", PageControl::TEXTURE);
         brush->addChild("Attributes", PageControl::ATTRIBUTE);
+        brush->addChild("Aim", PageControl::AIM);
         root_->children.push_back(brush);
 
         pageIndex_ = 0;

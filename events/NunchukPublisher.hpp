@@ -7,12 +7,15 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 struct wiimote_t;
 class EventManager;
 class Camera;
 class ControllerManager;
 class Brush3dManager;
+class Octree;
 
 // Publishes the full state of a Wiimote (and any attached Nunchuk expansion)
 // using the wiiuse library. Supports auto-connect with a retry loop so a
@@ -34,7 +37,8 @@ public:
     // active page/subpage of the wiimote context. Must be called each frame
     // after update().
     void applyControls(EventManager* em, const Camera& cam, float deltaTime,
-                       ControllerManager* cm, Brush3dManager* brushManager);
+                       ControllerManager* cm, Brush3dManager* brushManager,
+                       const Octree* octree = nullptr);
 
     WiimoteState getState() const;
     bool isAutoConnecting() const { return autoConnecting.load(); }
@@ -69,6 +73,16 @@ private:
     float gyroBiasYaw = 0.0f;
     float gyroBiasPitch = 0.0f;
     float gyroBiasRoll = 0.0f;
+
+    // ── M+ Aim state ──
+    bool aimWasActive = false;         // Aim subpage was active last frame
+    float aimStartYaw = 0.0f;         // yaw when Aim page was entered (fallback)
+    float aimStartPitch = 0.0f;       // pitch when Aim page was entered (fallback)
+    float aimStartRoll = 0.0f;        // roll when Aim page was entered (fallback)
+    glm::quat aimOrient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // accumulated M+ orientation
+    float aimGyroBiasYaw = 0.0f;      // gyro bias for aim integration
+    float aimGyroBiasPitch = 0.0f;
+    float aimGyroBiasRoll = 0.0f;
 
     void autoConnectLoop();
     void readState();

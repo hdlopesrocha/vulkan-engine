@@ -18,6 +18,8 @@ struct BrushEntry {
     glm::vec3 translate = glm::vec3(0.0f, 1024.0f, 0.0f);
     float yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
     glm::quat rot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    // Offset accumulated by nunchuk in Aim (snap-to-geometry) mode
+    glm::vec3 snapTranslation = glm::vec3(0.0f);
     // Octree min size
     float minSize = 30.0f;
     // Optional SDF effect

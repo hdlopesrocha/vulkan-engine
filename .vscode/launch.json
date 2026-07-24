@@ -1,19 +1,16 @@
 {
   "version": "0.2.0",
   "configurations": [
-    
-  
     {
-      "name": "Launch app (gdb, external console)",
+      "name": "Debug (gdb)",
       "type": "cppdbg",
       "request": "launch",
       "program": "${workspaceFolder}/bin/app",
       "args": [],
       "stopAtEntry": false,
-      "cwd": "${workspaceFolder}",
+      "cwd": "${workspaceFolder}/bin",
       "externalConsole": false,
       "MIMode": "gdb",
-      "miDebuggerPath": "/usr/bin/gdb",
       "setupCommands": [
         {
           "description": "Enable pretty-printing for gdb",

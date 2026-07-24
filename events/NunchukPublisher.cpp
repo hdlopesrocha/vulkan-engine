@@ -5,6 +5,10 @@
 #include "TranslateCameraEvent.hpp"
 #include "RotateCameraEvent.hpp"
 #include "../math/Camera.hpp"
+#include "../math/Ray.hpp"
+#include "../space/Octree.hpp"
+#include "../space/OctreeNode.hpp"
+#include "../space/ChildBlock.hpp"
 #include "../utils/Brush3dManager.hpp"
 #include "../utils/Brush3dEntry.hpp"
 #include "RebuildBrushEvent.hpp"
@@ -283,8 +287,11 @@ void NunchukPublisher::readStateLocked() {
     }
 }
 
+static bool rayIntersectOctree(const Octree& tree, const Ray& ray, glm::vec3& outPos);
+
 void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float deltaTime,
-                                     ControllerManager* cm, Brush3dManager* brushManager) {
+                                     ControllerManager* cm, Brush3dManager* brushManager,
+                                     const Octree* octree) {
     if (!em || !cm) return;
 
     WiimoteState s = getState();
@@ -393,11 +400,16 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 if (jy != 0.0f) delta += forward * (jy * vel);
                 em->publish(std::make_shared<TranslateCameraEvent>(delta));
             } else if (brushManager) {
-                BrushEntry* be = brushManager->getSelectedEntry();
-                if (be) {
-                    if (jx != 0.0f) be->translate += right * (jx * vel);
-                    if (jy != 0.0f) be->translate += forward * (jy * vel);
-                    em->queue(std::make_shared<RebuildBrushEvent>());
+                // Check that we are NOT on the Aim subpage (Aim handles nunchuk
+                // as a relative shift from the intersection point instead).
+                const ControllerPage* bp = wctx.activeSubpage();
+                if (!bp || bp->control != PageControl::AIM) {
+                    BrushEntry* be = brushManager->getSelectedEntry();
+                    if (be) {
+                        if (jx != 0.0f) be->translate += right * (jx * vel);
+                        if (jy != 0.0f) be->translate += forward * (jy * vel);
+                        em->queue(std::make_shared<RebuildBrushEvent>());
+                    }
                 }
             }
         }
@@ -409,15 +421,19 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
     // Both apply to camera (Camera page) or brush (Brush page).
     // ========================================================================
     if (hasNunchuk) {
+        // ── Check if Aim subpage is active (C/Z are handled as shift below) ──
+        const ControllerPage* aimCheck = wctx.activeSubpage();
+        bool aimActive = aimCheck && aimCheck->control == PageControl::AIM;
+
         float vel = cam.speed * deltaTime;
         glm::vec3 upDelta = up * vel;
         glm::vec3 downDelta = up * (-vel);
 
-        // C → UP (camera on Camera page, brush on Brush page)
+        // C → UP (camera on Camera page, brush on Brush page, skip on Aim)
         if (s.buttonC) {
             if (wctx.activeCategory() == PageCategory::CAMERA) {
                 em->publish(std::make_shared<TranslateCameraEvent>(upDelta));
-            } else if (brushManager) {
+            } else if (brushManager && !aimActive) {
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) {
                     be->translate += upDelta;
@@ -427,11 +443,11 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         }
         prevC = s.buttonC;
 
-        // Z → DOWN (camera on Camera page, brush on Brush page)
+        // Z → DOWN (camera on Camera page, brush on Brush page, skip on Aim)
         if (s.buttonZ) {
             if (wctx.activeCategory() == PageCategory::CAMERA) {
                 em->publish(std::make_shared<TranslateCameraEvent>(downDelta));
-            } else if (brushManager) {
+            } else if (brushManager && !aimActive) {
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) {
                     be->translate += downDelta;
@@ -493,25 +509,218 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             if (y != 0.0f || p != 0.0f || r != 0.0f)
                 em->publish(std::make_shared<RotateCameraEvent>(y, p, r));
         } else if (brushManager) {
+            // Do NOT apply rotation when on the Aim subpage (it has its own
+            // gyro integration).
+            const ControllerPage* rotSub = wctx.activeSubpage();
+            if (!rotSub || rotSub->control != PageControl::AIM) {
+                BrushEntry* be = brushManager->getSelectedEntry();
+                if (be) {
+                    float brushScale = deltaTime * cp.wiimoteRotSpeed / 90.0f;
+                    float dy = yawInput   * brushScale;
+                    float dp = pitchInput * brushScale;
+                    float dr = rollInput  * brushScale;
+                    if (dy != 0.0f || dp != 0.0f || dr != 0.0f) {
+                        glm::quat q = be->rot;
+                        glm::quat camOrient = cam.getOrientation();
+                        glm::quat rCam = glm::angleAxis(glm::radians(dy),  glm::vec3(0.0f, 1.0f, 0.0f))
+                                       * glm::angleAxis(glm::radians(-dp), glm::vec3(1.0f, 0.0f, 0.0f))
+                                       * glm::angleAxis(glm::radians(-dr), glm::vec3(0.0f, 0.0f, -1.0f));
+                        glm::quat rWorld = camOrient * rCam * glm::conjugate(camOrient);
+                        be->rot = glm::normalize(rWorld * q);
+                        em->queue(std::make_shared<RebuildBrushEvent>());
+                    }
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // AIM SUBPAGE: M+ orientation → ray → leaf intersection → brush position
+    // The nunchuk joystick always accumulates into snapTranslation (independent
+    // of the A button); C/Z shift it vertically.  Brush translate is set to
+    // hitPos + snapTranslation only when the ray hits — no hit = no change.
+    //
+    // Gyro integration follows the same pattern as the rotation section above:
+    //   • A button must be held to accumulate M+ rotation into aimOrient
+    //   • Bias is updated via leaky integrator when NOT actively aiming
+    //   • Fallback to absolute YPR offsets when M+ is unavailable
+    // ========================================================================
+    {
+        const ControllerPage* subpage = wctx.activeSubpage();
+        bool onAim = subpage && subpage->control == PageControl::AIM;
+
+        // ── Gyro bias: update when not actively aiming ──
+        if (!onAim || !aDown) {
+            aimGyroBiasYaw   += (s.gyroYawRate   - aimGyroBiasYaw)   * 0.02f;
+            aimGyroBiasPitch += (s.gyroPitchRate - aimGyroBiasPitch) * 0.02f;
+            aimGyroBiasRoll  += (s.gyroRollRate  - aimGyroBiasRoll)  * 0.02f;
+        }
+
+        if (onAim && !aimWasActive) {
+            // Entering Aim page: reset orientation to identity (forward)
+            aimOrient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            aimStartYaw = s.yaw;
+            aimStartPitch = s.pitch;
+            aimStartRoll = s.roll;
+        }
+        aimWasActive = onAim;
+
+        // ── Nunchuk adjusts snapTranslation in Aim mode ──
+        if (onAim && brushManager) {
             BrushEntry* be = brushManager->getSelectedEntry();
             if (be) {
-                float brushScale = deltaTime * cp.wiimoteRotSpeed / 90.0f;
-                float dy = yawInput   * brushScale;
-                float dp = pitchInput * brushScale;
-                float dr = rollInput  * brushScale;
+                if (hasNunchuk) {
+                    float jx = s.joystickX;
+                    float jy = s.joystickY;
+                    if (!std::isfinite(jx)) jx = 0.0f;
+                    if (!std::isfinite(jy)) jy = 0.0f;
+                    jx = glm::clamp(jx, -1.0f, 1.0f);
+                    jy = glm::clamp(jy, -1.0f, 1.0f);
+                    const float jdz = 0.30f;
+                    if (std::abs(jx) < jdz) jx = 0.0f;
+                    if (std::abs(jy) < jdz) jy = 0.0f;
+                    if (jx != 0.0f || jy != 0.0f) {
+                        float vel = cam.speed * deltaTime;
+                        glm::vec3 delta(0.0f);
+                        if (jx != 0.0f) delta += right * (jx * vel);
+                        if (jy != 0.0f) delta += forward * (jy * vel);
+                        be->snapTranslation += delta;
+                        em->queue(std::make_shared<RebuildBrushEvent>());
+                    }
+                }
+                if (s.buttonC) {
+                    be->snapTranslation += up * (cam.speed * deltaTime);
+                    em->queue(std::make_shared<RebuildBrushEvent>());
+                }
+                if (s.buttonZ) {
+                    be->snapTranslation -= up * (cam.speed * deltaTime);
+                    em->queue(std::make_shared<RebuildBrushEvent>());
+                }
+            }
+        }
+
+        // ── M+ aim-direction integration (A-only) ──
+        if (onAim && aDown) {
+            const float rdz = 2.0f;
+
+            if (s.hasMotionPlus) {
+                float gy = std::isfinite(s.gyroYawRate)   ? glm::clamp(s.gyroYawRate   - aimGyroBiasYaw,   -720.0f, 720.0f)   : 0.0f;
+                float gp = std::isfinite(s.gyroPitchRate) ? glm::clamp(s.gyroPitchRate - aimGyroBiasPitch, -720.0f, 720.0f) : 0.0f;
+                float gr = std::isfinite(s.gyroRollRate)  ? glm::clamp(s.gyroRollRate  - aimGyroBiasRoll,  -720.0f, 720.0f)  : 0.0f;
+                float dy = (std::abs(gy) > rdz) ? gy * deltaTime : 0.0f;
+                float dp = (std::abs(gp) > rdz) ? gp * deltaTime : 0.0f;
+                float dr = (std::abs(gr) > rdz) ? gr * deltaTime : 0.0f;
+
                 if (dy != 0.0f || dp != 0.0f || dr != 0.0f) {
-                    glm::quat q = be->rot;
-                    glm::quat camOrient = cam.getOrientation();
-                    glm::quat rCam = glm::angleAxis(glm::radians(dy),  glm::vec3(0.0f, 1.0f, 0.0f))
-                                   * glm::angleAxis(glm::radians(-dp), glm::vec3(1.0f, 0.0f, 0.0f))
-                                   * glm::angleAxis(glm::radians(-dr), glm::vec3(0.0f, 0.0f, -1.0f));
-                    glm::quat rWorld = camOrient * rCam * glm::conjugate(camOrient);
-                    be->rot = glm::normalize(rWorld * q);
+                    glm::quat dq = glm::angleAxis(glm::radians(dy),  glm::vec3(0.0f, 1.0f, 0.0f))
+                                 * glm::angleAxis(glm::radians(-dp), glm::vec3(1.0f, 0.0f, 0.0f))
+                                 * glm::angleAxis(glm::radians(-dr), glm::vec3(0.0f, 0.0f, -1.0f));
+                    aimOrient = glm::normalize(dq * aimOrient);
+                }
+            } else {
+                float dy = wrap180(s.yaw   - aimStartYaw);
+                float dp = wrap180(s.pitch - aimStartPitch);
+                float dr = wrap180(s.roll  - aimStartRoll);
+                dy = (std::abs(dy) > rdz) ? glm::radians(dy) : 0.0f;
+                dp = (std::abs(dp) > rdz) ? glm::radians(-dp) : 0.0f;
+                dr = (std::abs(dr) > rdz) ? glm::radians(-dr) : 0.0f;
+
+                if (dy != 0.0f || dp != 0.0f || dr != 0.0f) {
+                    glm::quat qAim = glm::angleAxis(dy, glm::vec3(0.0f, 1.0f, 0.0f))
+                                   * glm::angleAxis(dp, glm::vec3(1.0f, 0.0f, 0.0f))
+                                   * glm::angleAxis(dr, glm::vec3(0.0f, 0.0f, -1.0f));
+                    aimOrient = qAim;
+                }
+            }
+        }
+
+        // ── Ray-cast (always in Aim mode, direction from aimOrient) ──
+        if (onAim && octree && brushManager) {
+            BrushEntry* be = brushManager->getSelectedEntry();
+            if (be) {
+                glm::vec3 V_cam = glm::normalize(aimOrient * glm::vec3(0.0f, 0.0f, -1.0f));
+                glm::vec3 V_world = glm::normalize(cam.getOrientation() * V_cam);
+                Ray ray(cam.getPosition(), V_world);
+
+                glm::vec3 hitPos;
+                if (rayIntersectOctree(*octree, ray, hitPos)) {
+                    be->translate = hitPos + be->snapTranslation;
                     em->queue(std::make_shared<RebuildBrushEvent>());
                 }
             }
         }
     }
+}
+
+
+// ── Ray-vs-Octree traversal (leaf-level only) ──────────────────────────────
+//
+// Walks the octree depth-first, descending all the way to leaf nodes.  When a
+// leaf is of type Surface the hit is recorded; the closest hit (by tNear) is
+// returned.  Children are visited in order of increasing tNear so the first
+// surface leaf found is the closest.
+static bool rayIntersectOctree(const Octree& tree, const Ray& ray, glm::vec3& outPos) {
+    float tNear, tFar;
+    if (!ray.intersects(tree, &tNear, &tFar))
+        return false;
+
+    struct Entry { OctreeNode* node; BoundingCube cube; float tNear; };
+    std::vector<Entry> stack;
+    stack.push_back({tree.root, static_cast<const BoundingCube&>(tree), tNear});
+
+    float bestT = tFar;
+    bool found = false;
+
+    while (!stack.empty()) {
+        Entry e = stack.back();
+        stack.pop_back();
+
+        // Prune: this node starts farther than the best hit we already have
+        if (e.tNear >= bestT) continue;
+
+        // True leaf (no children) — check type
+        if (e.node->isLeaf()) {
+            if (e.node->getType() == SpaceType::Surface) {
+                float tn, tf;
+                if (ray.intersects(e.cube, &tn, &tf) && tn < bestT) {
+                    bestT = tn;
+                    found = true;
+                }
+            }
+            continue;
+        }
+
+        // Non-leaf with children — descend
+        ChildBlock* block = e.node->getBlock(*tree.allocator);
+        if (!block) continue;
+
+        // Collect intersecting children sorted by distance
+        struct ChildE { int idx; float tNear; };
+        std::vector<ChildE> children;
+        for (int i = 0; i < 8; ++i) {
+            OctreeNode* child = block->get(i, *tree.allocator);
+            if (!child) continue;
+            BoundingCube childCube = e.cube.getChild(i);
+            float tn, tf;
+            if (ray.intersects(childCube, &tn, &tf) && tf >= 0.0f && tn < bestT) {
+                children.push_back({i, tn});
+            }
+        }
+
+        std::sort(children.begin(), children.end(),
+                  [](const ChildE& a, const ChildE& b) { return a.tNear < b.tNear; });
+        for (int i = static_cast<int>(children.size()) - 1; i >= 0; --i) {
+            int idx = children[i].idx;
+            OctreeNode* child = block->get(idx, *tree.allocator);
+            stack.push_back({child, e.cube.getChild(idx), children[i].tNear});
+        }
+    }
+
+    if (found) {
+        outPos = ray.pointAt(bestT);
+        return true;
+    }
+    return false;
 }
 
 WiimoteState NunchukPublisher::getState() const {
