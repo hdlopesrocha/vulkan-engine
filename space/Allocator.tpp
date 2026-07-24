@@ -57,6 +57,7 @@ void Allocator<T>::deallocate(T* ptr) {
         throw std::runtime_error("Double deallocate!");
     }
     #endif
+    #ifndef NDEBUG
     // check pointer belongs to a block
     bool valid = false;
     for (auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
@@ -64,6 +65,7 @@ void Allocator<T>::deallocate(T* ptr) {
         if (ptr >= b.data && ptr < b.data + blockSize) { valid = true; break; }
     }
     assert(valid && "Pointer does not belong to allocator");
+    #endif
     #ifndef NDEBUG
     deallocatedSet.insert(ptr);
     #endif

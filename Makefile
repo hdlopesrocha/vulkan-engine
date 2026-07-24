@@ -150,7 +150,7 @@ $(OBJ_DIR)/imgui/backends/%.o: third_party/imgui/backends/%.cpp
 $(OBJ_DIR)/wiiuse/%.o: third_party/wiiuse/src/%.c
 	@mkdir -p $(dir $@)
 	@echo "Compiling wiiuse: $<"
-	@gcc -O2 -Wall -Wno-unused-parameter -Wno-unused-variable -Ithird_party/wiiuse/src $(shell pkg-config --cflags bluez) -DWIIUSE_STATIC -DWIIUSE_COMPILE_LIB -c $< -o $@
+	@gcc -O2 -Wall -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Ithird_party/wiiuse/src $(shell pkg-config --cflags bluez) -DWIIUSE_STATIC -DWIIUSE_COMPILE_LIB -c $< -o $@
 
 
 shaders: $(OUT_SPVS)
