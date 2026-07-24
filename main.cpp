@@ -1196,7 +1196,8 @@ public:
 
             // Solid geometry color (LESS_OR_EQUAL, no depth write)
             if (settings.renderSolid) {
-                sceneRenderer->solidRenderer->drawColor(commandBuffer, this, getMainDescriptorSet());
+                VkDescriptorSet brushDepthSet = sceneRenderer->getBrushDepthDescriptorSet(frameIdx);
+                sceneRenderer->solidRenderer->drawColor(commandBuffer, this, getMainDescriptorSet(), brushDepthSet);
             }
 
             if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)

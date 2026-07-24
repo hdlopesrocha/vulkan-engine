@@ -27,6 +27,7 @@ public:
                         SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
                         SolidRenderer* solidRenderer,
                         VkDescriptorSet mainDescriptorSet,
+                        VkDescriptorSet brushDepthSet,
                         Buffer& uniformBuffer, const UniformObject& ubo,
                         bool renderSolid, bool renderWater,
                         VkDescriptorSet computeDs = VK_NULL_HANDLE,

@@ -470,8 +470,9 @@ void SceneRenderer::mainPass(VulkanApp* app, VkCommandBuffer &commandBuffer, uin
         printedOnce = true;
     }
     if (renderSolid) {
-        solidRenderer->renderDepthPrepass(commandBuffer, app, perTextureDescriptorSet);
-        solidRenderer->render(commandBuffer, app, perTextureDescriptorSet);
+        VkDescriptorSet brushDepthSet = getBrushDepthDescriptorSet(frameIdx);
+        solidRenderer->renderDepthPrepass(commandBuffer, app, perTextureDescriptorSet, brushDepthSet);
+        solidRenderer->render(commandBuffer, app, perTextureDescriptorSet, brushDepthSet);
         if (wireframeEnabled) {
             solidWireframe->draw(commandBuffer, app, {perTextureDescriptorSet}, solidRenderer->getIndirectRenderer());
         } 

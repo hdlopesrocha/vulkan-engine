@@ -26,9 +26,9 @@ public:
     void cleanup(VulkanApp* app);
 
     // Draw main solid geometry: bind pipeline and draw
-    void render(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet);
+    void render(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet, VkDescriptorSet brushDepthSet = VK_NULL_HANDLE);
     // Draw depth-only pre-pass to populate depth buffer without writing color
-    void renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet);
+    void renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet, VkDescriptorSet brushDepthSet = VK_NULL_HANDLE);
 
     // Access for adding meshes
     IndirectRenderer& getIndirectRenderer() { return indirectRenderer; }
@@ -59,11 +59,11 @@ public:
     // Deferred depth test: draw only depth (no color)
     void drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet);
     // Deferred depth test: draw only color with LESS_OR_EQUAL compare, no depth write
-    void drawColor(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet);
+    void drawColor(VkCommandBuffer &commandBuffer, VulkanApp* app, VkDescriptorSet descSet, VkDescriptorSet brushDepthSet = VK_NULL_HANDLE);
     // Draw depth using an external IndirectRenderer (e.g. separate brush mesh buffer)
     void drawDepthExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
     // Draw color using an external IndirectRenderer
-    void drawColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
+    void drawColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect, VkDescriptorSet brushDepthSet = VK_NULL_HANDLE);
     // Draw brush color (brush.frag, no shadows) using an external IndirectRenderer
     void drawBrushColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect);
     // Draw brush color with alpha blending at the given opacity

@@ -257,6 +257,8 @@ void Solid360Renderer::createSolid360Pipelines(VulkanApp* app) {
     std::vector<VkDescriptorSetLayout> setLayouts;
     if (app->getDescriptorSetLayout() != VK_NULL_HANDLE)
         setLayouts.push_back(app->getDescriptorSetLayout());
+    if (app->getBrushDepthDescriptorSetLayout() != VK_NULL_HANDLE)
+        setLayouts.push_back(app->getBrushDepthDescriptorSetLayout());
 
     // Depth-only pipeline: lightweight fragment shader, no color attachment, depth write, LESS compare
     {
@@ -306,6 +308,7 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                                      SkyRenderer* skyRenderer, SkySettings::Mode skyMode,
                                      SolidRenderer* solidRenderer,
                                      VkDescriptorSet mainDescriptorSet,
+                                     VkDescriptorSet brushDepthSet,
                                      Buffer& uniformBuffer, const UniformObject& ubo,
                                      bool renderSolid, bool renderWater,
                                      VkDescriptorSet computeDs,
@@ -522,8 +525,11 @@ void Solid360Renderer::renderSolid360(VulkanApp* app, VkCommandBuffer cmd,
                 if (gfxPipe != VK_NULL_HANDLE && gfxLayout != VK_NULL_HANDLE) {
                     if (cmdState) cmdState->bindGraphicsPipeline(cmd, gfxPipe);
                     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxPipe);
-                    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, gfxLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
-                    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxLayout, 0, 1, &mainDescriptorSet, 0, nullptr);
+                    // gfxPipe uses main.frag which references brush depth at set=1
+                    VkDescriptorSet bindSets[2] = { mainDescriptorSet, brushDepthSet };
+                    uint32_t bindCount = (brushDepthSet != VK_NULL_HANDLE) ? 2 : 1;
+                    if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, gfxLayout, 0, bindCount, bindSets, 0, nullptr);
+                    else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfxLayout, 0, bindCount, bindSets, 0, nullptr);
                     if (compactIndirectBuffer != VK_NULL_HANDLE && visibleCountBuffer != VK_NULL_HANDLE) {
                         solidRenderer->getIndirectRenderer().drawPreparedWithBuffers(cmd, compactIndirectBuffer, visibleCountBuffer);
                     } else {

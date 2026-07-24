@@ -197,11 +197,12 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
         VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
     );
 
-    // Descriptor set layouts: ensure main UBO (set 0) is first
-    // Main shaders don't use set 1 (material descriptor set), so only include set 0
+    // Descriptor set layouts: main textures (set 0) then brush depth (set 1)
     std::vector<VkDescriptorSetLayout> setLayouts;
     if (app->getDescriptorSetLayout() != VK_NULL_HANDLE) setLayouts.push_back(app->getDescriptorSetLayout());
-    // Note: Removed material descriptor set layout since main shaders don't use set = 1
+    // main.frag references brush depth textures at set=1 (separate from the main
+    // set so the shadow pass — which uses set=0 only — doesn't require them).
+    if (app->getBrushDepthDescriptorSetLayout() != VK_NULL_HANDLE) setLayouts.push_back(app->getBrushDepthDescriptorSetLayout());
 
     // No per-mesh model push-constants are used anymore (models are identity in shaders).
     GraphicsPipelineConfig cfg{};
@@ -341,7 +342,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
     vertexShader.info.module = VK_NULL_HANDLE;
 }
 
-void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet) {
+void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet, VkDescriptorSet brushDepthSet) {
     static int frameCount = 0;
     if (frameCount++ == 0) {
         printf("[DEBUG] SolidRenderer::render called for the first time\n");
@@ -366,16 +367,21 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
     else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
     // Bind descriptor set 0: main UBO/samplers (perTextureDescriptorSet)
-    // Main shaders only use set 0, no set 1 needed
+    // and set 1: brush depth textures (brushDepthSet) for PAINT mode.
     if (!printedOnce) {
         printf("[SolidRenderer::draw] perTextureDescriptorSet=%p\n", (void*)perTextureDescriptorSet);
         printedOnce = true;
     }
     
     if (perTextureDescriptorSet != VK_NULL_HANDLE) {
-        //printf("[BIND] SolidRenderer::draw: layout=%p firstSet=0 count=1 sets=%p\n", (void*)usedLayout, (void*)perTextureDescriptorSet);
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, usedLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, usedLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
+        VkDescriptorSet bindSets[2] = { perTextureDescriptorSet, VK_NULL_HANDLE };
+        uint32_t bindCount = 1;
+        if (brushDepthSet != VK_NULL_HANDLE) {
+            bindSets[1] = brushDepthSet;
+            bindCount = 2;
+        }
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, usedLayout, 0, bindCount, bindSets, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, usedLayout, 0, bindCount, bindSets, 0, nullptr);
     } else {
         std::cerr << "[SolidRenderer::draw] ERROR: perTextureDescriptorSet is NULL!" << std::endl;
     }
@@ -386,7 +392,7 @@ void SolidRenderer::render(VkCommandBuffer &commandBuffer, VulkanApp* appArg, Vk
     //printf("[SolidRenderer::draw] drawPrepared returned\n");
 }
 
-void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet) {
+void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet perTextureDescriptorSet, VkDescriptorSet brushDepthSet) {
     if (!appArg) {
         std::cerr << "[SolidRenderer::renderDepthPrepass] appArg is nullptr, skipping." << std::endl;
         return;
@@ -399,10 +405,12 @@ void SolidRenderer::renderDepthPrepass(VkCommandBuffer &commandBuffer, VulkanApp
     if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, depthPrePassPipeline);
     else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipeline);
 
-    // Bind descriptor set using the depth pre-pass pipeline layout
+    // Bind descriptor sets (set 0: main, set 1: brush depth)
     if (perTextureDescriptorSet != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, depthPrePassPipelineLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipelineLayout, 0, 1, &perTextureDescriptorSet, 0, nullptr);
+        VkDescriptorSet bindSets[2] = { perTextureDescriptorSet, brushDepthSet };
+        uint32_t bindCount = (brushDepthSet != VK_NULL_HANDLE) ? 2 : 1;
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, depthPrePassPipelineLayout, 0, bindCount, bindSets, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrePassPipelineLayout, 0, bindCount, bindSets, 0, nullptr);
     }
 
     // Draw all meshes using GPU-culled indirect commands (depth-only)
@@ -420,13 +428,15 @@ void SolidRenderer::drawDepth(VkCommandBuffer &commandBuffer, VulkanApp* appArg,
     indirectRenderer.drawPrepared(commandBuffer);
 }
 
-void SolidRenderer::drawColor(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet descSet) {
+void SolidRenderer::drawColor(VkCommandBuffer &commandBuffer, VulkanApp* appArg, VkDescriptorSet descSet, VkDescriptorSet brushDepthSet) {
     if (!appArg || deferredColorPipeline == VK_NULL_HANDLE) return;
     if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, deferredColorPipeline);
     else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipeline);
     if (descSet != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
+        VkDescriptorSet bindSets[2] = { descSet, brushDepthSet };
+        uint32_t bindCount = (brushDepthSet != VK_NULL_HANDLE) ? 2 : 1;
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer, deferredColorPipelineLayout, 0, bindCount, bindSets, 0, nullptr);
+        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipelineLayout, 0, bindCount, bindSets, 0, nullptr);
     }
     indirectRenderer.drawPrepared(commandBuffer);
 }
@@ -442,13 +452,15 @@ void SolidRenderer::drawDepthExternal(VkCommandBuffer &cmd, VkDescriptorSet desc
     indirect.drawPrepared(cmd);
 }
 
-void SolidRenderer::drawColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect) {
+void SolidRenderer::drawColorExternal(VkCommandBuffer &cmd, VkDescriptorSet descSet, IndirectRenderer& indirect, VkDescriptorSet brushDepthSet) {
     if (deferredColorPipeline == VK_NULL_HANDLE) return;
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, deferredColorPipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipeline);
     if (descSet != VK_NULL_HANDLE) {
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
-        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipelineLayout, 0, 1, &descSet, 0, nullptr);
+        VkDescriptorSet bindSets[2] = { descSet, brushDepthSet };
+        uint32_t bindCount = (brushDepthSet != VK_NULL_HANDLE) ? 2 : 1;
+        if (cmdState) cmdState->bindGraphicsDescriptorSets(cmd, deferredColorPipelineLayout, 0, bindCount, bindSets, 0, nullptr);
+        else vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredColorPipelineLayout, 0, bindCount, bindSets, 0, nullptr);
     }
     indirect.drawPrepared(cmd);
 }
