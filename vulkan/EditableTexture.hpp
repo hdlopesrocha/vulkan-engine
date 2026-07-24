@@ -2,6 +2,7 @@
 
 #include "vulkan.hpp"
 #include <imgui.h>
+#include <backends/imgui_impl_vulkan.h>
 #include <vector>
 #include <cstring>
 
@@ -26,7 +27,7 @@ public:
     void updateGPU(VulkanApp* app);
     
     // Render ImGui widget
-    void renderImGui(VulkanApp* app);
+    void renderImGui();
     VkImageView getView() const;
     VkSampler getSampler() const;
     VkImage getImage() const;
@@ -34,14 +35,17 @@ public:
     uint32_t getWidth() const;
     uint32_t getHeight() const;
     uint32_t getBytesPerPixel() const;
-    // Return an ImGui descriptor set for this texture.  The descriptor is
-    // lazily created and cached by ImTextureManager.
-    ImTextureID getImTextureID(VulkanApp* app);
+    VkDescriptorSet getImGuiDescriptorSet();
     const uint8_t* getPixelData() const;
     
     // Get as TextureImage for TextureManager compatibility
     TextureImage getTextureImage() const;
 
+    // Invalidate the ImGui descriptor (e.g., after ImGui pool is recreated).
+    // Must be called before ImGui_ImplVulkan_Shutdown() while the old pool
+    // is still alive so the descriptor can be properly freed.
+    void invalidateImGuiDescriptor();
+    
 private:
     uint32_t width = 0;
     uint32_t height = 0;
@@ -54,9 +58,12 @@ private:
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
+    VkDescriptorSet imguiDescSet = VK_NULL_HANDLE;
     
     std::vector<uint8_t> cpuData;
     bool isDirty = false;
+    
+    void createImGuiDescriptor();
     
     void transitionImageLayout(VulkanApp* app, VkImageLayout oldLayout, VkImageLayout newLayout);
     
