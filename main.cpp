@@ -2160,27 +2160,27 @@ void MyApp::rebuildBrushScene() {
             if (entry.useEffect) {
                 switch (entry.effectType) {
                     case 0: {
-                        WrappedPerlinDistortDistanceEffect effect(wrappedFunc,
+                        PerlinDistortDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectFrequency,
                             glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
                         octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     case 1: {
-                        WrappedPerlinCarveDistanceEffect effect(wrappedFunc,
+                        PerlinCarveDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
                             glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
                         octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     case 2: {
-                        WrappedSineDistortDistanceEffect effect(wrappedFunc,
+                        SineDistortDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectFrequency, glm::vec3(0), model, entry.minSize);
                         octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     case 3: {
-                        WrappedVoronoiCarveDistanceEffect effect(wrappedFunc,
+                        VoronoiCarveDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectCellSize,
                             glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
                         octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
@@ -2305,27 +2305,27 @@ void MyApp::applyBrushToScene() {
         if (entry.useEffect) {
             switch (entry.effectType) {
                 case 0: {
-                    WrappedPerlinDistortDistanceEffect effect(wrappedFunc,
+                    PerlinDistortDistanceEffect effect(wrappedFunc,
                         entry.effectAmplitude, entry.effectFrequency,
                         glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
                     octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                     break;
                 }
                 case 1: {
-                    WrappedPerlinCarveDistanceEffect effect(wrappedFunc,
+                    PerlinCarveDistanceEffect effect(wrappedFunc,
                         entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
                         glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
                     octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                     break;
                 }
                 case 2: {
-                    WrappedSineDistortDistanceEffect effect(wrappedFunc,
+                    SineDistortDistanceEffect effect(wrappedFunc,
                         entry.effectAmplitude, entry.effectFrequency, glm::vec3(0), model, entry.minSize);
                     octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                     break;
                 }
                 case 3: {
-                    WrappedVoronoiCarveDistanceEffect effect(wrappedFunc,
+                    VoronoiCarveDistanceEffect effect(wrappedFunc,
                         entry.effectAmplitude, entry.effectCellSize,
                         glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
                     octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);

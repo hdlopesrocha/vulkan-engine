@@ -32,10 +32,10 @@
 #include "../sdf/OctreeDifferenceFunction.hpp"
 
 // SDF effects
-#include "../sdf/WrappedPerlinDistortDistanceEffect.hpp"
-#include "../sdf/WrappedPerlinCarveDistanceEffect.hpp"
-#include "../sdf/WrappedSineDistortDistanceEffect.hpp"
-#include "../sdf/WrappedVoronoiCarveDistanceEffect.hpp"
+#include "../sdf/PerlinDistortDistanceEffect.hpp"
+#include "../sdf/PerlinCarveDistanceEffect.hpp"
+#include "../sdf/SineDistortDistanceEffect.hpp"
+#include "../sdf/VoronoiCarveDistanceEffect.hpp"
 #include "../sdf/RoadSpline.hpp"
 #include "../sdf/RoadDistanceFunction.hpp"
 #include "../sdf/TriangleStripDistanceFunction.hpp"
@@ -133,7 +133,7 @@ public:
             glm::vec3 b = glm::vec3(0,500,0);
             float r = 256.0f;
             CapsuleDistanceFunction function(a, b, r, model, minSize);
-            WrappedPerlinDistortDistanceEffect distortedFunction = WrappedPerlinDistortDistanceEffect(&function, 64.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
+            PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(&function, 64.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
             opaqueLayer.apply(SDF::opSubtraction, &distortedFunction, model, translate, scale, SimpleBrush(7), minSize, simplifier, opaqueHandler);
         }
 
@@ -240,7 +240,7 @@ public:
             float radius = 200.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            WrappedPerlinDistortDistanceEffect distortedFunction = WrappedPerlinDistortDistanceEffect(&function, 48.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
+            PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(&function, 48.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
             opaqueLayer.apply(SDF::opUnion, &distortedFunction, model, translate, scale, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
         }
     
@@ -250,7 +250,7 @@ public:
             float radius = 200.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            WrappedPerlinCarveDistanceEffect carvedFunction = WrappedPerlinCarveDistanceEffect(&function, 64.0f, 0.1f/32.0f, 0.1f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
+            PerlinCarveDistanceEffect carvedFunction = PerlinCarveDistanceEffect(&function, 64.0f, 0.1f/32.0f, 0.1f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
             opaqueLayer.apply(SDF::opUnion, &carvedFunction, model, translate, scale, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
         }
     
@@ -260,7 +260,7 @@ public:
             float radius = 200.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            WrappedSineDistortDistanceEffect carvedFunction = WrappedSineDistortDistanceEffect(&function, 32.0f, 0.1f/2.0f, glm::vec3(0), model, minSize);
+            SineDistortDistanceEffect carvedFunction = SineDistortDistanceEffect(&function, 32.0f, 0.1f/2.0f, glm::vec3(0), model, minSize);
             opaqueLayer.apply(SDF::opUnion, &carvedFunction, model, translate, scale, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
         }
     
@@ -270,7 +270,7 @@ public:
             float radius = 200.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            WrappedVoronoiCarveDistanceEffect distortFunction = WrappedVoronoiCarveDistanceEffect(&function, 64.0f, 64.0f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
+            VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(&function, 64.0f, 64.0f, glm::vec3(0), 0.0f, 1.0f, model, minSize);
             opaqueLayer.apply(SDF::opUnion, &distortFunction, model, translate, scale, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
         }
     
@@ -280,7 +280,7 @@ public:
             float radius = 200.0f;
             Transformation model(glm::vec3(radius), center, 0,0,0);
             SphereDistanceFunction function = SphereDistanceFunction(model, minSize);
-            WrappedVoronoiCarveDistanceEffect distortFunction = WrappedVoronoiCarveDistanceEffect(&function, 64.0f, 64.0f, glm::vec3(0), 0.0f, -1.0f, model, minSize);
+            VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(&function, 64.0f, 64.0f, glm::vec3(0), 0.0f, -1.0f, model, minSize);
             opaqueLayer.apply(SDF::opUnion, &distortFunction, model, translate, scale, SimpleBrush(15), minSize*0.25f, simplifier, opaqueHandler);
         }
     

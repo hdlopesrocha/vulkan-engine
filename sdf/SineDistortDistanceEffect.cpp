@@ -1,17 +1,16 @@
-#include "WrappedSineDistortDistanceEffect.hpp"
+#include "SineDistortDistanceEffect.hpp"
 
-WrappedSineDistortDistanceEffect::WrappedSineDistortDistanceEffect(SignedDistanceFunction * function_, float amplitude_, float frequency_, glm::vec3 offset_, const Transformation &model, float bias) : WrappedSignedDistanceEffect(function_, model, bias + amplitude_ * 0.5f), amplitude(amplitude_), frequency(frequency_), offset(offset_) {
+SineDistortDistanceEffect::SineDistortDistanceEffect(SignedDistanceFunction * function_, float amplitude_, float frequency_, glm::vec3 offset_, const Transformation &model, float bias) : SignedDistanceEffect(function_, model, bias + amplitude_ * 0.5f), amplitude(amplitude_), frequency(frequency_), offset(offset_) {
 }
 
-WrappedSineDistortDistanceEffect::~WrappedSineDistortDistanceEffect() {
-
+SineDistortDistanceEffect::~SineDistortDistanceEffect() {
 }
 
-const char* WrappedSineDistortDistanceEffect::getLabel() const {
+const char* SineDistortDistanceEffect::getLabel() const {
     return "Sine Distort";
 }
 
-float WrappedSineDistortDistanceEffect::distance(const glm::vec3 &p, const Transformation &model) {
+float SineDistortDistanceEffect::distance(const glm::vec3 &p, const Transformation &model) {
     glm::vec3 localP = p - model.translate;
     glm::vec3 pp = localP + offset;
 
