@@ -14,6 +14,8 @@
 #include <array>
 #include "CommandBufferState.hpp"
 #include "../streaming/StreamCommon.hpp"
+#include "SlotAllocator.hpp"
+#include "RenderProxy.hpp"
 
 namespace streaming { class UploadManager; }
 
@@ -21,6 +23,13 @@ namespace streaming { class UploadManager; }
 // CPU-side allocator for adding/removing meshes. Draws are performed via
 // vkCmdDrawIndexedIndirect (one indirect command per mesh). The allocator is
 // append-first and supports reclamation on remove (simple free list rebuild).
+//
+// STABLE SLOT MODE (preferred):
+// Call initSlots() once with the maximum expected chunk count, then use
+// addMeshSlotted()/updateMeshSlotted()/removeMeshSlotted(). Each chunk gets a
+// fixed slot that is never compacted. Updating a chunk only touches its own
+// slot — there is NO global rebuild. The indirect/bounds buffer layout is
+// stable, so GPU culling continues to work without interruption.
 class IndirectRenderer {
 public:
     static constexpr uint32_t MAX_CULL_FRAMES = 3;
@@ -56,6 +65,7 @@ public:
         glm::vec4 boundsMax = glm::vec4(0.0f); // object-space AABB max (xyz)
         VkDeviceSize indirectOffset = 0; // byte offset into indirect buffer
         uint32_t drawIndex = UINT32_MAX; // position in indirectCommands list
+        uint32_t slotIndex = UINT32_MAX; // stable slot (if using slotted mode)
         bool active = false;
         // NOTE: per-mesh buffers removed — meshes are packed into the merged buffers
     };
@@ -66,20 +76,44 @@ public:
     void init();
     void cleanup();
 
-    // Add mesh and return mesh id. Mesh transform is identity on GPU (no per-mesh model SSBO/push-constants).
+    // ── Legacy append-based API (triggers full rebuild) ──
+    // Add mesh and return mesh id.
     uint32_t addMesh(const Geometry& mesh);
     // Add mesh with a custom ID (e.g., node ID from octree). If mesh with this ID exists, it is replaced.
     uint32_t updateMesh(const Geometry& mesh, uint32_t customId);
     void removeMesh(uint32_t meshId);
-    // Remove all meshes and reset GPU write tracking.  Call before reloading a
-    // scene so new meshes are written from position 0 in the indirect/bounds
-    // buffers — without this, stale entries from the previous scene cause the
-    // culling compute shader to read garbage, resulting in GPU hangs.
+    // Remove all meshes and reset GPU write tracking.
     void removeAllMeshes();
-
-    // Rebuild GPU backing buffers from current CPU mesh list. Call before drawing
-    // if add/remove operations occurred.
+    // Rebuild GPU backing buffers from current CPU mesh list.
     void rebuild(VulkanApp* app);
+
+    // ── Stable slot-based API (no global rebuilds) ──
+    // Pre-allocate the slot pool and create GPU buffers sized to capacity.
+    // `maxChunks` is the maximum number of concurrently active chunks.
+    // Must be called once on the main thread with no pending GPU work.
+    // vertexBytesPerChunk and indexBytesPerChunk are the max expected
+    // vertex/index data per chunk mesh.
+    void initSlots(VulkanApp* app,
+                   uint32_t maxChunks,
+                   uint32_t vertexBytesPerChunk = 1u << 20,
+                   uint32_t indexBytesPerChunk  = 1u << 19);
+
+    // Add or update a mesh in a stable slot. The slot is allocated on first
+    // use and freed on removal. Returns the stable slot index, or UINT32_MAX
+    // on failure (pool exhausted).
+    uint32_t addMeshSlotted(const Geometry& mesh, uint32_t chunkId);
+    void updateMeshSlotted(uint32_t slotIndex, const Geometry& mesh);
+    void removeMeshSlotted(uint32_t slotIndex);
+
+    // Upload a single slot's vertex/index data to the GPU, and write its
+    // indirect command + bounds into the host-visible metadata buffers.
+    // This is the per-chunk equivalent of a full rebuild — but only touches
+    // one slot. The GPU culling buffer layout is unchanged.
+    // Returns true on success.
+    bool uploadSlot(VulkanApp* app, uint32_t slotIndex, float priority = 0.0f);
+
+    // Convenience: create a proxy, upload it, and return the slot index.
+    uint32_t installProxy(VulkanApp* app, std::unique_ptr<RenderProxy> proxy);
 
     // Upload a single mesh to GPU (incremental update). Requires buffers to have capacity.
     // Returns true if upload succeeded, false if rebuild() is needed (capacity exceeded or buffers not created).
@@ -202,17 +236,39 @@ private:
     // append-only watermark (doUploadMeshMetaBuffers) cannot be used.
     void publishMeshMeta(uint32_t meshId);
 
+    // ── Slotted-mode internals ──
+    // Copy vertex/index data from a Geometry into the pre-reserved slot
+    // position in mergedVertices/mergedIndices. Requires slottedMode.
+    void copyGeometryToSlot(const Geometry& mesh, uint32_t slotIndex);
+    // Write a single mesh's indirect command + bounds into the host-visible
+    // GPU buffers at the given slot position. Does NOT touch the vertex/index
+    // data (which must have been uploaded separately).
+    void writeSlotMeta(uint32_t slotIndex, const MeshInfo& info);
+
     // Async transfer engine (optional). When non-null, uploadMeshes routes
     // through it instead of the single-slot pendingTransfer path.
     streaming::UploadManager* uploadMgr_ = nullptr;
     streaming::StreamCategory streamCategory_ = streaming::StreamCategory::Solid;
     uint32_t nextId = 1;
-    std::unordered_map<uint32_t, MeshInfo> meshes; // nodeId -> MeshInfo
+    std::unordered_map<uint32_t, MeshInfo> meshes; // chunkId -> MeshInfo
 
     // CPU-side combined buffers
     std::vector<Vertex> mergedVertices;
     std::vector<uint32_t> mergedIndices;
     std::vector<VkDrawIndexedIndirectCommand> indirectCommands;
+
+    // When true, the slotted API is active. In this mode, mergedVertices and
+    // mergedIndices are pre-sized to capacity and each slot has a fixed
+    // position. The indirectCommands vector is also pre-sized. No full
+    // rebuilds are performed; each slot is updated independently.
+    bool slottedMode = false;
+
+    // Per-slot maximum capacities (set by initSlots)
+    uint32_t slotVertexCapacity = 0;
+    uint32_t slotIndexCapacity  = 0;
+
+    // Slot allocator for the stable slot pool
+    SlotAllocator slotAlloc;
 
     // Set which per-frame cull buffers to use. Must be called once per frame
     // before prepareCull / drawPrepared. frame idx should be in [0, MAX_CULL_FRAMES).

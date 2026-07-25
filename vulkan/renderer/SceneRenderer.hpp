@@ -40,6 +40,7 @@ class Octree;
 #include "ShadowRenderer.hpp"
 #include "WaterRenderer.hpp"
 #include "../../utils/UniqueOctreeChangeHandler.hpp"
+#include "ChunkManager.hpp"
 
 #include "../ubo/PassUBO.hpp"
 #include "CommandBufferState.hpp"
@@ -131,6 +132,7 @@ public:
     // Mutex protecting all chunk maps (solid, transparent, brush) and mesh operations
     std::recursive_mutex chunksMutex;
 
+    // ── Legacy chunk tracking (append-based, full rebuild) ──
     // Track model ids for transparent/water meshes so we can remove them if erased/updated
     std::unordered_map<NodeID, Model3DVersion> transparentChunks;
 
@@ -140,6 +142,16 @@ public:
     // Brush scene chunk tracking (separate from main scene)
     std::unordered_map<NodeID, Model3DVersion> brushSolidChunks;
     std::unordered_map<NodeID, Model3DVersion> brushTransparentChunks;
+
+    // ── New: per-chunk state machine and async rebuild pipeline ──
+    // Tracks every chunk's dirty state, current/pending RenderProxy,
+    // and drives the async rebuild pipeline without any global lock.
+    ChunkManager chunkManager;
+
+    // Enable the slot-based stable indirect renderer path.
+    // When true, chunks use the slot-based API instead of the legacy
+    // append+rebuild path. This must be set before any chunks are created.
+    bool slottedModeEnabled = false;
     // Separate IndirectRenderer for brush solid meshes (so the brush backface
     // buffer only renders brush geometry, not all scene solids).
     IndirectRenderer brushSolidIndirectRenderer;
@@ -206,6 +218,26 @@ public:
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
     // Process nodes for a single Layer (nodeMap maps NodeID->OctreeNodeData)
     void processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry, ThreadPool* poolOverride = nullptr);
+
+    // ── Slotted-mode chunk processing ────────────────────────────────────────
+    // Initialize the slotted rendering pipeline for solid and water layers.
+    // Creates the slot pool, GPU buffers, and switches the renderers to
+    // stable-slot mode. Must be called once on the main thread.
+    void initSlottedMode(VulkanApp* app, uint32_t maxChunks,
+                         uint32_t vertexBytesPerChunk = 1u << 20,
+                         uint32_t indexBytesPerChunk  = 1u << 19);
+
+    // Process a single chunk's mesh in slotted mode.
+    // To be called from the change handler callback (on a worker thread).
+    // Generates the mesh, creates a RenderProxy, and queues it for GPU upload.
+    // Returns true if the chunk was processed successfully.
+    bool processChunkSlotted(Layer layer, NodeID nid, const OctreeNodeData& nd,
+                             const Geometry& geom, uint32_t version);
+
+    // Drain the swap queue and atomically swap in new RenderProxies.
+    // Also retires old proxies via deferred destruction.
+    // Call once per frame from processPendingMeshes.
+    void processChunkSwapQueue(VulkanApp* app);
 
     // Runtime introspection helpers for UI/debug
     size_t getTransparentModelCount();

@@ -1255,94 +1255,101 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos) {
     solidIR.pollPendingTransfers(app);
     waterIR.pollPendingTransfers(app);
 
-    if (batch.empty()) return;
+    if (slottedModeEnabled && !batch.empty()) {
+        // ── Slotted mode: per-slot updates, NO global rebuilds ───────────────
+        // Each chunk update only touches its own stable slot. The indirect
+        // buffer layout is unchanged, so GPU culling never sees stale data.
+        for (auto& pd : batch) {
+            ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(pd.nid);
 
-    // Compute per-layer totals for the incoming batch so we can pre-size
-    // renderer buffers and enable incremental uploads when possible.
-    size_t solidNewV = 0, solidNewI = 0, solidNewM = 0;
-    size_t waterNewV = 0, waterNewI = 0, waterNewM = 0;
-    for (const auto &pd : batch) {
-        if (pd.layer == LAYER_OPAQUE) {
-            solidNewV += pd.geom.vertices.size();
-            solidNewI += pd.geom.indices.size();
-            solidNewM += 1;
-        } else {
-            waterNewV += pd.geom.vertices.size();
-            waterNewI += pd.geom.indices.size();
-            waterNewM += 1;
+            IndirectRenderer* ir = (pd.layer == LAYER_OPAQUE) ? &solidIR : &waterIR;
+            if (!ir) continue;
+
+            // Add or update the mesh in its stable slot.
+            uint32_t slotIdx = ir->addMeshSlotted(pd.geom, static_cast<uint32_t>(pd.nid));
+            if (slotIdx == UINT32_MAX) {
+                continue;
+            }
+
+            // Upload the slot's vertex/index/meta data to GPU.
+            // Meta (indirect command + bounds) is written synchronously to
+            // host-visible buffers. Vertex/index data is async via UploadManager.
+            ir->uploadSlot(app, slotIdx);
+
+            // Signal completion to the chunk manager.
+            // The proxy swap is handled by processChunkSwapQueue on the next frame.
+            chunkManager.finishUpload(cid);
+        }
+    } else if (!slottedModeEnabled && !batch.empty()) {
+        // ── Legacy mode: append-based with full rebuild ──
+        // Compute per-layer totals for the incoming batch so we can pre-size
+        // renderer buffers and enable incremental uploads when possible.
+        size_t solidNewV = 0, solidNewI = 0, solidNewM = 0;
+        size_t waterNewV = 0, waterNewI = 0, waterNewM = 0;
+        for (const auto &pd : batch) {
+            if (pd.layer == LAYER_OPAQUE) {
+                solidNewV += pd.geom.vertices.size();
+                solidNewI += pd.geom.indices.size();
+                solidNewM += 1;
+            } else {
+                waterNewV += pd.geom.vertices.size();
+                waterNewI += pd.geom.indices.size();
+                waterNewM += 1;
+            }
+        }
+
+        bool solidCanIncremental = true;
+        bool waterCanIncremental = true;
+
+        if (solidNewM > 0) {
+            size_t desiredV = solidIR.getMergedVertexCount() + solidNewV;
+            size_t desiredI = solidIR.getMergedIndexCount() + solidNewI;
+            size_t desiredM = solidIR.getMeshCount() + solidNewM;
+            solidCanIncremental = solidIR.ensureCapacity(desiredV, desiredI, desiredM);
+        }
+
+        if (waterNewM > 0) {
+            size_t desiredV = waterIR.getMergedVertexCount() + waterNewV;
+            size_t desiredI = waterIR.getMergedIndexCount() + waterNewI;
+            size_t desiredM = waterIR.getMeshCount() + waterNewM;
+            waterCanIncremental = waterIR.ensureCapacity(desiredV, desiredI, desiredM);
+        }
+
+        // Process meshes and attempt incremental upload only when pre-sizing succeeded.
+        bool solidOrWaterHadRemovals = false;
+        std::vector<uint32_t> solidUploads;
+        std::vector<uint32_t> waterUploads;
+        for (auto& pd : batch) {
+            bool attemptUpload = (pd.layer == LAYER_OPAQUE) ? solidCanIncremental : waterCanIncremental;
+            updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, pd.geom, attemptUpload, pd.version,
+                              &solidOrWaterHadRemovals,
+                              pd.layer == LAYER_OPAQUE ? &solidUploads : &waterUploads);
+        }
+
+        // Coalesce each layer's incremental uploads into a single GPU transfer.
+        if (!solidUploads.empty()) solidIR.uploadMeshes(app, solidUploads);
+        if (!waterUploads.empty()) waterIR.uploadMeshes(app, waterUploads);
+
+        // Batch rebuild.
+        if (solidIR.isDirty()) {
+            if (solidCanIncremental && solidNewM > 0 && !solidOrWaterHadRemovals && !solidIR.needsFullRebuild()) {
+                solidIR.setDirty(false);
+            } else {
+                solidIR.rebuild(app);
+            }
+        }
+        if (waterIR.isDirty()) {
+            if (waterCanIncremental && waterNewM > 0 && !solidOrWaterHadRemovals && !waterIR.needsFullRebuild()) {
+                waterIR.setDirty(false);
+            } else {
+                waterIR.rebuild(app);
+            }
         }
     }
 
-    bool solidCanIncremental = true;
-    bool waterCanIncremental = true;
-
-    if (solidNewM > 0) {
-        size_t desiredV = solidIR.getMergedVertexCount() + solidNewV;
-        size_t desiredI = solidIR.getMergedIndexCount() + solidNewI;
-        size_t desiredM = solidIR.getMeshCount() + solidNewM;
-        solidCanIncremental = solidIR.ensureCapacity(desiredV, desiredI, desiredM);
-#if 0
-        if (solidCanIncremental) {
-            printf("[SceneRenderer::processPendingMeshes] Solid renderer pre-sized for incremental uploads (v=%zu,i=%zu,m=%zu)\n", desiredV, desiredI, desiredM);
-        } else {
-            printf("[SceneRenderer::processPendingMeshes] Solid renderer needs rebuild to grow capacity (v=%zu,i=%zu,m=%zu)\n", desiredV, desiredI, desiredM);
-        }
-#endif
-    }
-
-    if (waterNewM > 0) {
-        size_t desiredV = waterIR.getMergedVertexCount() + waterNewV;
-        size_t desiredI = waterIR.getMergedIndexCount() + waterNewI;
-        size_t desiredM = waterIR.getMeshCount() + waterNewM;
-        waterCanIncremental = waterIR.ensureCapacity(desiredV, desiredI, desiredM);
-#if 0
-        if (waterCanIncremental) {
-            printf("[SceneRenderer::processPendingMeshes] Water renderer pre-sized for incremental uploads (v=%zu,i=%zu,m=%zu)\n", desiredV, desiredI, desiredM);
-        } else {
-            printf("[SceneRenderer::processPendingMeshes] Water renderer needs rebuild to grow capacity (v=%zu,i=%zu,m=%zu)\n", desiredV, desiredI, desiredM);
-        }
-#endif
-    }
-
-    // Process meshes and attempt incremental upload only when pre-sizing succeeded.
-    bool solidOrWaterHadRemovals = false;
-    std::vector<uint32_t> solidUploads;
-    std::vector<uint32_t> waterUploads;
-    for (auto& pd : batch) {
-        bool attemptUpload = (pd.layer == LAYER_OPAQUE) ? solidCanIncremental : waterCanIncremental;
-        updateMeshForNode(app, pd.layer, pd.nid, pd.nodeData, pd.geom, attemptUpload, pd.version,
-                          &solidOrWaterHadRemovals,
-                          pd.layer == LAYER_OPAQUE ? &solidUploads : &waterUploads);
-    }
-
-    // Coalesce each layer's incremental uploads into a single GPU transfer.
-    // This batches all of the frame's vertex/index copies into one command
-    // buffer per layer per frame instead of one round-trip per chunk, removing
-    // the per-chunk fence stall on the render thread.
-    if (!solidUploads.empty()) solidIR.uploadMeshes(app, solidUploads);
-    if (!waterUploads.empty()) waterIR.uploadMeshes(app, waterUploads);
-
-    // Batch rebuild: only needed when buffers were created/grown (canIncremental == false)
-    // OR when meshes were removed — removals leave stale indirect commands on GPU
-    // that must be compacted away by a full rebuild.
-    // Also force rebuild if the GPU meta-buffers still contain stale data from a
-    // previous scene (needsFullRebuild), which happens after removeAllMeshes().
-    // Without this, the incremental path skips the rebuild, leaving the culling
-    // shader to read garbage from the old indirect/bounds buffers — causing GPU hangs.
-    if (solidIR.isDirty()) {
-        if (solidCanIncremental && solidNewM > 0 && !solidOrWaterHadRemovals && !solidIR.needsFullRebuild()) {
-            solidIR.setDirty(false);
-        } else {
-            solidIR.rebuild(app);
-        }
-    }
-    if (waterIR.isDirty()) {
-        if (waterCanIncremental && waterNewM > 0 && !solidOrWaterHadRemovals && !waterIR.needsFullRebuild()) {
-            waterIR.setDirty(false);
-        } else {
-            waterIR.rebuild(app);
-        }
-    }
+    // Every frame, process the chunk swap queue (slotted mode).
+    // This swaps in newly-built RenderProxies and retires old ones.
+    processChunkSwapQueue(app);
 }
 
 // Forward declaration (defined later in this file, near the brush handlers).
@@ -1393,6 +1400,82 @@ void SceneRenderer::processPendingBrushMeshes(VulkanApp* app, glm::vec3 cameraPo
     // rebuildBrushScene() drop the device-wide deviceWaitIdle() stall.
     if (brushIR.isDirty()) brushIR.rebuild(app);
     if (waterIR.isDirty()) waterIR.rebuild(app);
+}
+
+// ── Slotted mode chunk processing ──────────────────────────────────────────
+
+void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxChunks,
+                                     uint32_t vertexBytesPerChunk,
+                                     uint32_t indexBytesPerChunk)
+{
+    // Initialize the stable slot pool on both solid and water indirect renderers.
+    // This pre-allocates GPU buffers and switches them to slotted mode, where
+    // each chunk gets a fixed slot that is updated independently — NO global
+    // rebuilds.
+    IndirectRenderer& solidIR = solidRenderer->getIndirectRenderer();
+    IndirectRenderer& waterIR = waterRenderer->getIndirectRenderer();
+
+    solidIR.initSlots(app, maxChunks, vertexBytesPerChunk, indexBytesPerChunk);
+    waterIR.initSlots(app, maxChunks, vertexBytesPerChunk, indexBytesPerChunk);
+
+    slottedModeEnabled = true;
+}
+
+bool SceneRenderer::processChunkSlotted(Layer layer, NodeID nid,
+                                         const OctreeNodeData& nd,
+                                         const Geometry& geom, uint32_t version)
+{
+    if (!slottedModeEnabled) return false;
+
+    // Mark the chunk dirty in the state machine (thread-safe).
+    // This prevents duplicate queue entries.
+    ChunkManager::ChunkId cid = static_cast<ChunkManager::ChunkId>(nid);
+    chunkManager.markDirty(cid, version);
+
+    // Queue the geometry for main-thread processing.
+    // On the main thread, processPendingMeshes will call addMeshSlotted
+    // and uploadSlot using the appropriate IndirectRenderer.
+    {
+        std::lock_guard<std::mutex> lock(pendingMeshMutex);
+        pendingMeshQueue.push_back({layer, nid, nd, geom, version});
+    }
+
+    return true;
+}
+
+void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
+{
+    if (!slottedModeEnabled) return;
+
+    // Drain the swap queue: for each ready chunk, atomically swap its
+    // RenderProxy and retire the old one.
+    auto retired = chunkManager.processSwapQueue();
+
+    if (retired.empty()) return;
+
+    // Schedule old proxy GPU resources for deferred destruction.
+    // They must remain valid until the current frame's GPU work completes.
+    for (auto& proxy : retired) {
+        if (!proxy) continue;
+        // Defer destruction of the proxy's vertex/index buffers until the
+        // current frame fence signals.
+        Buffer vbuf = proxy->vertexBuffer;
+        Buffer ibuf = proxy->indexBuffer;
+        if (vbuf.buffer != VK_NULL_HANDLE) {
+            app->deferDestroyUntilFence(app->getCurrentFrameFence(),
+                [app, vbuf]() {
+                    if (vbuf.buffer != VK_NULL_HANDLE)
+                        app->resources.removeBufferVma(vbuf.buffer, vbuf.allocation);
+                });
+        }
+        if (ibuf.buffer != VK_NULL_HANDLE) {
+            app->deferDestroyUntilFence(app->getCurrentFrameFence(),
+                [app, ibuf]() {
+                    if (ibuf.buffer != VK_NULL_HANDLE)
+                        app->resources.removeBufferVma(ibuf.buffer, ibuf.allocation);
+                });
+        }
+    }
 }
 
 void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, const std::function<void(Layer, NodeID, const OctreeNodeData&, const Geometry&)>& onGeometry, ThreadPool* poolOverride) {
