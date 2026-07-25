@@ -1,6 +1,6 @@
 #include "PerlinDistortDistanceEffect.hpp"
 
-PerlinDistortDistanceEffect::PerlinDistortDistanceEffect(SignedDistanceFunction * function_, float amplitude_, float frequency_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias) : SignedDistanceEffect(function_, model, bias + amplitude_ * 1.97f), amplitude(amplitude_), frequency(frequency_), offset(offset_), brightness(brightness_), contrast(contrast_) {
+PerlinDistortDistanceEffect::PerlinDistortDistanceEffect(SignedDistanceFunction &function_, float amplitude_, float frequency_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias) : SignedDistanceEffect(function_, model, bias + amplitude_ * 1.97f), amplitude(amplitude_), frequency(frequency_), offset(offset_), brightness(brightness_), contrast(contrast_) {
 }
 
 PerlinDistortDistanceEffect::~PerlinDistortDistanceEffect() {
@@ -18,7 +18,7 @@ float PerlinDistortDistanceEffect::distance(const glm::vec3 &p, const Transforma
     noise.z = Math::brightnessAndContrast(noise.z, brightness, contrast);
 
     glm::vec3 newLocalPos = localP + amplitude * noise;
-    float d = function->distance(newLocalPos + model.translate, model);
+    float d = function.distance(newLocalPos + model.translate, model);
 
     float maxJacobian = 18.0f * amplitude * frequency;
     float L = 1.0f + maxJacobian;

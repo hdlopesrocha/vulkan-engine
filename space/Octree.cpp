@@ -686,8 +686,8 @@ OctreeNodeLevel Octree::fetch(glm::vec3 pos, uint level, bool simplification, Th
 
 
 void Octree::expand(const ShapeArgs &args) {
-    while (!args.function->isContained(*this)) {
-        glm::vec3 point = args.function->getCenter(args.model);
+    while (!args.function.isContained(*this)) {
+        glm::vec3 point = args.function.getCenter(args.model);
         unsigned int i = getNodeIndex(point, *this) ^ 0x7;
 
         setMin(getMin() - Octree::getShift(i) * getLengthX());
@@ -725,7 +725,7 @@ float Octree::evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float
     if (it != cache->end())
         return it->second;
 
-    float d = args.function->distance(p, args.model);
+    float d = args.function.distance(p, args.model);
     cache->try_emplace(p, d);
     return d;
 }
@@ -748,8 +748,8 @@ void Octree::buildResultSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float
 
 void Octree::apply(
         const SignedDistanceOperation &operation,
-        SignedDistanceFunction *function,
-        const Transformation model,
+        SignedDistanceFunction &function,
+        const Transformation &model,
         const TexturePainter &painter,
         float minSize,
         Simplifier &simplifier,
@@ -972,7 +972,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             process = r.shapeSdfCenter <= halfDiagonal;
 
             if(process) {
-                const ContainmentType check = args.function->check(frame.cube);
+                const ContainmentType check = args.function.check(frame.cube);
                 process = check != ContainmentType::Disjoint;
             }
             if(process) {    

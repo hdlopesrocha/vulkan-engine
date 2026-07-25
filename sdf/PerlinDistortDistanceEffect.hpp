@@ -11,7 +11,7 @@ class PerlinDistortDistanceEffect : public SignedDistanceEffect {
     glm::vec3 offset;
     float brightness;
     float contrast;
-    PerlinDistortDistanceEffect(SignedDistanceFunction * function_, float amplitude_, float frequency_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias);
+    PerlinDistortDistanceEffect(SignedDistanceFunction &function_, float amplitude_, float frequency_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias);
     ~PerlinDistortDistanceEffect();
     const char* getLabel() const override;
     float distance(const glm::vec3 &p, const Transformation &model) override;

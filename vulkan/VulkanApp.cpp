@@ -824,10 +824,13 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     // Suppress BestPractices messages — they come from third-party code
     // (ImGui) and SPIR-V tooling (WorkgroupSize deprecation) and cannot
     // be fixed without modifying external components.
+    // Also suppress VK_ERROR_DEVICE_LOST echoes — the call sites handle
+    // device loss gracefully, and aborting on the validation layer's
+    // post-submit error report prevents that recovery from running.
     {
         const char* msg = (pCallbackData && pCallbackData->pMessage) ? pCallbackData->pMessage : "";
         if (strstr(msg, "BestPractices") != nullptr) return VK_FALSE;
-  
+        if (strstr(msg, "VK_ERROR_DEVICE_LOST") != nullptr) return VK_FALSE;
     }
 
     // Only print WARNING and ERROR — suppress INFO/VERBOSE noise
