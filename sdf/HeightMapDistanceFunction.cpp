@@ -6,7 +6,7 @@ HeightMapDistanceFunction::HeightMapDistanceFunction(HeightMap * map_, float bia
     : SignedDistanceFunction(SdfType::HEIGHTMAP), map(map_)
     , box(getBox(bias)) {}
 
-float HeightMapDistanceFunction::distance(const glm::vec3 &p, const Transformation &model)  {
+float HeightMapDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
     glm::vec3 len = map->getLength()*0.5f;
     glm::vec3 pos = p - map->getCenter();
 

@@ -11,7 +11,7 @@ const char* PerlinCarveDistanceEffect::getLabel() const {
     return "Perlin Carve";
 }
 
-float PerlinCarveDistanceEffect::distance(const glm::vec3 &p, const Transformation &model) {
+float PerlinCarveDistanceEffect::distance(const glm::vec3 &p, const Transformation &model) const {
     float d = function.distance(p, model);
     glm::vec3 localP = p - model.translate;
     float noise = SDF::distortedCarveFractalSDF(localP + offset, threshold, frequency, 6, 2.0f, 0.5f);

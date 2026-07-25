@@ -33,7 +33,7 @@ RoadDistanceFunction::RoadDistanceFunction(RoadSpline* spline, float width, floa
     m_center = (aabbMin + aabbMax) * 0.5f;
 }
 
-float RoadDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
+float RoadDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
     float t;
     glm::vec3 c, T, U;
     m_spline->closestPointInRange(p, m_tMin, m_tMax, t, c, T, U);

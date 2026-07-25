@@ -4,7 +4,7 @@ OctahedronDistanceFunction::OctahedronDistanceFunction(const Transformation &mod
     : SignedDistanceFunction(SdfType::OCTAHEDRON)
     , sphere(getSphere(model, bias)) {}
 
-float OctahedronDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
+float OctahedronDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
     glm::vec3 pos = p - getCenter(model);
     pos = glm::inverse(model.quaternion) * pos;
 

@@ -10,6 +10,6 @@ class SineDistortDistanceEffect : public SignedDistanceEffect {
     SineDistortDistanceEffect(SignedDistanceFunction &function_, float amplitude_, float frequency_, glm::vec3 offset_, const Transformation &model, float bias);
     ~SineDistortDistanceEffect();
     const char* getLabel() const override;
-    float distance(const glm::vec3 &p, const Transformation &model) override;
+    float distance(const glm::vec3 &p, const Transformation &model) const override;
     SdfType getType() const override { return SdfType::DISTORT_SINE; }
 };

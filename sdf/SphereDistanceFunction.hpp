@@ -9,7 +9,7 @@ private:
 public:
     SphereDistanceFunction(const Transformation &model, float bias);
     virtual ~SphereDistanceFunction() = default;
-    float distance(const glm::vec3 &p, const Transformation &model) override;
+    float distance(const glm::vec3 &p, const Transformation &model) const override;
     BoundingSphere getSphere(const Transformation &model, float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;
     bool isContained(const BoundingCube &cube) const override;

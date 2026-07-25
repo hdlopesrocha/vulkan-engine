@@ -10,7 +10,7 @@ public:
     HeightMap * map;
     HeightMapDistanceFunction(HeightMap * map_, float bias);
     virtual ~HeightMapDistanceFunction() = default;
-    float distance(const glm::vec3 &p, const Transformation &model) override;
+    float distance(const glm::vec3 &p, const Transformation &model) const override;
     glm::vec3 getCenter(const Transformation &model) const override;
     BoundingBox getBox(float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;

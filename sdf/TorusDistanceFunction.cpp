@@ -3,7 +3,7 @@
 TorusDistanceFunction::TorusDistanceFunction(glm::vec2 radius_, const Transformation &model, float bias)
     : SignedDistanceFunction(SdfType::TORUS), radius(radius_), sphere(getSphere(model, bias)) {}
 
-float TorusDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
+float TorusDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
      glm::vec3 pos = p - getCenter(model);
     pos = glm::inverse(model.quaternion) * pos;
 

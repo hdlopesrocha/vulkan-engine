@@ -4,7 +4,7 @@ BoxDistanceFunction::BoxDistanceFunction(const Transformation &model, float bias
     : SignedDistanceFunction(SdfType::BOX)
     , sphere(getSphere(model, bias)) {}
 
-float BoxDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
+float BoxDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
     glm::vec3 pos = p - getCenter(model);
     pos = glm::inverse(model.quaternion) * pos;
     return SDF::box(pos, model.scale);

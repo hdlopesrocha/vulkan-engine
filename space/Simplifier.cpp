@@ -15,7 +15,7 @@ SimplificationResult Simplifier::simplify(
         const BoundingCube &cube,
         const float * sdf,
         NodeOperationResult * children,
-        const BoundingCube& chunkCube)
+        const BoundingCube& chunkCube) const 
 {
     SimplificationResult res(0u, DISCARD_BRUSH_INDEX);
     int brushIndex = DISCARD_BRUSH_INDEX;

@@ -17,7 +17,7 @@ public:
                                    float r1_ = 0.5f, float r2_ = 0.25f,
                                    const Transformation &model = Transformation(), float bias = 0.0f);
     virtual ~TaperedCapsuleDistanceFunction() = default;
-    float distance(const glm::vec3 &p, const Transformation &model) override;
+    float distance(const glm::vec3 &p, const Transformation &model) const override;
     glm::vec3 getCenter(const Transformation &model) const override;
     BoundingSphere getSphere(const Transformation &model, float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;

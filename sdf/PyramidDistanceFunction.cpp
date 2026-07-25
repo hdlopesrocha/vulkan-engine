@@ -4,7 +4,7 @@ PyramidDistanceFunction::PyramidDistanceFunction(const Transformation &model, fl
     : SignedDistanceFunction(SdfType::PYRAMID)
     , sphere(getSphere(model, bias)) {}
 
-float PyramidDistanceFunction::distance(const glm::vec3 &p, const Transformation &model)  {
+float PyramidDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
    glm::vec3 pos = p - getCenter(model);
     pos = glm::inverse(model.quaternion) * pos;
 

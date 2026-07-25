@@ -6,7 +6,7 @@ TaperedCylinderDistanceFunction::TaperedCylinderDistanceFunction(float r1_, floa
     : SignedDistanceFunction(SdfType::TAPERED_CYLINDER), r1(r1_), r2(r2_)
     , sphere(getSphere(model, bias)) {}
 
-float TaperedCylinderDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
+float TaperedCylinderDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
     glm::vec3 pos = p - getCenter(model);
     pos = glm::inverse(model.quaternion) * pos;
     glm::vec3 q = pos / model.scale;

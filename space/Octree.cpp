@@ -748,11 +748,11 @@ void Octree::buildResultSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float
 
 void Octree::apply(
         const SignedDistanceOperation &operation,
-        SignedDistanceFunction &function,
+        const SignedDistanceFunction &function,
         const Transformation &model,
         const TexturePainter &painter,
         float minSize,
-        Simplifier &simplifier,
+        const Simplifier &simplifier,
         const OctreeChangeHandler &changeHandler
     ) {
     threadsCreated = 0;

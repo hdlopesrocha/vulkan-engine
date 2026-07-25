@@ -10,7 +10,7 @@ const char* SineDistortDistanceEffect::getLabel() const {
     return "Sine Distort";
 }
 
-float SineDistortDistanceEffect::distance(const glm::vec3 &p, const Transformation &model) {
+float SineDistortDistanceEffect::distance(const glm::vec3 &p, const Transformation &model) const {
     glm::vec3 localP = p - model.translate;
     glm::vec3 pp = localP + offset;
 

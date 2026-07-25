@@ -6,7 +6,7 @@ TaperedCapsuleDistanceFunction::TaperedCapsuleDistanceFunction(glm::vec3 a_, glm
     : SignedDistanceFunction(SdfType::TAPERED_CAPSULE), a(a_), b(b_), r1(r1_), r2(r2_)
     , sphere(getSphere(model, bias)) {}
 
-float TaperedCapsuleDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
+float TaperedCapsuleDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
     glm::vec3 pos = p - model.translate;
     pos = glm::inverse(model.quaternion) * pos;
     float d = SDF::taperedCapsule(pos / model.scale, a, b, r1, r2);

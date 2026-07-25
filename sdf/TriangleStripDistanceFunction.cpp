@@ -15,7 +15,7 @@ TriangleStripDistanceFunction::TriangleStripDistanceFunction(
 {
 }
 
-float TriangleStripDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
+float TriangleStripDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
     glm::vec3 pos = p - getCenter(model);
     pos = glm::inverse(model.quaternion) * pos;
     glm::vec3 q = pos / model.scale;

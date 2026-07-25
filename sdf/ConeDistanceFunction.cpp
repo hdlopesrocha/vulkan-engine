@@ -5,7 +5,7 @@ ConeDistanceFunction::ConeDistanceFunction(const Transformation &model, float bi
     : SignedDistanceFunction(SdfType::CONE)
     , sphere(getSphere(model, bias)) {}
 
-float ConeDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
+float ConeDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
     glm::vec3 pos = p - getCenter(model);
     pos = glm::inverse(model.quaternion) * pos;
     glm::vec3 q = pos / model.scale - glm::vec3(0,1,0);

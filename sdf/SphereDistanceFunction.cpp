@@ -4,7 +4,7 @@ SphereDistanceFunction::SphereDistanceFunction(const Transformation &model, floa
     : SignedDistanceFunction(SdfType::SPHERE)
     , sphere(getSphere(model, bias)) {}
 
-float SphereDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) {
+float SphereDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
     glm::vec3 pos = p - model.translate;
     pos = glm::inverse(model.quaternion) * pos;
 
