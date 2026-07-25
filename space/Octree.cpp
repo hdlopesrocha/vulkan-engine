@@ -742,12 +742,12 @@ void Octree::buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float 
 
 void Octree::buildResultSDF(const ShapeArgs &args, OctreeNodeFrame &frame, float shapeSDF[8], float resultSDF[8], ThreadContext * threadContext) const {
     for (uint i = 0; i < 8; ++i) {
-        resultSDF[i] = args.operation.combine(frame.sdf[i], shapeSDF[i]);
+        resultSDF[i] = args.operation->combine(frame.sdf[i], shapeSDF[i]);
     }
 }
 
 void Octree::apply(
-        SignedDistanceOperation operation,
+        const SignedDistanceOperation &operation,
         SignedDistanceFunction *function,
         const Transformation model,
         const TexturePainter &painter,
@@ -893,7 +893,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
             for(int i = 0; i < 8; ++i)
                 if(frame.sdf[i] != INFINITY) { allInfinity = false; break; }
             if(allInfinity) {
-                if(args.operation.propagatesFromInfinity()) {
+                if(args.operation->propagatesFromInfinity()) {
                     if(r.shapeSdfCenter < -halfDiagonal) {
                         SDF::copySDF(r.shapeSDF, r.resultSDF);
                         r.shapeType = SpaceType::Solid;
@@ -921,7 +921,8 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         }
 
         // Operations that preserve Solid — existing Solid → always Solid everywhere
-        if(!processed && frame.type == SpaceType::Solid && args.operation.preservesSolid()) {
+        if(!processed && frame.type == SpaceType::Solid &&
+           args.operation->preservesSolid()) {
             bool allFinite = true;
             for(int i = 0; i < 8; ++i)
                 if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
@@ -935,7 +936,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
         }
 
         // Operations that preserve Empty — existing Empty → always Empty everywhere
-        if(!processed && frame.type == SpaceType::Empty && args.operation.preservesEmpty()) {
+        if(!processed && frame.type == SpaceType::Empty && args.operation->preservesEmpty()) {
             bool allFinite = true;
             for(int i = 0; i < 8; ++i)
                 if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
@@ -956,7 +957,7 @@ void Octree::shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs
                 if(frame.sdf[i] == INFINITY) { allFinite = false; break; }
             if(allFinite) {
                 const float existingSdfCenter = SDF::interpolate(frame.sdf, center, frame.cube);
-                const float resultSdfCenter = args.operation.combine(existingSdfCenter, r.shapeSdfCenter);
+                const float resultSdfCenter = args.operation->combine(existingSdfCenter, r.shapeSdfCenter);
                 if(resultSdfCenter < -halfDiagonal) {
                     buildResultSDF(args, frame, r.shapeSDF, r.resultSDF, threadContext);
                     r.shapeType = SDF::eval(r.shapeSDF);

@@ -50,6 +50,9 @@
 #include "widgets/Brush3dWidget.hpp"
 #include "widgets/MusicWidget.hpp"
 #include "widgets/components/FilePicker.hpp"
+#include "sdf/AddSignedDistanceOperation.hpp"
+#include "sdf/DeleteSignedDistanceOperation.hpp"
+#include "sdf/PaintSignedDistanceOperation.hpp"
 #include "utils/MainSceneLoader.hpp"
 #include "utils/Settings.hpp"
 #include "widgets/WidgetManager.hpp"
@@ -2151,7 +2154,7 @@ void MyApp::rebuildBrushScene() {
         auto applyEntry = [&](SignedDistanceFunction* wrappedFunc) {
             // Brush preview always shows union; the specific operation (Add/Remove/Paint)
             // is only used when applying the brush to the solid space.
-            SignedDistanceOperation brushOp = SignedDistanceOperation(SDF::opUnion);
+            AddSignedDistanceOperation brushOp;
             // Optionally wrap in an effect
             // effectType: 0=PerlinDistort, 1=PerlinCarve, 2=SineDistort, 3=VoronoiCarve
             if (entry.useEffect) {
@@ -2275,12 +2278,16 @@ void MyApp::applyBrushToScene() {
     const auto& entry = *selectedEntry;
 
     // Select brush operation based on brushMode
-    SignedDistanceOperation brushOp = SignedDistanceOperation(SDF::opUnion);
-    switch (entry.brushMode) {
-        case 1:  brushOp = SignedDistanceOperation(SDF::opSubtraction); break;
-        case 2:  brushOp = SignedDistanceOperation(SDF::opPaint);       break;
-        default: brushOp = SignedDistanceOperation(SDF::opUnion);       break;
-    }
+    AddSignedDistanceOperation addOp;
+    DeleteSignedDistanceOperation deleteOp;
+    PaintSignedDistanceOperation paintOp;
+    const SignedDistanceOperation &brushOp = [&]() -> const SignedDistanceOperation & {
+        switch (entry.brushMode) {
+            case 1:  return deleteOp;
+            case 2:  return paintOp;
+            default: return addOp;
+        }
+    }();
 
     // Select target octree and handler based on targetLayer
     Octree& octree = (entry.targetLayer == 0)

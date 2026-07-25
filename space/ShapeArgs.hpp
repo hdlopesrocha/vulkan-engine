@@ -12,7 +12,7 @@
 class OctreeChangeHandler;
 
 struct ShapeArgs {
-    SignedDistanceOperation operation;
+    const SignedDistanceOperation * operation;
     SignedDistanceFunction * function;
     const TexturePainter &painter;
     const Transformation model;
@@ -21,7 +21,7 @@ struct ShapeArgs {
     float minSize;
 
     ShapeArgs(
-        SignedDistanceOperation operation,
+        const SignedDistanceOperation &operation,
         SignedDistanceFunction * function,
         const TexturePainter &painter,
         const Transformation model,

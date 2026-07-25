@@ -42,7 +42,7 @@ public:
     ~Octree();
 
     void expand(const ShapeArgs &args);
-    void apply(SignedDistanceOperation operation, SignedDistanceFunction *function, const Transformation model, const TexturePainter &painter, float minSize, Simplifier &simplifier, const OctreeChangeHandler &changeHandler);
+    void apply(const SignedDistanceOperation &operation, SignedDistanceFunction *function, const Transformation model, const TexturePainter &painter, float minSize, Simplifier &simplifier, const OctreeChangeHandler &changeHandler);
     void reset();
     void shape(NodeOperationResult &r,OctreeNodeFrame frame, const ShapeArgs &args, ThreadContext * threadContext);
         void iterate(IteratorHandler &handler);
