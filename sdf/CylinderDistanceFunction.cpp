@@ -2,17 +2,17 @@
 #include "SDF.hpp"
 
 CylinderDistanceFunction::CylinderDistanceFunction(const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::CYLINDER, model.translate)
+    : SignedDistanceFunction(SdfType::CYLINDER, model.translate, model)
     , sphere(getSphere(model, bias)) {}
 
-float CylinderDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
+float CylinderDistanceFunction::distance(const glm::vec3 &p) const {
     glm::vec3 pos = p - getCenter();
-    pos = glm::inverse(model.quaternion) * pos;
-    glm::vec3 q = pos / model.scale;
+    pos = glm::inverse(m_model.quaternion) * pos;
+    glm::vec3 q = pos / m_model.scale;
 
     float d = SDF::cylinder(q, 0.5f, 1.0f);
 
-    float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
+    float minScale = glm::min(glm::min(m_model.scale.x, m_model.scale.y), m_model.scale.z);
     return d * minScale;
 }
 

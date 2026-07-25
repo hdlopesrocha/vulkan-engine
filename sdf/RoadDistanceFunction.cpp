@@ -8,7 +8,7 @@ RoadDistanceFunction::RoadDistanceFunction(RoadSpline* spline, float width, floa
                                             bool applyStartCap, bool applyEndCap,
                                             const glm::vec3& sphereCenter, float sphereRadius,
                                             const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::ROAD)
+    : SignedDistanceFunction(SdfType::ROAD, model)
     , m_spline(spline)
     , m_width(width)
     , m_height(height)
@@ -33,7 +33,7 @@ RoadDistanceFunction::RoadDistanceFunction(RoadSpline* spline, float width, floa
     m_center = (aabbMin + aabbMax) * 0.5f;
 }
 
-float RoadDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
+float RoadDistanceFunction::distance(const glm::vec3 &p) const {
     float t;
     glm::vec3 c, T, U;
     m_spline->closestPointInRange(p, m_tMin, m_tMax, t, c, T, U);

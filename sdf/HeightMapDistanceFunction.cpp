@@ -2,18 +2,18 @@
 #include "SDF.hpp"
 #include "../math/HeightMap.hpp"
 
-HeightMapDistanceFunction::HeightMapDistanceFunction(HeightMap * map_, float bias)
-    : SignedDistanceFunction(SdfType::HEIGHTMAP, map_->getCenter()), map(map_)
+HeightMapDistanceFunction::HeightMapDistanceFunction(HeightMap * map_, float bias, const Transformation &model)
+    : SignedDistanceFunction(SdfType::HEIGHTMAP, map_->getCenter(), model), map(map_)
     , box(getBox(bias)) {}
 
-float HeightMapDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
+float HeightMapDistanceFunction::distance(const glm::vec3 &p) const {
     glm::vec3 len = map->getLength()*0.5f;
     glm::vec3 pos = p - map->getCenter();
 
     float sdf = map->distance(p);
 
     float d = SDF::opIntersection(
-        SDF::box(pos+model.translate, len),
+        SDF::box(pos+m_model.translate, len),
         sdf
     );
 

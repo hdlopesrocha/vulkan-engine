@@ -725,7 +725,7 @@ float Octree::evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float
     if (it != cache->end())
         return it->second;
 
-    float d = args.function.distance(p, args.model);
+    float d = args.function.distance(p);
     cache->try_emplace(p, d);
     return d;
 }

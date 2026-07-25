@@ -8,9 +8,9 @@ class HeightMap;
 class HeightMapDistanceFunction : public SignedDistanceFunction {
 public:
     HeightMap * map;
-    HeightMapDistanceFunction(HeightMap * map_, float bias);
+    HeightMapDistanceFunction(HeightMap * map_, float bias, const Transformation &model = Transformation());
     virtual ~HeightMapDistanceFunction() = default;
-    float distance(const glm::vec3 &p, const Transformation &model) const override;
+    float distance(const glm::vec3 &p) const override;
     glm::vec3 getCenter() const override;
     BoundingBox getBox(float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;

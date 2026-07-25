@@ -1,13 +1,13 @@
 #include "CapsuleDistanceFunction.hpp"
 
 CapsuleDistanceFunction::CapsuleDistanceFunction(glm::vec3 a_, glm::vec3 b_, float r, const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::CAPSULE, 0.5f*(a_+b_)+model.translate), a(a_), b(b_), radius(r), sphere(getSphere(model, bias)) {}
+    : SignedDistanceFunction(SdfType::CAPSULE, 0.5f*(a_+b_)+model.translate, model), a(a_), b(b_), radius(r), sphere(getSphere(model, bias)) {}
 
-float CapsuleDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
-    glm::vec3 pos = p - model.translate;
-    pos = glm::inverse(model.quaternion) * pos;
-    float d = SDF::capsule(pos / model.scale, a, b, radius);
-    float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
+float CapsuleDistanceFunction::distance(const glm::vec3 &p) const {
+    glm::vec3 pos = p - m_model.translate;
+    pos = glm::inverse(m_model.quaternion) * pos;
+    float d = SDF::capsule(pos / m_model.scale, a, b, radius);
+    float minScale = glm::min(glm::min(m_model.scale.x, m_model.scale.y), m_model.scale.z);
     return d * minScale;
 }
 

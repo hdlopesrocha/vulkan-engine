@@ -421,7 +421,7 @@ public:
                     glm::vec3 segCenter = (aabbMin + aabbMax) * 0.5f;
                     float segRadius = glm::distance(segCenter, aabbMax);
                     TriangleStripDistanceFunction tsFunc(v0, v1, v2, v3, unitHalfThick,
-                                                         segCenter, segRadius, Transformation(), minSize);
+                                                         segCenter, segRadius, tsModel, minSize);
                     opaqueLayer.apply(AddSignedDistanceOperation(), tsFunc, tsModel,
                                       SimpleBrush(14),
                                       minSize, simplifier, opaqueHandler);

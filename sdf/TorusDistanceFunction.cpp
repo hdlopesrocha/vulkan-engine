@@ -1,16 +1,16 @@
 #include "TorusDistanceFunction.hpp"
 
 TorusDistanceFunction::TorusDistanceFunction(glm::vec2 radius_, const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::TORUS, model.translate), radius(radius_), sphere(getSphere(model, bias)) {}
+    : SignedDistanceFunction(SdfType::TORUS, model.translate, model), radius(radius_), sphere(getSphere(model, bias)) {}
 
-float TorusDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
+float TorusDistanceFunction::distance(const glm::vec3 &p) const {
      glm::vec3 pos = p - getCenter();
-    pos = glm::inverse(model.quaternion) * pos;
+    pos = glm::inverse(m_model.quaternion) * pos;
 
-    glm::vec3 q = pos / model.scale;
+    glm::vec3 q = pos / m_model.scale;
     float d = SDF::torus(q, radius);
 
-    float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
+    float minScale = glm::min(glm::min(m_model.scale.x, m_model.scale.y), m_model.scale.z);
     return d * minScale;
 }
 

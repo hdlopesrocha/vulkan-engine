@@ -11,12 +11,14 @@ class SignedDistanceFunction {
 protected:
     SdfType type;
     glm::vec3 m_center{};
+    Transformation m_model{};
     SignedDistanceFunction() : type() {}
-    SignedDistanceFunction(SdfType t) : type(t) {}
-    SignedDistanceFunction(SdfType t, const glm::vec3 &center) : type(t), m_center(center) {}
+    SignedDistanceFunction(const Transformation &model) : type(), m_model(model) {}
+    SignedDistanceFunction(SdfType t, const Transformation &model) : type(t), m_model(model) {}
+    SignedDistanceFunction(SdfType t, const glm::vec3 &center, const Transformation &model) : type(t), m_center(center), m_model(model) {}
 public:
     virtual ~SignedDistanceFunction() = default;
-    virtual float distance(const glm::vec3 &p, const Transformation &model) const = 0;
+    virtual float distance(const glm::vec3 &p) const = 0;
     virtual glm::vec3 getCenter() const { return m_center; }
     virtual const char* getLabel() const { return ""; }
     virtual SdfType getType() const { return type; }

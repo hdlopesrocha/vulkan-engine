@@ -1,14 +1,14 @@
 #include "SphereDistanceFunction.hpp"
 
 SphereDistanceFunction::SphereDistanceFunction(const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::SPHERE, model.translate)
+    : SignedDistanceFunction(SdfType::SPHERE, model.translate, model)
     , sphere(getSphere(model, bias)) {}
 
-float SphereDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
-    glm::vec3 pos = p - model.translate;
-    pos = glm::inverse(model.quaternion) * pos;
+float SphereDistanceFunction::distance(const glm::vec3 &p) const {
+    glm::vec3 pos = p - m_model.translate;
+    pos = glm::inverse(m_model.quaternion) * pos;
 
-    glm::vec3 radii = model.scale;
+    glm::vec3 radii = m_model.scale;
     glm::vec3 q = glm::abs(pos) / radii;
     return (glm::length(q) - 1.0f) * glm::min(glm::min(radii.x, radii.y), radii.z);
 }

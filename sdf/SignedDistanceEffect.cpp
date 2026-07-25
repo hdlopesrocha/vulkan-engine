@@ -1,7 +1,7 @@
 #include "SignedDistanceEffect.hpp"
 
 SignedDistanceEffect::SignedDistanceEffect(SignedDistanceFunction &function_, const Transformation &model, float bias)
-: SignedDistanceFunction(), function(function_) {
+: SignedDistanceFunction(model), function(function_) {
     m_center = function_.getCenter();
     sphere = function.getSphere(model, bias);
 }

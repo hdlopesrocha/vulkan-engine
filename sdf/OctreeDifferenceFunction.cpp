@@ -1,12 +1,12 @@
 #include "OctreeDifferenceFunction.hpp"
 
-OctreeDifferenceFunction::OctreeDifferenceFunction(Octree * tree_, BoundingBox box_, float bias_)
-    : SignedDistanceFunction(SdfType::OCTREE_DIFFERENCE, box_.getCenter()), tree(tree_), box(box_), bias(bias_)
+OctreeDifferenceFunction::OctreeDifferenceFunction(Octree * tree_, BoundingBox box_, float bias_, const Transformation &model)
+    : SignedDistanceFunction(SdfType::OCTREE_DIFFERENCE, box_.getCenter(), model), tree(tree_), box(box_), bias(bias_)
     , m_box(getBox(bias_)) {}
 
-float OctreeDifferenceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
+float OctreeDifferenceFunction::distance(const glm::vec3 &p) const {
     glm::vec3 len = box.getLength()*0.5f;
-    glm::vec3 pos = p - box.getCenter()+model.translate;
+    glm::vec3 pos = p - box.getCenter() + m_model.translate;
     return SDF::opSubtraction(
         SDF::box(pos, len),
         tree->getSdfAt(p)+bias

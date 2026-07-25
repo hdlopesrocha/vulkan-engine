@@ -3,17 +3,17 @@
 
 TaperedCylinderDistanceFunction::TaperedCylinderDistanceFunction(float r1_, float r2_,
                                                                 const Transformation &model, float bias)
-    : SignedDistanceFunction(SdfType::TAPERED_CYLINDER, model.translate), r1(r1_), r2(r2_)
+    : SignedDistanceFunction(SdfType::TAPERED_CYLINDER, model.translate, model), r1(r1_), r2(r2_)
     , sphere(getSphere(model, bias)) {}
 
-float TaperedCylinderDistanceFunction::distance(const glm::vec3 &p, const Transformation &model) const {
+float TaperedCylinderDistanceFunction::distance(const glm::vec3 &p) const {
     glm::vec3 pos = p - getCenter();
-    pos = glm::inverse(model.quaternion) * pos;
-    glm::vec3 q = pos / model.scale;
+    pos = glm::inverse(m_model.quaternion) * pos;
+    glm::vec3 q = pos / m_model.scale;
 
     float d = SDF::taperedCylinder(q, r1, r2, 0.5f);
 
-    float minScale = glm::min(glm::min(model.scale.x, model.scale.y), model.scale.z);
+    float minScale = glm::min(glm::min(m_model.scale.x, m_model.scale.y), m_model.scale.z);
     return d * minScale;
 }
 

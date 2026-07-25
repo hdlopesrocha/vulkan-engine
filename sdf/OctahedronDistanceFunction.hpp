@@ -11,7 +11,7 @@ private:
 public:
     OctahedronDistanceFunction(const Transformation &model, float bias);
     virtual ~OctahedronDistanceFunction() = default;
-    float distance(const glm::vec3 &p, const Transformation &model) const override;
+    float distance(const glm::vec3 &p) const override;
     BoundingSphere getSphere(const Transformation &model, float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;
     bool isContained(const BoundingCube &cube) const override;

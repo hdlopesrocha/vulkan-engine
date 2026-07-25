@@ -10,15 +10,15 @@ const char* PerlinDistortDistanceEffect::getLabel() const {
     return "Perlin Distort";
 }
 
-float PerlinDistortDistanceEffect::distance(const glm::vec3 &p, const Transformation &model) const {
-    glm::vec3 localP = p - model.translate;
+float PerlinDistortDistanceEffect::distance(const glm::vec3 &p) const {
+    glm::vec3 localP = p - m_model.translate;
     glm::vec3 noise = SDF::distortPerlinFractal(localP + offset, frequency, 6, 2.0f, 0.5f);
     noise.x = Math::brightnessAndContrast(noise.x, brightness, contrast);
     noise.y = Math::brightnessAndContrast(noise.y, brightness, contrast);
     noise.z = Math::brightnessAndContrast(noise.z, brightness, contrast);
 
     glm::vec3 newLocalPos = localP + amplitude * noise;
-    float d = function.distance(newLocalPos + model.translate, model);
+    float d = function.distance(newLocalPos + m_model.translate);
 
     float maxJacobian = 18.0f * amplitude * frequency;
     float L = 1.0f + maxJacobian;

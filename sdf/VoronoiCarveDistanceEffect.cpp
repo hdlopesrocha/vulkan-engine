@@ -10,10 +10,10 @@ const char* VoronoiCarveDistanceEffect::getLabel() const {
     return "Voronoi Carve";
 }
 
-float VoronoiCarveDistanceEffect::distance(const glm::vec3 &p, const Transformation &model) const {
-    glm::vec3 localP = p - model.translate;
+float VoronoiCarveDistanceEffect::distance(const glm::vec3 &p) const {
+    glm::vec3 localP = p - m_model.translate;
     glm::vec3 pp = localP + offset;
-    float d = function.distance(p, model);
+    float d = function.distance(p);
 
     float noise = SDF::voronoi3D(pp , cellSize, 0);
     float carved = d - amplitude * Math::brightnessAndContrast(noise, brightness, contrast);

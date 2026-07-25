@@ -10,8 +10,8 @@ const char* SineDistortDistanceEffect::getLabel() const {
     return "Sine Distort";
 }
 
-float SineDistortDistanceEffect::distance(const glm::vec3 &p, const Transformation &model) const {
-    glm::vec3 localP = p - model.translate;
+float SineDistortDistanceEffect::distance(const glm::vec3 &p) const {
+    glm::vec3 localP = p - m_model.translate;
     glm::vec3 pp = localP + offset;
 
     float dx = sin(pp.x * frequency) * cos(pp.y * frequency) * sin(pp.z * frequency);
@@ -21,7 +21,7 @@ float SineDistortDistanceEffect::distance(const glm::vec3 &p, const Transformati
     const float norm = 2.0f;
     glm::vec3 newLocalPos = localP + amplitude / norm * glm::vec3(dx, dy, dz);
 
-    float d = function.distance(newLocalPos + model.translate, model);
+    float d = function.distance(newLocalPos + m_model.translate);
 
     float maxJacobian = 1.5f * amplitude * frequency;
     float L = 1.0f + maxJacobian;
