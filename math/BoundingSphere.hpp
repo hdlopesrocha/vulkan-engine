@@ -11,7 +11,6 @@ public:
     bool contains(const glm::vec3 &point) const;
     ContainmentType test(const AbstractBoundingBox& cube) const;
     bool intersects(const AbstractBoundingBox& cube) const;
-    void accept(BoundingVolumeVisitor& visitor) const;
 };
 
  

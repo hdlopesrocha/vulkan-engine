@@ -7,7 +7,7 @@ class WrappedCapsule : public WrappedSignedDistanceFunction {
 private:
     BoundingSphere sphere;
     public:
-    WrappedCapsule(CapsuleDistanceFunction * function_, const Transformation &model = Transformation(), float bias = 0.0f);
+    WrappedCapsule(CapsuleDistanceFunction * function_, const Transformation &model, float bias);
     ~WrappedCapsule();
     BoundingSphere getSphere(const Transformation &model, float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;

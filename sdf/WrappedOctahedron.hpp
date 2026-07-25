@@ -7,7 +7,7 @@ class WrappedOctahedron : public WrappedSignedDistanceFunction {
 private:
     BoundingSphere sphere;
     public:
-    WrappedOctahedron(OctahedronDistanceFunction * function_, const Transformation &model = Transformation(), float bias = 0.0f);
+    WrappedOctahedron(OctahedronDistanceFunction * function_, const Transformation &model, float bias);
     ~WrappedOctahedron();
     BoundingSphere getSphere(const Transformation &model, float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;

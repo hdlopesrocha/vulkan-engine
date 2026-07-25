@@ -12,7 +12,7 @@ class WrappedPerlinCarveDistanceEffect : public WrappedSignedDistanceEffect {
     glm::vec3 offset;
     float brightness;
     float contrast;
-    WrappedPerlinCarveDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float frequency_, float threshold_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model = Transformation(), float bias = 0.0f);
+    WrappedPerlinCarveDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float frequency_, float threshold_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias);
     ~WrappedPerlinCarveDistanceEffect();
     const char* getLabel() const override;
     float distance(const glm::vec3 &p, const Transformation &model) override;

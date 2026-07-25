@@ -1,5 +1,4 @@
 #include "AbstractBoundingBox.hpp"
-#include "BoundingVolumeVisitor.hpp"
 #include "Math.hpp"
 #include "BoundingCube.hpp"
 
@@ -128,8 +127,4 @@ glm::vec3 AbstractBoundingBox::getShift(uint i) {
 
 glm::vec3 AbstractBoundingBox::getCorner(uint i) const {
     return getMin() + AbstractBoundingBox::getShift(i) * getLength();
-}
-
-void AbstractBoundingBox::accept(BoundingVolumeVisitor& visitor) const {
-    visitor.visit(*this);  
 }

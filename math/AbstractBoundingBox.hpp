@@ -6,7 +6,6 @@
 class BoundingSphere;
 class BoundingCube;
 
-class BoundingVolumeVisitor;
 
 class AbstractBoundingBox : public BoundingVolume {
 protected:
@@ -39,7 +38,6 @@ public:
     bool intersects(const BoundingSphere &sphere) const;
     bool intersects(const AbstractBoundingBox &cube) const;
     ContainmentType test(const AbstractBoundingBox &cube) const;
-    void accept(BoundingVolumeVisitor& visitor) const;
     static glm::vec3 getShift(uint i);
     glm::vec3 getCorner(uint i) const;
 };

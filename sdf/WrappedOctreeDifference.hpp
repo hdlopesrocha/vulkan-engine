@@ -6,7 +6,7 @@ class WrappedOctreeDifference : public WrappedSignedDistanceFunction {
 private:
     BoundingBox box;
     public:
-    WrappedOctreeDifference(OctreeDifferenceFunction * function_, float bias = 0.0f);
+    WrappedOctreeDifference(OctreeDifferenceFunction * function_, float bias);
 
     ~WrappedOctreeDifference();
 

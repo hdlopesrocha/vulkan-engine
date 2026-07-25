@@ -7,7 +7,7 @@ class WrappedCone : public WrappedSignedDistanceFunction {
 private:
     BoundingSphere sphere;
 public:
-    WrappedCone(ConeDistanceFunction * function_, const Transformation &model = Transformation(), float bias = 0.0f);
+    WrappedCone(ConeDistanceFunction * function_, const Transformation &model, float bias);
     ~WrappedCone();
     BoundingSphere getSphere(const Transformation &model, float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;

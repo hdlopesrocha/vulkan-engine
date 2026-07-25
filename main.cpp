@@ -2162,27 +2162,27 @@ void MyApp::rebuildBrushScene() {
                     case 0: {
                         WrappedPerlinDistortDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectFrequency,
-                            glm::vec3(0), entry.effectBrightness, entry.effectContrast);
+                            glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
                         octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     case 1: {
                         WrappedPerlinCarveDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
-                            glm::vec3(0), entry.effectBrightness, entry.effectContrast);
+                            glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
                         octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     case 2: {
                         WrappedSineDistortDistanceEffect effect(wrappedFunc,
-                            entry.effectAmplitude, entry.effectFrequency, glm::vec3(0));
+                            entry.effectAmplitude, entry.effectFrequency, glm::vec3(0), model, entry.minSize);
                         octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                         break;
                     }
                     case 3: {
                         WrappedVoronoiCarveDistanceEffect effect(wrappedFunc,
                             entry.effectAmplitude, entry.effectCellSize,
-                            glm::vec3(0), entry.effectBrightness, entry.effectContrast);
+                            glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
                         octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                         break;
                     }
@@ -2201,62 +2201,62 @@ void MyApp::rebuildBrushScene() {
         switch (entry.sdfType) {
             case 0: { // Sphere
                 SphereDistanceFunction fn;
-                WrappedSphere wrapped(&fn);
+                WrappedSphere wrapped(&fn, model, entry.minSize);
                 applyEntry(&wrapped);
                 break;
             }
             case 1: { // Box
                 BoxDistanceFunction fn;
-                WrappedBox wrapped(&fn);
+                WrappedBox wrapped(&fn, model, entry.minSize);
                 applyEntry(&wrapped);
                 break;
             }
             case 2: { // Capsule
                 CapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.capsuleRadius);
-                WrappedCapsule wrapped(&fn);
+                WrappedCapsule wrapped(&fn, model, entry.minSize);
                 applyEntry(&wrapped);
                 break;
             }
             case 3: { // Octahedron
                 OctahedronDistanceFunction fn;
-                WrappedOctahedron wrapped(&fn);
+                WrappedOctahedron wrapped(&fn, model, entry.minSize);
                 applyEntry(&wrapped);
                 break;
             }
             case 4: { // Pyramid
                 PyramidDistanceFunction fn;
-                WrappedPyramid wrapped(&fn);
+                WrappedPyramid wrapped(&fn, model, entry.minSize);
                 applyEntry(&wrapped);
                 break;
             }
             case 5: { // Torus
                 TorusDistanceFunction fn(entry.torusRadii);
-                WrappedTorus wrapped(&fn);
+                WrappedTorus wrapped(&fn, model, entry.minSize);
                 applyEntry(&wrapped);
                 break;
             }
             case 6: { // Cone
                 ConeDistanceFunction fn;
-                WrappedCone wrapped(&fn);
+                WrappedCone wrapped(&fn, model, entry.minSize);
                 applyEntry(&wrapped);
                 break;
             }
             case 7: { // Cylinder
                 CylinderDistanceFunction fn;
-                WrappedCylinder wrapped(&fn);
+                WrappedCylinder wrapped(&fn, model, entry.minSize);
                 applyEntry(&wrapped);
                 break;
             }
             case 8: { // Tapered Cylinder
                 TaperedCylinderDistanceFunction fn(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y);
-                WrappedTaperedCylinder wrapped(&fn);
+                WrappedTaperedCylinder wrapped(&fn, model, entry.minSize);
                 applyEntry(&wrapped);
                 break;
             }
             case 9: { // Tapered Capsule
                 TaperedCapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB,
                     entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y);
-                WrappedTaperedCapsule wrapped(&fn);
+                WrappedTaperedCapsule wrapped(&fn, model, entry.minSize);
                 applyEntry(&wrapped);
                 break;
             }
@@ -2317,27 +2317,27 @@ void MyApp::applyBrushToScene() {
                 case 0: {
                     WrappedPerlinDistortDistanceEffect effect(wrappedFunc,
                         entry.effectAmplitude, entry.effectFrequency,
-                        glm::vec3(0), entry.effectBrightness, entry.effectContrast);
+                        glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
                     octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                     break;
                 }
                 case 1: {
                     WrappedPerlinCarveDistanceEffect effect(wrappedFunc,
                         entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
-                        glm::vec3(0), entry.effectBrightness, entry.effectContrast);
+                        glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
                     octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                     break;
                 }
                 case 2: {
                     WrappedSineDistortDistanceEffect effect(wrappedFunc,
-                        entry.effectAmplitude, entry.effectFrequency, glm::vec3(0));
+                        entry.effectAmplitude, entry.effectFrequency, glm::vec3(0), model, entry.minSize);
                     octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                     break;
                 }
                 case 3: {
                     WrappedVoronoiCarveDistanceEffect effect(wrappedFunc,
                         entry.effectAmplitude, entry.effectCellSize,
-                        glm::vec3(0), entry.effectBrightness, entry.effectContrast);
+                        glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, entry.minSize);
                     octree.apply(brushOp, &effect, model, translate, scale, brush, entry.minSize, simplifier, handler);
                     break;
                 }
@@ -2351,16 +2351,16 @@ void MyApp::applyBrushToScene() {
     };
 
     switch (entry.sdfType) {
-        case 0: { SphereDistanceFunction fn; WrappedSphere wrapped(&fn); applyEntry(&wrapped); break; }
-        case 1: { BoxDistanceFunction fn; WrappedBox wrapped(&fn); applyEntry(&wrapped); break; }
-        case 2: { CapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.capsuleRadius); WrappedCapsule wrapped(&fn); applyEntry(&wrapped); break; }
-        case 3: { OctahedronDistanceFunction fn; WrappedOctahedron wrapped(&fn); applyEntry(&wrapped); break; }
-        case 4: { PyramidDistanceFunction fn; WrappedPyramid wrapped(&fn); applyEntry(&wrapped); break; }
-        case 5: { TorusDistanceFunction fn(entry.torusRadii); WrappedTorus wrapped(&fn); applyEntry(&wrapped); break; }
-        case 6: { ConeDistanceFunction fn; WrappedCone wrapped(&fn); applyEntry(&wrapped); break; }
-        case 7: { CylinderDistanceFunction fn; WrappedCylinder wrapped(&fn); applyEntry(&wrapped); break; }
-        case 8: { TaperedCylinderDistanceFunction fn(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y); WrappedTaperedCylinder wrapped(&fn); applyEntry(&wrapped); break; }
-        case 9: { TaperedCapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y); WrappedTaperedCapsule wrapped(&fn); applyEntry(&wrapped); break; }
+        case 0: { SphereDistanceFunction fn; WrappedSphere wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
+        case 1: { BoxDistanceFunction fn; WrappedBox wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
+        case 2: { CapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.capsuleRadius); WrappedCapsule wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
+        case 3: { OctahedronDistanceFunction fn; WrappedOctahedron wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
+        case 4: { PyramidDistanceFunction fn; WrappedPyramid wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
+        case 5: { TorusDistanceFunction fn(entry.torusRadii); WrappedTorus wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
+        case 6: { ConeDistanceFunction fn; WrappedCone wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
+        case 7: { CylinderDistanceFunction fn; WrappedCylinder wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
+        case 8: { TaperedCylinderDistanceFunction fn(entry.taperedCylinderRadii.x, entry.taperedCylinderRadii.y); WrappedTaperedCylinder wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
+        case 9: { TaperedCapsuleDistanceFunction fn(entry.capsuleA, entry.capsuleB, entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y); WrappedTaperedCapsule wrapped(&fn, model, entry.minSize); applyEntry(&wrapped); break; }
         default:
             std::cerr << "[applyBrushToScene] Unknown sdfType " << entry.sdfType << ", skipping" << std::endl;
             break;

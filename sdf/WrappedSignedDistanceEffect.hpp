@@ -6,7 +6,7 @@ class WrappedSignedDistanceEffect : public WrappedSignedDistanceFunction {
     protected:
     BoundingSphere sphere;
     public:
-    WrappedSignedDistanceEffect(WrappedSignedDistanceFunction * function_, const Transformation &model = Transformation(), float bias = 0.0f);
+    WrappedSignedDistanceEffect(WrappedSignedDistanceFunction * function_, const Transformation &model, float bias);
     ~WrappedSignedDistanceEffect();
     void setFunction(WrappedSignedDistanceFunction * function_);
     ContainmentType check(const BoundingCube &cube) const override;

@@ -14,7 +14,7 @@ class WrappedVoronoiCarveDistanceEffect : public WrappedSignedDistanceEffect {
     glm::vec3 offset;
     float brightness;
     float contrast;
-    WrappedVoronoiCarveDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float cellSize_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model = Transformation(), float bias = 0.0f);
+    WrappedVoronoiCarveDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float cellSize_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias);
     ~WrappedVoronoiCarveDistanceEffect();
     const char* getLabel() const override;
     float distance(const glm::vec3 &p, const Transformation &model) override;

@@ -7,7 +7,7 @@ class WrappedCylinder : public WrappedSignedDistanceFunction {
 private:
     BoundingSphere sphere;
     public:
-    WrappedCylinder(CylinderDistanceFunction * function_, const Transformation &model = Transformation(), float bias = 0.0f);
+    WrappedCylinder(CylinderDistanceFunction * function_, const Transformation &model, float bias);
     ~WrappedCylinder();
     BoundingSphere getSphere(const Transformation &model, float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;

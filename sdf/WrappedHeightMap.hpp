@@ -7,7 +7,7 @@ class WrappedHeightMap : public WrappedSignedDistanceFunction {
 private:
     BoundingBox box;
     public:
-    WrappedHeightMap(HeightMapDistanceFunction * function_, float bias = 0.0f);
+    WrappedHeightMap(HeightMapDistanceFunction * function_, float bias);
     ~WrappedHeightMap();
     BoundingBox getBox(float bias) const override;
     ContainmentType check(const BoundingCube &cube) const override;

@@ -7,7 +7,7 @@ class WrappedSineDistortDistanceEffect : public WrappedSignedDistanceEffect {
     float amplitude;
     float frequency;
     glm::vec3 offset;
-    WrappedSineDistortDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float frequency_, glm::vec3 offset_, const Transformation &model = Transformation(), float bias = 0.0f);
+    WrappedSineDistortDistanceEffect(WrappedSignedDistanceFunction * function_, float amplitude_, float frequency_, glm::vec3 offset_, const Transformation &model, float bias);
     ~WrappedSineDistortDistanceEffect();
     const char* getLabel() const override;
     float distance(const glm::vec3 &p, const Transformation &model) override;
